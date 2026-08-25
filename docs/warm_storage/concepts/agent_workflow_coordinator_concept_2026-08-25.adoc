@@ -1,0 +1,273 @@
+= Agent Workflow Coordinator — Concept Notes
+:toc:
+:toclevels: 2
+
+Status: non-binding exploratory concept note. Future design input only.
+Authorizes no source, test, registry, Domain, Trusted-Ingress, FTR, or DMC
+family-cycle change.
+
+Date: 2026-08-25.
+
+== 1. Status and purpose
+
+This note preserves a working hypothesis raised during the FK/reference-helper
+DMC pilot handoff (`SIG-ACT-WORKFLOW-AUTOMATION-FOLLOWUP`, recorded in
+`docs(project-memory): hand off FK family after cycle 1`, commit `c4b844a`) so
+a fresh chat can resume the discussion without rediscovering why it matters.
+
+It is explicitly *not*:
+
+* an accepted architecture;
+* an approved implementation plan;
+* a final workflow DSL or state machine;
+* a mandatory tool stack;
+* a committed cross-repository product;
+* a decision that SonarQube (or any external analysis service) is required;
+* a decision that full autonomous agent execution is desired.
+
+Wording such as "working hypothesis," "candidate shape," "exploratory
+direction," "design question," and "future option" is used deliberately below
+and should not be read as stronger than that.
+
+Nothing here authorizes starting DMC Family Cycle 2 (remove redundant
+security defensive logic) for the FK/reference-helper family, or any other
+family-hardening cycle. Family Cycle 2 remains NEXT / NOT STARTED per
+`docs/backlog/roadmap_domain_hardening_sequence.adoc`.
+
+== 2. Motivation from the FK/DMC pilot
+
+The completed FK/reference-helper pilot (Cycle 0 through Family Cycle 1, ~60+
+commits) exposed a repetitive *human coordination* loop, distinct from the
+semantic work itself:
+
+[source,text]
+----
+agent receives prompt
+  -> agent analyzes / designs / implements / reviews
+  -> agent reports one or more commits
+  -> human verifies actual git state
+  -> human inspects git show / git show --stat / changed files / tests
+  -> human packages the relevant evidence
+  -> human selects the next agent / role / context
+  -> human pastes the next bounded prompt
+  -> independent gate / correction loop
+  -> repeat
+----
+
+The recurring overhead is not the semantic judgment (design, implementation,
+review) but the mechanical packaging and hand-off between agent turns. A
+future automation effort should investigate automating this orchestration
+overhead *without* prematurely automating the maintainer's semantic authority.
+
+== 3. Generalization hypothesis
+
+The useful abstraction should, if practical, be *more general* than the DMC
+sweep. The candidate shape is not a narrow `dmc_loop.py`, but:
+
+[source,text]
+----
+generic workflow coordinator
+  + workflow profiles
+----
+
+with DMC family hardening as the *first* profile and source of empirical
+requirements. Potential later profiles are aspirational only: FTR
+implementation, ordinary feature development, bug investigation/fix/review,
+architecture migration/refactoring, security hardening, release/quality
+gates, and possibly other projects or repositories.
+
+Cross-repository reuse is a design pressure, not a requirement for the first
+implementation. The first design should avoid closing off later
+extraction/reuse, without building a universal framework from day one.
+
+== 4. Coordinator / Agent / Human boundaries
+
+*Coordinator.* Trusted workflow mechanics, likely running on the development
+VM with direct access to the repository filesystem, git, tests/make targets,
+architecture/style guards, workflow state, and (where available) an agent
+invocation mechanism. It should not rely on agent prose as repository
+authority.
+
+*Agents.* Perform semantic work: assessment, design, implementation, review,
+correction, closure assessment. Agent self-report is evidence/input, not
+repository truth.
+
+*Git.* Authoritative for what actually changed. If an agent reports N commits,
+the coordinator should be able to verify commit existence, expected ancestry,
+actual HEAD, unexpected commits, changed paths, and worktree state.
+
+*Reviewers.* Independent reviewers should be distinct runs/contexts from the
+author. Provider/model diversity can be useful, but no exact model assignment
+should become part of the architecture.
+
+*Human.* Remains semantic authority for important gates. The goal is not to
+remove the maintainer, but to stop requiring manual, repetitive mechanical
+orchestration between every agent hop.
+
+== 5. Generic workflow shape and profiles
+
+Candidate generic structure:
+
+[source,text]
+----
+work item
+  -> author/analyst agent
+  -> deterministic repository/evidence verification
+  -> validations / evidence providers
+  -> independent reviewer
+  -> structured verdict
+  -> workflow transition OR correction loop OR human stop
+----
+
+A DMC-specific profile may later define transitions such as assessment ->
+readiness design -> independent readiness review -> implementation ->
+independent implementation review -> closure assessment -> independent
+closure review, but the generic coordinator should avoid hard-coding DMC
+terminology where reasonably avoidable.
+
+== 6. Workflow state (open question, no schema chosen)
+
+A future coordinator likely needs explicit machine-readable workflow state,
+possibly including: workflow/profile, current work item, current phase,
+repository base commit, current HEAD, generated commits, accepted/rejected
+gates, open findings, authorized scope, next permitted transition, blocked
+transitions, and whether a human decision is required. No schema is chosen
+here; see <<12>>.
+
+== 7. Git authority and evidence packaging
+
+One of the strongest concrete requirements observed in the FK pilot: a
+*deterministic Git evidence packager*. Candidate evidence: repository path
+identity, workflow base commit, current HEAD, commits produced by the current
+work item, commit metadata, changed-path list, per-commit `git show` /
+`git show --stat`, aggregate `base..head` diff, aggregate diff stat, worktree
+state, validation results, and authorized-scope comparison.
+
+Principle: *Git is authority over agent self-report.* If an agent reports
+three commits but repository history contains four relevant new commits, that
+mismatch should be detectable and potentially stop the workflow.
+
+=== 7.1 Large-diff bounding
+
+For ordinary bounded commits, the evidence package may contain full diffs.
+For very large changes, the packager should avoid blindly injecting thousands
+of lines into the next agent's context — candidate strategy: small diff -> full
+`git show`/aggregate diff; large diff -> `git show --stat` + changed paths +
+selected/priority-path diffs, with the reviewer able to inspect source
+directly as needed. A rough ~1000-changed-line threshold was discussed during
+this handoff but is explicitly *not* adopted as a permanent constant here; the
+real principle is that evidence should be complete enough for review while
+remaining bounded. Authorized/priority paths from the current work item could
+help decide which diffs stay fully included.
+
+== 8. Validation / evidence providers
+
+Separate *evidence collection* from *gate semantics*. Candidate initial
+providers: git evidence, unit/integration tests, architecture guards,
+source/style guards, diff hygiene. Candidate later, optional providers:
+SonarQube/static analysis, security scanners, dependency scanners, other
+quality-analysis services.
+
+Principle: evidence providers produce observations; workflow policy, the
+reviewer, or the human determine meaning and gates. A Sonar Quality Gate (or
+equivalent) must not become architecture truth by default — e.g. a complexity
+warning may be useful evidence without automatically forcing a refactor.
+
+== 9. SonarQube / external-analysis future option
+
+Preserved as a *future option only*, not a decision: a later add-on may place
+SonarQube (or similar) on a separate quality-services node reachable by the
+development/agent VM, keeping persistent service state and optional external
+evidence providers separate from the coordinator's own narrow integration
+surface. Explicitly out of scope for this note and for any first slice: do
+not install SonarQube now; do not create network/service configuration; do
+not require a second node for an MVP; do not design a Sonar-specific
+coordinator architecture. The first coordinator design should merely avoid
+making later external evidence-provider integration unnecessarily difficult.
+
+== 10. Human gates and autonomy boundary
+
+Candidate human stop conditions (non-exhaustive): scope expansion beyond
+authorized files/area; a new public-surface question; a new
+metadata/lifecycle/persistence contract; conflict between governing
+artifacts; a new Domain ownership-boundary question; unexpected repository
+history/worktree state; a material review finding requiring fresh design; a
+cross-profile/cycle transition; a strategy/roadmap/Project-Memory decision.
+
+Principle: automate repetitive coordination; retain explicit human gates for
+semantic/strategic changes.
+
+Working autonomy hypothesis:
+
+* *Stage 1* — semi-automatic coordinator: state tracking, next-task/prompt
+  preparation, git/evidence verification, validation collection; the human
+  still launches/approves major hops.
+* *Stage 2* — the coordinator may serially invoke bounded agent roles
+  automatically between predefined gates, only after Stage 1 proves reliable.
+
+The observed successful workflow so far is fundamentally *serial* and
+dependency-aware; avoid multi-agent parallelism unless a later use case
+justifies it.
+
+== 11. Possible minimal first slice (hypothesis, not scoped work)
+
+A useful first automation slice may consist only of: a coordinator skeleton;
+machine-readable workflow state; a deterministic Git evidence packager; a
+role/prompt template mechanism; a structured-result parser/schema; and
+explicit human stop gates. Structured agent results (status, commits, verdict,
+material findings, scope_changed, next_requested_gate — no schema fixed here)
+are meant to give the coordinator a machine interface alongside the normal
+prose report, so it does not need to infer intent (e.g. whether "ACCEPT WITH
+MINOR CORRECTIONS" authorizes the next transition) from free text. Role/prompt
+templates (assessment, readiness design, independent design review,
+implementation, independent implementation review, correction, delta review,
+closure assessment, closure review) are a related candidate mechanism; none of
+this is built by this note.
+
+Explicitly *out* of initial scope: SonarQube; distributed service
+architecture; autonomous full-family execution; generalized cross-repository
+product packaging; a broad plugin ecosystem; a parallel agent swarm;
+automatic architecture decisions.
+
+== 12. Open design questions for the next chat
+
+. Where should the coordinator live — this repo, a sibling tooling repo, or a
+  later extracted reusable package?
+. What is the minimal generic workflow state model?
+. What belongs in the generic coordinator vs. a DMC-specific profile?
+. How are allowed transitions and human stop gates represented?
+. How does an agent return a structured result without losing useful prose?
+. How does the evidence packager select full vs. bounded diffs?
+. How are validation/evidence providers represented?
+. How should agent invocation be abstracted across providers/tools?
+. Which actions may the coordinator perform automatically vs. require human
+  confirmation?
+. What would make later cross-repository reuse possible without
+  over-engineering version 1?
+. How should failures/retries/corrections be recorded?
+. What should be persisted in-repo vs. kept as transient workflow runtime
+  state?
+
+== 13. Explicit non-goals
+
+This note does not decide, and nothing above should be read as deciding:
+
+* that a workflow coordinator will be built at all;
+* any coordinator implementation language, storage format, or tool stack;
+* a final workflow state schema or structured-result schema;
+* that DMC terminology should or should not appear in the generic
+  coordinator;
+* that SonarQube or any other external analysis service will be adopted;
+* any autonomy level beyond the Stage-1 hypothesis in <<10>>;
+* starting DMC Family Cycle 2, or any other family-hardening cycle, for
+  FK/reference-helper or any other family;
+* the FK/reference-helper Surface Consolidation FTR, which remains
+  OPEN/UNDECIDED and is untouched by this note.
+
+== 14. Next step
+
+The next step is a dedicated design session (fresh chat) that treats this
+note as background context, works through the open questions in <<12>>, and
+produces its own bounded design/assessment artifact before any coordinator
+code is written. That session is expected to run independently of, and not
+gate, DMC Family Cycle 2 or Surface Consolidation.
