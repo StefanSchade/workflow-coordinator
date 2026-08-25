@@ -1,0 +1,930 @@
+===== FTR-AGENT-WORKFLOW-COORDINATOR-P5 -- Coordinate bounded repository-native agent workflows
+
+*Lifecycle:* New
+
+*Status:* *DRAFT / PROPOSED -- UNDER INDEPENDENT READINESS REVIEW; NOT YET
+ACCEPTED; IMPLEMENTATION NOT AUTHORIZED*
+
+*Priority:* P5
+
+*Type:* Internal developer tooling / AI-assisted engineering workflow
+
+*Review gate:* A fresh independent adversarial readiness review of the complete
+`hypothesis -> proposed architecture -> draft FTR` derivation is required before
+this FTR may become implementation authority.
+
+[IMPORTANT]
+====
+This FTR is a draft implementation contract. It does not accept the proposed
+architecture, authorize any implementation slice or live agent invocation,
+start DMC Family Cycle 2, reopen Trusted Ingress, or authorize a DMC work item.
+====
+
+==== 1. Purpose and design inputs
+
+V1 addresses the repeated human orchestration around bounded engineering-agent
+work: preparing tasks, invoking roles, establishing actual Git truth, collecting
+deterministic evidence, validating structured results, selecting only permitted
+next actions, coordinating reviews/corrections, stopping for human semantic
+authority, and preserving ex-post observability across autonomous Hops.
+
+The empirical and architectural reasoning is not repeated here. Inputs are:
+
+* `docs/warm_storage/concepts/agent_workflow_coordinator_concept_2026-08-25.adoc`
+  -- non-binding evidence/hypothesis;
+* `docs/warm_storage/concepts/agent_workflow_coordinator_proposed_architecture_2026-08-25.adoc`
+  -- proposed design projected into this contract, still unaccepted.
+
+If this FTR conflicts with the proposed design, readiness review must record the
+conflict; implementation must not silently choose a third contract.
+
+==== 2. V1 scope and planned placement
+
+===== 2.1 Required V1 capability
+
+V1 is a local, repository-native, Git-centered, policy-bounded coordinator with:
+
+* one coordinator process, repository, worktree, active Run, and agent
+  invocation at a time;
+* WorkItem semantic input plus Run, Hop, and Finding operational records;
+* finite validated workflow profiles and deterministic route reduction;
+* one configured agent adapter plus an optional, policy-bounded supervisor role;
+* Git reconciliation, fixed trusted evidence callables, structured results,
+  finding convergence, autonomy budget, checkpoints, interruption/resume, and
+  explicit human authority stops;
+* a first routine profile and, only in Slice 5, a DMC-shaped profile without DMC
+  vocabulary in generic mechanics.
+
+Planned implementation placement follows the proposed architecture:
+
+* repository-local executable mechanics: `scripts/workflow_coordinator/`;
+* versioned profiles, repository policy, and prompt components:
+  `docs/ai_info/workflows/`;
+* focused unit/integration/architecture tests under the existing `tests/`
+  topology.
+
+No coordinator code belongs under `src/spreadsheet_handling/`; it is developer
+tooling, not product/runtime API. No new dependency is justified by V1 unless
+the readiness review or a separately reviewed slice demonstrates necessity.
+
+===== 2.2 Deferred capabilities
+
+Deferred without V1 scaffolding: coordinator-created or mixed semantic commit
+ownership; mandatory trailers/hooks; multiple agent providers/models and
+provider-diversity policy; extraction into `tools/` or a package; automated
+warm/cold run archival; quantitative trust scoring; parallel worktrees/runs;
+remote/distributed execution; SonarQube implementation; semantic/vector
+retrieval; web UI.
+
+===== 2.3 Explicit non-goals
+
+* No workflow DSL, executable profile code, graph engine, database, event store,
+  plugin manager, DI framework, queue, or distributed fault tolerance.
+* No universal agent abstraction, general sandbox/security product, automatic
+  workflow invention, automatic semantic acceptance, or Project Memory run
+  store.
+* No Domain, FK/Lookup, Trusted-Ingress, public CLI/YAML, spreadsheet, demo,
+  release, or consumer behavior change.
+* No real Run/Hop manifests, Git hooks, enforced trailers, live workflow agent,
+  Sonar service, vector index, or external infrastructure in this drafting task.
+
+===== 2.4 FTR sizing preflight
+
+This is a justified FTR because it introduces architectural developer tooling
+with acceptance contracts. It does not touch spreadsheet roundtrip, `_meta`,
+Domain registries, XLSX/ODS parity, or current public product surfaces. The
+workflow profile schema is an internal coordinator input, not the existing
+public pipeline YAML surface. The five slices separate the state/reducer,
+repository transaction, adapter, live invocation, and multi-Hop risks.
+
+==== 3. Binding V1 system and model contracts
+
+These contracts become binding only after independent FTR acceptance.
+
+===== 3.1 System boundary
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-SYS-01
+|V1 shall execute serially for exactly one configured repository/worktree and
+at most one active Run and one agent invocation. A suspended parent is not
+active while its separate child Run executes.
+
+|WFC-SYS-02
+|Coordinator mechanics, workflow profile, repository engineering policy,
+operator/Run policy, and task payload shall remain distinguishable inputs even
+when implemented by a small number of modules/files.
+
+|WFC-SYS-03
+|The generic coordinator shall contain no DMC, family, cycle, slice, or
+Trusted-Ingress E-phase primitive. Profiles and WorkItem labels may contain
+those terms.
+
+|WFC-SYS-04
+|V1 shall remain useful with `max_autonomous_hops=1` and shall require no
+future-only service or infrastructure to run.
+
+|WFC-SYS-05
+|The implementation shall stay repository-local under the planned placement
+unless readiness review explicitly corrects a demonstrated placement conflict.
+|===
+
+===== 3.2 WorkItem input, Run, Hop, and Finding
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-MODEL-01
+|WorkItem shall be semantic input, not a mutable operational entity. Its compact
+specification shall carry stable `work_item_id`, task/authority source, profile
+reference, repository/scope, initial phase, `max_autonomous_hops`, and optional
+profile labels.
+
+|WFC-MODEL-02
+|A Run shall identify one execution attempt with `run_id`, schema version,
+WorkItem reference, pinned profile/policy revision, repository identity,
+baseline/current observed HEAD, current phase/status, budget used/limit, compact
+Hop summaries, Findings, suspension/rebaseline state, stop reason, and finite
+next route keys.
+
+|WFC-MODEL-03
+|Run state shall not duplicate full diffs, Git log, changed-file contents, or
+other facts reconstructable from stored commit IDs and Git.
+
+|WFC-MODEL-04
+|A Hop shall identify one adapter-accepted invocation through run-local
+`hop_id`/sequence and record role/context, start/end, independently observed
+base/end commits, actual commit range, invocation/result status, Finding delta,
+evidence refs, route/stop, and concise attributed rationale.
+
+|WFC-MODEL-05
+|A Finding shall have stable run-local ID, concise invariant/problem statement,
+blocking flag, state, introducing/last-changing Hop, evidence refs, concise
+disposition, and optional successor/external WorkItem reference. It shall not
+grow assignees, due dates, comments, or general issue-tracker workflow.
+
+|WFC-MODEL-06
+|Review descriptors, observations, transition decisions, prerequisite links,
+and checkpoints shall remain nested ordinary data or generated views rather
+than additional operational aggregate roots.
+|===
+
+==== 4. Workflow profile, route, and authority contracts
+
+===== 4.1 Profile data and route effects
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-PROFILE-01
+|A profile shall use one validated, versioned, finite data representation chosen
+before Slice 1 implementation. Profile phase keys are opaque to generic code.
+
+|WFC-PROFILE-02
+|Each phase shall declare its role/prompt policy, permitted route keys, evidence
+requirements, authorized scope/actions, human gates, and review descriptor when
+the phase is a review.
+
+|WFC-PROFILE-03
+|Profiles shall express only five route effects: `goto`, `complete`,
+`await_human`, `suspend_for_prerequisite`, and `stop`.
+
+|WFC-PROFILE-04
+|`goto` selects one declared target phase; `complete` ends the Run without
+claiming authority beyond profile policy; `await_human` records a concrete
+question; `suspend_for_prerequisite` records an authorized child and clears
+stale next action; `stop` ends autonomous progress without claiming completion.
+
+|WFC-PROFILE-05
+|Profile data shall not contain executable code, arbitrary conditions, computed
+graphs, fan-out, or user-defined loops. A loop is a finite declared route edge.
+
+|WFC-PROFILE-06
+|A profile or pinned policy mutation during a Run shall be an anomaly requiring
+stop/rebaseline; an agent result cannot authorize its own profile change.
+|===
+
+===== 4.2 Routing precedence and authority
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-AUTH-01
+|Routing precedence shall be: mechanical preemption, deterministic policy
+reduction, optional declared supervisor judgment, then human semantic authority.
+
+|WFC-AUTH-02
+|Mechanical preemption shall stop on malformed state/result, Git anomaly,
+policy mutation, budget prohibition, or required evidence-provider error; no
+supervisor may override it.
+
+|WFC-AUTH-03
+|Deterministic reduction shall use only validated outcome, current review
+authority/blocking policy, Finding state, evidence state, budget, and the current
+finite route table. It shall route automatically only when policy determines a
+single permitted result.
+
+|WFC-AUTH-04
+|A supervisor may be invoked only at a profile-declared judgment point, shall be
+read-only, consumes a Hop, receives one bounded question plus finite route keys
+and compact history, and may choose only one key or request a human.
+
+|WFC-AUTH-05
+|A supervisor shall not invent routes, mutate profile/policy, enlarge scope,
+downgrade a blocker without delegated authority, create semantic ownership,
+approve public/API choices, activate unauthorized work, raise review authority,
+or claim project/Project-Memory decisions.
+
+|WFC-AUTH-06
+|Human escalation shall be mandatory for new/conflicting semantic ownership or
+authority, plausible public/API/compatibility choices, trust/security redesign,
+capability deletion, workflow/profile redesign, unauthorized scope, unapproved
+nested work, roadmap/Project Memory governance, and any undelegated decision.
+|===
+
+==== 5. Review, Finding, and convergence contracts
+
+===== 5.1 Review dimensions and anti-ceremony rule
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-REVIEW-01
+|Every review phase shall independently declare breadth/search scope, authority,
+and context policy. Breadth selects the falsification surface and grants no
+authority.
+
+|WFC-REVIEW-02
+|Review authority is `advisory` or `gate`. Advisory results may add evidence or
+Findings but cannot advance/complete. A gate authorizes only its declared route
+under its blocking policy.
+
+|WFC-REVIEW-03
+|Context is `fresh` or `continuing`. Fresh shall not reuse author conversation
+history; continuing retains only the bounded thread allowed by profile. Context
+does not establish independence or authority by itself.
+
+|WFC-REVIEW-04
+|A review stage shall exist only where the profile states a distinct epistemic,
+falsification, risk, or authority purpose plus trigger, blocking policy, and
+exit. Availability shall never imply mandatory execution.
+
+|WFC-REVIEW-05
+|After broad review establishes a Finding set, correction/delta review normally
+checks known Findings and direct regressions. New material evidence may escape
+the bound; unrelated new minors shall not automatically reopen the whole work.
+|===
+
+===== 5.2 Finding lifecycle and convergence
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-FIND-01
+|Finding state shall be exactly `open`, `resolved`, `residual`, or `superseded`.
+`residual` means genuine and explicitly accepted non-blocking;
+`superseded` requires successor/reclassification reference.
+
+|WFC-FIND-02
+|Agents may cite an existing ID or propose an unassigned Finding. The
+coordinator allocates new IDs and rejects silent invariant/identity rewrites.
+
+|WFC-FIND-03
+|Only the current declared gate or human authority may validate closure,
+blocking downgrade, residual acceptance, or supersession. Agent proposals alone
+do not change authoritative disposition.
+
+|WFC-FIND-04
+|The coordinator shall deterministically expose Finding transitions/reopens,
+commit/path and evidence changes, regression state, new material-Finding count,
+route repetition, and scope/policy/baseline changes.
+
+|WFC-FIND-05
+|Material mechanism change, semantic narrowing, productive progress, goalpost
+drift, lack of progress, or wrong owner/workflow are semantic classifications
+for delegated supervisor or human judgment. V1 shall implement no numerical
+convergence score.
+
+|WFC-FIND-06
+|V1 shall permit productive correction beyond three loops, stop non-progressing
+loops before budget where judged, and route semantic reclassification out of
+local correction. No fixed low `max_review_iterations` may be the primary rule.
+|===
+
+==== 6. Bounded autonomy and Git contracts
+
+===== 6.1 Autonomy budget
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-AUTO-01
+|Every Run shall carry positive `max_autonomous_hops=N`; architecture shall
+support empirical N=1 -> 2 -> 5 -> 10 changes without model/schema redesign.
+
+|WFC-AUTO-02
+|Every invocation accepted by the agent adapter consumes one Hop whether it
+succeeds, fails, or yields malformed output. Author, reviewer, correction,
+rebaseline, curator, and supervisor invocations all count.
+
+|WFC-AUTO-03
+|Local failure before adapter/provider acceptance, Git/evidence inspection,
+prompt assembly, schema validation, deterministic routing, state/checkpoint
+writing, and human actions do not consume Hops. V1 has no hidden retry.
+
+|WFC-AUTO-04
+|The coordinator shall stop before the next invocation on early-stop conditions.
+At exhaustion it completes safe deterministic post-Hop work, records
+`awaiting_human_budget`, renders a checkpoint, and invokes no further agent.
+
+|WFC-AUTO-05
+|Resume requires explicit maintainer action, resolved gates, verified current
+HEAD/clean state, and a limit not below used Hops. Used Hops never reset within
+the Run.
+|===
+
+===== 6.2 Git transaction and prospective identity
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-GIT-01
+|Every Hop begins at an independently observed Git commit. Before invocation,
+the coordinator verifies repository identity, expected ancestry, current HEAD,
+and no tracked or non-ignored untracked changes.
+
+|WFC-GIT-02
+|After invocation, the coordinator independently observes HEAD/worktree and
+computes the actual `base..head` commit range. Agent-claimed commits are hints,
+never factual authority.
+
+|WFC-GIT-03
+|A successful mutating Hop shall produce 1..n atomic agent-created commits and
+end clean before another Hop. Observation-only or failed Hops may have
+`base==head`. The coordinator shall not synthesize semantic commits in V1.
+
+|WFC-GIT-04
+|The next Hop is prohibited after rewritten/divergent ancestry, HEAD movement
+outside the invocation window, forbidden merge commit, dirty tracked/non-ignored
+state, out-of-scope path, pinned policy/prompt mutation, commit safety-cap breach,
+or unresolved repository/submodule/evidence identity.
+
+|WFC-GIT-05
+|Claimed/actual mismatch shall be reported and actual Git used. Mismatch becomes
+blocking when coupled to hidden, divergent, out-of-scope, or policy-forbidden
+change.
+
+|WFC-GIT-06
+|Ignored scratch affects cleanliness only through trusted repository policy: it
+may be tolerated in approved roots but must not retain secrets. V1 does not
+promise whole-filesystem cleanliness.
+
+|WFC-GIT-07
+|WorkItem ID is semantic identity; Run ID is one attempt; Hop ID is invocation
+identity within Run. Run evidence carries all three. No historical Hop IDs are
+invented.
+
+|WFC-GIT-08
+|Workflow-produced commit subjects shall project WorkItem/Hop identity in
+human-readable `git log --oneline` form compatible with Conventional Commits.
+Trailers/hooks remain optional/deferred; any subject validation is coordinator
+postcondition, not a Git hook.
+|===
+
+==== 7. Prompt, agent output, and repository-policy contracts
+
+===== 7.1 Prompt composition
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-PROMPT-01
+|Reusable prompt material shall be repository-local, versioned, and pinned by
+Git revision/content digest for the Run.
+
+|WFC-PROMPT-02
+|Expanded prompt order shall be: generated identity/Git/authority/output header;
+role/persona; repository engineering policy; workflow/profile/phase policy;
+task-specific semantic payload; bounded evidence/context; result/output
+contract.
+
+|WFC-PROMPT-03
+|Identity, provenance, scope, routes, process, evidence refs, and output contract
+shall be structured; semantic task/reasoning remains natural-language prose.
+
+|WFC-PROMPT-04
+|V1 shall have no general template language or user-defined conditional/include
+engine. What deterministic software can reliably enforce shall not exist only
+as an LLM instruction.
+|===
+
+===== 7.2 Three output surfaces
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-OUTPUT-01
+|Every accepted invocation shall produce or fail validation against a
+machine-readable routing envelope containing schema version, outcome, requested
+profile route, `scope_changed`, `requires_human`, optional escalation, Finding
+deltas, claimed commits, evidence refs, and short summary.
+
+|WFC-OUTPUT-02
+|Outcome vocabulary shall be `completed`, `changes_required`, `blocked`, or
+`failed`. Escalation classes shall include `scope`, `semantic_authority`,
+`public_surface`, `trust_boundary`, `prerequisite`, and `operational` with a
+concise question.
+
+|WFC-OUTPUT-03
+|A Finding delta shall contain existing/null ID, invariant, blocking flag,
+proposed state, and evidence refs. Free-form prose cannot supply missing
+routing-critical fields.
+
+|WFC-OUTPUT-04
+|Substantial semantic analysis (architecture/design, material review,
+assessment/census, closure assessment, durable rationale) shall be written as a
+versioned repository artifact and, for a successful mutating Hop, committed by
+the agent. Operational/supervisor-only reasoning may remain transient.
+
+|WFC-OUTPUT-05
+|Terminal output shall be concise and navigational: identities, outcome/stop,
+commit/check status, human question, and artifact/checkpoint locations. Material
+analysis belongs in repository artifacts, not a long terminal transcript.
+|===
+
+===== 7.3 Repository engineering policy boundary
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-POLICY-01
+|Coordinator core shall encode execution mechanics, not code-quality or Domain
+semantics. Repository rules are versioned inputs to prompts and deterministic
+guards.
+
+|WFC-POLICY-02
+|Repository policy may reference current architecture, coding/testing/docs,
+commit, AI/developer, and Human Readability guidance, including
+`docs/developer_guide/ch06_code_conventions/03_human_readability_review.adoc`;
+none becomes generic workflow vocabulary.
+
+|WFC-POLICY-03
+|Operator/Run policy controls repository, adapter, autonomy, authorized scope and
+actions; profile controls workflow semantics; task payload controls concrete
+work. No layer may silently grant authority owned by another.
+|===
+
+==== 8. Evidence, persistence, Project Memory, and checkpoint contracts
+
+===== 8.1 Evidence providers
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-EVID-01
+|V1 shall use a fixed trusted in-code registry of simple evidence callables; no
+runtime discovery or plugin lifecycle.
+
+|WFC-EVID-02
+|An observation shall identify provider, one of `pass`, `fail`, `error`, or
+`not_run`, exact
+command/version when applicable, concise summary, artifact ref, and digest.
+
+|WFC-EVID-03
+|Initial categories are mandatory Git facts and profile-selected tests,
+architecture guards, source/style checks, and diff hygiene. Commands/argv and
+working directory originate in trusted policy, not agent output.
+
+|WFC-EVID-04
+|Providers return observations and never semantic acceptance. A future
+Sonar/static-analysis provider may implement the same shape through explicit
+registration without any Sonar-specific V1 machinery.
+|===
+
+===== 8.2 Persistence and artifact lifecycle
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-PERSIST-01
+|V1 shall persist enough compact local state for same-checkout crash/resume:
+atomic Run snapshot, compact Hop/result metadata, Finding state, evidence
+manifest refs/digests, and generated checkpoint.
+
+|WFC-PERSIST-02
+|Default operational state shall live in a configured Gitignored root such as
+`.agent_tmp/workflow_coordinator/<run-id>/`; no database, event store, or
+append-only event log is permitted.
+
+|WFC-PERSIST-03
+|Git stores durable repository history; committed design/review/assessment
+artifacts store durable semantics. Run state references commits/artifacts rather
+than copying full diffs/content.
+
+|WFC-PERSIST-04
+|Expanded prompts, raw stdout/stderr, full logs, large diffs, and copied files
+are transient by default, may be redacted/promoted selectively, and may be
+deleted. Secrets are never eligible for promotion.
+
+|WFC-PERSIST-05
+|A maintainer may deliberately promote one compact active/paused/completed Run
+report to warm storage for durable handoff. Later cold-storage movement or
+deletion is governed separately; V1 automates neither retention nor archival.
+|===
+
+===== 8.3 Project Memory boundary
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-PM-01
+|Project Memory remembers what matters; the coordinator records what happened.
+Project Memory shall never be operational Run/Hop storage.
+
+|WFC-PM-02
+|At accepted completion, the coordinator may suggest `none` or
+`update_existing` with WorkItem, accepted HEAD, durable decision/residual, and
+evidence refs. Canonical curation remains a separate maintainer-authorized
+Project Memory workflow.
+
+|WFC-PM-03
+|Individual Hops shall not become routine Project Memory events. A semantically
+exceptional Hop may be referenced inside a coarse curated outcome, not promoted
+as execution state. Future Run/Hop references are prospective only; vector
+retrieval remains out of scope.
+|===
+
+===== 8.4 Checkpoint and terminal observability
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-OBS-01
+|Every autonomous stop/completion and each explicit operator checkpoint shall
+render a compact report from Run state and evidence manifests.
+
+|WFC-OBS-02
+|Checkpoint shall contain WorkItem/Run, profile/policy revision,
+baseline/current HEAD, phase/status, budget used/remaining, one-line Hop
+summaries and ranges, Finding state/origins, evidence state, anomalies, stop
+reason, human questions, and finite next permitted routes.
+
+|WFC-OBS-03
+|Git facts/counts/route validity/provider state are deterministic. Semantic
+summaries or progress classifications shall be attributed to agent, supervisor,
+or human.
+
+|WFC-OBS-04
+|Progressive disclosure shall be `checkpoint -> Hop/commit -> review/result ->
+evidence/diff`; reports and terminal output link rather than duplicate full
+prompts, prose, logs, or diffs.
+|===
+
+==== 9. Failure, suspension, resume, and trust contracts
+
+===== 9.1 Failure and resume
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-FAIL-01
+|Invocation failure or malformed structured result after adapter acceptance
+consumes a Hop; coordinator reconciles Git/evidence, records diagnostic, and
+stops without hidden retry or inferred route.
+
+|WFC-FAIL-02
+|A failed deterministic guard is recorded. A profile-declared failed gate may
+route to correction; evidence-provider error or hard invariant stops.
+
+|WFC-FAIL-03
+|Dirty/divergent/unexpected Git state shall stop without reset, cleanup,
+rollback, or guessed ownership and shall report exact state.
+
+|WFC-FAIL-04
+|Before invocation, state is atomically marked `invoking` with base HEAD. After
+process interruption, restart reconciles actual Git, checkpoints, and requires
+explicit resume; it never replays automatically.
+
+|WFC-FAIL-05
+|Budget exhaustion, human stop, or unclassifiable route persists
+state/checkpoint and invokes no next agent.
+
+|WFC-FAIL-06
+|Prerequisite activation requires preauthorization or explicit maintainer
+authority, creates a separate child Run, and leaves parent `suspended` with
+child/suspension HEAD and no stale next action.
+
+|WFC-FAIL-07
+|Nested return shall enter parent `rebaseline`, increment rebaseline generation,
+compare current Git/governing artifacts/Findings against suspension state, and
+select a newly valid route. Nested work never restores stale next action.
+|===
+
+===== 9.2 Trust and security
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-SEC-01
+|V1 trusts the maintainer-selected repository, pinned profile/policy, configured
+adapter, Git/filesystem/process observations, and existing OS/tool permission
+boundary; it is not a hostile-code sandbox.
+
+|WFC-SEC-02
+|Agent prose, factual claims, claimed commits, requested routes, and Finding
+proposals are untrusted input. Repository facts are observed independently.
+
+|WFC-SEC-03
+|Agents/supervisors cannot request arbitrary workflow mutation or evidence
+commands; only validated profile routes and trusted policy command definitions
+are executable.
+
+|WFC-SEC-04
+|Coordinator invocation shall grant no new agent permission. Supervisor shall
+not increase its own semantic/review authority.
+
+|WFC-SEC-05
+|Secrets, model credentials, environment dumps, and credential-bearing output
+shall not be persisted in workflow artifacts; raw material is deleted/redacted
+before deliberate promotion.
+|===
+
+==== 10. Historical replay acceptance matrix
+
+Slice 1 shall make these cases executable as reducer/model/replay tests. Later
+slices replace fixture assumptions with Git/adapter integration where noted.
+
+[cols="1,3,4",options="header"]
+|===
+|Case |Contracts exercised |Required acceptance
+
+|A -- Trusted Ingress E4
+|WFC-REVIEW-05, WFC-FIND-04..06, WFC-AUTO-01/04
+|Stable Finding survives >3 productive correction loops; resolved Findings stay
+closed; bounded review continues while budget remains; no review-count stop.
+
+|B -- Trusted Ingress E3/XRef
+|WFC-AUTH-05/06, WFC-FIND-05/06, WFC-FAIL-06/07
+|Conflicting contracts escape local correction, require human/prerequisite,
+suspend parent, and rebaseline before return.
+
+|C -- DMC F-002 Ultrareview
+|WFC-REVIEW-01..04, WFC-AUTH-03..05
+|Broad/fresh adversarial review remains advisory, returns evidence to a separate
+formal gate, and cannot accept implementation.
+
+|D -- DMC Cell Codec
+|WFC-REVIEW-04, WFC-FIND-01/03/06
+|Empty known-open set does not generically close a Run; a profile-selected
+closure search can introduce a new blocker and route correction/prerequisite.
+
+|E -- DMC deletion authority
+|WFC-AUTH-06, WFC-FAIL-06/07, WFC-PM-01
+|Human authorizes independent child lifecycle; parent is suspended and safely
+rebaselined; Project Memory is not used for nested execution state.
+
+|F -- tiny local change
+|WFC-SYS-04, WFC-REVIEW-04, WFC-AUTO-01
+|One authorized implementation Hop plus passing mechanics can complete without
+design/readiness/adversarial/integration/closure/lifecycle review chain.
+
+|G -- accepted non-blocking minor
+|WFC-FIND-01/03, WFC-REVIEW-02
+|Authorized gate records `residual` and advances/completes without a forced
+correction loop.
+
+|H -- `max_autonomous_hops=1`
+|WFC-AUTO-01..05, WFC-OBS-01..04
+|One invocation still yields Git/evidence/result processing and useful
+checkpoint; next invocation is preempted unless deterministic completion ends
+the Run.
+|===
+
+==== 11. Implementation slices and slice acceptance
+
+No slice is authorized by this draft.
+
+===== 11.1 Slice 1 -- reducer / model / replay proof
+
+Scope:: Minimal typed WorkItem input, Run/Hop/Finding records; one selected
+profile serialization and validator; five route effects; deterministic reducer;
+Finding lifecycle; autonomy accounting; atomic local state/checkpoint; A--H
+tests; no real agent invocation.
+
+Acceptance::
+
+. WFC-SYS, WFC-MODEL, WFC-PROFILE, WFC-AUTH deterministic path, WFC-REVIEW,
+  WFC-FIND, WFC-AUTO, WFC-PM, and WFC-OBS contracts have executable focused
+  tests where behavior exists.
+. A--H matrix tests demonstrate every required state/evidence/route outcome,
+  including >3 loops, advisory non-authority, residual completion, and N=1.
+. Invalid phase/route/effect/profile/result data fail closed with deliberate
+  diagnostics; no DSL/executable configuration is introduced.
+. Atomic write/interrupted-write tests preserve either prior valid state or new
+  valid state, never a partially parseable snapshot.
+. Test implementation uses no real LLM/provider/network and changes no product
+  runtime under `src/spreadsheet_handling/`.
+
+===== 11.2 Slice 2 -- Git transaction / evidence proof
+
+Scope:: Disposable fixture repositories; pre/post Git facts; base/head/range,
+ancestry, scope, linearity, clean-state and policy mutation checks; actual vs
+claimed commits; fixed evidence callables; crash reconciliation.
+
+Acceptance::
+
+. WFC-GIT-01..08 and WFC-EVID-01..04 are exercised against real temporary Git
+  repositories, including 1..n commits and allowed `base==head`.
+. Dirty tracked/non-ignored, divergent history, forbidden merge, out-of-scope
+  path, pinned-policy change, unexpected commit, and claim mismatch cases yield
+  the specified stop/diagnostic without cleanup or reset.
+. Git observation is authoritative even when a fixture agent result lies about
+  commits.
+. Provider `pass/fail/error/not_run` behavior and trusted command selection are
+  tested; no plugin discovery or Sonar-specific code appears.
+. Crash while marked `invoking` reconciles fixture HEAD and requires explicit
+  resume without replay.
+
+===== 11.3 Slice 3 -- N=1 vertical proof with fake adapter
+
+Scope:: Ordered prompt composition; bounded context policy; structured-result
+validation; fake/subprocess adapter; complete one-Hop routine workflow;
+checkpoint and concise terminal projection.
+
+Acceptance::
+
+. WFC-PROMPT-01..04, WFC-OUTPUT-01..05, and WFC-OBS-01..04 are proven in an
+  end-to-end fixture Run with `max_autonomous_hops=1`.
+. Component revision/digests and prompt order are deterministic; routing-critical
+  data missing only from prose fails validation.
+. Completed, failed, malformed, scope-change, and human-escalation fake results
+  produce the required route/stop/budget state.
+. A material-review fixture writes a durable artifact while terminal output
+  stays concise; raw prompt/stdout/log retention follows WFC-PERSIST.
+. The readiness-approved prompt/diff bounding contract is covered at its exact
+  boundary and reports omissions/references explicitly.
+
+===== 11.4 Slice 4 -- real local adapter at N=1
+
+Scope:: One selected configured local agent invocation boundary, first in a
+disposable/low-risk repository, then in a separately authorized routine
+documentation/tooling task. No new semantic Domain work.
+
+Safety/readiness acceptance::
+
+. The adapter/API, credentials boundary, permissions, cancellation/failure
+mapping, structured-result transport, and fresh/continuing context evidence have
+been independently reviewed before any live invocation.
+. Disposable-repository runs prove WFC-AUTO, WFC-GIT, WFC-OUTPUT, WFC-FAIL, and
+  WFC-SEC without hidden retries, extra permissions, secret retention, or
+  coordinator-created semantic commits.
+. `max_autonomous_hops=1` cannot cause a second live invocation; human stop and
+  malformed/failed results stop safely.
+. A maintainer separately authorizes the first real repository task and its
+  scope. The accepted checkpoint/commit/artifact reconstruct the Run without
+  raw transcript review.
+. No Domain, public product surface, DMC Cycle 2, or Trusted-Ingress task is used
+  as first dogfood.
+
+===== 11.5 Slice 5 -- bounded multi-Hop / DMC-profile dogfood
+
+Scope:: N>1; optional supervisor; correction/delta loops; prerequisite
+suspension/re-entry; DMC-shaped profile; separately authorized dogfood task.
+
+Acceptance::
+
+. N>1 uses the unchanged Run/Hop/Finding/budget model and stops exactly at the
+  configured outer budget.
+. Optional supervisor is invoked only at declared points, selects only finite
+  routes, and fails closed to human on forbidden/ambiguous authority.
+. Productive >3 correction replay and non-progress/reclassification paths work
+  against the integrated coordinator, not only Slice-1 reducer fixtures.
+. Parent/child Runs prove suspension and current-state rebaseline without stale
+  route restoration.
+. DMC profile represents assess/design/readiness/implement/review/correction/
+  closure/lifecycle plus optional advisory/prerequisite/rebaseline routes while
+  generic code contains none of those names.
+. Maintainer separately authorizes the dogfood WorkItem and budget. This FTR does
+  not implicitly authorize DMC Family Cycle 2.
+
+===== 11.6 Complete V1 acceptance
+
+V1 is complete only when all five slices are independently reviewed and their
+findings resolved; A--H remain green at integrated level where applicable;
+relevant focused, architecture, and full repository tests pass; documentation
+and release-note checkpoint are applied; no deferred infrastructure leaked into
+V1; and lifecycle cleanup is performed under repository governance.
+
+==== 12. OPEN DESIGN ISSUES / READINESS REVIEW QUESTIONS
+
+No contradiction with the proposed architecture was found. These open choices
+already present in that design must be resolved at the stated gate rather than
+silently selected during implementation:
+
+OPEN DESIGN ISSUE WFC-ODI-01 -- one V1 serialization::
+The design says validated YAML/JSON but the smallest V1 should implement one
+canonical profile/Run-spec serialization, not two equivalent surfaces.
+Readiness review must select it before Slice 1 and confirm schema/versioning and
+unknown-field behavior.
+
+READINESS REVIEW QUESTION WFC-RRQ-01 -- prompt/diff bounds::
+The exact content-size/diff bounding policy requires empirical input. Readiness
+review must decide the minimum contract (including explicit omission/reference
+manifest); exact thresholds may be fixed from Slice-2 measurements before Slice
+3 acceptance.
+
+READINESS REVIEW QUESTION WFC-RRQ-02 -- real adapter and context evidence::
+The first live agent API, permission/cancellation/result transport, and how it
+proves `fresh` versus `continuing` context are unselected. They must be accepted
+before Slice 4; no adapter-generalization work may begin earlier.
+
+==== 13. Readiness, review, authorization, and lifecycle plan
+
+The next action is a fresh independent adversarial readiness review by another
+frontier-model context. It reviews the complete derivation chain and must test:
+
+* evidence-to-design validity and FTR/design correspondence;
+* architecture simplicity and deletable abstraction;
+* DMC/Trusted-Ingress overfit and profile-as-disguised-DSL risk;
+* necessity of Run/Hop/Finding and correctness of supervisor/human authority;
+* Git/recovery and transient-state resumability;
+* review convergence and anti-ceremony behavior;
+* strength/executability of requirements, A--H matrix, and slice acceptance;
+* feasibility/order of all five slices and the three open readiness items.
+
+The hypothesis is evidence, not an artifact requiring architecture acceptance.
+The proposed design also remains unaccepted until this derivation is reviewed.
+Only after readiness findings are corrected and independently accepted may the
+maintainer change this FTR's status and authorize implementation. Live adapter
+use and dogfood still require the explicit per-slice/operator authorizations
+above.
+
+After implemented V1 passes implementation/closure review, realized contracts
+shall be condensed into the appropriate canonical AI/developer/technical
+documentation. Final distribution is chosen from implemented reality, not
+prematurely by this draft. Hypothesis/design/FTR remain working or historical
+engineering artifacts rather than automatically becoming canonical truth.
+
+==== 14. Validation contract
+
+Draft/readiness validation::
+
+* render this FTR, the proposed architecture, and the active backlog include;
+* run `git diff --check` and validate any Project Memory JSON/context change;
+* confirm hypothesis/design inputs remain intact;
+* confirm only documentation/Project Memory changes in the drafting commit;
+* inspect status/authorization wording and the requirements/replay/slice
+  traceability mechanically.
+
+Future implementation validation::
+
+* every slice runs its named focused tests and relevant architecture guards;
+* new/modified test files carry `pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")`;
+* Slice 4/5 live validation is explicitly authorized, bounded, and reported;
+* complete V1 runs the full active repository suite and source-style guards;
+* implementation review records the release-notes checkpoint. Internal-only
+  tooling may need no release note, but the review must say why.
+
+==== 15. References and protected surfaces
+
+Primary design inputs::
+
+* `docs/warm_storage/concepts/agent_workflow_coordinator_concept_2026-08-25.adoc`
+* `docs/warm_storage/concepts/agent_workflow_coordinator_proposed_architecture_2026-08-25.adoc`
+
+Repository governance inputs::
+
+* `docs/ai_info/project_context.adoc`
+* `docs/ai_info/conventions.adoc`
+* `docs/ai_info/git_and_workflow.adoc`
+* `docs/ai_info/agent_rules.adoc`
+* `docs/ai_info/review_instructions.adoc`
+* `docs/ai_info/project_memory_workflow.adoc`
+* `docs/developer_guide/ch08_git_and_workflow/01_git_and_workflow.adoc`
+* `docs/developer_guide/ch06_code_conventions/03_human_readability_review.adoc`
+
+Protected surfaces::
+
+Product runtime under `src/spreadsheet_handling/`; Domain/FK/Lookup and Trusted
+Ingress; existing CLI/YAML/plugin/import surfaces; spreadsheet backends and
+registries; demo/consumer repositories; release infrastructure; DMC Family
+Cycle 2; Project Memory schema/automation; Git hooks; external quality/retrieval
+infrastructure.
