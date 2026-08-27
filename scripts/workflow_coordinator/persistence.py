@@ -75,6 +75,7 @@ def recover_uncertain_dispatch(
     marker: DispatchMarker | None,
     *,
     current_head: str,
+    actual_commits: tuple[str, ...] = (),
 ) -> Run:
     """Conservatively charge an uncertain marked invocation and never replay it."""
 
@@ -103,7 +104,7 @@ def recover_uncertain_dispatch(
                 ended_at=None,
                 base_head=marker.base_head,
                 end_head=current_head,
-                actual_commits=(),
+                actual_commits=actual_commits,
                 invocation_status="acceptance_not_disproved",
                 outcome="uncertain",
                 finding_delta_ids=(),
