@@ -147,6 +147,14 @@ def preflight_state_root(repository: Path, state_root: Path) -> None:
         raise GitPreflightError(
             "configured state root requires a tracked repository .gitignore rule; local excludes do not qualify"
         )
+    clean_authority = subprocess.run(
+        ("git", "-C", str(identity), "diff", "--quiet", "HEAD", "--", source_relative),
+        check=False,
+    ).returncode == 0
+    if not clean_authority:
+        raise GitPreflightError(
+            "configured state root authority .gitignore must be committed and clean"
+        )
 
 
 def observe_hop(
@@ -163,20 +171,29 @@ def observe_hop(
     facts = observe_repository(repository)
     identity = facts.repository
     anomalies: list[str] = []
-    ancestor = subprocess.run(
-        ("git", "-C", str(identity), "merge-base", "--is-ancestor", base_head, facts.head),
+    base_is_commit = subprocess.run(
+        ("git", "-C", str(identity), "cat-file", "-e", f"{base_head}^{{commit}}"),
         check=False,
     ).returncode == 0
-    if not ancestor:
-        anomalies.append("divergent or rewritten ancestry")
+    if not base_is_commit:
+        anomalies.append("unresolved base anchor")
         commits: tuple[str, ...] = ()
         changed: tuple[str, ...] = ()
     else:
-        commits = tuple(_git(identity, "rev-list", "--reverse", f"{base_head}..{facts.head}").splitlines())
-        changed = tuple(_git(identity, "diff", "--name-only", f"{base_head}..{facts.head}").splitlines())
-        merges = _git(identity, "rev-list", "--merges", f"{base_head}..{facts.head}")
-        if merges:
-            anomalies.append("forbidden merge commit")
+        ancestor = subprocess.run(
+            ("git", "-C", str(identity), "merge-base", "--is-ancestor", base_head, facts.head),
+            check=False,
+        ).returncode == 0
+        if not ancestor:
+            anomalies.append("divergent or rewritten ancestry")
+            commits = ()
+            changed = ()
+        else:
+            commits = tuple(_git(identity, "rev-list", "--reverse", f"{base_head}..{facts.head}").splitlines())
+            changed = tuple(_git(identity, "diff", "--name-only", f"{base_head}..{facts.head}").splitlines())
+            merges = _git(identity, "rev-list", "--merges", f"{base_head}..{facts.head}")
+            if merges:
+                anomalies.append("forbidden merge commit")
     if facts.tracked_changes:
         anomalies.append("dirty tracked state")
     if facts.untracked_changes:

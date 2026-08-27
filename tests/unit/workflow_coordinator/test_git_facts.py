@@ -76,6 +76,19 @@ def test_state_root_requires_tracked_ignore_not_local_exclude(repository: Path):
     preflight_state_root(repository, Path(".workflow-state"))
 
 
+@pytest.mark.parametrize("staged", [False, True])
+def test_state_root_rejects_uncommitted_tracked_ignore_authority(repository: Path, staged: bool):
+    (repository / ".gitignore").write_text("other-state/\n", encoding="utf-8")
+    git(repository, "add", ".gitignore")
+    git(repository, "commit", "-m", "test: unrelated ignored root")
+    (repository / ".gitignore").write_text(".workflow-state/\n", encoding="utf-8")
+    if staged:
+        git(repository, "add", ".gitignore")
+    with pytest.raises(GitPreflightError, match="must be committed and clean"):
+        preflight_state_root(repository, Path(".workflow-state"))
+    assert not (repository / ".workflow-state").exists()
+
+
 @pytest.mark.parametrize("local_exclude", [False, True])
 def test_state_root_unignored_or_local_only_fails_before_write(repository: Path, local_exclude: bool):
     if local_exclude:
@@ -139,6 +152,21 @@ def test_divergence_and_forbidden_merge_are_detected(repository: Path):
     git(repository, "checkout", "other")
     divergent = observe_hop(repository, base_head=merged.end_head)
     assert "divergent or rewritten ancestry" in divergent.anomalies
+
+
+@pytest.mark.parametrize("base", ["not-a-real-object", "blob"])
+def test_invalid_base_anchor_is_not_reported_as_divergence(repository: Path, base: str):
+    if base == "blob":
+        base = subprocess.run(
+            ("git", "-C", str(repository), "hash-object", "-w", "--stdin"),
+            input="not a commit\n",
+            text=True,
+            check=True,
+            capture_output=True,
+        ).stdout.strip()
+    delta = observe_hop(repository, base_head=base)
+    assert "unresolved base anchor" in delta.anomalies
+    assert "divergent or rewritten ancestry" not in delta.anomalies
 
 
 def test_postcondition_requires_clean_final_state(repository: Path):
