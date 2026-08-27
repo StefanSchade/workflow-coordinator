@@ -76,17 +76,23 @@ def _next_finding_id(findings: tuple[Finding, ...]) -> str:
     return f"F{sequence:03d}"
 
 
-def _operation(previous: FindingState | None, proposed: FindingState) -> str | None:
+def _finding_operation(previous: FindingState | None, proposed: FindingState) -> str | None:
+    creation_operations = {
+        FindingState.OPEN: None,
+        FindingState.RESOLVED: "resolve",
+        FindingState.RESIDUAL: "residual",
+        FindingState.SUPERSEDED: "supersede",
+    }
     if previous is None:
-        return None if proposed is FindingState.OPEN else proposed.value
-    transitions = {
+        return creation_operations[proposed]
+    transition_operations = {
         (FindingState.OPEN, FindingState.RESOLVED): "resolve",
         (FindingState.OPEN, FindingState.RESIDUAL): "residual",
         (FindingState.OPEN, FindingState.SUPERSEDED): "supersede",
         (FindingState.RESOLVED, FindingState.OPEN): "reopen",
         (FindingState.RESOLVED, FindingState.SUPERSEDED): "supersede",
     }
-    return transitions.get((previous, proposed))
+    return transition_operations.get((previous, proposed))
 
 
 def _may_dispose(
@@ -119,7 +125,7 @@ def apply_finding_deltas(
     for delta in deltas:
         if delta.finding_id is None:
             finding_id = _next_finding_id(tuple(findings))
-            operation = _operation(None, delta.proposed_state)
+            operation = _finding_operation(None, delta.proposed_state)
             if operation is not None and not _may_dispose(
                 authority, operation, permitted_gate_operations
             ):
@@ -164,7 +170,7 @@ def apply_finding_deltas(
                     f"Finding {previous.finding_id} blocking flag change is unauthorized"
                 )
 
-        operation = _operation(previous.state, delta.proposed_state)
+        operation = _finding_operation(previous.state, delta.proposed_state)
         if operation is None and delta.proposed_state is not previous.state:
             raise ReductionError(
                 f"invalid Finding transition: {previous.state.value} -> {delta.proposed_state.value}"
@@ -390,6 +396,21 @@ def require_reconcile(
 
     if reason not in {"interruption", "prerequisite_return"}:
         raise ReductionError(f"unknown reconcile reason: {reason}")
+    allowed_statuses = {
+        "interruption": {
+            RunStatus.READY,
+            RunStatus.RUNNING,
+            RunStatus.AWAITING_SUPERVISOR,
+        },
+        "prerequisite_return": {RunStatus.SUSPENDED},
+    }
+    idempotent_reentry = (
+        run.status is RunStatus.RECONCILE_REQUIRED and run.reconcile_reason == reason
+    )
+    if run.status not in allowed_statuses[reason] and not idempotent_reentry:
+        raise ReductionError(
+            f"{reason} reconciliation is invalid from Run status {run.status.value}"
+        )
     anomalies = run.anomalies
     if reality_error:
         anomalies = (*anomalies, reality_error)
@@ -401,7 +422,9 @@ def require_reconcile(
         reconcile_reason=reason,
         reconcile_anchor=anchor,
         stop_reason="reconcile_requires_explicit_resume",
-        human_question="Validate current reality and explicitly authorize resume.",
+        human_question=(
+            run.human_question or "Validate current reality and explicitly authorize resume."
+        ),
         anomalies=anomalies,
     )
 
@@ -432,7 +455,15 @@ def permitted_route_keys(run: Run, profile: WorkflowProfile) -> tuple[str, ...]:
     phase, error = _profile_phase(run, profile)
     if error or phase is None:
         return ()
-    if run.status in {RunStatus.COMPLETED, RunStatus.STOPPED, RunStatus.SUSPENDED}:
+    paused_or_terminal = {
+        RunStatus.AWAITING_HUMAN,
+        RunStatus.AWAITING_HUMAN_BUDGET,
+        RunStatus.RECONCILE_REQUIRED,
+        RunStatus.SUSPENDED,
+        RunStatus.COMPLETED,
+        RunStatus.STOPPED,
+    }
+    if run.status in paused_or_terminal:
         return ()
     if run.status is RunStatus.AWAITING_SUPERVISOR:
         return tuple(sorted(key for key, route in phase.routes.items() if route.supervisor))

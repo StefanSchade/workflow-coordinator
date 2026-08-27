@@ -455,6 +455,10 @@ def _hop_summary(value: Any, *, context: str) -> HopSummary:
         base_head=_string(data["base_head"], context=f"{context}.base_head"),
         end_head=_string(data["end_head"], context=f"{context}.end_head"),
         actual_commits=_strings(data["actual_commits"], context=f"{context}.actual_commits"),
+        finding_delta_ids=_strings(
+            data["finding_delta_ids"], context=f"{context}.finding_delta_ids"
+        ),
+        evidence_refs=_strings(data["evidence_refs"], context=f"{context}.evidence_refs"),
         applied_route=_optional_string(data["applied_route"], context=f"{context}.applied_route"),
         stop_reason=_optional_string(data["stop_reason"], context=f"{context}.stop_reason"),
         summary=_string(data["summary"], context=f"{context}.summary"),

@@ -125,6 +125,44 @@ def test_residual_and_superseded_states_have_required_invariants():
         )
 
 
+@pytest.mark.parametrize(
+    "state, operation, blocking, successor_ref",
+    [
+        ("resolved", "resolve", True, None),
+        ("residual", "residual", False, None),
+        ("superseded", "supersede", True, "F-successor"),
+    ],
+)
+def test_new_finding_creation_uses_explicit_authority_operation(
+    state, operation, blocking, successor_ref
+):
+    workflow = gate_profile()
+    run, _ = charge_hop(run_for(workflow))
+    proposal = delta(
+        None,
+        state,
+        blocking=blocking,
+        successor_ref=successor_ref,
+    )
+
+    with pytest.raises(ReductionError, match="cannot create Finding"):
+        apply_finding_deltas(
+            run,
+            (proposal,),
+            hop_id="H001",
+            authority=FindingAuthority.GATE,
+            permitted_gate_operations=(),
+        )
+    created = apply_finding_deltas(
+        run,
+        (proposal,),
+        hop_id="H001",
+        authority=FindingAuthority.GATE,
+        permitted_gate_operations=(operation,),
+    )
+    assert created.findings[0].state.value == state
+
+
 def test_supervisor_has_no_finding_disposition_surface():
     run, _ = charge_hop(run_for(gate_profile()))
     with pytest.raises(ReductionError, match="supervisor"):
@@ -223,6 +261,41 @@ def test_reconcile_rejects_stale_reality_and_unresolved_anomaly():
     clean = replace(run, anomalies=())
     with pytest.raises(ReductionError, match="HEAD changed"):
         resume_after_reconcile(clean, workflow, current_head="stale")
+
+
+def test_semantic_human_stop_cannot_enter_reconcile_or_resume_escape_path():
+    workflow = profile({"work": phase({"done": route("complete")})})
+    run, hop_id = charge_hop(run_for(workflow, budget=3))
+    stopped = reduce_result(
+        run,
+        result(
+            "done",
+            requires_human=True,
+            escalation=Escalation(
+                "semantic_authority",
+                "Who may accept this contract?",
+            ),
+        ),
+        workflow,
+        hop_id=hop_id,
+    ).run
+
+    with pytest.raises(ReductionError, match="invalid from Run status awaiting_human"):
+        require_reconcile(stopped, reason="interruption", current_head="observed")
+    assert stopped.status is RunStatus.AWAITING_HUMAN
+    assert stopped.human_question == "Who may accept this contract?"
+    with pytest.raises(ReductionError, match="does not require reconciliation"):
+        resume_after_reconcile(stopped, workflow, current_head=stopped.current_head)
+
+
+def test_reconcile_reason_has_a_specific_entry_state():
+    workflow = gate_profile()
+    ready = run_for(workflow)
+    with pytest.raises(ReductionError, match="prerequisite_return.*ready"):
+        require_reconcile(ready, reason="prerequisite_return", current_head="observed")
+    suspended = replace(ready, status=RunStatus.SUSPENDED, suspension_head=ready.current_head)
+    with pytest.raises(ReductionError, match="interruption.*suspended"):
+        require_reconcile(suspended, reason="interruption", current_head="observed")
 
 
 def test_budget_exhaustion_blocks_goto_but_not_deterministic_completion():

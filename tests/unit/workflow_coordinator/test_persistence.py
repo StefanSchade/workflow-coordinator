@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -11,8 +12,13 @@ from scripts.workflow_coordinator.persistence import (
     write_dispatch_marker,
     write_run_snapshot,
 )
-from scripts.workflow_coordinator.serialization import ValidationError, load_run, run_to_json
-from tests.utils.workflow_coordinator import phase, profile, route, run_for
+from scripts.workflow_coordinator.serialization import (
+    ValidationError,
+    load_run,
+    run_from_json,
+    run_to_json,
+)
+from tests.utils.workflow_coordinator import charge_hop, phase, profile, route, run_for
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
@@ -95,6 +101,36 @@ def test_checkpoint_is_deterministic_and_derives_routes_from_profile():
     assert first["budget"] == {"used": 0, "remaining": 2}
     assert first["evidence"][0]["status"] == "pass"
     assert "project_memory" not in first
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        RunStatus.AWAITING_HUMAN,
+        RunStatus.AWAITING_HUMAN_BUDGET,
+        RunStatus.RECONCILE_REQUIRED,
+        RunStatus.SUSPENDED,
+        RunStatus.COMPLETED,
+        RunStatus.STOPPED,
+    ],
+)
+def test_checkpoint_exposes_no_immediately_permitted_routes_while_paused(status):
+    workflow = profile({"work": phase({"done": route("complete"), "halt": route("stop")})})
+    paused = replace(run_for(workflow), status=status)
+    assert checkpoint_projection(paused, workflow)["next_permitted_route_keys"] == []
+
+
+def test_checkpoint_keeps_compact_per_hop_finding_and_evidence_references():
+    workflow = profile({"work": phase({"done": route("complete")})})
+    run, _ = charge_hop(
+        run_for(workflow),
+        finding_delta_ids=("F001",),
+        evidence_refs=("tests", "review-report"),
+    )
+    row = checkpoint_projection(run, workflow)["hops"][0]
+    assert row["finding_delta_ids"] == ["F001"]
+    assert row["evidence_refs"] == ["tests", "review-report"]
+    assert run_from_json(run_to_json(run)) == run
 
 
 def test_lost_local_state_has_no_automatic_recovery(tmp_path):

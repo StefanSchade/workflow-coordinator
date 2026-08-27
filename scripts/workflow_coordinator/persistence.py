@@ -155,6 +155,8 @@ def checkpoint_projection(
                 "role": hop.role,
                 "outcome": hop.outcome,
                 "range": f"{hop.base_head}..{hop.end_head}",
+                "finding_delta_ids": list(hop.finding_delta_ids),
+                "evidence_refs": list(hop.evidence_refs),
                 "route": hop.applied_route,
                 "summary": hop.summary,
                 "attribution": hop.attribution,

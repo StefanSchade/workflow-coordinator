@@ -204,6 +204,8 @@ class Hop:
             base_head=self.base_head,
             end_head=self.end_head,
             actual_commits=self.actual_commits,
+            finding_delta_ids=self.finding_delta_ids,
+            evidence_refs=self.evidence_refs,
             applied_route=self.applied_route,
             stop_reason=self.stop_reason,
             summary=self.summary,
@@ -220,6 +222,8 @@ class HopSummary:
     base_head: str
     end_head: str
     actual_commits: tuple[str, ...]
+    finding_delta_ids: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
     applied_route: str | None
     stop_reason: str | None
     summary: str

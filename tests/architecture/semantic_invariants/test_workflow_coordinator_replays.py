@@ -132,7 +132,7 @@ def test_replay_b_semantic_prerequisite_suspends_then_reconciles():
         suspended, reason="prerequisite_return", current_head="child-result-head"
     )
     interruption = require_reconcile(
-        stopped, reason="interruption", current_head="child-result-head"
+        run, reason="interruption", current_head="child-result-head"
     )
     assert returned.status == interruption.status == RunStatus.RECONCILE_REQUIRED
     assert returned.stop_reason == interruption.stop_reason

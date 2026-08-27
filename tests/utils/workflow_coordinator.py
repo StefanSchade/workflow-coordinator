@@ -105,6 +105,8 @@ def charge_hop(
     role: str = "worker",
     attribution: str = "agent",
     end_head: str | None = None,
+    finding_delta_ids: tuple[str, ...] = (),
+    evidence_refs: tuple[str, ...] = ("tests",),
 ) -> tuple[Run, str]:
     sequence = run.hop_used + 1
     hop_id = f"H{sequence:03d}"
@@ -122,8 +124,8 @@ def charge_hop(
         actual_commits=(end,) if end != run.current_head else (),
         invocation_status="accepted",
         outcome="completed",
-        finding_delta_ids=(),
-        evidence_refs=("tests",),
+        finding_delta_ids=finding_delta_ids,
+        evidence_refs=evidence_refs,
         applied_route=None,
         stop_reason=None,
         summary=f"{role} fixture Hop",
