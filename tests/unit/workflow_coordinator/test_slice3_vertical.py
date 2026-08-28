@@ -15,7 +15,7 @@ from scripts.workflow_coordinator.prompt import (
     COMPONENT_LIMIT_BYTES, CONTEXT_LIMIT_BYTES, DIFF_FILE_LIMIT, DIFF_LIMIT_BYTES,
     ContextItem, PromptComponent, assemble_prompt,
 )
-from scripts.workflow_coordinator.vertical import VerticalRunError, run_one_hop
+from scripts.workflow_coordinator.vertical import run_one_hop
 from tests.utils.workflow_coordinator import phase, profile, route, run_for
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -106,34 +106,106 @@ def test_fake_adapter_n1_path_accepts_valid_result_without_live_dependency(repos
 
 
 class CommitAdapter:
-    def __init__(self, repository: Path, subject: str, output: str): self.repository, self.subject, self.output = repository, subject, output
+    def __init__(self, repository: Path, subject: str, output: str, path: str = "src/change"):
+        self.repository = repository
+        self.subject = subject
+        self.output = output
+        self.path = path
+
     def invoke(self, prompt: str, repository: Path) -> str:
-        (repository / "src" / "change").write_text("change\n")
-        subprocess.run(("git", "-C", str(repository), "add", "src/change"), check=True)
-        subprocess.run(("git", "-C", str(repository), "commit", "-m", self.subject), check=True, capture_output=True)
+        target = repository / self.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("change\n")
+        subprocess.run(("git", "-C", str(repository), "add", self.path), check=True)
+        subprocess.run(
+            ("git", "-C", str(repository), "commit", "-m", self.subject),
+            check=True,
+            capture_output=True,
+        )
         return self.output
 
 
-@pytest.mark.parametrize("subject, accepted", [("feat(workflow): WI-1 H001 tiny change", True), ("feat(workflow): tiny change", False)])
-def test_git_subject_postcondition_requires_human_readable_workitem_and_hop(repository, subject, accepted):
+@pytest.mark.parametrize(
+    "subject, accepted",
+    [
+        ("feat(workflow): WI-1 H001 tiny change", True),
+        ("feat(workflow): WI-100 H0012 collision", False),
+        ("not conventional: WI-1 H001", False),
+        ("feat(workflow): tiny change", False),
+    ],
+)
+def test_git_subject_postcondition_charges_invalid_commits_and_rejects_collisions(
+    repository, subject, accepted
+):
     workflow = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), evidence=("git_version",))})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head)
     adapter = CommitAdapter(repository, subject, envelope())
     if accepted:
-        assert run_one_hop(run, workflow, repository, adapter, components(("worker", 1), ("testing", 1)), task_payload="tiny", invocation_id="INV-1").reduction.run.status.value == "completed"
+        assert run_one_hop(
+            run,
+            workflow,
+            repository,
+            adapter,
+            components(("worker", 1), ("testing", 1)),
+            task_payload="tiny",
+            invocation_id="INV-1",
+        ).reduction.run.status.value == "completed"
     else:
-        with pytest.raises(VerticalRunError, match="WFC-GIT-08"):
-            run_one_hop(run, workflow, repository, adapter, components(("worker", 1), ("testing", 1)), task_payload="tiny", invocation_id="INV-1")
+        stopped = run_one_hop(
+            run,
+            workflow,
+            repository,
+            adapter,
+            components(("worker", 1), ("testing", 1)),
+            task_payload="tiny",
+            invocation_id="INV-1",
+        )
+        assert stopped.reduction.run.status.value == "awaiting_human"
+        assert stopped.reduction.run.hop_used == len(stopped.reduction.run.hops) == 1
+        assert stopped.reduction.run.hops[0].actual_commits
+        assert "WFC-GIT-08" in (stopped.reduction.run.stop_reason or "")
+        assert stopped.checkpoint["hops"] and stopped.checkpoint["state"]["stop_reason"]
 
 
-def test_durable_artifact_required_rejects_missing_and_none_does_not_require_one(repository):
-    required = profile({"work": replace(phase({"done": route("complete")}), durable_artifact=DurableArtifact.REQUIRED, evidence=("git_version",))})
+def test_durable_artifact_required_charges_post_acceptance_failure(repository):
+    required = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), durable_artifact=DurableArtifact.REQUIRED, evidence=("git_version",))})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(required, budget=1), current_head=head)
-    with pytest.raises(VerticalRunError, match="required durable artifact"):
-        run_one_hop(run, required, repository, FakeAdapter(envelope()), components(("worker", 1), ("testing", 1)), task_payload="tiny", invocation_id="INV-1")
+    stopped = run_one_hop(
+        run,
+        required,
+        repository,
+        CommitAdapter(repository, "feat(workflow): WI-1 H001 ordinary change", envelope()),
+        components(("worker", 1), ("testing", 1)),
+        task_payload="tiny",
+        invocation_id="INV-1",
+    )
+    assert stopped.reduction.run.status.value == "awaiting_human"
+    assert stopped.reduction.run.hop_used == len(stopped.reduction.run.hops) == 1
+    assert stopped.reduction.run.hops[0].actual_commits
+    assert "required durable artifact" in (stopped.reduction.run.stop_reason or "")
+    assert stopped.checkpoint["hops"] and stopped.checkpoint["state"]["stop_reason"]
     # The separate fake N=1 test proves `none` has no document obligation.
+
+
+def test_out_of_scope_post_acceptance_anomaly_still_charges_and_checkpoints(repository):
+    workflow = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), evidence=("git_version",))})
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head)
+    stopped = run_one_hop(
+        run,
+        workflow,
+        repository,
+        CommitAdapter(repository, "feat(workflow): WI-1 H001 leaked path", envelope(), "docs/leak"),
+        components(("worker", 1), ("testing", 1)),
+        task_payload="tiny",
+        invocation_id="INV-1",
+    )
+    assert stopped.reduction.run.status.value == "awaiting_human"
+    assert stopped.reduction.run.hop_used == len(stopped.reduction.run.hops) == 1
+    assert "out-of-scope changed path: docs/leak" in (stopped.reduction.run.stop_reason or "")
+    assert stopped.checkpoint["hops"] and stopped.checkpoint["state"]["stop_reason"]
 
 
 def test_durable_artifact_required_accepts_an_in_scope_committed_artifact(repository):
