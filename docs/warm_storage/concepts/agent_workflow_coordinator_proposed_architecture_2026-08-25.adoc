@@ -3,7 +3,7 @@
 :toclevels: 3
 
 Status:: *FORMAL ARCHITECTURE DESIGN -- ACCEPTED FOR V1*
-Review state:: *READINESS SEQUENCE COMPLETE; INDEPENDENT BOUNDED RE-REVIEW ACCEPTED*
+Review state:: *READINESS SEQUENCE COMPLETE; SLICE-4 PERSISTENCE AUTHORITY CORRECTION PENDING INDEPENDENT BOUNDED REVIEW*
 Acceptance:: *ACCEPTED AS V1 IMPLEMENTATION AUTHORITY (with FTR-AGENT-WORKFLOW-COORDINATOR-P5), maintainer decision 2026-08-27*
 Authorization:: *IMPLEMENTATION SLICES 1-3 IMPLEMENTED, INDEPENDENTLY VERIFIED, AND MAINTAINER-ACCEPTED; SLICES 4-5 AND DEFERRED CAPABILITIES NOT AUTHORIZED*
 Date:: 2026-08-25
@@ -18,6 +18,10 @@ Correction re-review::
 `docs/warm_storage/global_reviews/agent_workflow_coordinator_readiness_correction_review_2026-08-26.adoc`
 -- verdict `ACCEPT -- READINESS CORRECTION VERIFIED` (re-review `bb9154c`); R1 and
 R2..R8 closed.
+Slice-4 readiness:: S4-READY-R1..R7 are independently re-reviewed and closed.
+Maintainer decision:: WFC-PERSIST-02 uses external trusted checkout-associated
+state for the writable real-agent boundary; this bounded authority correction
+awaits independent review and authorizes neither Slice 4 nor a live invocation.
 
 [IMPORTANT]
 ====
@@ -30,7 +34,9 @@ execution, DMC Family Cycle 2, a DMC work item, Trusted-Ingress work,
 Project-Memory schema work, SonarQube, or retrieval infrastructure; each remains
 separately gated. S1-R3 remains a deferred non-blocking observation for future
 Slice-3/real-agent-result hardening. This artifact stays in warm storage as an
-active engineering input during implementation.
+active engineering input during implementation. The persistence correction makes
+no Git-ownership decision: agent-owned commits remain acceptable in principle
+only for one disposable `N=1` proof, and not for routine real-repository use.
 ====
 
 == 1. Problem, evidence, and design forces
@@ -88,8 +94,10 @@ human alone closes, reopens, downgrades, accepts residual, or supersedes.
 
 |R3
 |Coordinator state cannot make its own worktree dirty.
-|The configured persistent local state root must be ignored by tracked
-repository policy, and preflight verifies Git ignore resolution before writing.
+|Repository-local coordinator state must be ignored by tracked repository policy
+and pass Git ignore-resolution preflight before writing. For the writable
+real-agent boundary, trusted coordinator state instead uses an external trusted
+checkout-associated root that the agent cannot write.
 
 |R4
 |Return after nested work and return after interruption use one safety path.
@@ -479,15 +487,18 @@ versus actual mismatch is recorded; it becomes blocking when paired with hidden,
 divergent, out-of-scope, or policy-forbidden change.
 
 Ignored scratch does not affect Git cleanliness when confined to approved roots
-and free of retained secrets. The configured coordinator state root is not a
-universal path: it must be persistent local storage for the same-checkout resume
-promise and ignored by *tracked repository policy* in every repository where the
-coordinator is used. Before the first Run write and each Hop preflight, the
-coordinator verifies the candidate path through Git's ignore resolution (for
-example `git check-ignore --no-index`). A local `.git/info/exclude` entry alone
-does not satisfy portability. An unignored root fails closed with an actionable
-diagnostic before the coordinator writes into it. V1 does not promise
-whole-filesystem cleanliness.
+and free of retained secrets. Trusted operational state is persistent local
+storage for the same-checkout resume promise and is repository-specific in its
+association, not necessarily physically inside the repository. For a
+repository-local root, the boundary-crossing process must be trusted not to
+mutate it; the root must be ignored by *tracked repository policy* in every
+repository where used. Before the first Run write and each Hop preflight, the
+coordinator verifies that root through Git's ignore resolution (for example
+`git check-ignore --no-index`). A local `.git/info/exclude` entry alone does not
+satisfy portability. An unignored local root fails closed with an actionable
+diagnostic before the coordinator writes into it. This Git check is the
+repository-local cleanliness proof, not a universal requirement for external
+state. V1 does not promise whole-filesystem cleanliness.
 
 `work_item_id` is stable semantic identity; `run_id` identifies one attempt;
 `H001...` identifies Hops within it. Run evidence always carries all three.
@@ -571,11 +582,26 @@ task authority, agent content, and required durable review/design artifacts. A
 compact run checkpoint is committed only when a maintainer deliberately promotes
 it for durable handoff/history.
 
-Default operational state lives at a configured persistent local root outside
-the tracked worktree view but within the same checkout's operational lifetime.
-The path is repository-specific, ignored by tracked policy, and verified before
-the first write; `.agent_tmp/...` is only an example after that tracked setup,
-not a universal default.
+Two operational-state forms are permitted. A repository-local root is suitable
+only where the boundary-crossing process is trusted not to mutate coordinator
+state; it is repository-specific, ignored by tracked policy, and verified before
+the first write. `.agent_tmp/...` is only an example after that tracked setup,
+not a universal default. For the writable real-agent Slice-4 boundary, trusted
+operational state must instead live outside the agent-writable workspace and
+must not be re-exposed through writable mounts or additional directories.
+Ignored-by-Git is not protected-from-agent-write.
+
+For that external form, first registration records, in minimal
+coordinator-controlled persistent state outside the workspace, the concrete
+checkout's canonical path and Git common-dir/git-dir fact as appropriate with
+one opaque checkout UUID. The UUID selects a checkout-associated external state
+root and is stable association metadata, not a security proof. Before Run
+writes and each Hop, the coordinator validates the association and current
+checkout/Git facts fail-closed, together with Run/Hop/HEAD correlation. A moved
+or renamed checkout, or an association mismatch, requires explicit maintainer
+intervention/re-registration in V1; V1 provides no registry service, database,
+automatic reassociation, cross-repository workflow, or multi-worktree
+orchestration.
 
 The two trusted resume anchors are an atomically replaced `run.json` snapshot
 and an atomically published dispatch/in-progress marker correlated to
@@ -869,14 +895,16 @@ no next agent is invoked.
   transactions.
 * YAML human-authored configuration and JSON machine state, both strict;
   phase-selected prompt/artifact policy; small result; fixed evidence registry.
-* Verified persistent ignored state root; atomic resume anchors; one
-  reconcile/resume path; exceptional human-curated Project Memory handoff.
+* Verified persistent coordinator-state boundary; atomic resume anchors; one
+  reconcile/resume path; external trusted checkout association for writable
+  real-agent state; exceptional human-curated Project Memory handoff.
 * One non-DMC bug-workflow fixture falsifies complex-profile overfit cheaply.
 
 === Deferred intentionally
 
 * Coordinator/mixed commit ownership; required trailers/hooks and exact ID
-  grammar; multiple providers/models and diversity policy.
+  grammar; multiple providers/models and diversity policy; repository registry,
+  database, automatic reassociation, and multi-worktree orchestration.
 * Extraction to `tools`/package; parallel/remote/distributed operation; Sonar,
   vector retrieval, web UI; automated warm/cold lifecycle.
 * Quantitative trust criteria beyond deliberate N=1 -> 2 -> 5 -> 10 trials.
@@ -898,8 +926,9 @@ Implementation remains unauthorized pending review/acceptance. If authorized:
   reduction, common reconcile/resume, atomic anchors, executable A--I tests and
   the non-DMC bug-workflow replay; no real agent.
 . *Git/evidence proof:* fixture repositories, transaction/scope/range checks,
-  tracked-ignore state-root preflight, fixed observations, anomaly/crash
-  reconciliation, progressive links.
+  repository-local tracked-ignore preflight, external checkout-association
+  boundary validation, fixed observations, anomaly/crash reconciliation,
+  progressive links.
 . *N=1 vertical proof:* ordered prompt, result validation, fake/subprocess
   adapter, phase-selected components/artifact policy, crash-result cases, and a
   tiny fixture end to end.
