@@ -14,7 +14,11 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from .adapter import Adapter, Invocation, ResultValidationError, validated_result
+from .model import RoutingResult, Run, WorkflowProfile
 from .persistence import atomic_write_json, atomic_write_text
+from .prompt import PromptComponent
+from .vertical import VerticalRun, run_one_hop
 
 
 class Slice4Error(RuntimeError):
@@ -37,6 +41,7 @@ class CodexOutcome:
     stdout: str
     stderr: str
     result_text: str | None
+    result: RoutingResult | None
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -56,9 +61,18 @@ def _facts(repository: Path) -> tuple[str, str, str]:
     return str(root), str(git_dir), str(common_dir)
 
 
+def _require_external_state_root(state_root: Path, repository: Path) -> None:
+    """Reject both nesting directions before coordinator state can be written."""
+    root = state_root.resolve()
+    checkout = Path(_facts(repository)[0])
+    if root == checkout or checkout in root.parents or root in checkout.parents:
+        raise Slice4Error("trusted state root must be disjoint from agent workspace")
+
+
 def register_checkout(state_root: Path, repository: Path) -> CheckoutAssociation:
     """Create the one opaque association, or validate its existing exact facts."""
     state_root = state_root.resolve()
+    _require_external_state_root(state_root, repository)
     canonical_path, git_dir, common_dir = _facts(repository)
     mapping = state_root / "checkout-association.json"
     if mapping.exists():
@@ -71,14 +85,24 @@ def register_checkout(state_root: Path, repository: Path) -> CheckoutAssociation
 
 def validate_checkout(state_root: Path, repository: Path) -> CheckoutAssociation:
     """Fail closed; a moved checkout needs explicit maintainer re-registration."""
-    mapping = state_root.resolve() / "checkout-association.json"
+    state_root = state_root.resolve()
+    _require_external_state_root(state_root, repository)
+    mapping = state_root / "checkout-association.json"
     try:
         data = json.loads(mapping.read_text(encoding="utf-8"))
         expected = CheckoutAssociation(**{key: data[key] for key in CheckoutAssociation.__dataclass_fields__})
     except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise Slice4Error("external checkout association is absent or malformed") from error
-    if data.get("schema_version") != 1 or not expected.checkout_id:
+    if (
+        set(data) != {"schema_version", *CheckoutAssociation.__dataclass_fields__}
+        or data.get("schema_version") != 1
+        or not all(isinstance(value, str) and value for value in expected.__dict__.values())
+    ):
         raise Slice4Error("external checkout association has unsupported schema")
+    try:
+        uuid.UUID(expected.checkout_id)
+    except ValueError as error:
+        raise Slice4Error("external checkout association has malformed checkout ID") from error
     actual = _facts(repository)
     if actual != (expected.canonical_path, expected.git_dir, expected.common_dir):
         raise Slice4Error("checkout/Git association mismatch; explicit maintainer re-registration required")
@@ -95,17 +119,16 @@ def _bounded(value: str, limit: int = 16_384) -> str:
 
 def invoke_codex(
     *, repository: Path, state_root: Path, association: CheckoutAssociation,
-    prompt: str, timeout_seconds: float, executable: str = "codex",
+    prompt: str, expected: Invocation, timeout_seconds: float, executable: str = "codex",
 ) -> CodexOutcome:
     """Run one fresh Codex process and terminate its whole session on deadline."""
     if timeout_seconds <= 0:
         raise Slice4Error("timeout must be positive")
+    _require_external_state_root(state_root, repository)
     validate_checkout(state_root, repository)
     run_root = checkout_state_root(state_root, association)
     schema = run_root / "structured-result.schema.json"
     result = run_root / "result-message.json"
-    if repository.resolve() in (state_root.resolve(), *state_root.resolve().parents):
-        raise Slice4Error("trusted state root must be outside agent workspace")
     schema_data = {
         "type": "object", "additionalProperties": False,
         "required": ["schema_version", "run_id", "hop_id", "invocation_id", "result"],
@@ -136,7 +159,49 @@ def invoke_codex(
             os.killpg(child.pid, signal.SIGKILL)
             stdout, stderr = child.communicate()
     result_text = result.read_text(encoding="utf-8") or None
-    # Only an independently validated correlated result establishes acceptance.
-    # Any other post-spawn state is conservatively uncertain and charged.
-    acceptance = "established" if result_text else "uncertain"
-    return CodexOutcome(child.returncode, timed_out, acceptance, _bounded(stdout), _bounded(stderr), result_text)
+    try:
+        validated = validated_result(result_text, expected) if result_text else None
+    except ResultValidationError:
+        validated = None
+    # Only the established Slice-3 validator can establish an accepted result.
+    acceptance = "established" if validated is not None else "uncertain"
+    return CodexOutcome(child.returncode, timed_out, acceptance, _bounded(stdout), _bounded(stderr), result_text, validated)
+
+
+@dataclass
+class _CodexAdapter(Adapter):
+    repository: Path
+    state_root: Path
+    association: CheckoutAssociation
+    expected: Invocation
+    timeout_seconds: float
+    executable: str
+    outcome: CodexOutcome | None = None
+
+    def invoke(self, prompt: str, repository: Path) -> str:
+        self.outcome = invoke_codex(
+            repository=self.repository, state_root=self.state_root, association=self.association,
+            prompt=prompt, expected=self.expected, timeout_seconds=self.timeout_seconds,
+            executable=self.executable,
+        )
+        if self.outcome.result is None or self.outcome.result_text is None:
+            raise ResultValidationError("real adapter result is absent, malformed, or uncorrelated")
+        return self.outcome.result_text
+
+
+def run_real_one_hop(
+    run: Run, profile: WorkflowProfile, repository: Path, components: dict[str, PromptComponent],
+    *, state_root: Path, association: CheckoutAssociation, task_payload: str,
+    invocation_id: str, timeout_seconds: float, executable: str = "codex",
+    durable_artifacts: tuple[str, ...] = (),
+) -> VerticalRun:
+    """Plug the concrete process boundary into the sole accepted vertical path."""
+    hop_id = f"H{run.hop_used + 1:03d}"
+    adapter = _CodexAdapter(
+        repository, state_root, association, Invocation(run.run_id, hop_id, invocation_id),
+        timeout_seconds, executable,
+    )
+    return run_one_hop(
+        run, profile, repository, adapter, components, task_payload=task_payload,
+        invocation_id=invocation_id, durable_artifacts=durable_artifacts,
+    )
