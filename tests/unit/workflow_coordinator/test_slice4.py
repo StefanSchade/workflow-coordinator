@@ -127,6 +127,7 @@ output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001
     assert argv[argv.index("--cd") + 1] == str(repository.resolve())
     for option in ("--output-schema", "--output-last-message"):
         assert Path(argv[argv.index(option) + 1]).is_relative_to(state.resolve())
+    assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
 
 
 def test_timeout_kills_process_group_descendant(repository, tmp_path):
@@ -177,3 +178,18 @@ def test_real_driver_preserves_no_hop_for_unlaunchable_executable(repository, tm
         run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(tmp_path / "missing-codex"))
     assert run.hop_used == 0
     assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
+
+
+def test_real_driver_cleans_marker_for_local_prompt_failure_before_spawn(repository, tmp_path):
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    executions = tmp_path / "executions"
+    executable = _fake(tmp_path, f"import pathlib\npathlib.Path({str(executions)!r}).write_text('1')\n")
+    workflow = profile({"work": phase({"done": route("complete")})})
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+    with pytest.raises(ValueError, match="prompt component"):
+        run_real_one_hop(run, workflow, repository, {"testing": _components()["testing"]}, state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
+    assert not executions.exists() and run.hop_used == 0
+    assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
+    assert (repository / "PROOF.md").read_text() == "before\n"

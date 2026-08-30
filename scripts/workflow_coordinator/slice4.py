@@ -235,11 +235,9 @@ def run_real_one_hop(
             run, profile, repository, adapter, components, task_payload=task_payload,
             invocation_id=invocation_id, durable_artifacts=durable_artifacts,
         )
-    except Slice4Error:
-        dispatch_path.unlink(missing_ok=True)
-        raise
     except ResultValidationError:
         if adapter.outcome is None:
+            dispatch_path.unlink(missing_ok=True)
             raise
         delta = observe_hop(
             repository, base_head=run.current_head,
@@ -254,6 +252,11 @@ def run_real_one_hop(
         write_run_snapshot(run_root / "run.json", recovered)
         atomic_write_json(run_root / "checkpoint.json", checkpoint)
         return RealHopRun(None, recovered, checkpoint, adapter.outcome)
+    except Exception:
+        if adapter.outcome is None:
+            dispatch_path.unlink(missing_ok=True)
+        raise
     write_run_snapshot(run_root / "run.json", vertical.reduction.run)
     atomic_write_json(run_root / "checkpoint.json", vertical.checkpoint)
+    dispatch_path.unlink(missing_ok=True)
     return RealHopRun(vertical, vertical.reduction.run, vertical.checkpoint, adapter.outcome)
