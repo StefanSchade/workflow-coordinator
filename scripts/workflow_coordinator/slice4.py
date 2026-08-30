@@ -11,12 +11,16 @@ import os
 import signal
 import subprocess
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .adapter import Adapter, Invocation, ResultValidationError, validated_result
-from .model import RoutingResult, Run, WorkflowProfile
-from .persistence import atomic_write_json, atomic_write_text
+from .git_facts import GitPreflightError, observe_hop, preflight_hop
+from .model import DispatchMarker, RoutingResult, Run, WorkflowProfile
+from .persistence import (
+    atomic_write_json, atomic_write_text, checkpoint_projection, recover_uncertain_dispatch,
+    write_dispatch_marker, write_run_snapshot,
+)
 from .prompt import PromptComponent
 from .vertical import VerticalRun, run_one_hop
 
@@ -42,6 +46,20 @@ class CodexOutcome:
     stderr: str
     result_text: str | None
     result: RoutingResult | None
+
+
+@dataclass(frozen=True)
+class RealHopRun:
+    """A completed vertical Hop or an honestly unreduced uncertain recovery."""
+
+    vertical: VerticalRun | None
+    run: Run
+    checkpoint: dict[str, object]
+    outcome: CodexOutcome | None
+
+    @property
+    def reduction(self):
+        return self.vertical.reduction if self.vertical is not None else None
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -194,14 +212,48 @@ def run_real_one_hop(
     *, state_root: Path, association: CheckoutAssociation, task_payload: str,
     invocation_id: str, timeout_seconds: float, executable: str = "codex",
     durable_artifacts: tuple[str, ...] = (),
-) -> VerticalRun:
+) -> RealHopRun:
     """Plug the concrete process boundary into the sole accepted vertical path."""
     hop_id = f"H{run.hop_used + 1:03d}"
+    try:
+        preflight_hop(repository, expected_repository=repository, expected_head=run.current_head)
+    except GitPreflightError as error:
+        raise Slice4Error(str(error)) from error
+    if validate_checkout(state_root, repository) != association:
+        raise Slice4Error("provided checkout association does not match trusted state")
+    run_root = checkout_state_root(state_root, association)
+    marker = DispatchMarker(1, run.run_id, hop_id, run.hop_used + 1, invocation_id, run.current_head, 1)
+    dispatch_path = run_root / "dispatch.json"
+    write_run_snapshot(run_root / "run.json", run)
+    write_dispatch_marker(dispatch_path, marker)
     adapter = _CodexAdapter(
         repository, state_root, association, Invocation(run.run_id, hop_id, invocation_id),
         timeout_seconds, executable,
     )
-    return run_one_hop(
-        run, profile, repository, adapter, components, task_payload=task_payload,
-        invocation_id=invocation_id, durable_artifacts=durable_artifacts,
-    )
+    try:
+        vertical = run_one_hop(
+            run, profile, repository, adapter, components, task_payload=task_payload,
+            invocation_id=invocation_id, durable_artifacts=durable_artifacts,
+        )
+    except Slice4Error:
+        dispatch_path.unlink(missing_ok=True)
+        raise
+    except ResultValidationError:
+        if adapter.outcome is None:
+            raise
+        delta = observe_hop(
+            repository, base_head=run.current_head,
+            allowed_paths=profile.phases[run.phase].authorized_scope,
+        )
+        recovered = recover_uncertain_dispatch(
+            run, marker, current_head=delta.end_head, actual_commits=delta.actual_commits,
+        )
+        if delta.anomalies:
+            recovered = replace(recovered, anomalies=(*recovered.anomalies, *delta.anomalies))
+        checkpoint = checkpoint_projection(recovered, profile)
+        write_run_snapshot(run_root / "run.json", recovered)
+        atomic_write_json(run_root / "checkpoint.json", checkpoint)
+        return RealHopRun(None, recovered, checkpoint, adapter.outcome)
+    write_run_snapshot(run_root / "run.json", vertical.reduction.run)
+    atomic_write_json(run_root / "checkpoint.json", vertical.checkpoint)
+    return RealHopRun(vertical, vertical.reduction.run, vertical.checkpoint, adapter.outcome)
