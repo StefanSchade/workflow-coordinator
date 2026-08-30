@@ -37,7 +37,7 @@ from scripts.workflow_coordinator.slice4 import RealHopRun, Slice4Error, registe
 WORK_ITEM_ID = "WFC-S4-PROOF"
 HOP_ID = "H001"
 EXPECTED_SUBJECT = "docs(workflow): WFC-S4-PROOF H001 mark fixture"
-DIAGNOSTIC_LIMIT_BYTES = 16_384
+DIAGNOSTIC_LIMIT_CHARS = 16_384
 ANCESTOR_LIMIT = 8
 
 
@@ -100,7 +100,7 @@ def _prepare_repository(repository: Path) -> str:
 
 
 def _bounded(value: str) -> str:
-    return value[-DIAGNOSTIC_LIMIT_BYTES:]
+    return value[-DIAGNOSTIC_LIMIT_CHARS:]
 
 
 def _process_name(pid: int, read_text: Callable[[Path], str]) -> str | None:
@@ -226,7 +226,7 @@ def run_disposable_proof(
         "acceptance": outcome.acceptance if outcome else "not_started",
         "stdout_tail": outcome.stdout if outcome else "",
         "stderr_tail": outcome.stderr if outcome else "",
-        "diagnostic_limit_bytes": DIAGNOSTIC_LIMIT_BYTES,
+        "diagnostic_limit_chars": DIAGNOSTIC_LIMIT_CHARS,
         "vertical_success": real_hop is not None and real_hop.vertical is not None,
         "final_run_status": final_run.status.value,
         "hop_used": final_run.hop_used,
@@ -242,6 +242,21 @@ def run_disposable_proof(
     return ProofHarnessResult(root, summary_path, real_hop, error)
 
 
+def proof_exit_status(result: ProofHarnessResult) -> int:
+    """Return shell success only for an established, completed proof."""
+    real_hop = result.real_hop
+    if (
+        result.error is None
+        and real_hop is not None
+        and real_hop.vertical is not None
+        and real_hop.outcome is not None
+        and real_hop.outcome.acceptance == "established"
+        and real_hop.run.status.value == "completed"
+    ):
+        return 0
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the fixed disposable Slice-4A proof harness.")
     parser.add_argument("--proof-root", type=Path, required=True, help="new durable directory for this attempt")
@@ -250,7 +265,7 @@ def main() -> int:
     args = parser.parse_args()
     result = run_disposable_proof(args.proof_root, executable=args.executable, timeout_seconds=args.timeout_seconds)
     print(result.summary_path)
-    return 0 if result.error is None else 1
+    return proof_exit_status(result)
 
 
 if __name__ == "__main__":

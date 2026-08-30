@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 
 from scripts.workflow_coordinator.proof_harness import (
-    DIAGNOSTIC_LIMIT_BYTES,
+    DIAGNOSTIC_LIMIT_CHARS,
     EXPECTED_SUBJECT,
     collect_launch_provenance,
+    proof_exit_status,
     run_disposable_proof,
 )
 
@@ -61,12 +62,13 @@ output.write_text(json.dumps({"schema_version": 1, "run_id": run_id, "hop_id": "
     assert summary["actual_commit_subjects"] == [EXPECTED_SUBJECT]
     assert summary["stdout_tail"] == "fake stdout" and summary["stderr_tail"] == "fake stderr"
     assert Path(str(summary["launch_provenance_path"])).exists()
+    assert proof_exit_status(result) == 0
 
 
 def test_post_spawn_fake_failure_is_charged_and_diagnosable_with_bounded_tails(tmp_path: Path):
     executable = _fake(
         tmp_path,
-        "import sys\nsys.stdout.write('o' * 20000)\nsys.stderr.write('e' * 20000)\nsys.exit(7)\n",
+        "import sys\nsys.stdout.write('\u00e4' * 20000)\nsys.stderr.write('\u00df' * 20000)\nsys.exit(7)\n",
     )
     result = run_disposable_proof(tmp_path / "proof", executable=str(executable), timeout_seconds=2)
     summary = _summary(result.summary_path)
@@ -77,9 +79,13 @@ def test_post_spawn_fake_failure_is_charged_and_diagnosable_with_bounded_tails(t
     assert summary["final_run_status"] == "reconcile_required"
     assert summary["hop_used"] == 1
     assert summary["dispatch_marker_present"] is True
-    assert len(str(summary["stdout_tail"]).encode()) == DIAGNOSTIC_LIMIT_BYTES
-    assert len(str(summary["stderr_tail"]).encode()) == DIAGNOSTIC_LIMIT_BYTES
+    assert summary["diagnostic_limit_chars"] == DIAGNOSTIC_LIMIT_CHARS
+    assert len(str(summary["stdout_tail"])) == DIAGNOSTIC_LIMIT_CHARS
+    assert len(str(summary["stderr_tail"])) == DIAGNOSTIC_LIMIT_CHARS
+    assert len(str(summary["stdout_tail"]).encode()) > DIAGNOSTIC_LIMIT_CHARS
+    assert len(str(summary["stderr_tail"]).encode()) > DIAGNOSTIC_LIMIT_CHARS
     assert summary["proof_md_final_content"] == "WFC-S4-PROOF: pending marker\n"
+    assert proof_exit_status(result) != 0
 
 
 def test_pre_spawn_failure_writes_summary_without_charging_a_hop(tmp_path: Path):
@@ -90,6 +96,7 @@ def test_pre_spawn_failure_writes_summary_without_charging_a_hop(tmp_path: Path)
     assert summary["hop_used"] == 0
     assert summary["dispatch_marker_present"] is False
     assert "pre-acceptance executable launch failure" in str(summary["operator_error"])
+    assert proof_exit_status(result) != 0
 
 
 def test_provenance_is_bounded_and_never_records_environment_values():
