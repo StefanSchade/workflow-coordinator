@@ -101,10 +101,10 @@ def _matches_type(value, expected_type):
 
 
 def _walk_object_schemas(schema):
-    if "properties" in schema:
+    if schema.get("type") == "object":
         yield schema
-        for child in schema["properties"].values():
-            yield from _walk_object_schemas(child)
+    for child in schema.get("properties", {}).values():
+        yield from _walk_object_schemas(child)
     if "items" in schema:
         yield from _walk_object_schemas(schema["items"])
     for child in schema.get("anyOf", []):
