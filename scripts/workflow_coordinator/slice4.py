@@ -22,6 +22,7 @@ from .persistence import (
     write_dispatch_marker, write_run_snapshot,
 )
 from .prompt import PromptComponent
+from .serialization import structured_result_envelope_schema
 from .vertical import VerticalRun, run_one_hop
 
 
@@ -147,14 +148,7 @@ def invoke_codex(
     run_root = checkout_state_root(state_root, association)
     schema = run_root / "structured-result.schema.json"
     result = run_root / "result-message.json"
-    schema_data = {
-        "type": "object", "additionalProperties": False,
-        "required": ["schema_version", "run_id", "hop_id", "invocation_id", "result"],
-        "properties": {"schema_version": {"const": 1}, "run_id": {"type": "string"},
-                       "hop_id": {"type": "string"}, "invocation_id": {"type": "string"},
-                       "result": {"type": "object"}},
-    }
-    atomic_write_json(schema, schema_data)
+    atomic_write_json(schema, structured_result_envelope_schema())
     atomic_write_text(result, "")
     argv = (executable, "--ask-for-approval", "never", "exec", "--ephemeral", "--json",
             "--color", "never", "--sandbox", "workspace-write", "--model", "gpt-5.6-terra",

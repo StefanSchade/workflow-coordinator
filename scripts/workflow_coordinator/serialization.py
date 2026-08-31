@@ -41,6 +41,45 @@ class ValidationError(ValueError):
 EnumType = TypeVar("EnumType", bound=Enum)
 
 
+ROUTING_RESULT_REQUIRED_KEYS = (
+    "schema_version",
+    "outcome",
+    "requested_route",
+    "scope_changed",
+    "requires_human",
+    "escalation",
+    "findings",
+    "claimed_commits",
+    "evidence_refs",
+    "summary",
+)
+FINDING_DELTA_REQUIRED_KEYS = (
+    "finding_id",
+    "invariant",
+    "blocking",
+    "proposed_state",
+    "evidence_refs",
+)
+FINDING_DELTA_OPTIONAL_KEYS = ("successor_ref", "new_material_evidence")
+FINDING_DELTA_KEYS = (*FINDING_DELTA_REQUIRED_KEYS, *FINDING_DELTA_OPTIONAL_KEYS)
+ESCALATION_REQUIRED_KEYS = ("kind", "question")
+ESCALATION_KINDS = (
+    "scope",
+    "semantic_authority",
+    "public_surface",
+    "trust_boundary",
+    "prerequisite",
+    "operational",
+)
+STRUCTURED_RESULT_ENVELOPE_KEYS = (
+    "schema_version",
+    "run_id",
+    "hop_id",
+    "invocation_id",
+    "result",
+)
+
+
 class _StrictLoader(yaml.SafeLoader):
     pass
 
@@ -347,8 +386,8 @@ def _finding_delta(value: Any, *, context: str) -> FindingDelta:
     data = _fields(
         value,
         context=context,
-        required={"finding_id", "invariant", "blocking", "proposed_state", "evidence_refs"},
-        optional={"successor_ref", "new_material_evidence"},
+        required=set(FINDING_DELTA_REQUIRED_KEYS),
+        optional=set(FINDING_DELTA_OPTIONAL_KEYS),
     )
     return FindingDelta(
         finding_id=_optional_string(data["finding_id"], context=f"{context}.finding_id"),
@@ -372,36 +411,17 @@ def routing_result_from_data(value: Any) -> RoutingResult:
     data = _fields(
         value,
         context="routing result",
-        required={
-            "schema_version",
-            "outcome",
-            "requested_route",
-            "scope_changed",
-            "requires_human",
-            "escalation",
-            "findings",
-            "claimed_commits",
-            "evidence_refs",
-            "summary",
-        },
+        required=set(ROUTING_RESULT_REQUIRED_KEYS),
     )
     escalation = None
     if data["escalation"] is not None:
         raw_escalation = _fields(
             data["escalation"],
             context="routing result.escalation",
-            required={"kind", "question"},
+            required=set(ESCALATION_REQUIRED_KEYS),
         )
         kind = _string(raw_escalation["kind"], context="routing result.escalation.kind")
-        allowed_kinds = {
-            "scope",
-            "semantic_authority",
-            "public_surface",
-            "trust_boundary",
-            "prerequisite",
-            "operational",
-        }
-        if kind not in allowed_kinds:
+        if kind not in ESCALATION_KINDS:
             raise ValidationError(f"routing result.escalation.kind is unknown: {kind}")
         escalation = Escalation(
             kind=kind,
@@ -427,6 +447,67 @@ def routing_result_from_data(value: Any) -> RoutingResult:
         evidence_refs=_strings(data["evidence_refs"], context="routing result.evidence_refs"),
         summary=_string(data["summary"], context="routing result.summary"),
     )
+
+
+def routing_result_json_schema() -> dict[str, Any]:
+    """Return the strict provider-facing schema for an accepted RoutingResult."""
+    string_array = {"type": "array", "items": {"type": "string"}}
+    finding = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": list(FINDING_DELTA_KEYS),
+        "properties": {
+            "finding_id": {"type": ["string", "null"]},
+            "invariant": {"type": "string"},
+            "blocking": {"type": "boolean"},
+            "proposed_state": {"type": "string", "enum": [state.value for state in FindingState]},
+            "evidence_refs": string_array,
+            "successor_ref": {"type": ["string", "null"]},
+            "new_material_evidence": {"type": "boolean"},
+        },
+    }
+    escalation = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": list(ESCALATION_REQUIRED_KEYS),
+        "properties": {
+            "kind": {"type": "string", "enum": list(ESCALATION_KINDS)},
+            "question": {"type": "string"},
+        },
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": list(ROUTING_RESULT_REQUIRED_KEYS),
+        "properties": {
+            "schema_version": {"const": 1},
+            "outcome": {"type": "string", "enum": [outcome.value for outcome in Outcome]},
+            "requested_route": {"type": "string"},
+            "scope_changed": {"type": "boolean"},
+            "requires_human": {"type": "boolean"},
+            "escalation": {"anyOf": [{"type": "null"}, escalation]},
+            "findings": {"type": "array", "items": finding},
+            "claimed_commits": string_array,
+            "evidence_refs": string_array,
+            "summary": {"type": "string"},
+        },
+    }
+
+
+def structured_result_envelope_schema() -> dict[str, Any]:
+    """Return the strict correlated provider-facing structured-result envelope."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": list(STRUCTURED_RESULT_ENVELOPE_KEYS),
+        "properties": {
+            "schema_version": {"const": 1},
+            "run_id": {"type": "string"},
+            "hop_id": {"type": "string"},
+            "invocation_id": {"type": "string"},
+            "result": routing_result_json_schema(),
+        },
+    }
 
 
 def _json_value(value: Any) -> Any:

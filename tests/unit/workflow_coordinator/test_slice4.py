@@ -11,7 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator.adapter import Invocation
+from scripts.workflow_coordinator.adapter import Invocation, validated_result
+from scripts.workflow_coordinator.serialization import (
+    FINDING_DELTA_KEYS,
+    ROUTING_RESULT_REQUIRED_KEYS,
+    structured_result_envelope_schema,
+)
 from scripts.workflow_coordinator.slice4 import (
     Slice4Error, invoke_codex, register_checkout, run_real_one_hop, validate_checkout,
 )
@@ -48,6 +53,124 @@ def _fake(tmp_path: Path, body: str) -> Path:
 
 def _expected() -> Invocation:
     return Invocation("RUN-1", "H001", "INV-1")
+
+
+def _assert_matches_schema(value, schema):
+    if "const" in schema:
+        assert value == schema["const"]
+    if "anyOf" in schema:
+        assert any(_matches_schema(value, branch) for branch in schema["anyOf"])
+        return
+    expected_type = schema.get("type")
+    if expected_type is not None:
+        expected_types = expected_type if isinstance(expected_type, list) else [expected_type]
+        assert any(_matches_type(value, candidate) for candidate in expected_types)
+    if "enum" in schema:
+        assert value in schema["enum"]
+    if schema.get("type") == "object":
+        assert isinstance(value, dict)
+        properties = schema["properties"]
+        assert set(schema["required"]).issubset(value)
+        if schema["additionalProperties"] is False:
+            assert set(value).issubset(properties)
+        for key, child_schema in properties.items():
+            if key in value:
+                _assert_matches_schema(value[key], child_schema)
+    if schema.get("type") == "array":
+        assert isinstance(value, list)
+        for item in value:
+            _assert_matches_schema(item, schema["items"])
+
+
+def _matches_schema(value, schema):
+    try:
+        _assert_matches_schema(value, schema)
+    except AssertionError:
+        return False
+    return True
+
+
+def _matches_type(value, expected_type):
+    return {
+        "object": lambda: isinstance(value, dict),
+        "array": lambda: isinstance(value, list),
+        "string": lambda: isinstance(value, str),
+        "boolean": lambda: isinstance(value, bool),
+        "null": lambda: value is None,
+    }[expected_type]()
+
+
+def _walk_object_schemas(schema):
+    if "properties" in schema:
+        yield schema
+        for child in schema["properties"].values():
+            yield from _walk_object_schemas(child)
+    if "items" in schema:
+        yield from _walk_object_schemas(schema["items"])
+    for child in schema.get("anyOf", []):
+        yield from _walk_object_schemas(child)
+
+
+def _known_good_envelope():
+    return {
+        "schema_version": 1,
+        "run_id": "RUN-1",
+        "hop_id": "H001",
+        "invocation_id": "INV-1",
+        "result": {
+            "schema_version": 1,
+            "outcome": "completed",
+            "requested_route": "done",
+            "scope_changed": False,
+            "requires_human": False,
+            "escalation": None,
+            "findings": [],
+            "claimed_commits": [],
+            "evidence_refs": [],
+            "summary": "done",
+        },
+    }
+
+
+def test_structured_result_schema_makes_every_object_strict_and_complete():
+    schema = structured_result_envelope_schema()
+    result = schema["properties"]["result"]
+    escalation = result["properties"]["escalation"]["anyOf"][1]
+    finding = result["properties"]["findings"]["items"]
+    object_schemas = list(_walk_object_schemas(schema))
+    assert all(candidate in object_schemas for candidate in (schema, result, escalation, finding))
+    for object_schema in object_schemas:
+        assert object_schema["additionalProperties"] is False
+        assert set(object_schema["required"]) == set(object_schema["properties"])
+
+
+def test_structured_result_schema_tracks_routing_result_validator_contract():
+    result = structured_result_envelope_schema()["properties"]["result"]
+    assert set(result["required"]) == set(ROUTING_RESULT_REQUIRED_KEYS)
+
+
+def test_structured_result_schema_tracks_complete_finding_delta_contract():
+    finding = structured_result_envelope_schema()["properties"]["result"]["properties"]["findings"]["items"]
+    properties = finding["properties"]
+    assert set(finding["required"]) == set(FINDING_DELTA_KEYS)
+    assert properties["finding_id"]["type"] == ["string", "null"]
+    assert properties["successor_ref"]["type"] == ["string", "null"]
+    assert properties["new_material_evidence"] == {"type": "boolean"}
+
+
+def test_invoke_codex_writes_the_canonical_structured_result_schema(repository, tmp_path):
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    executable = _fake(tmp_path, "pass\n")
+    invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, executable=str(executable))
+    emitted = json.loads((state / "checkouts" / association.checkout_id / "structured-result.schema.json").read_text())
+    assert emitted == structured_result_envelope_schema()
+
+
+def test_known_good_envelope_passes_adapter_validation_and_provider_schema():
+    envelope = _known_good_envelope()
+    assert validated_result(json.dumps(envelope), _expected()).summary == "done"
+    _assert_matches_schema(envelope, structured_result_envelope_schema())
 
 
 def test_state_root_nesting_is_rejected_before_any_trusted_write(repository, tmp_path):
