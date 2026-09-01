@@ -223,7 +223,10 @@ def run_disposable_proof(
         **_git_facts(repository, initial_head),
         "process_returncode": outcome.returncode if outcome else None,
         "timed_out": outcome.timed_out if outcome else False,
-        "acceptance": outcome.acceptance if outcome else "not_started",
+        "acceptance": (
+            "established" if real_hop is not None and real_hop.vertical is not None
+            else "uncertain" if outcome is not None else "not_started"
+        ),
         "stdout_tail": outcome.stdout if outcome else "",
         "stderr_tail": outcome.stderr if outcome else "",
         "diagnostic_limit_chars": DIAGNOSTIC_LIMIT_CHARS,
@@ -250,7 +253,6 @@ def proof_exit_status(result: ProofHarnessResult) -> int:
         and real_hop is not None
         and real_hop.vertical is not None
         and real_hop.outcome is not None
-        and real_hop.outcome.acceptance == "established"
         and real_hop.run.status.value == "completed"
     ):
         return 0

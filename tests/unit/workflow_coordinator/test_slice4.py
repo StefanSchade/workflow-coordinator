@@ -12,10 +12,10 @@ from pathlib import Path
 import pytest
 
 from scripts.workflow_coordinator.adapter import Invocation, validated_result
+from scripts.workflow_coordinator.codex_adapter import structured_result_envelope_openai_schema
 from scripts.workflow_coordinator.serialization import (
     FINDING_DELTA_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
-    structured_result_envelope_schema,
 )
 from scripts.workflow_coordinator.slice4 import (
     Slice4Error, invoke_codex, register_checkout, run_real_one_hop, validate_checkout,
@@ -95,6 +95,7 @@ def _matches_type(value, expected_type):
         "object": lambda: isinstance(value, dict),
         "array": lambda: isinstance(value, list),
         "string": lambda: isinstance(value, str),
+        "integer": lambda: isinstance(value, int) and not isinstance(value, bool),
         "boolean": lambda: isinstance(value, bool),
         "null": lambda: value is None,
     }[expected_type]()
@@ -132,8 +133,8 @@ def _known_good_envelope():
     }
 
 
-def test_structured_result_schema_makes_every_object_strict_and_complete():
-    schema = structured_result_envelope_schema()
+def test_codex_projection_makes_every_object_strict_and_complete():
+    schema = structured_result_envelope_openai_schema()
     result = schema["properties"]["result"]
     escalation = result["properties"]["escalation"]["anyOf"][1]
     finding = result["properties"]["findings"]["items"]
@@ -144,13 +145,13 @@ def test_structured_result_schema_makes_every_object_strict_and_complete():
         assert set(object_schema["required"]) == set(object_schema["properties"])
 
 
-def test_structured_result_schema_tracks_routing_result_validator_contract():
-    result = structured_result_envelope_schema()["properties"]["result"]
+def test_codex_projection_tracks_routing_result_validator_contract():
+    result = structured_result_envelope_openai_schema()["properties"]["result"]
     assert set(result["required"]) == set(ROUTING_RESULT_REQUIRED_KEYS)
 
 
-def test_structured_result_schema_tracks_complete_finding_delta_contract():
-    finding = structured_result_envelope_schema()["properties"]["result"]["properties"]["findings"]["items"]
+def test_codex_projection_tracks_complete_finding_delta_contract():
+    finding = structured_result_envelope_openai_schema()["properties"]["result"]["properties"]["findings"]["items"]
     properties = finding["properties"]
     assert set(finding["required"]) == set(FINDING_DELTA_KEYS)
     assert properties["finding_id"]["type"] == ["string", "null"]
@@ -164,13 +165,13 @@ def test_invoke_codex_writes_the_canonical_structured_result_schema(repository, 
     executable = _fake(tmp_path, "pass\n")
     invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, executable=str(executable))
     emitted = json.loads((state / "checkouts" / association.checkout_id / "structured-result.schema.json").read_text())
-    assert emitted == structured_result_envelope_schema()
+    assert emitted == structured_result_envelope_openai_schema()
 
 
 def test_known_good_envelope_passes_adapter_validation_and_provider_schema():
     envelope = _known_good_envelope()
     assert validated_result(json.dumps(envelope), _expected()).summary == "done"
-    _assert_matches_schema(envelope, structured_result_envelope_schema())
+    _assert_matches_schema(envelope, structured_result_envelope_openai_schema())
 
 
 def test_state_root_nesting_is_rejected_before_any_trusted_write(repository, tmp_path):
@@ -211,7 +212,7 @@ def test_nonempty_invalid_result_is_not_established(repository, tmp_path, payloa
     association = register_checkout(state, repository)
     executable = _fake(tmp_path, "import pathlib,sys\np=pathlib.Path(sys.argv[sys.argv.index('--output-last-message')+1]); p.write_text(" + repr(payload) + ")\n")
     outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, executable=str(executable))
-    assert outcome.acceptance == "uncertain" and outcome.result is None
+    assert outcome.candidate_result == payload
 
 
 def test_nonzero_without_result_is_uncertain(repository, tmp_path):
@@ -219,7 +220,7 @@ def test_nonzero_without_result_is_uncertain(repository, tmp_path):
     association = register_checkout(state, repository)
     executable = _fake(tmp_path, "import sys\nsys.exit(7)\n")
     outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, executable=str(executable))
-    assert outcome.returncode == 7 and outcome.acceptance == "uncertain"
+    assert outcome.returncode == 7 and outcome.candidate_result is None
 
 
 def test_real_vertical_composition_uses_fake_cli_and_existing_reducer(repository, tmp_path):

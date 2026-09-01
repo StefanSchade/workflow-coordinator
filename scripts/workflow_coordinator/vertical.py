@@ -7,7 +7,15 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .adapter import Adapter, Invocation, validated_result
+from .adapter import (
+    ROUTING_RESULT_ENVELOPE_CONTRACT,
+    AgentExecutionPort,
+    AgentExecutionRequest,
+    ExecutionResultValidationError,
+    Invocation,
+    ResultValidationError,
+    validated_result,
+)
 from .evidence import run_evidence
 from .git_facts import GitDelta, GitPreflightError, observe_hop, preflight_hop
 from .model import Hop, MechanicalFacts, Phase, Run, WorkflowProfile, record_hop
@@ -26,6 +34,7 @@ class VerticalRun:
     prompt: PromptPackage
     checkpoint: dict[str, object]
     terminal: str
+    execution_outcome: object
 
 
 _CONVENTIONAL_SUBJECT = re.compile(r"^[a-z][a-z0-9-]*(?:\([^)]+\))?!?: ")
@@ -75,8 +84,9 @@ def _durable_artifact_anomalies(
 
 
 def run_one_hop(
-    run: Run, profile: WorkflowProfile, repository: Path, adapter: Adapter, components: dict[str, PromptComponent],
+    run: Run, profile: WorkflowProfile, repository: Path, adapter: AgentExecutionPort, components: dict[str, PromptComponent],
     *, task_payload: str, invocation_id: str, durable_artifacts: tuple[str, ...] = (),
+    execution_timeout_seconds: float = 0.0,
 ) -> VerticalRun:
     """Execute only the N=1 fake/subprocess boundary and reduce observed facts."""
 
@@ -87,7 +97,16 @@ def run_one_hop(
         raise VerticalRunError(str(error)) from error
     hop_id = f"H{run.hop_used + 1:03d}"
     prompt = assemble_prompt(run, phase, components, task_payload=task_payload)
-    result = validated_result(adapter.invoke(prompt.text, repository), Invocation(run.run_id, hop_id, invocation_id))
+    outcome = adapter.execute(AgentExecutionRequest(
+        Invocation(run.run_id, hop_id, invocation_id), prompt.text, repository,
+        ROUTING_RESULT_ENVELOPE_CONTRACT, execution_timeout_seconds,
+    ))
+    if outcome.candidate_result is None:
+        raise ExecutionResultValidationError(outcome, "agent execution produced no candidate structured result")
+    try:
+        result = validated_result(outcome.candidate_result, Invocation(run.run_id, hop_id, invocation_id))
+    except ResultValidationError as error:
+        raise ExecutionResultValidationError(outcome, str(error)) from error
     delta = observe_hop(
         repository,
         base_head=run.current_head,
@@ -115,4 +134,4 @@ def run_one_hop(
     )
     checkpoint = checkpoint_projection(reduction.run, profile, observations=observations)
     terminal = f"{run.work_item_id}/{run.run_id} {reduction.run.status.value} {hop_id} {delta.base_head}..{delta.end_head}"
-    return VerticalRun(reduction, prompt, checkpoint, terminal)
+    return VerticalRun(reduction, prompt, checkpoint, terminal, outcome)

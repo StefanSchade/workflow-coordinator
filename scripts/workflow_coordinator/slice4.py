@@ -7,22 +7,25 @@ state root is external to the repository passed to Codex.
 from __future__ import annotations
 
 import json
-import os
-import signal
 import subprocess
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .adapter import Adapter, Invocation, ResultValidationError, validated_result
+from .adapter import (
+    AgentExecutionOutcome,
+    AgentExecutionRequest,
+    ExecutionResultValidationError,
+    Invocation,
+)
+from .codex_adapter import CodexCliAdapter, CodexCliError
 from .git_facts import GitPreflightError, observe_hop, preflight_hop
-from .model import DispatchMarker, RoutingResult, Run, WorkflowProfile
+from .model import DispatchMarker, Run, WorkflowProfile
 from .persistence import (
-    atomic_write_json, atomic_write_text, checkpoint_projection, recover_uncertain_dispatch,
+    atomic_write_json, checkpoint_projection, recover_uncertain_dispatch,
     write_dispatch_marker, write_run_snapshot,
 )
 from .prompt import PromptComponent
-from .serialization import structured_result_envelope_schema
 from .vertical import VerticalRun, run_one_hop
 
 
@@ -39,24 +42,13 @@ class CheckoutAssociation:
 
 
 @dataclass(frozen=True)
-class CodexOutcome:
-    returncode: int | None
-    timed_out: bool
-    acceptance: str
-    stdout: str
-    stderr: str
-    result_text: str | None
-    result: RoutingResult | None
-
-
-@dataclass(frozen=True)
 class RealHopRun:
     """A completed vertical Hop or an honestly unreduced uncertain recovery."""
 
     vertical: VerticalRun | None
     run: Run
     checkpoint: dict[str, object]
-    outcome: CodexOutcome | None
+    outcome: AgentExecutionOutcome | None
 
     @property
     def reduction(self):
@@ -132,73 +124,20 @@ def checkout_state_root(state_root: Path, association: CheckoutAssociation) -> P
     return state_root.resolve() / "checkouts" / association.checkout_id
 
 
-def _bounded(value: str, limit: int = 16_384) -> str:
-    return value[-limit:]
-
-
 def invoke_codex(
     *, repository: Path, state_root: Path, association: CheckoutAssociation,
     prompt: str, expected: Invocation, timeout_seconds: float, executable: str = "codex",
-) -> CodexOutcome:
-    """Run one fresh Codex process and terminate its whole session on deadline."""
-    if timeout_seconds <= 0:
-        raise Slice4Error("timeout must be positive")
+) -> AgentExecutionOutcome:
+    """Compatibility wrapper for the concrete Codex execution port."""
     _require_external_state_root(state_root, repository)
     validate_checkout(state_root, repository)
     run_root = checkout_state_root(state_root, association)
-    schema = run_root / "structured-result.schema.json"
-    result = run_root / "result-message.json"
-    atomic_write_json(schema, structured_result_envelope_schema())
-    atomic_write_text(result, "")
-    argv = (executable, "--ask-for-approval", "never", "exec", "--ephemeral", "--json",
-            "--color", "never", "--sandbox", "workspace-write", "--model", "gpt-5.6-terra",
-            "-c", 'model_reasoning_effort="medium"', "--cd", str(repository.resolve()),
-            "--output-schema", str(schema), "--output-last-message", str(result), "-")
     try:
-        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 text=True, start_new_session=True)
-    except OSError as error:
-        raise Slice4Error("local pre-acceptance executable launch failure") from error
-    try:
-        stdout, stderr = child.communicate(prompt, timeout=timeout_seconds)
-        timed_out = False
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        os.killpg(child.pid, signal.SIGTERM)
-        try:
-            stdout, stderr = child.communicate(timeout=3)
-        except subprocess.TimeoutExpired:
-            os.killpg(child.pid, signal.SIGKILL)
-            stdout, stderr = child.communicate()
-    result_text = result.read_text(encoding="utf-8") or None
-    try:
-        validated = validated_result(result_text, expected) if result_text else None
-    except ResultValidationError:
-        validated = None
-    # Only the established Slice-3 validator can establish an accepted result.
-    acceptance = "established" if validated is not None else "uncertain"
-    return CodexOutcome(child.returncode, timed_out, acceptance, _bounded(stdout), _bounded(stderr), result_text, validated)
-
-
-@dataclass
-class _CodexAdapter(Adapter):
-    repository: Path
-    state_root: Path
-    association: CheckoutAssociation
-    expected: Invocation
-    timeout_seconds: float
-    executable: str
-    outcome: CodexOutcome | None = None
-
-    def invoke(self, prompt: str, repository: Path) -> str:
-        self.outcome = invoke_codex(
-            repository=self.repository, state_root=self.state_root, association=self.association,
-            prompt=prompt, expected=self.expected, timeout_seconds=self.timeout_seconds,
-            executable=self.executable,
+        return CodexCliAdapter(run_root, executable=executable).execute(
+            AgentExecutionRequest(expected, prompt, repository, "routing-result-envelope/v1", timeout_seconds)
         )
-        if self.outcome.result is None or self.outcome.result_text is None:
-            raise ResultValidationError("real adapter result is absent, malformed, or uncorrelated")
-        return self.outcome.result_text
+    except CodexCliError as error:
+        raise Slice4Error(str(error)) from error
 
 
 def run_real_one_hop(
@@ -220,19 +159,15 @@ def run_real_one_hop(
     dispatch_path = run_root / "dispatch.json"
     write_run_snapshot(run_root / "run.json", run)
     write_dispatch_marker(dispatch_path, marker)
-    adapter = _CodexAdapter(
-        repository, state_root, association, Invocation(run.run_id, hop_id, invocation_id),
-        timeout_seconds, executable,
-    )
+    adapter = CodexCliAdapter(run_root, executable=executable)
     try:
         vertical = run_one_hop(
             run, profile, repository, adapter, components, task_payload=task_payload,
             invocation_id=invocation_id, durable_artifacts=durable_artifacts,
+            execution_timeout_seconds=timeout_seconds,
         )
-    except ResultValidationError:
-        if adapter.outcome is None:
-            dispatch_path.unlink(missing_ok=True)
-            raise
+    except ExecutionResultValidationError as error:
+        outcome = error.outcome
         delta = observe_hop(
             repository, base_head=run.current_head,
             allowed_paths=profile.phases[run.phase].authorized_scope,
@@ -245,12 +180,14 @@ def run_real_one_hop(
         checkpoint = checkpoint_projection(recovered, profile)
         write_run_snapshot(run_root / "run.json", recovered)
         atomic_write_json(run_root / "checkpoint.json", checkpoint)
-        return RealHopRun(None, recovered, checkpoint, adapter.outcome)
+        return RealHopRun(None, recovered, checkpoint, outcome)
+    except CodexCliError as error:
+        dispatch_path.unlink(missing_ok=True)
+        raise Slice4Error(str(error)) from error
     except Exception:
-        if adapter.outcome is None:
-            dispatch_path.unlink(missing_ok=True)
+        dispatch_path.unlink(missing_ok=True)
         raise
     write_run_snapshot(run_root / "run.json", vertical.reduction.run)
     atomic_write_json(run_root / "checkpoint.json", vertical.checkpoint)
     dispatch_path.unlink(missing_ok=True)
-    return RealHopRun(vertical, vertical.reduction.run, vertical.checkpoint, adapter.outcome)
+    return RealHopRun(vertical, vertical.reduction.run, vertical.checkpoint, vertical.execution_outcome)

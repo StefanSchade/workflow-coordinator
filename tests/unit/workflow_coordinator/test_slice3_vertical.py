@@ -9,7 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator.adapter import FakeAdapter, ResultValidationError, SubprocessAdapter, validated_result
+from scripts.workflow_coordinator.adapter import (
+    AgentExecutionOutcome,
+    AgentExecutionRequest,
+    FakeAdapter,
+    Invocation,
+    ResultValidationError,
+    SubprocessAdapter,
+    validated_result,
+)
 from scripts.workflow_coordinator.model import DurableArtifact
 from scripts.workflow_coordinator.prompt import (
     COMPONENT_LIMIT_BYTES, CONTEXT_LIMIT_BYTES, DIFF_FILE_LIMIT, DIFF_LIMIT_BYTES,
@@ -112,17 +120,17 @@ class CommitAdapter:
         self.output = output
         self.path = path
 
-    def invoke(self, prompt: str, repository: Path) -> str:
-        target = repository / self.path
+    def execute(self, request: AgentExecutionRequest) -> AgentExecutionOutcome:
+        target = request.repository / self.path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("change\n")
-        subprocess.run(("git", "-C", str(repository), "add", self.path), check=True)
+        subprocess.run(("git", "-C", str(request.repository), "add", self.path), check=True)
         subprocess.run(
-            ("git", "-C", str(repository), "commit", "-m", self.subject),
+            ("git", "-C", str(request.repository), "commit", "-m", self.subject),
             check=True,
             capture_output=True,
         )
-        return self.output
+        return AgentExecutionOutcome(self.output, 0, False, "", "")
 
 
 @pytest.mark.parametrize(
@@ -219,4 +227,5 @@ def test_durable_artifact_required_accepts_an_in_scope_committed_artifact(reposi
 
 def test_subprocess_adapter_is_local_fixture_seam_not_provider(repository):
     adapter = SubprocessAdapter(("/bin/sh", "-c", "printf '{}'"))
-    assert adapter.invoke("ignored", repository) == "{}"
+    outcome = adapter.execute(AgentExecutionRequest(Invocation("RUN-1", "H001", "INV-1"), "ignored", repository, "test", 0))
+    assert outcome.candidate_result == "{}"

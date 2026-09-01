@@ -449,67 +449,6 @@ def routing_result_from_data(value: Any) -> RoutingResult:
     )
 
 
-def routing_result_json_schema() -> dict[str, Any]:
-    """Return the strict provider-facing schema for an accepted RoutingResult."""
-    string_array = {"type": "array", "items": {"type": "string"}}
-    finding = {
-        "type": "object",
-        "additionalProperties": False,
-        "required": list(FINDING_DELTA_KEYS),
-        "properties": {
-            "finding_id": {"type": ["string", "null"]},
-            "invariant": {"type": "string"},
-            "blocking": {"type": "boolean"},
-            "proposed_state": {"type": "string", "enum": [state.value for state in FindingState]},
-            "evidence_refs": string_array,
-            "successor_ref": {"type": ["string", "null"]},
-            "new_material_evidence": {"type": "boolean"},
-        },
-    }
-    escalation = {
-        "type": "object",
-        "additionalProperties": False,
-        "required": list(ESCALATION_REQUIRED_KEYS),
-        "properties": {
-            "kind": {"type": "string", "enum": list(ESCALATION_KINDS)},
-            "question": {"type": "string"},
-        },
-    }
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": list(ROUTING_RESULT_REQUIRED_KEYS),
-        "properties": {
-            "schema_version": {"const": 1},
-            "outcome": {"type": "string", "enum": [outcome.value for outcome in Outcome]},
-            "requested_route": {"type": "string"},
-            "scope_changed": {"type": "boolean"},
-            "requires_human": {"type": "boolean"},
-            "escalation": {"anyOf": [{"type": "null"}, escalation]},
-            "findings": {"type": "array", "items": finding},
-            "claimed_commits": string_array,
-            "evidence_refs": string_array,
-            "summary": {"type": "string"},
-        },
-    }
-
-
-def structured_result_envelope_schema() -> dict[str, Any]:
-    """Return the strict correlated provider-facing structured-result envelope."""
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": list(STRUCTURED_RESULT_ENVELOPE_KEYS),
-        "properties": {
-            "schema_version": {"const": 1},
-            "run_id": {"type": "string"},
-            "hop_id": {"type": "string"},
-            "invocation_id": {"type": "string"},
-            "result": routing_result_json_schema(),
-        },
-    }
-
-
 def _json_value(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value

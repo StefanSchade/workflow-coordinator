@@ -1,4 +1,4 @@
-"""Fake and local subprocess test adapters; this module contains no provider integration."""
+"""Provider-neutral execution port and deterministic local test adapters."""
 
 from __future__ import annotations
 
@@ -16,6 +16,14 @@ class ResultValidationError(ValidationError):
     """An adapter result is malformed, incomplete, or belongs to another invocation."""
 
 
+class ExecutionResultValidationError(ResultValidationError):
+    """A semantic rejection paired with its completed transport outcome."""
+
+    def __init__(self, outcome: AgentExecutionOutcome, message: str):
+        super().__init__(message)
+        self.outcome = outcome
+
+
 @dataclass(frozen=True)
 class Invocation:
     run_id: str
@@ -23,16 +31,50 @@ class Invocation:
     invocation_id: str
 
 
-class Adapter(Protocol):
-    def invoke(self, prompt: str, repository: Path) -> str: ...
+@dataclass(frozen=True)
+class AgentExecutionRequest:
+    """Facts the application supplies for one bounded agent invocation.
+
+    ``result_contract`` identifies the canonical semantic result envelope; its
+    provider transport projection is deliberately an adapter concern.
+    """
+
+    invocation: Invocation
+    prompt: str
+    repository: Path
+    result_contract: str
+    timeout_seconds: float
+
+
+@dataclass(frozen=True)
+class AgentExecutionOutcome:
+    """Transport facts, before provider-neutral semantic acceptance.
+
+    A candidate result is intentionally not a ``RoutingResult``.  The caller
+    must still parse, validate, and correlate it through ``validated_result``.
+    """
+
+    candidate_result: str | None
+    returncode: int | None
+    timed_out: bool
+    stdout: str
+    stderr: str
+    diagnostics: tuple[str, ...] = ()
+
+
+ROUTING_RESULT_ENVELOPE_CONTRACT = "routing-result-envelope/v1"
+
+
+class AgentExecutionPort(Protocol):
+    def execute(self, request: AgentExecutionRequest) -> AgentExecutionOutcome: ...
 
 
 @dataclass(frozen=True)
 class FakeAdapter:
     output: str
 
-    def invoke(self, prompt: str, repository: Path) -> str:
-        return self.output
+    def execute(self, request: AgentExecutionRequest) -> AgentExecutionOutcome:
+        return AgentExecutionOutcome(self.output, 0, False, "", "")
 
 
 @dataclass(frozen=True)
@@ -41,12 +83,17 @@ class SubprocessAdapter:
 
     argv: tuple[str, ...]
 
-    def invoke(self, prompt: str, repository: Path) -> str:
-        completed = subprocess.run(self.argv, cwd=repository, input=prompt, text=True,
+    def execute(self, request: AgentExecutionRequest) -> AgentExecutionOutcome:
+        completed = subprocess.run(self.argv, cwd=request.repository, input=request.prompt, text=True,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        if completed.returncode:
-            raise ResultValidationError(f"subprocess adapter failed: exit {completed.returncode}")
-        return completed.stdout
+        return AgentExecutionOutcome(
+            completed.stdout if completed.returncode == 0 else None,
+            completed.returncode,
+            False,
+            completed.stdout,
+            completed.stderr,
+            (f"subprocess adapter exited {completed.returncode}",) if completed.returncode else (),
+        )
 
 
 def validated_result(raw: str, expected: Invocation) -> RoutingResult:
