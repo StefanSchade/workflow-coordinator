@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .adapter import AgentExecutionOutcome, AgentExecutionRequest
+from .adapter import (
+    ROUTING_RESULT_ENVELOPE_CONTRACT,
+    AgentExecutionOutcome,
+    AgentExecutionRequest,
+)
 from .persistence import atomic_write_json, atomic_write_text
 from .serialization import (
     ESCALATION_KINDS,
@@ -34,7 +38,7 @@ class OpenAIStrictSchemaError(ValueError):
     """The Codex Structured Outputs projection leaves the supported subset."""
 
 
-_STRICT_KEYS = frozenset({"type", "additionalProperties", "required", "properties", "items", "enum", "const", "anyOf"})
+_STRICT_KEYS = frozenset({"type", "additionalProperties", "required", "properties", "items", "enum", "anyOf"})
 
 
 def assert_openai_strict_schema(schema: dict[str, Any]) -> None:
@@ -60,8 +64,6 @@ def assert_openai_strict_schema(schema: dict[str, Any]) -> None:
         types = node_type if isinstance(node_type, list) else [node_type]
         if not types or not all(item in {"object", "array", "string", "integer", "boolean", "null"} for item in types):
             raise OpenAIStrictSchemaError(f"{location}: unsupported type")
-        if "const" in node and "type" not in node:
-            raise OpenAIStrictSchemaError(f"{location}: const requires explicit type")
         if "object" in types:
             properties = node.get("properties")
             if not isinstance(properties, dict) or node.get("additionalProperties") is not False:
@@ -101,7 +103,7 @@ def routing_result_openai_schema() -> dict[str, Any]:
     return {
         "type": "object", "additionalProperties": False, "required": list(ROUTING_RESULT_REQUIRED_KEYS),
         "properties": {
-            "schema_version": {"type": "integer", "const": 1},
+            "schema_version": {"type": "integer", "enum": [1]},
             "outcome": {"type": "string", "enum": [outcome.value for outcome in Outcome]},
             "requested_route": {"type": "string"}, "scope_changed": {"type": "boolean"},
             "requires_human": {"type": "boolean"}, "escalation": {"anyOf": [{"type": "null"}, escalation]},
@@ -117,7 +119,7 @@ def structured_result_envelope_openai_schema() -> dict[str, Any]:
         "type": "object", "additionalProperties": False,
         "required": list(STRUCTURED_RESULT_ENVELOPE_KEYS),
         "properties": {
-            "schema_version": {"type": "integer", "const": 1}, "run_id": {"type": "string"},
+            "schema_version": {"type": "integer", "enum": [1]}, "run_id": {"type": "string"},
             "hop_id": {"type": "string"}, "invocation_id": {"type": "string"},
             "result": routing_result_openai_schema(),
         },
@@ -142,6 +144,8 @@ class CodexCliAdapter:
         )
 
     def execute(self, request: AgentExecutionRequest) -> AgentExecutionOutcome:
+        if request.result_contract != ROUTING_RESULT_ENVELOPE_CONTRACT:
+            raise CodexCliError(f"unsupported result contract: {request.result_contract}")
         if request.timeout_seconds <= 0:
             raise CodexCliError("timeout must be positive")
         schema = self.result_directory / "structured-result.schema.json"

@@ -11,6 +11,8 @@ from .adapter import (
     ROUTING_RESULT_ENVELOPE_CONTRACT,
     AgentExecutionPort,
     AgentExecutionRequest,
+    AgentExecutionOutcome,
+    ExecutionNotStartedError,
     ExecutionResultValidationError,
     Invocation,
     ResultValidationError,
@@ -34,7 +36,7 @@ class VerticalRun:
     prompt: PromptPackage
     checkpoint: dict[str, object]
     terminal: str
-    execution_outcome: object
+    execution_outcome: AgentExecutionOutcome
 
 
 _CONVENTIONAL_SUBJECT = re.compile(r"^[a-z][a-z0-9-]*(?:\([^)]+\))?!?: ")
@@ -94,9 +96,12 @@ def run_one_hop(
     try:
         preflight_hop(repository, expected_repository=repository, expected_head=run.current_head)
     except GitPreflightError as error:
-        raise VerticalRunError(str(error)) from error
+        raise ExecutionNotStartedError(str(error)) from error
     hop_id = f"H{run.hop_used + 1:03d}"
-    prompt = assemble_prompt(run, phase, components, task_payload=task_payload)
+    try:
+        prompt = assemble_prompt(run, phase, components, task_payload=task_payload)
+    except Exception as error:
+        raise ExecutionNotStartedError(str(error)) from error
     outcome = adapter.execute(AgentExecutionRequest(
         Invocation(run.run_id, hop_id, invocation_id), prompt.text, repository,
         ROUTING_RESULT_ENVELOPE_CONTRACT, execution_timeout_seconds,

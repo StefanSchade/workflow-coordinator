@@ -24,6 +24,10 @@ class ExecutionResultValidationError(ResultValidationError):
         self.outcome = outcome
 
 
+class ExecutionNotStartedError(ValueError):
+    """A local failure that proves the execution port was not entered."""
+
+
 @dataclass(frozen=True)
 class Invocation:
     run_id: str

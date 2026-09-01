@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator.adapter import AgentExecutionRequest, Invocation
+from scripts.workflow_coordinator.adapter import (
+    ROUTING_RESULT_ENVELOPE_CONTRACT,
+    AgentExecutionRequest,
+    Invocation,
+)
 from scripts.workflow_coordinator.codex_adapter import (
     CodexCliAdapter,
     OpenAIStrictSchemaError,
@@ -20,15 +24,21 @@ def test_exact_codex_projection_conforms_to_supported_openai_strict_subset():
     assert_openai_strict_schema(structured_result_envelope_openai_schema())
 
 
+def test_schema_version_uses_the_documented_single_value_enum_in_both_envelopes():
+    schema = structured_result_envelope_openai_schema()
+    assert schema["properties"]["schema_version"] == {"type": "integer", "enum": [1]}
+    assert schema["properties"]["result"]["properties"]["schema_version"] == {"type": "integer", "enum": [1]}
+
+
 def test_conformance_rejects_both_historical_live_defects():
     opaque = structured_result_envelope_openai_schema()
     opaque["properties"]["result"] = {"type": "object"}
     with pytest.raises(OpenAIStrictSchemaError, match="object must be strict"):
         assert_openai_strict_schema(opaque)
-    untyped_const = structured_result_envelope_openai_schema()
-    del untyped_const["properties"]["schema_version"]["type"]
+    untyped_enum = structured_result_envelope_openai_schema()
+    del untyped_enum["properties"]["schema_version"]["type"]
     with pytest.raises(OpenAIStrictSchemaError, match="explicit type"):
-        assert_openai_strict_schema(untyped_const)
+        assert_openai_strict_schema(untyped_enum)
 
 
 def test_conformance_walks_nested_properties_arrays_and_nullable_anyof_branches():
@@ -51,7 +61,7 @@ def test_projection_derives_from_canonical_semantic_contract_facts():
 
 
 def test_codex_argv_is_adapter_owned_and_request_is_provider_neutral(tmp_path: Path):
-    request = AgentExecutionRequest(Invocation("RUN", "H001", "INV"), "prompt", tmp_path, "routing-result-envelope/v1", 1)
+    request = AgentExecutionRequest(Invocation("RUN", "H001", "INV"), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 1)
     adapter = CodexCliAdapter(tmp_path, executable="fake-codex")
     argv = adapter.argv(request, tmp_path / "schema.json", tmp_path / "result.json")
     assert argv[:4] == ("fake-codex", "--ask-for-approval", "never", "exec")
@@ -60,8 +70,19 @@ def test_codex_argv_is_adapter_owned_and_request_is_provider_neutral(tmp_path: P
     assert not hasattr(adapter, "outcome")
 
 
+def test_adapter_rejects_an_unsupported_result_contract_before_launch(tmp_path: Path):
+    adapter = CodexCliAdapter(tmp_path, executable="must-not-run")
+    request = AgentExecutionRequest(Invocation("RUN", "H001", "INV"), "prompt", tmp_path, "other-contract", 1)
+    with pytest.raises(RuntimeError, match="unsupported result contract"):
+        adapter.execute(request)
+
+
 def test_conformance_rejects_constructs_outside_the_projection_subset():
     schema = structured_result_envelope_openai_schema()
     schema["properties"]["result"]["oneOf"] = []
+    with pytest.raises(OpenAIStrictSchemaError, match="unsupported keywords"):
+        assert_openai_strict_schema(schema)
+    schema = structured_result_envelope_openai_schema()
+    schema["properties"]["schema_version"] = {"type": "integer", "const": 1}
     with pytest.raises(OpenAIStrictSchemaError, match="unsupported keywords"):
         assert_openai_strict_schema(schema)

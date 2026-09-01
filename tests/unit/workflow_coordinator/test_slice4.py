@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from scripts.workflow_coordinator.adapter import Invocation, validated_result
-from scripts.workflow_coordinator.codex_adapter import structured_result_envelope_openai_schema
+from scripts.workflow_coordinator.codex_adapter import CodexCliAdapter, structured_result_envelope_openai_schema
 from scripts.workflow_coordinator.serialization import (
     FINDING_DELTA_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
@@ -290,6 +290,62 @@ def test_real_driver_recovers_post_spawn_uncertainty_with_external_anchors(repos
     assert subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip() == head
     assert (run_root / "dispatch.json").exists() and (run_root / "run.json").exists()
     assert (run_root / "checkpoint.json").exists()
+
+
+def test_real_driver_retains_dispatch_after_post_execution_mutating_failure(repository, tmp_path, monkeypatch):
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    executions = tmp_path / "executions"
+    script = f'''import json, pathlib, subprocess, sys
+args=sys.argv[1:]; repo=args[args.index("--cd")+1]; output=pathlib.Path(args[args.index("--output-last-message")+1])
+counter=pathlib.Path({str(executions)!r}); counter.write_text(str(int(counter.read_text())+1) if counter.exists() else "1")
+pathlib.Path(repo, "PROOF.md").write_text("after\\n")
+subprocess.run(("git", "-C", repo, "add", "PROOF.md"), check=True)
+subprocess.run(("git", "-C", repo, "commit", "-m", "docs(workflow): WI-1 H001 fixture"), check=True)
+commit=subprocess.run(("git", "-C", repo, "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+output.write_text(json.dumps({{"schema_version": 1, "run_id": "RUN-1", "hop_id": "H001", "invocation_id": "INV-1", "result": {{"schema_version": 1, "outcome": "completed", "requested_route": "done", "scope_changed": False, "requires_human": False, "escalation": None, "findings": [], "claimed_commits": [commit], "evidence_refs": [], "summary": "done"}}}}))
+'''
+    executable = _fake(tmp_path, script)
+    workflow = profile({"work": phase({"done": route("complete")})})
+    workflow = replace(workflow, phases={"work": replace(workflow.phases["work"], authorized_scope=("PROOF.md",))})
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+
+    import scripts.workflow_coordinator.vertical as vertical
+
+    monkeypatch.setattr(vertical, "observe_hop", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("post-execution observation failure")))
+    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
+
+    run_root = state / "checkouts" / association.checkout_id
+    assert executions.read_text() == "1" and (repository / "PROOF.md").read_text() == "after\n"
+    assert subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip() != head
+    assert outcome.vertical is None and outcome.run.hop_used == 1
+    assert outcome.run.status.value == "reconcile_required"
+    assert outcome.run.stop_reason == "reconcile_requires_explicit_resume"
+    assert outcome.checkpoint["state"]["status"] == "reconcile_required"
+    assert (run_root / "dispatch.json").exists() and (run_root / "run.json").exists()
+    assert executions.read_text() == "1"
+
+
+def test_real_driver_fails_closed_for_unclassified_execution_boundary_exception(repository, tmp_path, monkeypatch):
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    workflow = profile({"work": phase({"done": route("complete")})})
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+    executions: list[str] = []
+
+    def unexpected_execute(self, request):
+        executions.append(request.invocation.invocation_id)
+        raise RuntimeError("execution boundary became unavailable")
+
+    monkeypatch.setattr(CodexCliAdapter, "execute", unexpected_execute)
+    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2)
+
+    run_root = state / "checkouts" / association.checkout_id
+    assert executions == ["INV-1"]
+    assert outcome.vertical is None and outcome.run.status.value == "reconcile_required"
+    assert outcome.run.hop_used == 1 and (run_root / "dispatch.json").exists()
 
 
 def test_real_driver_preserves_no_hop_for_unlaunchable_executable(repository, tmp_path):

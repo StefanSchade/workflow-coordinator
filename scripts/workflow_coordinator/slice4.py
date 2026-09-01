@@ -15,8 +15,10 @@ from pathlib import Path
 from .adapter import (
     AgentExecutionOutcome,
     AgentExecutionRequest,
+    ExecutionNotStartedError,
     ExecutionResultValidationError,
     Invocation,
+    ROUTING_RESULT_ENVELOPE_CONTRACT,
 )
 from .codex_adapter import CodexCliAdapter, CodexCliError
 from .git_facts import GitPreflightError, observe_hop, preflight_hop
@@ -134,7 +136,7 @@ def invoke_codex(
     run_root = checkout_state_root(state_root, association)
     try:
         return CodexCliAdapter(run_root, executable=executable).execute(
-            AgentExecutionRequest(expected, prompt, repository, "routing-result-envelope/v1", timeout_seconds)
+            AgentExecutionRequest(expected, prompt, repository, ROUTING_RESULT_ENVELOPE_CONTRACT, timeout_seconds)
         )
     except CodexCliError as error:
         raise Slice4Error(str(error)) from error
@@ -160,14 +162,9 @@ def run_real_one_hop(
     write_run_snapshot(run_root / "run.json", run)
     write_dispatch_marker(dispatch_path, marker)
     adapter = CodexCliAdapter(run_root, executable=executable)
-    try:
-        vertical = run_one_hop(
-            run, profile, repository, adapter, components, task_payload=task_payload,
-            invocation_id=invocation_id, durable_artifacts=durable_artifacts,
-            execution_timeout_seconds=timeout_seconds,
-        )
-    except ExecutionResultValidationError as error:
-        outcome = error.outcome
+
+    def recover_uncertain(outcome: AgentExecutionOutcome | None) -> RealHopRun:
+        """Retain dispatch authority unless execution was proven absent."""
         delta = observe_hop(
             repository, base_head=run.current_head,
             allowed_paths=profile.phases[run.phase].authorized_scope,
@@ -181,12 +178,23 @@ def run_real_one_hop(
         write_run_snapshot(run_root / "run.json", recovered)
         atomic_write_json(run_root / "checkpoint.json", checkpoint)
         return RealHopRun(None, recovered, checkpoint, outcome)
+
+    try:
+        vertical = run_one_hop(
+            run, profile, repository, adapter, components, task_payload=task_payload,
+            invocation_id=invocation_id, durable_artifacts=durable_artifacts,
+            execution_timeout_seconds=timeout_seconds,
+        )
+    except ExecutionResultValidationError as error:
+        return recover_uncertain(error.outcome)
+    except ExecutionNotStartedError:
+        dispatch_path.unlink(missing_ok=True)
+        raise
     except CodexCliError as error:
         dispatch_path.unlink(missing_ok=True)
         raise Slice4Error(str(error)) from error
     except Exception:
-        dispatch_path.unlink(missing_ok=True)
-        raise
+        return recover_uncertain(None)
     write_run_snapshot(run_root / "run.json", vertical.reduction.run)
     atomic_write_json(run_root / "checkpoint.json", vertical.checkpoint)
     dispatch_path.unlink(missing_ok=True)
