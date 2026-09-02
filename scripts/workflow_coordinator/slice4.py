@@ -187,12 +187,12 @@ def run_real_one_hop(
         )
     except ExecutionResultValidationError as error:
         return recover_uncertain(error.outcome)
-    except ExecutionNotStartedError:
-        dispatch_path.unlink(missing_ok=True)
-        raise
     except CodexCliError as error:
         dispatch_path.unlink(missing_ok=True)
         raise Slice4Error(str(error)) from error
+    except ExecutionNotStartedError:
+        dispatch_path.unlink(missing_ok=True)
+        raise
     except Exception:
         return recover_uncertain(None)
     write_run_snapshot(run_root / "run.json", vertical.reduction.run)

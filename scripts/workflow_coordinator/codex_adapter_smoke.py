@@ -21,11 +21,12 @@ if __package__ in {None, ""}:  # Allow the documented file-based launcher.
 from scripts.workflow_coordinator.adapter import (
     ROUTING_RESULT_ENVELOPE_CONTRACT,
     AgentExecutionRequest,
+    ExecutionNotStartedError,
     Invocation,
     ResultValidationError,
     validated_result,
 )
-from scripts.workflow_coordinator.codex_adapter import CodexCliAdapter, CodexCliError
+from scripts.workflow_coordinator.codex_adapter import CodexCliAdapter
 from scripts.workflow_coordinator.persistence import atomic_write_json
 
 
@@ -44,6 +45,7 @@ def _summary_base(
     executable: str,
     model: str,
     reasoning_effort: str,
+    timeout_seconds: float,
 ) -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -54,6 +56,7 @@ def _summary_base(
         "executable": executable,
         "model": model,
         "reasoning_effort": reasoning_effort,
+        "timeout_seconds": timeout_seconds,
         "result_contract": ROUTING_RESULT_ENVELOPE_CONTRACT,
         "invocation_attempted": False,
         "returncode": None,
@@ -63,8 +66,16 @@ def _summary_base(
         "stderr_tail": "",
         "candidate_result_present": False,
         "semantic_validation_succeeded": False,
-        "real_provider_compatibility_established": False,
+        "configured_executable_smoke_succeeded": False,
     }
+
+
+def _write_summary_best_effort(path: Path, summary: dict[str, object]) -> None:
+    """Persist failure evidence without replacing the failure being recorded."""
+    try:
+        atomic_write_json(path, summary)
+    except Exception:
+        pass
 
 
 def run_smoke(
@@ -86,7 +97,11 @@ def run_smoke(
         run_id=f"SMOKE-{uuid4().hex}", hop_id="H001", invocation_id=f"INV-{uuid4().hex}"
     )
     summary = _summary_base(
-        invocation, executable=executable, model=model, reasoning_effort=reasoning_effort
+        invocation,
+        executable=executable,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        timeout_seconds=timeout_seconds,
     )
     summary_path = smoke_root / "smoke-summary.json"
     workspace = smoke_root / "workspace"
@@ -95,6 +110,12 @@ def run_smoke(
     try:
         workspace.mkdir()
         result_directory.mkdir()
+    except OSError as error:
+        summary["diagnostics"] = [str(error)]
+        _write_summary_best_effort(summary_path, summary)
+        return 1
+
+    try:
         adapter = CodexCliAdapter(
             result_directory=result_directory,
             executable=executable,
@@ -110,49 +131,60 @@ def run_smoke(
                 timeout_seconds=timeout_seconds,
             )
         )
-    except (CodexCliError, OSError, ValueError) as error:
+    except ExecutionNotStartedError as error:
         summary["diagnostics"] = [str(error)]
-        atomic_write_json(summary_path, summary)
+        _write_summary_best_effort(summary_path, summary)
+        return 1
+    except Exception as error:
+        summary.update(invocation_attempted=True, smoke_status="post_execution_error")
+        summary["diagnostics"] = [str(error)]
+        _write_summary_best_effort(summary_path, summary)
         return 1
 
-    summary.update(
-        invocation_attempted=True,
-        returncode=outcome.returncode,
-        timed_out=outcome.timed_out,
-        diagnostics=list(outcome.diagnostics),
-        stdout_tail=outcome.stdout,
-        stderr_tail=outcome.stderr,
-        candidate_result_present=outcome.candidate_result is not None,
-    )
-    schema_path = result_directory / "structured-result.schema.json"
-    if schema_path.exists():
-        summary["result_schema_sha256"] = hashlib.sha256(schema_path.read_bytes()).hexdigest()
+    try:
+        summary.update(
+            invocation_attempted=True,
+            returncode=outcome.returncode,
+            timed_out=outcome.timed_out,
+            diagnostics=list(outcome.diagnostics),
+            stdout_tail=outcome.stdout,
+            stderr_tail=outcome.stderr,
+            candidate_result_present=outcome.candidate_result is not None,
+        )
+        schema_path = result_directory / "structured-result.schema.json"
+        if schema_path.exists():
+            summary["result_schema_sha256"] = hashlib.sha256(schema_path.read_bytes()).hexdigest()
 
-    validated = None
-    if outcome.candidate_result is not None:
-        try:
-            validated = validated_result(outcome.candidate_result, invocation)
-        except ResultValidationError as error:
-            summary["diagnostics"] = [*outcome.diagnostics, f"semantic validation failed: {error}"]
+        validated = None
+        if outcome.candidate_result is not None:
+            try:
+                validated = validated_result(outcome.candidate_result, invocation)
+            except ResultValidationError as error:
+                summary["diagnostics"] = [*outcome.diagnostics, f"semantic validation failed: {error}"]
+            else:
+                summary["semantic_validation_succeeded"] = True
+                summary["semantic_result_summary"] = {
+                    "outcome": validated.outcome.value,
+                    "requested_route": validated.requested_route,
+                    "summary": validated.summary,
+                }
+
+        transport_succeeded = outcome.returncode == 0 and not outcome.timed_out
+        if transport_succeeded and validated is not None:
+            summary["smoke_status"] = "succeeded"
+            summary["configured_executable_smoke_succeeded"] = True
+            exit_code = 0
+        elif not transport_succeeded:
+            summary["smoke_status"] = "transport_failure"
+            exit_code = 1
         else:
-            summary["semantic_validation_succeeded"] = True
-            summary["semantic_result_summary"] = {
-                "outcome": validated.outcome.value,
-                "requested_route": validated.requested_route,
-                "summary": validated.summary,
-            }
-
-    transport_succeeded = outcome.returncode == 0 and not outcome.timed_out
-    if transport_succeeded and validated is not None:
-        summary["smoke_status"] = "succeeded"
-        summary["real_provider_compatibility_established"] = True
-        exit_code = 0
-    elif not transport_succeeded:
-        summary["smoke_status"] = "transport_failure"
-        exit_code = 1
-    else:
-        summary["smoke_status"] = "semantic_failure"
-        exit_code = 1
+            summary["smoke_status"] = "semantic_failure"
+            exit_code = 1
+    except Exception as error:
+        summary["smoke_status"] = "post_execution_error"
+        summary["diagnostics"] = [*summary["diagnostics"], str(error)]
+        _write_summary_best_effort(summary_path, summary)
+        return 1
     atomic_write_json(summary_path, summary)
     return exit_code
 

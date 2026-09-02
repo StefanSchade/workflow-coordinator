@@ -18,6 +18,7 @@ from .adapter import (
     ROUTING_RESULT_ENVELOPE_CONTRACT,
     AgentExecutionOutcome,
     AgentExecutionRequest,
+    ExecutionNotStartedError,
 )
 from .persistence import atomic_write_json, atomic_write_text
 from .serialization import (
@@ -30,8 +31,8 @@ from .serialization import (
 from .model import FindingState, Outcome
 
 
-class CodexCliError(RuntimeError):
-    """The configured local Codex executable could not be launched."""
+class CodexCliError(ExecutionNotStartedError, RuntimeError):
+    """A local pre-launch Codex setup or launch failure."""
 
 
 class OpenAIStrictSchemaError(ValueError):
@@ -148,16 +149,16 @@ class CodexCliAdapter:
             raise CodexCliError(f"unsupported result contract: {request.result_contract}")
         if request.timeout_seconds <= 0:
             raise CodexCliError("timeout must be positive")
-        schema = self.result_directory / "structured-result.schema.json"
-        result = self.result_directory / "result-message.json"
-        atomic_write_json(schema, structured_result_envelope_openai_schema())
-        atomic_write_text(result, "")
         try:
+            schema = self.result_directory / "structured-result.schema.json"
+            result = self.result_directory / "result-message.json"
+            atomic_write_json(schema, structured_result_envelope_openai_schema())
+            atomic_write_text(result, "")
             child = subprocess.Popen(
                 self.argv(request, schema, result), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True, start_new_session=True,
             )
-        except OSError as error:
+        except (OSError, ValueError) as error:
             raise CodexCliError("local pre-acceptance executable launch failure") from error
         try:
             stdout, stderr = child.communicate(request.prompt, timeout=request.timeout_seconds)
