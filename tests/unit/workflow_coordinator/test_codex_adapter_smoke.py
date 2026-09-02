@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from scripts.workflow_coordinator import codex_adapter_smoke
@@ -56,9 +57,16 @@ def _summary(root: Path) -> dict[str, object]:
     return json.loads((root / "smoke-summary.json").read_text(encoding="utf-8"))
 
 
-def test_fake_success_uses_one_execution_and_ordinary_non_git_workspace(tmp_path: Path):
+def test_fake_success_uses_one_execution_and_disposable_git_workspace(tmp_path: Path):
     marker = tmp_path / "runs"
-    fake = _fake(tmp_path, _dynamic_valid_writer() + f"\nPath({str(marker)!r}).write_text('one')\n")
+    fake = _fake(
+        tmp_path,
+        "import subprocess\n"
+        + _dynamic_valid_writer()
+        + "\nworkspace = Path(sys.argv[sys.argv.index('--cd') + 1])\n"
+        + "subprocess.run(['git', '-C', str(workspace), 'rev-parse', '--git-dir'], check=True)\n"
+        + f"Path({str(marker)!r}).write_text('one')\n",
+    )
     root = tmp_path / "smoke"
 
     assert run_smoke(root, executable=str(fake), timeout_seconds=1) == 0
@@ -71,19 +79,69 @@ def test_fake_success_uses_one_execution_and_ordinary_non_git_workspace(tmp_path
     assert summary["configured_executable_smoke_succeeded"] is True
     assert "real_provider_compatibility_established" not in summary
     assert summary["timeout_seconds"] == 1
-    assert (root / "workspace" / ".git").exists() is False
+    workspace = root / "workspace"
+    assert subprocess.run(
+        ["git", "-C", str(workspace), "rev-parse", "--git-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert subprocess.run(
+        ["git", "-C", str(workspace), "rev-parse", "--verify", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).returncode != 0
 
 
-def test_existing_root_fails_before_fake_executable_runs(tmp_path: Path):
+def test_existing_root_fails_before_git_initialization_or_fake_execution(tmp_path: Path, monkeypatch):
     root = tmp_path / "smoke"
     root.mkdir()
     marker = tmp_path / "ran"
     fake = _fake(tmp_path, f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')")
+    git_initialization_called = False
+
+    def initialize_workspace(_: Path) -> None:
+        nonlocal git_initialization_called
+        git_initialization_called = True
+
+    monkeypatch.setattr(codex_adapter_smoke, "_initialize_disposable_git_workspace", initialize_workspace)
 
     assert run_smoke(root, executable=str(fake)) == 2
 
+    assert git_initialization_called is False
     assert marker.exists() is False
     assert (root / "smoke-summary.json").exists() is False
+
+
+def test_git_initialization_failure_blocks_fake_execution_and_is_truthful(tmp_path: Path, monkeypatch):
+    root = tmp_path / "smoke"
+    marker = tmp_path / "ran"
+    fake = _fake(tmp_path, f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')")
+    attempts = 0
+
+    def fail_git_initialization(_: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise OSError("simulated local git init failure")
+
+    monkeypatch.setattr(codex_adapter_smoke, "_initialize_disposable_git_workspace", fail_git_initialization)
+
+    class MustNotConstructAdapter:
+        def __init__(self, **_: object):
+            marker.write_text("constructed")
+
+    monkeypatch.setattr(codex_adapter_smoke, "CodexCliAdapter", MustNotConstructAdapter)
+
+    assert run_smoke(root, executable=str(fake)) == 1
+
+    summary = _summary(root)
+    assert attempts == 1
+    assert marker.exists() is False
+    assert summary["smoke_status"] == "local_pre_execution_error"
+    assert summary["invocation_attempted"] is False
+    assert summary["configured_executable_smoke_succeeded"] is False
+    assert "simulated local git init failure" in " ".join(summary["diagnostics"])
 
 
 def test_nonzero_fake_transport_failure_is_truthful_and_not_retried(tmp_path: Path):

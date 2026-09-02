@@ -1,16 +1,18 @@
 """One-shot Level-3 preparation runner for the Codex adapter boundary.
 
-This is intentionally below the coordinator: it creates an ordinary non-Git
-workspace, invokes the Codex adapter exactly once, and validates the returned
-routing envelope.  It does not exercise Run/Hop lifecycle, reduction, Git, or
-the Slice-4 proof harness.  A later real invocation remains separately
-authorized.
+This is intentionally below the coordinator: it creates a disposable Git
+workspace solely for the external CLI working-directory prerequisite, invokes
+the Codex adapter exactly once, and validates the returned routing envelope.
+It does not exercise Run/Hop lifecycle, coordinator Git workflow or authority
+semantics, reduction, or the Slice-4 proof harness.  A later real invocation
+remains separately authorized.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import subprocess
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -78,6 +80,21 @@ def _write_summary_best_effort(path: Path, summary: dict[str, object]) -> None:
         pass
 
 
+def _initialize_disposable_git_workspace(workspace: Path) -> None:
+    """Initialize only the local CLI prerequisite for a fresh smoke workspace."""
+    try:
+        subprocess.run(
+            ("git", "init"),
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        diagnostics = error.stderr.strip() or error.stdout.strip() or str(error)
+        raise OSError(f"disposable workspace git initialization failed: {diagnostics}") from error
+
+
 def run_smoke(
     smoke_root: Path,
     *,
@@ -110,6 +127,13 @@ def run_smoke(
     try:
         workspace.mkdir()
         result_directory.mkdir()
+    except OSError as error:
+        summary["diagnostics"] = [str(error)]
+        _write_summary_best_effort(summary_path, summary)
+        return 1
+
+    try:
+        _initialize_disposable_git_workspace(workspace)
     except OSError as error:
         summary["diagnostics"] = [str(error)]
         _write_summary_best_effort(summary_path, summary)
