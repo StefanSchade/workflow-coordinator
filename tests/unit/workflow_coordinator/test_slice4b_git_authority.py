@@ -196,14 +196,14 @@ def test_deterministic_staging_failure_reports_truthfully_without_reset(reposito
     import scripts.workflow_coordinator.git_facts as git_facts
 
     base = git(repository, "rev-parse", "HEAD")
-    original = git_facts._git
+    original = git_facts._trusted_git
 
     def fail_add(repo: Path, *args: str, **kwargs: object) -> str:
         if args[:1] == ("add",):
             raise GitPreflightError("injected stage failure")
         return original(repo, *args, **kwargs)
 
-    monkeypatch.setattr(git_facts, "_git", fail_add)
+    monkeypatch.setattr(git_facts, "_trusted_git", fail_add)
     stopped = _vertical_run(
         repository,
         WorktreeOnlyAdapter(_result(intent={"paths": ["src/a.py"], "subject": "fix(workflow): WI-1 H001 change"}), {"src/a.py": "after\n"}),
@@ -212,6 +212,86 @@ def test_deterministic_staging_failure_reports_truthfully_without_reset(reposito
     assert "trusted_commit:staging failed: injected stage failure" in (stopped.reduction.run.stop_reason or "")
     assert git(repository, "rev-parse", "HEAD") == base
     assert (repository / "src" / "a.py").read_text() == "after\n"
+
+
+def _write_hook(repository: Path, directory: str, side_effect: str) -> str:
+    hook = repository / directory / "pre-commit"
+    hook.parent.mkdir()
+    hook.write_text(f"#!/bin/sh\nprintf hook > {side_effect}\n", encoding="utf-8")
+    hook.chmod(0o755)
+    return hook.relative_to(repository).as_posix()
+
+
+def test_trusted_commit_neutralizes_agent_authored_worktree_hook(repository: Path):
+    base = git(repository, "rev-parse", "HEAD")
+    git(repository, "config", "core.hooksPath", ".githooks")
+    hook_path = _write_hook(repository, ".githooks", "hook-executed")
+    (repository / "src" / "a.py").write_text("after\n", encoding="utf-8")
+
+    committed = trusted_commit(
+        repository,
+        expected_repository=repository,
+        base_head=base,
+        allowed_paths=("src", ".githooks"),
+        intent=CommitIntent(
+            ("src/a.py", hook_path),
+            "fix(workflow): WI-1 H001 neutralize worktree hook",
+        ),
+        work_item_id="WI-1",
+        hop_id="H001",
+    )
+
+    assert committed.commit == git(repository, "rev-parse", "HEAD")
+    assert not (repository / "hook-executed").exists()
+
+
+def test_trusted_commit_strips_inherited_git_config_hook_injection(repository: Path, monkeypatch):
+    base = git(repository, "rev-parse", "HEAD")
+    hook_path = _write_hook(repository, ".injected-hooks", "injected-hook-executed")
+    (repository / "src" / "a.py").write_text("after\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", ".injected-hooks")
+
+    committed = trusted_commit(
+        repository,
+        expected_repository=repository,
+        base_head=base,
+        allowed_paths=("src", ".injected-hooks"),
+        intent=CommitIntent(
+            ("src/a.py", hook_path),
+            "fix(workflow): WI-1 H001 ignore Git config injection",
+        ),
+        work_item_id="WI-1",
+        hop_id="H001",
+    )
+
+    assert committed.commit == git(repository, "rev-parse", "HEAD")
+    assert not (repository / "injected-hook-executed").exists()
+
+
+def test_trusted_commit_refuses_configured_clean_filter_before_staging(repository: Path):
+    base = git(repository, "rev-parse", "HEAD")
+    git(repository, "config", "filter.agent.clean", "touch filter-executed")
+    (repository / ".gitattributes").write_text("src/a.py filter=agent\n", encoding="utf-8")
+    (repository / "src" / "a.py").write_text("after\n", encoding="utf-8")
+
+    with pytest.raises(TrustedCommitError, match="configured clean/process filter"):
+        trusted_commit(
+            repository,
+            expected_repository=repository,
+            base_head=base,
+            allowed_paths=("src", ".gitattributes"),
+            intent=CommitIntent(
+                ("src/a.py", ".gitattributes"),
+                "fix(workflow): WI-1 H001 reject selected filter",
+            ),
+            work_item_id="WI-1",
+            hop_id="H001",
+        )
+
+    assert git(repository, "rev-parse", "HEAD") == base
+    assert not (repository / "filter-executed").exists()
 
 
 def test_clean_observation_only_is_valid_and_dirty_without_intent_is_not(repository: Path):

@@ -6,11 +6,13 @@ from an invocation result.  It neither invokes an agent nor repairs a checkout.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
+from typing import Callable
 
 from .model import CommitIntent
 
@@ -62,23 +64,89 @@ class TrustedCommit:
 _CONVENTIONAL_SUBJECT = re.compile(r"^[a-z][a-z0-9-]*(?:\([^)]+\))?!?: ")
 
 
-def _git(repository: Path, *args: str, check: bool = True) -> str:
-    completed = subprocess.run(
-        ("git", "-C", str(repository), *args),
+GitCommand = Callable[..., str]
+
+
+def _run_git(
+    repository: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    trusted: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    configuration = (
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        "-c",
+        "commit.gpgSign=false",
+        "-c",
+        "core.fsmonitor=false",
+    ) if trusted else ()
+    return subprocess.run(
+        ("git", "-C", str(repository), *configuration, *args),
         check=False,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
+        shell=False,
+    )
+
+
+def _git(repository: Path, *args: str, check: bool = True) -> str:
+    completed = _run_git(repository, *args)
+    if check and completed.returncode:
+        raise GitPreflightError(completed.stderr.strip() or "Git command failed")
+    return completed.stdout.strip()
+
+
+def _trusted_git_environment() -> dict[str, str]:
+    """Keep ordinary process settings but remove every inherited Git control."""
+
+    return {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+
+
+def _trusted_git(repository: Path, *args: str, check: bool = True) -> str:
+    """Run one internal trusted-commit Git command with fixed execution policy.
+
+    This private helper is deliberately not a generic Git service.  It removes
+    inherited Git routing/configuration controls, resolves hooks to ``/dev/null``
+    (a non-writable non-directory), disables commit signing and fsmonitor, and
+    never invokes a shell.  ``trusted_commit`` uses it for every Git subprocess it
+    starts; read-only public observation intentionally retains ordinary Git policy.
+    """
+
+    completed = _run_git(
+        repository,
+        *args,
+        env=_trusted_git_environment(),
+        trusted=True,
     )
     if check and completed.returncode:
         raise GitPreflightError(completed.stderr.strip() or "Git command failed")
     return completed.stdout.strip()
 
 
-def repository_identity(repository: Path) -> Path:
+def _git_succeeds(repository: Path, *args: str) -> bool:
+    return _run_git(repository, *args).returncode == 0
+
+
+def _trusted_git_succeeds(repository: Path, *args: str) -> bool:
+    return _run_git(
+        repository,
+        *args,
+        env=_trusted_git_environment(),
+        trusted=True,
+    ).returncode == 0
+
+
+def _repository_identity(repository: Path, *, git_command: GitCommand) -> Path:
     """Return Git's resolved work-tree identity, rejecting non-repositories."""
 
-    return Path(_git(repository, "rev-parse", "--show-toplevel")).resolve()
+    return Path(git_command(repository, "rev-parse", "--show-toplevel")).resolve()
+
+
+def repository_identity(repository: Path) -> Path:
+    return _repository_identity(repository, git_command=_git)
 
 
 def _contains_identity_token(subject: str, identity: str) -> bool:
@@ -124,23 +192,34 @@ def _validated_intent_paths(intent: CommitIntent, allowed_paths: tuple[str, ...]
     return paths
 
 
-def _changed_worktree_paths(repository: Path) -> tuple[str, ...]:
+def _changed_worktree_paths(
+    repository: Path, *, git_command: GitCommand = _git
+) -> tuple[str, ...]:
     """Return every non-ignored path differing from HEAD without broad staging."""
 
-    modified = tuple(filter(None, _git(repository, "diff", "--name-only", "HEAD").splitlines()))
-    untracked = tuple(filter(None, _git(repository, "ls-files", "--others", "--exclude-standard").splitlines()))
+    modified = tuple(
+        filter(None, git_command(repository, "diff", "--no-ext-diff", "--name-only", "HEAD").splitlines())
+    )
+    untracked = tuple(
+        filter(None, git_command(repository, "ls-files", "--others", "--exclude-standard").splitlines())
+    )
     return tuple(dict.fromkeys((*modified, *untracked)))
 
 
-def _staged_paths(repository: Path) -> tuple[str, ...]:
-    return tuple(filter(None, _git(repository, "diff", "--cached", "--name-only").splitlines()))
+def _staged_paths(repository: Path, *, git_command: GitCommand = _git) -> tuple[str, ...]:
+    return tuple(
+        filter(
+            None,
+            git_command(repository, "diff", "--no-ext-diff", "--cached", "--name-only").splitlines(),
+        )
+    )
 
 
-def observe_repository(repository: Path) -> GitFacts:
+def _observe_repository(repository: Path, *, git_command: GitCommand) -> GitFacts:
     """Independently observe HEAD and Git's tracked/non-ignored worktree state."""
 
-    identity = repository_identity(repository)
-    status = _git(identity, "status", "--porcelain=v1", "--untracked-files=all")
+    identity = _repository_identity(repository, git_command=git_command)
+    status = git_command(identity, "status", "--porcelain=v1", "--untracked-files=all")
     tracked: list[str] = []
     untracked: list[str] = []
     for line in status.splitlines():
@@ -149,15 +228,19 @@ def observe_repository(repository: Path) -> GitFacts:
         elif line:
             tracked.append(line)
     submodules = tuple(
-        line for line in _git(identity, "submodule", "status").splitlines() if line[:1] in {"-", "+"}
+        line for line in git_command(identity, "submodule", "status").splitlines() if line[:1] in {"-", "+"}
     )
     return GitFacts(
         repository=identity,
-        head=_git(identity, "rev-parse", "HEAD"),
+        head=git_command(identity, "rev-parse", "HEAD"),
         tracked_changes=tuple(tracked),
         untracked_changes=tuple(untracked),
         unresolved_submodules=submodules,
     )
+
+
+def observe_repository(repository: Path) -> GitFacts:
+    return _observe_repository(repository, git_command=_git)
 
 
 def preflight_hop(
@@ -235,7 +318,7 @@ def preflight_state_root(repository: Path, state_root: Path) -> None:
         )
 
 
-def observe_hop(
+def _observe_hop(
     repository: Path,
     *,
     base_head: str,
@@ -244,33 +327,33 @@ def observe_hop(
     pinned_paths: tuple[str, ...] = (),
     max_commits: int | None = None,
     claims_existing_commits: bool = True,
+    git_command: GitCommand,
+    git_succeeds: Callable[..., bool],
 ) -> GitDelta:
     """Observe the post-invocation range and classify repository anomalies."""
 
-    facts = observe_repository(repository)
+    facts = _observe_repository(repository, git_command=git_command)
     identity = facts.repository
     anomalies: list[str] = []
-    base_is_commit = subprocess.run(
-        ("git", "-C", str(identity), "cat-file", "-e", f"{base_head}^{{commit}}"),
-        check=False,
-    ).returncode == 0
+    base_is_commit = git_succeeds(identity, "cat-file", "-e", f"{base_head}^{{commit}}")
     if not base_is_commit:
         anomalies.append("unresolved base anchor")
         commits: tuple[str, ...] = ()
         changed: tuple[str, ...] = ()
     else:
-        ancestor = subprocess.run(
-            ("git", "-C", str(identity), "merge-base", "--is-ancestor", base_head, facts.head),
-            check=False,
-        ).returncode == 0
+        ancestor = git_succeeds(identity, "merge-base", "--is-ancestor", base_head, facts.head)
         if not ancestor:
             anomalies.append("divergent or rewritten ancestry")
             commits = ()
             changed = ()
         else:
-            commits = tuple(_git(identity, "rev-list", "--reverse", f"{base_head}..{facts.head}").splitlines())
-            changed = tuple(_git(identity, "diff", "--name-only", f"{base_head}..{facts.head}").splitlines())
-            merges = _git(identity, "rev-list", "--merges", f"{base_head}..{facts.head}")
+            commits = tuple(
+                git_command(identity, "rev-list", "--reverse", f"{base_head}..{facts.head}").splitlines()
+            )
+            changed = tuple(
+                git_command(identity, "diff", "--no-ext-diff", "--name-only", f"{base_head}..{facts.head}").splitlines()
+            )
+            merges = git_command(identity, "rev-list", "--merges", f"{base_head}..{facts.head}")
             if merges:
                 anomalies.append("forbidden merge commit")
     if facts.tracked_changes:
@@ -302,6 +385,50 @@ def observe_hop(
     )
 
 
+def observe_hop(
+    repository: Path,
+    *,
+    base_head: str,
+    claimed_commits: tuple[str, ...] = (),
+    allowed_paths: tuple[str, ...] = (),
+    pinned_paths: tuple[str, ...] = (),
+    max_commits: int | None = None,
+    claims_existing_commits: bool = True,
+) -> GitDelta:
+    return _observe_hop(
+        repository,
+        base_head=base_head,
+        claimed_commits=claimed_commits,
+        allowed_paths=allowed_paths,
+        pinned_paths=pinned_paths,
+        max_commits=max_commits,
+        claims_existing_commits=claims_existing_commits,
+        git_command=_git,
+        git_succeeds=_git_succeeds,
+    )
+
+
+def _configured_external_filters(repository: Path) -> tuple[str, ...]:
+    """Return effective clean/process filter keys that could execute at ``git add``.
+
+    A worktree ``.gitattributes`` file can select a named filter, while the
+    executable clean/process command lives in Git configuration.  Trusted mutation
+    therefore refuses any such effective configuration rather than allowing
+    agent-authored attributes to select an operator-configured process.
+    """
+
+    configured = _trusted_git(
+        repository,
+        "config",
+        "--null",
+        "--name-only",
+        "--get-regexp",
+        r"^filter\..*\.(clean|process)$",
+        check=False,
+    )
+    return tuple(filter(None, configured.split("\0")))
+
+
 def trusted_commit(
     repository: Path,
     *,
@@ -319,10 +446,15 @@ def trusted_commit(
     argv or broad-tree operation.
     """
 
-    identity = repository_identity(repository)
+    identity = _repository_identity(repository, git_command=_trusted_git)
     if identity != expected_repository.resolve():
         raise TrustedCommitError("repository identity mismatch")
-    facts = observe_repository(identity)
+    if filters := _configured_external_filters(identity):
+        raise TrustedCommitError(
+            "configured clean/process filter is not permitted for trusted commit: "
+            + ", ".join(filters)
+        )
+    facts = _observe_repository(identity, git_command=_trusted_git)
     if facts.head != base_head:
         raise TrustedCommitError("unexpected HEAD movement")
     if facts.unresolved_submodules:
@@ -331,9 +463,9 @@ def trusted_commit(
     if subject_error:
         raise TrustedCommitError(subject_error)
     paths = _validated_intent_paths(intent, allowed_paths)
-    if _staged_paths(identity):
+    if _staged_paths(identity, git_command=_trusted_git):
         raise TrustedCommitError("pre-existing staged state")
-    actual_paths = _changed_worktree_paths(identity)
+    actual_paths = _changed_worktree_paths(identity, git_command=_trusted_git)
     unexpected = sorted(set(actual_paths) - set(paths))
     missing = sorted(set(paths) - set(actual_paths))
     if unexpected:
@@ -342,27 +474,29 @@ def trusted_commit(
         raise TrustedCommitError(f"commit intent path has no worktree mutation: {', '.join(missing)}")
 
     try:
-        _git(identity, "add", "--", *paths)
+        _trusted_git(identity, "add", "--", *paths)
     except GitPreflightError as error:
         raise TrustedCommitError(f"staging failed: {error}") from error
-    staged = _staged_paths(identity)
+    staged = _staged_paths(identity, git_command=_trusted_git)
     if set(staged) != set(paths):
         raise TrustedCommitError("staged paths differ from commit intent")
-    if _git(identity, "rev-parse", "HEAD") != base_head:
+    if _trusted_git(identity, "rev-parse", "HEAD") != base_head:
         raise TrustedCommitError("unexpected HEAD movement before commit")
     try:
-        _git(identity, "commit", "-m", intent.subject, "--")
+        _trusted_git(identity, "commit", "--no-verify", "-m", intent.subject, "--")
     except GitPreflightError as error:
         raise TrustedCommitError(f"commit failed: {error}") from error
 
-    delta = observe_hop(
+    delta = _observe_hop(
         identity,
         base_head=base_head,
         allowed_paths=allowed_paths,
         max_commits=1,
         claims_existing_commits=False,
+        git_command=_trusted_git,
+        git_succeeds=_trusted_git_succeeds,
     )
-    subject = _git(identity, "show", "-s", "--format=%s", delta.end_head)
+    subject = _trusted_git(identity, "show", "-s", "--format=%s", delta.end_head)
     invalid = (
         len(delta.actual_commits) != 1
         or delta.actual_commits[0] != delta.end_head
