@@ -6,13 +6,25 @@ from an invocation result.  It neither invokes an agent nor repairs a checkout.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
+
+from .model import CommitIntent
 
 
 class GitPreflightError(RuntimeError):
     """The repository is not a safe boundary for a coordinator Hop."""
+
+
+class TrustedCommitError(GitPreflightError):
+    """The narrow Coordinator-owned commit boundary refused or could not commit."""
+
+    def __init__(self, message: str, *, delta: GitDelta | None = None) -> None:
+        super().__init__(message)
+        self.delta = delta
 
 
 @dataclass(frozen=True)
@@ -39,6 +51,17 @@ class GitDelta:
     anomalies: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class TrustedCommit:
+    """The only factual result of the Coordinator's one-commit write surface."""
+
+    commit: str
+    delta: GitDelta
+
+
+_CONVENTIONAL_SUBJECT = re.compile(r"^[a-z][a-z0-9-]*(?:\([^)]+\))?!?: ")
+
+
 def _git(repository: Path, *args: str, check: bool = True) -> str:
     completed = subprocess.run(
         ("git", "-C", str(repository), *args),
@@ -56,6 +79,57 @@ def repository_identity(repository: Path) -> Path:
     """Return Git's resolved work-tree identity, rejecting non-repositories."""
 
     return Path(_git(repository, "rev-parse", "--show-toplevel")).resolve()
+
+
+def _contains_identity_token(subject: str, identity: str) -> bool:
+    return re.search(rf"(?<![A-Za-z0-9_-]){re.escape(identity)}(?![A-Za-z0-9_-])", subject) is not None
+
+
+def commit_subject_error(subject: str, *, work_item_id: str, hop_id: str) -> str | None:
+    """Apply the existing ordinary workflow-commit subject postcondition early."""
+
+    if subject != subject.strip() or "\n" in subject or "\r" in subject:
+        return "commit subject must be one non-empty line"
+    if not _CONVENTIONAL_SUBJECT.match(subject):
+        return "commit subject is not Conventional-Commit-compatible"
+    if not _contains_identity_token(subject, work_item_id) or not _contains_identity_token(subject, hop_id):
+        return "commit subject lacks WorkItem/Hop identity"
+    return None
+
+
+def _normalized_path(path: str, *, context: str) -> str:
+    if not path or path != path.strip() or "\\" in path:
+        raise TrustedCommitError(f"{context} must be a normalized repository-relative path")
+    candidate = PurePosixPath(path)
+    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
+        raise TrustedCommitError(f"{context} must not escape the repository")
+    normalized = candidate.as_posix()
+    if normalized != path:
+        raise TrustedCommitError(f"{context} is ambiguous after normalization")
+    return normalized
+
+
+def _validated_intent_paths(intent: CommitIntent, allowed_paths: tuple[str, ...]) -> tuple[str, ...]:
+    paths = tuple(_normalized_path(path, context="commit intent path") for path in intent.paths)
+    if len(set(paths)) != len(paths):
+        raise TrustedCommitError("commit intent has duplicate paths")
+    scope = tuple(_normalized_path(path, context="authorized scope") for path in allowed_paths)
+    for path in paths:
+        if not any(allowed == "." or path == allowed or path.startswith(f"{allowed}/") for allowed in scope):
+            raise TrustedCommitError(f"commit intent path is outside authorized scope: {path}")
+    return paths
+
+
+def _changed_worktree_paths(repository: Path) -> tuple[str, ...]:
+    """Return every non-ignored path differing from HEAD without broad staging."""
+
+    modified = tuple(filter(None, _git(repository, "diff", "--name-only", "HEAD").splitlines()))
+    untracked = tuple(filter(None, _git(repository, "ls-files", "--others", "--exclude-standard").splitlines()))
+    return tuple(dict.fromkeys((*modified, *untracked)))
+
+
+def _staged_paths(repository: Path) -> tuple[str, ...]:
+    return tuple(filter(None, _git(repository, "diff", "--cached", "--name-only").splitlines()))
 
 
 def observe_repository(repository: Path) -> GitFacts:
@@ -165,6 +239,7 @@ def observe_hop(
     allowed_paths: tuple[str, ...] = (),
     pinned_paths: tuple[str, ...] = (),
     max_commits: int | None = None,
+    claims_existing_commits: bool = True,
 ) -> GitDelta:
     """Observe the post-invocation range and classify repository anomalies."""
 
@@ -215,6 +290,82 @@ def observe_hop(
         actual_commits=commits,
         changed_paths=changed,
         claimed_commits=claimed_commits,
-        claim_mismatch=tuple(claimed_commits) != commits,
+        # An empty claim is still a claim mismatch on historical agent-owned
+        # commit paths.  The Coordinator-created path explicitly opts out: the
+        # agent made semantic intent, not a claim that a commit already existed.
+        claim_mismatch=claims_existing_commits and tuple(claimed_commits) != commits,
         anomalies=tuple(anomalies),
     )
+
+
+def trusted_commit(
+    repository: Path,
+    *,
+    expected_repository: Path,
+    base_head: str,
+    allowed_paths: tuple[str, ...],
+    intent: CommitIntent,
+    work_item_id: str,
+    hop_id: str,
+) -> TrustedCommit:
+    """Create exactly one ordinary commit over an already-mutated explicit path set.
+
+    This is intentionally the sole Coordinator Git write surface.  It validates
+    all semantic and worktree facts before staging and exposes no agent-selected
+    argv or broad-tree operation.
+    """
+
+    identity = repository_identity(repository)
+    if identity != expected_repository.resolve():
+        raise TrustedCommitError("repository identity mismatch")
+    facts = observe_repository(identity)
+    if facts.head != base_head:
+        raise TrustedCommitError("unexpected HEAD movement")
+    if facts.unresolved_submodules:
+        raise TrustedCommitError("unresolved submodule identity")
+    subject_error = commit_subject_error(intent.subject, work_item_id=work_item_id, hop_id=hop_id)
+    if subject_error:
+        raise TrustedCommitError(subject_error)
+    paths = _validated_intent_paths(intent, allowed_paths)
+    if _staged_paths(identity):
+        raise TrustedCommitError("pre-existing staged state")
+    actual_paths = _changed_worktree_paths(identity)
+    unexpected = sorted(set(actual_paths) - set(paths))
+    missing = sorted(set(paths) - set(actual_paths))
+    if unexpected:
+        raise TrustedCommitError(f"unexpected dirty path: {', '.join(unexpected)}")
+    if missing:
+        raise TrustedCommitError(f"commit intent path has no worktree mutation: {', '.join(missing)}")
+
+    try:
+        _git(identity, "add", "--", *paths)
+    except GitPreflightError as error:
+        raise TrustedCommitError(f"staging failed: {error}") from error
+    staged = _staged_paths(identity)
+    if set(staged) != set(paths):
+        raise TrustedCommitError("staged paths differ from commit intent")
+    if _git(identity, "rev-parse", "HEAD") != base_head:
+        raise TrustedCommitError("unexpected HEAD movement before commit")
+    try:
+        _git(identity, "commit", "-m", intent.subject, "--")
+    except GitPreflightError as error:
+        raise TrustedCommitError(f"commit failed: {error}") from error
+
+    delta = observe_hop(
+        identity,
+        base_head=base_head,
+        allowed_paths=allowed_paths,
+        max_commits=1,
+        claims_existing_commits=False,
+    )
+    subject = _git(identity, "show", "-s", "--format=%s", delta.end_head)
+    invalid = (
+        len(delta.actual_commits) != 1
+        or delta.actual_commits[0] != delta.end_head
+        or set(delta.changed_paths) != set(paths)
+        or subject != intent.subject
+        or bool(delta.anomalies)
+    )
+    if invalid:
+        raise TrustedCommitError("post-commit observation does not match commit intent", delta=delta)
+    return TrustedCommit(commit=delta.end_head, delta=delta)

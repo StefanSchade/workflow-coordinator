@@ -80,7 +80,7 @@ def _proof_profile() -> WorkflowProfile:
 def _proof_components() -> dict[str, PromptComponent]:
     return {
         "worker": PromptComponent("worker", "proof-runner", "proof-r1", "Work only on PROOF.md."),
-        "policy": PromptComponent("policy", "proof-runner", "proof-r1", "Create exactly one commit."),
+        "policy": PromptComponent("policy", "proof-runner", "proof-r1", "Return explicit commit intent; the Coordinator creates the commit."),
     }
 
 
@@ -199,8 +199,8 @@ def run_disposable_proof(
     try:
         real_hop = run_real_one_hop(
             run, profile, repository, _proof_components(), state_root=state_root, association=association,
-            task_payload=("Change PROOF.md to `WFC-S4-PROOF: completed marker`, commit exactly once with "
-                          f"subject `{EXPECTED_SUBJECT}`, then return route `complete`. "
+        task_payload=("Change PROOF.md to `WFC-S4-PROOF: completed marker`, return commit intent for exactly "
+                          f"`PROOF.md` with subject `{EXPECTED_SUBJECT}`, then return route `complete`. "
                           f"The result invocation_id is `{invocation_id}`."),
             invocation_id=invocation_id, timeout_seconds=timeout_seconds, executable=executable,
         )

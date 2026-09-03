@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .adapter import (
     ROUTING_RESULT_ENVELOPE_CONTRACT,
@@ -19,7 +19,15 @@ from .adapter import (
     validated_result,
 )
 from .evidence import run_evidence
-from .git_facts import GitDelta, GitPreflightError, observe_hop, preflight_hop
+from .git_facts import (
+    GitDelta,
+    GitPreflightError,
+    TrustedCommitError,
+    commit_subject_error,
+    observe_hop,
+    preflight_hop,
+    trusted_commit,
+)
 from .model import Hop, MechanicalFacts, Phase, Run, WorkflowProfile, record_hop
 from .persistence import checkpoint_projection
 from .prompt import PromptComponent, PromptPackage, assemble_prompt
@@ -39,15 +47,6 @@ class VerticalRun:
     execution_outcome: AgentExecutionOutcome
 
 
-_CONVENTIONAL_SUBJECT = re.compile(r"^[a-z][a-z0-9-]*(?:\([^)]+\))?!?: ")
-
-
-def _contains_identity_token(subject: str, identity: str) -> bool:
-    """Reject identities embedded in a longer WorkItem or Hop token."""
-
-    return re.search(rf"(?<![A-Za-z0-9_-]){re.escape(identity)}(?![A-Za-z0-9_-])", subject) is not None
-
-
 def _subject_anomalies(
     repository: Path, commits: tuple[str, ...], run: Run, hop_id: str
 ) -> tuple[str, ...]:
@@ -61,12 +60,7 @@ def _subject_anomalies(
             text=True,
             capture_output=True,
         ).stdout.strip()
-        valid = (
-            _CONVENTIONAL_SUBJECT.match(subject)
-            and _contains_identity_token(subject, run.work_item_id)
-            and _contains_identity_token(subject, hop_id)
-        )
-        if not valid:
+        if commit_subject_error(subject, work_item_id=run.work_item_id, hop_id=hop_id):
             anomalies.append(f"WFC-GIT-08 commit subject lacks WorkItem/Hop identity: {subject}")
     return tuple(anomalies)
 
@@ -89,6 +83,7 @@ def run_one_hop(
     run: Run, profile: WorkflowProfile, repository: Path, adapter: AgentExecutionPort, components: dict[str, PromptComponent],
     *, task_payload: str, invocation_id: str, durable_artifacts: tuple[str, ...] = (),
     execution_timeout_seconds: float = 0.0,
+    registered_checkout_validator: Callable[[], None] | None = None,
 ) -> VerticalRun:
     """Execute only the N=1 fake/subprocess boundary and reduce observed facts."""
 
@@ -112,12 +107,43 @@ def run_one_hop(
         result = validated_result(outcome.candidate_result, Invocation(run.run_id, hop_id, invocation_id))
     except ResultValidationError as error:
         raise ExecutionResultValidationError(outcome, str(error)) from error
-    delta = observe_hop(
-        repository,
-        base_head=run.current_head,
-        claimed_commits=result.claimed_commits,
-        allowed_paths=phase.authorized_scope,
-    )
+    delta: GitDelta | None = None
+    trusted_commit_error: str | None = None
+    if result.commit_intent is not None:
+        permitted_intent = (
+            result.outcome.value == "completed"
+            and not result.scope_changed
+            and not result.requires_human
+            and result.escalation is None
+        )
+        if not permitted_intent:
+            trusted_commit_error = "commit intent is not permitted for this result disposition"
+        else:
+            try:
+                if registered_checkout_validator is not None:
+                    registered_checkout_validator()
+                committed = trusted_commit(
+                    repository,
+                    expected_repository=repository,
+                    base_head=run.current_head,
+                    allowed_paths=phase.authorized_scope,
+                    intent=result.commit_intent,
+                    work_item_id=run.work_item_id,
+                    hop_id=hop_id,
+                )
+                delta = committed.delta
+            except TrustedCommitError as error:
+                trusted_commit_error = str(error)
+                delta = error.delta
+            except Exception as error:
+                trusted_commit_error = f"trusted commit boundary failure: {type(error).__name__}: {error}"
+    if delta is None:
+        delta = observe_hop(
+            repository,
+            base_head=run.current_head,
+            claimed_commits=result.claimed_commits,
+            allowed_paths=phase.authorized_scope,
+        )
     post_acceptance_anomalies = (
         *_subject_anomalies(repository, delta.actual_commits, run, hop_id),
         *_durable_artifact_anomalies(phase, delta, durable_artifacts),
@@ -133,7 +159,10 @@ def run_one_hop(
         profile,
         hop_id=hop_id,
         facts=MechanicalFacts(
-            repository_anomaly="; ".join((*delta.anomalies, *post_acceptance_anomalies)) or None,
+            repository_anomaly="; ".join(
+                (*delta.anomalies, *post_acceptance_anomalies,
+                 f"trusted_commit:{trusted_commit_error}" if trusted_commit_error else "")
+            ).strip("; ") or None,
             required_evidence_error=required_error,
         ),
     )

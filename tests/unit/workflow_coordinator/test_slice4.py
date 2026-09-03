@@ -127,6 +127,7 @@ def _known_good_envelope():
             "escalation": None,
             "findings": [],
             "claimed_commits": [],
+            "commit_intent": None,
             "evidence_refs": [],
             "summary": "done",
         },
@@ -230,10 +231,7 @@ def test_real_vertical_composition_uses_fake_cli_and_existing_reducer(repository
 args=sys.argv[1:]; repo=args[args.index("--cd")+1]; output=pathlib.Path(args[args.index("--output-last-message")+1])
 (output.parent / "argv.json").write_text(json.dumps(args))
 pathlib.Path(repo, "PROOF.md").write_text("after\\n")
-subprocess.run(("git","-C",repo,"add","PROOF.md"),check=True)
-subprocess.run(("git","-C",repo,"commit","-m","docs(workflow): WI-1 H001 fixture"),check=True)
-commit=subprocess.run(("git","-C",repo,"rev-parse","HEAD"),text=True,capture_output=True,check=True).stdout.strip()
-output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001","invocation_id":"INV-1","result":{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[commit],"evidence_refs":[],"summary":"done"}}))
+output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001","invocation_id":"INV-1","result":{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-1 H001 fixture"},"evidence_refs":[],"summary":"done"}}))
 '''
     executable = _fake(tmp_path, script)
     workflow = profile({"work": phase({"done": route("complete")})})
@@ -303,7 +301,7 @@ pathlib.Path(repo, "PROOF.md").write_text("after\\n")
 subprocess.run(("git", "-C", repo, "add", "PROOF.md"), check=True)
 subprocess.run(("git", "-C", repo, "commit", "-m", "docs(workflow): WI-1 H001 fixture"), check=True)
 commit=subprocess.run(("git", "-C", repo, "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
-output.write_text(json.dumps({{"schema_version": 1, "run_id": "RUN-1", "hop_id": "H001", "invocation_id": "INV-1", "result": {{"schema_version": 1, "outcome": "completed", "requested_route": "done", "scope_changed": False, "requires_human": False, "escalation": None, "findings": [], "claimed_commits": [commit], "evidence_refs": [], "summary": "done"}}}}))
+output.write_text(json.dumps({{"schema_version": 1, "run_id": "RUN-1", "hop_id": "H001", "invocation_id": "INV-1", "result": {{"schema_version": 1, "outcome": "completed", "requested_route": "done", "scope_changed": False, "requires_human": False, "escalation": None, "findings": [], "claimed_commits": [commit], "commit_intent": None, "evidence_refs": [], "summary": "done"}}}}))
 '''
     executable = _fake(tmp_path, script)
     workflow = profile({"work": phase({"done": route("complete")})})

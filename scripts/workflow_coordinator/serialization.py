@@ -12,6 +12,7 @@ import yaml
 from yaml.constructor import ConstructorError
 
 from .model import (
+    CommitIntent,
     DispatchMarker,
     DurableArtifact,
     Escalation,
@@ -50,6 +51,7 @@ ROUTING_RESULT_REQUIRED_KEYS = (
     "escalation",
     "findings",
     "claimed_commits",
+    "commit_intent",
     "evidence_refs",
     "summary",
 )
@@ -62,6 +64,7 @@ FINDING_DELTA_REQUIRED_KEYS = (
 )
 FINDING_DELTA_OPTIONAL_KEYS = ("successor_ref", "new_material_evidence")
 FINDING_DELTA_KEYS = (*FINDING_DELTA_REQUIRED_KEYS, *FINDING_DELTA_OPTIONAL_KEYS)
+COMMIT_INTENT_REQUIRED_KEYS = ("paths", "subject")
 ESCALATION_REQUIRED_KEYS = ("kind", "question")
 ESCALATION_KINDS = (
     "scope",
@@ -407,6 +410,16 @@ def _finding_delta(value: Any, *, context: str) -> FindingDelta:
     )
 
 
+def _commit_intent(value: Any, *, context: str) -> CommitIntent | None:
+    if value is None:
+        return None
+    data = _fields(value, context=context, required=set(COMMIT_INTENT_REQUIRED_KEYS))
+    paths = _strings(data["paths"], context=f"{context}.paths")
+    if not paths:
+        raise ValidationError(f"{context}.paths must not be empty")
+    return CommitIntent(paths=paths, subject=_string(data["subject"], context=f"{context}.subject"))
+
+
 def routing_result_from_data(value: Any) -> RoutingResult:
     data = _fields(
         value,
@@ -444,6 +457,7 @@ def routing_result_from_data(value: Any) -> RoutingResult:
             for index, item in enumerate(raw_findings)
         ),
         claimed_commits=_strings(data["claimed_commits"], context="routing result.claimed_commits"),
+        commit_intent=_commit_intent(data["commit_intent"], context="routing result.commit_intent"),
         evidence_refs=_strings(data["evidence_refs"], context="routing result.evidence_refs"),
         summary=_string(data["summary"], context="routing result.summary"),
     )

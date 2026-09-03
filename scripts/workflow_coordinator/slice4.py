@@ -163,6 +163,10 @@ def run_real_one_hop(
     write_dispatch_marker(dispatch_path, marker)
     adapter = CodexCliAdapter(run_root, executable=executable)
 
+    def require_registered_checkout() -> None:
+        if validate_checkout(state_root, repository) != association:
+            raise Slice4Error("provided checkout association does not match trusted state")
+
     def recover_uncertain(outcome: AgentExecutionOutcome | None) -> RealHopRun:
         """Retain dispatch authority unless execution was proven absent."""
         delta = observe_hop(
@@ -184,6 +188,7 @@ def run_real_one_hop(
             run, profile, repository, adapter, components, task_payload=task_payload,
             invocation_id=invocation_id, durable_artifacts=durable_artifacts,
             execution_timeout_seconds=timeout_seconds,
+            registered_checkout_validator=require_registered_checkout,
         )
     except ExecutionResultValidationError as error:
         return recover_uncertain(error.outcome)

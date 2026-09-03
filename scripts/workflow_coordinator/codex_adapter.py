@@ -24,6 +24,7 @@ from .persistence import atomic_write_json, atomic_write_text
 from .serialization import (
     ESCALATION_KINDS,
     ESCALATION_REQUIRED_KEYS,
+    COMMIT_INTENT_REQUIRED_KEYS,
     FINDING_DELTA_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
     STRUCTURED_RESULT_ENVELOPE_KEYS,
@@ -101,6 +102,11 @@ def routing_result_openai_schema() -> dict[str, Any]:
         "type": "object", "additionalProperties": False, "required": list(ESCALATION_REQUIRED_KEYS),
         "properties": {"kind": {"type": "string", "enum": list(ESCALATION_KINDS)}, "question": {"type": "string"}},
     }
+    commit_intent = {
+        "type": "object", "additionalProperties": False,
+        "required": list(COMMIT_INTENT_REQUIRED_KEYS),
+        "properties": {"paths": string_array, "subject": {"type": "string"}},
+    }
     return {
         "type": "object", "additionalProperties": False, "required": list(ROUTING_RESULT_REQUIRED_KEYS),
         "properties": {
@@ -109,6 +115,7 @@ def routing_result_openai_schema() -> dict[str, Any]:
             "requested_route": {"type": "string"}, "scope_changed": {"type": "boolean"},
             "requires_human": {"type": "boolean"}, "escalation": {"anyOf": [{"type": "null"}, escalation]},
             "findings": {"type": "array", "items": finding}, "claimed_commits": string_array,
+            "commit_intent": {"anyOf": [{"type": "null"}, commit_intent]},
             "evidence_refs": string_array, "summary": {"type": "string"},
         },
     }

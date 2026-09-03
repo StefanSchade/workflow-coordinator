@@ -32,7 +32,8 @@ pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 def envelope(run_id="RUN-1", hop_id="H001", invocation_id="INV-1", **result_changes):
     result = {"schema_version": 1, "outcome": "completed", "requested_route": "done",
               "scope_changed": False, "requires_human": False, "escalation": None,
-              "findings": [], "claimed_commits": [], "evidence_refs": ["git_version"], "summary": "done"}
+              "findings": [], "claimed_commits": [], "commit_intent": None,
+              "evidence_refs": ["git_version"], "summary": "done"}
     result.update(result_changes)
     return json.dumps({"schema_version": 1, "run_id": run_id, "hop_id": hop_id,
                        "invocation_id": invocation_id, "result": result})

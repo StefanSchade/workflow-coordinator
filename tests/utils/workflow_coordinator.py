@@ -152,6 +152,7 @@ def result(
         escalation=escalation,
         findings=findings,
         claimed_commits=(),
+        commit_intent=None,
         evidence_refs=("tests",),
         summary="fixture decision",
     )

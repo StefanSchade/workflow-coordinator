@@ -95,6 +95,7 @@ def valid_result_data(**changes):
         "escalation": None,
         "findings": [],
         "claimed_commits": [],
+        "commit_intent": None,
         "evidence_refs": ["tests"],
         "summary": "done",
     }
@@ -178,6 +179,16 @@ def test_result_validation_preserves_completed_escalation_shape():
     assert parsed.outcome.value == "completed"
     assert parsed.requires_human is True
     assert parsed.escalation and parsed.escalation.kind == "semantic_authority"
+
+
+def test_commit_intent_is_explicit_strict_semantic_data_not_a_commit_claim():
+    parsed = routing_result_from_data(
+        valid_result_data(commit_intent={"paths": ["scripts/a.py"], "subject": "fix(workflow): WI-1 H001 change"})
+    )
+    assert parsed.claimed_commits == ()
+    assert parsed.commit_intent and parsed.commit_intent.paths == ("scripts/a.py",)
+    with pytest.raises(ValidationError, match="unknown fields"):
+        routing_result_from_data(valid_result_data(commit_intent={"paths": ["scripts/a.py"], "subject": "x", "argv": ["git"]}))
 
 
 def test_structured_schema_versions_fail_closed():

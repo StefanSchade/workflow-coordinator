@@ -147,6 +147,18 @@ class FindingDelta:
 
 
 @dataclass(frozen=True)
+class CommitIntent:
+    """An agent's bounded semantic request for one Coordinator-created commit.
+
+    This is deliberately distinct from ``claimed_commits``: it names neither a
+    Git command nor a commit that already exists.
+    """
+
+    paths: tuple[str, ...]
+    subject: str
+
+
+@dataclass(frozen=True)
 class RoutingResult:
     schema_version: int
     outcome: Outcome
@@ -156,6 +168,7 @@ class RoutingResult:
     escalation: Escalation | None
     findings: tuple[FindingDelta, ...]
     claimed_commits: tuple[str, ...]
+    commit_intent: CommitIntent | None
     evidence_refs: tuple[str, ...]
     summary: str
 

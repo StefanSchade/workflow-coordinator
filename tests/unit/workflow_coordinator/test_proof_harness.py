@@ -38,15 +38,12 @@ args=sys.argv[1:]
 repo=args[args.index("--cd") + 1]
 output=pathlib.Path(args[args.index("--output-last-message") + 1])
 pathlib.Path(repo, "PROOF.md").write_text("WFC-S4-PROOF: completed marker\\n")
-subprocess.run(("git", "-C", repo, "add", "PROOF.md"), check=True)
-subprocess.run(("git", "-C", repo, "commit", "-m", "docs(workflow): WFC-S4-PROOF H001 mark fixture"), check=True, stdout=subprocess.DEVNULL)
-commit=subprocess.run(("git", "-C", repo, "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
 sys.stdout.write("fake stdout")
 sys.stderr.write("fake stderr")
 prompt=sys.stdin.read()
 run_id=prompt.split("run_id=", 1)[1].split("\\n", 1)[0]
 invocation_id=prompt.split("result invocation_id is `", 1)[1].split("`", 1)[0]
-output.write_text(json.dumps({"schema_version": 1, "run_id": run_id, "hop_id": "H001", "invocation_id": invocation_id, "result": {"schema_version": 1, "outcome": "completed", "requested_route": "complete", "scope_changed": False, "requires_human": False, "escalation": None, "findings": [], "claimed_commits": [commit], "evidence_refs": [], "summary": "done"}}))
+output.write_text(json.dumps({"schema_version": 1, "run_id": run_id, "hop_id": "H001", "invocation_id": invocation_id, "result": {"schema_version": 1, "outcome": "completed", "requested_route": "complete", "scope_changed": False, "requires_human": False, "escalation": None, "findings": [], "claimed_commits": [], "commit_intent": {"paths": ["PROOF.md"], "subject": "docs(workflow): WFC-S4-PROOF H001 mark fixture"}, "evidence_refs": [], "summary": "done"}}))
 ''',
     )
     result = run_disposable_proof(tmp_path / "proof", executable=str(executable), timeout_seconds=2)

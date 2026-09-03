@@ -38,7 +38,7 @@ def _valid_result(run_id: str, hop_id: str, invocation_id: str) -> str:
         "result": {
             "schema_version": 1, "outcome": "completed", "requested_route": "done",
             "scope_changed": False, "requires_human": False, "escalation": None,
-            "findings": [], "claimed_commits": [], "evidence_refs": [], "summary": "smoke complete",
+            "findings": [], "claimed_commits": [], "commit_intent": None, "evidence_refs": [], "summary": "smoke complete",
         },
     })
 
@@ -48,7 +48,7 @@ def _dynamic_valid_writer() -> str:
         "output.write_text('PLACEHOLDER', encoding=\"utf-8\")",
         '''output.write_text(json.dumps({"schema_version": 1, **ids, "result": {
 "schema_version": 1, "outcome": "completed", "requested_route": "done", "scope_changed": False,
-"requires_human": False, "escalation": None, "findings": [], "claimed_commits": [],
+"requires_human": False, "escalation": None, "findings": [], "claimed_commits": [], "commit_intent": None,
 "evidence_refs": [], "summary": "smoke complete"}}), encoding="utf-8")''',
     )
 
