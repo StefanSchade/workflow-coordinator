@@ -97,13 +97,15 @@ def commit_subject_error(subject: str, *, work_item_id: str, hop_id: str) -> str
     return None
 
 
-def _normalized_path(path: str, *, context: str) -> str:
+def _normalized_path(path: str, *, context: str, allow_root: bool = False) -> str:
     if not path or path != path.strip() or "\\" in path:
         raise TrustedCommitError(f"{context} must be a normalized repository-relative path")
     candidate = PurePosixPath(path)
     if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
         raise TrustedCommitError(f"{context} must not escape the repository")
     normalized = candidate.as_posix()
+    if normalized == "." and not allow_root:
+        raise TrustedCommitError(f"{context} must name an explicit file path")
     if normalized != path:
         raise TrustedCommitError(f"{context} is ambiguous after normalization")
     return normalized
@@ -113,7 +115,9 @@ def _validated_intent_paths(intent: CommitIntent, allowed_paths: tuple[str, ...]
     paths = tuple(_normalized_path(path, context="commit intent path") for path in intent.paths)
     if len(set(paths)) != len(paths):
         raise TrustedCommitError("commit intent has duplicate paths")
-    scope = tuple(_normalized_path(path, context="authorized scope") for path in allowed_paths)
+    scope = tuple(
+        _normalized_path(path, context="authorized scope", allow_root=True) for path in allowed_paths
+    )
     for path in paths:
         if not any(allowed == "." or path == allowed or path.startswith(f"{allowed}/") for allowed in scope):
             raise TrustedCommitError(f"commit intent path is outside authorized scope: {path}")

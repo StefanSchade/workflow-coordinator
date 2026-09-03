@@ -134,7 +134,7 @@ def test_unrelated_dirty_tracked_or_untracked_state_fails_closed_without_cleanin
     assert "unexpected dirty path" in (stopped.reduction.run.stop_reason or "")
 
 
-@pytest.mark.parametrize("path", ["/tmp/escape", "../escape", "src/../a.py", "src//a.py"])
+@pytest.mark.parametrize("path", [".", "/tmp/escape", "../escape", "src/../a.py", "src//a.py"])
 def test_escape_or_ambiguous_intent_path_fails_before_staging(repository: Path, path: str):
     base = git(repository, "rev-parse", "HEAD")
     intent = CommitIntent((path,), "fix(workflow): WI-1 H001 bounded change")
