@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from enum import Enum
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Mapping, TypeVar
 
 import yaml
@@ -37,6 +38,13 @@ from .model import (
 
 class ValidationError(ValueError):
     """A deliberate fail-closed structured-data diagnostic."""
+
+
+@dataclass(frozen=True)
+class PromptComponentReference:
+    """One declarative repository-relative source for a prompt component."""
+
+    path: str
 
 
 EnumType = TypeVar("EnumType", bound=Enum)
@@ -185,6 +193,30 @@ def _yaml_mapping(text: str, *, context: str) -> Mapping[str, Any]:
     except yaml.YAMLError as error:
         raise ValidationError(f"invalid {context} YAML: {error}") from error
     return _mapping(value, context=context)
+
+
+def component_manifest_from_yaml(text: str) -> dict[str, PromptComponentReference]:
+    """Load the deliberately small, non-executable prompt-component manifest."""
+
+    data = _fields(
+        _yaml_mapping(text, context="component manifest"),
+        context="component manifest",
+        required={"schema_version", "components"},
+    )
+    _version(data["schema_version"], context="component manifest.schema_version")
+    raw_components = _mapping(data["components"], context="component manifest.components")
+    components: dict[str, PromptComponentReference] = {}
+    for component_id, value in raw_components.items():
+        identifier = _string(component_id, context="component manifest component ID")
+        entry = _fields(value, context=f"component manifest.components.{identifier}", required={"path"})
+        path = _string(entry["path"], context=f"component manifest.components.{identifier}.path")
+        candidate = PurePosixPath(path)
+        if "\\" in path or candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
+            raise ValidationError(f"component manifest.components.{identifier}.path must be repository-relative")
+        if candidate.as_posix() != path:
+            raise ValidationError(f"component manifest.components.{identifier}.path is ambiguous after normalization")
+        components[identifier] = PromptComponentReference(path=path)
+    return components
 
 
 def work_item_from_yaml(text: str) -> WorkItem:
