@@ -122,6 +122,13 @@ def _preflight(args: argparse.Namespace):
         raise OperatorPreflightError(str(error)) from error
     if _relative_path(work_item.profile_ref, context="WorkItem.profile_ref") != input_paths["profile"]:
         raise OperatorPreflightError("WorkItem.profile_ref does not identify the supplied profile path")
+    policy_actions = set(policy.actions)
+    for phase_key, phase_value in profile.phases.items():
+        excess = sorted(set(phase_value.authorized_actions) - policy_actions)
+        if excess:
+            raise OperatorPreflightError(
+                f"profile phase {phase_key} authorizes actions outside repository policy: {', '.join(excess)}"
+            )
     if work_item.max_autonomous_hops != 1:
         raise OperatorPreflightError("this N=1 operator requires WorkItem.max_autonomous_hops == 1")
     if work_item.initial_phase not in profile.phases:

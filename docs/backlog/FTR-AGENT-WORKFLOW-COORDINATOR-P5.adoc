@@ -1938,6 +1938,38 @@ machine-readable maintainer grants; provider routing, plugins, or recursion; a
 generic privileged Git API; Project Memory cleanup; and any broadening of the
 authority listed above.
 
+Action authority (hardening 2026-09-11):: `Phase.authorized_actions` and
+`RepositoryPolicy.actions` are *permitted workflow effects/capabilities, not shell
+commands exposed to the agent*. Their values are an open descriptive vocabulary;
+only two tokens carry normative Coordinator meaning:
+
+* `edit` -- the semantic worker may mutate authorized worktree content (bounded by
+  `authorized_scope`).
+* `commit` -- a successful invocation may return a `CommitIntent` that the trusted
+  Coordinator materializes as one bounded ordinary local Git commit.
+
+`commit` is *not* permission for the agent to run `git add`, `git commit`, or any
+other Git command; the agent remains forbidden from Git-metadata mutation, and the
+sandbox is unchanged. The following invariants are enforced deterministically:
+
+. *Phase coherence (strict serialization).* A phase that authorizes `edit`, or that
+  declares `durable_artifact: required`, must authorize `commit`. The agent never
+  commits, so an authorized worktree mutation (or a required durable artifact) that
+  withholds `commit` could only ever fail closed; such a profile is rejected before
+  any Run.
+. *Phase ⊆ policy (operator preflight).* Every profile phase's `authorized_actions`
+  must be a subset of `RepositoryPolicy.actions`; the operator rejects a profile
+  phase that authorizes an effect the repository policy does not permit, before
+  provider execution. Because the runtime commit-authority check (below) also
+  requires `commit` in the current phase, `commit` authority transitively implies
+  policy `commit` authority for the operator path without carrying policy state
+  into the runtime commit boundary.
+. *Runtime fail-closed commit authority.* A non-null `CommitIntent` cannot cause any
+  trusted Git mutation unless the current phase authorizes `commit`. The refusal
+  happens before `trusted_commit()` touches Git, leaves the agent's worktree state
+  observable, and enters ordinary mechanical preemption (human stop). HEAD does not
+  move.
+
 ===== 11.4.8 Slice 4B -- one disposable Level-4 proof (consumed and accepted, N=1)
 
 Status:: *MAINTAINER-ACCEPTED / N=1 HAPPY PATH PROVEN. CURRENT-SCHEMA LEVEL-3

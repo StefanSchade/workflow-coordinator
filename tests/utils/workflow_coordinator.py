@@ -57,7 +57,7 @@ def phase(
         repository_policy_components=("testing",),
         durable_artifact=DurableArtifact.NONE,
         authorized_scope=("repo",),
-        authorized_actions=("edit",),
+        authorized_actions=("edit", "commit"),
         human_gates=(),
         evidence=("tests",),
         review=descriptor,
@@ -93,7 +93,7 @@ def run_for(
         policy_id="policy",
         revision="policy-r1",
         scope=("repo",),
-        actions=("edit",),
+        actions=("edit", "commit"),
         evidence_states=("tests",),
     )
     return new_run(item, workflow, policy, run_id="RUN-1", baseline_head="head-0")

@@ -16,7 +16,7 @@ from scripts.workflow_coordinator.git_facts import (
     observe_hop,
     trusted_commit,
 )
-from scripts.workflow_coordinator.model import CommitIntent
+from scripts.workflow_coordinator.model import CommitIntent, DurableArtifact
 from scripts.workflow_coordinator.prompt import PromptComponent
 from scripts.workflow_coordinator.vertical import run_one_hop
 from tests.utils.workflow_coordinator import phase, profile, route, run_for
@@ -300,6 +300,61 @@ def test_clean_observation_only_is_valid_and_dirty_without_intent_is_not(reposit
     dirty = _vertical_run(repository, WorktreeOnlyAdapter(_result(intent=None), {"src/a.py": "after\n"}))
     assert dirty.reduction.run.status.value == "awaiting_human"
     assert "dirty tracked state" in (dirty.reduction.run.stop_reason or "")
+
+
+def _vertical_run_phase(repository: Path, adapter: WorktreeOnlyAdapter, work_phase):
+    workflow = profile({"work": work_phase})
+    base = git(repository, "rev-parse", "HEAD")
+    run = replace(run_for(workflow, budget=1), current_head=base, baseline_head=base)
+    return run_one_hop(run, workflow, repository, adapter, _components(), task_payload="fixture", invocation_id="INV-1")
+
+
+def test_commit_intent_without_phase_commit_authority_never_mutates_git(repository: Path):
+    base = git(repository, "rev-parse", "HEAD")
+    subject = "feat(workflow): WI-1 H001 coordinator commit"
+    edit_only = replace(
+        phase({"done": route("complete")}),
+        authorized_scope=("src",),
+        authorized_actions=("edit",),  # deliberately withholds commit authority
+        evidence=("git_version",),
+    )
+    stopped = _vertical_run_phase(
+        repository,
+        WorktreeOnlyAdapter(_result(intent={"paths": ["src/a.py"], "subject": subject}), {"src/a.py": "after\n"}),
+        edit_only,
+    )
+    # Fail-closed: no trusted commit; HEAD never moved; the agent's worktree
+    # mutation is left observable rather than silently committed or reverted.
+    assert git(repository, "rev-parse", "HEAD") == base
+    assert stopped.reduction.run.status.value == "awaiting_human"
+    assert "current phase does not grant the 'commit' action" in (stopped.reduction.run.stop_reason or "")
+    assert (repository / "src" / "a.py").read_text() == "after\n"
+    assert git(repository, "log", "--oneline").count("\n") == 0
+
+
+def test_wi02_shape_edit_only_required_durable_cannot_reach_a_trusted_commit(repository: Path):
+    # Runtime counterpart of the statically rejected WI02 profile: even a
+    # required-durable phase that only authorizes ``edit`` cannot land a commit.
+    base = git(repository, "rev-parse", "HEAD")
+    subject = "docs(workflow): WI-1 H001 assessment"
+    wi02_like = replace(
+        phase({"done": route("complete")}),
+        durable_artifact=DurableArtifact.REQUIRED,
+        authorized_scope=("docs",),
+        authorized_actions=("edit",),
+        evidence=("git_version",),
+    )
+    stopped = _vertical_run_phase(
+        repository,
+        WorktreeOnlyAdapter(
+            _result(intent={"paths": ["docs/unrelated.adoc"], "subject": subject}),
+            {"docs/unrelated.adoc": "assessment body\n"},
+        ),
+        wi02_like,
+    )
+    assert git(repository, "rev-parse", "HEAD") == base
+    assert stopped.reduction.run.status.value == "awaiting_human"
+    assert "current phase does not grant the 'commit' action" in (stopped.reduction.run.stop_reason or "")
 
 
 def test_failed_result_with_intent_never_synthesizes_a_commit(repository: Path):

@@ -43,7 +43,7 @@ max_autonomous_hops: 1
 policy_id: fixture
 revision: "1"
 scope: [repo]
-actions: [write]
+actions: [edit, commit]
 evidence_states: [local]
 """)
     (repo / "profile.yml").write_text("""schema_version: 1
@@ -58,7 +58,7 @@ phases:
       repository_policy: []
     durable_artifact: none
     authorized_scope: [PROOF.md]
-    authorized_actions: [write]
+    authorized_actions: [edit, commit]
     human_gates: []
     evidence: []
     review: null
@@ -206,6 +206,21 @@ def test_durable_required_and_optional_preflight_branches(repository: Path, tmp_
     assert main(args(repository, tmp_path / "optional-none", str(executable))) == 1
     assert main([*args(repository, tmp_path / "optional-valid", str(executable)), "--durable-artifact", "PROOF.md"]) == 1
     assert counter.read_text() == "3"
+
+
+def test_phase_actions_exceeding_repository_policy_reject_before_provider(repository: Path, tmp_path: Path, capsys):
+    counter = tmp_path / "counter"
+    executable = malformed_fake(tmp_path, counter)
+    profile = repository / "profile.yml"
+    profile.write_text(
+        profile.read_text().replace(
+            "authorized_actions: [edit, commit]", "authorized_actions: [edit, commit, publish]"
+        )
+    )
+    commit(repository)
+    assert main(args(repository, tmp_path / "state", str(executable))) == 2
+    assert "authorizes actions outside repository policy: publish" in capsys.readouterr().err
+    assert not counter.exists()
 
 
 def test_missing_selected_component_rejects_before_provider(repository: Path, tmp_path: Path, capsys):

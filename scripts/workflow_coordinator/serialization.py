@@ -13,9 +13,11 @@ import yaml
 from yaml.constructor import ConstructorError
 
 from .model import (
+    COMMIT_ACTION,
     CommitIntent,
     DispatchMarker,
     DurableArtifact,
+    EDIT_ACTION,
     Escalation,
     Finding,
     FindingDelta,
@@ -336,6 +338,37 @@ def _route(value: Any, *, context: str) -> Route:
     return Route(effect=effect, target=target, question=question, supervisor=supervisor)
 
 
+def _check_action_coherence(
+    authorized_actions: tuple[str, ...],
+    durable_artifact: DurableArtifact,
+    *,
+    context: str,
+) -> None:
+    """Reject a phase that can durably change the repository without commit authority.
+
+    The agent never runs ``git commit``; a worktree mutation that survives the Hop
+    boundary can only be landed by the trusted Coordinator's commit.  A phase that
+    authorizes ``edit`` (or requires a durable artifact) but withholds ``commit``
+    can therefore only ever fail closed, so it is a statically incoherent profile.
+    This rejects the observed operator-dogfood mistake: ``authorized_actions:
+    [edit]`` on a ``durable_artifact: required`` phase whose result was required to
+    carry a non-null CommitIntent.
+    """
+
+    if EDIT_ACTION in authorized_actions and COMMIT_ACTION not in authorized_actions:
+        raise ValidationError(
+            f"{context}.authorized_actions authorizes '{EDIT_ACTION}' without "
+            f"'{COMMIT_ACTION}'; the agent never runs git commit, so an authorized "
+            "worktree mutation can only be landed by the Coordinator's trusted commit"
+        )
+    if durable_artifact is DurableArtifact.REQUIRED and COMMIT_ACTION not in authorized_actions:
+        raise ValidationError(
+            f"{context} requires a durable artifact but its authorized_actions do "
+            f"not include '{COMMIT_ACTION}'; a required durable artifact must be "
+            "committed by the Coordinator"
+        )
+
+
 def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
     data = _fields(
         _yaml_mapping(text, context="workflow profile"),
@@ -375,6 +408,17 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
             key: _route(route, context=f"{phase_context}.routes.{key}")
             for key, route in raw_routes.items()
         }
+        durable_artifact = _enum(
+            DurableArtifact,
+            phase_data["durable_artifact"],
+            context=f"{phase_context}.durable_artifact",
+        )
+        authorized_actions = _strings(
+            phase_data["authorized_actions"], context=f"{phase_context}.authorized_actions"
+        )
+        _check_action_coherence(
+            authorized_actions, durable_artifact, context=phase_context
+        )
         phases[phase_key] = Phase(
             role=_string(phase_data["role"], context=f"{phase_context}.role"),
             role_components=_strings(
@@ -387,17 +431,11 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
                 components["repository_policy"],
                 context=f"{phase_context}.components.repository_policy",
             ),
-            durable_artifact=_enum(
-                DurableArtifact,
-                phase_data["durable_artifact"],
-                context=f"{phase_context}.durable_artifact",
-            ),
+            durable_artifact=durable_artifact,
             authorized_scope=_strings(
                 phase_data["authorized_scope"], context=f"{phase_context}.authorized_scope"
             ),
-            authorized_actions=_strings(
-                phase_data["authorized_actions"], context=f"{phase_context}.authorized_actions"
-            ),
+            authorized_actions=authorized_actions,
             human_gates=_strings(phase_data["human_gates"], context=f"{phase_context}.human_gates"),
             evidence=_strings(phase_data["evidence"], context=f"{phase_context}.evidence"),
             review=_review(phase_data["review"], context=f"{phase_context}.review"),

@@ -28,7 +28,7 @@ from .git_facts import (
     preflight_hop,
     trusted_commit,
 )
-from .model import Hop, MechanicalFacts, Phase, Run, WorkflowProfile, record_hop
+from .model import COMMIT_ACTION, Hop, MechanicalFacts, Phase, Run, WorkflowProfile, record_hop
 from .persistence import checkpoint_projection
 from .prompt import PromptComponent, PromptPackage, assemble_prompt
 from .reducer import Reduction, reduce_result
@@ -119,7 +119,16 @@ def run_one_hop(
             and not result.requires_human
             and result.escalation is None
         )
-        if not permitted_intent:
+        if COMMIT_ACTION not in phase.authorized_actions:
+            # Fail closed before Git is mutated: the current phase carries no
+            # trusted-commit authority, so a non-null CommitIntent can never
+            # become a commit.  Any worktree mutation the agent already made is
+            # left observable and surfaces as a repository anomaly below.
+            trusted_commit_error = (
+                "commit intent is not authorized: current phase does not grant the "
+                f"'{COMMIT_ACTION}' action"
+            )
+        elif not permitted_intent:
             trusted_commit_error = "commit intent is not permitted for this result disposition"
         else:
             try:

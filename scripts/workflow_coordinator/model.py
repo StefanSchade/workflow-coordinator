@@ -7,6 +7,23 @@ from enum import Enum
 from typing import Mapping
 
 
+# Reserved workflow-effect action tokens.  ``authorized_actions`` /
+# ``RepositoryPolicy.actions`` are an open descriptive capability vocabulary;
+# only these two tokens carry normative Coordinator meaning (see FTR
+# section 11.4.7).  They name *workflow effects*, never shell commands exposed to
+# the agent:
+#
+# * ``EDIT_ACTION`` -- the semantic worker may mutate authorized worktree content.
+# * ``COMMIT_ACTION`` -- a successful invocation may return a CommitIntent that the
+#   trusted Coordinator materializes as one bounded ordinary local Git commit.
+#
+# ``COMMIT_ACTION`` never grants the agent authority to run ``git add`` /
+# ``git commit`` or any other Git command; the agent remains forbidden from
+# mutating Git metadata and the sandbox is unchanged.
+EDIT_ACTION = "edit"
+COMMIT_ACTION = "commit"
+
+
 class CoordinatorValue(str, Enum):
     """String enum whose values serialize without a custom JSON protocol."""
 

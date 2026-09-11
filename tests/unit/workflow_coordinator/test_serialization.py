@@ -33,7 +33,7 @@ schema_version: 1
 policy_id: core-policy
 revision: policy-r1
 scope: [repo]
-actions: [edit]
+actions: [edit, commit]
 evidence_states: [tests]
 """
 
@@ -50,7 +50,7 @@ phases:
       repository_policy: [testing]
     durable_artifact: none
     authorized_scope: [scripts]
-    authorized_actions: [edit]
+    authorized_actions: [edit, commit]
     human_gates: [semantic_change]
     evidence: [tests]
     review: null
@@ -68,7 +68,7 @@ phases:
       repository_policy: [testing]
     durable_artifact: required
     authorized_scope: [scripts]
-    authorized_actions: [review]
+    authorized_actions: [review, edit, commit]
     human_gates: []
     evidence: [tests]
     review:
@@ -153,6 +153,47 @@ def test_advisory_review_cannot_be_configured_with_disposition_authority():
     document = PROFILE_YAML.replace("authority: gate", "authority: advisory")
     with pytest.raises(ValidationError, match="advisory review"):
         workflow_profile_from_yaml(document)
+
+
+def test_edit_without_commit_action_is_rejected_as_incoherent():
+    document = PROFILE_YAML.replace("authorized_actions: [edit, commit]", "authorized_actions: [edit]")
+    with pytest.raises(ValidationError, match="authorizes 'edit' without 'commit'"):
+        workflow_profile_from_yaml(document)
+
+
+def test_required_durable_artifact_without_commit_action_is_rejected():
+    # A required-durable phase must be committable even if it declares no ``edit``
+    # token: the durable artifact itself must be landed by the Coordinator.
+    document = PROFILE_YAML.replace(
+        "authorized_actions: [review, edit, commit]", "authorized_actions: [review]"
+    )
+    with pytest.raises(ValidationError, match="requires a durable artifact"):
+        workflow_profile_from_yaml(document)
+
+
+def test_non_mutating_observation_phase_needs_no_commit_action():
+    document = """
+schema_version: 1
+profile_id: observe-only
+revision: profile-r1
+phases:
+  observe:
+    role: observer
+    components:
+      role: [observer]
+      modifiers: []
+      repository_policy: [testing]
+    durable_artifact: none
+    authorized_scope: [scripts]
+    authorized_actions: [review]
+    human_gates: []
+    evidence: [tests]
+    review: null
+    routes:
+      finish: {effect: complete}
+"""
+    profile = workflow_profile_from_yaml(document)
+    assert profile.phases["observe"].authorized_actions == ("review",)
 
 
 def test_result_validation_rejects_unknown_missing_and_malformed_fields():
