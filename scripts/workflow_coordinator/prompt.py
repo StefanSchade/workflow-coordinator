@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Mapping
 
+from .adapter import Invocation
 from .model import Phase, Run
 
 COMPONENT_LIMIT_BYTES = 65_536
@@ -61,12 +62,13 @@ def _selected_ids(phase: Phase) -> tuple[str, ...]:
     return (*phase.role_components, *phase.modifier_components, *phase.repository_policy_components)
 
 
-def _header(run: Run, phase: Phase) -> str:
+def _header(run: Run, phase: Phase, invocation: Invocation) -> str:
     routes = ", ".join(sorted(phase.routes))
     return (
         "[identity]\n"
-        f"work_item_id={run.work_item_id}\nrun_id={run.run_id}\n"
-        f"hop_id=H{run.hop_used + 1:03d}\nbase_head={run.current_head}\n"
+        f"work_item_id={run.work_item_id}\nrun_id={invocation.run_id}\n"
+        f"hop_id={invocation.hop_id}\ninvocation_id={invocation.invocation_id}\n"
+        f"base_head={run.current_head}\n"
         f"phase={run.phase}\nscope={','.join(phase.authorized_scope)}\n"
         f"permitted_routes={routes}\nevidence={','.join(phase.evidence)}\n"
         "output_contract=structured_result_v1\n"
@@ -78,6 +80,7 @@ def assemble_prompt(
     phase: Phase,
     components: Mapping[str, PromptComponent],
     *,
+    invocation: Invocation,
     task_payload: str,
     context: tuple[ContextItem, ...] = (),
     diff: str | None = None,
@@ -89,7 +92,7 @@ def assemble_prompt(
 
     selected: list[dict[str, object]] = []
     omissions: list[dict[str, object]] = []
-    blocks = [_header(run, phase)]
+    blocks = [_header(run, phase, invocation)]
     used = 0
     for component_id in _selected_ids(phase):
         component = components.get(component_id)

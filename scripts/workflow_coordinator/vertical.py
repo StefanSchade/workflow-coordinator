@@ -93,18 +93,21 @@ def run_one_hop(
     except GitPreflightError as error:
         raise ExecutionNotStartedError(str(error)) from error
     hop_id = f"H{run.hop_used + 1:03d}"
+    invocation = Invocation(run.run_id, hop_id, invocation_id)
     try:
-        prompt = assemble_prompt(run, phase, components, task_payload=task_payload)
+        prompt = assemble_prompt(
+            run, phase, components, invocation=invocation, task_payload=task_payload
+        )
     except Exception as error:
         raise ExecutionNotStartedError(str(error)) from error
     outcome = adapter.execute(AgentExecutionRequest(
-        Invocation(run.run_id, hop_id, invocation_id), prompt.text, repository,
+        invocation, prompt.text, repository,
         ROUTING_RESULT_ENVELOPE_CONTRACT, execution_timeout_seconds,
     ))
     if outcome.candidate_result is None:
         raise ExecutionResultValidationError(outcome, "agent execution produced no candidate structured result")
     try:
-        result = validated_result(outcome.candidate_result, Invocation(run.run_id, hop_id, invocation_id))
+        result = validated_result(outcome.candidate_result, invocation)
     except ResultValidationError as error:
         raise ExecutionResultValidationError(outcome, str(error)) from error
     delta: GitDelta | None = None

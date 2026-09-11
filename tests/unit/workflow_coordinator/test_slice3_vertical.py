@@ -10,13 +10,8 @@ from pathlib import Path
 import pytest
 
 from scripts.workflow_coordinator.adapter import (
-    AgentExecutionOutcome,
-    AgentExecutionRequest,
-    FakeAdapter,
-    Invocation,
-    ResultValidationError,
-    SubprocessAdapter,
-    validated_result,
+    AgentExecutionOutcome, AgentExecutionRequest, Invocation,
+    ResultValidationError, SubprocessAdapter, validated_result,
 )
 from scripts.workflow_coordinator.model import DurableArtifact
 from scripts.workflow_coordinator.prompt import (
@@ -43,23 +38,27 @@ def components(*items: tuple[str, int]) -> dict[str, PromptComponent]:
     return {name: PromptComponent(name, f"docs/{name}.txt", "PIN", "x" * size) for name, size in items}
 
 
+def invocation() -> Invocation:
+    return Invocation("RUN-1", "H001", "INV-1")
+
+
 def test_prompt_selects_only_phase_components_in_explicit_order_and_keeps_critical_header():
     workflow = profile({"work": phase({"done": route("complete")}, role="worker")})
     current = workflow.phases["work"]
     selected = replace(current, role_components=("role",), modifier_components=("modifier",), repository_policy_components=("policy",))
     workflow = replace(workflow, phases={"work": selected})
-    package = assemble_prompt(run_for(workflow), selected, components(("role", 2), ("modifier", 2), ("policy", 2), ("absent", 2)), task_payload="task")
+    package = assemble_prompt(run_for(workflow), selected, components(("role", 2), ("modifier", 2), ("policy", 2), ("absent", 2)), invocation=invocation(), task_payload="task")
     assert [item["id"] for item in package.selected_components] == ["role", "modifier", "policy"]
     assert "absent" not in package.text
     assert package.text.index("xx") < package.text.index("[workflow_policy]") < package.text.index("[task]")
-    for critical in ("work_item_id=WI-1", "run_id=RUN-1", "scope=repo", "permitted_routes=done", "output_contract=structured_result_v1"):
+    for critical in ("work_item_id=WI-1", "run_id=RUN-1", "hop_id=H001", "invocation_id=INV-1", "scope=repo", "permitted_routes=done", "output_contract=structured_result_v1"):
         assert critical in package.text
 
 
 @pytest.mark.parametrize("size, omitted", [(COMPONENT_LIMIT_BYTES - 1, False), (COMPONENT_LIMIT_BYTES + 1, True)])
 def test_component_bound_is_visible_not_truncated(size, omitted):
     workflow = profile({"work": phase({"done": route("complete")})})
-    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", size), ("testing", 1)), task_payload="task")
+    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", size), ("testing", 1)), invocation=invocation(), task_payload="task")
     assert bool(package.omissions) is omitted
     assert ("x" * 30 in package.text) is not omitted
     if omitted:
@@ -69,7 +68,7 @@ def test_component_bound_is_visible_not_truncated(size, omitted):
 @pytest.mark.parametrize("size, omitted", [(CONTEXT_LIMIT_BYTES - 2, False), (CONTEXT_LIMIT_BYTES + 1, True)])
 def test_total_context_bound_has_a_reference_for_every_excluded_item(size, omitted):
     workflow = profile({"work": phase({"done": route("complete")})})
-    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", 1), ("testing", 1)), task_payload="task", context=(ContextItem("artifact://large", "z" * size),))
+    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", 1), ("testing", 1)), invocation=invocation(), task_payload="task", context=(ContextItem("artifact://large", "z" * size),))
     assert any(item["reference"] == "artifact://large" for item in package.omissions) is omitted
     assert ("z" * 30 in package.text) is not omitted
 
@@ -77,7 +76,7 @@ def test_total_context_bound_has_a_reference_for_every_excluded_item(size, omitt
 @pytest.mark.parametrize("size, files, omitted", [(DIFF_LIMIT_BYTES - 1, 1, False), (DIFF_LIMIT_BYTES + 1, 1, True), (1, DIFF_FILE_LIMIT, False), (1, DIFF_FILE_LIMIT + 1, True)])
 def test_diff_bounds_are_visible_and_exact(size, files, omitted):
     workflow = profile({"work": phase({"done": route("complete")})})
-    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", 1), ("testing", 1)), task_payload="task", diff="d" * size, diff_base="base", diff_head="head", changed_paths=tuple(f"src/{number}" for number in range(files)))
+    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", 1), ("testing", 1)), invocation=invocation(), task_payload="task", diff="d" * size, diff_base="base", diff_head="head", changed_paths=tuple(f"src/{number}" for number in range(files)))
     assert (package.inline_diff is None) is omitted
     if omitted:
         row = next(item for item in package.omissions if item["kind"] == "diff")
@@ -87,7 +86,7 @@ def test_diff_bounds_are_visible_and_exact(size, files, omitted):
 def test_result_validation_accepts_only_complete_correlated_structured_envelope():
     expected = type("Expected", (), {"run_id": "RUN-1", "hop_id": "H001", "invocation_id": "INV-1"})()
     assert validated_result(envelope(), expected).requested_route == "done"
-    for raw in ("{", envelope(hop_id="H002"), json.dumps({"schema_version": 1})):
+    for raw in ("{", envelope(hop_id="H002"), envelope(invocation_id="INV-2"), json.dumps({"schema_version": 1})):
         with pytest.raises(ResultValidationError):
             validated_result(raw, expected)
 
@@ -105,13 +104,28 @@ def repository(tmp_path: Path) -> Path:
     return repo
 
 
-def test_fake_adapter_n1_path_accepts_valid_result_without_live_dependency(repository):
+class CapturingAdapter:
+    def __init__(self, output: str):
+        self.output = output
+        self.request: AgentExecutionRequest | None = None
+
+    def execute(self, request: AgentExecutionRequest) -> AgentExecutionOutcome:
+        self.request = request
+        return AgentExecutionOutcome(self.output, 0, False, "", "")
+
+
+def test_one_invocation_identity_is_projected_dispatched_and_validated(repository):
     workflow = profile({"work": replace(phase({"done": route("complete")}), evidence=("git_version",))})
     run = replace(run_for(workflow, budget=1), current_head=subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip())
-    completed = run_one_hop(run, workflow, repository, FakeAdapter(envelope()), components(("worker", 1), ("testing", 1)), task_payload="tiny", invocation_id="INV-1")
+    adapter = CapturingAdapter(envelope())
+    completed = run_one_hop(run, workflow, repository, adapter, components(("worker", 1), ("testing", 1)), task_payload="tiny", invocation_id="INV-1")
     assert completed.reduction.run.status.value == "completed"
     assert completed.reduction.run.hops[0].actual_commits == ()
     assert "WI-1/RUN-1 completed H001" in completed.terminal
+    assert adapter.request is not None
+    assert adapter.request.invocation == invocation()
+    for name, value in adapter.request.invocation.__dict__.items():
+        assert f"{name}={value}" in adapter.request.prompt
 
 
 class CommitAdapter:
