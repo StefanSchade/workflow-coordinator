@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from scripts.workflow_coordinator import operator
 from scripts.workflow_coordinator.operator import main
+from scripts.workflow_coordinator.operator import _pinned_text
 from scripts.workflow_coordinator.serialization import ValidationError, component_manifest_from_yaml
 
 
@@ -85,6 +87,20 @@ def fake(tmp_path: Path, body: str) -> Path:
     return path
 
 
+def commit(repository: Path, message: str = "test: fixture change") -> str:
+    git(repository, "add", ".")
+    git(repository, "commit", "-m", message)
+    return git(repository, "rev-parse", "HEAD")
+
+
+def malformed_fake(tmp_path: Path, counter: Path) -> Path:
+    return fake(tmp_path, f'''import pathlib, sys
+counter=pathlib.Path({str(counter)!r})
+counter.write_text(str(int(counter.read_text()) + 1) if counter.exists() else "1")
+pathlib.Path(sys.argv[sys.argv.index("--output-last-message") + 1]).write_text("{{")
+''')
+
+
 def test_manifest_is_strict_and_repository_relative():
     assert component_manifest_from_yaml("schema_version: 1\ncomponents:\n  x:\n    path: x.txt\n")["x"].path == "x.txt"
     with pytest.raises(ValidationError, match="unknown"):
@@ -125,13 +141,17 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     assert git(repository, "status", "--porcelain") == ""
 
 
-def test_n_greater_than_one_and_durable_none_reject_without_execution(repository: Path, tmp_path: Path):
-    executable = fake(tmp_path, "raise SystemExit(99)\n")
+def test_n_greater_than_one_rejects_pinned_clean_input_before_execution(repository: Path, tmp_path: Path, capsys):
+    counter = tmp_path / "counter"
+    executable = malformed_fake(tmp_path, counter)
     work = repository / "work.yml"
     work.write_text(work.read_text().replace("max_autonomous_hops: 1", "max_autonomous_hops: 2"))
+    expected_head = commit(repository)
+    command = args(repository, tmp_path / "state", str(executable))
+    assert command[command.index("--expected-head") + 1] == expected_head
     assert main(args(repository, tmp_path / "state", str(executable))) == 2
-    git(repository, "checkout", "--", "work.yml")
-    assert main([*args(repository, tmp_path / "state2", str(executable)), "--durable-artifact", "PROOF.md"]) == 2
+    assert "max_autonomous_hops == 1" in capsys.readouterr().err
+    assert not counter.exists()
 
 
 def test_dirty_and_malformed_results_do_not_retry(repository: Path, tmp_path: Path):
@@ -150,3 +170,68 @@ pathlib.Path(sys.argv[sys.argv.index("--output-last-message") + 1]).write_text("
     assert main(args(repository, state, str(executable))) == 1
     summary = json.loads((state / "operator-summary.json").read_text())
     assert counter.read_text() == "1" and summary["run_status"] == "reconcile_required" and summary["hop_used"] == 1
+
+
+def test_post_provider_summary_failure_is_attempt_failure_with_evidence(repository: Path, tmp_path: Path, monkeypatch):
+    counter = tmp_path / "counter"
+    executable = fake(
+        tmp_path,
+        f'''import json, pathlib, sys
+args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message") + 1])
+counter=pathlib.Path({str(counter)!r}); counter.write_text(str(int(counter.read_text()) + 1) if counter.exists() else "1")
+prompt=sys.stdin.read()
+def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
+output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":{{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"done"}}}}))
+''',
+    )
+    monkeypatch.setattr(operator, "_summary", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("post-provider observation failed")))
+    state = tmp_path / "state"
+    assert main(args(repository, state, str(executable))) == 1
+    summary = json.loads((state / "operator-summary.json").read_text())
+    assert counter.read_text() == "1"
+    assert (state / "operator-plan.json").exists()
+    assert summary["operator_status"] == "failed" and summary["operator_error"] == "post-provider observation failed"
+
+
+def test_durable_required_and_optional_preflight_branches(repository: Path, tmp_path: Path):
+    counter = tmp_path / "counter"
+    executable = malformed_fake(tmp_path, counter)
+    profile = repository / "profile.yml"
+    profile.write_text(profile.read_text().replace("durable_artifact: none", "durable_artifact: required"))
+    commit(repository)
+    assert main(args(repository, tmp_path / "required-none", str(executable))) == 2
+    assert main([*args(repository, tmp_path / "required-valid", str(executable)), "--durable-artifact", "PROOF.md"]) == 1
+    profile.write_text(profile.read_text().replace("durable_artifact: required", "durable_artifact: optional"))
+    commit(repository)
+    assert main(args(repository, tmp_path / "optional-none", str(executable))) == 1
+    assert main([*args(repository, tmp_path / "optional-valid", str(executable)), "--durable-artifact", "PROOF.md"]) == 1
+    assert counter.read_text() == "3"
+
+
+def test_missing_selected_component_rejects_before_provider(repository: Path, tmp_path: Path, capsys):
+    counter = tmp_path / "counter"
+    executable = malformed_fake(tmp_path, counter)
+    (repository / "components.yml").write_text("schema_version: 1\ncomponents: {}\n")
+    commit(repository)
+    assert main(args(repository, tmp_path / "state", str(executable))) == 2
+    assert "selected component ID is absent from manifest: worker" in capsys.readouterr().err
+    assert not counter.exists()
+
+
+def test_profile_ref_mismatch_rejects_pinned_clean_input_before_provider(repository: Path, tmp_path: Path, capsys):
+    counter = tmp_path / "counter"
+    executable = malformed_fake(tmp_path, counter)
+    work = repository / "work.yml"
+    work.write_text(work.read_text().replace("profile_ref: profile.yml", "profile_ref: other.yml"))
+    commit(repository)
+    assert main(args(repository, tmp_path / "state", str(executable))) == 2
+    assert "WorkItem.profile_ref does not identify the supplied profile path" in capsys.readouterr().err
+    assert not counter.exists()
+
+
+def test_pinned_text_reads_committed_revision_not_worktree_content(repository: Path):
+    baseline = git(repository, "rev-parse", "HEAD")
+    (repository / "task.txt").write_text("later committed task\n")
+    commit(repository)
+    assert _pinned_text(repository, baseline, "task.txt", context="task") == "pinned task\n"
+    assert (repository / "task.txt").read_text() == "later committed task\n"

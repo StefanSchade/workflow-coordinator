@@ -29,7 +29,7 @@ from scripts.workflow_coordinator.serialization import (
     work_item_from_yaml,
     workflow_profile_from_yaml,
 )
-from scripts.workflow_coordinator.slice4 import Slice4Error, register_checkout, run_real_one_hop
+from scripts.workflow_coordinator.slice4 import register_checkout, run_real_one_hop
 
 
 class OperatorPreflightError(RuntimeError):
@@ -167,9 +167,54 @@ def _summary(repository: Path, run, outcome, error: str | None = None) -> dict[s
             "worktree_clean": facts.clean and not facts.unresolved_submodules, "operator_error": error}
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = _parse_args(argv)
+def _best_effort_failure_summary(
+    repository: Path, run, *, invocation_id: str, checkout_id: str | None,
+    outcome=None, error: Exception,
+) -> dict[str, object]:
+    """Record only operator-known facts when an attempt cannot finish normally."""
+    provider = None if outcome is None else {
+        "returncode": outcome.returncode, "timed_out": outcome.timed_out,
+        "candidate_result_present": outcome.candidate_result is not None,
+    }
+    summary: dict[str, object] = {
+        "schema_version": 1, "work_item_id": run.work_item_id, "run_id": run.run_id,
+        "invocation_id": invocation_id, "baseline_head": run.baseline_head,
+        "run_status": run.status.value, "hop_used": run.hop_used,
+        "hop_limit": run.hop_limit, "stop_reason": run.stop_reason,
+        "human_question": run.human_question, "anomalies": list(run.anomalies),
+        "provider": provider, "commits": [], "changed_paths": [],
+        "operator_status": "failed", "operator_error": str(error),
+    }
+    if checkout_id is not None:
+        summary["checkout_id"] = checkout_id
     try:
+        facts = observe_repository(repository)
+    except Exception:
+        pass
+    else:
+        summary["final_head"] = facts.head
+        summary["worktree_clean"] = facts.clean and not facts.unresolved_submodules
+    return summary
+
+
+def _write_failure_summary(state_root: Path, repository: Path, run, *, invocation_id: str,
+                           checkout_id: str | None, outcome, error: Exception) -> None:
+    """Never obscure the attempt failure with an evidence-writing failure."""
+    try:
+        atomic_write_json(
+            state_root / "operator-summary.json",
+            _best_effort_failure_summary(
+                repository, run, invocation_id=invocation_id, checkout_id=checkout_id,
+                outcome=outcome, error=error,
+            ),
+        )
+    except Exception:
+        pass
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        args = _parse_args(argv)
         repository, state_root, paths, texts, item, profile, policy, components, durable = _preflight(args)
         run_id, invocation_id = f"RUN-{uuid.uuid4().hex}", f"INV-{uuid.uuid4().hex}"
         run = new_run(item, profile, policy, run_id=run_id, baseline_head=args.expected_head)
@@ -181,6 +226,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "invocation_id": invocation_id, "executable": args.executable, "timeout_seconds": args.timeout_seconds,
                 "max_autonomous_hops": 1, "retry": False}
         atomic_write_json(state_root / "operator-plan.json", plan)
+    except SystemExit as error:
+        return 0 if error.code == 0 else 2
+    except Exception as error:
+        print(f"OPERATOR ERROR: {error}", file=sys.stderr)
+        return 2
+
+    # From checkout registration onward a provider-capable attempt exists.  Do not
+    # reclassify failures by exception type after this boundary.
+    association = None
+    real = None
+    try:
         association = register_checkout(state_root, repository)
         real = run_real_one_hop(run, profile, repository, components, state_root=state_root,
                                 association=association, task_payload=texts["task"], invocation_id=invocation_id,
@@ -195,9 +251,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         facts = observe_repository(repository)
         print(f"CURRENT HEAD: {facts.head}\nWORKTREE CLEAN: {facts.clean and not facts.unresolved_submodules}")
         return 0 if real.run.status.value == "completed" and facts.clean and not facts.unresolved_submodules else 1
-    except (OperatorPreflightError, Slice4Error, GitPreflightError, ValueError) as error:
+    except Exception as error:
+        known_run = real.run if real is not None else run
+        known_outcome = real.outcome if real is not None else None
+        _write_failure_summary(
+            state_root, repository, known_run, invocation_id=invocation_id,
+            checkout_id=None if association is None else association.checkout_id,
+            outcome=known_outcome, error=error,
+        )
         print(f"OPERATOR ERROR: {error}", file=sys.stderr)
-        return 2
+        return 1
 
 
 if __name__ == "__main__":
