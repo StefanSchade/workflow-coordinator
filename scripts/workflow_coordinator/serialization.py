@@ -344,28 +344,39 @@ def _check_action_coherence(
     *,
     context: str,
 ) -> None:
-    """Reject a phase that can durably change the repository without commit authority.
+    """Require ``edit`` and ``commit`` to be a coherent pair for any mutating phase.
 
-    The agent never runs ``git commit``; a worktree mutation that survives the Hop
-    boundary can only be landed by the trusted Coordinator's commit.  A phase that
-    authorizes ``edit`` (or requires a durable artifact) but withholds ``commit``
-    can therefore only ever fail closed, so it is a statically incoherent profile.
-    This rejects the observed operator-dogfood mistake: ``authorized_actions:
-    [edit]`` on a ``durable_artifact: required`` phase whose result was required to
-    carry a non-null CommitIntent.
+    Landing agent-created semantic worktree mutation exercises both capabilities:
+    ``edit`` authorizes the semantic mutation, and ``commit`` authorizes the
+    trusted Coordinator to materialize it as one ordinary local Git commit (the
+    agent never runs ``git commit``).  Neither substitutes for the other, so a
+    phase that declares one without the other can only ever fail closed and is a
+    statically incoherent profile.  A genuinely non-mutating phase (for example
+    ``authorized_actions: [review]`` with ``durable_artifact: none``) declares
+    neither token and remains valid.  A ``durable_artifact: required`` phase must
+    both produce and land its required artifact, so it requires both tokens.
     """
 
-    if EDIT_ACTION in authorized_actions and COMMIT_ACTION not in authorized_actions:
+    has_edit = EDIT_ACTION in authorized_actions
+    has_commit = COMMIT_ACTION in authorized_actions
+    if has_edit and not has_commit:
         raise ValidationError(
             f"{context}.authorized_actions authorizes '{EDIT_ACTION}' without "
             f"'{COMMIT_ACTION}'; the agent never runs git commit, so an authorized "
             "worktree mutation can only be landed by the Coordinator's trusted commit"
         )
-    if durable_artifact is DurableArtifact.REQUIRED and COMMIT_ACTION not in authorized_actions:
+    if has_commit and not has_edit:
+        raise ValidationError(
+            f"{context}.authorized_actions authorizes '{COMMIT_ACTION}' without "
+            f"'{EDIT_ACTION}'; a trusted commit lands agent-created worktree mutation, "
+            f"which requires the '{EDIT_ACTION}' authority, so '{COMMIT_ACTION}' "
+            f"cannot substitute for an absent '{EDIT_ACTION}'"
+        )
+    if durable_artifact is DurableArtifact.REQUIRED and not (has_edit and has_commit):
         raise ValidationError(
             f"{context} requires a durable artifact but its authorized_actions do "
-            f"not include '{COMMIT_ACTION}'; a required durable artifact must be "
-            "committed by the Coordinator"
+            f"not include both '{EDIT_ACTION}' and '{COMMIT_ACTION}'; producing and "
+            "landing a required durable artifact exercises both capabilities"
         )
 
 

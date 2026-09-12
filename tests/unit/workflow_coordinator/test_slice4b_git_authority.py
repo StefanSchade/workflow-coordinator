@@ -332,6 +332,32 @@ def test_commit_intent_without_phase_commit_authority_never_mutates_git(reposito
     assert git(repository, "log", "--oneline").count("\n") == 0
 
 
+def test_commit_intent_without_phase_edit_authority_never_mutates_git(repository: Path):
+    # AAH-R1 direct-path counterpart: a ``commit``-only phase must not let the
+    # Coordinator land agent-created worktree mutation, because the semantic
+    # mutation itself requires ``edit`` authority.  ``commit`` cannot substitute.
+    base = git(repository, "rev-parse", "HEAD")
+    subject = "feat(workflow): WI-1 H001 coordinator commit"
+    commit_only = replace(
+        phase({"done": route("complete")}),
+        authorized_scope=("src",),
+        authorized_actions=("commit",),  # deliberately withholds edit authority
+        evidence=("git_version",),
+    )
+    stopped = _vertical_run_phase(
+        repository,
+        WorktreeOnlyAdapter(_result(intent={"paths": ["src/a.py"], "subject": subject}), {"src/a.py": "after\n"}),
+        commit_only,
+    )
+    # Fail-closed: no trusted commit; HEAD never moved; the agent's worktree
+    # mutation is left observable rather than silently committed or reverted.
+    assert git(repository, "rev-parse", "HEAD") == base
+    assert stopped.reduction.run.status.value == "awaiting_human"
+    assert "current phase does not grant the 'edit' action" in (stopped.reduction.run.stop_reason or "")
+    assert (repository / "src" / "a.py").read_text() == "after\n"
+    assert git(repository, "log", "--oneline").count("\n") == 0
+
+
 def test_wi02_shape_edit_only_required_durable_cannot_reach_a_trusted_commit(repository: Path):
     # Runtime counterpart of the statically rejected WI02 profile: even a
     # required-durable phase that only authorizes ``edit`` cannot land a commit.

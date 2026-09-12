@@ -223,6 +223,26 @@ def test_phase_actions_exceeding_repository_policy_reject_before_provider(reposi
     assert not counter.exists()
 
 
+def test_commit_only_phase_rejects_before_provider(repository: Path, tmp_path: Path, capsys):
+    # AAH-R1 normal-operator reproducer: a ``commit``-only phase paired with a
+    # ``commit``-only policy must be rejected as an intra-profile coherence error
+    # at strict deserialization, before any provider execution or Git mutation.
+    counter = tmp_path / "counter"
+    executable = malformed_fake(tmp_path, counter)
+    profile = repository / "profile.yml"
+    policy = repository / "policy.yml"
+    profile.write_text(
+        profile.read_text().replace("authorized_actions: [edit, commit]", "authorized_actions: [commit]")
+    )
+    policy.write_text(policy.read_text().replace("actions: [edit, commit]", "actions: [commit]"))
+    expected_head = commit(repository)
+    assert main(args(repository, tmp_path / "state", str(executable))) == 2
+    assert "authorizes 'commit' without 'edit'" in capsys.readouterr().err
+    assert not counter.exists()
+    assert git(repository, "rev-parse", "HEAD") == expected_head
+    assert not (tmp_path / "state").exists()
+
+
 def test_missing_selected_component_rejects_before_provider(repository: Path, tmp_path: Path, capsys):
     counter = tmp_path / "counter"
     executable = malformed_fake(tmp_path, counter)

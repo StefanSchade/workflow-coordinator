@@ -28,7 +28,16 @@ from .git_facts import (
     preflight_hop,
     trusted_commit,
 )
-from .model import COMMIT_ACTION, Hop, MechanicalFacts, Phase, Run, WorkflowProfile, record_hop
+from .model import (
+    COMMIT_ACTION,
+    EDIT_ACTION,
+    Hop,
+    MechanicalFacts,
+    Phase,
+    Run,
+    WorkflowProfile,
+    record_hop,
+)
 from .persistence import checkpoint_projection
 from .prompt import PromptComponent, PromptPackage, assemble_prompt
 from .reducer import Reduction, reduce_result
@@ -119,14 +128,24 @@ def run_one_hop(
             and not result.requires_human
             and result.escalation is None
         )
-        if COMMIT_ACTION not in phase.authorized_actions:
-            # Fail closed before Git is mutated: the current phase carries no
-            # trusted-commit authority, so a non-null CommitIntent can never
-            # become a commit.  Any worktree mutation the agent already made is
-            # left observable and surfaces as a repository anomaly below.
+        missing_actions = tuple(
+            action
+            for action in (EDIT_ACTION, COMMIT_ACTION)
+            if action not in phase.authorized_actions
+        )
+        if missing_actions:
+            # Fail closed before Git is mutated: a trusted commit of agent-created
+            # semantic worktree mutation requires BOTH ``edit`` (authorizing the
+            # mutation) and ``commit`` (authorizing the Coordinator's landing).  A
+            # non-null CommitIntent with either authority missing can never become a
+            # commit.  Any worktree mutation the agent already made is left
+            # observable and surfaces as a repository anomaly below.
+            joined = " and ".join(f"'{action}'" for action in missing_actions)
+            noun = "action" if len(missing_actions) == 1 else "actions"
             trusted_commit_error = (
                 "commit intent is not authorized: current phase does not grant the "
-                f"'{COMMIT_ACTION}' action"
+                f"{joined} {noun}; a trusted commit of agent-created worktree "
+                f"mutation requires both '{EDIT_ACTION}' and '{COMMIT_ACTION}'"
             )
         elif not permitted_intent:
             trusted_commit_error = "commit intent is not permitted for this result disposition"

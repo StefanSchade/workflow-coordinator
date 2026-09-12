@@ -161,14 +161,50 @@ def test_edit_without_commit_action_is_rejected_as_incoherent():
         workflow_profile_from_yaml(document)
 
 
-def test_required_durable_artifact_without_commit_action_is_rejected():
-    # A required-durable phase must be committable even if it declares no ``edit``
-    # token: the durable artifact itself must be landed by the Coordinator.
+def test_commit_without_edit_action_is_rejected_as_incoherent():
+    # AAH-R1: ``commit`` authorizes only the Coordinator's mechanical landing; it
+    # cannot substitute for the ``edit`` authority that a trusted commit of
+    # agent-created worktree mutation also requires.
+    document = PROFILE_YAML.replace("authorized_actions: [edit, commit]", "authorized_actions: [commit]")
+    with pytest.raises(ValidationError, match="authorizes 'commit' without 'edit'"):
+        workflow_profile_from_yaml(document)
+
+
+def test_required_durable_artifact_without_any_mutation_action_is_rejected():
+    # A required-durable phase must both produce and land its artifact, so a phase
+    # that declares neither ``edit`` nor ``commit`` is rejected.
     document = PROFILE_YAML.replace(
         "authorized_actions: [review, edit, commit]", "authorized_actions: [review]"
     )
     with pytest.raises(ValidationError, match="requires a durable artifact"):
         workflow_profile_from_yaml(document)
+
+
+def test_required_durable_artifact_with_only_commit_is_rejected():
+    # Producing the required artifact exercises ``edit`` as well as ``commit``.
+    document = PROFILE_YAML.replace(
+        "authorized_actions: [review, edit, commit]", "authorized_actions: [commit]"
+    )
+    with pytest.raises(ValidationError, match="authorizes 'commit' without 'edit'"):
+        workflow_profile_from_yaml(document)
+
+
+def test_required_durable_artifact_with_only_edit_is_rejected():
+    # Landing the required artifact exercises ``commit`` as well as ``edit``.
+    document = PROFILE_YAML.replace(
+        "authorized_actions: [review, edit, commit]", "authorized_actions: [edit]"
+    )
+    with pytest.raises(ValidationError, match="authorizes 'edit' without 'commit'"):
+        workflow_profile_from_yaml(document)
+
+
+def test_required_durable_artifact_with_edit_and_commit_is_accepted():
+    document = PROFILE_YAML.replace(
+        "authorized_actions: [review, edit, commit]", "authorized_actions: [edit, commit]"
+    )
+    profile = workflow_profile_from_yaml(document)
+    assert profile.phases["review"].durable_artifact is DurableArtifact.REQUIRED
+    assert profile.phases["review"].authorized_actions == ("edit", "commit")
 
 
 def test_non_mutating_observation_phase_needs_no_commit_action():
