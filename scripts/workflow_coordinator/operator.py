@@ -18,7 +18,7 @@ import subprocess
 import uuid
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
-from typing import Sequence
+from typing import Callable, Sequence
 
 from scripts.workflow_coordinator.git_facts import GitPreflightError, observe_repository, preflight_hop, repository_identity
 from scripts.workflow_coordinator.model import DurableArtifact, RunStatus, new_run
@@ -32,6 +32,7 @@ from scripts.workflow_coordinator.serialization import (
     workflow_profile_from_yaml,
 )
 from scripts.workflow_coordinator.slice4 import Slice4Error, checkout_state_root, register_checkout, run_real_one_hop, validate_checkout
+from scripts.workflow_coordinator.codex_adapter import CodexCliAdapter
 
 
 class OperatorPreflightError(RuntimeError):
@@ -158,7 +159,10 @@ def _preflight(args: argparse.Namespace):
     if phase.durable_artifact is DurableArtifact.NONE and durable_artifacts:
         raise OperatorPreflightError("initial phase allows no durable-artifact arguments")
     components: dict[str, PromptComponent] = {}
-    governing = {path: _governing_digest(text) for path, text in texts.items()}
+    governing = {
+        input_paths[name]: _governing_digest(text)
+        for name, text in texts.items()
+    }
     for component_id in _selected_ids(profile):
         reference = manifest.get(component_id)
         if reference is None:
@@ -192,13 +196,24 @@ def _h1_context(run) -> tuple[ContextItem, ...]:
     ),)
 
 
-def _execution_evidence(run, outcome, *, invocation_id: str, executable: str, timeout_seconds: float) -> dict[str, object]:
+def _execution_binding(adapter, *, executable: str) -> dict[str, object]:
+    """Resolve the concrete binding for this invocation without selecting one."""
+    selected = adapter
+    if selected is None:
+        selected = CodexCliAdapter(Path("."), executable=executable)
+    if isinstance(selected, CodexCliAdapter):
+        return {"adapter": "codex_cli", "executable": selected.executable,
+                "model": selected.model, "reasoning": selected.reasoning_effort}
+    return {"adapter": "local", "executable": executable,
+            "model": None, "reasoning": None}
+
+
+def _execution_evidence(run, outcome, *, invocation_id: str, binding: dict[str, object], timeout_seconds: float) -> dict[str, object]:
     hop = run.hops[-1]
-    return {"hop_id": hop.hop_id, "invocation_id": invocation_id,
-            "adapter": "local" if executable == "local" else "codex_cli",
-            "executable": executable, "model": None, "reasoning": None,
+    return {"hop_id": hop.hop_id, "invocation_id": invocation_id, **binding,
             "context": "fresh", "timeout_seconds": timeout_seconds,
             "returncode": outcome.returncode, "timed_out": outcome.timed_out,
+            "candidate_result_present": outcome.candidate_result is not None,
             "outcome": hop.outcome, "base_head": hop.base_head, "end_head": hop.end_head,
             "actual_commits": list(hop.actual_commits)}
 
@@ -207,6 +222,7 @@ def run_serial_hops(
     run, profile, repository: Path, components: dict[str, PromptComponent], *, state_root: Path,
     association, task_payload: str, governing: dict[str, str], timeout_seconds: float,
     executable: str = "codex", adapter=None, durable_artifacts: tuple[str, ...] = (),
+    progress: Callable[[object, str, object | None], None] | None = None,
 ):
     """The Slice-5A serial driver: one H001 and, only after a fresh gate, H002."""
     evidence: list[dict[str, object]] = []
@@ -218,15 +234,18 @@ def run_serial_hops(
         )
 
     invocation_id = f"INV-{uuid.uuid4().hex}"
+    binding = _execution_binding(adapter, executable=executable)
     first = run_real_one_hop(
         run, profile, repository, components, state_root=state_root, association=association,
         task_payload=task_payload, invocation_id=invocation_id, timeout_seconds=timeout_seconds,
         executable=executable, adapter=adapter, durable_artifacts=durable_artifacts,
     )
     run = first.run
+    if progress is not None:
+        progress(run, invocation_id, first.outcome)
     if first.outcome is not None and run.hops:
         evidence.append(_execution_evidence(run, first.outcome, invocation_id=invocation_id,
-                                            executable=executable, timeout_seconds=timeout_seconds))
+                                            binding=binding, timeout_seconds=timeout_seconds))
         publish_execution_evidence()
     if run.hop_limit != 2 or run.status is not RunStatus.READY:
         return run, evidence
@@ -254,15 +273,18 @@ def run_serial_hops(
             "governing_input_changed", "Pinned governing input changed after H001."
         )
     invocation_id = f"INV-{uuid.uuid4().hex}"
+    binding = _execution_binding(adapter, executable=executable)
     second = run_real_one_hop(
         run, profile, repository, components, state_root=state_root, association=association,
         task_payload=task_payload, invocation_id=invocation_id, timeout_seconds=timeout_seconds,
         executable=executable, adapter=adapter, context_items=_h1_context(run),
     )
     run = second.run
+    if progress is not None:
+        progress(run, invocation_id, second.outcome)
     if second.outcome is not None and run.hops:
         evidence.append(_execution_evidence(run, second.outcome, invocation_id=invocation_id,
-                                            executable=executable, timeout_seconds=timeout_seconds))
+                                            binding=binding, timeout_seconds=timeout_seconds))
         publish_execution_evidence()
     return run, evidence
 
@@ -285,6 +307,7 @@ def _summary(repository: Path, run, outcome, error: str | None = None, *, execut
                      "outcome": hop.outcome})
     return {"schema_version": 1, "work_item_id": run.work_item_id, "run_id": run.run_id,
             "invocation_id": getattr(outcome, "invocation_id", None), "baseline_head": run.baseline_head,
+            "current_head": run.current_head,
             "final_head": facts.head, "run_status": run.status.value, "hop_used": run.hop_used,
             "hop_limit": run.hop_limit, "stop_reason": run.stop_reason, "human_question": run.human_question,
             "anomalies": list(run.anomalies), "provider": provider, "commits": commits,
@@ -305,6 +328,7 @@ def _best_effort_failure_summary(
     summary: dict[str, object] = {
         "schema_version": 1, "work_item_id": run.work_item_id, "run_id": run.run_id,
         "invocation_id": invocation_id, "baseline_head": run.baseline_head,
+        "current_head": run.current_head,
         "run_status": run.status.value, "hop_used": run.hop_used,
         "hop_limit": run.hop_limit, "stop_reason": run.stop_reason,
         "human_question": run.human_question, "anomalies": list(run.anomalies),
@@ -362,15 +386,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     # From checkout registration onward a provider-capable attempt exists.  Do not
     # reclassify failures by exception type after this boundary.
     association = None
-    real = None
+    latest_run = run
+    latest_invocation_id: str | None = None
+    latest_outcome = None
+
+    def remember_progress(observed_run, invocation_id: str, outcome) -> None:
+        nonlocal latest_run, latest_invocation_id, latest_outcome
+        latest_run = observed_run
+        latest_invocation_id = invocation_id
+        latest_outcome = outcome
+
     try:
         association = register_checkout(state_root, repository)
         final_run, execution_evidence = run_serial_hops(
             run, profile, repository, components, state_root=state_root, association=association,
             task_payload=texts["task"], governing=governing, timeout_seconds=args.timeout_seconds,
-            executable=args.executable, durable_artifacts=durable,
+            executable=args.executable, durable_artifacts=durable, progress=remember_progress,
         )
-        real = None
+        latest_run = final_run
         summary = _summary(repository, final_run, None, execution_evidence=execution_evidence)
         summary["invocation_id"] = execution_evidence[-1]["invocation_id"] if execution_evidence else None
         summary["checkout_id"] = association.checkout_id
@@ -381,12 +414,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"CURRENT HEAD: {facts.head}\nWORKTREE CLEAN: {facts.clean and not facts.unresolved_submodules}")
         return 0 if final_run.status.value == "completed" and facts.clean and not facts.unresolved_submodules else 1
     except Exception as error:
-        known_run = real.run if real is not None else run
-        known_outcome = real.outcome if real is not None else None
         _write_failure_summary(
-            state_root, repository, known_run, invocation_id="unknown",
+            state_root, repository, latest_run,
+            invocation_id=latest_invocation_id or "not_dispatched",
             checkout_id=None if association is None else association.checkout_id,
-            outcome=known_outcome, error=error,
+            outcome=latest_outcome, error=error,
         )
         print(f"OPERATOR ERROR: {error}", file=sys.stderr)
         return 1

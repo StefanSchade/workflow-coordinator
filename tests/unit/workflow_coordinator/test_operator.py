@@ -197,6 +197,15 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     assert counter.read_text() == "1"
     assert (state / "operator-plan.json").exists()
     assert summary["operator_status"] == "failed" and summary["operator_error"] == "post-provider observation failed"
+    assert summary["run_status"] == "completed" and summary["hop_used"] == 1
+    assert summary["invocation_id"].startswith("INV-")
+    assert summary["current_head"] == summary["final_head"] == git(repository, "rev-parse", "HEAD")
+
+
+def test_codex_binding_evidence_records_actual_default_model_without_execution(tmp_path: Path):
+    binding = operator._execution_binding(None, executable="fake-codex")
+    assert binding == {"adapter": "codex_cli", "executable": "fake-codex",
+                       "model": "gpt-5.6-terra", "reasoning": "medium"}
 
 
 def test_durable_required_and_optional_preflight_branches(repository: Path, tmp_path: Path):
@@ -251,9 +260,10 @@ class _TwoHopAdapter:
         invocation = request.invocation
         if invocation.hop_id == "H001":
             self.repository.joinpath("PROOF.md").write_text("after\n")
+            work_item_id = request.prompt.split("work_item_id=", 1)[1].split("\n", 1)[0]
             result = {"schema_version": 1, "outcome": "completed", "requested_route": "verify",
                       "scope_changed": False, "requires_human": False, "escalation": None, "findings": [],
-                      "claimed_commits": [], "commit_intent": {"paths": ["PROOF.md"], "subject": "docs(workflow): WI-2 H001 fixture"},
+                      "claimed_commits": [], "commit_intent": {"paths": ["PROOF.md"], "subject": f"docs(workflow): {work_item_id} H001 fixture"},
                       "evidence_refs": [], "summary": "prepared"}
         else:
             result = {"schema_version": 1, "outcome": "completed", "requested_route": "again",
@@ -262,6 +272,134 @@ class _TwoHopAdapter:
         envelope = {"schema_version": 1, "run_id": invocation.run_id, "hop_id": invocation.hop_id,
                     "invocation_id": invocation.invocation_id, "result": result}
         return AgentExecutionOutcome(json.dumps(envelope), 0, False, "", "")
+
+
+class _ResultAdapter:
+    def __init__(self, repository: Path, result: dict[str, object], *, malformed: bool = False, uncorrelated: bool = False):
+        self.repository = repository
+        self.result = result
+        self.malformed = malformed
+        self.uncorrelated = uncorrelated
+        self.requests = []
+
+    def execute(self, request):
+        self.requests.append(request)
+        if self.malformed:
+            return AgentExecutionOutcome("{", 0, False, "", "")
+        envelope = {"schema_version": 1, "run_id": request.invocation.run_id,
+                    "hop_id": request.invocation.hop_id,
+                    "invocation_id": request.invocation.invocation_id, "result": self.result}
+        if self.uncorrelated:
+            envelope["invocation_id"] = "INV-wrong"
+        return AgentExecutionOutcome(json.dumps(envelope), 0, False, "", "")
+
+
+def _two_hop_serial_fixture(repository: Path, tmp_path: Path, adapter):
+    workflow = profile({
+        "prepare": replace(phase({"verify": route("goto", "verify")}, role="prepare"), authorized_scope=("PROOF.md",), evidence=()),
+        "verify": replace(phase({"done": route("complete")}, role="verify"), authorized_scope=("PROOF.md",), evidence=()),
+    })
+    baseline = git(repository, "rev-parse", "HEAD")
+    item = WorkItem(1, "WI-stop", "fixture", "profile.yml", "repo", ("PROOF.md",), "prepare", 2)
+    policy = RepositoryPolicy(1, "policy", "1", ("repo",), ("edit", "commit"), ())
+    run = new_run(item, workflow, policy, run_id="RUN-stop", baseline_head=baseline)
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    components = {"prepare": PromptComponent("prepare", "prepare", baseline, "prepare"),
+                  "verify": PromptComponent("verify", "verify", baseline, "verify"),
+                  "testing": PromptComponent("testing", "testing", baseline, "testing")}
+    return workflow, run, state, association, components
+
+
+def _base_result(route_key: str, **overrides: object) -> dict[str, object]:
+    result = {"schema_version": 1, "outcome": "completed", "requested_route": route_key,
+              "scope_changed": False, "requires_human": False, "escalation": None,
+              "findings": [], "claimed_commits": [], "commit_intent": None,
+              "evidence_refs": [], "summary": "fixture"}
+    result.update(overrides)
+    return result
+
+
+@pytest.mark.parametrize(
+    ("result", "malformed", "uncorrelated"),
+    [
+        (_base_result("verify", requires_human=True, escalation={"kind": "semantic_authority", "question": "decide"}), False, False),
+        (_base_result("unknown"), False, False),
+        (_base_result("verify", findings=[{"finding_id": "F404", "invariant": "bad", "blocking": True, "proposed_state": "resolved", "evidence_refs": []}]), False, False),
+        (_base_result("verify"), True, False),
+        (_base_result("verify"), False, True),
+    ],
+    ids=["human", "unknown-route", "invalid-finding", "malformed", "uncorrelated"],
+)
+def test_n2_h001_rejections_charge_once_and_never_dispatch_h002(repository: Path, tmp_path: Path, result, malformed: bool, uncorrelated: bool):
+    adapter = _ResultAdapter(repository, result, malformed=malformed, uncorrelated=uncorrelated)
+    workflow, run, state, association, components = _two_hop_serial_fixture(repository, tmp_path, adapter)
+    final, _ = run_serial_hops(run, workflow, repository, components, state_root=state,
+                               association=association, task_payload="task", governing={},
+                               timeout_seconds=1, executable="local", adapter=adapter)
+    assert len(adapter.requests) == 1 and final.hop_used == 1
+    assert final.status.value != "ready"
+    assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists() or final.status.value == "reconcile_required"
+
+
+def test_trusted_h001_commit_remains_factual_when_route_is_rejected(repository: Path, tmp_path: Path):
+    class CommitThenReject(_TwoHopAdapter):
+        def execute(self, request):
+            outcome = super().execute(request)
+            payload = json.loads(outcome.candidate_result)
+            payload["result"]["requested_route"] = "unknown"
+            return AgentExecutionOutcome(json.dumps(payload), 0, False, "", "")
+
+    adapter = CommitThenReject(repository)
+    workflow, run, state, association, components = _two_hop_serial_fixture(repository, tmp_path, adapter)
+    baseline = run.current_head
+    final, _ = run_serial_hops(run, workflow, repository, components, state_root=state,
+                               association=association, task_payload="task", governing={},
+                               timeout_seconds=1, executable="local", adapter=adapter)
+    assert len(adapter.requests) == final.hop_used == 1
+    assert final.current_head != baseline == final.baseline_head
+    assert final.current_head == git(repository, "rev-parse", "HEAD")
+    assert final.status.value != "ready" and not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
+
+
+def test_dirty_worktree_between_hops_stops_after_h001(repository: Path, tmp_path: Path):
+    adapter = _TwoHopAdapter(repository)
+    workflow, run, state, association, components = _two_hop_serial_fixture(repository, tmp_path, adapter)
+
+    def dirty_after_h001(observed, _invocation_id, _outcome):
+        if observed.hop_used == 1:
+            repository.joinpath("untracked-between-hops").write_text("dirty\n")
+
+    final, _ = run_serial_hops(run, workflow, repository, components, state_root=state,
+                               association=association, task_payload="task", governing={},
+                               timeout_seconds=1, executable="local", adapter=adapter,
+                               progress=dirty_after_h001)
+    assert len(adapter.requests) == final.hop_used == 1
+    assert final.status.value == "awaiting_human"
+    assert final.stop_reason == "inter_hop_git_validation_failed"
+
+
+def test_h001_checkpoint_publication_fault_retains_marker_and_never_dispatches_h002(repository: Path, tmp_path: Path, monkeypatch):
+    import scripts.workflow_coordinator.slice4 as slice4
+
+    adapter = _TwoHopAdapter(repository)
+    workflow, run, state, association, components = _two_hop_serial_fixture(repository, tmp_path, adapter)
+    original = slice4.atomic_write_json
+
+    def fail_checkpoint(path, value, **kwargs):
+        if path.name == "checkpoint.json":
+            raise OSError("injected checkpoint crash")
+        return original(path, value, **kwargs)
+
+    monkeypatch.setattr(slice4, "atomic_write_json", fail_checkpoint)
+    with pytest.raises(OSError, match="injected checkpoint crash"):
+        run_serial_hops(run, workflow, repository, components, state_root=state,
+                        association=association, task_payload="task", governing={},
+                        timeout_seconds=1, executable="local", adapter=adapter)
+    run_root = state / "checkouts" / association.checkout_id
+    assert len(adapter.requests) == 1
+    assert (run_root / "run.json").exists() and (run_root / "dispatch.json").exists()
+    assert not (run_root / "checkpoint.json").exists()
 
 
 def test_n2_serial_driver_uses_fresh_context_and_never_allocates_h003(repository: Path, tmp_path: Path):
@@ -288,6 +426,8 @@ def test_n2_serial_driver_uses_fresh_context_and_never_allocates_h003(repository
     assert result.status.value == "awaiting_human_budget"
     assert len(adapter.requests) == len(evidence) == 2
     assert len({entry["invocation_id"] for entry in evidence}) == 2
+    assert all(entry["model"] is None and entry["reasoning"] is None for entry in evidence)
+    assert all(entry["candidate_result_present"] is True for entry in evidence)
     assert "phase=verify" in adapter.requests[1].prompt
     assert "prior_hop=H001" in adapter.requests[1].prompt
     run_root = state / "checkouts" / association.checkout_id
@@ -327,6 +467,51 @@ def test_governing_input_commit_after_h001_stops_before_h002(repository: Path, t
     )
     assert result.status.value == "awaiting_human" and result.hop_used == 1
     assert len(adapter.requests) == len(evidence) == 1
+
+
+def test_main_runs_supported_n2_path_with_fake_local_executable(repository: Path, tmp_path: Path):
+    (repository / "work.yml").write_text((repository / "work.yml").read_text().replace("max_autonomous_hops: 1", "max_autonomous_hops: 2").replace("initial_phase: work", "initial_phase: prepare"))
+    (repository / "profile.yml").write_text("""schema_version: 1
+profile_id: fixture
+revision: "1"
+phases:
+  prepare:
+    role: prepare
+    components: {role: [worker], modifiers: [], repository_policy: []}
+    durable_artifact: none
+    authorized_scope: [PROOF.md]
+    authorized_actions: [edit, commit]
+    human_gates: []
+    evidence: []
+    review: null
+    routes: {verify: {effect: goto, target: verify}}
+  verify:
+    role: verify
+    components: {role: [worker], modifiers: [], repository_policy: []}
+    durable_artifact: none
+    authorized_scope: [PROOF.md]
+    authorized_actions: [edit, commit]
+    human_gates: []
+    evidence: []
+    review: null
+    routes: {done: {effect: complete}}
+""")
+    commit(repository)
+    executable = fake(tmp_path, '''import json, pathlib, sys
+args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read()
+def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
+first=fact("hop_id") == "H001"
+if first: repo.joinpath("PROOF.md").write_text("after\\n")
+result={"schema_version":1,"outcome":"completed","requested_route":"verify" if first else "done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 fixture"} if first else None,"evidence_refs":[],"summary":"fixture"}
+output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
+''')
+    state = tmp_path / "state"
+    result = main(args(repository, state, str(executable)))
+    summary = json.loads((state / "operator-summary.json").read_text())
+    assert result == 0, summary
+    assert summary["run_status"] == "completed" and summary["hop_used"] == 2
+    assert [hop["hop_id"] for hop in summary["hops"]] == ["H001", "H002"]
+    assert len(summary["execution_evidence"]) == 2
 
 
 def test_commit_only_phase_rejects_before_provider(repository: Path, tmp_path: Path, capsys):
