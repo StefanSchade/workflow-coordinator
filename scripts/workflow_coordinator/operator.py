@@ -12,16 +12,18 @@ if __package__ in {None, ""}:
     sys.path.insert(0, __file__.rsplit("/scripts/workflow_coordinator/", 1)[0])
 
 import argparse
+import hashlib
 import re
 import subprocess
 import uuid
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
-from scripts.workflow_coordinator.git_facts import GitPreflightError, observe_repository, repository_identity
-from scripts.workflow_coordinator.model import DurableArtifact, new_run
-from scripts.workflow_coordinator.persistence import atomic_write_json
-from scripts.workflow_coordinator.prompt import PromptComponent
+from scripts.workflow_coordinator.git_facts import GitPreflightError, observe_repository, preflight_hop, repository_identity
+from scripts.workflow_coordinator.model import DurableArtifact, RunStatus, new_run
+from scripts.workflow_coordinator.persistence import atomic_write_json, checkpoint_projection, write_run_snapshot
+from scripts.workflow_coordinator.prompt import ContextItem, PromptComponent
 from scripts.workflow_coordinator.serialization import (
     ValidationError,
     component_manifest_from_yaml,
@@ -29,7 +31,7 @@ from scripts.workflow_coordinator.serialization import (
     work_item_from_yaml,
     workflow_profile_from_yaml,
 )
-from scripts.workflow_coordinator.slice4 import register_checkout, run_real_one_hop
+from scripts.workflow_coordinator.slice4 import Slice4Error, checkout_state_root, register_checkout, run_real_one_hop, validate_checkout
 
 
 class OperatorPreflightError(RuntimeError):
@@ -72,6 +74,14 @@ def _selected_ids(profile) -> tuple[str, ...]:
 
 def _within_scope(path: str, scope: tuple[str, ...]) -> bool:
     return any(path == allowed or path.startswith(f"{allowed.rstrip('/')}/") for allowed in scope)
+
+
+def _normalized_scope(values: tuple[str, ...], *, context: str) -> tuple[str, ...]:
+    return tuple(_relative_path(value, context=context) for value in values)
+
+
+def _governing_digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -123,14 +133,18 @@ def _preflight(args: argparse.Namespace):
     if _relative_path(work_item.profile_ref, context="WorkItem.profile_ref") != input_paths["profile"]:
         raise OperatorPreflightError("WorkItem.profile_ref does not identify the supplied profile path")
     policy_actions = set(policy.actions)
+    work_scope = _normalized_scope(work_item.scope, context="WorkItem.scope")
     for phase_key, phase_value in profile.phases.items():
         excess = sorted(set(phase_value.authorized_actions) - policy_actions)
         if excess:
             raise OperatorPreflightError(
                 f"profile phase {phase_key} authorizes actions outside repository policy: {', '.join(excess)}"
             )
-    if work_item.max_autonomous_hops != 1:
-        raise OperatorPreflightError("this N=1 operator requires WorkItem.max_autonomous_hops == 1")
+        phase_scope = _normalized_scope(phase_value.authorized_scope, context=f"profile phase {phase_key} authorized_scope")
+        if any(not _within_scope(path, work_scope) for path in phase_scope):
+            raise OperatorPreflightError(f"profile phase {phase_key} authorized scope exceeds WorkItem.scope")
+    if work_item.max_autonomous_hops > 2:
+        raise OperatorPreflightError("Slice-5A supports at most two autonomous Hops")
     if work_item.initial_phase not in profile.phases:
         raise OperatorPreflightError(f"WorkItem.initial_phase is absent from supplied profile: {work_item.initial_phase}")
     phase = profile.phases[work_item.initial_phase]
@@ -144,6 +158,7 @@ def _preflight(args: argparse.Namespace):
     if phase.durable_artifact is DurableArtifact.NONE and durable_artifacts:
         raise OperatorPreflightError("initial phase allows no durable-artifact arguments")
     components: dict[str, PromptComponent] = {}
+    governing = {path: _governing_digest(text) for path, text in texts.items()}
     for component_id in _selected_ids(profile):
         reference = manifest.get(component_id)
         if reference is None:
@@ -151,12 +166,108 @@ def _preflight(args: argparse.Namespace):
         path = _relative_path(reference.path, context=f"component {component_id} path")
         content = _pinned_text(repository, args.expected_head, path, context=f"component {component_id}")
         components[component_id] = PromptComponent(component_id, path, args.expected_head, content)
+        governing[path] = _governing_digest(content)
     if args.timeout_seconds <= 0:
         raise OperatorPreflightError("timeout seconds must be positive")
-    return repository, state_root, input_paths, texts, work_item, profile, policy, components, durable_artifacts
+    return repository, state_root, input_paths, texts, work_item, profile, policy, components, durable_artifacts, governing
 
 
-def _summary(repository: Path, run, outcome, error: str | None = None) -> dict[str, object]:
+def _governing_inputs_unchanged(repository: Path, expected_head: str, governing: dict[str, str]) -> bool:
+    """Re-read every pre-H001 repository input at B; paths must remain tracked."""
+    try:
+        return all(
+            _governing_digest(_pinned_text(repository, expected_head, path, context="governing input")) == digest
+            for path, digest in governing.items()
+        )
+    except OperatorPreflightError:
+        return False
+
+
+def _h1_context(run) -> tuple[ContextItem, ...]:
+    hop = run.hops[-1]
+    return (ContextItem(
+        reference=f"Hop {hop.hop_id} coordinator summary",
+        content=(f"prior_hop={hop.hop_id}\nprior_outcome={hop.outcome}\n"
+                 f"prior_range={hop.base_head}..{hop.end_head}\nprior_summary={hop.summary}"),
+    ),)
+
+
+def _execution_evidence(run, outcome, *, invocation_id: str, executable: str, timeout_seconds: float) -> dict[str, object]:
+    hop = run.hops[-1]
+    return {"hop_id": hop.hop_id, "invocation_id": invocation_id,
+            "adapter": "local" if executable == "local" else "codex_cli",
+            "executable": executable, "model": None, "reasoning": None,
+            "context": "fresh", "timeout_seconds": timeout_seconds,
+            "returncode": outcome.returncode, "timed_out": outcome.timed_out,
+            "outcome": hop.outcome, "base_head": hop.base_head, "end_head": hop.end_head,
+            "actual_commits": list(hop.actual_commits)}
+
+
+def run_serial_hops(
+    run, profile, repository: Path, components: dict[str, PromptComponent], *, state_root: Path,
+    association, task_payload: str, governing: dict[str, str], timeout_seconds: float,
+    executable: str = "codex", adapter=None, durable_artifacts: tuple[str, ...] = (),
+):
+    """The Slice-5A serial driver: one H001 and, only after a fresh gate, H002."""
+    evidence: list[dict[str, object]] = []
+
+    def publish_execution_evidence() -> None:
+        atomic_write_json(
+            checkout_state_root(state_root, association) / "execution-evidence.json",
+            {"schema_version": 1, "attempts": evidence},
+        )
+
+    invocation_id = f"INV-{uuid.uuid4().hex}"
+    first = run_real_one_hop(
+        run, profile, repository, components, state_root=state_root, association=association,
+        task_payload=task_payload, invocation_id=invocation_id, timeout_seconds=timeout_seconds,
+        executable=executable, adapter=adapter, durable_artifacts=durable_artifacts,
+    )
+    run = first.run
+    if first.outcome is not None and run.hops:
+        evidence.append(_execution_evidence(run, first.outcome, invocation_id=invocation_id,
+                                            executable=executable, timeout_seconds=timeout_seconds))
+        publish_execution_evidence()
+    if run.hop_limit != 2 or run.status is not RunStatus.READY:
+        return run, evidence
+    # H001 has already completed its independent publication sequence.  No
+    # speculative route or context is retained: validate all facts again first.
+    def stop_continuation(reason: str, question: str):
+        stopped = replace(run, status=RunStatus.AWAITING_HUMAN,
+                          stop_reason=reason, human_question=question)
+        run_root = checkout_state_root(state_root, association)
+        write_run_snapshot(run_root / "run.json", stopped)
+        atomic_write_json(run_root / "checkpoint.json", checkpoint_projection(stopped, profile))
+        return stopped, evidence
+
+    expected_head = run.current_head
+    try:
+        validate_checkout(state_root, repository)
+        preflight_hop(repository, expected_repository=repository, expected_head=expected_head)
+    except (GitPreflightError, Slice4Error):
+        return stop_continuation(
+            "inter_hop_git_validation_failed",
+            "Inter-Hop Git validation failed; validate current reality before continuation.",
+        )
+    if not _governing_inputs_unchanged(repository, expected_head, governing):
+        return stop_continuation(
+            "governing_input_changed", "Pinned governing input changed after H001."
+        )
+    invocation_id = f"INV-{uuid.uuid4().hex}"
+    second = run_real_one_hop(
+        run, profile, repository, components, state_root=state_root, association=association,
+        task_payload=task_payload, invocation_id=invocation_id, timeout_seconds=timeout_seconds,
+        executable=executable, adapter=adapter, context_items=_h1_context(run),
+    )
+    run = second.run
+    if second.outcome is not None and run.hops:
+        evidence.append(_execution_evidence(run, second.outcome, invocation_id=invocation_id,
+                                            executable=executable, timeout_seconds=timeout_seconds))
+        publish_execution_evidence()
+    return run, evidence
+
+
+def _summary(repository: Path, run, outcome, error: str | None = None, *, execution_evidence: list[dict[str, object]] | None = None) -> dict[str, object]:
     facts = observe_repository(repository)
     commits = []
     for commit in run.hops[-1].actual_commits if run.hops else ():
@@ -165,13 +276,21 @@ def _summary(repository: Path, run, outcome, error: str | None = None) -> dict[s
         "returncode": outcome.returncode, "timed_out": outcome.timed_out,
         "candidate_result_present": outcome.candidate_result is not None,
     }
+    hop_evidence = execution_evidence or []
+    hops = []
+    for hop in run.hops:
+        changed = _git(repository, "diff", "--name-only", f"{hop.base_head}..{hop.end_head}").splitlines()
+        hops.append({"hop_id": hop.hop_id, "base_head": hop.base_head, "end_head": hop.end_head,
+                     "actual_commits": list(hop.actual_commits), "changed_paths": changed,
+                     "outcome": hop.outcome})
     return {"schema_version": 1, "work_item_id": run.work_item_id, "run_id": run.run_id,
             "invocation_id": getattr(outcome, "invocation_id", None), "baseline_head": run.baseline_head,
             "final_head": facts.head, "run_status": run.status.value, "hop_used": run.hop_used,
             "hop_limit": run.hop_limit, "stop_reason": run.stop_reason, "human_question": run.human_question,
             "anomalies": list(run.anomalies), "provider": provider, "commits": commits,
             "changed_paths": list(run.hops[-1].actual_commits and _git(repository, "diff", "--name-only", f"{run.baseline_head}..{facts.head}").splitlines() if run.hops else []),
-            "worktree_clean": facts.clean and not facts.unresolved_submodules, "operator_error": error}
+            "worktree_clean": facts.clean and not facts.unresolved_submodules, "operator_error": error,
+            "hops": hops, "execution_evidence": hop_evidence}
 
 
 def _best_effort_failure_summary(
@@ -222,16 +341,17 @@ def _write_failure_summary(state_root: Path, repository: Path, run, *, invocatio
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parse_args(argv)
-        repository, state_root, paths, texts, item, profile, policy, components, durable = _preflight(args)
-        run_id, invocation_id = f"RUN-{uuid.uuid4().hex}", f"INV-{uuid.uuid4().hex}"
+        repository, state_root, paths, texts, item, profile, policy, components, durable, governing = _preflight(args)
+        run_id = f"RUN-{uuid.uuid4().hex}"
         run = new_run(item, profile, policy, run_id=run_id, baseline_head=args.expected_head)
         state_root.mkdir(parents=True)
         plan = {"schema_version": 1, "repository": str(repository), "expected_baseline": args.expected_head,
                 "inputs": {**paths, "pinned_revision": args.expected_head},
                 "components": {key: {"path": value.path, "digest": value.digest} for key, value in components.items()},
                 "durable_artifacts": list(durable), "state_root": str(state_root), "run_id": run_id,
-                "invocation_id": invocation_id, "executable": args.executable, "timeout_seconds": args.timeout_seconds,
-                "max_autonomous_hops": 1, "retry": False}
+                "executable": args.executable, "timeout_seconds": args.timeout_seconds,
+                "max_autonomous_hops": item.max_autonomous_hops, "retry": False,
+                "governing_inputs": governing}
         atomic_write_json(state_root / "operator-plan.json", plan)
     except SystemExit as error:
         return 0 if error.code == 0 else 2
@@ -245,24 +365,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     real = None
     try:
         association = register_checkout(state_root, repository)
-        real = run_real_one_hop(run, profile, repository, components, state_root=state_root,
-                                association=association, task_payload=texts["task"], invocation_id=invocation_id,
-                                timeout_seconds=args.timeout_seconds, executable=args.executable,
-                                durable_artifacts=durable)
-        summary = _summary(repository, real.run, real.outcome)
-        summary["invocation_id"] = invocation_id
+        final_run, execution_evidence = run_serial_hops(
+            run, profile, repository, components, state_root=state_root, association=association,
+            task_payload=texts["task"], governing=governing, timeout_seconds=args.timeout_seconds,
+            executable=args.executable, durable_artifacts=durable,
+        )
+        real = None
+        summary = _summary(repository, final_run, None, execution_evidence=execution_evidence)
+        summary["invocation_id"] = execution_evidence[-1]["invocation_id"] if execution_evidence else None
         summary["checkout_id"] = association.checkout_id
         atomic_write_json(state_root / "operator-summary.json", summary)
         print(f"STATE ROOT: {state_root}\nRUN ROOT: {state_root / 'checkouts' / association.checkout_id}\nSUMMARY: {state_root / 'operator-summary.json'}")
-        print(f"RUN STATUS: {real.run.status.value}\nHOP USED: {real.run.hop_used}\nLAST COMMIT: {(real.run.hops[-1].actual_commits[-1] if real.run.hops and real.run.hops[-1].actual_commits else 'none')}")
+        print(f"RUN STATUS: {final_run.status.value}\nHOP USED: {final_run.hop_used}\nLAST COMMIT: {(final_run.hops[-1].actual_commits[-1] if final_run.hops and final_run.hops[-1].actual_commits else 'none')}")
         facts = observe_repository(repository)
         print(f"CURRENT HEAD: {facts.head}\nWORKTREE CLEAN: {facts.clean and not facts.unresolved_submodules}")
-        return 0 if real.run.status.value == "completed" and facts.clean and not facts.unresolved_submodules else 1
+        return 0 if final_run.status.value == "completed" and facts.clean and not facts.unresolved_submodules else 1
     except Exception as error:
         known_run = real.run if real is not None else run
         known_outcome = real.outcome if real is not None else None
         _write_failure_summary(
-            state_root, repository, known_run, invocation_id=invocation_id,
+            state_root, repository, known_run, invocation_id="unknown",
             checkout_id=None if association is None else association.checkout_id,
             outcome=known_outcome, error=error,
         )

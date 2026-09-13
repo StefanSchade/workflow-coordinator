@@ -39,7 +39,7 @@ from .model import (
     record_hop,
 )
 from .persistence import checkpoint_projection
-from .prompt import PromptComponent, PromptPackage, assemble_prompt
+from .prompt import ContextItem, PromptComponent, PromptPackage, assemble_prompt
 from .reducer import Reduction, reduce_result
 
 
@@ -93,6 +93,7 @@ def run_one_hop(
     *, task_payload: str, invocation_id: str, durable_artifacts: tuple[str, ...] = (),
     execution_timeout_seconds: float = 0.0,
     registered_checkout_validator: Callable[[], None] | None = None,
+    context_items: tuple[ContextItem, ...] = (),
 ) -> VerticalRun:
     """Execute only the N=1 fake/subprocess boundary and reduce observed facts."""
 
@@ -105,7 +106,8 @@ def run_one_hop(
     invocation = Invocation(run.run_id, hop_id, invocation_id)
     try:
         prompt = assemble_prompt(
-            run, phase, components, invocation=invocation, task_payload=task_payload
+            run, phase, components, invocation=invocation, task_payload=task_payload,
+            context=context_items,
         )
     except Exception as error:
         raise ExecutionNotStartedError(str(error)) from error

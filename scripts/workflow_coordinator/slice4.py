@@ -17,7 +17,7 @@ from .adapter import (
     AgentExecutionRequest,
     ExecutionNotStartedError,
     ExecutionResultValidationError,
-    Invocation,
+    Invocation, AgentExecutionPort,
     ROUTING_RESULT_ENVELOPE_CONTRACT,
 )
 from .codex_adapter import CodexCliAdapter, CodexCliError
@@ -27,12 +27,17 @@ from .persistence import (
     atomic_write_json, checkpoint_projection, recover_uncertain_dispatch,
     write_dispatch_marker, write_run_snapshot,
 )
-from .prompt import PromptComponent
+from .prompt import ContextItem, PromptComponent
 from .vertical import VerticalRun, run_one_hop
 
 
 class Slice4Error(RuntimeError):
     """The real-agent boundary cannot safely proceed."""
+
+
+def dispatch_eligible(run: Run) -> bool:
+    """Small fail-closed assertion at the provider-capable boundary."""
+    return run.status.value == "ready" and run.hop_used < run.hop_limit
 
 
 @dataclass(frozen=True)
@@ -147,8 +152,12 @@ def run_real_one_hop(
     *, state_root: Path, association: CheckoutAssociation, task_payload: str,
     invocation_id: str, timeout_seconds: float, executable: str = "codex",
     durable_artifacts: tuple[str, ...] = (),
+    adapter: AgentExecutionPort | None = None,
+    context_items: tuple[ContextItem, ...] = (),
 ) -> RealHopRun:
     """Plug the concrete process boundary into the sole accepted vertical path."""
+    if not dispatch_eligible(run):
+        raise Slice4Error("Run is not dispatch-eligible")
     hop_id = f"H{run.hop_used + 1:03d}"
     try:
         preflight_hop(repository, expected_repository=repository, expected_head=run.current_head)
@@ -161,7 +170,7 @@ def run_real_one_hop(
     dispatch_path = run_root / "dispatch.json"
     write_run_snapshot(run_root / "run.json", run)
     write_dispatch_marker(dispatch_path, marker)
-    adapter = CodexCliAdapter(run_root, executable=executable)
+    execution_port = adapter or CodexCliAdapter(run_root, executable=executable)
 
     def require_registered_checkout() -> None:
         if validate_checkout(state_root, repository) != association:
@@ -185,10 +194,11 @@ def run_real_one_hop(
 
     try:
         vertical = run_one_hop(
-            run, profile, repository, adapter, components, task_payload=task_payload,
+            run, profile, repository, execution_port, components, task_payload=task_payload,
             invocation_id=invocation_id, durable_artifacts=durable_artifacts,
             execution_timeout_seconds=timeout_seconds,
             registered_checkout_validator=require_registered_checkout,
+            context_items=context_items,
         )
     except ExecutionResultValidationError as error:
         return recover_uncertain(error.outcome)

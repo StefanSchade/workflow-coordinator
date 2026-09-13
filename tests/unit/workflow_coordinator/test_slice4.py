@@ -358,6 +358,18 @@ def test_real_driver_preserves_no_hop_for_unlaunchable_executable(repository, tm
     assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
 
 
+@pytest.mark.parametrize("budget,used", [(1, 1), (2, 2)])
+def test_real_boundary_refuses_ineligible_or_exhausted_run_before_marker(repository, tmp_path, budget, used):
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    workflow = profile({"work": phase({"done": route("complete")})})
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=budget), current_head=head, baseline_head=head, hop_used=used)
+    with pytest.raises(Slice4Error, match="not dispatch-eligible"):
+        run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2)
+    assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
+
+
 def test_real_driver_cleans_marker_for_local_prompt_failure_before_spawn(repository, tmp_path):
     state = tmp_path / "external"
     association = register_checkout(state, repository)
