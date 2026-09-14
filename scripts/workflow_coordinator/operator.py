@@ -292,8 +292,9 @@ def run_serial_hops(
 def _summary(repository: Path, run, outcome, error: str | None = None, *, execution_evidence: list[dict[str, object]] | None = None) -> dict[str, object]:
     facts = observe_repository(repository)
     commits = []
-    for commit in run.hops[-1].actual_commits if run.hops else ():
-        commits.append({"hash": commit, "subject": _git(repository, "show", "-s", "--format=%s", commit).strip()})
+    for hop in run.hops:
+        for commit in hop.actual_commits:
+            commits.append({"hash": commit, "subject": _git(repository, "show", "-s", "--format=%s", commit).strip()})
     provider = None if outcome is None else {
         "returncode": outcome.returncode, "timed_out": outcome.timed_out,
         "candidate_result_present": outcome.candidate_result is not None,
@@ -311,7 +312,7 @@ def _summary(repository: Path, run, outcome, error: str | None = None, *, execut
             "final_head": facts.head, "run_status": run.status.value, "hop_used": run.hop_used,
             "hop_limit": run.hop_limit, "stop_reason": run.stop_reason, "human_question": run.human_question,
             "anomalies": list(run.anomalies), "provider": provider, "commits": commits,
-            "changed_paths": list(run.hops[-1].actual_commits and _git(repository, "diff", "--name-only", f"{run.baseline_head}..{facts.head}").splitlines() if run.hops else []),
+            "changed_paths": _git(repository, "diff", "--name-only", f"{run.baseline_head}..{facts.head}").splitlines(),
             "worktree_clean": facts.clean and not facts.unresolved_submodules, "operator_error": error,
             "hops": hops, "execution_evidence": hop_evidence}
 
@@ -409,7 +410,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary["checkout_id"] = association.checkout_id
         atomic_write_json(state_root / "operator-summary.json", summary)
         print(f"STATE ROOT: {state_root}\nRUN ROOT: {state_root / 'checkouts' / association.checkout_id}\nSUMMARY: {state_root / 'operator-summary.json'}")
-        print(f"RUN STATUS: {final_run.status.value}\nHOP USED: {final_run.hop_used}\nLAST COMMIT: {(final_run.hops[-1].actual_commits[-1] if final_run.hops and final_run.hops[-1].actual_commits else 'none')}")
+        last_run_commit = next((commit for hop in reversed(final_run.hops) for commit in reversed(hop.actual_commits)), "none")
+        print(f"RUN STATUS: {final_run.status.value}\nHOP USED: {final_run.hop_used}\nLAST RUN COMMIT: {last_run_commit}")
         facts = observe_repository(repository)
         print(f"CURRENT HEAD: {facts.head}\nWORKTREE CLEAN: {facts.clean and not facts.unresolved_submodules}")
         return 0 if final_run.status.value == "completed" and facts.clean and not facts.unresolved_submodules else 1

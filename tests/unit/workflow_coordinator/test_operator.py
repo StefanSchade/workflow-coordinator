@@ -144,6 +144,7 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     plan, summary = json.loads((state / "operator-plan.json").read_text()), json.loads((state / "operator-summary.json").read_text())
     assert counter.read_text() == "1" and plan["max_autonomous_hops"] == 1 and plan["retry"] is False
     assert summary["run_status"] == "completed" and summary["hop_used"] == 1 and summary["worktree_clean"] is True
+    assert len(summary["commits"]) == 1 and summary["changed_paths"] == ["PROOF.md"]
     assert git(repository, "status", "--porcelain") == ""
 
 
@@ -469,7 +470,7 @@ def test_governing_input_commit_after_h001_stops_before_h002(repository: Path, t
     assert len(adapter.requests) == len(evidence) == 1
 
 
-def test_main_runs_supported_n2_path_with_fake_local_executable(repository: Path, tmp_path: Path):
+def test_main_runs_supported_n2_path_with_fake_local_executable(repository: Path, tmp_path: Path, capsys):
     (repository / "work.yml").write_text((repository / "work.yml").read_text().replace("max_autonomous_hops: 1", "max_autonomous_hops: 2").replace("initial_phase: work", "initial_phase: prepare"))
     (repository / "profile.yml").write_text("""schema_version: 1
 profile_id: fixture
@@ -511,7 +512,25 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
     assert result == 0, summary
     assert summary["run_status"] == "completed" and summary["hop_used"] == 2
     assert [hop["hop_id"] for hop in summary["hops"]] == ["H001", "H002"]
+    assert len(summary["commits"]) == 1 and summary["changed_paths"] == ["PROOF.md"]
+    assert summary["hops"][1]["actual_commits"] == [] and summary["hops"][1]["changed_paths"] == []
+    assert summary["baseline_head"] != summary["final_head"] == summary["current_head"]
     assert len(summary["execution_evidence"]) == 2
+    assert "LAST RUN COMMIT: " + summary["commits"][0]["hash"] in capsys.readouterr().out
+
+
+def test_main_observation_only_run_reports_no_run_commits(repository: Path, tmp_path: Path):
+    executable = fake(tmp_path, '''import json, pathlib, sys
+output=pathlib.Path(sys.argv[sys.argv.index("--output-last-message") + 1]); prompt=sys.stdin.read()
+def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
+result={"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"observed"}
+output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
+''')
+    state = tmp_path / "state"
+    assert main(args(repository, state, str(executable))) == 0
+    summary = json.loads((state / "operator-summary.json").read_text())
+    assert summary["commits"] == [] and summary["changed_paths"] == []
+    assert summary["baseline_head"] == summary["current_head"] == summary["final_head"]
 
 
 def test_commit_only_phase_rejects_before_provider(repository: Path, tmp_path: Path, capsys):
