@@ -1,0 +1,181 @@
+= Agent Workflow Coordinator -- Adversarial Architecture Review of the Concept Follow-up (Outer-Loop / Authority Boundaries)
+:toc:
+:toclevels: 2
+
+Status:: *INDEPENDENT, NON-AUTHORIZING ARCHITECTURE REVIEW.*
+Date:: 2026-09-14.
+Reviewed commit:: `1c14a62a195a598b7bcf965d1369b7128902c9bc` (`docs(workflow): sharpen coordinator concept boundaries`).
+Review target:: `docs/warm_storage/concepts/agent_workflow_coordinator_concept_followup_2026-09-14.adoc`.
+Reviewer role:: Skeptical senior architect attempting to falsify the proposed boundaries. Read-only except this artifact and its commit.
+Provider invocations through the Coordinator during this review:: *0.*
+Runtime / test / FTR-lifecycle / Project-Memory / execution-authority changes:: *none.* This review authorizes nothing: no Slice 5B, no outer loop, no carve-out, no live execution.
+
+== 1. Question, evidence, and method
+
+The follow-up proposes that the proven Coordinator is an inner execution system for an already-authorized WorkItem, surrounded in future by distinct concerns (intake, work selection, profile selection, action authority, information/trust authority, per-Hop binding, capability/cost, invocation). This review tests whether those boundaries are coherent against the system actually built.
+
+Evidence inspected at the reviewed commit:
+
+* the follow-up and the historical concept (`agent_workflow_coordinator_concept_2026-08-25.adoc`);
+* `docs/warm_storage/workflow_coordinator/execution_evolution_2026-09-14.adoc` and the Commissioning Diary;
+* `higher_order_agent_loops_strategy_2026-09-07.adoc`;
+* FTR-AGENT-WORKFLOW-COORDINATOR-P5 sections 3, 4, 5, 6, 7, 8, 9, 11.5 (incl. 11.5.1 binding-seam and 11.5.2 Slice 5B);
+* Slice-5 readiness rescoping assessment (sections 8--10), Slice-5A live N=2 proof review `67226f6e`, post-proof cleanup review;
+* `scripts/workflow_coordinator/` -- `model.py`, `reducer.py`, `operator.py`, `vertical.py`, `slice4.py`, `prompt.py`, `codex_adapter.py`, `persistence.py`, `git_facts.py`, `serialization.py`;
+* `tests/unit/workflow_coordinator/test_operator.py` (governing-input drift and scope tests);
+* the declarative dogfood inputs under `docs/ai_info/workflows/dogfood/dmc_fk_c3_wi02/`;
+* Git author identity of Coordinator-made commits in `core` (`54c708ec`, `2adee468`) versus maintainer commits (`80c22b96`).
+
+Method: for each boundary the follow-up asserts, find the code or contract that would enforce it, then construct the smallest case in which the boundary is crossed without tripping an existing check. Rediscovered WATCHes, Deferred Items, and explicit non-goals are listed in section 6 and not counted as findings.
+
+Validation performed for this artifact:
+
+[source,text]
+----
+asciidoctor --failure-level WARN -o /dev/null <this file>
+git diff --check
+----
+
+== 2. Verdict
+
+*B -- ARCHITECTURE DIRECTION SOUND WITH BOUNDED MATERIAL REVISIONS.*
+
+The inner-Coordinator inference is correct and is the strongest claim the evidence supports. No finding shows the current mechanics unsafe, because the maintainer still performs every outer-loop step by hand and every binding is fixed. Six IMPORTANT findings show that the follow-up draws three of its boundaries at places the code does not actually enforce, and states one invariant ("orthogonal") more strongly than the system can honour. Each is a bounded conceptual correction, not a redesign. None blocks Slice 5B.
+
+Findings by severity: BLOCKING 0; IMPORTANT 6 (F1--F6); MINOR 3 (F7--F9); INFO/WATCH 4 (W1--W4).
+
+Most important newly discovered consequence: the inner Coordinator's only proof that a WorkItem is "already authorized" is that its governing inputs are committed at the pinned HEAD. The Coordinator's own trusted commit can satisfy that proof, and the drift test shows a Hop can land a modified governing input at B. Within one Run this is caught; across Runs it is a self-governance channel that no current check, and no sentence in the follow-up, addresses. The real inner/outer boundary is therefore *governing-input authorship*, and it is currently unproven by anything except repository write access.
+
+== 3. Findings
+
+Each finding states observation, evidence, risk if ignored, recommended conceptual action, and disposition. Actions are conceptual corrections to the follow-up; none authorizes implementation.
+
+=== F1 -- IMPORTANT -- "Already-authorized WorkItem" is proven only by "committed at pinned HEAD", which the Coordinator itself can satisfy
+
+Observation:: The operator admits a WorkItem when its five governing inputs plus selected components are tracked at `--expected-head` and pass structural coherence (`_pinned_text`, `_preflight`). `WorkItem.authority_source` is free prose and is never checked. Nothing excludes governing-input paths, or the workflows directory, from a phase's `authorized_scope`.
+Evidence:: `operator.py` `_preflight` / `_governing_inputs_unchanged`; `model.py` `WorkItem.authority_source: str`; `test_operator.py::test_governing_input_commit_after_h001_stops_before_h002` -- the fixture places `task.txt` in the authorized scope, the agent's CommitIntent includes it, the trusted commit *lands* at B, and only the current Run stops before H002. Coordinator-made commits in `core` carry the maintainer's Git identity (`54c708ec`, `2adee468` vs maintainer `80c22b96`), so provenance is not distinguishable by author either; only the subject projection differs.
+Risk if ignored:: Any future outer loop that lands WorkItems through the trusted commit path -- or any Hop whose scope covers the workflows directory -- produces the next Run's governance from agent output. The follow-up's principle "may recommend governance, may not weaken its own governance" is stated per Run and is silent across Runs. A generic carve-out would export this "committed equals authorized" assumption to consumers whose repositories are not maintainer-only.
+Action:: State the inner/outer authority boundary as *authorship of the governing-input set*, not as the four descriptive outer boxes. Record that governing-input provenance must be mechanically distinguishable from agent output before any intake automation. The smallest present-mechanics analogue is a preflight rejection of governing-input paths (and their directory) inside any phase's authorized scope; this is one check, not a permission system. Not authorized here.
+Disposition:: Open; concept revision.
+
+=== F2 -- IMPORTANT -- Trusted repository policy is not a ceiling over WorkItem path scope or Hop budget
+
+Observation:: `new_run` checks only `work_item.repository in policy.scope`; policy scope is repository identity (`scope: [core]`). Policy actions bound phase actions, and phase scope must lie within WorkItem scope, but nothing bounds WorkItem scope or `max_autonomous_hops` from above except a hard-coded Slice-5A constant (`> 2` rejected).
+Evidence:: `model.py` `new_run`; `operator.py` `_preflight` (phase ⊆ WorkItem scope; phase actions ⊆ policy actions; `max_autonomous_hops > 2` constant); rescoping assessment 5.2 ("policy scope continues to admit repository identity").
+Risk if ignored:: The follow-up's outer loop "must not create unrestricted scope merely because it can describe an attractive next task", but the only entity with a scope ceiling today is the *phase*. A WorkItem author, human or automated, has no policy-owned upper bound. Once WorkItem authoring is delegated, the trusted policy no longer dominates the envelope it is supposed to dominate.
+Action:: Recognise that the outer boundary requires a *policy-dominates-WorkItem* relation for path scope and Hop budget, the same shape as the existing phase ⊆ WorkItem and phase-actions ⊆ policy-actions checks. Record it as a precondition of any intake automation. Not a scope lattice; one domination check per dimension.
+Disposition:: Open; concept revision.
+
+=== F3 -- IMPORTANT -- Information authority attaches to the reachable execution surface, not to constructed context
+
+Observation:: The follow-up derives the trust requirement from "explicitly constructed Hop context" and orders `context construction -> trust requirement -> eligible bindings`. The real provider receives the constructed prompt on stdin, then runs inside the checkout with `--sandbox workspace-write --cd <repo>` and reads whatever it chooses; every file it opens and every command output it sees is sent to the provider inside the Hop. The Coordinator observes only the stdin prompt and the last message; stdout is a transient 16 KiB tail.
+Evidence:: `codex_adapter.py` `argv` and `execute` (`_bounded` stdout/stderr, `result-message.json`); `prompt.py` (constructed context is bounded and manifested, the workspace is not); `operator.py` `_execution_evidence` (no disclosure facts beyond binding and return code); strategy doc section 3 (environment boundary vs Hop authority).
+Risk if ignored:: Three consequences the follow-up does not recognise. (a) The trust requirement of a Hop is the *join* of the constructed context's classification and the classification of everything reachable in the execution environment; deriving it from constructed context alone under-classifies. (b) "A local/approved model receives richer context while an external model receives a narrower safe context" cannot be achieved by context construction; it requires narrowing the *reachable surface* (a checkout/sandbox concern), so the enforcement point of information authority coincides with the environment boundary even though the concept is distinct from action authority. (c) Audit can establish *presumed disclosure = reachable surface*, never actual disclosure; the follow-up's evidence list (binding, trust zone, classification, context provenance, digests) omits the reachable-surface identity (checkout HEAD, sandbox mode, network mode) that is the only honest disclosure bound.
+Action:: Add *reachability* as the third dimension alongside may-modify and may-see, sourced from the environment boundary already named in the strategy doc. Restate the ordering as `phase -> declared disclosure set (context + reachable surface) -> trust requirement -> eligible bindings -> capability/cost -> invocation`. No classification framework is required; one rule (join over the disclosure set) suffices.
+Disposition:: Open; concept revision.
+
+=== F4 -- IMPORTANT -- Coordinator-owned durable state already contains derived agent prose and therefore inherits context classification; its promotion is an unowned declassification
+
+Observation:: The follow-up prefers "evidence that a governed context was supplied" over "another raw copy". But `run.json`, `checkpoint.json`, `result-message.json`, `execution-evidence.json`, and every commit subject carry agent-authored prose (`Hop.summary`, `Finding.invariant`, `disposition`, `RoutingResult.summary`, CommitIntent subject) derived from whatever the agent saw. WFC-PERSIST-05 permits promoting a compact Run report to warm storage, and review artifacts are assumed publishable.
+Evidence:: `model.py` `Hop`, `Finding`, `RoutingResult`; `persistence.py` `checkpoint_projection`; `operator.py` `_summary`; FTR WFC-PERSIST-04/05; `review_instructions.adoc` ("Assume review artifacts may be committed to the public repository").
+Risk if ignored:: Monotonicity is asserted for "downstream stages" but the state root is a downstream stage that is never classified. A generated summary of RESTRICTED material is RESTRICTED until someone says otherwise; today nothing says otherwise and nothing prevents its promotion. "Evidence, not copies" does not avoid the problem because summaries *are* derived copies.
+Action:: Record the precise rule the review was asked for: derived items inherit the join of their sources' labels; a lower label may be assigned only by an explicit, human/policy-owned declassification step recorded as provenance; *dropping* an item from a disclosure set is not declassification (it changes the set), but because the set is the reachable surface (F3) dropping works only through environment narrowing, never through prompt assembly. Declassification authority lives exactly where classification authority lives. The Run state root and any promoted report carry the join of all Hops' requirements. Over-classification excluding a binding is then a human cost decision, which is the correct fail-closed default.
+Disposition:: Open; concept revision.
+
+=== F5 -- IMPORTANT -- "Orthogonal" is the wrong invariant; the correct relation is one-directional compatibility
+
+Observation:: The follow-up states workflow/profile policy and execution policy are orthogonal, then immediately lists "expected convergence/review quality" and "capability required by the bounded task" as binding-selection inputs -- both are phase-dependent requirements. The system already has a hard phase-to-binding constraint: every phase requires the strict structured-result contract, so a binding that cannot honour `ROUTING_RESULT_ENVELOPE_CONTRACT` is ineligible for every phase. A `gate` review's *authority* is fixed by the profile, but its *epistemic value* depends on the binding, and WFC-REVIEW-03 independence today rests on fresh context while author and reviewer share the same pinned components and the same fixed binding.
+Evidence:: `codex_adapter.py` `assert_openai_strict_schema` / `structured_result_envelope_openai_schema`; `adapter.py` contract check in `execute`; FTR WFC-REVIEW-02/03; historical concept section 4 ("provider/model diversity can be useful").
+Risk if ignored:: Stated as orthogonal, the invariant forbids the profile from declaring a minimum execution requirement for a gate phase, which is the one legitimate coupling. Stated correctly, it is asymmetric: *the phase may constrain eligible bindings; a binding may never expand phase authority* (routes, scope, actions, review authority, budget, retry/resume). This also unifies the follow-up's two compatibility ideas -- trust compatibility and capability compatibility are the same predicate shape (phase-declared requirement versus binding facts, fail-closed) with cost choice strictly after both.
+Action:: Replace "orthogonal" with "separately authorized, constrained by compatibility, one-directional". Record that the profile phase is the natural pinned home for execution requirements and that a single deterministic compatibility check precedes cost selection. This is a declared field plus a check, not a resolver framework.
+Disposition:: Open; concept revision (material for the binding seam).
+
+=== F6 -- IMPORTANT -- Failure-triggered escalation is a retry route and therefore a workflow edge, not an execution-policy knob
+
+Observation:: The follow-up presents cheap -> strong -> frontier escalation as execution runway and lists retry/resume authority among the things a binding must not increase. It does not observe that escalation *after failure* has no admissible path under current semantics: a failed or malformed result after adapter acceptance consumes the Hop and stops without hidden retry (WFC-FAIL-01, WFC-AUTO-03); the reducer routes only on a *valid* result's requested route among finite declared routes.
+Evidence:: `reducer.py` `reduce_result` (route only after preemption clears; unknown/failed results stop for human); `slice4.py` `recover_uncertain` (uncertain dispatch is charged and reconciled, never re-run); `operator.py` (no fallback binding; `retry: False` in plan).
+Risk if ignored:: An escalation ladder implemented as "on failure, re-invoke with a stronger binding" is precisely the hidden retry the FTR forbids and would silently convert one-shot fail-closed semantics into best-effort. The only coherent forms are (a) human resume with a changed binding, or (b) a profile-declared route reached by a valid result (for example failed gate -> correction) where the *next* Hop's resolver applies an escalation policy and charges the budget. Either way the ladder is a workflow edge plus an execution input, which is a further instance of F5's coupling. Economically, each escalation re-sends the full pinned component set (up to `CONTEXT_LIMIT_BYTES` = 192 KiB) and consumes a Hop, so cheapest-per-Hop can raise total cost; no fact needed to judge this is recorded today (`execution-evidence.json` holds return code and timeout only; Codex usage lives in transient stdout).
+Action:: Record that escalation on failure stays human; escalation on a valid non-completing result is a declared route; the minimum facts before any economic selection are per-invocation tokens in/out, wall time, binding, outcome, applied route, Finding delta, and re-review count. Not a CostOptimizer; an evidence list.
+Disposition:: Open; concept revision.
+
+=== F7 -- MINOR -- The recommendation-vs-authority principle lacks its transition-owner clause
+
+Observation:: "May recommend governance, may not weaken its own governance" is necessary but does not say *who* turns a recommendation into authority. Today the answer is structural: `RoutingResult` has no field for execution or classification recommendations, so they are prose and mechanically inert; scope change and escalation stop for a human; child work requires explicit maintainer authority (WFC-FAIL-06). The gap appears only when a future resolver reads a recommendation from the recommending Hop's own output (for example "complexity" from the worker's result to pick a stronger binding for that worker's next Hop): the entity benefiting supplies the evidence.
+Evidence:: `serialization.py` `ROUTING_RESULT_REQUIRED_KEYS`; `reducer.py` `scope_changed` / `requires_human` preemption; `authorize_prerequisite`.
+Risk if ignored:: Circular authority enters through the binding seam, not the route table. It is benign only because of F5's one-directional rule and an unchanged budget.
+Action:: Add the clause: a recommendation becomes authority only through an input the recommending Hop cannot author -- a human, trusted policy pinned before the Hop, or a separately declared gate phase. Note also that a profile edge into a phase with broader actions is an agent-selected, profile-pre-authorized escalation; profile authors must treat such edges as grants.
+Disposition:: Open; wording.
+
+=== F8 -- MINOR -- The follow-up over-couples Slice 5B to questions 5B does not depend on
+
+Observation:: "Slice 5B's review/correction/Finding convergence is an inner-Coordinator question only after authority and evidence semantics are independently contracted." The authority semantics 5B needs -- gate authority, Finding disposition authority, reopening with new material evidence -- are already contracted (WFC-REVIEW-02, WFC-FIND-03) and implemented (`reducer.apply_finding_deltas`, `_may_dispose`). F1--F6 concern the outer loop and future runway; none changes what 5B must build.
+Evidence:: `reducer.py`; rescoping assessment 10.2 and section 9 (5B-specific residuals: fail vs error, `finding_delta_ids` attribution, phase-specific durable artifacts, context completeness).
+Risk if ignored:: Sequencing stalls on unrelated concept work.
+Action:: Narrow the precondition to the 5B residuals already listed in the rescoping assessment.
+Disposition:: Open; wording.
+
+=== F9 -- MINOR -- Review independence rests on fresh context alone; shared priors are structurally possible
+
+Observation:: Author and reviewer phases receive the same pinned components and, today, the same fixed binding; "fresh" excludes conversation history, not shared assumptions. Durable evidence keeps one-line `Hop.summary` and short `Finding.invariant` values, which cannot be challenged later; the challengeable record is the *required durable artifact* of semantic phases (WFC-OUTPUT-04), which exists and is adequate.
+Evidence:: `operator.py` `_h1_context`; `prompt.py` `_selected_ids`; `model.py` `Hop.summary`; dogfood profile (single component set).
+Risk if ignored:: Accumulated locally plausible, globally wrong decisions pass a reviewer that shares the author's premise. The existing bounded-goalpost and human outer loop mitigate but do not name the property.
+Action:: Record one principle, not a framework: a gate review's independence is a *declared* profile property with at least one varied input (binding, component set, or human). This is a phase-to-binding constraint and lands in F5's seam. No Slice-5B fixture change is implied.
+Disposition:: Open; principle.
+
+=== INFO / WATCH
+
+W1:: The task payload is Run-invariant: the operator passes the identical task text to H001 and H002 and only adds a prior-Hop summary item. Phase semantics therefore come from role components. For 5B the correction Hop's instruction must come from components plus projected Findings and diff, not from the task. Observation only.
+W2:: The constructed prompt is a deterministic function of pinned governing inputs, Run state, and invocation IDs (`assemble_prompt`, component digests in `operator-plan.json`). The follow-up's "evidence, not copies" therefore already holds for the Coordinator-constructed part without new mechanism; the gap is entirely in-Hop disclosure (F3).
+W3:: Agent selection among several declared `goto` routes is a bounded semantic choice executed deterministically. The FTR names it correctly; no mislabelling of semantic decisions as deterministic was found in code.
+W4:: The carve-out hypothesis is premature until F1 and F2 are answered, because a generic Coordinator would export "committed equals authorized" and "policy is not a scope ceiling" to consumers that are not maintainer-only repositories.
+
+== 4. Section-by-section assessment against the review questions
+
+. *Inner Coordinator vs outer loop.* The inner Coordinator is independent of *how* a WorkItem was selected but not of *who may author* its governing inputs (F1) or *what ceiling* bounds them (F2). Continuation logic does not perform work selection: H002 is the same WorkItem at a new HEAD with a pinned task; phase choice is a bounded route request (W3). A future outer loop weakens authority without crossing an obvious boundary exactly through F1 and F2. A smaller boundary exists: the governing-input set is the single inner contract; everything that produces it is outer.
+. *Recommendation vs authority.* Sufficient today by construction (no channel), insufficient as a stated principle for the binding seam (F7). Circularity risk is confined to a resolver reading the worker's own output.
+. *Action vs information authority.* Separable as concepts; not separable at the enforcement point, which is the environment boundary for both (F3). Third dimension: reachability. Derived material in Run state inherits classification (F4).
+. *Monotone restrictions.* Monotonicity is sufficient once the disclosure set is defined as the reachable surface and the state root is included as a stage (F3, F4). The precise rule and the location of declassification authority are stated under F4.
+. *Workflow vs execution selection.* "Orthogonal" is falsified by the structured-output requirement and by review quality as a phase requirement. Correct concept: separately authorized, constrained by one-directional compatibility (F5). Escalation after failure is the concrete point where the coupling is unavoidable (F6).
+. *Trust before capability/cost.* Coherent, provided the trust requirement includes the reachable surface and context construction is binding-independent. Per-binding context variants would invert the ordering; if a narrower disclosure set is wanted it is a distinct *declared* phase or profile variant chosen by policy, not a runtime selector choice. The deterministic fail-closed boundary sits at the compatibility check, which is the same predicate for trust and capability (F5).
+. *Cost/capability escalation.* Decomposition moves capability need per Hop down and moves cost into re-sent context, invocation count, review, and budget; nothing needed to judge the trade is recorded today. Failure-based escalation conflicts with one-shot semantics unless declared as a route (F6).
+. *Auditability.* The audit direction proves the Coordinator's decision path and the constructed context (W2). It cannot prove semantic disclosure from a digest, cannot prove non-disclosure, and cannot see in-Hop reads or provider retention. The honest claim is presumed disclosure bounded by the reachable surface, which the evidence list must therefore include (F3). Derived prose in Run state is the secret duplication that already exists (F4).
+. *Human responsibility.* "Delegate cognition aggressively; constrain effects mechanically" holds because semantic phases must land required durable artifacts that remain challengeable, and because independent gates exist. The one missing principle is declared review independence with a varied input (F9).
+. *Slice 5B.* See section 5.
+
+== 5. Explicit answers and Slice-5B recommendation
+
+. *Is the inner-Coordinator / outer-loop boundary coherent?* Yes for present mechanics; drawn at the wrong place for the future. The real boundary is governing-input authorship, currently proven only by repository commit and bounded by no policy ceiling (F1, F2).
+. *Is Action Authority meaningfully separable from Information Authority?* Conceptually yes. Their enforcement coincides at the environment boundary, and a third dimension (reachability) is needed for the separation to be honest (F3, F4).
+. *Is "orthogonal workflow vs execution selection" correct as stated?* No. The correct relation is separately authorized, one-directional compatibility: phase may constrain binding; binding may never expand phase authority (F5, F6).
+. *Is trust-before-cost selection coherent?* Yes, with two conditions: the trust requirement is computed over the reachable surface, and context construction is binding-independent (no runtime context variants).
+. *Does the audit direction preserve useful evidence without unnecessary secret duplication?* For the Coordinator-constructed part, yes. It must add reachable-surface facts, and it must acknowledge that derived agent prose in Run state is already a classified copy (F4).
+. *Does the architecture accidentally imply a platform?* No. The only new seam implied by this review is a phase-declared execution requirement checked by one compatibility predicate -- a field and a check. The carve-out is premature before F1/F2 (W4).
+. *Should Slice 5B remain the leading next implementation candidate?* Yes. 5B remains the obvious next inner slice; no finding requires a conceptual adjustment before it. The follow-up's own precondition should be narrowed to the 5B residuals already recorded (F8). F1--F6 are outer-loop and runway corrections that 5B does not exercise; F9 is a profile-level principle that the deterministic 5B fixture need not implement. This review does not authorize Slice 5B.
+
+== 6. Rediscovered caveats not counted as findings
+
+* WATCH-7 / WATCH-8 (summary aggregates; single overwriting result carrier) -- documented and reconciled.
+* Fail-versus-error conflation, empty `finding_delta_ids`, phase-specific durable-artifact declarations -- documented 5B residuals.
+* No token accounting, no supervisor, no resume command, no provider selection -- explicit non-goals or deferred items.
+* Agent choice among declared routes -- by design, not a mislabelled deterministic decision.
+
+== 7. Residual risks and disposition summary
+
+[cols="1,1,3,1",options="header"]
+|===
+|ID |Severity |One-line consequence |Disposition
+|F1 |IMPORTANT |Governing-input authorship is the real boundary; "committed at HEAD" is satisfiable by the Coordinator itself |Open; concept revision
+|F2 |IMPORTANT |Policy is not a ceiling over WorkItem scope or budget |Open; concept revision
+|F3 |IMPORTANT |Information authority attaches to the reachable surface; add reachability; audit bounds presumed disclosure only |Open; concept revision
+|F4 |IMPORTANT |Run state and promoted reports are derived classified copies; declassification has no owner |Open; concept revision
+|F5 |IMPORTANT |Replace "orthogonal" with one-directional compatibility; one predicate for trust and capability |Open; concept revision
+|F6 |IMPORTANT |Failure escalation is a retry route; must be declared or human; economic facts absent |Open; concept revision
+|F7 |MINOR |Name the transition owner for recommendation -> authority |Open; wording
+|F8 |MINOR |5B over-coupled to outer-loop questions |Open; wording
+|F9 |MINOR |Declared review independence with a varied input |Open; principle
+|W1--W4 |INFO |Task invariance; prompt reconstructability; route choice by design; carve-out premature |Watch
+|===
+
+== 8. Lifecycle cleanup check
+
+No FTR, BUG, or concept status changes. FTR-AGENT-WORKFLOW-COORDINATOR-P5 remains at its current disposition; Slice 5B remains NOT AUTHORIZED; the follow-up remains a non-normative concept. Recommended follow-up (not performed): incorporate F1--F6 into a dated revision of the follow-up or into the next concept iteration before any intake-automation or carve-out discussion; narrow the 5B precondition per F8. No includes, moves, or archival are required by this review. Residual scope is the concept revision itself; no new FTR is needed for it.
