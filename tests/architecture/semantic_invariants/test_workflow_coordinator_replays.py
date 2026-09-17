@@ -4,6 +4,7 @@ from dataclasses import fields
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.workflow_coordinator.model import (
     Escalation,
@@ -19,6 +20,10 @@ from scripts.workflow_coordinator.reducer import (
     reduce_result,
     require_reconcile,
     resume_after_reconcile,
+)
+from scripts.workflow_coordinator.serialization import (
+    work_item_from_yaml,
+    workflow_profile_from_yaml,
 )
 from tests.utils.workflow_coordinator import (
     charge_hop,
@@ -381,3 +386,20 @@ def test_replay_j_non_domain_specific_complex_profile_converges_generically():
     )
     assert "dmc" not in generic_source
     assert "trusted_ingress" not in generic_source
+
+
+def test_replay_j_slice5b_declarative_fixture_is_bounded_and_consumer_neutral():
+    fixture_path = Path("tests/data/workflow_coordinator/slice5b_non_dmc.yaml")
+    text = fixture_path.read_text(encoding="utf-8")
+    fixture = yaml.safe_load(text)
+    item = work_item_from_yaml(yaml.safe_dump(fixture["work_item"], sort_keys=False))
+    workflow = workflow_profile_from_yaml(yaml.safe_dump(fixture["profile"], sort_keys=False))
+
+    assert tuple(workflow.phases) == ("investigate", "review", "correct", "rereview")
+    assert item.max_autonomous_hops == 4
+    assert workflow.phases["review"].review is not None
+    assert workflow.phases["rereview"].review is not None
+    lowered = text.lower()
+    assert "dmc" not in lowered
+    assert "spreadsheet" not in lowered
+    assert "trusted_ingress" not in lowered

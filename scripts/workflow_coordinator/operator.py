@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Declarative, one-shot N=1 entry point for the accepted coordinator path."""
+"""Declarative finite-serial entry point for the accepted coordinator path."""
 
 from __future__ import annotations
 
@@ -21,6 +21,11 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Sequence
 
 from scripts.workflow_coordinator.git_facts import GitPreflightError, observe_repository, preflight_hop, repository_identity
+from scripts.workflow_coordinator.evidence import (
+    EvidenceRunner,
+    PRODUCTION_EVIDENCE_RUNNER,
+    TRUSTED_EVIDENCE,
+)
 from scripts.workflow_coordinator.model import DurableArtifact, RunStatus, new_run
 from scripts.workflow_coordinator.persistence import atomic_write_json, checkpoint_projection, write_run_snapshot
 from scripts.workflow_coordinator.prompt import ContextItem, PromptComponent
@@ -101,7 +106,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _preflight(args: argparse.Namespace):
+def _preflight(
+    args: argparse.Namespace,
+    *,
+    evidence_runner: EvidenceRunner = PRODUCTION_EVIDENCE_RUNNER,
+):
     repository = Path(args.repository).resolve()
     if not repository.is_dir():
         raise OperatorPreflightError("repository path is not a directory")
@@ -135,6 +144,7 @@ def _preflight(args: argparse.Namespace):
         raise OperatorPreflightError("WorkItem.profile_ref does not identify the supplied profile path")
     policy_actions = set(policy.actions)
     work_scope = _normalized_scope(work_item.scope, context="WorkItem.scope")
+    normalized_phase_scopes: dict[str, tuple[str, ...]] = {}
     for phase_key, phase_value in profile.phases.items():
         excess = sorted(set(phase_value.authorized_actions) - policy_actions)
         if excess:
@@ -142,22 +152,87 @@ def _preflight(args: argparse.Namespace):
                 f"profile phase {phase_key} authorizes actions outside repository policy: {', '.join(excess)}"
             )
         phase_scope = _normalized_scope(phase_value.authorized_scope, context=f"profile phase {phase_key} authorized_scope")
+        normalized_phase_scopes[phase_key] = phase_scope
         if any(not _within_scope(path, work_scope) for path in phase_scope):
             raise OperatorPreflightError(f"profile phase {phase_key} authorized scope exceeds WorkItem.scope")
-    if work_item.max_autonomous_hops > 2:
-        raise OperatorPreflightError("Slice-5A supports at most two autonomous Hops")
+        for evidence_name in phase_value.evidence:
+            if evidence_name not in policy.evidence_states:
+                raise OperatorPreflightError(
+                    f"profile phase {phase_key} selects evidence outside repository policy: {evidence_name}"
+                )
+            if not evidence_runner.supports(evidence_name):
+                raise OperatorPreflightError(
+                    f"profile phase {phase_key} selects unresolved evidence: {evidence_name}"
+                )
+            if (
+                evidence_runner is not PRODUCTION_EVIDENCE_RUNNER
+                and evidence_name in TRUSTED_EVIDENCE
+            ):
+                raise OperatorPreflightError(
+                    f"injected evidence runner name collides with production registry: {evidence_name}"
+                )
+    if work_item.max_autonomous_hops > 5:
+        raise OperatorPreflightError("Slice-5B supports at most five autonomous Hops")
     if work_item.initial_phase not in profile.phases:
         raise OperatorPreflightError(f"WorkItem.initial_phase is absent from supplied profile: {work_item.initial_phase}")
-    phase = profile.phases[work_item.initial_phase]
-    durable_artifacts = tuple(_relative_path(path, context="durable artifact") for path in args.durable_artifact)
-    if len(set(durable_artifacts)) != len(durable_artifacts):
+    initial_phase = profile.phases[work_item.initial_phase]
+    legacy_artifacts = tuple(_relative_path(path, context="durable artifact") for path in args.durable_artifact)
+    if len(set(legacy_artifacts)) != len(legacy_artifacts):
         raise OperatorPreflightError("durable artifact arguments must not contain duplicates")
-    if any(not _within_scope(path, phase.authorized_scope) for path in durable_artifacts):
-        raise OperatorPreflightError("durable artifact is outside the initial phase authorized scope")
-    if phase.durable_artifact is DurableArtifact.REQUIRED and not durable_artifacts:
-        raise OperatorPreflightError("initial phase requires at least one durable artifact")
-    if phase.durable_artifact is DurableArtifact.NONE and durable_artifacts:
-        raise OperatorPreflightError("initial phase allows no durable-artifact arguments")
+    durable_artifacts: dict[str, tuple[str, ...]] = {}
+    if work_item.durable_artifacts is not None:
+        if legacy_artifacts:
+            raise OperatorPreflightError(
+                "WorkItem durable_artifacts and --durable-artifact are mutually exclusive"
+            )
+        unknown_phases = sorted(set(work_item.durable_artifacts) - set(profile.phases))
+        if unknown_phases:
+            raise OperatorPreflightError(
+                "WorkItem durable_artifacts names undeclared phases: " + ", ".join(unknown_phases)
+            )
+        durable_artifacts = dict(work_item.durable_artifacts)
+        for phase_key, phase_value in profile.phases.items():
+            paths = durable_artifacts.get(phase_key, ())
+            if phase_value.durable_artifact is DurableArtifact.REQUIRED and not paths:
+                raise OperatorPreflightError(
+                    f"profile phase {phase_key} requires mapped durable artifacts"
+                )
+            if phase_value.durable_artifact is DurableArtifact.NONE and paths:
+                raise OperatorPreflightError(
+                    f"profile phase {phase_key} permits no mapped durable artifacts"
+                )
+            if any(
+                not _within_scope(path, work_scope)
+                or not _within_scope(path, normalized_phase_scopes[phase_key])
+                for path in paths
+            ):
+                raise OperatorPreflightError(
+                    f"durable artifact for phase {phase_key} is outside WorkItem or phase scope"
+                )
+    else:
+        for phase_key, phase_value in profile.phases.items():
+            if phase_key != work_item.initial_phase and phase_value.durable_artifact is DurableArtifact.REQUIRED:
+                raise OperatorPreflightError(
+                    f"legacy durable-artifact input cannot satisfy later required phase {phase_key}"
+                )
+        if initial_phase.durable_artifact is DurableArtifact.REQUIRED and not legacy_artifacts:
+            raise OperatorPreflightError("initial phase requires at least one durable artifact")
+        if initial_phase.durable_artifact is DurableArtifact.NONE and legacy_artifacts:
+            raise OperatorPreflightError("initial phase allows no durable-artifact arguments")
+        if any(
+            not _within_scope(path, work_scope)
+            or not _within_scope(path, normalized_phase_scopes[work_item.initial_phase])
+            for path in legacy_artifacts
+        ):
+            raise OperatorPreflightError("durable artifact is outside WorkItem or initial phase scope")
+        if initial_phase.durable_artifact is DurableArtifact.REQUIRED and any(
+            route.target == work_item.initial_phase
+            for phase_value in profile.phases.values()
+            for route in phase_value.routes.values()
+        ):
+            raise OperatorPreflightError(
+                "legacy durable-artifact input cannot satisfy direct initial-phase re-entry"
+            )
     components: dict[str, PromptComponent] = {}
     governing = {
         input_paths[name]: _governing_digest(text)
@@ -173,7 +248,10 @@ def _preflight(args: argparse.Namespace):
         governing[path] = _governing_digest(content)
     if args.timeout_seconds <= 0:
         raise OperatorPreflightError("timeout seconds must be positive")
-    return repository, state_root, input_paths, texts, work_item, profile, policy, components, durable_artifacts, governing
+    return (
+        repository, state_root, input_paths, texts, work_item, profile, policy,
+        components, durable_artifacts, legacy_artifacts, governing, evidence_runner,
+    )
 
 
 def _governing_inputs_unchanged(repository: Path, expected_head: str, governing: dict[str, str]) -> bool:
@@ -187,13 +265,71 @@ def _governing_inputs_unchanged(repository: Path, expected_head: str, governing:
         return False
 
 
-def _h1_context(run) -> tuple[ContextItem, ...]:
-    hop = run.hops[-1]
-    return (ContextItem(
-        reference=f"Hop {hop.hop_id} coordinator summary",
-        content=(f"prior_hop={hop.hop_id}\nprior_outcome={hop.outcome}\n"
-                 f"prior_range={hop.base_head}..{hop.end_head}\nprior_summary={hop.summary}"),
-    ),)
+def _reconstructed_context(
+    run,
+    profile,
+    repository: Path,
+    durable_artifacts: tuple[str, ...],
+    prior_observations: tuple[object, ...],
+) -> tuple[ContextItem, ...]:
+    """Project bounded fresh context while preserving origin labels."""
+
+    phase = profile.phases[run.phase]
+    lines = [
+        "provenance=coordinator_derived",
+        f"current_phase={run.phase}",
+        f"current_head={run.current_head}",
+        f"durable_artifacts={','.join(durable_artifacts)}",
+    ]
+    if phase.review is not None:
+        lines.extend(
+            (
+                f"review_authority={phase.review.authority.value}",
+                f"blocking_policy={phase.review.blocking_policy}",
+                f"finding_authority={','.join(phase.review.finding_authority)}",
+            )
+        )
+    for finding in run.findings:
+        lines.extend(
+            (
+                f"finding={finding.finding_id}|state={finding.state.value}|blocking={str(finding.blocking).lower()}"
+                f"|introduced_by={finding.introduced_by_hop}|changed_by={finding.changed_by_hop}"
+                f"|disposition={finding.disposition}|ledger_authority=coordinator"
+                "|blocking_origin=agent_proposal",
+                f"agent_attributed_finding_prose={finding.finding_id}|{finding.invariant}",
+                f"agent_attributed_evidence_refs={finding.finding_id}|{','.join(finding.evidence_refs)}",
+            )
+        )
+        if finding.successor_ref is not None:
+            lines.append(
+                f"agent_attributed_successor_ref={finding.finding_id}|{finding.successor_ref}"
+            )
+    if run.hops:
+        hop = run.hops[-1]
+        changed_paths = _git(
+            repository, "diff", "--name-only", f"{hop.base_head}..{hop.end_head}"
+        ).splitlines()
+        lines.extend(
+            (
+                f"prior_hop={hop.hop_id}",
+                f"prior_outcome={hop.outcome}",
+                f"prior_range={hop.base_head}..{hop.end_head}",
+                f"prior_commits={','.join(hop.actual_commits)}",
+                f"prior_changed_paths={','.join(changed_paths)}",
+                f"prior_applied_route={hop.applied_route or ''}",
+                f"agent_attributed_prior_summary={hop.summary}",
+            )
+        )
+    for observation in prior_observations:
+        lines.append(
+            f"trusted_evidence={observation.provider}|status={observation.status}|summary={observation.summary}"
+        )
+    return (
+        ContextItem(
+            reference=f"Coordinator reconstruction for {run.run_id}/{run.phase}",
+            content="\n".join(lines),
+        ),
+    )
 
 
 def _execution_binding(adapter, *, executable: str) -> dict[str, object]:
@@ -208,24 +344,37 @@ def _execution_binding(adapter, *, executable: str) -> dict[str, object]:
             "model": None, "reasoning": None}
 
 
-def _execution_evidence(run, outcome, *, invocation_id: str, binding: dict[str, object], timeout_seconds: float) -> dict[str, object]:
+def _execution_evidence(run, outcome, *, invocation_id: str, binding: dict[str, object], timeout_seconds: float,
+                        observations: tuple[object, ...] = ()) -> dict[str, object]:
     hop = run.hops[-1]
     return {"hop_id": hop.hop_id, "invocation_id": invocation_id, **binding,
             "context": "fresh", "timeout_seconds": timeout_seconds,
             "returncode": outcome.returncode, "timed_out": outcome.timed_out,
             "candidate_result_present": outcome.candidate_result is not None,
             "outcome": hop.outcome, "base_head": hop.base_head, "end_head": hop.end_head,
-            "actual_commits": list(hop.actual_commits)}
+            "actual_commits": list(hop.actual_commits),
+            "trusted_observations": [
+                {"provider": item.provider, "status": item.status,
+                 "command": list(item.command), "summary": item.summary,
+                 "artifact_ref": item.artifact_ref, "digest": item.digest}
+                for item in observations
+            ]}
 
 
 def run_serial_hops(
     run, profile, repository: Path, components: dict[str, PromptComponent], *, state_root: Path,
     association, task_payload: str, governing: dict[str, str], timeout_seconds: float,
     executable: str = "codex", adapter=None, durable_artifacts: tuple[str, ...] = (),
+    durable_artifacts_by_phase: dict[str, tuple[str, ...]] | None = None,
+    evidence_runner: EvidenceRunner = PRODUCTION_EVIDENCE_RUNNER,
     progress: Callable[[object, str, object | None], None] | None = None,
 ):
-    """The Slice-5A serial driver: one H001 and, only after a fresh gate, H002."""
+    """Run the finite Slice-5B serial loop without reserving a future Hop."""
+    if run.hop_limit > 5:
+        raise OperatorPreflightError("Slice-5B serial driver refuses a Hop limit above five")
     evidence: list[dict[str, object]] = []
+    artifact_map = dict(durable_artifacts_by_phase or {})
+    prior_observations: tuple[object, ...] = ()
 
     def publish_execution_evidence() -> None:
         atomic_write_json(
@@ -233,24 +382,6 @@ def run_serial_hops(
             {"schema_version": 1, "attempts": evidence},
         )
 
-    invocation_id = f"INV-{uuid.uuid4().hex}"
-    binding = _execution_binding(adapter, executable=executable)
-    first = run_real_one_hop(
-        run, profile, repository, components, state_root=state_root, association=association,
-        task_payload=task_payload, invocation_id=invocation_id, timeout_seconds=timeout_seconds,
-        executable=executable, adapter=adapter, durable_artifacts=durable_artifacts,
-    )
-    run = first.run
-    if progress is not None:
-        progress(run, invocation_id, first.outcome)
-    if first.outcome is not None and run.hops:
-        evidence.append(_execution_evidence(run, first.outcome, invocation_id=invocation_id,
-                                            binding=binding, timeout_seconds=timeout_seconds))
-        publish_execution_evidence()
-    if run.hop_limit != 2 or run.status is not RunStatus.READY:
-        return run, evidence
-    # H001 has already completed its independent publication sequence.  No
-    # speculative route or context is retained: validate all facts again first.
     def stop_continuation(reason: str, question: str):
         stopped = replace(run, status=RunStatus.AWAITING_HUMAN,
                           stop_reason=reason, human_question=question)
@@ -259,33 +390,61 @@ def run_serial_hops(
         atomic_write_json(run_root / "checkpoint.json", checkpoint_projection(stopped, profile))
         return stopped, evidence
 
-    expected_head = run.current_head
-    try:
-        validate_checkout(state_root, repository)
-        preflight_hop(repository, expected_repository=repository, expected_head=expected_head)
-    except (GitPreflightError, Slice4Error):
-        return stop_continuation(
-            "inter_hop_git_validation_failed",
-            "Inter-Hop Git validation failed; validate current reality before continuation.",
+    while run.status is RunStatus.READY:
+        if run.hop_used >= run.hop_limit:
+            break
+        if run.hop_used:
+            expected_head = run.current_head
+            try:
+                validate_checkout(state_root, repository)
+                preflight_hop(
+                    repository,
+                    expected_repository=repository,
+                    expected_head=expected_head,
+                )
+            except (GitPreflightError, Slice4Error):
+                return stop_continuation(
+                    "inter_hop_git_validation_failed",
+                    "Inter-Hop Git validation failed; validate current reality before continuation.",
+                )
+            if not _governing_inputs_unchanged(repository, expected_head, governing):
+                return stop_continuation(
+                    "governing_input_changed", "Pinned governing input changed after the prior Hop."
+                )
+        invocation_id = f"INV-{uuid.uuid4().hex}"
+        binding = _execution_binding(adapter, executable=executable)
+        phase_artifacts = (
+            durable_artifacts
+            if run.hop_used == 0 and durable_artifacts
+            else artifact_map.get(run.phase, ())
         )
-    if not _governing_inputs_unchanged(repository, expected_head, governing):
-        return stop_continuation(
-            "governing_input_changed", "Pinned governing input changed after H001."
+        hop_run = run_real_one_hop(
+            run, profile, repository, components,
+            state_root=state_root, association=association,
+            task_payload=task_payload, invocation_id=invocation_id,
+            timeout_seconds=timeout_seconds, executable=executable, adapter=adapter,
+            durable_artifacts=phase_artifacts,
+            context_items=_reconstructed_context(
+                run, profile, repository, phase_artifacts, prior_observations
+            ),
+            evidence_runner=evidence_runner,
         )
-    invocation_id = f"INV-{uuid.uuid4().hex}"
-    binding = _execution_binding(adapter, executable=executable)
-    second = run_real_one_hop(
-        run, profile, repository, components, state_root=state_root, association=association,
-        task_payload=task_payload, invocation_id=invocation_id, timeout_seconds=timeout_seconds,
-        executable=executable, adapter=adapter, context_items=_h1_context(run),
-    )
-    run = second.run
-    if progress is not None:
-        progress(run, invocation_id, second.outcome)
-    if second.outcome is not None and run.hops:
-        evidence.append(_execution_evidence(run, second.outcome, invocation_id=invocation_id,
-                                            binding=binding, timeout_seconds=timeout_seconds))
-        publish_execution_evidence()
+        run = hop_run.run
+        if progress is not None:
+            progress(run, invocation_id, hop_run.outcome)
+        if hop_run.outcome is not None and run.hops:
+            observations = (
+                hop_run.vertical.observations if hop_run.vertical is not None else ()
+            )
+            evidence.append(
+                _execution_evidence(
+                    run, hop_run.outcome, invocation_id=invocation_id,
+                    binding=binding, timeout_seconds=timeout_seconds,
+                    observations=observations,
+                )
+            )
+            prior_observations = observations
+            publish_execution_evidence()
     return run, evidence
 
 
@@ -366,14 +525,20 @@ def _write_failure_summary(state_root: Path, repository: Path, run, *, invocatio
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parse_args(argv)
-        repository, state_root, paths, texts, item, profile, policy, components, durable, governing = _preflight(args)
+        (
+            repository, state_root, paths, texts, item, profile, policy,
+            components, durable, legacy_durable, governing, active_evidence_runner,
+        ) = _preflight(args)
         run_id = f"RUN-{uuid.uuid4().hex}"
         run = new_run(item, profile, policy, run_id=run_id, baseline_head=args.expected_head)
         state_root.mkdir(parents=True)
         plan = {"schema_version": 1, "repository": str(repository), "expected_baseline": args.expected_head,
                 "inputs": {**paths, "pinned_revision": args.expected_head},
                 "components": {key: {"path": value.path, "digest": value.digest} for key, value in components.items()},
-                "durable_artifacts": list(durable), "state_root": str(state_root), "run_id": run_id,
+                "durable_artifacts": {
+                    phase: list(paths) for phase, paths in durable.items()
+                }, "legacy_durable_artifacts": list(legacy_durable),
+                "state_root": str(state_root), "run_id": run_id,
                 "executable": args.executable, "timeout_seconds": args.timeout_seconds,
                 "max_autonomous_hops": item.max_autonomous_hops, "retry": False,
                 "governing_inputs": governing}
@@ -402,7 +567,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         final_run, execution_evidence = run_serial_hops(
             run, profile, repository, components, state_root=state_root, association=association,
             task_payload=texts["task"], governing=governing, timeout_seconds=args.timeout_seconds,
-            executable=args.executable, durable_artifacts=durable, progress=remember_progress,
+            executable=args.executable, durable_artifacts=legacy_durable,
+            durable_artifacts_by_phase=durable,
+            evidence_runner=active_evidence_runner, progress=remember_progress,
         )
         latest_run = final_run
         summary = _summary(repository, final_run, None, execution_evidence=execution_evidence)

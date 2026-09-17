@@ -10,6 +10,7 @@ from .model import (
     FindingDelta,
     FindingState,
     MechanicalFacts,
+    Outcome,
     Reduction,
     ReviewAuthority,
     Route,
@@ -117,11 +118,37 @@ def apply_finding_deltas(
 ) -> Run:
     """Apply proposals while keeping authoritative disposition out of supervisor APIs."""
 
+    updated, _ = _apply_finding_deltas(
+        run,
+        deltas,
+        hop_id=hop_id,
+        authority=authority,
+        permitted_gate_operations=permitted_gate_operations,
+    )
+    return updated
+
+
+def _apply_finding_deltas(
+    run: Run,
+    deltas: tuple[FindingDelta, ...],
+    *,
+    hop_id: str,
+    authority: FindingAuthority,
+    permitted_gate_operations: tuple[str, ...] = (),
+) -> tuple[Run, tuple[str, ...]]:
+    """Atomically validate/apply proposals and report truthful changed IDs."""
+
     if authority is FindingAuthority.SUPERVISOR and deltas:
         raise ReductionError("supervisor cannot authoritatively change Finding state")
 
     findings = list(run.findings)
     by_id = {finding.finding_id: index for index, finding in enumerate(findings)}
+    changed_ids: list[str] = []
+
+    def changed(finding_id: str) -> None:
+        if finding_id not in changed_ids:
+            changed_ids.append(finding_id)
+
     for delta in deltas:
         if delta.finding_id is None:
             finding_id = _next_finding_id(tuple(findings))
@@ -136,6 +163,8 @@ def apply_finding_deltas(
                 raise ReductionError("residual Finding must be non-blocking")
             if delta.proposed_state is FindingState.SUPERSEDED and not delta.successor_ref:
                 raise ReductionError("superseded Finding requires successor_ref")
+            if delta.proposed_state is not FindingState.SUPERSEDED and delta.successor_ref is not None:
+                raise ReductionError("successor_ref is valid only for supersession")
             findings.append(
                 Finding(
                     finding_id=finding_id,
@@ -150,6 +179,7 @@ def apply_finding_deltas(
                 )
             )
             by_id[finding_id] = len(findings) - 1
+            changed(finding_id)
             continue
 
         index = by_id.get(delta.finding_id)
@@ -158,6 +188,35 @@ def apply_finding_deltas(
         previous = findings[index]
         if delta.invariant != previous.invariant:
             raise ReductionError(f"Finding {previous.finding_id} invariant cannot be rewritten")
+
+        same_state = delta.proposed_state is previous.state
+        if same_state:
+            if delta.blocking != previous.blocking:
+                raise ReductionError(
+                    f"Finding {previous.finding_id} same-state citation cannot change blocking"
+                )
+            if delta.successor_ref != previous.successor_ref:
+                raise ReductionError(
+                    f"Finding {previous.finding_id} same-state citation must restate successor_ref exactly"
+                )
+            if delta.new_material_evidence:
+                raise ReductionError(
+                    f"Finding {previous.finding_id} same-state citation cannot request a lifecycle operation"
+                )
+            appended = tuple(
+                reference
+                for reference in delta.evidence_refs
+                if reference not in previous.evidence_refs
+            )
+            if appended:
+                findings[index] = replace(
+                    previous,
+                    changed_by_hop=hop_id,
+                    evidence_refs=(*previous.evidence_refs, *appended),
+                )
+                changed(previous.finding_id)
+            continue
+
         if delta.blocking != previous.blocking:
             allowed_downgrade = (
                 previous.blocking
@@ -185,6 +244,8 @@ def apply_finding_deltas(
             raise ReductionError("residual Finding must be non-blocking")
         if delta.proposed_state is FindingState.SUPERSEDED and not delta.successor_ref:
             raise ReductionError("superseded Finding requires successor_ref")
+        if delta.proposed_state is not FindingState.SUPERSEDED and delta.successor_ref is not None:
+            raise ReductionError("successor_ref is valid only for supersession")
 
         findings[index] = replace(
             previous,
@@ -195,7 +256,15 @@ def apply_finding_deltas(
             disposition=f"{authority.value}: {delta.proposed_state.value}",
             successor_ref=delta.successor_ref,
         )
-    return replace(run, findings=tuple(findings))
+        changed(previous.finding_id)
+    return replace(run, findings=tuple(findings)), tuple(changed_ids)
+
+
+def _has_open_blocker(run: Run) -> bool:
+    return any(
+        finding.state is FindingState.OPEN and finding.blocking
+        for finding in run.findings
+    )
 
 
 def _apply_route(run: Run, route_key: str, route: Route) -> Reduction:
@@ -213,6 +282,8 @@ def _apply_route(run: Run, route_key: str, route: Route) -> Reduction:
             supervisor_required=False,
         )
     if route.effect is RouteEffect.COMPLETE:
+        if _has_open_blocker(run):
+            return _stop_for_human(run, "completion_blocked_by_open_blocking_findings")
         return Reduction(
             run=replace(run, status=RunStatus.COMPLETED, stop_reason=None, human_question=None),
             route_key=route_key,
@@ -266,8 +337,6 @@ def reduce_result(
     for error in mechanical_errors:
         if error:
             return finish(_stop_for_human(run, f"mechanical_preemption:{error}"))
-    if result.scope_changed:
-        return finish(_stop_for_human(run, "mechanical_preemption:scope_changed"))
     if result.requires_human or result.escalation is not None:
         question = (
             result.escalation.question if result.escalation else "Agent requested human authority."
@@ -277,6 +346,14 @@ def reduce_result(
             _stop_for_human(run, f"mechanical_preemption:human_authority{suffix}", question)
         )
 
+    # A correlated semantic failure is terminal and discards every proposal.
+    # It deliberately precedes scope/route/Finding guards (11.5.2 P5B-C6).
+    if result.outcome is Outcome.FAILED:
+        return finish(_stop_for_human(run, "result_failed"))
+
+    if result.scope_changed:
+        return finish(_stop_for_human(run, "mechanical_preemption:scope_changed"))
+
     assert phase is not None
     route = phase.routes.get(result.requested_route)
     if route is None:
@@ -284,6 +361,12 @@ def reduce_result(
             _stop_for_human(
                 run,
                 f"mechanical_preemption:unknown_route:{result.requested_route}",
+            )
+        )
+    if result.outcome is Outcome.CHANGES_REQUIRED and phase.review is None:
+        return finish(
+            _stop_for_human(
+                run, "mechanical_preemption:changes_required_requires_review"
             )
         )
     if phase.review and phase.review.authority is ReviewAuthority.ADVISORY:
@@ -299,7 +382,7 @@ def reduce_result(
         permitted_operations = ()
 
     try:
-        updated = apply_finding_deltas(
+        updated, finding_delta_ids = _apply_finding_deltas(
             run,
             result.findings,
             hop_id=hop_id,
@@ -309,9 +392,40 @@ def reduce_result(
     except ReductionError as error:
         return finish(_stop_for_human(run, f"mechanical_preemption:invalid_finding_delta:{error}"))
 
+    if result.outcome is Outcome.BLOCKED:
+        reduction = _stop_for_human(updated, "result_blocked")
+        return _with_hop_decision(
+            _with_finding_delta_ids(reduction, hop_id, finding_delta_ids), hop_id
+        )
+
+    route_key = result.requested_route
+    if facts.required_evidence_failed:
+        failure_key = phase.review.failed_evidence_route if phase.review else None
+        failure_route = phase.routes.get(failure_key) if failure_key else None
+        if (
+            phase.review is None
+            or phase.review.authority is not ReviewAuthority.GATE
+            or failure_route is None
+            or failure_route.effect is not RouteEffect.GOTO
+        ):
+            reduction = _stop_for_human(
+                updated, "required_evidence_failed_without_route"
+            )
+            return _with_hop_decision(
+                _with_finding_delta_ids(reduction, hop_id, finding_delta_ids), hop_id
+            )
+        route_key = failure_key
+        route = failure_route
+
+    if result.outcome is Outcome.CHANGES_REQUIRED and route.effect is RouteEffect.COMPLETE:
+        reduction = _stop_for_human(updated, "changes_required_cannot_complete")
+        return _with_hop_decision(
+            _with_finding_delta_ids(reduction, hop_id, finding_delta_ids), hop_id
+        )
+
     invocation_needed = route.supervisor or route.effect is RouteEffect.GOTO
     if invocation_needed and updated.hop_used >= updated.hop_limit:
-        return finish(
+        reduction = finish(
             Reduction(
                 run=replace(
                     updated,
@@ -323,8 +437,9 @@ def reduce_result(
                 supervisor_required=False,
             )
         )
+        return _with_finding_delta_ids(reduction, hop_id, finding_delta_ids)
     if route.supervisor:
-        return finish(
+        reduction = finish(
             Reduction(
                 run=replace(
                     updated,
@@ -336,7 +451,21 @@ def reduce_result(
                 supervisor_required=True,
             )
         )
-    return finish(_apply_route(updated, result.requested_route, route))
+        return _with_finding_delta_ids(reduction, hop_id, finding_delta_ids)
+    reduction = finish(_apply_route(updated, route_key, route))
+    return _with_finding_delta_ids(reduction, hop_id, finding_delta_ids)
+
+
+def _with_finding_delta_ids(
+    reduction: Reduction, hop_id: str, finding_delta_ids: tuple[str, ...]
+) -> Reduction:
+    updated_hops = tuple(
+        replace(hop, finding_delta_ids=finding_delta_ids)
+        if hop.hop_id == hop_id
+        else hop
+        for hop in reduction.run.hops
+    )
+    return replace(reduction, run=replace(reduction.run, hops=updated_hops))
 
 
 def confirm_supervisor_route(run: Run, profile: WorkflowProfile, route_key: str) -> Reduction:

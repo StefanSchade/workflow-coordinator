@@ -235,7 +235,19 @@ def test_durable_artifact_required_accepts_an_in_scope_committed_artifact(reposi
     required = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), durable_artifact=DurableArtifact.REQUIRED, evidence=("git_version",))})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(required, budget=1), current_head=head)
-    adapter = CommitAdapter(repository, "docs(workflow): WI-1 H001 artifact", envelope())
+    class IntentAdapter(CapturingAdapter):
+        def execute(self, request):
+            (request.repository / "src" / "change").write_text("change\n")
+            return super().execute(request)
+
+    adapter = IntentAdapter(
+        envelope(
+            commit_intent={
+                "paths": ["src/change"],
+                "subject": "docs(workflow): WI-1 H001 artifact",
+            }
+        )
+    )
     completed = run_one_hop(run, required, repository, adapter, components(("worker", 1), ("testing", 1)), task_payload="tiny", invocation_id="INV-1", durable_artifacts=("src/change",))
     assert completed.reduction.run.status.value == "completed"
 

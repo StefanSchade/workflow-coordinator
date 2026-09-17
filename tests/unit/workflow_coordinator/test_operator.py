@@ -148,16 +148,16 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     assert git(repository, "status", "--porcelain") == ""
 
 
-def test_n_greater_than_two_rejects_pinned_clean_input_before_execution(repository: Path, tmp_path: Path, capsys):
+def test_n_greater_than_five_rejects_pinned_clean_input_before_execution(repository: Path, tmp_path: Path, capsys):
     counter = tmp_path / "counter"
     executable = malformed_fake(tmp_path, counter)
     work = repository / "work.yml"
-    work.write_text(work.read_text().replace("max_autonomous_hops: 1", "max_autonomous_hops: 3"))
+    work.write_text(work.read_text().replace("max_autonomous_hops: 1", "max_autonomous_hops: 6"))
     expected_head = commit(repository)
     command = args(repository, tmp_path / "state", str(executable))
     assert command[command.index("--expected-head") + 1] == expected_head
     assert main(args(repository, tmp_path / "state", str(executable))) == 2
-    assert "at most two autonomous Hops" in capsys.readouterr().err
+    assert "at most five autonomous Hops" in capsys.readouterr().err
     assert not counter.exists()
 
 

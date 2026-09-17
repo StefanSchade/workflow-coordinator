@@ -91,6 +91,7 @@ class WorkItem:
     initial_phase: str
     max_autonomous_hops: int
     profile_labels: tuple[str, ...] = ()
+    durable_artifacts: Mapping[str, tuple[str, ...]] | None = None
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,7 @@ class ReviewDescriptor:
     trigger: str
     exit: str
     finding_authority: tuple[str, ...] = ()
+    failed_evidence_route: str | None = None
 
 
 @dataclass(frozen=True)
@@ -307,6 +309,7 @@ class MechanicalFacts:
     repository_anomaly: str | None = None
     policy_anomaly: str | None = None
     required_evidence_error: str | None = None
+    required_evidence_failed: bool = False
 
 
 @dataclass(frozen=True)

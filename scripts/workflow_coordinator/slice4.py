@@ -22,6 +22,7 @@ from .adapter import (
 )
 from .codex_adapter import CodexCliAdapter, CodexCliError
 from .git_facts import GitPreflightError, observe_hop, preflight_hop
+from .evidence import EvidenceRunner, PRODUCTION_EVIDENCE_RUNNER
 from .model import DispatchMarker, Run, WorkflowProfile
 from .persistence import (
     atomic_write_json, checkpoint_projection, recover_uncertain_dispatch,
@@ -154,6 +155,7 @@ def run_real_one_hop(
     durable_artifacts: tuple[str, ...] = (),
     adapter: AgentExecutionPort | None = None,
     context_items: tuple[ContextItem, ...] = (),
+    evidence_runner: EvidenceRunner = PRODUCTION_EVIDENCE_RUNNER,
 ) -> RealHopRun:
     """Plug the concrete process boundary into the sole accepted vertical path."""
     if not dispatch_eligible(run):
@@ -199,6 +201,7 @@ def run_real_one_hop(
             execution_timeout_seconds=timeout_seconds,
             registered_checkout_validator=require_registered_checkout,
             context_items=context_items,
+            evidence_runner=evidence_runner,
         )
     except ExecutionResultValidationError as error:
         return recover_uncertain(error.outcome)

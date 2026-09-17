@@ -181,6 +181,36 @@ def _strings(value: Any, *, context: str) -> tuple[str, ...]:
     return tuple(_string(item, context=f"{context} item") for item in value)
 
 
+def _repository_path(value: Any, *, context: str) -> str:
+    path = _string(value, context=context)
+    candidate = PurePosixPath(path)
+    if (
+        "\\" in path
+        or candidate.is_absolute()
+        or any(part in {"", ".", ".."} for part in candidate.parts)
+        or candidate.as_posix() != path
+    ):
+        raise ValidationError(f"{context} must be a normalized repository-relative path")
+    return path
+
+
+def _durable_artifacts(value: Any, *, context: str) -> dict[str, tuple[str, ...]]:
+    raw = _mapping(value, context=context)
+    result: dict[str, tuple[str, ...]] = {}
+    for phase_key, raw_paths in raw.items():
+        phase = _string(phase_key, context=f"{context} phase key")
+        if not isinstance(raw_paths, list) or not raw_paths:
+            raise ValidationError(f"{context}.{phase} must be a non-empty list")
+        paths = tuple(
+            _repository_path(path, context=f"{context}.{phase} item")
+            for path in raw_paths
+        )
+        if len(set(paths)) != len(paths):
+            raise ValidationError(f"{context}.{phase} paths must be unique")
+        result[phase] = paths
+    return result
+
+
 def _enum(enum_type: type[EnumType], value: Any, *, context: str) -> EnumType:
     try:
         return enum_type(value)
@@ -235,7 +265,7 @@ def work_item_from_yaml(text: str) -> WorkItem:
             "initial_phase",
             "max_autonomous_hops",
         },
-        optional={"profile_labels"},
+        optional={"profile_labels", "durable_artifacts"},
     )
     return WorkItem(
         schema_version=_version(data["schema_version"], context="WorkItem.schema_version"),
@@ -251,6 +281,11 @@ def work_item_from_yaml(text: str) -> WorkItem:
             positive=True,
         ),
         profile_labels=_strings(data.get("profile_labels", []), context="WorkItem.profile_labels"),
+        durable_artifacts=(
+            _durable_artifacts(data["durable_artifacts"], context="WorkItem.durable_artifacts")
+            if "durable_artifacts" in data
+            else None
+        ),
     )
 
 
@@ -285,7 +320,7 @@ def _review(value: Any, *, context: str) -> ReviewDescriptor | None:
             "trigger",
             "exit",
         },
-        optional={"finding_authority"},
+        optional={"finding_authority", "failed_evidence_route"},
     )
     context_policy = _string(data["context"], context=f"{context}.context")
     if context_policy != "fresh":
@@ -302,15 +337,24 @@ def _review(value: Any, *, context: str) -> ReviewDescriptor | None:
         raise ValidationError(
             f"{context} advisory review cannot carry Finding disposition authority"
         )
+    blocking_policy = _string(data["blocking_policy"], context=f"{context}.blocking_policy")
+    if blocking_policy != "blocking_only":
+        raise ValidationError(f"{context}.blocking_policy must be blocking_only")
+    failed_evidence_route = _optional_string(
+        data.get("failed_evidence_route"), context=f"{context}.failed_evidence_route"
+    )
+    if failed_evidence_route is not None and authority is not ReviewAuthority.GATE:
+        raise ValidationError(f"{context}.failed_evidence_route is valid only for a gate review")
     return ReviewDescriptor(
         purpose=_string(data["purpose"], context=f"{context}.purpose"),
         breadth=_string(data["breadth"], context=f"{context}.breadth"),
         authority=authority,
         context=context_policy,
-        blocking_policy=_string(data["blocking_policy"], context=f"{context}.blocking_policy"),
+        blocking_policy=blocking_policy,
         trigger=_string(data["trigger"], context=f"{context}.trigger"),
         exit=_string(data["exit"], context=f"{context}.exit"),
         finding_authority=permitted,
+        failed_evidence_route=failed_evidence_route,
     )
 
 
@@ -457,6 +501,16 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
             if route.target is not None and route.target not in phases:
                 raise ValidationError(
                     f"profile.phases.{phase_key}.routes.{route_key} targets unknown phase {route.target}"
+                )
+        if phase.review and phase.review.failed_evidence_route is not None:
+            route = phase.routes.get(phase.review.failed_evidence_route)
+            if route is None:
+                raise ValidationError(
+                    f"profile.phases.{phase_key}.review.failed_evidence_route names unknown route"
+                )
+            if route.effect is not RouteEffect.GOTO:
+                raise ValidationError(
+                    f"profile.phases.{phase_key}.review.failed_evidence_route must name a goto route"
                 )
     return WorkflowProfile(
         schema_version=_version(data["schema_version"], context="profile.schema_version"),
