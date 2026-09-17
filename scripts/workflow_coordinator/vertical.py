@@ -105,15 +105,32 @@ def _durable_artifact_anomalies(
     ):
         return ("required durable artifact is missing, unrepresented, or uncommitted",)
     for path in durable_artifacts:
-        tracked = subprocess.run(
-            ("git", "-C", str(repository), "ls-tree", "-r", "--name-only", delta.end_head, "--", path),
+        completed = subprocess.run(
+            ("git", "-C", str(repository), "ls-tree", "-z", delta.end_head, "--", path),
             check=False,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-        ).stdout.splitlines()
-        if tracked != [path] or not (repository / path).is_file():
-            return ("required durable artifact is absent or not Git-tracked at end HEAD",)
+        )
+        entries = tuple(filter(None, completed.stdout.split("\0")))
+        try:
+            metadata, tracked_path = entries[0].split("\t", 1)
+            mode, object_type, object_id = metadata.split(" ", 2)
+        except (IndexError, ValueError):
+            mode = object_type = object_id = tracked_path = ""
+        regular_versioned_file = (
+            completed.returncode == 0
+            and len(entries) == 1
+            and tracked_path == path
+            and mode in {"100644", "100755"}
+            and object_type == "blob"
+            and bool(object_id)
+            and (repository / path).is_file()
+        )
+        if not regular_versioned_file:
+            return (
+                "required durable artifact is absent or not a regular Git-tracked file at end HEAD",
+            )
     return ()
 
 

@@ -199,14 +199,12 @@ def _apply_finding_deltas(
                 raise ReductionError(
                     f"Finding {previous.finding_id} same-state citation must restate successor_ref exactly"
                 )
-            if delta.new_material_evidence:
-                raise ReductionError(
-                    f"Finding {previous.finding_id} same-state citation cannot request a lifecycle operation"
-                )
             appended = tuple(
-                reference
-                for reference in delta.evidence_refs
-                if reference not in previous.evidence_refs
+                dict.fromkeys(
+                    reference
+                    for reference in delta.evidence_refs
+                    if reference not in previous.evidence_refs
+                )
             )
             if appended:
                 findings[index] = replace(

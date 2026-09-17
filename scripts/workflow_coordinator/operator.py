@@ -13,6 +13,7 @@ if __package__ in {None, ""}:
 
 import argparse
 import hashlib
+import json
 import re
 import subprocess
 import uuid
@@ -274,6 +275,11 @@ def _reconstructed_context(
 ) -> tuple[ContextItem, ...]:
     """Project bounded fresh context while preserving origin labels."""
 
+    def agent_literal(value: object) -> str:
+        """Keep agent-originated values on one unambiguous context line."""
+
+        return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+
     phase = profile.phases[run.phase]
     lines = [
         "provenance=coordinator_derived",
@@ -296,13 +302,28 @@ def _reconstructed_context(
                 f"|introduced_by={finding.introduced_by_hop}|changed_by={finding.changed_by_hop}"
                 f"|disposition={finding.disposition}|ledger_authority=coordinator"
                 "|blocking_origin=agent_proposal",
-                f"agent_attributed_finding_prose={finding.finding_id}|{finding.invariant}",
-                f"agent_attributed_evidence_refs={finding.finding_id}|{','.join(finding.evidence_refs)}",
+                "agent_attributed_finding_prose="
+                + agent_literal(
+                    {"finding_id": finding.finding_id, "value": finding.invariant}
+                ),
+                "agent_attributed_evidence_refs="
+                + agent_literal(
+                    {
+                        "finding_id": finding.finding_id,
+                        "values": finding.evidence_refs,
+                    }
+                ),
             )
         )
         if finding.successor_ref is not None:
             lines.append(
-                f"agent_attributed_successor_ref={finding.finding_id}|{finding.successor_ref}"
+                "agent_attributed_successor_ref="
+                + agent_literal(
+                    {
+                        "finding_id": finding.finding_id,
+                        "value": finding.successor_ref,
+                    }
+                )
             )
     if run.hops:
         hop = run.hops[-1]
@@ -312,17 +333,18 @@ def _reconstructed_context(
         lines.extend(
             (
                 f"prior_hop={hop.hop_id}",
-                f"prior_outcome={hop.outcome}",
+                f"agent_attributed_prior_outcome={agent_literal(hop.outcome)}",
                 f"prior_range={hop.base_head}..{hop.end_head}",
                 f"prior_commits={','.join(hop.actual_commits)}",
                 f"prior_changed_paths={','.join(changed_paths)}",
                 f"prior_applied_route={hop.applied_route or ''}",
-                f"agent_attributed_prior_summary={hop.summary}",
+                f"agent_attributed_prior_summary={agent_literal(hop.summary)}",
             )
         )
     for observation in prior_observations:
         lines.append(
-            f"trusted_evidence={observation.provider}|status={observation.status}|summary={observation.summary}"
+            f"trusted_evidence={observation.provider}|status={observation.status}"
+            f"|summary={json.dumps(observation.summary, ensure_ascii=True)}"
         )
     return (
         ContextItem(
