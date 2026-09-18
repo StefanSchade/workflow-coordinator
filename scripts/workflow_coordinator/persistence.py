@@ -22,6 +22,45 @@ from .model import WorkflowProfile, record_hop
 Replace = Callable[[str, str], None]
 
 
+def observation_to_data(observation: Observation) -> dict[str, Any]:
+    """Project the exact bounded A2 attempt record without stream bodies."""
+
+    fingerprint = observation.stat_fingerprint
+    return {
+        "provider": observation.provider,
+        "status": observation.status,
+        "command_name": observation.command_name,
+        "command": list(observation.command),
+        "summary": observation.summary,
+        "artifact_ref": observation.artifact_ref,
+        "argv_digest": observation.argv_digest,
+        "authored_argv0": observation.authored_argv0,
+        "timeout_seconds": observation.timeout_seconds,
+        "cwd_policy": observation.cwd_policy,
+        "invocation_path": observation.invocation_path,
+        "canonical_path": observation.canonical_path,
+        "stat_fingerprint": None if fingerprint is None else {
+            "st_dev": fingerprint.st_dev,
+            "st_ino": fingerprint.st_ino,
+            "st_mode": fingerprint.st_mode,
+            "st_size": fingerprint.st_size,
+            "st_mtime_ns": fingerprint.st_mtime_ns,
+        },
+        "environment_policy": observation.environment_policy,
+        "path_source": observation.path_source,
+        "path_digest": observation.path_digest,
+        "exit_code": observation.exit_code,
+        "signal": observation.signal,
+        "error_class": observation.error_class,
+        "stdout_byte_count": observation.stdout_byte_count,
+        "stdout_sha256": observation.stdout_sha256,
+        "stdout_body_omitted": observation.stdout_body_omitted,
+        "stderr_byte_count": observation.stderr_byte_count,
+        "stderr_sha256": observation.stderr_sha256,
+        "stderr_body_omitted": observation.stderr_body_omitted,
+    }
+
+
 def atomic_write_text(path: Path, text: str, *, replace_file: Replace = os.replace) -> None:
     """Publish one complete file or leave the previous file untouched."""
 
@@ -175,16 +214,7 @@ def checkpoint_projection(
             }
             for finding in run.findings
         ],
-        "evidence": [
-            {
-                "provider": observation.provider,
-                "status": observation.status,
-                "summary": observation.summary,
-                "artifact_ref": observation.artifact_ref,
-                "digest": observation.digest,
-            }
-            for observation in observations
-        ],
+        "evidence": [observation_to_data(observation) for observation in observations],
         "next_permitted_route_keys": list(permitted_route_keys(run, profile)),
     }
 
@@ -193,6 +223,7 @@ __all__ = [
     "atomic_write_json",
     "checkpoint_projection",
     "load_dispatch_marker",
+    "observation_to_data",
     "load_run",
     "recover_uncertain_dispatch",
     "write_dispatch_marker",

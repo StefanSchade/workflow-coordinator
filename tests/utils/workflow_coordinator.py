@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 
 from scripts.workflow_coordinator.model import (
     DurableArtifact,
+    EvidenceCommand,
     Escalation,
     FindingDelta,
     FindingState,
     Hop,
+    Observation,
     Outcome,
     Phase,
     RepositoryPolicy,
@@ -23,6 +26,12 @@ from scripts.workflow_coordinator.model import (
     WorkflowProfile,
     new_run,
     record_hop,
+)
+from scripts.workflow_coordinator.evidence import (
+    CWD_POLICY,
+    ENVIRONMENT_POLICY,
+    PreparedEvidenceCommand,
+    prepare_evidence_commands,
 )
 
 
@@ -59,7 +68,7 @@ def phase(
         authorized_scope=("repo",),
         authorized_actions=("edit", "commit"),
         human_gates=(),
-        evidence=("tests",),
+        evidence=(),
         review=descriptor,
         routes=routes,
     )
@@ -89,7 +98,7 @@ def run_for(
         max_autonomous_hops=budget,
     )
     policy = RepositoryPolicy(
-        schema_version=2,
+        schema_version=3,
         policy_id="policy",
         revision="policy-r1",
         scope=("repo",),
@@ -97,7 +106,7 @@ def run_for(
         work_item_scope_ceiling=item.scope,
         max_autonomous_hops=item.max_autonomous_hops,
         actions=("edit", "commit"),
-        evidence_states=("tests",),
+        evidence_commands={"tests": EvidenceCommand(("git", "--version"), 10)},
     )
     return new_run(item, workflow, policy, run_id="RUN-1", baseline_head="head-0")
 
@@ -184,3 +193,53 @@ def delta(
 
 def with_phase(run: Run, phase_key: str) -> Run:
     return replace(run, phase=phase_key)
+
+
+def prepared_evidence(
+    repository,
+    names: tuple[str, ...] = ("tests",),
+) -> dict[str, PreparedEvidenceCommand]:
+    definitions = {
+        name: EvidenceCommand(("git", "--version"), 10) for name in names
+    }
+    return {
+        command.command_name: command
+        for command in prepare_evidence_commands(names, definitions, repository)
+    }
+
+
+def simulated_observation(
+    command: PreparedEvidenceCommand,
+    *,
+    status: str = "pass",
+    summary: str = "exit 0",
+) -> Observation:
+    resolution = command.admission_resolution
+    empty_digest = hashlib.sha256(b"").hexdigest()
+    return Observation(
+        provider=command.command_name,
+        status=status,
+        command_name=command.command_name,
+        command=(resolution.invocation_path, *command.authored_argv[1:]),
+        summary=summary,
+        artifact_ref=None,
+        argv_digest=command.argv_digest,
+        authored_argv0=command.authored_argv[0],
+        timeout_seconds=command.timeout_seconds,
+        cwd_policy=CWD_POLICY,
+        invocation_path=resolution.invocation_path,
+        canonical_path=resolution.canonical_path,
+        stat_fingerprint=resolution.stat_fingerprint,
+        environment_policy=ENVIRONMENT_POLICY,
+        path_source=command.environment.path_source,
+        path_digest=command.environment.path_digest,
+        exit_code=0 if status in {"pass", "fail"} else None,
+        signal=None,
+        error_class=None if status in {"pass", "fail"} else status,
+        stdout_byte_count=0,
+        stdout_sha256=empty_digest,
+        stdout_body_omitted=False,
+        stderr_byte_count=0,
+        stderr_sha256=empty_digest,
+        stderr_body_omitted=False,
+    )

@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from scripts.workflow_coordinator.model import RepositoryPolicy, WorkItem
+from scripts.workflow_coordinator.model import EvidenceCommand, RepositoryPolicy, WorkItem
 from scripts.workflow_coordinator.operator import OperatorPreflightError, _admit_a1
 from tests.utils.workflow_coordinator import phase, profile, route
 
@@ -42,7 +42,7 @@ def policy(
     hops=2,
 ):
     return RepositoryPolicy(
-        2,
+        3,
         "policy-a1",
         "r2",
         ("repo",),
@@ -50,7 +50,7 @@ def policy(
         ceiling,
         hops,
         ("edit", "commit"),
-        (),
+        {"tests": EvidenceCommand(("git", "--version"), 10)},
     )
 
 

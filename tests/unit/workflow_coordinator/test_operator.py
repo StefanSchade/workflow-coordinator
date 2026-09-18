@@ -45,7 +45,7 @@ scope: [PROOF.md]
 initial_phase: work
 max_autonomous_hops: 1
 """)
-    (repo / "policy.yml").write_text("""schema_version: 2
+    (repo / "policy.yml").write_text("""schema_version: 3
 policy_id: fixture
 revision: "1"
 scope: [repo]
@@ -53,7 +53,10 @@ governance_paths: [work.yml, profile.yml, policy.yml, components.yml, task.txt, 
 work_item_scope_ceiling: [PROOF.md]
 max_autonomous_hops: 5
 actions: [edit, commit]
-evidence_states: [local]
+evidence_commands:
+  local:
+    argv: [git, --version]
+    timeout_seconds: 10
 """)
     (repo / "profile.yml").write_text("""schema_version: 1
 profile_id: fixture
@@ -69,7 +72,7 @@ phases:
     authorized_scope: [PROOF.md]
     authorized_actions: [edit, commit]
     human_gates: []
-    evidence: []
+    evidence: [local]
     review: null
     routes:
       done:
@@ -165,6 +168,39 @@ def test_a1_rejection_has_no_run_state_checkout_adapter_or_provider_effects(
     assert not counter.exists()
 
 
+def test_a2_unknown_reference_has_no_run_state_checkout_evidence_adapter_or_provider_effects(
+    repository: Path, tmp_path: Path, monkeypatch
+):
+    counter = tmp_path / "provider-counter"
+    executable = fake(
+        tmp_path, f"import pathlib\npathlib.Path({str(counter)!r}).write_text('called')\n",
+    )
+    policy_path = repository / "policy.yml"
+    policy_path.write_text(policy_path.read_text().replace("  local:\n", "  other:\n"))
+    commit(repository, "test: undefined evidence reference")
+    calls = {"run_id": 0, "new_run": 0, "checkout": 0, "adapter": 0, "evidence": 0}
+
+    def forbidden(name):
+        def fail(*_args, **_kwargs):
+            calls[name] += 1
+            raise AssertionError(f"unexpected {name}")
+        return fail
+
+    monkeypatch.setattr(operator.uuid, "uuid4", forbidden("run_id"))
+    monkeypatch.setattr(operator, "new_run", forbidden("new_run"))
+    monkeypatch.setattr(operator, "register_checkout", forbidden("checkout"))
+    monkeypatch.setattr(operator, "CodexCliAdapter", forbidden("adapter"))
+    monkeypatch.setattr(
+        "scripts.workflow_coordinator.evidence.ProductionEvidenceRunner.observe",
+        forbidden("evidence"),
+    )
+    state_root = tmp_path / "a2-rejected-state"
+    assert main(args(repository, state_root, str(executable))) == 2
+    assert calls == {"run_id": 0, "new_run": 0, "checkout": 0, "adapter": 0, "evidence": 0}
+    assert not state_root.exists()
+    assert not counter.exists()
+
+
 def test_fake_success_is_one_hop_and_writes_compact_operator_evidence(repository: Path, tmp_path: Path):
     counter = tmp_path / "counter"
     body = f'''import json, pathlib, sys
@@ -180,6 +216,10 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     assert main(args(repository, state, str(executable))) == 0
     plan, summary = json.loads((state / "operator-plan.json").read_text()), json.loads((state / "operator-summary.json").read_text())
     assert counter.read_text() == "1" and plan["max_autonomous_hops"] == 1 and plan["retry"] is False
+    assert plan["evidence"]["environment_policy"] == "coordinator-inherited-environment-v1"
+    assert plan["evidence"]["selected_commands"][0]["command_name"] == "local"
+    assert plan["evidence"]["selected_commands"][0]["argv_digest"]
+    assert summary["schema_version"] == 2
     assert summary["run_status"] == "completed" and summary["hop_used"] == 1 and summary["worktree_clean"] is True
     assert len(summary["commits"]) == 1 and summary["changed_paths"] == ["PROOF.md"]
     assert git(repository, "status", "--porcelain") == ""
@@ -340,8 +380,8 @@ def _two_hop_serial_fixture(repository: Path, tmp_path: Path, adapter):
     baseline = git(repository, "rev-parse", "HEAD")
     item = WorkItem(1, "WI-stop", "fixture", "profile.yml", "repo", ("PROOF.md",), "prepare", 2)
     policy = RepositoryPolicy(
-        2, "policy", "1", ("repo",), ("governance",), ("PROOF.md",), 2,
-        ("edit", "commit"), (),
+        3, "policy", "1", ("repo",), ("governance",), ("PROOF.md",), 2,
+        ("edit", "commit"), {},
     )
     run = new_run(item, workflow, policy, run_id="RUN-stop", baseline_head=baseline)
     state = tmp_path / "external"
@@ -451,8 +491,8 @@ def test_n2_serial_driver_uses_fresh_context_and_never_allocates_h003(repository
     baseline = git(repository, "rev-parse", "HEAD")
     item = WorkItem(1, "WI-2", "fixture", "profile.yml", "repo", ("PROOF.md",), "prepare", 2)
     policy = RepositoryPolicy(
-        2, "policy", "1", ("repo",), ("governance",), ("PROOF.md",), 2,
-        ("edit", "commit"), (),
+        3, "policy", "1", ("repo",), ("governance",), ("PROOF.md",), 2,
+        ("edit", "commit"), {},
     )
     run = new_run(item, workflow, policy, run_id="RUN-2", baseline_head=baseline)
     adapter = _TwoHopAdapter(repository)
@@ -497,8 +537,8 @@ def test_governing_input_commit_after_h001_stops_before_h002(repository: Path, t
     baseline = git(repository, "rev-parse", "HEAD")
     item = WorkItem(1, "WI-drift", "fixture", "profile.yml", "repo", ("PROOF.md", "task.txt"), "prepare", 2)
     policy = RepositoryPolicy(
-        2, "policy", "1", ("repo",), ("governance",),
-        ("PROOF.md", "task.txt"), 2, ("edit", "commit"), (),
+        3, "policy", "1", ("repo",), ("governance",),
+        ("PROOF.md", "task.txt"), 2, ("edit", "commit"), {},
     )
     run = new_run(item, workflow, policy, run_id="RUN-drift", baseline_head=baseline)
     state = tmp_path / "external"

@@ -20,7 +20,8 @@ from .adapter import (
 )
 from .evidence import (
     EvidenceRunner,
-    PRODUCTION_EVIDENCE_RUNNER,
+    FAIL_CLOSED_EVIDENCE_RUNNER,
+    PreparedEvidenceCommand,
     observation_error,
 )
 from .git_facts import (
@@ -28,6 +29,7 @@ from .git_facts import (
     GitPreflightError,
     TrustedCommitError,
     commit_subject_error,
+    observe_repository,
     observe_hop,
     preflight_hop,
     trusted_commit,
@@ -140,7 +142,8 @@ def run_one_hop(
     execution_timeout_seconds: float = 0.0,
     registered_checkout_validator: Callable[[], None] | None = None,
     context_items: tuple[ContextItem, ...] = (),
-    evidence_runner: EvidenceRunner = PRODUCTION_EVIDENCE_RUNNER,
+    evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
+    evidence_commands: dict[str, PreparedEvidenceCommand] | None = None,
 ) -> VerticalRun:
     """Execute only the N=1 fake/subprocess boundary and reduce observed facts."""
 
@@ -240,14 +243,27 @@ def run_one_hop(
             repository, phase, delta, durable_artifacts, result
         ),
     )
+    authorized_evidence = evidence_commands or {}
     observations = tuple(
-        evidence_runner.observe(provider, repository) for provider in phase.evidence
+        evidence_runner.observe(authorized_evidence[name]) for name in phase.evidence
     )
     observation_errors = tuple(
         error
-        for provider, observation in zip(phase.evidence, observations, strict=True)
-        if (error := observation_error(observation, expected_provider=provider)) is not None
+        for name, observation in zip(phase.evidence, observations, strict=True)
+        if (
+            error := observation_error(observation, expected=authorized_evidence[name])
+        ) is not None
     )
+    post_evidence = observe_repository(repository)
+    post_evidence_anomalies: tuple[str, ...] = ()
+    if post_evidence.head != delta.end_head:
+        post_evidence_anomalies += (
+            "post-evidence HEAD differs from trusted pre-evidence Hop end HEAD",
+        )
+    if not post_evidence.clean or post_evidence.unresolved_submodules:
+        post_evidence_anomalies += (
+            "post-evidence worktree is not clean with resolved submodules",
+        )
     required_error = next(
         (
             item.summary
@@ -269,7 +285,7 @@ def run_one_hop(
         hop_id=hop_id,
         facts=MechanicalFacts(
             repository_anomaly="; ".join(
-                (*delta.anomalies, *post_acceptance_anomalies,
+                (*delta.anomalies, *post_acceptance_anomalies, *post_evidence_anomalies,
                  f"trusted_commit:{trusted_commit_error}" if trusted_commit_error else "")
             ).strip("; ") or None,
             required_evidence_error=required_error,

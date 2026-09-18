@@ -8,7 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator.evidence import run_evidence
+from scripts.workflow_coordinator.evidence import (
+    PRODUCTION_EVIDENCE_RUNNER,
+    prepare_evidence_commands,
+)
 from scripts.workflow_coordinator.git_facts import (
     GitPreflightError,
     observe_hop,
@@ -16,7 +19,7 @@ from scripts.workflow_coordinator.git_facts import (
     preflight_hop,
     preflight_state_root,
 )
-from scripts.workflow_coordinator.model import DispatchMarker, RunStatus
+from scripts.workflow_coordinator.model import DispatchMarker, EvidenceCommand, RunStatus
 from scripts.workflow_coordinator.persistence import recover_uncertain_dispatch
 from scripts.workflow_coordinator.reducer import resume_after_reconcile
 from tests.utils.workflow_coordinator import phase, profile, route, run_for
@@ -177,19 +180,37 @@ def test_postcondition_requires_clean_final_state(repository: Path):
     assert "dirty tracked state" in delta.anomalies
 
 
-def test_fixed_evidence_covers_pass_fail_error_and_not_run(repository: Path, monkeypatch):
-    passed = run_evidence("git_version", repository)
-    skipped = run_evidence("git_version", repository, selected=False)
-    assert passed.status == "pass" and passed.command == ("git", "--version") and passed.digest
-    assert skipped.status == "not_run"
+def test_policy_bound_evidence_covers_pass_fail_and_runtime_resolution_error(repository: Path):
+    definitions = {
+        "git_version": EvidenceCommand(("git", "--version"), 10),
+        "diff_hygiene": EvidenceCommand(("git", "diff", "--check"), 10),
+    }
+    prepared = {
+        command.command_name: command
+        for command in prepare_evidence_commands(
+            ("git_version", "diff_hygiene"), definitions, repository
+        )
+    }
+    passed = PRODUCTION_EVIDENCE_RUNNER.observe(prepared["git_version"])
+    assert passed.status == "pass"
+    assert passed.command[1:] == ("--version",)
+    assert passed.argv_digest
     (repository / "src" / "base.txt").write_text("line   \n", encoding="utf-8")
-    failed = run_evidence("diff_hygiene", repository)
+    failed = PRODUCTION_EVIDENCE_RUNNER.observe(prepared["diff_hygiene"])
     assert failed.status == "fail"
-    monkeypatch.setattr("scripts.workflow_coordinator.evidence.subprocess.run", lambda *a, **k: (_ for _ in ()).throw(OSError("offline")))
-    errored = run_evidence("git_version", repository)
+
+    executable = repository / "temporary-check"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    temporary = prepare_evidence_commands(
+        ("temporary",),
+        {"temporary": EvidenceCommand(("./temporary-check",), 10)},
+        repository,
+    )[0]
+    executable.unlink()
+    errored = PRODUCTION_EVIDENCE_RUNNER.observe(temporary)
     assert errored.status == "error"
-    with pytest.raises(ValueError, match="unknown trusted"):
-        run_evidence("agent-selected-command", repository)
+    assert errored.error_class == "resolution:ExecutableResolutionError"
 
 
 def test_marker_recovery_preserves_actual_commits_requires_resume_and_charges_once(repository: Path):

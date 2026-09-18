@@ -23,6 +23,7 @@ from typing import Mapping
 EDIT_ACTION = "edit"
 COMMIT_ACTION = "commit"
 COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS = 5
+COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS = 900
 
 
 class CoordinatorValue(str, Enum):
@@ -96,6 +97,12 @@ class WorkItem:
 
 
 @dataclass(frozen=True)
+class EvidenceCommand:
+    argv: tuple[str, ...]
+    timeout_seconds: int
+
+
+@dataclass(frozen=True)
 class RepositoryPolicy:
     schema_version: int
     policy_id: str
@@ -105,7 +112,7 @@ class RepositoryPolicy:
     work_item_scope_ceiling: tuple[str, ...]
     max_autonomous_hops: int
     actions: tuple[str, ...]
-    evidence_states: tuple[str, ...]
+    evidence_commands: Mapping[str, EvidenceCommand]
 
 
 @dataclass(frozen=True)
@@ -298,13 +305,41 @@ class Run:
 
 
 @dataclass(frozen=True)
+class StatFingerprint:
+    st_dev: int
+    st_ino: int
+    st_mode: int
+    st_size: int
+    st_mtime_ns: int
+
+
+@dataclass(frozen=True)
 class Observation:
     provider: str
     status: str
+    command_name: str
     command: tuple[str, ...]
     summary: str
     artifact_ref: str | None
-    digest: str | None
+    argv_digest: str
+    authored_argv0: str
+    timeout_seconds: int
+    cwd_policy: str
+    invocation_path: str | None
+    canonical_path: str | None
+    stat_fingerprint: StatFingerprint | None
+    environment_policy: str
+    path_source: str
+    path_digest: str
+    exit_code: int | None
+    signal: int | None
+    error_class: str | None
+    stdout_byte_count: int | None
+    stdout_sha256: str | None
+    stdout_body_omitted: bool | None
+    stderr_byte_count: int | None
+    stderr_sha256: str | None
+    stderr_body_omitted: bool | None
 
 
 @dataclass(frozen=True)

@@ -21,6 +21,7 @@ if __package__ in {None, ""}:  # Allow the documented file-based launcher.
 
 from scripts.workflow_coordinator.model import (
     DurableArtifact,
+    EvidenceCommand,
     Phase,
     RepositoryPolicy,
     Route,
@@ -28,6 +29,10 @@ from scripts.workflow_coordinator.model import (
     WorkItem,
     WorkflowProfile,
     new_run,
+)
+from scripts.workflow_coordinator.evidence import (
+    PRODUCTION_EVIDENCE_RUNNER,
+    prepare_evidence_commands,
 )
 from scripts.workflow_coordinator.persistence import atomic_write_json
 from scripts.workflow_coordinator.prompt import PromptComponent
@@ -191,13 +196,20 @@ def run_disposable_proof(
         "disposable-proof", ("disposable-proof",), "proof", 1,
     )
     policy = RepositoryPolicy(
-        2, "slice4-proof-policy", "proof-r1", ("disposable-proof",),
+        3, "slice4-proof-policy", "proof-r2", ("disposable-proof",),
         ("proof-runner",), work_item.scope, work_item.max_autonomous_hops,
-        ("edit", "commit"), ("git_version",),
+        ("edit", "commit"),
+        {"git_version": EvidenceCommand(("git", "--version"), 10)},
     )
     run_id = f"RUN-{uuid.uuid4().hex}"
     invocation_id = f"INV-{uuid.uuid4().hex}"
     run = new_run(work_item, profile, policy, run_id=run_id, baseline_head=initial_head)
+    evidence_commands = {
+        command.command_name: command
+        for command in prepare_evidence_commands(
+            ("git_version",), policy.evidence_commands, repository
+        )
+    }
     real_hop: RealHopRun | None = None
     error: str | None = None
     try:
@@ -207,6 +219,8 @@ def run_disposable_proof(
                           f"`PROOF.md` with subject `{EXPECTED_SUBJECT}`, then return route `complete`. "
                           f"The result invocation_id is `{invocation_id}`."),
             invocation_id=invocation_id, timeout_seconds=timeout_seconds, executable=executable,
+            evidence_runner=PRODUCTION_EVIDENCE_RUNNER,
+            evidence_commands=evidence_commands,
         )
     except Exception as caught:  # The summary, not terminal output, remains the operator record.
         error = f"{type(caught).__name__}: {caught}"

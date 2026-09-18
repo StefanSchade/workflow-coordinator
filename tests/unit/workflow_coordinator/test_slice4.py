@@ -235,7 +235,7 @@ output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001
 '''
     executable = _fake(tmp_path, script)
     workflow = profile({"work": phase({"done": route("complete")})})
-    workflow = replace(workflow, phases={"work": replace(workflow.phases["work"], authorized_scope=("PROOF.md",), evidence=("git_version",))})
+    workflow = replace(workflow, phases={"work": replace(workflow.phases["work"], authorized_scope=("PROOF.md",), evidence=())})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
     result = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))

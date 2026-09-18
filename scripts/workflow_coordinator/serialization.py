@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, fields
 from enum import Enum
 from pathlib import Path
@@ -15,10 +16,12 @@ from yaml.constructor import ConstructorError
 from .model import (
     COMMIT_ACTION,
     COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
+    COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS,
     CommitIntent,
     DispatchMarker,
     DurableArtifact,
     EDIT_ACTION,
+    EvidenceCommand,
     Escalation,
     Finding,
     FindingDelta,
@@ -172,11 +175,12 @@ def _version(value: Any, *, context: str) -> int:
 
 def _policy_version(value: Any) -> int:
     version = _integer(value, context="policy.schema_version")
-    if version == 1:
+    if version in {1, 2}:
         raise ValidationError(
-            "repository policy schema_version 1 is unsupported; migrate to schema_version 2"
+            f"repository policy schema_version {version} is unsupported; "
+            "migration to schema_version 3 is required"
         )
-    if version != 2:
+    if version != 3:
         raise ValidationError(f"policy.schema_version has unsupported version: {version}")
     return version
 
@@ -191,6 +195,43 @@ def _strings(value: Any, *, context: str) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ValidationError(f"{context} must be a list")
     return tuple(_string(item, context=f"{context} item") for item in value)
+
+
+def _evidence_commands(value: Any) -> dict[str, EvidenceCommand]:
+    raw = _mapping(value, context="policy.evidence_commands")
+    commands: dict[str, EvidenceCommand] = {}
+    for name, raw_command in raw.items():
+        if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name) is None:
+            raise ValidationError(
+                "policy.evidence_commands command name must match "
+                "[a-z][a-z0-9_]{0,63}: " + repr(name)
+            )
+        context = f"policy.evidence_commands.{name}"
+        command = _fields(
+            raw_command,
+            context=context,
+            required={"argv", "timeout_seconds"},
+        )
+        raw_argv = command["argv"]
+        if not isinstance(raw_argv, list) or not raw_argv:
+            raise ValidationError(f"{context}.argv must be a non-empty list")
+        argv: list[str] = []
+        for index, item in enumerate(raw_argv):
+            if not isinstance(item, str):
+                raise ValidationError(f"{context}.argv[{index}] must be a string")
+            if "\0" in item:
+                raise ValidationError(f"{context}.argv[{index}] must not contain NUL")
+            if index == 0 and not item:
+                raise ValidationError(f"{context}.argv[0] must be non-empty")
+            argv.append(item)
+        timeout = _integer(command["timeout_seconds"], context=f"{context}.timeout_seconds")
+        if not 1 <= timeout <= COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS:
+            raise ValidationError(
+                f"{context}.timeout_seconds must be in "
+                f"1..{COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS}"
+            )
+        commands[name] = EvidenceCommand(tuple(argv), timeout)
+    return commands
 
 
 def _repository_path(value: Any, *, context: str) -> str:
@@ -353,7 +394,7 @@ def repository_policy_from_yaml(text: str) -> RepositoryPolicy:
         context="repository policy",
         required={
             "schema_version", "policy_id", "revision", "scope", "governance_paths",
-            "work_item_scope_ceiling", "max_autonomous_hops", "actions", "evidence_states",
+            "work_item_scope_ceiling", "max_autonomous_hops", "actions", "evidence_commands",
         },
     )
     max_autonomous_hops = _integer(
@@ -375,7 +416,7 @@ def repository_policy_from_yaml(text: str) -> RepositoryPolicy:
         ),
         max_autonomous_hops=max_autonomous_hops,
         actions=_strings(data["actions"], context="policy.actions"),
-        evidence_states=_strings(data["evidence_states"], context="policy.evidence_states"),
+        evidence_commands=_evidence_commands(data["evidence_commands"]),
     )
 
 
@@ -548,6 +589,9 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
         _check_action_coherence(
             authorized_actions, durable_artifact, context=phase_context
         )
+        evidence = _strings(phase_data["evidence"], context=f"{phase_context}.evidence")
+        if len(set(evidence)) != len(evidence):
+            raise ValidationError(f"{phase_context}.evidence references must be unique")
         phases[phase_key] = Phase(
             role=_string(phase_data["role"], context=f"{phase_context}.role"),
             role_components=_strings(
@@ -566,7 +610,7 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
             ),
             authorized_actions=authorized_actions,
             human_gates=_strings(phase_data["human_gates"], context=f"{phase_context}.human_gates"),
-            evidence=_strings(phase_data["evidence"], context=f"{phase_context}.evidence"),
+            evidence=evidence,
             review=_review(phase_data["review"], context=f"{phase_context}.review"),
             routes=routes,
         )

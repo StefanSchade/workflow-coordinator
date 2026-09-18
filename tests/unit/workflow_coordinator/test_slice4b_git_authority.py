@@ -93,7 +93,7 @@ def _components() -> dict[str, PromptComponent]:
 
 
 def _vertical_run(repository: Path, adapter: WorktreeOnlyAdapter, *, scope: tuple[str, ...] = ("src",)):
-    workflow = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=scope, evidence=("git_version",))})
+    workflow = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=scope, evidence=())})
     base = git(repository, "rev-parse", "HEAD")
     run = replace(run_for(workflow, budget=1), current_head=base, baseline_head=base)
     return run_one_hop(run, workflow, repository, adapter, _components(), task_payload="fixture", invocation_id="INV-1")
@@ -316,7 +316,7 @@ def test_commit_intent_without_phase_commit_authority_never_mutates_git(reposito
         phase({"done": route("complete")}),
         authorized_scope=("src",),
         authorized_actions=("edit",),  # deliberately withholds commit authority
-        evidence=("git_version",),
+        evidence=(),
     )
     stopped = _vertical_run_phase(
         repository,
@@ -342,7 +342,7 @@ def test_commit_intent_without_phase_edit_authority_never_mutates_git(repository
         phase({"done": route("complete")}),
         authorized_scope=("src",),
         authorized_actions=("commit",),  # deliberately withholds edit authority
-        evidence=("git_version",),
+        evidence=(),
     )
     stopped = _vertical_run_phase(
         repository,
@@ -368,7 +368,7 @@ def test_wi02_shape_edit_only_required_durable_cannot_reach_a_trusted_commit(rep
         durable_artifact=DurableArtifact.REQUIRED,
         authorized_scope=("docs",),
         authorized_actions=("edit",),
-        evidence=("git_version",),
+        evidence=(),
     )
     stopped = _vertical_run_phase(
         repository,

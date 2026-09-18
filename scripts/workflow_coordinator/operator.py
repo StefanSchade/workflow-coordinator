@@ -24,8 +24,11 @@ from typing import Callable, Sequence
 from scripts.workflow_coordinator.git_facts import GitPreflightError, observe_repository, preflight_hop, repository_identity
 from scripts.workflow_coordinator.evidence import (
     EvidenceRunner,
+    FAIL_CLOSED_EVIDENCE_RUNNER,
     PRODUCTION_EVIDENCE_RUNNER,
-    TRUSTED_EVIDENCE,
+    PreparedEvidenceCommand,
+    prepare_evidence_commands,
+    snapshot_environment,
 )
 from scripts.workflow_coordinator.model import (
     COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
@@ -33,7 +36,12 @@ from scripts.workflow_coordinator.model import (
     RunStatus,
     new_run,
 )
-from scripts.workflow_coordinator.persistence import atomic_write_json, checkpoint_projection, write_run_snapshot
+from scripts.workflow_coordinator.persistence import (
+    atomic_write_json,
+    checkpoint_projection,
+    observation_to_data,
+    write_run_snapshot,
+)
 from scripts.workflow_coordinator.prompt import ContextItem, PromptComponent
 from scripts.workflow_coordinator.serialization import (
     ValidationError,
@@ -157,6 +165,23 @@ def _admit_a1(work_item, profile, policy, governing_paths) -> None:
         )
 
 
+def _selected_evidence_names(profile, policy) -> tuple[str, ...]:
+    """Check definition/reference coherence and retain first-reference order."""
+
+    selected: list[str] = []
+    seen: set[str] = set()
+    for phase_key, phase in profile.phases.items():
+        for name in phase.evidence:
+            if name not in policy.evidence_commands:
+                raise OperatorPreflightError(
+                    f"profile phase {phase_key} references undefined evidence command: {name}"
+                )
+            if name not in seen:
+                seen.add(name)
+                selected.append(name)
+    return tuple(selected)
+
+
 def _governing_digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -180,7 +205,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def _preflight(
     args: argparse.Namespace,
     *,
-    evidence_runner: EvidenceRunner = PRODUCTION_EVIDENCE_RUNNER,
+    evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
 ):
     repository = Path(args.repository).resolve()
     if not repository.is_dir():
@@ -226,22 +251,6 @@ def _preflight(
         normalized_phase_scopes[phase_key] = phase_scope
         if any(not _within_scope(path, work_scope) for path in phase_scope):
             raise OperatorPreflightError(f"profile phase {phase_key} authorized scope exceeds WorkItem.scope")
-        for evidence_name in phase_value.evidence:
-            if evidence_name not in policy.evidence_states:
-                raise OperatorPreflightError(
-                    f"profile phase {phase_key} selects evidence outside repository policy: {evidence_name}"
-                )
-            if not evidence_runner.supports(evidence_name):
-                raise OperatorPreflightError(
-                    f"profile phase {phase_key} selects unresolved evidence: {evidence_name}"
-                )
-            if (
-                evidence_runner is not PRODUCTION_EVIDENCE_RUNNER
-                and evidence_name in TRUSTED_EVIDENCE
-            ):
-                raise OperatorPreflightError(
-                    f"injected evidence runner name collides with production registry: {evidence_name}"
-                )
     if work_item.max_autonomous_hops > COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS:
         raise OperatorPreflightError("Slice-5B supports at most five autonomous Hops")
     if work_item.initial_phase not in profile.phases:
@@ -323,11 +332,21 @@ def _preflight(
         work_item, profile, policy,
         (*input_paths.values(), *selected_component_paths),
     )
+    selected_evidence = _selected_evidence_names(profile, policy)
+    environment = snapshot_environment()
+    try:
+        prepared_evidence = prepare_evidence_commands(
+            selected_evidence, policy.evidence_commands, repository,
+            environment=environment,
+        )
+    except ValueError as error:
+        raise OperatorPreflightError(str(error)) from error
     if args.timeout_seconds <= 0:
         raise OperatorPreflightError("timeout seconds must be positive")
     return (
         repository, state_root, input_paths, texts, work_item, profile, policy,
         components, durable_artifacts, legacy_artifacts, governing, evidence_runner,
+        {command.command_name: command for command in prepared_evidence}, environment,
     )
 
 
@@ -442,6 +461,37 @@ def _execution_binding(adapter, *, executable: str) -> dict[str, object]:
             "model": None, "reasoning": None}
 
 
+def _prepared_evidence_plan(
+    commands: dict[str, PreparedEvidenceCommand],
+    environment,
+) -> dict[str, object]:
+    selected = []
+    for command in commands.values():
+        resolution = command.admission_resolution
+        fingerprint = resolution.stat_fingerprint
+        selected.append({
+            "command_name": command.command_name,
+            "argv_digest": command.argv_digest,
+            "timeout_seconds": command.timeout_seconds,
+            "authored_argv0": command.authored_argv[0],
+            "invocation_path": resolution.invocation_path,
+            "canonical_path": resolution.canonical_path,
+            "stat_fingerprint": {
+                "st_dev": fingerprint.st_dev,
+                "st_ino": fingerprint.st_ino,
+                "st_mode": fingerprint.st_mode,
+                "st_size": fingerprint.st_size,
+                "st_mtime_ns": fingerprint.st_mtime_ns,
+            },
+        })
+    return {
+        "environment_policy": "coordinator-inherited-environment-v1",
+        "path_source": environment.path_source,
+        "path_digest": environment.path_digest,
+        "selected_commands": selected,
+    }
+
+
 def _execution_evidence(run, outcome, *, invocation_id: str, binding: dict[str, object], timeout_seconds: float,
                         observations: tuple[object, ...] = ()) -> dict[str, object]:
     hop = run.hops[-1]
@@ -452,9 +502,7 @@ def _execution_evidence(run, outcome, *, invocation_id: str, binding: dict[str, 
             "outcome": hop.outcome, "base_head": hop.base_head, "end_head": hop.end_head,
             "actual_commits": list(hop.actual_commits),
             "trusted_observations": [
-                {"provider": item.provider, "status": item.status,
-                 "command": list(item.command), "summary": item.summary,
-                 "artifact_ref": item.artifact_ref, "digest": item.digest}
+                observation_to_data(item)
                 for item in observations
             ]}
 
@@ -464,7 +512,8 @@ def run_serial_hops(
     association, task_payload: str, governing: dict[str, str], timeout_seconds: float,
     executable: str = "codex", adapter=None, durable_artifacts: tuple[str, ...] = (),
     durable_artifacts_by_phase: dict[str, tuple[str, ...]] | None = None,
-    evidence_runner: EvidenceRunner = PRODUCTION_EVIDENCE_RUNNER,
+    evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
+    evidence_commands: dict[str, PreparedEvidenceCommand] | None = None,
     progress: Callable[[object, str, object | None], None] | None = None,
 ):
     """Run the finite Slice-5B serial loop without reserving a future Hop."""
@@ -477,7 +526,7 @@ def run_serial_hops(
     def publish_execution_evidence() -> None:
         atomic_write_json(
             checkout_state_root(state_root, association) / "execution-evidence.json",
-            {"schema_version": 1, "attempts": evidence},
+            {"schema_version": 2, "attempts": evidence},
         )
 
     def stop_continuation(reason: str, question: str):
@@ -526,6 +575,7 @@ def run_serial_hops(
                 run, profile, repository, phase_artifacts, prior_observations
             ),
             evidence_runner=evidence_runner,
+            evidence_commands=evidence_commands or {},
         )
         run = hop_run.run
         if progress is not None:
@@ -563,7 +613,7 @@ def _summary(repository: Path, run, outcome, error: str | None = None, *, execut
         hops.append({"hop_id": hop.hop_id, "base_head": hop.base_head, "end_head": hop.end_head,
                      "actual_commits": list(hop.actual_commits), "changed_paths": changed,
                      "outcome": hop.outcome})
-    return {"schema_version": 1, "work_item_id": run.work_item_id, "run_id": run.run_id,
+    return {"schema_version": 2, "work_item_id": run.work_item_id, "run_id": run.run_id,
             "invocation_id": getattr(outcome, "invocation_id", None), "baseline_head": run.baseline_head,
             "current_head": run.current_head,
             "final_head": facts.head, "run_status": run.status.value, "hop_used": run.hop_used,
@@ -584,7 +634,7 @@ def _best_effort_failure_summary(
         "candidate_result_present": outcome.candidate_result is not None,
     }
     summary: dict[str, object] = {
-        "schema_version": 1, "work_item_id": run.work_item_id, "run_id": run.run_id,
+        "schema_version": 2, "work_item_id": run.work_item_id, "run_id": run.run_id,
         "invocation_id": invocation_id, "baseline_head": run.baseline_head,
         "current_head": run.current_head,
         "run_status": run.status.value, "hop_used": run.hop_used,
@@ -626,7 +676,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         (
             repository, state_root, paths, texts, item, profile, policy,
             components, durable, legacy_durable, governing, active_evidence_runner,
-        ) = _preflight(args)
+            prepared_evidence, evidence_environment,
+        ) = _preflight(args, evidence_runner=PRODUCTION_EVIDENCE_RUNNER)
         run_id = f"RUN-{uuid.uuid4().hex}"
         run = new_run(item, profile, policy, run_id=run_id, baseline_head=args.expected_head)
         state_root.mkdir(parents=True)
@@ -639,7 +690,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "state_root": str(state_root), "run_id": run_id,
                 "executable": args.executable, "timeout_seconds": args.timeout_seconds,
                 "max_autonomous_hops": item.max_autonomous_hops, "retry": False,
-                "governing_inputs": governing}
+                "governing_inputs": governing,
+                "evidence": _prepared_evidence_plan(
+                    prepared_evidence, evidence_environment
+                )}
         atomic_write_json(state_root / "operator-plan.json", plan)
     except SystemExit as error:
         return 0 if error.code == 0 else 2
@@ -667,7 +721,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             task_payload=texts["task"], governing=governing, timeout_seconds=args.timeout_seconds,
             executable=args.executable, durable_artifacts=legacy_durable,
             durable_artifacts_by_phase=durable,
-            evidence_runner=active_evidence_runner, progress=remember_progress,
+            evidence_runner=active_evidence_runner,
+            evidence_commands=prepared_evidence,
+            progress=remember_progress,
         )
         latest_run = final_run
         summary = _summary(repository, final_run, None, execution_evidence=execution_evidence)

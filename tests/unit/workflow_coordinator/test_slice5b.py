@@ -43,10 +43,12 @@ from tests.utils.workflow_coordinator import (
     charge_hop,
     delta,
     phase,
+    prepared_evidence,
     profile,
     result,
     route,
     run_for,
+    simulated_observation,
 )
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -269,21 +271,14 @@ def test_clean_evidence_failure_uses_only_declared_gate_route():
 
 
 class FakeEvidenceRunner:
-    def __init__(self, supported=("fake_check",), status="pass"):
-        self.supported = tuple(supported)
+    def __init__(self, status="pass"):
         self.status = status
-        self.support_calls: list[str] = []
         self.observe_calls: list[str] = []
 
-    def supports(self, provider: str) -> bool:
-        self.support_calls.append(provider)
-        return provider in self.supported
-
-    def observe(self, provider: str, repository: Path) -> Observation:
-        self.observe_calls.append(provider)
-        return Observation(
-            provider, self.status, ("fake-evidence", "--fixed"),
-            f"fixed {self.status}", None, f"digest-{self.status}",
+    def observe(self, command) -> Observation:
+        self.observe_calls.append(command.command_name)
+        return simulated_observation(
+            command, status=self.status, summary=f"fixed {self.status}"
         )
 
 
@@ -335,18 +330,12 @@ def test_slice5b_preflight_rejects_artifact_and_evidence_ambiguities(tmp_path: P
         )
 
     policy = repository / "policy.yml"
-    policy.write_text(policy.read_text().replace("- fake_check\n", "- other\n"))
+    policy_data = yaml.safe_load(policy.read_text())
+    policy_data["evidence_commands"]["other"] = policy_data["evidence_commands"].pop("fake_check")
+    policy.write_text(yaml.safe_dump(policy_data, sort_keys=False))
     commit_all(repository, "test: disallow evidence")
-    with pytest.raises(OperatorPreflightError, match="outside repository policy"):
+    with pytest.raises(OperatorPreflightError, match="undefined evidence command"):
         _preflight(preflight_args(repository, tmp_path / "state-2"), evidence_runner=runner)
-
-    policy.write_text(policy.read_text().replace("- other\n", "- fake_check\n"))
-    commit_all(repository, "test: restore evidence")
-    with pytest.raises(OperatorPreflightError, match="unresolved evidence"):
-        _preflight(
-            preflight_args(repository, tmp_path / "state-3"),
-            evidence_runner=FakeEvidenceRunner(supported=()),
-        )
 
 
 def test_slice5b_static_profile_and_legacy_preflight_negatives(tmp_path: Path):
@@ -462,13 +451,14 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
     (
         observed_repository, observed_state, _paths, texts, item, workflow,
         policy, components, artifact_map, legacy_artifacts, governing, active_runner,
+        evidence_commands, evidence_environment,
     ) = _preflight(
         preflight_args(repository, state_root), evidence_runner=runner
     )
     assert observed_repository == repository and observed_state == state_root
     assert legacy_artifacts == ()
     assert active_runner is runner
-    assert runner.support_calls == ["fake_check"] * 4
+    assert evidence_environment.path_digest
 
     import scripts.workflow_coordinator.operator as operator
 
@@ -490,6 +480,7 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
         timeout_seconds=1, executable="local", adapter=adapter,
         durable_artifacts_by_phase=artifact_map,
         evidence_runner=active_runner,
+        evidence_commands=evidence_commands,
     )
 
     assert final.status is RunStatus.COMPLETED
@@ -508,6 +499,11 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
     assert all(entry["context"] == "fresh" for entry in evidence)
     assert all(entry["trusted_observations"][0]["provider"] == "fake_check" for entry in evidence)
     assert all(entry["trusted_observations"][0]["status"] == "pass" for entry in evidence)
+    persisted = json.loads(
+        (state_root / "checkouts" / association.checkout_id / "execution-evidence.json").read_text()
+    )
+    assert persisted["schema_version"] == 2
+    assert persisted["attempts"] == evidence
     assert not (state_root / "checkouts" / association.checkout_id / "dispatch.json").exists()
     assert git(repository, "status", "--porcelain") == ""
 
@@ -524,8 +520,8 @@ def test_five_hop_budget_stops_before_h006_without_reservation_or_retry(tmp_path
         ("payload.txt",), "loop", 5,
     )
     policy = RepositoryPolicy(
-        2, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 5,
-        ("edit", "commit"), (),
+        3, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 5,
+        ("edit", "commit"), {},
     )
     run = new_run(item, workflow, policy, run_id="RUN-BUDGET-5B", baseline_head=baseline)
 
@@ -665,6 +661,7 @@ def test_required_evidence_error_not_run_and_malformed_hard_stop(
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
         task_payload="task", invocation_id="INV-1",
         evidence_runner=FakeEvidenceRunner(status=status),
+        evidence_commands=prepared_evidence(repository, ("fake_check",)),
     )
     assert vertical.reduction.run.status is RunStatus.AWAITING_HUMAN
     assert expected in (vertical.reduction.run.stop_reason or "")
@@ -761,8 +758,8 @@ def test_reconstructed_context_encodes_agent_values_and_attributes_outcome(tmp_p
                  ("payload.txt",), "review", 2),
         workflow,
         RepositoryPolicy(
-            2, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 2,
-            ("edit", "commit"), (),
+            3, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 2,
+            ("edit", "commit"), {},
         ),
         run_id="RUN-CONTEXT",
         baseline_head=baseline,
@@ -903,6 +900,7 @@ def test_vertical_clean_evidence_fail_uses_declared_gate_failure_route(tmp_path)
         task_payload="task",
         invocation_id="INV-FAIL-ROUTE",
         evidence_runner=FakeEvidenceRunner(status="fail"),
+        evidence_commands=prepared_evidence(repository, ("fake_check",)),
     )
     assert vertical.reduction.route_key == "correct"
     assert vertical.reduction.run.status is RunStatus.READY
@@ -923,6 +921,7 @@ def test_vertical_clean_evidence_fail_without_route_stops_exactly(tmp_path):
         task_payload="task",
         invocation_id="INV-FAIL-STOP",
         evidence_runner=FakeEvidenceRunner(status="fail"),
+        evidence_commands=prepared_evidence(repository, ("fake_check",)),
     )
     assert vertical.reduction.route_key is None
     assert vertical.reduction.run.stop_reason == "required_evidence_failed_without_route"
@@ -1071,47 +1070,47 @@ def test_required_artifact_rejects_tracked_symlink_to_external_content(tmp_path)
     assert "not a regular Git-tracked file" in (vertical.reduction.run.stop_reason or "")
 
 
-def test_injected_runner_cannot_claim_production_evidence_name(tmp_path):
+def test_injected_runner_has_no_name_authority_and_policy_definition_is_admitted(tmp_path):
     repository = fixture_repository(tmp_path)
     profile_path = repository / "profile.yml"
     policy_path = repository / "policy.yml"
     profile_path.write_text(profile_path.read_text().replace("fake_check", "git_version"))
     policy_path.write_text(policy_path.read_text().replace("fake_check", "git_version"))
     commit_all(repository)
-    with pytest.raises(OperatorPreflightError, match="collides with production registry"):
-        _preflight(
-            preflight_args(repository, tmp_path / "state"),
-            evidence_runner=FakeEvidenceRunner(supported=("git_version",)),
-        )
+    runner = FakeEvidenceRunner()
+    result = _preflight(
+        preflight_args(repository, tmp_path / "state"), evidence_runner=runner
+    )
+    assert tuple(result[-2]) == ("git_version",)
+    assert runner.observe_calls == []
     assert not (tmp_path / "state").exists()
 
 
 @pytest.mark.parametrize(
-    "observation, expected",
+    "malformation, expected",
     [
-        (
-            Observation("wrong_provider", "pass", ("fake",), "ok", None, "digest"),
-            "provider identity mismatch",
-        ),
-        (
-            Observation("fake_check", "pass", ("fake",), "ok", None, None),
-            "pass/fail requires digest",
-        ),
+        ("provider", "provider/command_name identity mismatch"),
+        ("argv_digest", "authored argv digest mismatch"),
     ],
 )
 def test_malformed_trusted_observation_hard_stops_before_routing(
-    tmp_path, observation, expected
+    tmp_path, malformation, expected
 ):
     repository = fixture_repository(tmp_path)
     baseline = commit_all(repository)
     workflow = _evidence_review_workflow(failure_route=True)
 
-    class FixedObservationRunner:
-        def supports(self, provider):
-            return provider == "fake_check"
+    commands = prepared_evidence(repository, ("fake_check",))
+    valid = simulated_observation(commands["fake_check"])
+    observation = (
+        replace(valid, provider="wrong_provider")
+        if malformation == "provider"
+        else replace(valid, argv_digest="wrong")
+    )
 
-        def observe(self, provider, observed_repository):
-            assert provider == "fake_check" and observed_repository == repository
+    class FixedObservationRunner:
+        def observe(self, command):
+            assert command.command_name == "fake_check"
             return observation
 
     vertical = run_one_hop(
@@ -1123,6 +1122,7 @@ def test_malformed_trusted_observation_hard_stops_before_routing(
         task_payload="task",
         invocation_id="INV-MALFORMED",
         evidence_runner=FixedObservationRunner(),
+        evidence_commands=commands,
     )
     assert expected in (vertical.reduction.run.stop_reason or "")
     assert vertical.reduction.run.stop_reason.startswith("mechanical_preemption:")
@@ -1256,8 +1256,8 @@ def test_direct_serial_driver_rejects_limit_above_five_before_dispatch(tmp_path)
                  ("payload.txt",), "loop", 6),
         workflow,
         RepositoryPolicy(
-            2, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 5,
-            ("edit", "commit"), (),
+            3, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 5,
+            ("edit", "commit"), {},
         ),
         run_id="RUN-LIMIT",
         baseline_head=baseline,

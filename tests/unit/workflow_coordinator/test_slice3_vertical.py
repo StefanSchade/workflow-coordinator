@@ -115,7 +115,7 @@ class CapturingAdapter:
 
 
 def test_one_invocation_identity_is_projected_dispatched_and_validated(repository):
-    workflow = profile({"work": replace(phase({"done": route("complete")}), evidence=("git_version",))})
+    workflow = profile({"work": replace(phase({"done": route("complete")}), evidence=())})
     run = replace(run_for(workflow, budget=1), current_head=subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip())
     adapter = CapturingAdapter(envelope())
     completed = run_one_hop(run, workflow, repository, adapter, components(("worker", 1), ("testing", 1)), task_payload="tiny", invocation_id="INV-1")
@@ -160,7 +160,7 @@ class CommitAdapter:
 def test_git_subject_postcondition_charges_invalid_commits_and_rejects_collisions(
     repository, subject, accepted
 ):
-    workflow = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), evidence=("git_version",))})
+    workflow = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), evidence=())})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head)
     adapter = CommitAdapter(repository, subject, envelope())
@@ -192,7 +192,7 @@ def test_git_subject_postcondition_charges_invalid_commits_and_rejects_collision
 
 
 def test_durable_artifact_required_charges_post_acceptance_failure(repository):
-    required = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), durable_artifact=DurableArtifact.REQUIRED, evidence=("git_version",))})
+    required = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), durable_artifact=DurableArtifact.REQUIRED, evidence=())})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(required, budget=1), current_head=head)
     stopped = run_one_hop(
@@ -213,7 +213,7 @@ def test_durable_artifact_required_charges_post_acceptance_failure(repository):
 
 
 def test_out_of_scope_post_acceptance_anomaly_still_charges_and_checkpoints(repository):
-    workflow = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), evidence=("git_version",))})
+    workflow = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), evidence=())})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head)
     stopped = run_one_hop(
@@ -232,7 +232,7 @@ def test_out_of_scope_post_acceptance_anomaly_still_charges_and_checkpoints(repo
 
 
 def test_durable_artifact_required_accepts_an_in_scope_committed_artifact(repository):
-    required = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), durable_artifact=DurableArtifact.REQUIRED, evidence=("git_version",))})
+    required = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=("src",), durable_artifact=DurableArtifact.REQUIRED, evidence=())})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(required, budget=1), current_head=head)
     class IntentAdapter(CapturingAdapter):

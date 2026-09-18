@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import pytest
 
-from scripts.workflow_coordinator.model import DispatchMarker, Observation, RunStatus
+from scripts.workflow_coordinator.model import DispatchMarker, RunStatus
 from scripts.workflow_coordinator.persistence import (
     atomic_write_text,
     checkpoint_projection,
@@ -18,7 +18,15 @@ from scripts.workflow_coordinator.serialization import (
     run_from_json,
     run_to_json,
 )
-from tests.utils.workflow_coordinator import charge_hop, phase, profile, route, run_for
+from tests.utils.workflow_coordinator import (
+    charge_hop,
+    phase,
+    prepared_evidence,
+    profile,
+    route,
+    run_for,
+    simulated_observation,
+)
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
@@ -90,10 +98,11 @@ def test_crash_after_dispatch_marker_charges_once_and_requires_reconcile():
     assert recovered_again.hop_used == 1
 
 
-def test_checkpoint_is_deterministic_and_derives_routes_from_profile():
+def test_checkpoint_is_deterministic_and_derives_routes_from_profile(tmp_path):
     workflow = profile({"work": phase({"z_route": route("complete"), "a_route": route("stop")})})
     run = run_for(workflow, budget=2)
-    observations = (Observation("tests", "pass", ("pytest",), "green", "report", "sha256:x"),)
+    command = prepared_evidence(tmp_path)["tests"]
+    observations = (simulated_observation(command),)
     first = checkpoint_projection(run, workflow, observations=observations)
     second = checkpoint_projection(run, workflow, observations=observations)
     assert first == second
