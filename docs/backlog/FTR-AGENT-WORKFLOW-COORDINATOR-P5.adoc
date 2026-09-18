@@ -3343,8 +3343,15 @@ engineering artifacts rather than automatically becoming canonical truth.
 
 ===== 13.1 Carve-out A1 -- governing-input and WorkItem-policy authority ceilings
 
-Status:: *NORMATIVE CONTRACT DRAFT; IMPLEMENTATION NOT AUTHORIZED PENDING
-INDEPENDENT ADVERSARIAL REVIEW AND EXPLICIT MAINTAINER DISPOSITION.*
+Status:: *NORMATIVE CONTRACT DRAFT, BOUNDEDLY CORRECTED; IMPLEMENTATION NOT
+AUTHORIZED PENDING INDEPENDENT DELTA RE-REVIEW AND EXPLICIT MAINTAINER
+DISPOSITION.*
+
+Review and correction:: Independent adversarial review `27c804b4`
+(`docs/warm_storage/global_reviews/agent_workflow_coordinator_carveout_a1_contract_review_2026-09-18.adoc`)
+returned verdict B. This section incorporates A1-CR-I1..I4 and A1-CR-M1..M5
+only; A1-CR-M6 (`WFC-ODI-02` family) is left unchanged to avoid traceability
+churn. Accepted A1 material is unchanged.
 
 Purpose and boundary:: A1 is the first accepted carve-out prerequisite and
 closes the pre-split F1/F2 authority gap for the current single-WorkItem inner
@@ -3380,22 +3387,49 @@ evidence_states: [diff_hygiene, git_version]
 
 Path syntax:: Governance paths and WorkItem ceiling entries shall be required,
 non-empty lists of unique, glob-free, normalized repository-relative POSIX
-paths. Each value shall be a non-empty stripped string; shall contain no `\`,
-absolute prefix, empty/`.`/`..` segment, trailing or repeated slash, or glob
-metacharacter `*`, `?`, `[`, or `]`; and shall equal its
-`PurePosixPath(value).as_posix()` spelling. Empty, `/`, and `.` shall not
-represent repository root. Files and directories are both valid lexical paths.
-Policy paths need not exist, because A1 must reserve the future A3 location;
-selected governing inputs remain required tracked files at pinned HEAD.
+paths. A1 shall define one pure A1 path-shape predicate. A value satisfies it
+when it is a non-empty stripped string; contains no `\`, absolute prefix,
+empty/`.`/`..` segment, trailing or repeated slash, or glob metacharacter `*`,
+`?`, `[`, or `]`; equals its `PurePosixPath(value).as_posix()` spelling; and is
+not `.`. Empty, `/`, and `.` shall not represent repository root. Files and
+directories are both valid lexical paths. Policy paths need not exist, because
+A1 must reserve the future A3 location; selected governing inputs remain
+required tracked files at pinned HEAD.
 
-Containment relation:: A1 shall reuse one canonical strict path normalizer and
-the existing `_within_scope` relation: `path` lies within `root` when the values
-are equal or `path` starts with `root + "/"`. It shall not add filesystem
-resolution, symlink semantics, globs, or a second path algebra. Exact duplicate
-governance paths reject. Distinct governance paths also reject when either is
-equal to, an ancestor of, or a descendant of the other; redundant overlapping
-governance roots are not a second valid spelling. Diagnostics shall be
-deterministic.
+Predicate application:: The A1 path-shape predicate applies to exactly these
+A1 operands: the three new RepositoryPolicy fields' path entries
+(`governance_paths`, `work_item_scope_ceiling`); `WorkItem.scope` entries and
+phase `authorized_scope` entries as they participate in A1 admission; the five
+supplied governing-input paths; and selected component paths. Each existing
+layer shall retain its own exception class (`ValidationError` in serialization,
+`OperatorPreflightError` in the operator) and its established diagnostic
+vocabulary; the predicate supplies the decision, not a shared exception or
+message. `git_facts._normalized_path`, CommitIntent path validation, and all
+trusted-commit/Hop-observation path semantics are excluded from A1 and remain
+unchanged. Unselected manifest entries, durable-artifact path validation, and
+other path layers are not refactored by A1.
+
+Deliberate A1 tightening:: Current normalization does *not* reject `.`:
+`operator._relative_path(".")`, `serialization._repository_path(".")`, and the
+component-manifest check all accept it, and none of the current helpers rejects
+glob metacharacters; `_repository_path` and the manifest check also accept
+surrounding whitespace. A1 deliberately tightens these A1 operands: `.` rejects
+for governance paths, WorkItem ceiling entries, WorkItem scope, and phase
+`authorized_scope`; glob metacharacters and surrounding whitespace reject
+wherever the A1 predicate applies. The `.` rejection is required, not cosmetic:
+`git_facts` treats an authorized scope of `.` as the whole repository for
+trusted commit, while `_within_scope` treats `.` lexically, so
+`within(".", g)` and `within(g, ".")` are both false for every governance path
+`g`. Admitting `.` would therefore let a whole-repository mutation scope pass the
+governance-overlap check.
+
+Containment relation:: A1 shall reuse the existing `_within_scope` relation:
+`path` lies within `root` when the values are equal or `path` starts with
+`root + "/"`. It shall not add filesystem resolution, symlink semantics, globs,
+or a second path algebra. Exact duplicate governance paths reject. Distinct
+governance paths also reject when either is equal to, an ancestor of, or a
+descendant of the other; redundant overlapping governance roots are not a
+second valid spelling. Diagnostics shall be deterministic.
 
 Governing-input set:: Before A3 exists, the selected repository-backed set is
 exactly the five supplied pinned files -- WorkItem, WorkflowProfile,
@@ -3405,9 +3439,10 @@ entries and durable-artifact output paths are not selected governing inputs.
 Every current core policy shall additionally protect the predetermined future
 A3 path
 `scripts/workflow_coordinator/resources/agent_operating_contract_v1.txt`.
-A1 neither creates nor loads that resource. Once A3 selects it, the resource is
-another pinned governing input subject to the same containment rule; after
-extraction its packaged ownership is governed by A3 rather than consumer paths.
+A1 neither creates nor loads that resource and only reserves and protects that
+lexical repository location. A1 does not determine how A3 loads, packages,
+pins, or digests the resource; the A3 contract shall define the relation
+between packaged resource identity and the pre-split governed repository path.
 
 Non-governing facts:: Coordinator code/hard limits, adapter/evidence-runner
 implementations and registries, repository/HEAD/cleanliness observations,
@@ -3437,14 +3472,17 @@ read-only WorkItem may retain empty scope; the policy ceiling remains explicitly
 non-empty.
 
 Hop domination:: `RepositoryPolicy.max_autonomous_hops` shall be an integer,
-not a boolean, in `1..5` at the current product boundary. It has no default.
-Admission requires
+not a boolean, in `1..COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS` (currently 5). It has
+no default. Admission requires
 `WorkItem.max_autonomous_hops <= RepositoryPolicy.max_autonomous_hops` and
-independently retains the current direct Coordinator hard maximum of five in
-preflight and the serial driver. Equality is allowed. A policy value above the
-hard limit, missing/invalid value, or WorkItem request above policy rejects.
-Later product-limit change requires separate authority but no policy-shape
-redesign.
+independently retains the direct Coordinator hard maximum in preflight and the
+serial driver. A1 shall introduce one named Coordinator constant,
+`COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS = 5`, used by RepositoryPolicy Hop-limit
+validation, `_preflight()`, and `run_serial_hops()`, replacing the current
+literal `5` checks; no other budgeting change is made. Equality is allowed. A
+policy value above the hard limit, missing/invalid value, or WorkItem request
+above policy rejects. Later product-limit change requires separate authority
+but no policy-shape redesign.
 
 Admission boundary:: Every A1 cross-document check shall complete in
 `operator._preflight()` after selected component paths are known and before Run
@@ -3453,6 +3491,33 @@ registration, adapter construction/entry, dispatch marker, fake executable, or
 provider call. Representative refusal tests shall prove no Run creation, no
 state-root existence, and zero adapter/fake/provider calls. A1 adds no retry or
 alternate ingress.
+
+Pure A1 admission function:: The A1 cross-document relations shall live in one
+pure, I/O-free function in `operator.py`, of the intended shape
+`_admit_a1(work_item, profile, policy, governing_paths) -> None`, where
+`work_item`, `profile`, and `policy` are already parsed model objects and
+`governing_paths` is the tuple of selected repository-backed governing-input
+paths (the five supplied inputs plus selected component paths). It applies the
+A1 path-shape predicate to WorkItem and phase scope operands and to the
+governing paths, and checks governing containment, symmetric phase/governance
+exclusion, WorkItem-scope domination, and Hop domination, raising
+`OperatorPreflightError` with sorted, deterministic diagnostics. It performs no
+Git, filesystem, state-root, or adapter access. `_preflight()` calls it after
+component resolution and before returning. Pinned/tracked Git reads,
+clean-worktree and HEAD checks, state-root absence, and side-effect boundaries
+remain owned by `_preflight()` and its unit tests. No new module, class, or
+policy engine is introduced.
+
+Proof-harness ingress:: `scripts/workflow_coordinator/proof_harness.py` is a
+closed historical/disposable Slice-4 proof ingress that constructs its
+RepositoryPolicy in memory and calls `new_run()` directly, bypassing
+`_preflight()`. A1 shall migrate its RepositoryPolicy construction explicitly to
+schema version 2 with least-authority values: `work_item_scope_ceiling` equal to
+its WorkItem scope; `max_autonomous_hops` equal to its WorkItem request; and
+`governance_paths` sufficient for its governing material and non-overlapping
+with its mutation scope. A1 grants this harness no normal admission authority.
+Any future reactivation as a supported ingress shall route through the normal A1
+admission boundary.
 
 Schema and migration:: The required authority fields make RepositoryPolicy a
 breaking shape change, so RepositoryPolicy alone moves from `schema_version: 1`
@@ -3469,10 +3534,16 @@ conditionally fail-closed; otherwise A2 shall use v3. It may not reinterpret
 A1 fields or accept v1 silently.
 
 A1 precedes A2:: A2 may later trust consumer-policy argv definitions executed
-with host authority. The selected policy must first be inside an admitted
-governance path and outside every phase mutation scope; otherwise a Hop could
-author the policy that supplies a later Run's trusted command definition. This
-is a dependency statement only and authorizes no evidence-command schema or
+with host authority. The selected policy must first be inside a governance path
+declared by the admitted policy and outside every phase mutation scope;
+otherwise a Hop of a Run admitted under that policy could modify the admitted
+policy or its governance area and thereby change a later Run's trusted command
+definition. The guarantee is relative to the governance paths declared by the
+admitted policy: it does not prevent a Run admitted under a different policy
+from mutating another bundle, nor a Hop from authoring a new bundle inside its
+own mutation scope. Such cross-bundle or new-bundle authority takes effect only
+through external launch authorization and remains outside A1. This is a
+dependency statement only and authorizes no evidence-command schema or
 execution.
 
 [cols="1,5",options="header"]
@@ -3483,12 +3554,15 @@ execution.
 |RepositoryPolicy schema version 2 shall require non-empty normalized
 `governance_paths`, non-empty normalized `work_item_scope_ceiling`, and positive
 bounded `max_autonomous_hops` in addition to the unchanged repository identity,
-action, and evidence-state fields. No A1 field has an inferred default.
+action, and evidence-state fields. No A1 field has an inferred default. The A1
+path-shape predicate rejects `.` for governance paths, ceiling entries, WorkItem
+scope, and phase scope.
 
 |WFC-POLICY-05
 |A1's repository-backed governing set shall be the five supplied pinned files
 and every selected component source. Current core policies shall also protect
-the fixed future A3 resource path without A1 creating/loading it. Harness,
+the fixed future A3 resource path lexically, without A1 creating, loading, or
+defining the packaging of it. Harness,
 evidence-defining, provider, and arbitrary executable files shall not be
 silently promoted.
 
@@ -3498,9 +3572,10 @@ at least one governance path. Any outside input rejects deterministically before
 Run creation.
 
 |WFC-POLICY-07
-|No phase mutation-scope entry may overlap a governance path in either
-direction. Equality, phase-as-ancestor, and phase-as-descendant each reject;
-siblings remain admissible.
+|No phase mutation-scope entry may overlap a governance path declared by the
+admitted policy in either direction. Equality, phase-as-ancestor, and
+phase-as-descendant each reject; siblings, including sibling-prefix names,
+remain admissible.
 
 |WFC-POLICY-08
 |Every WorkItem mutation-scope entry shall equal or descend from at least one
@@ -3512,7 +3587,8 @@ governance paths remain distinct.
 |The WorkItem autonomous-Hop request shall not exceed the policy Hop ceiling,
 which shall not exceed the current independent Coordinator hard maximum. Exact
 equality at either boundary is valid; the hard guard remains independently
-enforced.
+enforced. One named constant supplies the hard maximum to policy validation,
+preflight, and the serial driver.
 
 |WFC-AUTH-07
 |A1 refusal shall occur before Run identity/model creation, durable state-root
@@ -3527,9 +3603,11 @@ explicit and shall preserve all A1 authority semantics.
 
 |WFC-SYS-06
 |A1 acceptance shall load both current real core WorkItem/profile/policy/
-components/task bundles through the supported Coordinator schema/admission
-surface, resolve selected component sources, and prove governance, scope, and
-Hop domination. It shall also retain a consumer-neutral fake/local fixture and
+components/task bundles through the supported serializers, resolve selected
+component sources, and prove governance, scope, and Hop domination by calling
+the same pure A1 admission function used by `_preflight()`, without calling
+live-repository `_preflight()` or reimplementing the rules. It shall also
+retain a consumer-neutral fake/local fixture and
 deterministic negatives, with no DMC/spreadsheet semantics in generic production
 code and zero provider calls.
 |===
@@ -3539,23 +3617,31 @@ combinatorial multiplication:
 
 * positive: both current consumer bundles after explicit policy migration; the
   neutral fixture; multiple governing files beneath one governance directory;
-  a narrower phase scope in a sibling/non-governance area; WorkItem scope equal
-  to policy ceiling; and WorkItem Hops equal to policy ceiling;
+  a narrower phase scope in a sibling/non-governance area; sibling-prefix
+  non-overlap (governance `docs/ai_info`, phase scope `docs/ai_info_extra/x`);
+  WorkItem scope equal to policy ceiling; empty read-only WorkItem scope with a
+  non-empty policy ceiling; a governance path absent at pinned HEAD admitted
+  lexically; and WorkItem Hops equal to policy ceiling;
 * negative: governing input outside every governance path; phase scope equal to,
   ancestor of, and descendant of governance path; WorkItem scope outside and
   ancestor/wider than policy ceiling; WorkItem Hops above policy ceiling;
   malformed/absolute/`..`/glob/ambiguous, duplicate, and overlapping governance
-  paths; policy v1 or a missing required A1 field; and
+  paths; `.` as governance path, ceiling entry, WorkItem scope entry, and phase
+  `authorized_scope` entry; policy v1 or a missing required A1 field; a v2
+  policy with an unknown extra field; and
 * side effects: representative negative admission yields no Run, no state root,
   and zero adapter/fake/provider calls.
 
 Consumer integration boundary:: Add one focused integration test over the real
-bundles under `docs/ai_info/workflows/dogfood/...`. It shall parse current core
-WorkItem, profile, policy, components, and task inputs, resolve selected
-components, and execute the same generic admission relations used by the
-operator. It is not a live-provider, Useful-Loop, DMC-semantic, spreadsheet, or
-full-suite test. Deterministic unit tests own malformed and boundary variants;
-the integration test owns coherence of committed consumer data.
+bundles under `docs/ai_info/workflows/dogfood/...`. It shall read the worktree
+WorkItem, profile, policy, components, and task files, parse them through the
+supported loaders, resolve selected components through the manifest, and call
+the same pure A1 admission function that `_preflight()` calls. It shall not
+call live-repository `_preflight()` and shall not reimplement the admission
+rules. It is not a live-provider, Useful-Loop, DMC-semantic, spreadsheet, or
+full-suite test. Deterministic unit tests own malformed and boundary variants
+and `_preflight()` Git/side-effect behavior; the integration test owns
+coherence of committed consumer data.
 
 Current migration values:: Both current core policies may use
 `docs/ai_info` plus the exact future A3 resource path as governance paths; the
@@ -3568,15 +3654,21 @@ DMC and 4 for IOR-04. The neutral fixture shall use explicit exact governing
 file paths, exact WorkItem ceilings, and Hop ceiling 4. No dormant authority is
 added merely for migration convenience.
 
-Likely implementation seams:: `model.py` owns the three immutable fields;
-`serialization.py` owns policy-v2/schema and canonical path-shape validation;
-`operator.py` owns cross-document containment/domination and the pre-Run
-admission boundary; `_within_scope` remains containment and supplies symmetric
-overlap through two calls. Focused serialization/operator tests prove negative
-semantics and no side effects; `tests/utils/workflow_coordinator.py`, neutral
+Implementation seams:: `model.py` owns the three immutable fields;
+`serialization.py` owns policy-v2/schema validation and applies the A1
+path-shape predicate to the new policy path fields with `ValidationError`;
+`operator.py` owns the named hard-maximum use in `_preflight()` and
+`run_serial_hops()`, the pure A1 admission function, and its call from
+`_preflight()` before the pre-Run boundary; `_within_scope` remains containment
+and supplies symmetric overlap through two calls; `proof_harness.py` receives
+its explicit least-authority v2 RepositoryPolicy values and no admission
+authority. The named constant lives in `model.py` and the pure predicate in
+`serialization.py`, both importable by the operator without a new module. Focused
+serialization/operator tests prove negative semantics and no side effects;
+`tests/utils/workflow_coordinator.py`, positional test constructors, neutral
 fixture/tests, and the two real policy YAML files receive explicit v2 values;
-the new integration test proves committed consumer coherence. No other
-production architecture is required.
+the new integration test proves committed consumer coherence. `git_facts.py` is
+not an A1 seam. No other production architecture is required.
 
 Slice size and non-scope:: A1 remains one bounded implementation/review slice.
 It shall not design or implement A2 evidence argv, A3 operating-contract
@@ -3587,9 +3679,11 @@ generalized capability/policy systems, glob scope, or cross-repository
 provenance. A committed WorkItem remains externally authorized input; commit
 presence alone is not authorization.
 
-Lifecycle:: The immediate next action is independent adversarial review of this
-A1 contract. Only after findings are dispositioned and the maintainer explicitly
-authorizes implementation may one bounded A1 implementation commit modify the
+Lifecycle:: Independent adversarial review `27c804b4` returned B and this
+bounded correction applies its I1..I4 and M1..M5 findings. The immediate next
+action is a fresh independent bounded delta re-review of this correction. Only
+after an accepting re-review and explicit maintainer implementation
+authorization may one bounded A1 implementation commit modify the
 named code/tests/fixtures/current consumer policies. Acceptance is deterministic
 and fake/local with zero provider calls; it is followed by independent
 implementation review. A2/A3/A4', extraction, and target-repository mutation
