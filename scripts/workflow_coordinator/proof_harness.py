@@ -190,7 +190,11 @@ def run_disposable_proof(
         1, WORK_ITEM_ID, "future maintainer authorization required", "slice4-disposable-proof",
         "disposable-proof", ("disposable-proof",), "proof", 1,
     )
-    policy = RepositoryPolicy(1, "slice4-proof-policy", "proof-r1", ("disposable-proof",), ("edit", "commit"), ("git_version",))
+    policy = RepositoryPolicy(
+        2, "slice4-proof-policy", "proof-r1", ("disposable-proof",),
+        ("proof-runner",), work_item.scope, work_item.max_autonomous_hops,
+        ("edit", "commit"), ("git_version",),
+    )
     run_id = f"RUN-{uuid.uuid4().hex}"
     invocation_id = f"INV-{uuid.uuid4().hex}"
     run = new_run(work_item, profile, policy, run_id=run_id, baseline_head=initial_head)

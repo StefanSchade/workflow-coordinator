@@ -14,6 +14,7 @@ from yaml.constructor import ConstructorError
 
 from .model import (
     COMMIT_ACTION,
+    COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
     CommitIntent,
     DispatchMarker,
     DurableArtifact,
@@ -169,6 +170,17 @@ def _version(value: Any, *, context: str) -> int:
     return version
 
 
+def _policy_version(value: Any) -> int:
+    version = _integer(value, context="policy.schema_version")
+    if version == 1:
+        raise ValidationError(
+            "repository policy schema_version 1 is unsupported; migrate to schema_version 2"
+        )
+    if version != 2:
+        raise ValidationError(f"policy.schema_version has unsupported version: {version}")
+    return version
+
+
 def _boolean(value: Any, *, context: str) -> bool:
     if not isinstance(value, bool):
         raise ValidationError(f"{context} must be a boolean")
@@ -192,6 +204,50 @@ def _repository_path(value: Any, *, context: str) -> str:
     ):
         raise ValidationError(f"{context} must be a normalized repository-relative path")
     return path
+
+
+def a1_path_shape(value: object) -> bool:
+    """Return whether *value* is one canonical non-root A1 repository path."""
+
+    if not isinstance(value, str) or not value or value != value.strip():
+        return False
+    if "\\" in value or any(character in value for character in "*?[]"):
+        return False
+    candidate = PurePosixPath(value)
+    return (
+        value != "."
+        and not candidate.is_absolute()
+        and all(part not in {"", ".", ".."} for part in candidate.parts)
+        and candidate.as_posix() == value
+        and "//" not in value
+        and not value.endswith("/")
+    )
+
+
+def _policy_paths(value: Any, *, context: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise ValidationError(f"{context} must be a non-empty list")
+    paths = tuple(value)
+    malformed = sorted(repr(path) for path in paths if not a1_path_shape(path))
+    if malformed:
+        raise ValidationError(
+            f"{context} must contain normalized repository-relative A1 paths: "
+            + ", ".join(malformed)
+        )
+    if len(set(paths)) != len(paths):
+        raise ValidationError(f"{context} paths must be unique")
+    overlaps = sorted(
+        {
+            tuple(sorted((left, right)))
+            for index, left in enumerate(paths)
+            for right in paths[index + 1 :]
+            if left.startswith(f"{right}/") or right.startswith(f"{left}/")
+        }
+    )
+    if overlaps:
+        rendered = ", ".join(f"{left} <-> {right}" for left, right in overlaps)
+        raise ValidationError(f"{context} paths must not overlap: {rendered}")
+    return paths
 
 
 def _durable_artifacts(value: Any, *, context: str) -> dict[str, tuple[str, ...]]:
@@ -290,16 +346,34 @@ def work_item_from_yaml(text: str) -> WorkItem:
 
 
 def repository_policy_from_yaml(text: str) -> RepositoryPolicy:
+    raw = _yaml_mapping(text, context="repository policy")
+    policy_version = _policy_version(raw["schema_version"]) if "schema_version" in raw else None
     data = _fields(
-        _yaml_mapping(text, context="repository policy"),
+        raw,
         context="repository policy",
-        required={"schema_version", "policy_id", "revision", "scope", "actions", "evidence_states"},
+        required={
+            "schema_version", "policy_id", "revision", "scope", "governance_paths",
+            "work_item_scope_ceiling", "max_autonomous_hops", "actions", "evidence_states",
+        },
     )
+    max_autonomous_hops = _integer(
+        data["max_autonomous_hops"], context="policy.max_autonomous_hops", positive=True,
+    )
+    if max_autonomous_hops > COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS:
+        raise ValidationError(
+            "policy.max_autonomous_hops exceeds Coordinator hard maximum: "
+            f"{COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS}"
+        )
     return RepositoryPolicy(
-        schema_version=_version(data["schema_version"], context="policy.schema_version"),
+        schema_version=(policy_version if policy_version is not None else _policy_version(data["schema_version"])),
         policy_id=_string(data["policy_id"], context="policy.policy_id"),
         revision=_string(data["revision"], context="policy.revision"),
         scope=_strings(data["scope"], context="policy.scope"),
+        governance_paths=_policy_paths(data["governance_paths"], context="policy.governance_paths"),
+        work_item_scope_ceiling=_policy_paths(
+            data["work_item_scope_ceiling"], context="policy.work_item_scope_ceiling",
+        ),
+        max_autonomous_hops=max_autonomous_hops,
         actions=_strings(data["actions"], context="policy.actions"),
         evidence_states=_strings(data["evidence_states"], context="policy.evidence_states"),
     )

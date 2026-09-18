@@ -45,10 +45,13 @@ scope: [PROOF.md]
 initial_phase: work
 max_autonomous_hops: 1
 """)
-    (repo / "policy.yml").write_text("""schema_version: 1
+    (repo / "policy.yml").write_text("""schema_version: 2
 policy_id: fixture
 revision: "1"
 scope: [repo]
+governance_paths: [work.yml, profile.yml, policy.yml, components.yml, task.txt, worker.txt]
+work_item_scope_ceiling: [PROOF.md]
+max_autonomous_hops: 5
 actions: [edit, commit]
 evidence_states: [local]
 """)
@@ -126,6 +129,40 @@ def test_head_mismatch_and_existing_root_fail_before_fake_execution(repository: 
     state = tmp_path / "existing"
     state.mkdir()
     assert main(args(repository, state, str(executable))) == 2 and not counter.exists()
+
+
+def test_a1_rejection_has_no_run_state_checkout_adapter_or_provider_effects(
+    repository: Path, tmp_path: Path, monkeypatch
+):
+    counter = tmp_path / "provider-counter"
+    executable = fake(
+        tmp_path, f"import pathlib\npathlib.Path({str(counter)!r}).write_text('called')\n",
+    )
+    policy_path = repository / "policy.yml"
+    policy_path.write_text(
+        policy_path.read_text().replace(
+            "governance_paths: [work.yml, profile.yml, policy.yml, components.yml, task.txt, worker.txt]",
+            "governance_paths: [profile.yml, policy.yml, components.yml, task.txt, worker.txt]",
+        )
+    )
+    commit(repository, "test: governing input outside policy")
+    calls = {"run_id": 0, "new_run": 0, "checkout": 0, "adapter": 0}
+
+    def forbidden(name):
+        def fail(*_args, **_kwargs):
+            calls[name] += 1
+            raise AssertionError(f"unexpected {name}")
+        return fail
+
+    monkeypatch.setattr(operator.uuid, "uuid4", forbidden("run_id"))
+    monkeypatch.setattr(operator, "new_run", forbidden("new_run"))
+    monkeypatch.setattr(operator, "register_checkout", forbidden("checkout"))
+    monkeypatch.setattr(operator, "CodexCliAdapter", forbidden("adapter"))
+    state_root = tmp_path / "a1-rejected-state"
+    assert main(args(repository, state_root, str(executable))) == 2
+    assert calls == {"run_id": 0, "new_run": 0, "checkout": 0, "adapter": 0}
+    assert not state_root.exists()
+    assert not counter.exists()
 
 
 def test_fake_success_is_one_hop_and_writes_compact_operator_evidence(repository: Path, tmp_path: Path):
@@ -302,7 +339,10 @@ def _two_hop_serial_fixture(repository: Path, tmp_path: Path, adapter):
     })
     baseline = git(repository, "rev-parse", "HEAD")
     item = WorkItem(1, "WI-stop", "fixture", "profile.yml", "repo", ("PROOF.md",), "prepare", 2)
-    policy = RepositoryPolicy(1, "policy", "1", ("repo",), ("edit", "commit"), ())
+    policy = RepositoryPolicy(
+        2, "policy", "1", ("repo",), ("governance",), ("PROOF.md",), 2,
+        ("edit", "commit"), (),
+    )
     run = new_run(item, workflow, policy, run_id="RUN-stop", baseline_head=baseline)
     state = tmp_path / "external"
     association = register_checkout(state, repository)
@@ -410,7 +450,10 @@ def test_n2_serial_driver_uses_fresh_context_and_never_allocates_h003(repository
     })
     baseline = git(repository, "rev-parse", "HEAD")
     item = WorkItem(1, "WI-2", "fixture", "profile.yml", "repo", ("PROOF.md",), "prepare", 2)
-    policy = RepositoryPolicy(1, "policy", "1", ("repo",), ("edit", "commit"), ())
+    policy = RepositoryPolicy(
+        2, "policy", "1", ("repo",), ("governance",), ("PROOF.md",), 2,
+        ("edit", "commit"), (),
+    )
     run = new_run(item, workflow, policy, run_id="RUN-2", baseline_head=baseline)
     adapter = _TwoHopAdapter(repository)
     state = tmp_path / "external"
@@ -453,7 +496,10 @@ def test_governing_input_commit_after_h001_stops_before_h002(repository: Path, t
     })
     baseline = git(repository, "rev-parse", "HEAD")
     item = WorkItem(1, "WI-drift", "fixture", "profile.yml", "repo", ("PROOF.md", "task.txt"), "prepare", 2)
-    policy = RepositoryPolicy(1, "policy", "1", ("repo",), ("edit", "commit"), ())
+    policy = RepositoryPolicy(
+        2, "policy", "1", ("repo",), ("governance",),
+        ("PROOF.md", "task.txt"), 2, ("edit", "commit"), (),
+    )
     run = new_run(item, workflow, policy, run_id="RUN-drift", baseline_head=baseline)
     state = tmp_path / "external"
     association = register_checkout(state, repository)

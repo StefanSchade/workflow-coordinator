@@ -89,10 +89,13 @@ def run_for(
         max_autonomous_hops=budget,
     )
     policy = RepositoryPolicy(
-        schema_version=1,
+        schema_version=2,
         policy_id="policy",
         revision="policy-r1",
         scope=("repo",),
+        governance_paths=("governance",),
+        work_item_scope_ceiling=item.scope,
+        max_autonomous_hops=item.max_autonomous_hops,
         actions=("edit", "commit"),
         evidence_states=("tests",),
     )

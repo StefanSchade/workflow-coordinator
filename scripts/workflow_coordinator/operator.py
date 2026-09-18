@@ -27,11 +27,17 @@ from scripts.workflow_coordinator.evidence import (
     PRODUCTION_EVIDENCE_RUNNER,
     TRUSTED_EVIDENCE,
 )
-from scripts.workflow_coordinator.model import DurableArtifact, RunStatus, new_run
+from scripts.workflow_coordinator.model import (
+    COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
+    DurableArtifact,
+    RunStatus,
+    new_run,
+)
 from scripts.workflow_coordinator.persistence import atomic_write_json, checkpoint_projection, write_run_snapshot
 from scripts.workflow_coordinator.prompt import ContextItem, PromptComponent
 from scripts.workflow_coordinator.serialization import (
     ValidationError,
+    a1_path_shape,
     component_manifest_from_yaml,
     repository_policy_from_yaml,
     work_item_from_yaml,
@@ -85,6 +91,70 @@ def _within_scope(path: str, scope: tuple[str, ...]) -> bool:
 
 def _normalized_scope(values: tuple[str, ...], *, context: str) -> tuple[str, ...]:
     return tuple(_relative_path(value, context=context) for value in values)
+
+
+def _admit_a1(work_item, profile, policy, governing_paths) -> None:
+    """Enforce the pure A1 authority relations without consulting external state."""
+    malformed_work_scope = sorted(path for path in work_item.scope if not a1_path_shape(path))
+    if malformed_work_scope:
+        raise OperatorPreflightError(
+            "WorkItem.scope contains malformed A1 paths: " + ", ".join(malformed_work_scope)
+        )
+    malformed_phase_scope = sorted(
+        (phase_key, path)
+        for phase_key, phase in profile.phases.items()
+        for path in phase.authorized_scope
+        if not a1_path_shape(path)
+    )
+    if malformed_phase_scope:
+        rendered = ", ".join(f"{phase_key}:{path}" for phase_key, path in malformed_phase_scope)
+        raise OperatorPreflightError(
+            "profile authorized_scope contains malformed A1 paths: " + rendered
+        )
+    malformed_governing = sorted(path for path in governing_paths if not a1_path_shape(path))
+    if malformed_governing:
+        raise OperatorPreflightError(
+            "governing inputs contain malformed A1 paths: " + ", ".join(malformed_governing)
+        )
+    outside_governance = sorted(
+        path for path in governing_paths if not _within_scope(path, policy.governance_paths)
+    )
+    if outside_governance:
+        raise OperatorPreflightError(
+            "governing inputs are outside repository policy governance_paths: "
+            + ", ".join(outside_governance)
+        )
+    overlaps = sorted(
+        (phase_key, phase_path, governance_path)
+        for phase_key, phase in profile.phases.items()
+        for phase_path in phase.authorized_scope
+        for governance_path in policy.governance_paths
+        if _within_scope(phase_path, (governance_path,))
+        or _within_scope(governance_path, (phase_path,))
+    )
+    if overlaps:
+        rendered = ", ".join(
+            f"{phase_key}:{phase_path} <-> {governance_path}"
+            for phase_key, phase_path, governance_path in overlaps
+        )
+        raise OperatorPreflightError(
+            "profile authorized_scope overlaps repository policy governance_paths: " + rendered
+        )
+    outside_ceiling = sorted(
+        path for path in work_item.scope if not _within_scope(path, policy.work_item_scope_ceiling)
+    )
+    if outside_ceiling:
+        raise OperatorPreflightError(
+            "WorkItem.scope exceeds repository policy work_item_scope_ceiling: "
+            + ", ".join(outside_ceiling)
+        )
+    if work_item.max_autonomous_hops > COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS:
+        raise OperatorPreflightError("Slice-5B supports at most five autonomous Hops")
+    if work_item.max_autonomous_hops > policy.max_autonomous_hops:
+        raise OperatorPreflightError(
+            "WorkItem.max_autonomous_hops exceeds repository policy maximum: "
+            f"{work_item.max_autonomous_hops} > {policy.max_autonomous_hops}"
+        )
 
 
 def _governing_digest(text: str) -> str:
@@ -172,7 +242,7 @@ def _preflight(
                 raise OperatorPreflightError(
                     f"injected evidence runner name collides with production registry: {evidence_name}"
                 )
-    if work_item.max_autonomous_hops > 5:
+    if work_item.max_autonomous_hops > COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS:
         raise OperatorPreflightError("Slice-5B supports at most five autonomous Hops")
     if work_item.initial_phase not in profile.phases:
         raise OperatorPreflightError(f"WorkItem.initial_phase is absent from supplied profile: {work_item.initial_phase}")
@@ -239,6 +309,7 @@ def _preflight(
         input_paths[name]: _governing_digest(text)
         for name, text in texts.items()
     }
+    selected_component_paths: list[str] = []
     for component_id in _selected_ids(profile):
         reference = manifest.get(component_id)
         if reference is None:
@@ -247,6 +318,11 @@ def _preflight(
         content = _pinned_text(repository, args.expected_head, path, context=f"component {component_id}")
         components[component_id] = PromptComponent(component_id, path, args.expected_head, content)
         governing[path] = _governing_digest(content)
+        selected_component_paths.append(path)
+    _admit_a1(
+        work_item, profile, policy,
+        (*input_paths.values(), *selected_component_paths),
+    )
     if args.timeout_seconds <= 0:
         raise OperatorPreflightError("timeout seconds must be positive")
     return (
@@ -392,7 +468,7 @@ def run_serial_hops(
     progress: Callable[[object, str, object | None], None] | None = None,
 ):
     """Run the finite Slice-5B serial loop without reserving a future Hop."""
-    if run.hop_limit > 5:
+    if run.hop_limit > COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS:
         raise OperatorPreflightError("Slice-5B serial driver refuses a Hop limit above five")
     evidence: list[dict[str, object]] = []
     artifact_map = dict(durable_artifacts_by_phase or {})

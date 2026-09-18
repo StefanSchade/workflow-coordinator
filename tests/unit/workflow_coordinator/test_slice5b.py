@@ -523,7 +523,10 @@ def test_five_hop_budget_stops_before_h006_without_reservation_or_retry(tmp_path
         1, "WI-BUDGET-5B", "fixture", "profile.yml", "repo",
         ("payload.txt",), "loop", 5,
     )
-    policy = RepositoryPolicy(1, "policy", "1", ("repo",), ("edit", "commit"), ())
+    policy = RepositoryPolicy(
+        2, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 5,
+        ("edit", "commit"), (),
+    )
     run = new_run(item, workflow, policy, run_id="RUN-BUDGET-5B", baseline_head=baseline)
 
     class LoopAdapter:
@@ -757,7 +760,10 @@ def test_reconstructed_context_encodes_agent_values_and_attributes_outcome(tmp_p
         WorkItem(1, "WI-CONTEXT", "fixture", "profile.yml", "repo",
                  ("payload.txt",), "review", 2),
         workflow,
-        RepositoryPolicy(1, "policy", "1", ("repo",), ("edit", "commit"), ()),
+        RepositoryPolicy(
+            2, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 2,
+            ("edit", "commit"), (),
+        ),
         run_id="RUN-CONTEXT",
         baseline_head=baseline,
     )
@@ -1249,7 +1255,10 @@ def test_direct_serial_driver_rejects_limit_above_five_before_dispatch(tmp_path)
         WorkItem(1, "WI-LIMIT", "fixture", "profile.yml", "repo",
                  ("payload.txt",), "loop", 6),
         workflow,
-        RepositoryPolicy(1, "policy", "1", ("repo",), ("edit", "commit"), ()),
+        RepositoryPolicy(
+            2, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 5,
+            ("edit", "commit"), (),
+        ),
         run_id="RUN-LIMIT",
         baseline_head=baseline,
     )

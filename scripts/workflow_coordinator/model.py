@@ -22,6 +22,7 @@ from typing import Mapping
 # mutating Git metadata and the sandbox is unchanged.
 EDIT_ACTION = "edit"
 COMMIT_ACTION = "commit"
+COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS = 5
 
 
 class CoordinatorValue(str, Enum):
@@ -100,6 +101,9 @@ class RepositoryPolicy:
     policy_id: str
     revision: str
     scope: tuple[str, ...]
+    governance_paths: tuple[str, ...]
+    work_item_scope_ceiling: tuple[str, ...]
+    max_autonomous_hops: int
     actions: tuple[str, ...]
     evidence_states: tuple[str, ...]
 

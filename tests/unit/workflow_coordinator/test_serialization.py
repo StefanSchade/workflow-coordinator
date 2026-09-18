@@ -1,6 +1,7 @@
 import json
 
 import pytest
+import yaml
 
 from scripts.workflow_coordinator.model import DurableArtifact, RouteEffect, new_run
 from scripts.workflow_coordinator.serialization import (
@@ -29,10 +30,13 @@ profile_labels: [routine]
 """
 
 POLICY_YAML = """
-schema_version: 1
+schema_version: 2
 policy_id: core-policy
 revision: policy-r1
 scope: [repo]
+governance_paths: [docs/ai_info, scripts/workflow_coordinator/resources/agent_operating_contract_v1.txt]
+work_item_scope_ceiling: [scripts]
+max_autonomous_hops: 1
 actions: [edit, commit]
 evidence_states: [tests]
 """
@@ -103,6 +107,12 @@ def valid_result_data(**changes):
     return data
 
 
+def policy_yaml(**changes):
+    data = yaml.safe_load(POLICY_YAML)
+    data.update(changes)
+    return yaml.safe_dump(data, sort_keys=False)
+
+
 def test_strict_yaml_loads_work_item_profile_and_policy():
     item = work_item_from_yaml(WORK_ITEM_YAML)
     profile = workflow_profile_from_yaml(PROFILE_YAML)
@@ -114,6 +124,62 @@ def test_strict_yaml_loads_work_item_profile_and_policy():
         RouteEffect
     )
     assert policy.evidence_states == ("tests",)
+    assert policy.schema_version == 2
+    assert policy.governance_paths == (
+        "docs/ai_info",
+        "scripts/workflow_coordinator/resources/agent_operating_contract_v1.txt",
+    )
+    assert policy.work_item_scope_ceiling == ("scripts",)
+    assert policy.max_autonomous_hops == 1
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "", " docs/ai_info", "docs/ai_info ", "/docs/ai_info", r"docs\ai_info",
+        "docs//ai_info", "docs/./ai_info", "docs/../ai_info", ".",
+        "docs/ai_info/", "docs/*", "docs/?", "docs/[ai]", "docs/ai]",
+    ],
+)
+@pytest.mark.parametrize("field", ["governance_paths", "work_item_scope_ceiling"])
+def test_repository_policy_v2_rejects_malformed_a1_paths(field, path):
+    with pytest.raises(ValidationError, match="normalized repository-relative A1 paths"):
+        repository_policy_from_yaml(policy_yaml(**{field: [path]}))
+
+
+@pytest.mark.parametrize("field", ["governance_paths", "work_item_scope_ceiling"])
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["docs/ai_info", "docs/ai_info"],
+        ["docs/ai_info", "docs/ai_info/workflows"],
+        ["docs/ai_info/workflows", "docs/ai_info"],
+    ],
+)
+def test_repository_policy_v2_rejects_duplicate_or_overlapping_roots(field, paths):
+    with pytest.raises(ValidationError, match="unique|must not overlap"):
+        repository_policy_from_yaml(policy_yaml(**{field: paths}))
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, 6])
+def test_repository_policy_v2_rejects_invalid_hop_ceiling(value):
+    with pytest.raises(ValidationError, match="max_autonomous_hops"):
+        repository_policy_from_yaml(policy_yaml(max_autonomous_hops=value))
+
+
+def test_repository_policy_v1_missing_a1_field_and_unknown_v2_field_fail_closed():
+    legacy_v1 = {
+        "schema_version": 1, "policy_id": "legacy", "revision": "r1",
+        "scope": ["repo"], "actions": ["edit"], "evidence_states": ["tests"],
+    }
+    with pytest.raises(ValidationError, match="schema_version 1 is unsupported; migrate"):
+        repository_policy_from_yaml(yaml.safe_dump(legacy_v1, sort_keys=False))
+    missing = yaml.safe_load(POLICY_YAML)
+    missing.pop("governance_paths")
+    with pytest.raises(ValidationError, match="missing fields: governance_paths"):
+        repository_policy_from_yaml(yaml.safe_dump(missing, sort_keys=False))
+    with pytest.raises(ValidationError, match="unknown fields: evidence_commands"):
+        repository_policy_from_yaml(policy_yaml(evidence_commands={}))
 
 
 @pytest.mark.parametrize(
