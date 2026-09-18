@@ -197,7 +197,7 @@ V1 is a local, repository-native, Git-centered, policy-bounded coordinator with:
 * WorkItem semantic input plus Run, Hop, and Finding operational records;
 * finite validated workflow profiles and deterministic route reduction;
 * one configured agent adapter plus an optional, policy-bounded supervisor role;
-* Git reconciliation, fixed trusted evidence callables, structured results,
+* Git reconciliation, consumer-policy-owned named evidence commands, structured results,
   finding convergence, autonomy budget, checkpoints, interruption/resume, and
   explicit human authority stops;
 * a first routine profile, a non-production non-DMC bug-workflow fixture that
@@ -681,23 +681,81 @@ work. No layer may silently grant authority owned by another.
 |ID |Requirement
 
 |WFC-EVID-01
-|V1 shall use a fixed trusted in-code registry of simple evidence callables; no
-runtime discovery or plugin lifecycle.
+|After A2, the required RepositoryPolicy v3 `evidence_commands` mapping shall be
+the sole production command-definition registry. Phase `evidence` entries name
+that mapping; agent output, an injected runner, runtime discovery, and plugins
+shall not define or authorize commands.
 
 |WFC-EVID-02
 |An observation shall identify provider, one of `pass`, `fail`, `error`, or
-`not_run`; exact command/version when applicable; concise summary; artifact ref;
-and digest.
+`not_run`; command name; authored `argv[0]` and canonical argv digest; configured
+timeout; repository-root cwd policy; runtime-resolved invocation and canonical
+executable paths plus bounded stat fingerprint; environment-policy version and
+effective `PATH` digest/source; outcome classification; exit code or signal when
+applicable; stdout/stderr byte counts and full-stream SHA-256 digests; a
+Coordinator-authored concise summary; artifact ref when applicable; and whether
+non-empty stream bodies were omitted from persistence.
 
 |WFC-EVID-03
-|Initial categories are mandatory Git facts and profile-selected tests,
-architecture guards, source/style checks, and diff hygiene. Commands/argv and
-working directory originate in trusted policy, not agent output.
+|A2 evidence execution shall use the exact policy argv with only `argv[0]`
+replaced by its resolved absolute invocation path, `shell=False`,
+`stdin=DEVNULL`, stdout/stderr capture, repository-root cwd, the one snapshotted
+Coordinator environment, and the policy timeout. No consumer command may
+override cwd, environment, PATH, shell, stdin, retries, user, executable,
+parser/plugin, or background behavior.
 
 |WFC-EVID-04
 |Providers return observations and never semantic acceptance. A future
-Sonar/static-analysis provider may implement the same shape through explicit
-registration without any Sonar-specific V1 machinery.
+Sonar/static-analysis integration would require a separate explicit contract and
+shall not gain command authority through runtime registration or A2 plugins.
+
+|WFC-EVID-05
+|A phase evidence list shall be an ordered list of unique command names. Every
+name shall exist in the admitted policy mapping; an unknown name rejects before
+Run creation, state-root mutation, checkout registration, adapter construction
+or entry, and provider invocation. An unused definition is valid but is neither
+resolved nor executed. One definition may be referenced by multiple phases and
+executes once whenever each such phase reaches evidence time.
+
+|WFC-EVID-06
+|The A2 executable resolver shall handle absolute `argv[0]` directly, resolve a
+relative value containing `/` from repository root, and resolve a bare name
+through the snapshotted effective PATH. It shall require an executable regular
+file at admission and repeat resolution at execution. Symlinks are permitted;
+the absolute invocation path and canonical real path are both recorded, and the
+invocation path is executed. Admission non-resolution is a pre-Run refusal;
+later disappearance or non-executability is runtime evidence `error`.
+
+|WFC-EVID-07
+|The named environment policy shall be
+`coordinator-inherited-environment-v1`: snapshot the Coordinator process
+environment once during canonical preflight, set PATH to `os.defpath` only when
+PATH is absent, preserve an explicitly empty PATH, and pass that unchanged
+snapshot to every evidence subprocess in the Run. No virtualenv is discovered
+or prepended. Persist only the policy version, PATH source, and SHA-256 of the
+effective PATH; persist no environment values or environment dump.
+
+|WFC-EVID-08
+|No stdout or stderr body shall be durable A2 evidence. Each full captured byte
+stream shall contribute its byte count and separate SHA-256 digest; the durable
+summary shall be generated only from Coordinator outcome facts and shall not
+copy command output. Non-empty bodies are marked omitted. Omission shall not
+change the semantic outcome. Raw capture remains transient and receives no
+host-containment claim.
+
+|WFC-EVID-09
+|Exit zero is `pass`; an ordinary positive nonzero exit is `fail`; admission-
+time resolution failure rejects; runtime resolution/spawn/permission failure,
+timeout, signal termination, or subprocess infrastructure failure is `error`.
+Timeout shall terminate and reap the process and shall not retry. `not_run`
+remains reserved for an existing deliberately unselected diagnostic path and
+shall be a hard evidence error if returned for a required phase reference.
+
+|WFC-EVID-10
+|Every command timeout shall be an integer other than boolean in
+`1..COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS`, whose A2 value is 900.
+There is no default. The implementation shall use that one named production
+constant for schema validation and the runtime guard.
 |===
 
 ===== 8.2 Persistence and artifact lifecycle
@@ -914,6 +972,14 @@ not increase its own semantic/review authority.
 |Secrets, model credentials, environment dumps, and credential-bearing output
 shall not be persisted in workflow artifacts; raw material is deleted/redacted
 before deliberate promotion.
+
+|WFC-SEC-06
+|A trusted consumer policy authorizes the Coordinator to attempt the named
+command. It does not establish that executable contents or agent-modified
+repository code are benign, subprocess output is truthful, exit zero proves
+correctness, execution is sandboxed, or the command cannot mutate the host or
+worktree. A2 bounds command-definition authority and execution mechanics only;
+host isolation remains a separate sandbox/trust concern.
 |===
 
 ==== 10. Historical replay and correction acceptance matrix
@@ -2784,14 +2850,16 @@ initial phase is `required`, and any declared route directly targets that initia
 phase again, canonical preflight also rejects. This is a static direct-reference
 check, not route-graph/reachability analysis.
 
-Trusted evidence (P5B-C4/C7):: WFC-EVID-01..04 remain authoritative and production
-remains bound to the fixed trusted in-code registry. Canonical preflight shall
-reject before Run creation and adapter entry any evidence name selected by any
-phase that is not listed in `RepositoryPolicy.evidence_states` or cannot be
-resolved by the active evidence runner supplied for that Run. It validates only
-selected names, not every policy-allowed name. Production uses the existing
-trusted runner/registry; deterministic acceptance may use only the injected fake
-runner described below. Required evidence has three route-bearing states:
+Trusted evidence (P5B-C4/C7, as superseded by A2):: WFC-EVID-01..10 remain
+authoritative. A2 replaces the fixed production registry and
+`RepositoryPolicy.evidence_states` with the sole RepositoryPolicy v3
+`evidence_commands` mapping. Canonical preflight shall reject before Run creation
+and adapter entry any phase evidence name absent from that mapping or any selected
+command whose executable does not resolve under WFC-EVID-06..07. It validates and
+resolves selected names only, not unused policy definitions. A test-injected
+runner may simulate execution of an already-authorized prepared definition but
+may neither advertise supported names nor grant command authority. Required
+evidence retains three route-bearing states:
 
 * `pass` permits ordinary outcome/Finding/route reduction;
 * clean `fail` is a trusted negative observation, never an agent classification;
@@ -2809,13 +2877,12 @@ field; static profile/preflight validation permits it only on a gate review,
 requires the named route key to exist in that phase, and requires that route's
 effect to be `goto`. It adds no route effect or migration system.
 
-For deterministic Slice-5B acceptance only, composition may inject one local/fake
-evidence-runner object with a fixed supported-name configuration. Canonical
-preflight and dispatch/execution shall receive that same object/configuration.
-Fake evidence names shall be disjoint from production registry names and shall
-not imply a production provider can cleanly fail. Supported production entry
-always uses the existing registry. No command migration, second production
-registry, runtime discovery, selector, or plugin surface is authorized.
+For deterministic acceptance, composition may inject one local/fake evidence
+runner that receives the prepared policy definition. The same object is used at
+execution, but policy/profile admission remains the sole authority check. A fake
+runner shall not imply that production execution can cleanly fail. No second
+production registry, runtime discovery, selector, or plugin surface is
+authorized.
 
 Refusal and preemption precedence (P5B-C6):: WFC-AUTH-01 remains controlling. To make
 overlapping 5B refusals deterministic, apply this minimum order:
@@ -2961,13 +3028,14 @@ duplicating the unchanged suite:
 * open/blocking prevents `complete` from a non-review phase, while resolved,
   superseded, or authorized residual/non-blocking Findings do not;
 * required-evidence clean `fail` takes only the declared failure route, while
-  `error` hard-stops; fake-runner identity/configuration is the same at preflight
-  and execution and fake names do not collide with production names;
+  `error` hard-stops; after A2 the injected runner receives the same prepared
+  policy definition at execution and cannot grant command-name authority;
 * `max_autonomous_hops > 5`, review `blocking_policy` other than
   `blocking_only`, and a statically invalid `failed_evidence_route` each reject
   before Run creation/execution;
-* a phase-selected evidence name outside `RepositoryPolicy.evidence_states` or
-  unresolved by the active runner rejects before Run creation and adapter entry;
+* after A2, a phase-selected evidence name outside
+  `RepositoryPolicy.evidence_commands` or a selected executable unresolved by
+  the Coordinator resolver rejects before Run creation and adapter entry;
 * simultaneous refusals follow the precedence above; supplying both artifact
   input forms rejects, and legacy argv rejects a later required artifact at
   preflight;
@@ -3343,9 +3411,8 @@ engineering artifacts rather than automatically becoming canonical truth.
 
 ===== 13.1 Carve-out A1 -- governing-input and WorkItem-policy authority ceilings
 
-Status:: *NORMATIVE CONTRACT DRAFT, BOUNDEDLY CORRECTED; IMPLEMENTATION NOT
-AUTHORIZED PENDING INDEPENDENT DELTA RE-REVIEW AND EXPLICIT MAINTAINER
-DISPOSITION.*
+Status:: *CLOSED. CONTRACT INDEPENDENTLY ACCEPTED; IMPLEMENTATION `a8482ca9`
+INDEPENDENTLY ACCEPTED BY `51be6204`. A1 SHALL NOT BE REOPENED BY A2.*
 
 Review and correction:: Independent adversarial review `27c804b4`
 (`docs/warm_storage/global_reviews/agent_workflow_coordinator_carveout_a1_contract_review_2026-09-18.adoc`)
@@ -3679,15 +3746,413 @@ generalized capability/policy systems, glob scope, or cross-repository
 provenance. A committed WorkItem remains externally authorized input; commit
 presence alone is not authorization.
 
-Lifecycle:: Independent adversarial review `27c804b4` returned B and this
-bounded correction applies its I1..I4 and M1..M5 findings. The immediate next
-action is a fresh independent bounded delta re-review of this correction. Only
-after an accepting re-review and explicit maintainer implementation
-authorization may one bounded A1 implementation commit modify the
-named code/tests/fixtures/current consumer policies. Acceptance is deterministic
-and fake/local with zero provider calls; it is followed by independent
-implementation review. A2/A3/A4', extraction, and target-repository mutation
-remain prohibited meanwhile.
+Lifecycle:: Independent adversarial review `27c804b4` returned B; bounded
+correction `6ad27385` applied I1..I4 and M1..M5; independent delta re-review
+`a01d6c3f` accepted the corrected contract; implementation `a8482ca9` was
+accepted by independent review `51be6204`. A1 is closed. A2 relies on its
+implemented admission guarantees and shall not duplicate or alter them.
+
+===== 13.2 Carve-out A2 -- consumer-owned evidence commands
+
+Status:: *NORMATIVE CONTRACT DRAFT; A2 IMPLEMENTATION NOT AUTHORIZED PENDING A
+FRESH INDEPENDENT ADVERSARIAL CONTRACT REVIEW AND EXPLICIT MAINTAINER
+DISPOSITION.*
+
+Baseline and authority:: This contract was prepared from clean `main` at
+`397d4cf6b06f455f157f2a0dab97f8a2ff827243`. The diff from accepted A1
+implementation `a8482ca9408a822629855881085421e54b836465` to that baseline
+contains documentation only; no Workflow Coordinator production code changed
+after A1. The accepted carve-out sequence remains
+`A1 -> (A2 || A3) -> A4' -> B -> C -> D -> E -> F`. A1 is closed. The supporting
+readiness evidence is
+`docs/warm_storage/global_reviews/agent_workflow_coordinator_carveout_a2_evidence_command_contract_2026-09-18.adoc`;
+this FTR section alone owns the normative A2 requirements.
+
+Purpose:: A2 answers one question: how a consumer declares a finite set of
+named evidence commands in A1-protected governance and how the trusted
+Coordinator attempts and records them with deterministic, bounded mechanics.
+It replaces the current fixed in-code `TRUSTED_EVIDENCE` command registry. It is
+not a generic task runner, plugin system, sandbox, or semantic acceptance
+engine.
+
+Trust model:: A trusted consumer policy authorizes the Coordinator to *attempt*
+the named command. Trust attaches to the command definition and its origin in
+admitted governance. It does not establish that the executable contents are
+trusted, agent-modified repository code is benign, subprocess output is
+truthful, exit zero proves correctness, execution is sandboxed, or execution
+cannot mutate the host or worktree. Commands execute under Coordinator host
+authority and may execute repository code changed by the preceding agent Hop.
+Under the inherited-environment policy they can also observe inherited
+credentials and other process environment values even though those values are
+not persisted by the Coordinator. A2 provides no exfiltration or network
+containment.
+`shell=False` removes shell interpretation; it does not provide hostile-code
+containment. Host isolation belongs to separate sandbox/trust architecture.
+
+RepositoryPolicy v3 decision:: A2 shall introduce RepositoryPolicy schema
+version 3. It shall preserve every A1 field and meaning, remove
+`evidence_states`, and require `evidence_commands`. Version 2 is an exact strict
+shape whose unknown fields reject; adding a required command-authority field
+under the same version would make two different documents both claim v2.
+Making the field optional or defaulting it empty would silently give old v2
+documents new semantics, while retaining both `evidence_states` and
+`evidence_commands` would create two registries. Therefore v2 shall reject with
+an explicit migration-required diagnostic after the atomic A2 migration. V1
+remains unsupported. WorkItem, WorkflowProfile, component, result, Run,
+dispatch, checkpoint, and operator-plan input schema versions do not move merely
+because RepositoryPolicy moves to v3.
+
+The exact policy shape is:
+
+[source,yaml]
+----
+schema_version: 3
+policy_id: core-example
+revision: r2
+scope: [core]
+governance_paths:
+  - docs/ai_info
+  - scripts/workflow_coordinator/resources/agent_operating_contract_v1.txt
+work_item_scope_ceiling:
+  - src/spreadsheet_handling/example.py
+max_autonomous_hops: 4
+actions: [edit, commit, review]
+evidence_commands:
+  diff_hygiene:
+    argv: [git, diff, --check]
+    timeout_seconds: 30
+  git_version:
+    argv: [git, --version]
+    timeout_seconds: 10
+----
+
+`evidence_commands` shall be a required finite YAML mapping and may be empty for
+a policy that authorizes no evidence command. It has no default. A command name
+shall match `[a-z][a-z0-9_]{0,63}`. Mapping-key uniqueness is enforced by the
+existing strict duplicate-key loader. Each value shall be a mapping with exactly
+`argv` and `timeout_seconds`; unknown or missing fields reject. The following
+consumer fields therefore reject rather than being ignored: `cwd`, `env`,
+`shell`, `stdin`, `retries`, `user`, `PATH`, a separate executable override,
+output parser/plugin, and background/detach flags.
+
+`argv` shall be a non-empty YAML list. Every item shall be an exact string and
+shall contain no NUL; no scalar coercion, trimming, expansion, interpolation,
+tokenization, or shell parsing occurs. `argv[0]` shall additionally be non-empty.
+Empty later arguments are valid and preserved. `timeout_seconds` shall be an
+integer other than boolean in
+`1..COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS`; the hard maximum is 900
+seconds and no default exists.
+
+Definition, reference, and result separation:: The RepositoryPolicy v3 mapping
+is the sole command-definition namespace. Existing
+`WorkflowProfile.phases.<phase>.evidence` remains an ordered list of names in
+that mapping; it contains no argv and grants no authority independently. Each
+phase list shall contain unique names. Mapping order has no execution meaning;
+phase-list order is execution order. One command definition may be referenced
+by multiple phases and is attempted once each time such a phase reaches evidence
+execution. An unused policy definition is valid, is not resolved, and is never
+executed. An `Observation` is the execution result and shall not be treated as
+definition or reference authority. No second command registry exists.
+
+Admission:: One pure cross-document check in the current operator seam shall
+validate duplicate phase references and require every phase reference to name a
+policy definition. It shall return the distinct selected names in deterministic
+first-reference order for preparation. The existing A1 admission remains a
+separate prerequisite and is not duplicated. Canonical preflight shall then
+snapshot the A2 environment policy and resolve every selected definition's
+`argv[0]`. Unknown reference, malformed definition, timeout violation, or
+admission-time executable non-resolution shall reject before UUID Run allocation,
+`new_run()`, state-root creation or write, checkout registration, adapter
+construction or entry, dispatch marker, fake executable, or provider call.
+Read-only repository/Git/input inspection already owned by `_preflight()` may
+precede these checks.
+
+Environment policy:: A2 defines exactly one policy,
+`coordinator-inherited-environment-v1`. During canonical preflight the
+Coordinator shall copy `os.environ` once. If `PATH` is absent, it shall insert
+`os.defpath` and record PATH source `os.defpath`; if PATH is present, including
+an empty value, it shall preserve that exact value and record source `inherited`.
+The immutable snapshot is used for both admission resolution and every evidence
+subprocess in that Run. All inherited variables are passed unchanged because
+current Git/tool behavior may depend on HOME, locale, temporary-directory, and
+tool configuration. The policy does not claim hermeticity and shall not persist
+environment values, names, secrets, or dumps. It persists only the policy
+version, PATH source, and SHA-256 of the exact effective PATH encoded with
+UTF-8 plus `surrogateescape`.
+
+There is no implicit repository virtualenv discovery or insertion. An activated
+virtualenv can affect inherited PATH as operator-launch context. A consumer that
+requires a repository virtualenv shall name a path such as
+`.venv/bin/python` explicitly in `argv[0]`; A2 neither discovers nor creates it.
+
+Executable resolution:: Resolution is POSIX and uses the fixed repository root
+and environment snapshot:
+
+* an absolute `argv[0]` bypasses PATH;
+* a relative `argv[0]` containing `/` is interpreted from repository root and
+  bypasses PATH;
+* a bare name is searched through the effective PATH in order; relative and
+  empty PATH entries are interpreted from repository root because that is the
+  fixed subprocess cwd;
+* the selected path shall resolve to an existing executable regular file;
+  otherwise admission rejects or, when repeated at evidence time, the
+  observation is `error`;
+* symlinks are permitted. The absolute selected invocation path and canonical
+  real path are both recorded. The selected invocation path, not the canonical
+  target spelling, replaces `argv[0]` for execution; and
+* repository-local executables are permitted through an explicit relative path.
+  Relative traversal and symlinks are not represented as containment or trust;
+  their resulting absolute/canonical paths are recorded.
+
+Resolution is performed at admission and repeated immediately before every
+attempt using the same environment snapshot. A changed executable or symlink is
+not rejected merely for differing from admission: commands are explicitly
+allowed to execute agent-modified repository code and the host may change. The
+runtime facts are recorded. Immediately before spawn, record authored `argv[0]`,
+absolute invocation path, canonical real path, and the bounded stat fingerprint
+`st_dev`, `st_ino`, `st_mode`, `st_size`, and `st_mtime_ns`. These facts and PATH
+digest aid audit; they neither hash all executable/interpreter content nor prove
+trustworthiness.
+
+Execution boundary:: Actual execution occurs only at the current evidence point:
+after the adapter has returned a validated candidate result and after the
+Coordinator's current trusted commit/Git observation, before evidence-dependent
+route reduction completes. For each phase reference the production runner shall:
+
+* pass a sequence argv, replacing only item zero with the resolved absolute
+  invocation path;
+* set `shell=False`, `cwd` to the canonical repository root,
+  `stdin=subprocess.DEVNULL`, and `env` to the immutable A2 snapshot;
+* capture stdout and stderr separately as bytes;
+* apply the definition's positive bounded timeout;
+* perform no retry, fallback, shell expansion, backgrounding, or interactive
+  input; and
+* on timeout, terminate and reap the child before returning an observation.
+
+Outcome taxonomy:: A successfully spawned process returning zero is `pass`. A
+successfully spawned process returning an ordinary positive nonzero status is
+`fail`. Runtime executable non-resolution/disappearance, permission or other
+spawn failure, timeout, signal termination (negative POSIX return code), or
+subprocess communication/infrastructure failure is `error`, with a stable
+classification and exit code or signal where applicable. `not_run` is not a
+production outcome for a required phase reference; if an injected runner returns
+it, existing reducer semantics treat it as required evidence error. A diagnostic
+API may retain the existing deliberately-unselected `not_run` concept, but it
+shall not authorize or execute a command. No nonzero exit-code allowlist is
+consumer configurable.
+
+Output and diagnostics:: Stdout/stderr bodies are transient and shall not be
+copied into Run, Hop, checkpoint, execution-evidence, operator-summary, or other
+durable A2 artifacts. Each complete captured byte stream shall produce its own
+byte count and SHA-256 digest; a non-empty stream records `body_omitted=true`.
+The digest is over the full stream, not a decoded or truncated form. Semantic
+outcome is unaffected by omission. The durable `summary` is generated only from
+Coordinator facts (`exit 0`, `exit N`, `timeout after Ns`, `terminated by signal
+N`, `resolution_error:<class>`, or `spawn_error:<class>`) and never copies command
+output or an environment value. Therefore A2 needs no retained-output-size hard
+constant and cannot create an unbounded durable Run artifact. Existing raw
+capture remains transient; A2 makes no memory, disk, or hostile-output
+containment claim.
+
+Durable facts and ownership:: The A2 observation separates:
+
+* semantic outcome: command name and `pass|fail|error|not_run`;
+* execution audit: canonical SHA-256 of
+  `json.dumps(list(argv), ensure_ascii=True, separators=(",", ":"))` encoded as
+  UTF-8, authored `argv[0]`, timeout, repository-root cwd policy, runtime
+  invocation/canonical paths and stat fingerprint, environment-policy version,
+  PATH source/digest, exit code or signal, stable error class, stdout/stderr byte
+  counts/digests/body-omitted flags, and artifact ref if any; and
+* human diagnostic: the bounded Coordinator-generated summary and terminal
+  preflight diagnostics.
+
+The current checkpoint's `evidence` projection and the cumulative atomic
+`execution-evidence.json` shall carry these facts. The operator plan shall carry
+the selected command names, definition/argv digests, admission resolution facts,
+timeouts, and environment-policy/PATH facts before provider-capable execution.
+`operator-summary.json` may project the same already-bounded attempt records.
+Run and Hop schemas do not change: `Hop.evidence_refs` remains agent-attributed
+references and shall not be conflated with trusted observations. Reducer inputs
+remain the existing evidence-error and evidence-failed facts. No provenance
+ledger or duration field is added. The checkpoint write that currently precedes
+dispatch-marker removal shall include the current observation; cumulative
+execution evidence shall be atomically published before another adapter
+invocation or normal operator return.
+
+A1 interaction:: Each real A2 policy file is under `docs/ai_info` and each
+current policy already declares `docs/ai_info` in `governance_paths`. DMC phase
+scope is its single `docs/warm_storage/global_reviews/...` artifact. IOR-04 phase
+scopes are the named `src/`, `tests/`, and
+`docs/warm_storage/global_reviews/...` paths. None equals, contains, or descends
+from `docs/ai_info`; the policy files are therefore protected by accepted A1
+admission. A2 shall call/rely on A1 and shall not duplicate its containment,
+overlap, WorkItem-ceiling, or Hop-ceiling logic. This is precisely why A1
+precedes A2: adding command authority to the same policy is safe only after that
+policy's governance area is excluded from phase mutation.
+
+Current consumer migration:: There are exactly two committed real consumer
+bundles. Their phase references remain unchanged and their policy revisions move
+from `r1` to `r2`:
+
+[cols="2,2,3,1,2",options="header"]
+|===
+|Consumer |Name |Policy argv |Timeout |Resolution dependency
+
+|DMC FK C3 WI02 and IOR-04
+|`diff_hygiene`
+|`[git, diff, --check]`
+|30
+|bare `git` through snapshotted PATH
+
+|DMC FK C3 WI02 and IOR-04
+|`git_version`
+|`[git, --version]`
+|10
+|bare `git` through snapshotted PATH
+|===
+
+Today both names are allowed by policy `evidence_states` and defined by the
+in-code registry. A2 moves both exact argv definitions into each v3 policy and
+deletes that registry authority. It adds no pytest, make, Python, `.venv`, DMC,
+IOR-04, or speculative command. DMC's single `assess` phase and all four IOR-04
+phases retain ordered `[diff_hygiene, git_version]`; their evidence meaning is
+unchanged.
+
+The consumer-neutral aggregate fixture shall move to v3 and explicitly define
+its referenced neutral command; fake/local runners simulate execution of that
+definition but do not authorize it. `tests/utils/workflow_coordinator.py`, every
+in-memory/positional RepositoryPolicy construction, serialization matrix, and
+the closed proof harness shall supply explicit v3 command mappings. The proof
+harness's existing `git_version` reference receives the same `[git, --version]`,
+10-second definition and no new admission authority. There is no production
+compatibility default.
+
+[cols="1,5",options="header"]
+|===
+|ID |Requirement
+
+|WFC-POLICY-09
+|RepositoryPolicy schema version 3 shall preserve all A1 authority fields and
+replace `evidence_states` with the required, possibly empty, strict
+`evidence_commands` mapping defined in section 13.2. V1 and v2 reject; no
+default, dual-version acceptance, or in-memory migration is permitted.
+
+|WFC-AUTH-08
+|A2 reference coherence and selected executable resolution shall complete in
+canonical preflight before any Run/state-root/checkout/adapter/provider side
+effect. Runtime execution starts only at evidence time. A selected executable
+that resolved at admission but later cannot resolve or spawn is runtime evidence
+`error`, not admission corruption.
+
+|WFC-SYS-07
+|A2 acceptance shall load both real consumer bundles through supported loaders,
+call the same A1 and A2 admission/preparation functions as production, prove v3
+definition/reference/governance/timeout/resolution coherence, and make zero
+provider calls. It shall not duplicate production validation logic or add DMC/
+spreadsheet semantics to generic Coordinator code.
+|===
+
+Acceptance matrix:: The bounded A2 implementation shall cover:
+
+* positive schema/admission: valid named definition; required explicit empty
+  mapping; known ordered reference; one name reused by multiple phases; unused
+  definition admitted but unresolved; current real bundles; neutral explicit
+  fixture; and selected bare `git` resolution under the production helper;
+* execution: `shell=False`, repository-root cwd, `DEVNULL` stdin, exact literal
+  metacharacter arguments, snapshotted environment, exit zero -> `pass`, and
+  ordinary positive nonzero -> `fail`;
+* schema/admission negatives: missing required field; unknown/forbidden field;
+  duplicate command key; invalid command name; empty argv; non-string or NUL
+  argv item; empty `argv[0]`; timeout boolean, non-integer, zero, negative, or
+  above 900; duplicate phase reference; unknown reference; unresolved or
+  non-executable selected executable; v1/v2 policy; and no Run, state root,
+  checkout, adapter, fake executable, or provider call on representative
+  refusal;
+* runtime `error`: executable disappears or becomes non-executable after
+  admission, permission/spawn failure, timeout with termination/reap, signal
+  termination, and subprocess infrastructure failure;
+* shell safety: `$`, `;`, `*`, spaces, and command-substitution-like text remain
+  literal argv items and produce no shell interpolation;
+* audit: deterministic argv and PATH digests for identical inputs; authored and
+  resolved executable facts; environment-policy version/source; timeout;
+  exit/signal/error classification; separate full stdout/stderr digests and byte
+  counts; no persisted stream body; omission flags; and fixed diagnostic
+  summary; and
+* trust/route boundary: `pass|fail|error|not_run` retain current reducer meaning;
+  unknown/reference/resolution refusal precedes provider entry; a runtime
+  `error` hard-stops; provider invocations are zero in all acceptance tests.
+
+One focused real-consumer integration test shall extend
+`tests/integration/workflow_coordinator/test_core_consumer_governance.py`. It
+shall discover the two committed bundles under `docs/ai_info/workflows/dogfood`,
+load WorkItem/profile/policy/components/task with supported serializers, resolve
+selected components, call production `_admit_a1`, call the production A2
+reference/preparation helper, and assert v3 definitions, unchanged profile
+references, governance containment, no phase/governance overlap, selected
+executable resolution, and timeout ceilings. It shall neither call live
+`_preflight()` nor a provider and shall not reimplement validation. A focused
+unit test may execute the safe local `git --version` definition in a temporary
+repository; the integration test need not execute commands.
+
+Implementation seams:: A2 remains within current architecture:
+
+* `model.py`: immutable `EvidenceCommand`, v3 RepositoryPolicy field,
+  observation audit fields, and
+  `COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS = 900`;
+* `serialization.py`: policy-specific v3 rejection/migration diagnostic,
+  strict command mapping/name/argv/timeout validation, and duplicate phase
+  reference rejection;
+* `evidence.py`: remove fixed `TRUSTED_EVIDENCE` authority; own environment
+  snapshot, resolver/prepared definition, policy-bound production runner,
+  subprocess execution, audit digests, and outcome classification. The injected
+  runner protocol remains an execution test seam, not a `supports()` registry;
+* `operator.py`: pure A2 cross-document admission, selected-command preparation
+  in `_preflight()`, pre-Run failure boundary, operator-plan facts, and passing
+  the one prepared runner/snapshot through the serial loop;
+* `vertical.py`: retain evidence timing/order, validate returned observation
+  shape, and project existing failed/error facts to the reducer;
+* `persistence.py` and the existing operator execution-evidence projection:
+  persist the bounded audit fields atomically; Run/Hop/reducer schemas remain
+  unchanged;
+* `proof_harness.py`: explicit v3 `git_version` definition and policy-bound
+  runner construction only; no supported-ingress authority;
+* `tests/utils/workflow_coordinator.py`, positional constructors, the neutral
+  YAML fixture, serialization/evidence/operator/persistence tests, both real
+  policy YAML files, and the focused consumer integration test: explicit atomic
+  migration and matrix coverage.
+
+No new subsystem is required. A small immutable prepared-command/helper record
+inside `evidence.py` is warranted by the resolution/environment boundary;
+creating a policy engine, provider registry, provenance ledger, or logging
+service is not.
+
+Hard constants:: A2 introduces exactly one new hard-limit constant:
+`COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS = 900`. Per-command values remain
+explicit policy authority. No retained-output constant exists because retained
+stdout/stderr bodies are prohibited and retained bytes are always zero. The
+environment-policy version is a named protocol identifier, not a configurable
+limit.
+
+Slice determination:: Schema, sole command authority, reference coherence,
+environment/executable preparation, bounded execution, observation audit,
+consumer migration, fixtures, and tests are one trust boundary and shall land as
+one bounded implementation commit followed by independent implementation
+review. Splitting would temporarily retain two authorities or an unexecutable v3
+policy and has no independent acceptance boundary.
+
+Non-scope:: A2 excludes A3 operating-contract work; A4' relocatability; target-
+repository extraction or mutation; standalone packaging or wheel work; bwrap or
+other sandbox redesign; provider routing; command signing; IAM; OS-user
+switching; approvals; retries; exit-code policy; command DAGs; remote execution;
+background jobs; plugins/runtime discovery; arbitrary environment customization;
+Sonar-specific integration; mandatory full-suite policy; resumability/5C; Outer
+Loop; Project Memory; Relation Key Identity; and any reopening of A1.
+
+Verdict and next action:: *A2 IMPLEMENTATION IS READY FOR INDEPENDENT CONTRACT
+REVIEW.* There are no unresolved A2 architecture questions. The exact next
+action is a fresh independent adversarial review of this A2 contract. No A2
+implementation may begin before that review is accepted and the maintainer gives
+explicit implementation authorization.
 
 ==== 14. Validation contract
 
