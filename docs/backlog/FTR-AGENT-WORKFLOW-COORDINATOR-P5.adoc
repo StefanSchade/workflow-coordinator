@@ -688,13 +688,17 @@ shall not define or authorize commands.
 
 |WFC-EVID-02
 |An observation shall identify provider, one of `pass`, `fail`, `error`, or
-`not_run`; command name; authored `argv[0]` and canonical argv digest; configured
-timeout; repository-root cwd policy; runtime-resolved invocation and canonical
-executable paths plus bounded stat fingerprint; environment-policy version and
-effective `PATH` digest/source; outcome classification; exit code or signal when
-applicable; stdout/stderr byte counts and full-stream SHA-256 digests; a
-Coordinator-authored concise summary; artifact ref when applicable; and whether
-non-empty stream bodies were omitted from persistence.
+`not_run`; command name; full executed argv; authored `argv[0]` and canonical argv
+digest; configured timeout; repository-root cwd policy; runtime-resolved
+invocation and canonical executable paths plus the `os.stat(invocation_path)`
+fingerprint; environment-policy version and effective `PATH` digest/source;
+outcome classification; exit code or signal when applicable; stdout/stderr byte
+counts and full-stream SHA-256 digests when complete streams exist (otherwise
+the corresponding fields are `null`); a Coordinator-authored concise summary;
+artifact ref when applicable; and whether non-empty complete stream bodies were
+omitted from persistence. The old combined output `digest` is removed, not
+repurposed. This changed record shape uses execution-evidence and embedded
+operator-summary schema version 2.
 
 |WFC-EVID-03
 |A2 evidence execution shall use the exact policy argv with only `argv[0]`
@@ -713,7 +717,8 @@ shall not gain command authority through runtime registration or A2 plugins.
 |A phase evidence list shall be an ordered list of unique command names. Every
 name shall exist in the admitted policy mapping; an unknown name rejects before
 Run creation, state-root mutation, checkout registration, adapter construction
-or entry, and provider invocation. An unused definition is valid but is neither
+or entry, and provider invocation, even when an injected fake/test runner would
+otherwise simulate it. An unused definition is valid but is neither
 resolved nor executed. One definition may be referenced by multiple phases and
 executes once whenever each such phase reaches evidence time.
 
@@ -723,7 +728,11 @@ relative value containing `/` from repository root, and resolve a bare name
 through the snapshotted effective PATH. It shall require an executable regular
 file at admission and repeat resolution at execution. Symlinks are permitted;
 the absolute invocation path and canonical real path are both recorded, and the
-invocation path is executed. Admission non-resolution is a pre-Run refusal;
+invocation path is executed. `PATH=""` is one empty entry and searches the
+repository-root cwd; relative or empty entries may resolve bare names to
+agent-modified repository content, which is audit disclosure, not containment.
+The fingerprint uses `os.stat(invocation_path)` and follows symlinks. Admission
+non-resolution is a pre-Run refusal;
 later disappearance or non-executability is runtime evidence `error`.
 
 |WFC-EVID-07
@@ -739,15 +748,21 @@ effective PATH; persist no environment values or environment dump.
 |No stdout or stderr body shall be durable A2 evidence. Each full captured byte
 stream shall contribute its byte count and separate SHA-256 digest; the durable
 summary shall be generated only from Coordinator outcome facts and shall not
-copy command output. Non-empty bodies are marked omitted. Omission shall not
-change the semantic outcome. Raw capture remains transient and receives no
-host-containment claim.
+copy command output. For a normally completed process, complete streams use
+their actual count/digest and `body_omitted` is true exactly for a non-empty
+stream. If a complete stream is unavailable (including resolution failure before
+spawn, spawn failure, timeout, or communication/infrastructure failure), its
+count, digest, and body-omitted fields are all `null`; SHA-256 of empty must not
+stand in for an unavailable stream. Omission shall not change the semantic
+outcome. Raw capture remains transient and receives no host-containment claim.
 
 |WFC-EVID-09
 |Exit zero is `pass`; an ordinary positive nonzero exit is `fail`; admission-
 time resolution failure rejects; runtime resolution/spawn/permission failure,
 timeout, signal termination, or subprocess infrastructure failure is `error`.
-Timeout shall terminate and reap the process and shall not retry. `not_run`
+Timeout shall terminate and reap the direct child only and shall not retry; A2
+creates no process group, tracks no descendants, and provides no process-tree
+containment. Descendants may survive or retain pipes. `not_run`
 remains reserved for an existing deliberately unselected diagnostic path and
 shall be a hard evidence error if returned for a required phase reference.
 
@@ -3754,9 +3769,9 @@ implemented admission guarantees and shall not duplicate or alter them.
 
 ===== 13.2 Carve-out A2 -- consumer-owned evidence commands
 
-Status:: *NORMATIVE CONTRACT DRAFT; A2 IMPLEMENTATION NOT AUTHORIZED PENDING A
-FRESH INDEPENDENT ADVERSARIAL CONTRACT REVIEW AND EXPLICIT MAINTAINER
-DISPOSITION.*
+Status:: *NORMATIVE CONTRACT CORRECTED AFTER THE BOUNDED I1/M1-M4 REVIEW
+DISPOSITION; A2 IMPLEMENTATION REMAINS UNAUTHORIZED PENDING FRESH INDEPENDENT
+BOUNDED DELTA RE-REVIEW AND EXPLICIT MAINTAINER DISPOSITION.*
 
 Baseline and authority:: This contract was prepared from clean `main` at
 `397d4cf6b06f455f157f2a0dab97f8a2ff827243`. The diff from accepted A1
@@ -3782,6 +3797,10 @@ trusted, agent-modified repository code is benign, subprocess output is
 truthful, exit zero proves correctness, execution is sandboxed, or execution
 cannot mutate the host or worktree. Commands execute under Coordinator host
 authority and may execute repository code changed by the preceding agent Hop.
+They may mutate the worktree, index, Git metadata, refs, repository
+configuration, and other host state; A2 does not contain those capabilities.
+The accepted agent-side `.git` restriction does not constrain this later
+evidence subprocess.
 Under the inherited-environment policy they can also observe inherited
 credentials and other process environment values even though those values are
 not persisted by the Coordinator. A2 provides no exfiltration or network
@@ -3854,9 +3873,9 @@ execution. An unused policy definition is valid, is not resolved, and is never
 executed. An `Observation` is the execution result and shall not be treated as
 definition or reference authority. No second command registry exists.
 
-Admission:: One pure cross-document check in the current operator seam shall
-validate duplicate phase references and require every phase reference to name a
-policy definition. It shall return the distinct selected names in deterministic
+Admission:: `serialization.py` owns phase-list duplicate-reference validation.
+One pure cross-document check in the current operator seam shall require every
+already-valid phase reference to name a policy definition. It shall return the distinct selected names in deterministic
 first-reference order for preparation. The existing A1 admission remains a
 separate prerequisite and is not duplicated. Canonical preflight shall then
 snapshot the A2 environment policy and resolve every selected definition's
@@ -3893,7 +3912,8 @@ and environment snapshot:
   bypasses PATH;
 * a bare name is searched through the effective PATH in order; relative and
   empty PATH entries are interpreted from repository root because that is the
-  fixed subprocess cwd;
+  fixed subprocess cwd. `PATH=""` is exactly one empty entry, so it searches
+  that repository root;
 * the selected path shall resolve to an existing executable regular file;
   otherwise admission rejects or, when repeated at evidence time, the
   observation is `error`;
@@ -3902,7 +3922,10 @@ and environment snapshot:
   target spelling, replaces `argv[0]` for execution; and
 * repository-local executables are permitted through an explicit relative path.
   Relative traversal and symlinks are not represented as containment or trust;
-  their resulting absolute/canonical paths are recorded.
+  their resulting absolute/canonical paths are recorded. Relative or empty PATH
+  entries can also resolve a bare name to an executable file inside the
+  repository, including agent-modified content; that is audit disclosure, not
+  containment.
 
 Resolution is performed at admission and repeated immediately before every
 attempt using the same environment snapshot. A changed executable or symlink is
@@ -3910,9 +3933,11 @@ not rejected merely for differing from admission: commands are explicitly
 allowed to execute agent-modified repository code and the host may change. The
 runtime facts are recorded. Immediately before spawn, record authored `argv[0]`,
 absolute invocation path, canonical real path, and the bounded stat fingerprint
-`st_dev`, `st_ino`, `st_mode`, `st_size`, and `st_mtime_ns`. These facts and PATH
-digest aid audit; they neither hash all executable/interpreter content nor prove
-trustworthiness.
+`st_dev`, `st_ino`, `st_mode`, `st_size`, and `st_mtime_ns`, using
+`os.stat(invocation_path)` and therefore following symlinks to fingerprint the
+target represented by the invocation path at observation time. These facts and
+PATH digest aid audit; they neither hash all executable/interpreter content nor
+prove trustworthiness.
 
 Execution boundary:: Actual execution occurs only at the current evidence point:
 after the adapter has returned a validated candidate result and after the
@@ -3927,7 +3952,11 @@ route reduction completes. For each phase reference the production runner shall:
 * apply the definition's positive bounded timeout;
 * perform no retry, fallback, shell expansion, backgrounding, or interactive
   input; and
-* on timeout, terminate and reap the child before returning an observation.
+* on timeout, terminate and reap the direct child before returning an observation.
+
+A2 creates and manages no process group, tracks no descendant, kills no process
+tree, and provides no descendant containment. Descendants may survive or retain
+pipes.
 
 Outcome taxonomy:: A successfully spawned process returning zero is `pass`. A
 successfully spawned process returning an ordinary positive nonzero status is
@@ -3945,7 +3974,13 @@ Output and diagnostics:: Stdout/stderr bodies are transient and shall not be
 copied into Run, Hop, checkpoint, execution-evidence, operator-summary, or other
 durable A2 artifacts. Each complete captured byte stream shall produce its own
 byte count and SHA-256 digest; a non-empty stream records `body_omitted=true`.
-The digest is over the full stream, not a decoded or truncated form. Semantic
+The digest is over the full stream, not a decoded or truncated form. For a
+normally completed process with complete streams, count and SHA-256 are present
+and `body_omitted=true` exactly when the stream is non-empty. When no complete
+stream is available--including admission/runtime resolution failure before spawn,
+spawn failure, timeout, or subprocess communication/infrastructure failure--the
+corresponding count, digest, and body-omitted facts are all `null`; an empty
+digest is used only for an actually observed complete empty stream. Semantic
 outcome is unaffected by omission. The durable `summary` is generated only from
 Coordinator facts (`exit 0`, `exit N`, `timeout after Ns`, `terminated by signal
 N`, `resolution_error:<class>`, or `spawn_error:<class>`) and never copies command
@@ -3957,7 +3992,7 @@ containment claim.
 Durable facts and ownership:: The A2 observation separates:
 
 * semantic outcome: command name and `pass|fail|error|not_run`;
-* execution audit: canonical SHA-256 of
+* execution audit: the full executed argv (with only `argv[0]` replaced), canonical SHA-256 of
   `json.dumps(list(argv), ensure_ascii=True, separators=(",", ":"))` encoded as
   UTF-8, authored `argv[0]`, timeout, repository-root cwd policy, runtime
   invocation/canonical paths and stat fingerprint, environment-policy version,
@@ -3966,18 +4001,42 @@ Durable facts and ownership:: The A2 observation separates:
 * human diagnostic: the bounded Coordinator-generated summary and terminal
   preflight diagnostics.
 
-The current checkpoint's `evidence` projection and the cumulative atomic
-`execution-evidence.json` shall carry these facts. The operator plan shall carry
-the selected command names, definition/argv digests, admission resolution facts,
-timeouts, and environment-policy/PATH facts before provider-capable execution.
-`operator-summary.json` may project the same already-bounded attempt records.
+The exact Observation/checkpoint/attempt record contains `provider`, `status`,
+`command_name`, `command` (the full executed argv), `summary`, `artifact_ref`, `argv_digest`,
+`authored_argv0`, `timeout_seconds`, `cwd_policy`, `invocation_path`,
+`canonical_path`, `stat_fingerprint`, `environment_policy`, `path_source`,
+`path_digest`, `exit_code`, `signal`, `error_class`, `stdout_byte_count`,
+`stdout_sha256`, `stdout_body_omitted`, `stderr_byte_count`, `stderr_sha256`, and
+`stderr_body_omitted`. `command` permits empty later items exactly as policy
+argv does; only item zero is non-empty. The existing combined output `digest` is
+removed rather than given a new meaning. Therefore `execution-evidence.json` is
+schema version 2 and every `operator-summary.json` embedding/projection of these
+attempt records is schema version 2; there is no v1 reader or migrator. The
+operator plan carries selected command names, argv digests, admission resolution
+facts, timeouts, and environment-policy/PATH facts before provider-capable
+execution; it carries no undefined "definition digest". `operator-summary.json`
+may project the same already-bounded attempt records.
 Run and Hop schemas do not change: `Hop.evidence_refs` remains agent-attributed
 references and shall not be conflated with trusted observations. Reducer inputs
 remain the existing evidence-error and evidence-failed facts. No provenance
 ledger or duration field is added. The checkpoint write that currently precedes
 dispatch-marker removal shall include the current observation; cumulative
 execution evidence shall be atomically published before another adapter
-invocation or normal operator return.
+invocation or normal operator return. After all required evidence attempts for a
+Hop complete, but before ordinary Hop reduction/completion may be accepted, the
+Coordinator shall perform one trusted re-observation through the existing
+repository/Git observation machinery. Its HEAD shall equal the trusted Hop end
+HEAD observed before evidence, and its worktree shall be clean under existing
+resolved-submodule cleanliness semantics. Either difference is projected through
+the existing `MechanicalFacts.repository_anomaly` path. This restores truthful
+Hop/repository state: without it, an evidence command could make an unattributed
+commit after the trusted observation, leaving `Run.current_head` stale, recorded
+commits incomplete, governance mutation unattributed, and terminal completion
+falsely successful. It adds no reducer fact, Run state, authority model, or
+second Git ledger. It does not detect or contain unrelated ref mutation leaving
+HEAD unchanged, Git-config mutation, reflog mutation, or other `.git` metadata
+change invisible to HEAD/worktree cleanliness; those remain sandbox/host-
+containment concerns outside A2.
 
 A1 interaction:: Each real A2 policy file is under `docs/ai_info` and each
 current policy already declares `docs/ai_info` in `governance_paths`. DMC phase
@@ -4057,14 +4116,18 @@ Acceptance matrix:: The bounded A2 implementation shall cover:
 * positive schema/admission: valid named definition; required explicit empty
   mapping; known ordered reference; one name reused by multiple phases; unused
   definition admitted but unresolved; current real bundles; neutral explicit
-  fixture; and selected bare `git` resolution under the production helper;
+  fixture; selected bare `git` resolution under the production helper; `PATH=""`
+  resolving a bare name through the one repository-root empty entry; and
+  `['some-command', '']` preserved exactly through preparation/execution
+  evidence mechanics;
 * execution: `shell=False`, repository-root cwd, `DEVNULL` stdin, exact literal
   metacharacter arguments, snapshotted environment, exit zero -> `pass`, and
   ordinary positive nonzero -> `fail`;
 * schema/admission negatives: missing required field; unknown/forbidden field;
   duplicate command key; invalid command name; empty argv; non-string or NUL
   argv item; empty `argv[0]`; timeout boolean, non-integer, zero, negative, or
-  above 900; duplicate phase reference; unknown reference; unresolved or
+  above 900; duplicate phase reference; unknown reference (including when an
+  injected fake/test runner would simulate it); unresolved or
   non-executable selected executable; v1/v2 policy; and no Run, state root,
   checkout, adapter, fake executable, or provider call on representative
   refusal;
@@ -4078,6 +4141,9 @@ Acceptance matrix:: The bounded A2 implementation shall cover:
   exit/signal/error classification; separate full stdout/stderr digests and byte
   counts; no persisted stream body; omission flags; and fixed diagnostic
   summary; and
+* Git truth: an evidence command that dirties the worktree or creates/moves HEAD
+  after the trusted Hop Git observation causes `repository_anomaly` mechanical
+  preemption and cannot report normal successful completion; and
 * trust/route boundary: `pass|fail|error|not_run` retain current reducer meaning;
   unknown/reference/resolution refusal precedes provider entry; a runtime
   `error` hard-stops; provider invocations are zero in all acceptance tests.
@@ -4100,13 +4166,14 @@ Implementation seams:: A2 remains within current architecture:
   observation audit fields, and
   `COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS = 900`;
 * `serialization.py`: policy-specific v3 rejection/migration diagnostic,
-  strict command mapping/name/argv/timeout validation, and duplicate phase
-  reference rejection;
+  strict command mapping/name/argv/timeout validation, and the sole phase-list
+  duplicate-reference validation;
 * `evidence.py`: remove fixed `TRUSTED_EVIDENCE` authority; own environment
   snapshot, resolver/prepared definition, policy-bound production runner,
   subprocess execution, audit digests, and outcome classification. The injected
   runner protocol remains an execution test seam, not a `supports()` registry;
-* `operator.py`: pure A2 cross-document admission, selected-command preparation
+* `operator.py`: pure A2 cross-document definition-reference coherence,
+  selected-command preparation
   in `_preflight()`, pre-Run failure boundary, operator-plan facts, and passing
   the one prepared runner/snapshot through the serial loop;
 * `vertical.py`: retain evidence timing/order, validate returned observation
@@ -4148,11 +4215,11 @@ background jobs; plugins/runtime discovery; arbitrary environment customization;
 Sonar-specific integration; mandatory full-suite policy; resumability/5C; Outer
 Loop; Project Memory; Relation Key Identity; and any reopening of A1.
 
-Verdict and next action:: *A2 IMPLEMENTATION IS READY FOR INDEPENDENT CONTRACT
-REVIEW.* There are no unresolved A2 architecture questions. The exact next
-action is a fresh independent adversarial review of this A2 contract. No A2
-implementation may begin before that review is accepted and the maintainer gives
-explicit implementation authorization.
+Verdict and next action:: *A2 CONTRACT ACCEPTED AFTER BOUNDED CORRECTION;
+IMPLEMENTATION REMAINS UNAUTHORIZED.* There are no unresolved A2 architecture
+questions. The exact next action is a fresh independent bounded delta re-review
+of I1/M1-M4 only. No A2 implementation may begin before that re-review is
+accepted and the maintainer gives explicit implementation authorization.
 
 ==== 14. Validation contract
 
