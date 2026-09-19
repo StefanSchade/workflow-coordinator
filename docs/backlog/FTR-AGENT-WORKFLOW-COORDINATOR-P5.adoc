@@ -617,7 +617,9 @@ forbidden. Numeric size/diff thresholds may follow Slice-2 measurement.
 with ID `workflow_coordinator.agent_operating_contract`, integer version `1`,
 and package-relative resource
 `resources/agent_operating_contract_v1.txt`. One strict `importlib.resources`
-loader shall validate its exact bytes, identity, version, and reviewed SHA-256.
+loader shall read its bytes, refuse if they are missing or unreadable, refuse if
+their SHA-256 differs from the reviewed SHA-256, then decode them as strict
+UTF-8. The reviewed SHA-256 is the sole runtime content-identity check.
 No consumer input, CLI value, environment value, registry, or runtime hook may
 select, replace, disable, or register an operating contract.
 
@@ -626,8 +628,9 @@ select, replace, disable, or register an operating contract.
 contract immediately after the generated header. It is not a `PromptComponent`,
 is not subject to component/context omission limits, and shall have ID, version,
 resource name, exact byte count, and exact-byte SHA-256 recorded in existing
-preflight/plan evidence. Missing, unreadable, malformed, unsupported, or
-digest-inconsistent content shall fail closed without repository-file fallback.
+preflight/plan evidence. Missing or unreadable content, digest mismatch, and
+strict UTF-8 decode failure where independently reachable after digest
+validation shall fail closed without repository-file fallback.
 |===
 
 ===== 7.2 Three output surfaces
@@ -4306,11 +4309,15 @@ become a Python subpackage. No general resource module or framework is created.
 Ownership and selection:: The Workflow Coordinator maintainer authors and owns
 the resource. Consumer maintainers continue to author WorkItems, profiles,
 RepositoryPolicies, tasks, and phase-selected components. Consumer material may
-add work/repository-specific constraints but may not select, replace, disable,
-register, or supply the Coordinator contract. No operating-contract field is
-added to WorkItem, WorkflowProfile, RepositoryPolicy, component manifest, CLI,
-or environment. There is no registry, plugin, search path, alternate filename,
-or runtime registration API.
+add work/repository-specific constraints and may narrow work or repository
+constraints, but may not widen, replace, disable, contradict, select, register,
+or supply Coordinator-owned invariants. The operating contract's Coordinator-
+level rules prevail over conflicting consumer task or component text, including
+Git ownership, CommitIntent semantics, structured-result discipline, invocation
+identity, and escalation semantics. No operating-contract field is added to
+WorkItem, WorkflowProfile, RepositoryPolicy, component manifest, CLI, or
+environment. There is no registry, plugin, search path, alternate filename, or
+runtime registration API.
 
 The contract is not a `PromptComponent`. It is mandatory Coordinator authority,
 not phase-selected consumer context; it has no `git show` retrieval identity and
@@ -4319,26 +4326,34 @@ is not subject to component or total-context omission limits.
 Content contract:: V1 shall communicate only generic rules already enforced or
 projected by the accepted Coordinator:
 
-* generated WorkItem/Run/Hop/invocation identity and current phase authority are
-  the invocation facts;
+* generated invocation facts are WorkItem ID, Run ID, Hop ID, invocation ID,
+  base HEAD, phase, `authorized_scope`, `permitted_routes`, evidence names, and
+  `output_contract`; `[workflow_policy]` additionally supplies
+  `durable_artifact`, while the result schema is supplied through the adapter;
 * the agent does not perform mutating Git ownership operations; read-only Git
-  inspection is permitted only where current work/phase authority allows it;
-* CommitIntent proposes paths and a subject for Coordinator-owned mechanical
-  Git handling and is neither evidence of a commit nor authority expansion;
+  inspection is allowed unless the consumer task restricts it; forbidden
+  agent-owned mutating Git commands include `git add`, `git commit`, `git reset`,
+  `git clean`, `git push`, `git rebase`, and `git commit --amend`;
+* CommitIntent proposes paths and a Conventional-Commit-compatible subject
+  containing the WorkItem ID and Hop ID for Coordinator-owned mechanical Git
+  handling; it is neither evidence of a commit nor authority expansion;
 * the correlated structured result envelope is mandatory and prose cannot
   replace routing-critical fields;
 * outcome, requested route, scope change, human requirement, escalation,
   Findings, evidence references, summary, and CommitIntent are reported
-  truthfully; and
+  truthfully; agent-reported validation or test results are not
+  Coordinator-trusted evidence; and
 * missing scope, semantic authority, public-surface authority, trust-boundary
   authority, prerequisite, or operational capability uses the existing
   escalation vocabulary instead of false completion or scope broadening.
 
 The text shall point to projected schema/phase facts rather than duplicate
 validation algorithms. It shall contain no DMC, spreadsheet, Core-path,
-consumer, provider, or model-specific instruction. Consumer task and selected
-component content remain authoritative for the work and repository engineering
-rules.
+consumer, provider, or model-specific instruction. It shall not transplant the
+IOR-04 `ROLE AND PHASE` generic paragraph, which is removed during A3
+implementation. Consumer task and selected component content remain
+authoritative for work and repository engineering rules only where they do not
+conflict with the operating contract.
 
 Identity and version:: A3 supports exactly this tuple:
 
@@ -4363,8 +4378,10 @@ Identity and version:: A3 supports exactly this tuple:
 |===
 
 The resource shall begin with one exact small ASCII identity prologue containing
-the ID and integer version. The filename, prologue, supported code constant, and
-reviewed digest are one invariant. A3 accepts no caller-requested version,
+the ID and integer version. Contract ID, version `1`, and resource path/name are
+module/provenance constants; the prologue is human-readable content verified by
+one positive test, not runtime authority. The reviewed digest fixes the reviewed
+bytes. A3 accepts no caller-requested version,
 multi-version reader, compatibility mode, negotiation, migration, deprecation,
 or fallback. A future semantic change requires an explicit reviewed identity
 decision; A3 does not pre-design it. Engineering words such as package,
@@ -4372,23 +4389,27 @@ contract, schema, policy, or security boundary do not imply product scale, so
 no enterprise or mass-market machinery is inferred.
 
 Loader and deterministic representation:: `prompt.py` shall own one small
-immutable loaded-contract value and the sole loader. The value contains only
-contract ID, integer version, package-relative resource, exact decoded text,
-exact byte count, and SHA-256. The loader shall read bytes once, reject empty
-content, validate resource name/prologue/version/reviewed digest, and decode
-strict UTF-8 without BOM, newline, whitespace, or Unicode normalization. The
-digest and count describe the bytes actually read; the prompt receives the
-corresponding decoded text.
+immutable loaded-contract value and the sole loader. The smallest value contains
+the strict-UTF-8 decoded text; byte count and SHA-256 may be exposed as derived
+facts, while ID, version, and resource path/name remain module/provenance
+constants. The loader contract is exactly: `importlib.resources` reads bytes;
+missing or unreadable bytes refuse; SHA-256 differing from `REVIEWED_SHA256`
+refuses; strict UTF-8 decoding follows; then the decoded text is loaded. The
+reviewed SHA-256 is the sole runtime content-identity check.
 
 Canonical admission and use:: `operator._preflight()` shall call the loader once
 before Run ID allocation, `new_run()`, state-root creation, checkout
 registration, adapter construction, or provider invocation. It shall return the
 immutable value with the existing admission result. `operator.main()` records
 its bounded facts, then passes the value through `run_serial_hops()`,
-`run_real_one_hop()`, and `run_one_hop()` to `assemble_prompt()`. All Hops of the
-Run use that one loaded value. Internal plumbing is not a consumer override;
-prompt assembly shall reassert the supported tuple so an inconsistent internal
-value cannot reach dispatch.
+`run_real_one_hop()`, and `run_one_hop()` to `assemble_prompt()`. At each of
+`run_serial_hops()`, `run_real_one_hop()`, `run_one_hop()`, and
+`assemble_prompt()`, the operating-contract value is a keyword-only required
+parameter with no default and is never lazy-loaded. All Hops of the Run use that
+one loaded value. Internal plumbing is not a consumer override; `assemble_prompt()`
+shall reassert `SHA-256(value.text.encode("utf-8")) == REVIEWED_SHA256` before
+dispatch. Strict UTF-8 round-trip makes this an exact content check; mismatch
+raises the one Coordinator resource error and prevents dispatch.
 
 Prompt order:: WFC-PROMPT-01/02 are narrowed accordingly. The generated
 identity/Git/authority/output header remains first; the full mandatory operating
@@ -4443,17 +4464,20 @@ Coordinator semantics from the two real task files where the new resource makes
 them duplicate or potentially conflicting. It shall retain WorkItem-specific
 success values, exact routes, validation, allowed artifact paths, exact commit
 subjects, phase-specific CommitIntent distinctions, and consumer engineering
-rules. The manifests and profiles do not select the resource. Policy YAML needs
-no A3 edit.
+rules. A consumer task clause may be removed only if the V1 operating contract
+states the same rule with equal or stronger force; otherwise that consumer clause
+must remain. The manifests and profiles do not select the resource. Policy YAML
+needs no A3 edit.
 
-Failure semantics:: Missing or unreadable resource; empty bytes; invalid UTF-8;
-wrong ID; unsupported version; filename/prologue/version inconsistency; reviewed
-digest mismatch; or inconsistent loaded value shall raise one stable
-Coordinator resource error. The canonical operator shall project it through the
-existing preflight failure boundary with exit status 2 and no Run/state-root/
-checkout/adapter/provider effects. The proof harness shall refuse before proof-
-root creation. A direct vertical test seam shall classify an inconsistent value
-as execution not started.
+Failure semantics:: Missing or unreadable resource, digest mismatch (including
+representative altered or empty bytes), and strict UTF-8 decode failure where
+independently reachable after digest validation shall raise one stable
+Coordinator resource error. An `assemble_prompt()` reassertion mismatch raises
+the same error and prevents dispatch. The canonical operator shall project it
+through the existing preflight failure boundary with exit status 2 and no
+Run/state-root/checkout/adapter/provider effects. The proof harness shall refuse
+before proof-root creation. A direct vertical test seam shall classify an
+inconsistent value as execution not started.
 
 There is no fallback to an operated-repository file, cwd, task, manifest,
 `generic_agent.txt`, reserved Core path via filesystem access, environment
@@ -4465,8 +4489,8 @@ rescue resource failure.
 |ID |Requirement
 
 |WFC-AUTH-09
-|Operating-contract load and exact identity/version/digest validation shall
-complete in canonical preflight before Run ID allocation, `new_run()`, state-
+|Operating-contract load and reviewed-digest validation shall complete in
+canonical preflight before Run ID allocation, `new_run()`, state-
 root creation, checkout registration, adapter construction, or provider
 execution. Every failure shall refuse; no consumer/repository fallback exists.
 
@@ -4482,10 +4506,14 @@ Acceptance matrix:: The bounded A3 implementation shall cover:
 
 * positive resource identity: package-relative production load, exact contract
   ID/version/resource/prologue, strict decoded content, byte count, reviewed
-  exact-byte digest, and deterministic repeat load;
+  exact-byte digest, and deterministic repeat load; the prologue is checked by
+  this positive test, not runtime parsing;
 * prompt use: one mandatory full block in WFC-PROMPT-02 order, identical loaded
   value for every serial Hop, no omission-limit path, no manifest selection,
-  and plan/prompt provenance agreement;
+  and plan/prompt provenance agreement; for every phase of both real consumer
+  bundles, the block appears exactly once after the generated header and before
+  the first consumer component, therefore before conflicting
+  `git_and_workflow.adoc` content;
 * production seams: canonical `_preflight()` loads once; proof harness uses the
   same loader before proof-root creation; the real consumer integration test
   uses production A1/A2/A3 helpers; no test/harness contract copy exists;
@@ -4493,9 +4521,10 @@ Acceptance matrix:: The bounded A3 implementation shall cover:
   current policies retain the exact A3 path, still cover all consumer governing
   inputs, and overlap no phase scope; resource loading never calls
   `_pinned_text()`;
-* missing/unreadable/empty/invalid UTF-8 resource refusal; wrong ID,
-  unsupported version, filename/prologue mismatch, digest mismatch, and internal
-  loaded-value inconsistency refusal;
+* missing/unreadable resource refusal; digest mismatch represented by altered
+  and empty bytes; strict UTF-8 decode failure only where independently
+  reachable after digest validation; and internal loaded-value reassertion
+  mismatch refusal;
 * no consumer authority: existing strict schemas reject an attempted extra
   operating-contract field, CLI exposes no selector, and no registration API
   exists;
@@ -4512,7 +4541,7 @@ Implementation seams:: A3 remains within current architecture:
 
 * add the sole resource under
   `scripts/workflow_coordinator/resources/agent_operating_contract_v1.txt`;
-* keep constants, immutable loaded value, sole loader, supported-value check,
+* keep constants, immutable loaded value, sole loader, reviewed-digest check,
   prompt injection, and prompt reference in `prompt.py` rather than add a module;
 * load once and project plan facts in `operator.py`, passing the internal value
   through its serial driver;
