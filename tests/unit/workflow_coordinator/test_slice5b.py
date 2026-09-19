@@ -53,6 +53,9 @@ from tests.utils.workflow_coordinator import (
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
+TESTS_ROOT = Path(__file__).resolve().parents[2]
+NEUTRAL_FIXTURE = TESTS_ROOT / "data" / "workflow_coordinator" / "slice5b_non_dmc.yaml"
+
 
 def git(repository: Path, *args: str) -> str:
     return subprocess.run(
@@ -283,9 +286,7 @@ class FakeEvidenceRunner:
 
 
 def fixture_data() -> dict[str, object]:
-    return yaml.safe_load(
-        Path("tests/data/workflow_coordinator/slice5b_non_dmc.yaml").read_text()
-    )
+    return yaml.safe_load(NEUTRAL_FIXTURE.read_text(encoding="utf-8"))
 
 
 def fixture_repository(tmp_path: Path, *, data: dict[str, object] | None = None) -> Path:

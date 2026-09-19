@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator import operator
+from scripts.workflow_coordinator import evidence, operator
 from scripts.workflow_coordinator.operator import main, run_serial_hops
 from scripts.workflow_coordinator.operator import _pinned_text
 from scripts.workflow_coordinator.adapter import AgentExecutionOutcome
@@ -194,10 +194,7 @@ def test_a2_unknown_reference_has_no_run_state_checkout_evidence_adapter_or_prov
     monkeypatch.setattr(operator, "new_run", forbidden("new_run"))
     monkeypatch.setattr(operator, "register_checkout", forbidden("checkout"))
     monkeypatch.setattr(operator, "CodexCliAdapter", forbidden("adapter"))
-    monkeypatch.setattr(
-        "scripts.workflow_coordinator.evidence.ProductionEvidenceRunner.observe",
-        forbidden("evidence"),
-    )
+    monkeypatch.setattr(evidence.ProductionEvidenceRunner, "observe", forbidden("evidence"))
     state_root = tmp_path / "a2-rejected-state"
     assert main(args(repository, state_root, str(executable))) == 2
     assert calls == {"run_id": 0, "new_run": 0, "checkout": 0, "adapter": 0, "evidence": 0}

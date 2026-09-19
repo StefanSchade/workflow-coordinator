@@ -10,16 +10,12 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
-import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-if __package__ in {None, ""}:  # Allow the documented file-based launcher.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from scripts.workflow_coordinator.model import (
+from .model import (
     DurableArtifact,
     EvidenceCommand,
     Phase,
@@ -30,13 +26,13 @@ from scripts.workflow_coordinator.model import (
     WorkflowProfile,
     new_run,
 )
-from scripts.workflow_coordinator.evidence import (
+from .evidence import (
     PRODUCTION_EVIDENCE_RUNNER,
     prepare_evidence_commands,
 )
-from scripts.workflow_coordinator.persistence import atomic_write_json
-from scripts.workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
-from scripts.workflow_coordinator.slice4 import RealHopRun, Slice4Error, register_checkout, run_real_one_hop
+from .persistence import atomic_write_json
+from .prompt import PromptComponent, load_agent_operating_contract
+from .slice4 import RealHopRun, Slice4Error, register_checkout, run_real_one_hop
 
 
 WORK_ITEM_ID = "WFC-S4-PROOF"

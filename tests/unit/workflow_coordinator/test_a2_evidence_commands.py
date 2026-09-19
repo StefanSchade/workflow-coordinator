@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from scripts.workflow_coordinator import evidence
 from scripts.workflow_coordinator.adapter import AgentExecutionOutcome
 from scripts.workflow_coordinator.evidence import (
     CWD_POLICY,
@@ -348,7 +349,7 @@ def test_spawn_permission_error_is_classified_and_streams_unavailable(tmp_path, 
     def denied(*args, **kwargs):
         raise PermissionError("denied")
 
-    monkeypatch.setattr("scripts.workflow_coordinator.evidence.subprocess.Popen", denied)
+    monkeypatch.setattr(evidence.subprocess, "Popen", denied)
     observation = PRODUCTION_EVIDENCE_RUNNER.observe(prepared)
     assert observation.status == "error"
     assert observation.error_class == "spawn:PermissionError"
@@ -376,10 +377,7 @@ def test_subprocess_communication_failure_is_infrastructure_error(tmp_path, monk
         def wait(self):
             return 0
 
-    monkeypatch.setattr(
-        "scripts.workflow_coordinator.evidence.subprocess.Popen",
-        lambda *args, **kwargs: BrokenProcess(),
-    )
+    monkeypatch.setattr(evidence.subprocess, "Popen", lambda *args, **kwargs: BrokenProcess())
     observation = PRODUCTION_EVIDENCE_RUNNER.observe(prepared)
     assert observation.status == "error"
     assert observation.error_class == "communication:RuntimeError"

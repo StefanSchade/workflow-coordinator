@@ -4,13 +4,6 @@
 from __future__ import annotations
 
 import sys
-
-# Direct ``python scripts/workflow_coordinator/operator.py`` execution would otherwise
-# shadow the standard-library ``operator`` module with this file during interpreter startup.
-if __package__ in {None, ""}:
-    sys.path.pop(0)
-    sys.path.insert(0, __file__.rsplit("/scripts/workflow_coordinator/", 1)[0])
-
 import argparse
 import hashlib
 import json
@@ -21,8 +14,8 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Callable, Sequence
 
-from scripts.workflow_coordinator.git_facts import GitPreflightError, observe_repository, preflight_hop, repository_identity
-from scripts.workflow_coordinator.evidence import (
+from .git_facts import GitPreflightError, observe_repository, preflight_hop, repository_identity
+from .evidence import (
     EvidenceRunner,
     FAIL_CLOSED_EVIDENCE_RUNNER,
     PRODUCTION_EVIDENCE_RUNNER,
@@ -30,25 +23,25 @@ from scripts.workflow_coordinator.evidence import (
     prepare_evidence_commands,
     snapshot_environment,
 )
-from scripts.workflow_coordinator.model import (
+from .model import (
     COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
     DurableArtifact,
     RunStatus,
     new_run,
 )
-from scripts.workflow_coordinator.persistence import (
+from .persistence import (
     atomic_write_json,
     checkpoint_projection,
     observation_to_data,
     write_run_snapshot,
 )
-from scripts.workflow_coordinator.prompt import (
+from .prompt import (
     AgentOperatingContract,
     ContextItem,
     PromptComponent,
     load_agent_operating_contract,
 )
-from scripts.workflow_coordinator.serialization import (
+from .serialization import (
     ValidationError,
     a1_path_shape,
     component_manifest_from_yaml,
@@ -56,8 +49,8 @@ from scripts.workflow_coordinator.serialization import (
     work_item_from_yaml,
     workflow_profile_from_yaml,
 )
-from scripts.workflow_coordinator.slice4 import Slice4Error, checkout_state_root, register_checkout, run_real_one_hop, validate_checkout
-from scripts.workflow_coordinator.codex_adapter import CodexCliAdapter
+from .slice4 import Slice4Error, checkout_state_root, register_checkout, run_real_one_hop, validate_checkout
+from .codex_adapter import CodexCliAdapter
 
 
 class OperatorPreflightError(RuntimeError):

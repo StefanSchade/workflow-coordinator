@@ -32,7 +32,9 @@ def _summary(result_path: Path) -> dict[str, object]:
     return json.loads(result_path.read_text(encoding="utf-8"))
 
 
-def test_successful_fake_proof_writes_self_contained_durable_evidence(tmp_path: Path):
+def test_successful_fake_proof_writes_self_contained_durable_evidence(
+    tmp_path: Path, monkeypatch
+):
     executable = _fake(
         tmp_path,
         '''import json, pathlib, subprocess, sys
@@ -49,7 +51,11 @@ invocation_id=prompt.split("result invocation_id is `", 1)[1].split("`", 1)[0]
 output.write_text(json.dumps({"schema_version": 1, "run_id": run_id, "hop_id": "H001", "invocation_id": invocation_id, "result": {"schema_version": 1, "outcome": "completed", "requested_route": "complete", "scope_changed": False, "requires_human": False, "escalation": None, "findings": [], "claimed_commits": [], "commit_intent": {"paths": ["PROOF.md"], "subject": "docs(workflow): WFC-S4-PROOF H001 mark fixture"}, "evidence_refs": [], "summary": "done"}}))
 ''',
     )
-    result = run_disposable_proof(tmp_path / "proof", executable=str(executable), timeout_seconds=2)
+    proof_root = (tmp_path / "proof").resolve()
+    unrelated_cwd = tmp_path / "unrelated-cwd"
+    unrelated_cwd.mkdir()
+    monkeypatch.chdir(unrelated_cwd)
+    result = run_disposable_proof(proof_root, executable=str(executable), timeout_seconds=2)
     summary = _summary(result.summary_path)
     assert result.error is None
     assert summary["vertical_success"] is True

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import scripts.workflow_coordinator as workflow_coordinator
 from scripts.workflow_coordinator.model import (
     Escalation,
     FindingAuthority,
@@ -36,6 +37,9 @@ from tests.utils.workflow_coordinator import (
 )
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
+
+TESTS_ROOT = Path(__file__).resolve().parents[2]
+NEUTRAL_FIXTURE = TESTS_ROOT / "data" / "workflow_coordinator" / "slice5b_non_dmc.yaml"
 
 
 def process(run, workflow, routing_result, *, role="worker", attribution="agent"):
@@ -380,17 +384,18 @@ def test_replay_j_non_domain_specific_complex_profile_converges_generically():
     assert len(run.findings) == 1
     assert run.findings[0].finding_id == "F001"
     assert run.findings[0].state is FindingState.RESOLVED
+    package_directory = Path(workflow_coordinator.__file__).resolve().parent
+    source_files = tuple(sorted(package_directory.glob("*.py")))
+    assert source_files
     generic_source = "\n".join(
-        path.read_text(encoding="utf-8").lower()
-        for path in Path("scripts/workflow_coordinator").glob("*.py")
+        path.read_text(encoding="utf-8").lower() for path in source_files
     )
     assert "dmc" not in generic_source
     assert "trusted_ingress" not in generic_source
 
 
 def test_replay_j_slice5b_declarative_fixture_is_bounded_and_consumer_neutral():
-    fixture_path = Path("tests/data/workflow_coordinator/slice5b_non_dmc.yaml")
-    text = fixture_path.read_text(encoding="utf-8")
+    text = NEUTRAL_FIXTURE.read_text(encoding="utf-8")
     fixture = yaml.safe_load(text)
     item = work_item_from_yaml(yaml.safe_dump(fixture["work_item"], sort_keys=False))
     workflow = workflow_profile_from_yaml(yaml.safe_dump(fixture["profile"], sort_keys=False))

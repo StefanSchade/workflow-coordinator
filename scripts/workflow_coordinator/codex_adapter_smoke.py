@@ -13,14 +13,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import subprocess
-import sys
 from pathlib import Path
 from uuid import uuid4
 
-if __package__ in {None, ""}:  # Allow the documented file-based launcher.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from scripts.workflow_coordinator.adapter import (
+from .adapter import (
     ROUTING_RESULT_ENVELOPE_CONTRACT,
     AgentExecutionRequest,
     ExecutionNotStartedError,
@@ -28,8 +24,8 @@ from scripts.workflow_coordinator.adapter import (
     ResultValidationError,
     validated_result,
 )
-from scripts.workflow_coordinator.codex_adapter import CodexCliAdapter
-from scripts.workflow_coordinator.persistence import atomic_write_json
+from .codex_adapter import CodexCliAdapter
+from .persistence import atomic_write_json
 
 
 DEFAULT_TIMEOUT_SECONDS = 120.0
