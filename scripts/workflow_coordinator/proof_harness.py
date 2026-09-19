@@ -35,7 +35,7 @@ from scripts.workflow_coordinator.evidence import (
     prepare_evidence_commands,
 )
 from scripts.workflow_coordinator.persistence import atomic_write_json
-from scripts.workflow_coordinator.prompt import PromptComponent
+from scripts.workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
 from scripts.workflow_coordinator.slice4 import RealHopRun, Slice4Error, register_checkout, run_real_one_hop
 
 
@@ -85,7 +85,7 @@ def _proof_profile() -> WorkflowProfile:
 def _proof_components() -> dict[str, PromptComponent]:
     return {
         "worker": PromptComponent("worker", "proof-runner", "proof-r1", "Work only on PROOF.md."),
-        "policy": PromptComponent("policy", "proof-runner", "proof-r1", "Return explicit commit intent; the Coordinator creates the commit."),
+        "policy": PromptComponent("policy", "proof-runner", "proof-r1", "Do not modify paths other than PROOF.md."),
     }
 
 
@@ -182,6 +182,7 @@ def run_disposable_proof(
     provenance: dict[str, object] | None = None,
 ) -> ProofHarnessResult:
     """Prepare one new fixed proof attempt and persist evidence for every outcome."""
+    agent_operating_contract = load_agent_operating_contract()
     root = proof_root.resolve()
     if root.exists():
         raise Slice4Error("proof root must be a new path")
@@ -215,6 +216,7 @@ def run_disposable_proof(
     try:
         real_hop = run_real_one_hop(
             run, profile, repository, _proof_components(), state_root=state_root, association=association,
+            agent_operating_contract=agent_operating_contract,
         task_payload=("Change PROOF.md to `WFC-S4-PROOF: completed marker`, return commit intent for exactly "
                           f"`PROOF.md` with subject `{EXPECTED_SUBJECT}`, then return route `complete`. "
                           f"The result invocation_id is `{invocation_id}`."),
@@ -238,6 +240,7 @@ def run_disposable_proof(
         "run_id": run_id,
         "invocation_id": invocation_id,
         "expected_commit_subject": EXPECTED_SUBJECT,
+        "agent_operating_contract": agent_operating_contract.provenance(),
         **_git_facts(repository, initial_head),
         "process_returncode": outcome.returncode if outcome else None,
         "timed_out": outcome.timed_out if outcome else False,

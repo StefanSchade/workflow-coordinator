@@ -28,7 +28,7 @@ from .persistence import (
     atomic_write_json, checkpoint_projection, recover_uncertain_dispatch,
     write_dispatch_marker, write_run_snapshot,
 )
-from .prompt import ContextItem, PromptComponent
+from .prompt import AgentOperatingContract, ContextItem, PromptComponent
 from .vertical import VerticalRun, run_one_hop
 
 
@@ -150,7 +150,8 @@ def invoke_codex(
 
 def run_real_one_hop(
     run: Run, profile: WorkflowProfile, repository: Path, components: dict[str, PromptComponent],
-    *, state_root: Path, association: CheckoutAssociation, task_payload: str,
+    *, agent_operating_contract: AgentOperatingContract, state_root: Path,
+    association: CheckoutAssociation, task_payload: str,
     invocation_id: str, timeout_seconds: float, executable: str = "codex",
     durable_artifacts: tuple[str, ...] = (),
     adapter: AgentExecutionPort | None = None,
@@ -198,6 +199,7 @@ def run_real_one_hop(
     try:
         vertical = run_one_hop(
             run, profile, repository, execution_port, components, task_payload=task_payload,
+            agent_operating_contract=agent_operating_contract,
             invocation_id=invocation_id, durable_artifacts=durable_artifacts,
             execution_timeout_seconds=timeout_seconds,
             registered_checkout_validator=require_registered_checkout,

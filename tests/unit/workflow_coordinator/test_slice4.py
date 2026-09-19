@@ -21,7 +21,7 @@ from scripts.workflow_coordinator.slice4 import (
     Slice4Error, invoke_codex, register_checkout, run_real_one_hop, validate_checkout,
 )
 from tests.utils.workflow_coordinator import phase, profile, route, run_for
-from scripts.workflow_coordinator.prompt import PromptComponent
+from scripts.workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
 
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -238,7 +238,7 @@ output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001
     workflow = replace(workflow, phases={"work": replace(workflow.phases["work"], authorized_scope=("PROOF.md",), evidence=())})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
-    result = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
+    result = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
     assert result.reduction.run.status.value == "completed"
     assert result.reduction.run.hop_used == 1 and result.reduction.run.hops[0].actual_commits
     assert result.checkpoint["state"]["status"] == "completed" and (repository / "PROOF.md").read_text() == "after\n"
@@ -278,7 +278,7 @@ def test_real_driver_recovers_post_spawn_uncertainty_with_external_anchors(repos
     workflow = profile({"work": phase({"done": route("complete")})})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
-    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
+    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
     run_root = state / "checkouts" / association.checkout_id
     assert outcome.vertical is None and outcome.run.hop_used == 1
     assert outcome.run.status.value == "reconcile_required"
@@ -312,7 +312,7 @@ output.write_text(json.dumps({{"schema_version": 1, "run_id": "RUN-1", "hop_id":
     import scripts.workflow_coordinator.vertical as vertical
 
     monkeypatch.setattr(vertical, "observe_hop", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("post-execution observation failure")))
-    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
+    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
 
     run_root = state / "checkouts" / association.checkout_id
     assert executions.read_text() == "1" and (repository / "PROOF.md").read_text() == "after\n"
@@ -338,7 +338,7 @@ def test_real_driver_fails_closed_for_unclassified_execution_boundary_exception(
         raise RuntimeError("execution boundary became unavailable")
 
     monkeypatch.setattr(CodexCliAdapter, "execute", unexpected_execute)
-    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2)
+    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2)
 
     run_root = state / "checkouts" / association.checkout_id
     assert executions == ["INV-1"]
@@ -353,7 +353,7 @@ def test_real_driver_preserves_no_hop_for_unlaunchable_executable(repository, tm
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
     with pytest.raises(Slice4Error, match="pre-acceptance"):
-        run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(tmp_path / "missing-codex"))
+        run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(tmp_path / "missing-codex"))
     assert run.hop_used == 0
     assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
 
@@ -366,7 +366,7 @@ def test_real_boundary_refuses_ineligible_or_exhausted_run_before_marker(reposit
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=budget), current_head=head, baseline_head=head, hop_used=used)
     with pytest.raises(Slice4Error, match="not dispatch-eligible"):
-        run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2)
+        run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2)
     assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
 
 
@@ -379,7 +379,7 @@ def test_real_driver_cleans_marker_for_local_prompt_failure_before_spawn(reposit
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
     with pytest.raises(ValueError, match="prompt component"):
-        run_real_one_hop(run, workflow, repository, {"testing": _components()["testing"]}, state_root=state, association=association, task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
+        run_real_one_hop(run, workflow, repository, {"testing": _components()["testing"]}, state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
     assert not executions.exists() and run.hop_used == 0
     assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
     assert (repository / "PROOF.md").read_text() == "before\n"

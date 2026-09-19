@@ -27,7 +27,7 @@ from scripts.workflow_coordinator.operator import (
     _preflight,
     run_serial_hops,
 )
-from scripts.workflow_coordinator.prompt import PromptComponent
+from scripts.workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
 from scripts.workflow_coordinator.reducer import (
     ReductionError,
     apply_finding_deltas,
@@ -449,7 +449,7 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
     runner = FakeEvidenceRunner()
     state_root = tmp_path / "state"
     (
-        observed_repository, observed_state, _paths, texts, item, workflow,
+        admitted_contract, observed_repository, observed_state, _paths, texts, item, workflow,
         policy, components, artifact_map, legacy_artifacts, governing, active_runner,
         evidence_commands, evidence_environment,
     ) = _preflight(
@@ -463,20 +463,27 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
     import scripts.workflow_coordinator.operator as operator
 
     original = operator._governing_inputs_unchanged
+    original_hop_runner = operator.run_real_one_hop
     revalidations = []
+    received_contracts = []
 
     def counted(*args, **kwargs):
         revalidations.append(args[1])
         return original(*args, **kwargs)
 
+    def capture_contract(*args, **kwargs):
+        received_contracts.append(kwargs["agent_operating_contract"])
+        return original_hop_runner(*args, **kwargs)
+
     monkeypatch.setattr(operator, "_governing_inputs_unchanged", counted)
+    monkeypatch.setattr(operator, "run_real_one_hop", capture_contract)
     run = new_run(item, workflow, policy, run_id="RUN-GENERIC-5B", baseline_head=baseline)
     association = register_checkout(state_root, repository)
     adapter = ScriptedConvergenceAdapter(repository)
     final, evidence = run_serial_hops(
         run, workflow, repository, components,
         state_root=state_root, association=association,
-        task_payload=texts["task"], governing=governing,
+        agent_operating_contract=admitted_contract, task_payload=texts["task"], governing=governing,
         timeout_seconds=1, executable="local", adapter=adapter,
         durable_artifacts_by_phase=artifact_map,
         evidence_runner=active_runner,
@@ -485,6 +492,8 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
 
     assert final.status is RunStatus.COMPLETED
     assert final.hop_used == len(final.hops) == len(adapter.requests) == 4
+    assert len(received_contracts) == 4
+    assert all(contract is admitted_contract for contract in received_contracts)
     assert [hop.hop_id for hop in final.hops] == ["H001", "H002", "H003", "H004"]
     assert len({request.invocation.invocation_id for request in adapter.requests}) == 4
     assert all(request.invocation.hop_id in request.prompt for request in adapter.requests)
@@ -546,7 +555,7 @@ def test_five_hop_budget_stops_before_h006_without_reservation_or_retry(tmp_path
         run, workflow, repository,
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        state_root=state, association=association, task_payload="loop",
+        state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="loop",
         governing={}, timeout_seconds=1, executable="local", adapter=adapter,
         durable_artifacts=("payload.txt",),
     )
@@ -603,7 +612,7 @@ def test_unsuccessful_outcomes_do_not_require_artifact_or_route(tmp_path, outcom
         ResultAdapter(base_result("again", outcome=outcome)),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        task_payload="task", invocation_id="INV-1",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-1",
         durable_artifacts=("review/report.md",),
     )
     assert vertical.reduction.run.stop_reason == expected
@@ -630,7 +639,7 @@ def test_unsuccessful_outcomes_forbid_commit_intent(tmp_path, outcome):
         ),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        task_payload="task", invocation_id="INV-1",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-1",
         durable_artifacts=("review/report.md",),
     )
     assert "commit intent is not permitted" in (vertical.reduction.run.stop_reason or "")
@@ -659,7 +668,7 @@ def test_required_evidence_error_not_run_and_malformed_hard_stop(
         ResultAdapter(base_result("accept")),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        task_payload="task", invocation_id="INV-1",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-1",
         evidence_runner=FakeEvidenceRunner(status=status),
         evidence_commands=prepared_evidence(repository, ("fake_check",)),
     )
@@ -685,7 +694,7 @@ def test_changes_required_commit_is_limited_to_declared_review_artifact(tmp_path
         ResultAdapter(base_result("correct", outcome="changes_required")),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        task_payload="task", invocation_id="INV-missing",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-missing",
         durable_artifacts=("review/report.md",),
     )
     assert "required durable artifact" in (missing.reduction.run.stop_reason or "")
@@ -703,7 +712,7 @@ def test_changes_required_commit_is_limited_to_declared_review_artifact(tmp_path
         ),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        task_payload="task", invocation_id="INV-1",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-1",
         durable_artifacts=("review/report.md",),
     )
     assert accepted.reduction.run.phase == "correct"
@@ -722,7 +731,7 @@ def test_changes_required_commit_is_limited_to_declared_review_artifact(tmp_path
         ),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        task_payload="task", invocation_id="INV-1",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-1",
         durable_artifacts=("review/report.md",),
     )
     assert "commit intent is not permitted" in (rejected.reduction.run.stop_reason or "")
@@ -817,7 +826,7 @@ def test_reconstructed_context_encodes_agent_values_and_attributes_outcome(tmp_p
         _components_for(baseline),
         state_root=state,
         association=association,
-        task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
         governing={},
         timeout_seconds=1,
         executable="local",
@@ -897,7 +906,7 @@ def test_vertical_clean_evidence_fail_uses_declared_gate_failure_route(tmp_path)
         repository,
         ResultAdapter(base_result("accept")),
         _components_for(baseline),
-        task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
         invocation_id="INV-FAIL-ROUTE",
         evidence_runner=FakeEvidenceRunner(status="fail"),
         evidence_commands=prepared_evidence(repository, ("fake_check",)),
@@ -918,7 +927,7 @@ def test_vertical_clean_evidence_fail_without_route_stops_exactly(tmp_path):
         repository,
         ResultAdapter(base_result("accept")),
         _components_for(baseline),
-        task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
         invocation_id="INV-FAIL-STOP",
         evidence_runner=FakeEvidenceRunner(status="fail"),
         evidence_commands=prepared_evidence(repository, ("fake_check",)),
@@ -971,7 +980,7 @@ def test_direct_agent_commit_cannot_satisfy_required_artifact(tmp_path):
             mutate=lambda repo: repo.joinpath(path).write_text("direct\n"),
         ),
         _components_for(baseline),
-        task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
         invocation_id="INV-DIRECT",
         durable_artifacts=(path,),
     )
@@ -1000,7 +1009,7 @@ def test_commitintent_deletion_cannot_satisfy_required_artifact(tmp_path):
             mutate=lambda repo: repo.joinpath(path).unlink(),
         ),
         _components_for(baseline),
-        task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
         invocation_id="INV-DELETE",
         durable_artifacts=(path,),
     )
@@ -1029,7 +1038,7 @@ def test_required_artifact_subset_does_not_satisfy_multiple_paths(tmp_path):
             mutate=lambda repo: repo.joinpath(paths[0]).write_text("after\n"),
         ),
         _components_for(baseline),
-        task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
         invocation_id="INV-SUBSET",
         durable_artifacts=paths,
     )
@@ -1062,7 +1071,7 @@ def test_required_artifact_rejects_tracked_symlink_to_external_content(tmp_path)
             mutate=create_symlink,
         ),
         _components_for(baseline),
-        task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
         invocation_id="INV-SYMLINK",
         durable_artifacts=(artifact,),
     )
@@ -1171,7 +1180,7 @@ def test_malformed_trusted_observation_hard_stops_before_routing(
         repository,
         ResultAdapter(base_result("accept")),
         _components_for(baseline),
-        task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
         invocation_id="INV-MALFORMED",
         evidence_runner=FixedObservationRunner(),
         evidence_commands=commands,
@@ -1226,7 +1235,7 @@ def test_advisory_changes_required_cannot_commit_review_artifact(tmp_path):
             mutate=lambda repo: repo.joinpath(artifact).write_text("report\n"),
         ),
         _components_for(baseline),
-        task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
         invocation_id="INV-ADVISORY",
         durable_artifacts=(artifact,),
     )
@@ -1280,7 +1289,7 @@ def test_changes_required_artifact_does_not_grant_finding_disposition(tmp_path):
             mutate=lambda repo: repo.joinpath(artifact).write_text("report\n"),
         ),
         _components_for(baseline),
-        task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
         invocation_id="INV-NO-AUTHORITY",
         durable_artifacts=(artifact,),
     )
@@ -1334,7 +1343,7 @@ def test_direct_serial_driver_rejects_limit_above_five_before_dispatch(tmp_path)
             _components_for(baseline),
             state_root=state,
             association=association,
-            task_payload="task",
+            agent_operating_contract=load_agent_operating_contract(), task_payload="task",
             governing={},
             timeout_seconds=1,
             executable="local",

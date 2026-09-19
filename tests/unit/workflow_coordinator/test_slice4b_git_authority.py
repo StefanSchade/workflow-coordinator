@@ -17,7 +17,7 @@ from scripts.workflow_coordinator.git_facts import (
     trusted_commit,
 )
 from scripts.workflow_coordinator.model import CommitIntent, DurableArtifact
-from scripts.workflow_coordinator.prompt import PromptComponent
+from scripts.workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
 from scripts.workflow_coordinator.vertical import run_one_hop
 from tests.utils.workflow_coordinator import phase, profile, route, run_for
 
@@ -96,7 +96,7 @@ def _vertical_run(repository: Path, adapter: WorktreeOnlyAdapter, *, scope: tupl
     workflow = profile({"work": replace(phase({"done": route("complete")}), authorized_scope=scope, evidence=())})
     base = git(repository, "rev-parse", "HEAD")
     run = replace(run_for(workflow, budget=1), current_head=base, baseline_head=base)
-    return run_one_hop(run, workflow, repository, adapter, _components(), task_payload="fixture", invocation_id="INV-1")
+    return run_one_hop(run, workflow, repository, adapter, _components(), agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1")
 
 
 def test_coordinator_creates_one_authoritative_commit_from_worktree_only_agent(repository: Path):
@@ -306,7 +306,7 @@ def _vertical_run_phase(repository: Path, adapter: WorktreeOnlyAdapter, work_pha
     workflow = profile({"work": work_phase})
     base = git(repository, "rev-parse", "HEAD")
     run = replace(run_for(workflow, budget=1), current_head=base, baseline_head=base)
-    return run_one_hop(run, workflow, repository, adapter, _components(), task_payload="fixture", invocation_id="INV-1")
+    return run_one_hop(run, workflow, repository, adapter, _components(), agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1")
 
 
 def test_commit_intent_without_phase_commit_authority_never_mutates_git(repository: Path):

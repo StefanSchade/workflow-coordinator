@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts.workflow_coordinator import proof_harness
+from scripts.workflow_coordinator.prompt import CoordinatorResourceError, load_agent_operating_contract
 from scripts.workflow_coordinator.proof_harness import (
     DIAGNOSTIC_LIMIT_CHARS,
     EXPECTED_SUBJECT,
@@ -41,6 +43,7 @@ pathlib.Path(repo, "PROOF.md").write_text("WFC-S4-PROOF: completed marker\\n")
 sys.stdout.write("fake stdout")
 sys.stderr.write("fake stderr")
 prompt=sys.stdin.read()
+assert prompt.count("[agent_operating_contract]") == 1
 run_id=prompt.split("run_id=", 1)[1].split("\\n", 1)[0]
 invocation_id=prompt.split("result invocation_id is `", 1)[1].split("`", 1)[0]
 output.write_text(json.dumps({"schema_version": 1, "run_id": run_id, "hop_id": "H001", "invocation_id": invocation_id, "result": {"schema_version": 1, "outcome": "completed", "requested_route": "complete", "scope_changed": False, "requires_human": False, "escalation": None, "findings": [], "claimed_commits": [], "commit_intent": {"paths": ["PROOF.md"], "subject": "docs(workflow): WFC-S4-PROOF H001 mark fixture"}, "evidence_refs": [], "summary": "done"}}))
@@ -56,10 +59,16 @@ output.write_text(json.dumps({"schema_version": 1, "run_id": run_id, "hop_id": "
     assert summary["actual_commits"] and summary["tracked_paths"] == ["PROOF.md"]
     assert summary["proof_md_final_content"] == "WFC-S4-PROOF: completed marker\n"
     assert summary["expected_commit_subject"] == EXPECTED_SUBJECT
+    assert summary["agent_operating_contract"] == load_agent_operating_contract().provenance()
     assert summary["actual_commit_subjects"] == [EXPECTED_SUBJECT]
     assert summary["stdout_tail"] == "fake stdout" and summary["stderr_tail"] == "fake stderr"
     assert Path(str(summary["launch_provenance_path"])).exists()
     assert proof_exit_status(result) == 0
+
+
+def test_proof_harness_uses_the_production_loader_and_prompt_seam():
+    assert proof_harness.load_agent_operating_contract is load_agent_operating_contract
+    assert "Coordinator creates the commit" not in proof_harness._proof_components()["policy"].content
 
 
 def test_post_spawn_fake_failure_is_charged_and_diagnosable_with_bounded_tails(tmp_path: Path):
@@ -94,6 +103,25 @@ def test_pre_spawn_failure_writes_summary_without_charging_a_hop(tmp_path: Path)
     assert summary["dispatch_marker_present"] is False
     assert "pre-acceptance executable launch failure" in str(summary["operator_error"])
     assert proof_exit_status(result) != 0
+
+
+def test_resource_admission_failure_leaves_no_proof_root_or_provider_effect(
+    tmp_path: Path, monkeypatch
+):
+    proof_root = tmp_path / "proof"
+    counter = tmp_path / "provider-counter"
+    executable = _fake(
+        tmp_path, f"import pathlib\npathlib.Path({str(counter)!r}).write_text('called')\n",
+    )
+
+    def unavailable():
+        raise CoordinatorResourceError("unavailable")
+
+    monkeypatch.setattr(proof_harness, "load_agent_operating_contract", unavailable)
+    with pytest.raises(CoordinatorResourceError):
+        run_disposable_proof(proof_root, executable=str(executable), timeout_seconds=2)
+    assert not proof_root.exists()
+    assert not counter.exists()
 
 
 def test_provenance_is_bounded_and_never_records_environment_values():

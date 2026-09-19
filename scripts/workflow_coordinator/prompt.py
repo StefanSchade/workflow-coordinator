@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from importlib import resources
 from typing import Mapping
 
 from .adapter import Invocation
@@ -13,6 +14,53 @@ COMPONENT_LIMIT_BYTES = 65_536
 CONTEXT_LIMIT_BYTES = 196_608
 DIFF_LIMIT_BYTES = 65_536
 DIFF_FILE_LIMIT = 12
+CONTRACT_ID = "workflow_coordinator.agent_operating_contract"
+CONTRACT_VERSION = 1
+RESOURCE = "resources/agent_operating_contract_v1.txt"
+REVIEWED_SHA256 = "058fde8651898afa170160b35d4c6969459130652a69cac1ae2f6112d8e5a194"
+
+
+class CoordinatorResourceError(RuntimeError):
+    """The mandatory Coordinator-owned resource could not be admitted."""
+
+
+@dataclass(frozen=True)
+class AgentOperatingContract:
+    text: str
+
+    @property
+    def byte_count(self) -> int:
+        return len(self.text.encode("utf-8"))
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.text.encode("utf-8")).hexdigest()
+
+    def provenance(self) -> dict[str, object]:
+        return {
+            "contract_id": CONTRACT_ID,
+            "version": CONTRACT_VERSION,
+            "resource": RESOURCE,
+            "byte_count": self.byte_count,
+            "sha256": self.sha256,
+        }
+
+
+def load_agent_operating_contract() -> AgentOperatingContract:
+    """Load and admit the sole reviewed Coordinator-owned operating contract."""
+
+    try:
+        content = (
+            resources.files(__package__) / "resources" / "agent_operating_contract_v1.txt"
+        ).read_bytes()
+    except (OSError, TypeError) as error:
+        raise CoordinatorResourceError("Coordinator operating contract resource is unavailable") from error
+    if hashlib.sha256(content).hexdigest() != REVIEWED_SHA256:
+        raise CoordinatorResourceError("Coordinator operating contract resource is unavailable")
+    try:
+        return AgentOperatingContract(content.decode("utf-8", errors="strict"))
+    except UnicodeDecodeError as error:
+        raise CoordinatorResourceError("Coordinator operating contract resource is unavailable") from error
 
 
 @dataclass(frozen=True)
@@ -50,6 +98,7 @@ class ContextItem:
 @dataclass(frozen=True)
 class PromptPackage:
     text: str
+    agent_operating_contract: dict[str, object]
     selected_components: tuple[dict[str, object], ...]
     omissions: tuple[dict[str, object], ...]
     inline_diff: str | None
@@ -69,7 +118,7 @@ def _header(run: Run, phase: Phase, invocation: Invocation) -> str:
         f"work_item_id={run.work_item_id}\nrun_id={invocation.run_id}\n"
         f"hop_id={invocation.hop_id}\ninvocation_id={invocation.invocation_id}\n"
         f"base_head={run.current_head}\n"
-        f"phase={run.phase}\nscope={','.join(phase.authorized_scope)}\n"
+        f"phase={run.phase}\nauthorized_scope={','.join(phase.authorized_scope)}\n"
         f"permitted_routes={routes}\nevidence={','.join(phase.evidence)}\n"
         "output_contract=structured_result_v1\n"
     )
@@ -80,6 +129,7 @@ def assemble_prompt(
     phase: Phase,
     components: Mapping[str, PromptComponent],
     *,
+    agent_operating_contract: AgentOperatingContract,
     invocation: Invocation,
     task_payload: str,
     context: tuple[ContextItem, ...] = (),
@@ -90,9 +140,15 @@ def assemble_prompt(
 ) -> PromptPackage:
     """Compose one fresh prompt; all optional content is included or referenced."""
 
+    try:
+        digest = hashlib.sha256(agent_operating_contract.text.encode("utf-8")).hexdigest()
+    except (AttributeError, UnicodeEncodeError) as error:
+        raise CoordinatorResourceError("Coordinator operating contract resource is unavailable") from error
+    if digest != REVIEWED_SHA256:
+        raise CoordinatorResourceError("Coordinator operating contract resource is unavailable")
     selected: list[dict[str, object]] = []
     omissions: list[dict[str, object]] = []
-    blocks = [_header(run, phase, invocation)]
+    blocks = [_header(run, phase, invocation), agent_operating_contract.text]
     used = 0
     for component_id in _selected_ids(phase):
         component = components.get(component_id)
@@ -129,4 +185,11 @@ def assemble_prompt(
             inline_diff = diff
             blocks.append("[diff]\n" + diff)
     blocks.append("[result_output_contract]\nReturn one JSON structured_result_v1 envelope; prose cannot replace fields.")
-    return PromptPackage("\n\n".join(blocks) + "\n", tuple(selected), tuple(omissions), inline_diff, diff_reference)
+    return PromptPackage(
+        "\n\n".join(blocks) + "\n",
+        agent_operating_contract.provenance(),
+        tuple(selected),
+        tuple(omissions),
+        inline_diff,
+        diff_reference,
+    )

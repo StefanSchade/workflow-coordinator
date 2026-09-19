@@ -14,7 +14,11 @@ from scripts.workflow_coordinator.operator import main, run_serial_hops
 from scripts.workflow_coordinator.operator import _pinned_text
 from scripts.workflow_coordinator.adapter import AgentExecutionOutcome
 from scripts.workflow_coordinator.model import RepositoryPolicy, WorkItem, new_run
-from scripts.workflow_coordinator.prompt import PromptComponent
+from scripts.workflow_coordinator.prompt import (
+    CoordinatorResourceError,
+    PromptComponent,
+    load_agent_operating_contract,
+)
 from scripts.workflow_coordinator.slice4 import register_checkout
 from tests.utils.workflow_coordinator import phase, profile, route
 from scripts.workflow_coordinator.serialization import ValidationError, component_manifest_from_yaml
@@ -201,7 +205,9 @@ def test_a2_unknown_reference_has_no_run_state_checkout_evidence_adapter_or_prov
     assert not counter.exists()
 
 
-def test_fake_success_is_one_hop_and_writes_compact_operator_evidence(repository: Path, tmp_path: Path):
+def test_fake_success_is_one_hop_and_writes_compact_operator_evidence(
+    repository: Path, tmp_path: Path, monkeypatch
+):
     counter = tmp_path / "counter"
     body = f'''import json, pathlib, sys
 args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib.Path(args[args.index("--output-last-message")+1])
@@ -213,9 +219,21 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
 '''
     executable = fake(tmp_path, body)
     state = tmp_path / "state"
+    original_loader = operator.load_agent_operating_contract
+    loads = []
+
+    def counted_loader():
+        loaded = original_loader()
+        loads.append(loaded)
+        return loaded
+
+    monkeypatch.setattr(operator, "load_agent_operating_contract", counted_loader)
     assert main(args(repository, state, str(executable))) == 0
     plan, summary = json.loads((state / "operator-plan.json").read_text()), json.loads((state / "operator-summary.json").read_text())
+    assert len(loads) == 1
     assert counter.read_text() == "1" and plan["max_autonomous_hops"] == 1 and plan["retry"] is False
+    assert plan["agent_operating_contract"] == loads[0].provenance()
+    assert "agent_operating_contract" not in plan["governing_inputs"]
     assert plan["evidence"]["environment_policy"] == "coordinator-inherited-environment-v1"
     assert plan["evidence"]["selected_commands"][0]["command_name"] == "local"
     assert plan["evidence"]["selected_commands"][0]["argv_digest"]
@@ -223,6 +241,38 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     assert summary["run_status"] == "completed" and summary["hop_used"] == 1 and summary["worktree_clean"] is True
     assert len(summary["commits"]) == 1 and summary["changed_paths"] == ["PROOF.md"]
     assert git(repository, "status", "--porcelain") == ""
+
+
+def test_operating_contract_failure_is_canonical_pre_run_refusal(
+    repository: Path, tmp_path: Path, monkeypatch
+):
+    counter = tmp_path / "provider-counter"
+    executable = fake(
+        tmp_path, f"import pathlib\npathlib.Path({str(counter)!r}).write_text('called')\n",
+    )
+    calls = {"run_id": 0, "new_run": 0, "checkout": 0, "adapter": 0}
+
+    def forbidden(name):
+        def fail(*_args, **_kwargs):
+            calls[name] += 1
+            raise AssertionError(f"unexpected {name}")
+
+        return fail
+
+    def unavailable():
+        raise CoordinatorResourceError("Coordinator operating contract resource is unavailable")
+
+    monkeypatch.setattr(operator, "load_agent_operating_contract", unavailable)
+    monkeypatch.setattr(operator.uuid, "uuid4", forbidden("run_id"))
+    monkeypatch.setattr(operator, "new_run", forbidden("new_run"))
+    monkeypatch.setattr(operator, "register_checkout", forbidden("checkout"))
+    monkeypatch.setattr(operator, "CodexCliAdapter", forbidden("adapter"))
+    state_root = tmp_path / "resource-rejected-state"
+
+    assert main(args(repository, state_root, str(executable))) == 2
+    assert calls == {"run_id": 0, "new_run": 0, "checkout": 0, "adapter": 0}
+    assert not state_root.exists()
+    assert not counter.exists()
 
 
 def test_n_greater_than_five_rejects_pinned_clean_input_before_execution(repository: Path, tmp_path: Path, capsys):
@@ -416,7 +466,7 @@ def test_n2_h001_rejections_charge_once_and_never_dispatch_h002(repository: Path
     adapter = _ResultAdapter(repository, result, malformed=malformed, uncorrelated=uncorrelated)
     workflow, run, state, association, components = _two_hop_serial_fixture(repository, tmp_path, adapter)
     final, _ = run_serial_hops(run, workflow, repository, components, state_root=state,
-                               association=association, task_payload="task", governing={},
+                               association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="task", governing={},
                                timeout_seconds=1, executable="local", adapter=adapter)
     assert len(adapter.requests) == 1 and final.hop_used == 1
     assert final.status.value != "ready"
@@ -435,7 +485,7 @@ def test_trusted_h001_commit_remains_factual_when_route_is_rejected(repository: 
     workflow, run, state, association, components = _two_hop_serial_fixture(repository, tmp_path, adapter)
     baseline = run.current_head
     final, _ = run_serial_hops(run, workflow, repository, components, state_root=state,
-                               association=association, task_payload="task", governing={},
+                               association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="task", governing={},
                                timeout_seconds=1, executable="local", adapter=adapter)
     assert len(adapter.requests) == final.hop_used == 1
     assert final.current_head != baseline == final.baseline_head
@@ -452,7 +502,7 @@ def test_dirty_worktree_between_hops_stops_after_h001(repository: Path, tmp_path
             repository.joinpath("untracked-between-hops").write_text("dirty\n")
 
     final, _ = run_serial_hops(run, workflow, repository, components, state_root=state,
-                               association=association, task_payload="task", governing={},
+                               association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="task", governing={},
                                timeout_seconds=1, executable="local", adapter=adapter,
                                progress=dirty_after_h001)
     assert len(adapter.requests) == final.hop_used == 1
@@ -475,7 +525,7 @@ def test_h001_checkpoint_publication_fault_retains_marker_and_never_dispatches_h
     monkeypatch.setattr(slice4, "atomic_write_json", fail_checkpoint)
     with pytest.raises(OSError, match="injected checkpoint crash"):
         run_serial_hops(run, workflow, repository, components, state_root=state,
-                        association=association, task_payload="task", governing={},
+                        association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="task", governing={},
                         timeout_seconds=1, executable="local", adapter=adapter)
     run_root = state / "checkouts" / association.checkout_id
     assert len(adapter.requests) == 1
@@ -502,7 +552,7 @@ def test_n2_serial_driver_uses_fresh_context_and_never_allocates_h003(repository
         run, workflow, repository, {"prepare": PromptComponent("prepare", "prepare", baseline, "prepare"),
                                      "verify": PromptComponent("verify", "verify", baseline, "verify"),
                                      "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        state_root=state, association=association, task_payload="pinned task", governing={},
+        state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="pinned task", governing={},
         timeout_seconds=1, executable="local", adapter=adapter,
     )
     assert result.hop_used == 2
@@ -548,7 +598,7 @@ def test_governing_input_commit_after_h001_stops_before_h002(repository: Path, t
         run, workflow, repository, {"prepare": PromptComponent("prepare", "prepare", baseline, "prepare"),
                                      "verify": PromptComponent("verify", "verify", baseline, "verify"),
                                      "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        state_root=state, association=association, task_payload="pinned task",
+        state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="pinned task",
         governing={"task.txt": operator._governing_digest("pinned task\n")},
         timeout_seconds=1, executable="local", adapter=adapter,
     )

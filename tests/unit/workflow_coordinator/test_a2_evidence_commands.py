@@ -32,7 +32,7 @@ from scripts.workflow_coordinator.operator import (
     _selected_evidence_names,
 )
 from scripts.workflow_coordinator.persistence import observation_to_data
-from scripts.workflow_coordinator.prompt import PromptComponent
+from scripts.workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
 from scripts.workflow_coordinator.serialization import (
     ValidationError,
     repository_policy_from_yaml,
@@ -478,7 +478,7 @@ def test_post_evidence_git_reobservation_preempts_normal_completion(repository, 
         run, workflow, repository, CompletedAdapter(),
         {"worker": PromptComponent("worker", "worker", head, "worker"),
          "testing": PromptComponent("testing", "testing", head, "testing")},
-        task_payload="task", invocation_id="INV-A2",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-A2",
         evidence_runner=MutatingRunner(), evidence_commands=commands,
     )
     assert vertical.reduction.run.status is not RunStatus.COMPLETED
@@ -510,7 +510,7 @@ def test_phase_reference_order_is_execution_order(repository):
         run, workflow, repository, CompletedAdapter(),
         {"worker": PromptComponent("worker", "worker", head, "worker"),
          "testing": PromptComponent("testing", "testing", head, "testing")},
-        task_payload="task", invocation_id="INV-ORDER",
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-ORDER",
         evidence_runner=runner, evidence_commands=commands,
     )
     assert completed.reduction.run.status is RunStatus.COMPLETED

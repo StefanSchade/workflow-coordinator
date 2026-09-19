@@ -47,7 +47,13 @@ from .model import (
     record_hop,
 )
 from .persistence import checkpoint_projection
-from .prompt import ContextItem, PromptComponent, PromptPackage, assemble_prompt
+from .prompt import (
+    AgentOperatingContract,
+    ContextItem,
+    PromptComponent,
+    PromptPackage,
+    assemble_prompt,
+)
 from .reducer import Reduction, reduce_result
 
 
@@ -138,7 +144,8 @@ def _durable_artifact_anomalies(
 
 def run_one_hop(
     run: Run, profile: WorkflowProfile, repository: Path, adapter: AgentExecutionPort, components: dict[str, PromptComponent],
-    *, task_payload: str, invocation_id: str, durable_artifacts: tuple[str, ...] = (),
+    *, agent_operating_contract: AgentOperatingContract, task_payload: str,
+    invocation_id: str, durable_artifacts: tuple[str, ...] = (),
     execution_timeout_seconds: float = 0.0,
     registered_checkout_validator: Callable[[], None] | None = None,
     context_items: tuple[ContextItem, ...] = (),
@@ -156,7 +163,8 @@ def run_one_hop(
     invocation = Invocation(run.run_id, hop_id, invocation_id)
     try:
         prompt = assemble_prompt(
-            run, phase, components, invocation=invocation, task_payload=task_payload,
+            run, phase, components, agent_operating_contract=agent_operating_contract,
+            invocation=invocation, task_payload=task_payload,
             context=context_items,
         )
     except Exception as error:

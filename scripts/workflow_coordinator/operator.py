@@ -42,7 +42,12 @@ from scripts.workflow_coordinator.persistence import (
     observation_to_data,
     write_run_snapshot,
 )
-from scripts.workflow_coordinator.prompt import ContextItem, PromptComponent
+from scripts.workflow_coordinator.prompt import (
+    AgentOperatingContract,
+    ContextItem,
+    PromptComponent,
+    load_agent_operating_contract,
+)
 from scripts.workflow_coordinator.serialization import (
     ValidationError,
     a1_path_shape,
@@ -207,6 +212,7 @@ def _preflight(
     *,
     evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
 ):
+    agent_operating_contract = load_agent_operating_contract()
     repository = Path(args.repository).resolve()
     if not repository.is_dir():
         raise OperatorPreflightError("repository path is not a directory")
@@ -344,7 +350,7 @@ def _preflight(
     if args.timeout_seconds <= 0:
         raise OperatorPreflightError("timeout seconds must be positive")
     return (
-        repository, state_root, input_paths, texts, work_item, profile, policy,
+        agent_operating_contract, repository, state_root, input_paths, texts, work_item, profile, policy,
         components, durable_artifacts, legacy_artifacts, governing, evidence_runner,
         {command.command_name: command for command in prepared_evidence}, environment,
     )
@@ -509,7 +515,8 @@ def _execution_evidence(run, outcome, *, invocation_id: str, binding: dict[str, 
 
 def run_serial_hops(
     run, profile, repository: Path, components: dict[str, PromptComponent], *, state_root: Path,
-    association, task_payload: str, governing: dict[str, str], timeout_seconds: float,
+    association, agent_operating_contract: AgentOperatingContract, task_payload: str,
+    governing: dict[str, str], timeout_seconds: float,
     executable: str = "codex", adapter=None, durable_artifacts: tuple[str, ...] = (),
     durable_artifacts_by_phase: dict[str, tuple[str, ...]] | None = None,
     evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
@@ -567,6 +574,7 @@ def run_serial_hops(
         )
         hop_run = run_real_one_hop(
             run, profile, repository, components,
+            agent_operating_contract=agent_operating_contract,
             state_root=state_root, association=association,
             task_payload=task_payload, invocation_id=invocation_id,
             timeout_seconds=timeout_seconds, executable=executable, adapter=adapter,
@@ -674,7 +682,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parse_args(argv)
         (
-            repository, state_root, paths, texts, item, profile, policy,
+            agent_operating_contract, repository, state_root, paths, texts, item, profile, policy,
             components, durable, legacy_durable, governing, active_evidence_runner,
             prepared_evidence, evidence_environment,
         ) = _preflight(args, evidence_runner=PRODUCTION_EVIDENCE_RUNNER)
@@ -690,6 +698,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "state_root": str(state_root), "run_id": run_id,
                 "executable": args.executable, "timeout_seconds": args.timeout_seconds,
                 "max_autonomous_hops": item.max_autonomous_hops, "retry": False,
+                "agent_operating_contract": agent_operating_contract.provenance(),
                 "governing_inputs": governing,
                 "evidence": _prepared_evidence_plan(
                     prepared_evidence, evidence_environment
@@ -718,6 +727,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         association = register_checkout(state_root, repository)
         final_run, execution_evidence = run_serial_hops(
             run, profile, repository, components, state_root=state_root, association=association,
+            agent_operating_contract=agent_operating_contract,
             task_payload=texts["task"], governing=governing, timeout_seconds=args.timeout_seconds,
             executable=args.executable, durable_artifacts=legacy_durable,
             durable_artifacts_by_phase=durable,
