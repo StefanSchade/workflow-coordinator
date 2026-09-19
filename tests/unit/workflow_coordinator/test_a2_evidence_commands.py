@@ -21,6 +21,7 @@ from scripts.workflow_coordinator.evidence import (
     PRODUCTION_EVIDENCE_RUNNER,
     EvidencePreparationError,
     authored_argv_digest,
+    observation_error,
     prepare_evidence_commands,
     resolve_executable,
     snapshot_environment,
@@ -241,6 +242,14 @@ def test_missing_and_non_executable_selected_commands_reject_admission(tmp_path)
             )
 
 
+@pytest.mark.parametrize("timeout", [0, 901, True, 1.5])
+def test_in_memory_timeout_must_match_hard_runtime_invariant(tmp_path, timeout):
+    with pytest.raises(EvidencePreparationError, match="timeout_seconds"):
+        prepare_evidence_commands(
+            ("check",), {"check": EvidenceCommand(("git",), timeout)}, tmp_path
+        )
+
+
 def test_environment_snapshot_missing_path_uses_os_defpath_and_is_immutable():
     source = {"A2_VALUE": "before"}
     snapshot = snapshot_environment(source)
@@ -280,6 +289,16 @@ def test_execution_is_literal_rooted_devnull_and_preserves_empty_arg(tmp_path):
     assert observation.stderr_sha256 == hashlib.sha256(b"err").hexdigest()
     assert "snapshotted" not in observation.summary
     assert not (tmp_path / "nope").exists()
+
+
+def test_valid_production_and_simulated_observations_pass_boundary_validation(tmp_path):
+    prepared = prepare_evidence_commands(
+        ("valid",), {"valid": EvidenceCommand((sys.executable, "-c", "pass"), 10)}, tmp_path
+    )[0]
+    assert observation_error(
+        PRODUCTION_EVIDENCE_RUNNER.observe(prepared), expected=prepared
+    ) is None
+    assert observation_error(simulated_observation(prepared), expected=prepared) is None
 
 
 @pytest.mark.parametrize(("exit_code", "status"), [(0, "pass"), (7, "fail")])

@@ -12,7 +12,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, Protocol, Sequence
 
-from .model import EvidenceCommand, Observation, StatFingerprint
+from .model import (
+    COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS,
+    EvidenceCommand,
+    Observation,
+    StatFingerprint,
+)
 
 
 ENVIRONMENT_POLICY = "coordinator-inherited-environment-v1"
@@ -151,6 +156,17 @@ def prepare_evidence_commands(
     prepared: list[PreparedEvidenceCommand] = []
     for name in selected_names:
         definition = definitions[name]
+        if (
+            isinstance(definition.timeout_seconds, bool)
+            or not isinstance(definition.timeout_seconds, int)
+            or not 1
+            <= definition.timeout_seconds
+            <= COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS
+        ):
+            raise EvidencePreparationError(
+                f"evidence command {name}: timeout_seconds must be a non-boolean "
+                f"integer in 1..{COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS}"
+            )
         try:
             resolution = resolve_executable(definition.argv[0], repository, active_environment)
         except ExecutableResolutionError as error:
@@ -338,8 +354,50 @@ def observation_error(
         return "malformed trusted evidence: invalid command"
     if observation.command and not observation.command[0]:
         return "malformed trusted evidence: invalid command executable"
+    if observation.command and observation.command[1:] != expected.authored_argv[1:]:
+        return "malformed trusted evidence: executed argv tail mismatch"
     if observation.artifact_ref is not None and (
         not isinstance(observation.artifact_ref, str) or not observation.artifact_ref
     ):
         return "malformed trusted evidence: invalid artifact reference"
+    if observation.status == "pass" and (
+        observation.exit_code != 0 or observation.signal is not None
+    ):
+        return "malformed trusted evidence: pass outcome mismatch"
+    if observation.status == "fail" and (
+        isinstance(observation.exit_code, bool)
+        or not isinstance(observation.exit_code, int)
+        or observation.exit_code <= 0
+        or observation.signal is not None
+    ):
+        return "malformed trusted evidence: fail outcome mismatch"
+    if observation.status == "error" and not observation.error_class:
+        return "malformed trusted evidence: error requires error_class"
+    for stream, byte_count, sha256, body_omitted in (
+        (
+            "stdout",
+            observation.stdout_byte_count,
+            observation.stdout_sha256,
+            observation.stdout_body_omitted,
+        ),
+        (
+            "stderr",
+            observation.stderr_byte_count,
+            observation.stderr_sha256,
+            observation.stderr_body_omitted,
+        ),
+    ):
+        if byte_count is sha256 is body_omitted is None:
+            continue
+        if (
+            isinstance(byte_count, bool)
+            or not isinstance(byte_count, int)
+            or byte_count < 0
+            or not isinstance(sha256, str)
+            or len(sha256) != 64
+            or any(character not in "0123456789abcdef" for character in sha256)
+            or not isinstance(body_omitted, bool)
+            or body_omitted != (byte_count > 0)
+        ):
+            return f"malformed trusted evidence: incomplete or invalid {stream} facts"
     return None

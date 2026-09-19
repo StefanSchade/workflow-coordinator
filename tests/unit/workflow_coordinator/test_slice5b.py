@@ -1091,6 +1091,15 @@ def test_injected_runner_has_no_name_authority_and_policy_definition_is_admitted
     [
         ("provider", "provider/command_name identity mismatch"),
         ("argv_digest", "authored argv digest mismatch"),
+        ("pass_nonzero", "pass outcome mismatch"),
+        ("fail_nonpositive", "fail outcome mismatch"),
+        ("incomplete_stream", "incomplete or invalid stdout facts"),
+        ("fail_incomplete_stream", "incomplete or invalid stdout facts"),
+        ("error_without_class", "error requires error_class"),
+        ("partial_stream", "incomplete or invalid stderr facts"),
+        ("malformed_sha256", "incomplete or invalid stdout facts"),
+        ("inconsistent_body_omitted", "incomplete or invalid stderr facts"),
+        ("argv_tail", "executed argv tail mismatch"),
     ],
 )
 def test_malformed_trusted_observation_hard_stops_before_routing(
@@ -1102,11 +1111,26 @@ def test_malformed_trusted_observation_hard_stops_before_routing(
 
     commands = prepared_evidence(repository, ("fake_check",))
     valid = simulated_observation(commands["fake_check"])
-    observation = (
-        replace(valid, provider="wrong_provider")
-        if malformation == "provider"
-        else replace(valid, argv_digest="wrong")
-    )
+    observation = {
+        "provider": lambda: replace(valid, provider="wrong_provider"),
+        "argv_digest": lambda: replace(valid, argv_digest="wrong"),
+        "pass_nonzero": lambda: replace(valid, exit_code=1),
+        "fail_nonpositive": lambda: replace(
+            simulated_observation(commands["fake_check"], status="fail"), exit_code=0
+        ),
+        "incomplete_stream": lambda: replace(valid, stdout_sha256=None),
+        "fail_incomplete_stream": lambda: replace(
+            simulated_observation(commands["fake_check"], status="fail"),
+            stdout_sha256=None,
+        ),
+        "error_without_class": lambda: replace(
+            simulated_observation(commands["fake_check"], status="error"), error_class=None
+        ),
+        "partial_stream": lambda: replace(valid, stderr_body_omitted=None),
+        "malformed_sha256": lambda: replace(valid, stdout_sha256="A" * 64),
+        "inconsistent_body_omitted": lambda: replace(valid, stderr_byte_count=1),
+        "argv_tail": lambda: replace(valid, command=(valid.command[0], "--wrong")),
+    }[malformation]()
 
     class FixedObservationRunner:
         def observe(self, command):

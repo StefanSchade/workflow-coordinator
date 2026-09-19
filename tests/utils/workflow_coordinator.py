@@ -233,7 +233,7 @@ def simulated_observation(
         environment_policy=ENVIRONMENT_POLICY,
         path_source=command.environment.path_source,
         path_digest=command.environment.path_digest,
-        exit_code=0 if status in {"pass", "fail"} else None,
+        exit_code=0 if status == "pass" else 1 if status == "fail" else None,
         signal=None,
         error_class=None if status in {"pass", "fail"} else status,
         stdout_byte_count=0,
