@@ -1095,6 +1095,10 @@ def test_injected_runner_has_no_name_authority_and_policy_definition_is_admitted
         ("fail_nonpositive", "fail outcome mismatch"),
         ("incomplete_stream", "incomplete or invalid stdout facts"),
         ("fail_incomplete_stream", "incomplete or invalid stdout facts"),
+        ("pass_stdout_unavailable", "incomplete or invalid stdout facts"),
+        ("pass_stderr_unavailable", "incomplete or invalid stderr facts"),
+        ("fail_stdout_unavailable", "incomplete or invalid stdout facts"),
+        ("fail_stderr_unavailable", "incomplete or invalid stderr facts"),
         ("error_without_class", "error requires error_class"),
         ("partial_stream", "incomplete or invalid stderr facts"),
         ("malformed_sha256", "incomplete or invalid stdout facts"),
@@ -1122,6 +1126,30 @@ def test_malformed_trusted_observation_hard_stops_before_routing(
         "fail_incomplete_stream": lambda: replace(
             simulated_observation(commands["fake_check"], status="fail"),
             stdout_sha256=None,
+        ),
+        "pass_stdout_unavailable": lambda: replace(
+            valid,
+            stdout_byte_count=None,
+            stdout_sha256=None,
+            stdout_body_omitted=None,
+        ),
+        "pass_stderr_unavailable": lambda: replace(
+            valid,
+            stderr_byte_count=None,
+            stderr_sha256=None,
+            stderr_body_omitted=None,
+        ),
+        "fail_stdout_unavailable": lambda: replace(
+            simulated_observation(commands["fake_check"], status="fail"),
+            stdout_byte_count=None,
+            stdout_sha256=None,
+            stdout_body_omitted=None,
+        ),
+        "fail_stderr_unavailable": lambda: replace(
+            simulated_observation(commands["fake_check"], status="fail"),
+            stderr_byte_count=None,
+            stderr_sha256=None,
+            stderr_body_omitted=None,
         ),
         "error_without_class": lambda: replace(
             simulated_observation(commands["fake_check"], status="error"), error_class=None

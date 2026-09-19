@@ -388,6 +388,8 @@ def observation_error(
         ),
     ):
         if byte_count is sha256 is body_omitted is None:
+            if observation.status in {"pass", "fail"}:
+                return f"malformed trusted evidence: incomplete or invalid {stream} facts"
             continue
         if (
             isinstance(byte_count, bool)
