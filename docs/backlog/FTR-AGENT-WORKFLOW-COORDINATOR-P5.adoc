@@ -4606,7 +4606,7 @@ remains open.
 
 ===== 13.4 Carve-out A4' -- current source-layout relocatability
 
-Status:: *CONTRACT READY FOR INDEPENDENT REVIEW; IMPLEMENTATION NOT AUTHORIZED.*
+Status:: *CONTRACT ACCEPTED AFTER BOUNDED CORRECTION; IMPLEMENTATION NOT AUTHORIZED.*
 A1, A2, and A3 are implemented, independently reviewed, and accepted. This
 section defines only the bounded A4' contract. It does not implement A4', freeze
 the extraction anchor, create an extraction manifest, package or extract the
@@ -4655,11 +4655,15 @@ modules already use relative intra-package imports. The remaining defects are:
 No other hidden runtime-root discovery was found. `operator` receives
 `--repository` and `--state-root`; repository-backed WorkItem/profile/policy/
 component/task paths are explicitly repository-relative; the proof and smoke
-utilities receive explicit output roots; provider cwd and A2 evidence cwd are
-the explicitly operated repository. Relative values supplied for explicit CLI
-path arguments naturally use normal command-line path semantics and are not an
-internal-resource discovery mechanism. A4' acceptance uses absolute operated-
-repository/output paths so caller cwd cannot change their meaning.
+utilities receive explicit output roots. The Coordinator/CLI process retains its
+launch cwd; the Codex CLI receives the operated repository explicitly through
+`--cd`; and A2 evidence commands deliberately execute with the operated
+repository as cwd. Relative explicit CLI filesystem arguments follow normal
+process/launcher semantics and can therefore depend on the explicitly selected
+source-root cwd; this is not internal-resource discovery. A4' acceptance uses
+absolute operated-repository, state-root, proof-root, smoke-root, and other
+explicit CLI filesystem arguments where cwd ambiguity would matter. It does not
+change provider or adapter cwd semantics.
 
 Import and invocation model:: A4' retains the current embedded package identity
 `scripts.workflow_coordinator`. It does not add `scripts/__init__.py`, rename the
@@ -4687,6 +4691,11 @@ precondition with an installed package/entry point. A4' shall not counterfeit C
 with a wrapper, console script, editable install, `.pth` file, environment
 override, or bootstrap importer.
 
+`PYTHONPATH` is forbidden not only as hidden import authority: Coordinator
+environment is inherited by A2 evidence commands, so a WFC source-root
+`PYTHONPATH` could leak into evidence-command processes operating in consumer
+repositories.
+
 Current identity versus location:: Ordinary imports in embedded tests may keep
 `scripts.workflow_coordinator` because that is the current package identity,
 not a filesystem search. A4' shall not mechanically rewrite those imports to a
@@ -4694,13 +4703,22 @@ speculative final name. In contrast, production intra-package imports shall be
 relative and monkeypatch targets shall use imported module/object references so
 the package tree can be renamed mechanically in C without hidden string
 authority. A focused relocation probe shall copy only the current package tree
-to a temporary neutral source root under an alternate package parent/name and
-prove import/module startup there; this is test evidence, not extraction,
-packaging, or a second supported namespace.
+to a temporary neutral source root under an alternate package name such as
+`portable_wfc` and prove import/module startup there. It copies only tracked
+files belonging to the current WFC package tree, creates neither packaging
+metadata nor Git metadata, and is test evidence rather than extraction,
+packaging, or a second supported namespace. A4' retains
+`scripts.workflow_coordinator` only as the current embedded source-tree identity
+at the external module-launch/import boundary; it removes internal dependence on
+the `scripts` namespace through relative production imports and no production
+filesystem-parent assumption. The top-level `portable_wfc` proof demonstrates
+that independence. C later chooses the final standalone identity.
 
 cwd and fixture contract:: Production code shall contain no `sys.path`
-mutation, Core-root discovery, parent walking, candidate-root search, cwd
-fallback, or environment-driven import fallback. Retained tests shall resolve
+mutation, `__file__` parent/split logic for import/root discovery, Core-root
+discovery, parent walking, candidate-root search, cwd fallback, or
+environment-driven import fallback. Tests may use fixed `__file__`-relative
+anchors for their own test data. Retained tests shall resolve
 the package source directory from an imported package/module and shall resolve
 the neutral YAML fixture from the test file's own fixed test-tree location.
 Those are two concrete test-local references, not a generic path/resource
@@ -4750,9 +4768,10 @@ shall contain no `sys.path` mutation, Core-root/parent discovery, import
 fallback, or direct-file compatibility path.
 
 |WFC-SYS-10
-|A4' acceptance shall prove package-tree relocation, neutral-caller-cwd module
-startup/testing, source-relative fixture discovery, and A3 package-resource
-loading without `PYTHONPATH`, packaging metadata, installation, extraction, a
+|A4' acceptance shall prove package-tree relocation in a fresh child interpreter
+with no `PYTHONPATH`/`PYTHONSAFEPATH` authority exposing Core, neutral-caller-cwd
+module startup/testing, source-relative fixture discovery, and A3 package-
+resource loading without packaging metadata, installation, extraction, a
 standalone target mutation, or a provider-capable invocation.
 |===
 
@@ -4763,12 +4782,27 @@ review shall record all of the following:
   command with a no-provider `--help` or equivalent parse-only path;
 * from an unrelated parent/caller cwd, a focused subprocess test explicitly
   selects the current or temporary source import root and launches the same
-  `python -m` model; no environment/PYTHONPATH mutation is present;
-* a temporary relocation probe copies the package tree outside Core, gives it a
-  non-`scripts.workflow_coordinator` package identity, starts operator, proof
-  harness, and smoke modules through `-m`, imports all package modules, and loads
-  the exact A3 resource; it neither initializes nor writes a standalone target
-  repository;
+  `python -m` model; no environment/`PYTHONPATH`/`PYTHONSAFEPATH` mutation is
+  present;
+* a temporary relocation probe copies only tracked current-WFC-package files
+  outside Core, gives the copy an alternate package identity such as
+  `portable_wfc`, and does not create packaging metadata or initialize Git;
+* fresh relocation child interpreters receive no `PYTHONPATH`/`PYTHONSAFEPATH`
+  authority that can expose Core. With the temporary source-tree import root
+  explicitly selected, they start `portable_wfc.operator`,
+  `portable_wfc.proof_harness`, and `portable_wfc.codex_adapter_smoke` through
+  `python -m ... --help`, import all relocated WFC modules, and load the exact
+  A3 resource after changing runtime cwd where useful;
+* the positive relocated child asserts that `scripts` and
+  `spreadsheet_handling` are not imported, every `portable_wfc`/
+  `portable_wfc.*` module origin is beneath the temporary relocated source root,
+  and the relocated A3 resource retains its accepted ID, version, byte count,
+  and SHA-256 facts;
+* as a negative control, the same alternate package/module command from a
+  neutral child cwd without selection of the temporary source import root fails
+  to resolve the uninstalled relocated package. This proves the positive result
+  comes from explicit source-root selection, not hidden import fallback; it is
+  not a claim of arbitrary-cwd uninstalled execution;
 * the proof harness runs through its callable with a fake executable while the
   caller/test cwd is unrelated, retaining its explicit proof root and A3
   provenance; no real provider is used;
@@ -4777,10 +4811,12 @@ review shall record all of the following:
   cannot pass on an empty path set;
 * the existing real Core consumer preparation/integration test remains green,
   with operated repository and governing inputs explicit and A1/A2/A3 unchanged;
-* structural assertions find no `sys.path` use, `__file__` parent/split import
-  repair, absolute `scripts.workflow_coordinator` production import, fallback
-  root search, or string-form monkeypatch target under the bounded WFC source/
-  test set;
+* structural assertions find no production `sys.path` repair, `__file__`
+  parent/split import/root bootstrap, Core-root discovery, fallback root search,
+  or absolute `scripts.workflow_coordinator` production import; production
+  intra-package imports are relative. String-form monkeypatch targets are absent
+  from the bounded tests, while test-local `__file__` fixture anchors and the
+  current Core consumer integration anchor remain allowed until D;
 * direct-file invocation is neither tested as success nor documented as a
   supported alternative; and
 * diff/style/focused/full relevant tests are green with provider invocations
@@ -4849,11 +4885,11 @@ reservation removal; B/C/D/E/F; resumability/5C; provider/model routing;
 Relation Key work; and unrelated refactoring. Provider-capable Coordinator
 invocations are zero.
 
-Verdict and exact next action:: *A -- A4' CONTRACT READY FOR INDEPENDENT
-REVIEW.* The exact next action is an independent adversarial review of this
-normative subsection and its readiness artifact. Do not implement A4', freeze B,
-extract C, reconnect D, or invoke a provider until the contract-review loop is
-closed and the maintainer separately authorizes the bounded implementation.
+Verdict and exact next action:: *B -- A4' CONTRACT ACCEPTED AFTER BOUNDED
+CORRECTION.* The exact next action is a narrow independent delta review of F1
+and M1-M3 only. Do not implement A4', freeze B, extract C, reconnect D, or invoke
+a provider until that loop is closed and the maintainer separately authorizes the
+bounded implementation.
 
 ==== 14. Validation contract
 
