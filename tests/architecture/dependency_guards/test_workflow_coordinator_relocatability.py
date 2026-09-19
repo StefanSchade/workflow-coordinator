@@ -105,15 +105,15 @@ def test_production_uses_one_relative_import_model_without_bootstrap() -> None:
         tree = ast.parse(source, filename=str(path))
         assert not _absolute_wfc_imports(tree), path
         assert not _sys_path_references(tree), path
+        assert "__file__" not in source
+        assert "PYTHONPATH" not in source
+        assert "PYTHONSAFEPATH" not in source
 
     executable_source = "\n".join(
         (PACKAGE_DIRECTORY / f"{module}.py").read_text(encoding="utf-8")
         for module in EXECUTABLE_MODULES
     )
-    assert "__file__" not in executable_source
     assert "__package__" not in executable_source
-    assert "PYTHONPATH" not in executable_source
-    assert "PYTHONSAFEPATH" not in executable_source
 
     for test_path in (
         SOURCE_ROOT / "tests/unit/workflow_coordinator/test_operator.py",
