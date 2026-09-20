@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator import proof_harness
-from scripts.workflow_coordinator.prompt import CoordinatorResourceError, load_agent_operating_contract
-from scripts.workflow_coordinator.proof_harness import (
+from workflow_coordinator import proof_harness
+from workflow_coordinator.prompt import CoordinatorResourceError, load_agent_operating_contract
+from workflow_coordinator.proof_harness import (
     DIAGNOSTIC_LIMIT_CHARS,
     EXPECTED_SUBJECT,
     collect_launch_provenance,

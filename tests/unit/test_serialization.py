@@ -3,8 +3,8 @@ import json
 import pytest
 import yaml
 
-from scripts.workflow_coordinator.model import DurableArtifact, RouteEffect, new_run
-from scripts.workflow_coordinator.serialization import (
+from workflow_coordinator.model import DurableArtifact, RouteEffect, new_run
+from workflow_coordinator.serialization import (
     ValidationError,
     repository_policy_from_yaml,
     routing_result_from_data,
@@ -34,7 +34,7 @@ schema_version: 3
 policy_id: core-policy
 revision: policy-r1
 scope: [repo]
-governance_paths: [docs/ai_info, scripts/workflow_coordinator/resources/agent_operating_contract_v1.txt]
+governance_paths: [docs/ai_info, docs/governance/agent_operating_contract_v1.txt]
 work_item_scope_ceiling: [scripts]
 max_autonomous_hops: 1
 actions: [edit, commit]
@@ -130,7 +130,7 @@ def test_strict_yaml_loads_work_item_profile_and_policy():
     assert policy.schema_version == 3
     assert policy.governance_paths == (
         "docs/ai_info",
-        "scripts/workflow_coordinator/resources/agent_operating_contract_v1.txt",
+        "docs/governance/agent_operating_contract_v1.txt",
     )
     assert policy.work_item_scope_ceiling == ("scripts",)
     assert policy.max_autonomous_hops == 1

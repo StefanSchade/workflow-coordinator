@@ -9,17 +9,17 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator.adapter import (
+from workflow_coordinator.adapter import (
     AgentExecutionOutcome, AgentExecutionRequest, Invocation,
     ResultValidationError, SubprocessAdapter, validated_result,
 )
-from scripts.workflow_coordinator.model import DurableArtifact
-from scripts.workflow_coordinator.prompt import (
+from workflow_coordinator.model import DurableArtifact
+from workflow_coordinator.prompt import (
     COMPONENT_LIMIT_BYTES, CONTEXT_LIMIT_BYTES, DIFF_FILE_LIMIT, DIFF_LIMIT_BYTES,
     ContextItem, PromptComponent, assemble_prompt, load_agent_operating_contract,
 )
-from scripts.workflow_coordinator.vertical import run_one_hop
-from tests.utils.workflow_coordinator import phase, profile, route, run_for
+from workflow_coordinator.vertical import run_one_hop
+from tests.support import phase, profile, route, run_for
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 
-from scripts.workflow_coordinator.model import (
+from workflow_coordinator.model import (
     DurableArtifact,
     EvidenceCommand,
     Escalation,
@@ -27,7 +27,7 @@ from scripts.workflow_coordinator.model import (
     new_run,
     record_hop,
 )
-from scripts.workflow_coordinator.evidence import (
+from workflow_coordinator.evidence import (
     CWD_POLICY,
     ENVIRONMENT_POLICY,
     PreparedEvidenceCommand,

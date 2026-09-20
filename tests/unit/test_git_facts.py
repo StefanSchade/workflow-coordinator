@@ -8,21 +8,21 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator.evidence import (
+from workflow_coordinator.evidence import (
     PRODUCTION_EVIDENCE_RUNNER,
     prepare_evidence_commands,
 )
-from scripts.workflow_coordinator.git_facts import (
+from workflow_coordinator.git_facts import (
     GitPreflightError,
     observe_hop,
     observe_repository,
     preflight_hop,
     preflight_state_root,
 )
-from scripts.workflow_coordinator.model import DispatchMarker, EvidenceCommand, RunStatus
-from scripts.workflow_coordinator.persistence import recover_uncertain_dispatch
-from scripts.workflow_coordinator.reducer import resume_after_reconcile
-from tests.utils.workflow_coordinator import phase, profile, route, run_for
+from workflow_coordinator.model import DispatchMarker, EvidenceCommand, RunStatus
+from workflow_coordinator.persistence import recover_uncertain_dispatch
+from workflow_coordinator.reducer import resume_after_reconcile
+from tests.support import phase, profile, route, run_for
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 

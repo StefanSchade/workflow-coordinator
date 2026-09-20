@@ -6,8 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
-from scripts.workflow_coordinator import codex_adapter_smoke
-from scripts.workflow_coordinator.codex_adapter_smoke import run_smoke
+from workflow_coordinator import codex_adapter_smoke
+from workflow_coordinator.codex_adapter_smoke import run_smoke
 
 
 def _fake(tmp_path: Path, body: str) -> Path:

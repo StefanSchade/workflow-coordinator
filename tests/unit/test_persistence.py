@@ -3,8 +3,8 @@ from dataclasses import replace
 
 import pytest
 
-from scripts.workflow_coordinator.model import DispatchMarker, RunStatus
-from scripts.workflow_coordinator.persistence import (
+from workflow_coordinator.model import DispatchMarker, RunStatus
+from workflow_coordinator.persistence import (
     atomic_write_text,
     checkpoint_projection,
     load_dispatch_marker,
@@ -12,13 +12,13 @@ from scripts.workflow_coordinator.persistence import (
     write_dispatch_marker,
     write_run_snapshot,
 )
-from scripts.workflow_coordinator.serialization import (
+from workflow_coordinator.serialization import (
     ValidationError,
     load_run,
     run_from_json,
     run_to_json,
 )
-from tests.utils.workflow_coordinator import (
+from tests.support import (
     charge_hop,
     phase,
     prepared_evidence,

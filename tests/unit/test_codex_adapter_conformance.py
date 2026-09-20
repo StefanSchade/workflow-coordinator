@@ -6,18 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator.adapter import (
+from workflow_coordinator.adapter import (
     ROUTING_RESULT_ENVELOPE_CONTRACT,
     AgentExecutionRequest,
     Invocation,
 )
-from scripts.workflow_coordinator.codex_adapter import (
+from workflow_coordinator.codex_adapter import (
     CodexCliAdapter,
     OpenAIStrictSchemaError,
     assert_openai_strict_schema,
     structured_result_envelope_openai_schema,
 )
-from scripts.workflow_coordinator.serialization import FINDING_DELTA_KEYS, ROUTING_RESULT_REQUIRED_KEYS
+from workflow_coordinator.serialization import FINDING_DELTA_KEYS, ROUTING_RESULT_REQUIRED_KEYS
 
 
 def test_exact_codex_projection_conforms_to_supported_openai_strict_subset():

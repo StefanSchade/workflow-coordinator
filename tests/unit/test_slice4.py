@@ -11,17 +11,17 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator.adapter import Invocation, validated_result
-from scripts.workflow_coordinator.codex_adapter import CodexCliAdapter, structured_result_envelope_openai_schema
-from scripts.workflow_coordinator.serialization import (
+from workflow_coordinator.adapter import Invocation, validated_result
+from workflow_coordinator.codex_adapter import CodexCliAdapter, structured_result_envelope_openai_schema
+from workflow_coordinator.serialization import (
     FINDING_DELTA_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
 )
-from scripts.workflow_coordinator.slice4 import (
+from workflow_coordinator.slice4 import (
     Slice4Error, invoke_codex, register_checkout, run_real_one_hop, validate_checkout,
 )
-from tests.utils.workflow_coordinator import phase, profile, route, run_for
-from scripts.workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
+from tests.support import phase, profile, route, run_for
+from workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
 
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -309,7 +309,7 @@ output.write_text(json.dumps({{"schema_version": 1, "run_id": "RUN-1", "hop_id":
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
 
-    import scripts.workflow_coordinator.vertical as vertical
+    import workflow_coordinator.vertical as vertical
 
     monkeypatch.setattr(vertical, "observe_hop", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("post-execution observation failure")))
     outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))

@@ -9,17 +9,17 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator.adapter import AgentExecutionOutcome
-from scripts.workflow_coordinator.git_facts import (
+from workflow_coordinator.adapter import AgentExecutionOutcome
+from workflow_coordinator.git_facts import (
     GitPreflightError,
     TrustedCommitError,
     observe_hop,
     trusted_commit,
 )
-from scripts.workflow_coordinator.model import CommitIntent, DurableArtifact
-from scripts.workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
-from scripts.workflow_coordinator.vertical import run_one_hop
-from tests.utils.workflow_coordinator import phase, profile, route, run_for
+from workflow_coordinator.model import CommitIntent, DurableArtifact
+from workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
+from workflow_coordinator.vertical import run_one_hop
+from tests.support import phase, profile, route, run_for
 
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -193,7 +193,7 @@ def test_head_and_registered_repository_preconditions_refuse_before_commit(repos
 
 
 def test_deterministic_staging_failure_reports_truthfully_without_reset(repository: Path, monkeypatch):
-    import scripts.workflow_coordinator.git_facts as git_facts
+    import workflow_coordinator.git_facts as git_facts
 
     base = git(repository, "rev-parse", "HEAD")
     original = git_facts._trusted_git

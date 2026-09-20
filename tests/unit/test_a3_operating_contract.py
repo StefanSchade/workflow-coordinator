@@ -7,10 +7,10 @@ import inspect
 
 import pytest
 
-from scripts.workflow_coordinator.adapter import Invocation
-from scripts.workflow_coordinator import prompt
-from scripts.workflow_coordinator.operator import run_serial_hops
-from scripts.workflow_coordinator.prompt import (
+from workflow_coordinator.adapter import Invocation
+from workflow_coordinator import prompt
+from workflow_coordinator.operator import run_serial_hops
+from workflow_coordinator.prompt import (
     CONTRACT_ID,
     CONTRACT_VERSION,
     RESOURCE,
@@ -21,9 +21,9 @@ from scripts.workflow_coordinator.prompt import (
     assemble_prompt,
     load_agent_operating_contract,
 )
-from scripts.workflow_coordinator.slice4 import run_real_one_hop
-from scripts.workflow_coordinator.vertical import run_one_hop
-from tests.utils.workflow_coordinator import phase, profile, route, run_for
+from workflow_coordinator.slice4 import run_real_one_hop
+from workflow_coordinator.vertical import run_one_hop
+from tests.support import phase, profile, route, run_for
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 

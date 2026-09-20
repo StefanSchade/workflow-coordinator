@@ -6,15 +6,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-import scripts.workflow_coordinator as workflow_coordinator
-from scripts.workflow_coordinator.model import (
+import workflow_coordinator as workflow_coordinator
+from workflow_coordinator.model import (
     Escalation,
     FindingAuthority,
     FindingState,
     Run,
     RunStatus,
 )
-from scripts.workflow_coordinator.reducer import (
+from workflow_coordinator.reducer import (
     apply_finding_deltas,
     authorize_prerequisite,
     confirm_supervisor_route,
@@ -22,11 +22,11 @@ from scripts.workflow_coordinator.reducer import (
     require_reconcile,
     resume_after_reconcile,
 )
-from scripts.workflow_coordinator.serialization import (
+from workflow_coordinator.serialization import (
     work_item_from_yaml,
     workflow_profile_from_yaml,
 )
-from tests.utils.workflow_coordinator import (
+from tests.support import (
     charge_hop,
     delta,
     phase,
@@ -38,8 +38,8 @@ from tests.utils.workflow_coordinator import (
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
-TESTS_ROOT = Path(__file__).resolve().parents[2]
-NEUTRAL_FIXTURE = TESTS_ROOT / "data" / "workflow_coordinator" / "slice5b_non_dmc.yaml"
+TESTS_ROOT = Path(__file__).resolve().parents[1]
+NEUTRAL_FIXTURE = TESTS_ROOT / "fixtures" / "slice5b_non_dmc.yaml"
 
 
 def process(run, workflow, routing_result, *, role="worker", attribution="agent"):

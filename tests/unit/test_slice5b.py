@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts.workflow_coordinator.adapter import AgentExecutionOutcome
-from scripts.workflow_coordinator.model import (
+from workflow_coordinator.adapter import AgentExecutionOutcome
+from workflow_coordinator.model import (
     DurableArtifact,
     FindingAuthority,
     MechanicalFacts,
@@ -22,24 +22,24 @@ from scripts.workflow_coordinator.model import (
     WorkItem,
     new_run,
 )
-from scripts.workflow_coordinator.operator import (
+from workflow_coordinator.operator import (
     OperatorPreflightError,
     _preflight,
     run_serial_hops,
 )
-from scripts.workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
-from scripts.workflow_coordinator.reducer import (
+from workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
+from workflow_coordinator.reducer import (
     ReductionError,
     apply_finding_deltas,
     reduce_result,
 )
-from scripts.workflow_coordinator.serialization import (
+from workflow_coordinator.serialization import (
     ValidationError,
     workflow_profile_from_yaml,
 )
-from scripts.workflow_coordinator.slice4 import register_checkout
-from scripts.workflow_coordinator.vertical import run_one_hop
-from tests.utils.workflow_coordinator import (
+from workflow_coordinator.slice4 import register_checkout
+from workflow_coordinator.vertical import run_one_hop
+from tests.support import (
     charge_hop,
     delta,
     phase,
@@ -53,8 +53,8 @@ from tests.utils.workflow_coordinator import (
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
-TESTS_ROOT = Path(__file__).resolve().parents[2]
-NEUTRAL_FIXTURE = TESTS_ROOT / "data" / "workflow_coordinator" / "slice5b_non_dmc.yaml"
+TESTS_ROOT = Path(__file__).resolve().parents[1]
+NEUTRAL_FIXTURE = TESTS_ROOT / "fixtures" / "slice5b_non_dmc.yaml"
 
 
 def git(repository: Path, *args: str) -> str:
@@ -461,7 +461,7 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
     assert active_runner is runner
     assert evidence_environment.path_digest
 
-    import scripts.workflow_coordinator.operator as operator
+    import workflow_coordinator.operator as operator
 
     original = operator._governing_inputs_unchanged
     original_hop_runner = operator.run_real_one_hop

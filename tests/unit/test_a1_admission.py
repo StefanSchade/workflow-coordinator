@@ -6,9 +6,9 @@ from dataclasses import replace
 
 import pytest
 
-from scripts.workflow_coordinator.model import EvidenceCommand, RepositoryPolicy, WorkItem
-from scripts.workflow_coordinator.operator import OperatorPreflightError, _admit_a1
-from tests.utils.workflow_coordinator import phase, profile, route
+from workflow_coordinator.model import EvidenceCommand, RepositoryPolicy, WorkItem
+from workflow_coordinator.operator import OperatorPreflightError, _admit_a1
+from tests.support import phase, profile, route
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 

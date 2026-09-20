@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts.workflow_coordinator import evidence
-from scripts.workflow_coordinator.adapter import AgentExecutionOutcome
-from scripts.workflow_coordinator.evidence import (
+from workflow_coordinator import evidence
+from workflow_coordinator.adapter import AgentExecutionOutcome
+from workflow_coordinator.evidence import (
     CWD_POLICY,
     ENVIRONMENT_POLICY,
     PRODUCTION_EVIDENCE_RUNNER,
@@ -27,20 +27,20 @@ from scripts.workflow_coordinator.evidence import (
     resolve_executable,
     snapshot_environment,
 )
-from scripts.workflow_coordinator.model import EvidenceCommand, RunStatus
-from scripts.workflow_coordinator.operator import (
+from workflow_coordinator.model import EvidenceCommand, RunStatus
+from workflow_coordinator.operator import (
     OperatorPreflightError,
     _selected_evidence_names,
 )
-from scripts.workflow_coordinator.persistence import observation_to_data
-from scripts.workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
-from scripts.workflow_coordinator.serialization import (
+from workflow_coordinator.persistence import observation_to_data
+from workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
+from workflow_coordinator.serialization import (
     ValidationError,
     repository_policy_from_yaml,
     workflow_profile_from_yaml,
 )
-from scripts.workflow_coordinator.vertical import run_one_hop
-from tests.utils.workflow_coordinator import (
+from workflow_coordinator.vertical import run_one_hop
+from tests.support import (
     phase,
     prepared_evidence,
     profile,

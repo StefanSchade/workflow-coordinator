@@ -9,19 +9,19 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workflow_coordinator import evidence, operator
-from scripts.workflow_coordinator.operator import main, run_serial_hops
-from scripts.workflow_coordinator.operator import _pinned_text
-from scripts.workflow_coordinator.adapter import AgentExecutionOutcome
-from scripts.workflow_coordinator.model import RepositoryPolicy, WorkItem, new_run
-from scripts.workflow_coordinator.prompt import (
+from workflow_coordinator import evidence, operator
+from workflow_coordinator.operator import main, run_serial_hops
+from workflow_coordinator.operator import _pinned_text
+from workflow_coordinator.adapter import AgentExecutionOutcome
+from workflow_coordinator.model import RepositoryPolicy, WorkItem, new_run
+from workflow_coordinator.prompt import (
     CoordinatorResourceError,
     PromptComponent,
     load_agent_operating_contract,
 )
-from scripts.workflow_coordinator.slice4 import register_checkout
-from tests.utils.workflow_coordinator import phase, profile, route
-from scripts.workflow_coordinator.serialization import ValidationError, component_manifest_from_yaml
+from workflow_coordinator.slice4 import register_checkout
+from tests.support import phase, profile, route
+from workflow_coordinator.serialization import ValidationError, component_manifest_from_yaml
 
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -508,7 +508,7 @@ def test_dirty_worktree_between_hops_stops_after_h001(repository: Path, tmp_path
 
 
 def test_h001_checkpoint_publication_fault_retains_marker_and_never_dispatches_h002(repository: Path, tmp_path: Path, monkeypatch):
-    import scripts.workflow_coordinator.slice4 as slice4
+    import workflow_coordinator.slice4 as slice4
 
     adapter = _TwoHopAdapter(repository)
     workflow, run, state, association, components = _two_hop_serial_fixture(repository, tmp_path, adapter)

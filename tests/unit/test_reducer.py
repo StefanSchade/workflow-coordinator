@@ -2,7 +2,7 @@ from dataclasses import fields, replace
 
 import pytest
 
-from scripts.workflow_coordinator.model import (
+from workflow_coordinator.model import (
     Escalation,
     FindingAuthority,
     FindingState,
@@ -10,7 +10,7 @@ from scripts.workflow_coordinator.model import (
     Run,
     RunStatus,
 )
-from scripts.workflow_coordinator.reducer import (
+from workflow_coordinator.reducer import (
     ReductionError,
     apply_finding_deltas,
     authorize_prerequisite,
@@ -20,7 +20,7 @@ from scripts.workflow_coordinator.reducer import (
     require_reconcile,
     resume_after_reconcile,
 )
-from tests.utils.workflow_coordinator import (
+from tests.support import (
     charge_hop,
     delta,
     phase,
