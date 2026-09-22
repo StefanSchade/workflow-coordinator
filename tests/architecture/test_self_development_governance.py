@@ -1,4 +1,4 @@
-"""Production-preflight proof for committed self-development governance."""
+"""Production-preflight proof for current self-development governance."""
 
 from __future__ import annotations
 
@@ -7,8 +7,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-from workflow_coordinator.operator import _preflight, _selected_ids, _within_scope
+import pytest
+import yaml
 
+from workflow_coordinator.operator import (
+    OperatorPreflightError,
+    _preflight,
+    _selected_ids,
+    _within_scope,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GOVERNING_PATHS = (
@@ -28,7 +35,9 @@ IMPLEMENTATION_PATHS = (
     "tests/unit/test_wfc_snapshot.py",
     "tests/architecture/test_package_boundaries.py",
 )
-REVIEW_ARTIFACT = "docs/backlog/first_wfc_on_wfc_dogfood_review.adoc"
+REVIEW_NAMESPACE = "docs/backlog/wfc_reviews"
+REVIEW_ARTIFACT = f"{REVIEW_NAMESPACE}/developer_ergonomics_review.adoc"
+HISTORICAL_REVIEW_ARTIFACT = "docs/backlog/first_wfc_on_wfc_dogfood_review.adoc"
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -40,11 +49,15 @@ def _git(repository: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def _committed_text(path: str) -> str:
-    return _git(PROJECT_ROOT, "show", f"HEAD:{path}") + "\n"
+def _current_text(path: str) -> str:
+    return (PROJECT_ROOT / path).read_text(encoding="utf-8")
 
 
-def test_committed_first_dogfood_bundle_passes_production_preflight(tmp_path: Path):
+def _materialize_bundle(
+    tmp_path: Path,
+    *,
+    replacements: dict[str, str] | None = None,
+) -> tuple[Path, str]:
     repository = tmp_path / "repository"
     repository.mkdir()
     _git(repository, "init", "--object-format=sha1")
@@ -53,14 +66,17 @@ def test_committed_first_dogfood_bundle_passes_production_preflight(tmp_path: Pa
     for relative in GOVERNING_PATHS:
         target = repository / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(_committed_text(relative), encoding="utf-8")
+        text = (replacements or {}).get(relative, _current_text(relative))
+        target.write_text(text, encoding="utf-8")
     _git(repository, "add", ".")
     _git(repository, "commit", "-m", "test: exact governing bundle")
     expected_head = _git(repository, "rev-parse", "HEAD")
     assert len(expected_head) == 40
+    return repository, expected_head
 
-    state_root = tmp_path / "external-state" / "new-run"
-    args = argparse.Namespace(
+
+def _preflight_args(repository: Path, expected_head: str, state_root: Path) -> argparse.Namespace:
+    return argparse.Namespace(
         repository=str(repository),
         state_root=str(state_root),
         expected_head=expected_head,
@@ -74,13 +90,21 @@ def test_committed_first_dogfood_bundle_passes_production_preflight(tmp_path: Pa
         executable="unused-before-dispatch",
     )
 
+
+def test_current_self_development_bundle_passes_production_preflight(tmp_path: Path):
+    repository, expected_head = _materialize_bundle(tmp_path)
+
+    state_root = tmp_path / "external-state" / "new-run"
+    args = _preflight_args(repository, expected_head, state_root)
+
     result = _preflight(args)
     work_item, profile, policy = result[5:8]
     components, durable_artifacts = result[8:10]
     prepared_evidence, environment = result[13:15]
-    exact_scope = (*IMPLEMENTATION_PATHS, REVIEW_ARTIFACT)
+    exact_scope = (*IMPLEMENTATION_PATHS, REVIEW_NAMESPACE)
 
     assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    assert profile.revision == policy.revision == "2"
     assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 4
     assert tuple(profile.phases) == ("investigate", "review", "correct", "rereview")
     assert durable_artifacts == {"review": (REVIEW_ARTIFACT,)}
@@ -91,12 +115,30 @@ def test_committed_first_dogfood_bundle_passes_production_preflight(tmp_path: Pa
     rereview = profile.phases["rereview"]
     assert investigate.authorized_scope == correct.authorized_scope == IMPLEMENTATION_PATHS
     assert investigate.authorized_actions == correct.authorized_actions == ("edit", "commit")
-    assert review.authorized_scope == rereview.authorized_scope == (REVIEW_ARTIFACT,)
+    assert review.authorized_scope == rereview.authorized_scope == (REVIEW_NAMESPACE,)
+    assert HISTORICAL_REVIEW_ARTIFACT not in review.authorized_scope
+    assert HISTORICAL_REVIEW_ARTIFACT not in rereview.authorized_scope
+    assert review.authorized_scope != ("docs/backlog",)
+    assert not _within_scope("docs/backlog/unrelated.adoc", review.authorized_scope)
     assert review.authorized_actions == ("review", "edit", "commit")
     assert rereview.authorized_actions == ("review",)
     assert investigate.durable_artifact.value == correct.durable_artifact.value == "optional"
     assert review.durable_artifact.value == "required"
     assert rereview.durable_artifact.value == "none"
+    assert _within_scope(REVIEW_ARTIFACT, work_item.scope)
+    assert _within_scope(REVIEW_ARTIFACT, review.authorized_scope)
+    assert set(IMPLEMENTATION_PATHS).isdisjoint(review.authorized_scope)
+    assert REVIEW_NAMESPACE not in investigate.authorized_scope
+    assert REVIEW_NAMESPACE not in correct.authorized_scope
+    assert {
+        phase: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase, value in profile.phases.items()
+    } == {
+        "investigate": (("review", "goto", "review"),),
+        "review": (("correct", "goto", "correct"),),
+        "correct": (("rereview", "goto", "rereview"),),
+        "rereview": (("accept", "complete", None), ("correct", "goto", "correct")),
+    }
     assert policy.governance_paths == ("governance",)
     assert policy.actions == ("edit", "commit", "review")
     assert not _within_scope("governance", policy.work_item_scope_ceiling)
@@ -107,4 +149,30 @@ def test_committed_first_dogfood_bundle_passes_production_preflight(tmp_path: Pa
     assert prepared.authored_argv == ("python", "-m", "pytest", "-q")
     assert prepared.admission_resolution.invocation_path == sys.executable
     assert environment.values["PATH"].split(":", 1)[0] == str(Path(sys.executable).parent)
+    assert not state_root.exists()
+
+
+def test_work_item_mapping_cannot_enlarge_review_phase_authority(tmp_path: Path):
+    outside_artifact = "docs/backlog/outside_wfc_review.adoc"
+    work_item = yaml.safe_load(_current_text(GOVERNING_PATHS[0]))
+    work_item["scope"].append(outside_artifact)
+    work_item["durable_artifacts"]["review"] = [outside_artifact]
+    policy = yaml.safe_load(_current_text(GOVERNING_PATHS[2]))
+    policy["work_item_scope_ceiling"].append(outside_artifact)
+    replacements = {
+        GOVERNING_PATHS[0]: yaml.safe_dump(work_item, sort_keys=False),
+        GOVERNING_PATHS[2]: yaml.safe_dump(policy, sort_keys=False),
+    }
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        replacements=replacements,
+    )
+    state_root = tmp_path / "external-state" / "rejected-run"
+
+    with pytest.raises(
+        OperatorPreflightError,
+        match="durable artifact for phase review is outside WorkItem or phase scope",
+    ):
+        _preflight(_preflight_args(repository, expected_head, state_root))
+
     assert not state_root.exists()
