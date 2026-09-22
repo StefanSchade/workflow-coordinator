@@ -1,0 +1,360 @@
+= BUG-WFC-PROFILE-DURABLE-ARTIFACT-INSTANCE-COUPLING -- Acceptance Review 001
+
+Fresh independent adversarial acceptance review of the bounded
+consumer-governance fix candidate for
+`docs/backlog/BUG-WFC-PROFILE-DURABLE-ARTIFACT-INSTANCE-COUPLING.adoc`.
+
+Reviewed from repository truth -- committed diff, committed governance text,
+production `_preflight`, and production path semantics -- not from the
+implementation agent's summary.
+
+Review only; no implementation, no dogfood execution, no provider invocation,
+no promotion, no push, no continuation WorkItem, no Attempt 3.
+
+== Identity
+
+* Candidate: `0ba506c970b0248110ed337588cd9a16f208900b`
+  -- `fix(governance): decouple review artifact identity`
+* Baseline: `ba6fdc8` -- `docs(backlog): classify profile artifact coupling as bug`
+* Accepted authority origin: `53d0109`
+  -- `feat(workflow): bootstrap standalone self-development authority`
+* Runtime N: `c6e3f245b57f7898be9fd00afb5b780c91cb7492`, clean,
+  pushurl DISABLED -- unchanged across this review
+* Core: `ad91eeb067752ae4773f86927071dd6c3aaf8621`, clean -- unchanged
+* Historical external state roots
+  `WI-WFC-DEVELOPER-ERGONOMICS-001-20260922-01/-02` -- read-only, unchanged
+* Provider invocations: 0
+
+== Verdict
+
+*ACCEPTED FOR CONSUMER-GOVERNANCE PROMOTION / BUG CLOSURE.*
+
+BLOCKING 0, IMPORTANT 1 (acknowledgement obligation, satisfied by this
+artifact), MINOR 3, INFO/WATCH 8.
+
+The candidate fixes the BUG. It changes no Coordinator core semantics, widens
+authority by exactly one bounded namespace, keeps exact artifact identity in the
+WorkItem, and preserves fail-closed double containment. No finding gates
+acceptance.
+
+== Candidate surface
+
+`git diff --stat ba6fdc8..0ba506c`: four files, `+86/-18`.
+
+[cols="2,3",options="header"]
+|===
+|Path |Change
+
+|`governance/self-development/repository-policy.yaml`
+|`revision` `1` -> `2`; ceiling entry
+`docs/backlog/first_wfc_on_wfc_dogfood_review.adoc` ->
+`docs/backlog/wfc_reviews`
+
+|`governance/self-development/standalone-development-profile.yaml`
+|`revision` `1` -> `2`; `review` and `rereview` `authorized_scope` entry
+replaced by `docs/backlog/wfc_reviews`
+
+|`governance/work-items/developer-ergonomics.yaml`
+|`scope` entry replaced by the namespace; `durable_artifacts.review` ->
+`docs/backlog/wfc_reviews/developer_ergonomics_review.adoc`
+
+|`tests/architecture/test_self_development_governance.py`
+|Bundle materialization extracted to `_materialize_bundle`/`_preflight_args`;
+positive proof retargeted; new negative proof; committed-HEAD reads replaced by
+worktree reads
+
+|===
+
+Zero files under `src/`, `docs/`, or any runtime path. No history rewrite:
+`origin/main` (`0b5260f6`) is still an ancestor of HEAD.
+
+== Required review questions
+
+*1. Fixes the BUG without changing Coordinator core semantics?* Yes. The diff
+touches no `src/` file. The coupling is broken because a distinct review
+artifact identity now requires only a WorkItem edit inside a stable namespace,
+with no profile change. Demonstrated: production `_preflight` admits the exact
+committed bundle and resolves
+`durable_artifacts == {'review': ('docs/backlog/wfc_reviews/developer_ergonomics_review.adoc',)}`.
+
+*2. Widening exactly bounded to `docs/backlog/wfc_reviews`?* Yes, and strictly.
+`review` and `rereview` `authorized_scope` are each the single-element tuple
+`('docs/backlog/wfc_reviews',)`. `_within_scope` (`operator.py:94`) matches only
+`path == allowed` or `path.startswith(allowed + "/")`, so the widening admits
+neither `docs/backlog` itself, nor any other backlog file, nor the sibling-prefix
+path `docs/backlog/wfc_reviews_evil.adoc`. All three rejections verified
+mechanically against production semantics.
+
+*3. Exact artifact still selected by the WorkItem?* Yes. The profile names only
+the namespace and no filename. The exact path exists solely in
+`WorkItem.durable_artifacts.review`. Post-hop,
+`vertical.py::_durable_artifact_anomalies` additionally requires each mapped
+path to appear in the commit intent, in `delta.changed_paths`, and as a regular
+tracked blob at `delta.end_head` -- so exact identity is enforced at runtime, not
+merely declared.
+
+*4. Double containment still enforced in production preflight?* Yes, unchanged
+at `operator.py:283-290`: a mapped artifact is rejected unless
+`_within_scope(path, work_scope)` *and*
+`_within_scope(path, normalized_phase_scopes[phase_key])`. The surrounding
+`REQUIRED`/`NONE` mapping rules and the earlier
+"phase scope must fit inside `WorkItem.scope`" rule are byte-identical to
+baseline.
+
+*5. Can a WorkItem mapping enlarge review authority?* No, and this was proved by
+independent control rather than by trusting the candidate's own test -- see
+"Independent validation", cases A/B/C.
+
+*6. Implementation and review authority still disjoint?* Yes.
+`set(investigate.authorized_scope).isdisjoint(review.authorized_scope)` and the
+same for `correct`; conversely `docs/backlog/wfc_reviews` appears in neither
+implementation phase scope. The bootstrap invariant
+"review-artifact mutation authority is not implementation mutation authority"
+(plan section 7.2) holds unchanged.
+
+*7. Unintended authority gained?* None. Verified absent from every phase scope:
+implementation payload for `review`/`rereview`; `governance` (also excluded from
+the policy ceiling, and `_admit_a1` still rejects any phase/governance overlap);
+`src/` (Core) for all four phases; runtime paths; push; promotion;
+repository-wide mutation. `policy.actions` remains exactly
+`('edit', 'commit', 'review')`, so no new verb exists to grant.
+
+*8. Routes unchanged?* Yes, byte-identical, and now pinned by an explicit test
+assertion: `investigate -> review`, `review -> correct`, `correct -> rereview`,
+`rereview -> accept(complete) | correct(goto)`.
+
+*9. `authorized_actions` unchanged?* Yes -- `investigate`/`correct`
+`(edit, commit)`, `review` `(review, edit, commit)`, `rereview` `(review,)`.
+The only value change anywhere is the scope namespace plus the two revisions.
+
+*10. Revisions `1 -> 2` justified?* Yes. `Run` pins `profile_revision` and
+`policy_revision` (`model.py:282-284`), and `reducer.py:61-65` refuses to reduce
+any Run whose pinned profile identity no longer matches, with
+"pinned profile identity changed". Because the authority envelope changed, an
+un-bumped profile would have let a Run pinned under the narrow authority continue
+under the widened one. The bump is the correct fail-closed act, and the accepted
+bootstrap (section 7.2) explicitly permits "one explicit profile revision" after
+dogfood.
+
+*11. Still a valid governing bundle?* Yes. Production `_preflight` admits the
+committed bundle at the real repository at HEAD `0ba506c`, resolving profile
+`standalone-developer-ergonomics@2`, policy
+`workflow-coordinator-self-development@2`, WorkItem
+`WI-WFC-DEVELOPER-ERGONOMICS-001`, with
+`work_item.scope == policy.work_item_scope_ceiling` (six implementation paths
+plus the namespace) and `max_autonomous_hops == 4`.
+
+*12. Acceptable that WorkItem scope holds the namespace while the mapping names
+one file?* Yes -- it is forced, not chosen. `_preflight` requires every phase
+scope to fit inside `WorkItem.scope`, so a namespace phase scope compels a
+namespace WorkItem entry. This is precisely the current-model limit the BUG
+recorded in "Desired invariant and boundary". `WorkItem.scope` is a ceiling, not
+authority: it grants nothing by itself, since only `Phase.authorized_scope`
+reaches `trusted_commit` and `observe_hop`.
+
+*13. Does `rereview` remain observation-only?* Yes.
+`authorized_actions == ('review',)` and `durable_artifact: none`.
+`vertical.py:201-220` fails closed before Git is mutated when a commit intent
+arrives without *both* `edit` and `commit`; `_preflight` independently rejects
+any mapped artifact for a `NONE` phase. The namespace in `rereview` is a read
+window only.
+
+*14. Provenance of the architecture proof (committed HEAD -> worktree reads).*
+Assessment: *harmless for production dispatch, but a genuine weakening of the
+test's own claim.* Recorded as M1.
+
+*15. Does the new negative test prove what it claims?* Yes -- confirmed by
+independent control, see M2 for its one expressive limit.
+
+*16. Historical evidence rewritten?* No. `git diff ba6fdc8..HEAD -- docs/` is
+empty; every historical dogfood, review, and bootstrap artifact is untouched.
+The only surviving reference to the historical path is the test constant
+`HISTORICAL_REVIEW_ARTIFACT`, used to assert its *absence* from current phase
+authority. Mutating the existing WorkItem in place does not rewrite frozen
+evidence: each archived Run pins `baseline_head`, and the revision-1 content
+remains recoverable from Git history.
+
+*17. Continuation WorkItem / Attempt 3 created?* No. `governance/work-items/`
+still contains exactly `developer-ergonomics.yaml` and its task file. No new
+external state root exists; `/home/stefan/wfc-state` still holds only the two
+archived Attempt-1/-2 roots.
+
+== Findings
+
+=== I1 (IMPORTANT) -- the namespace, not the mapping, is the write ceiling
+
+Under Option B the `review` phase may create or modify *any* path under
+`docs/backlog/wfc_reviews`, not only the mapped artifact.
+`_durable_artifact_anomalies` requires the mapped path to be *present* in the
+commit; it does not require the commit to be *limited* to it, and
+`trusted_commit` validates intent paths against `Phase.authorized_scope`, which
+is the namespace.
+
+The BUG's acceptance criteria require that the authority review acknowledge this
+explicitly. The candidate ships no document that does so. *This artifact
+discharges that obligation*: the widened write ceiling is the namespace, it is
+shared by every WorkItem that uses profile revision 2, and it is accepted on that
+understanding.
+
+Forward constraint, not a change required of this candidate: once more than one
+review artifact lives in the namespace, a `review` hop of one WorkItem is
+authorized to mutate another WorkItem's accepted review evidence. Accepted or
+frozen review evidence should therefore be kept outside the namespace, or a
+per-WorkItem subdirectory adopted when the continuation WorkItem is created.
+This review is deliberately filed outside the namespace for that reason.
+
+Not blocking: the namespace is currently empty and exactly one WorkItem exists.
+
+=== M1 (MINOR) -- architecture proof no longer reads committed text
+
+`_committed_text` (`git show HEAD:<path>`) was replaced by `_current_text`
+(`Path.read_text`). The docstring was honestly updated from "committed" to
+"current", and the change is what lets the negative test synthesize mutated
+bundles -- but that goal was reachable while keeping committed reads for the
+positive proof.
+
+Materiality: *not* a production weakening. Production `_preflight` refuses a
+dirty worktree (`facts.clean`) and reads every governing input pinned at
+`expected_head` via `git show`, so an uncommitted governance mutation that made
+the test green would also make the real Run refuse to start -- it cannot reach
+dispatch. The residual risk is a misleading local green, and the repository has
+no CI workflow to enforce a clean tree. The accepted bootstrap section 7.3 also
+speaks of "the committed policy ceiling".
+
+Smallest bounded correction (optional, non-blocking): keep the worktree read and
+add, for each `GOVERNING_PATHS` entry, an assertion that it equals
+`git show HEAD:<path>` whenever `git status --porcelain` is empty.
+
+Independently compensated here: this review re-ran the full bundle proof from
+`git show 0ba506c:<path>` (case A below) and confirmed the committed worktree is
+byte-identical to HEAD for all three governance files.
+
+=== M2 (MINOR) -- negative test cannot name the decisive containment leg
+
+Both legs of the double-containment check raise the same message,
+"durable artifact for phase review is outside WorkItem or phase scope", so the
+test's `pytest.raises(match=...)` cannot by itself distinguish a phase-authority
+rejection from a WorkItem-scope rejection. The test is nevertheless sound -- it
+widens `WorkItem.scope` and the policy ceiling first, leaving phase authority as
+the only possible cause -- and this review proved that independently with a
+positive control (case C). Optional strengthening: add that control as a third
+case so the proof is self-contained.
+
+=== M3 (MINOR) -- namespace convention is undocumented
+
+`docs/backlog/README.adoc` is untouched and no decision note records what
+`docs/backlog/wfc_reviews` is, who may write to it, or how its files are named.
+Suggested at BUG closure: one line in the backlog README. Deliberately not
+bundled into the candidate, which the BUG restricted to narrowly necessary
+governance and proof coverage.
+
+=== INFO / WATCH
+
+. The revision bump makes the two archived Runs (both pinned at
+  `profile_revision "1"`, status `awaiting_human`) permanently non-resumable via
+  `reducer._profile_phase`. Intended: they are frozen evidence and were never to
+  be resumed.
+. `policy_revision` is recorded in `Run` and rendered in operator summaries but
+  is not enforced by the reducer -- only *profile* identity is. Pre-existing Core
+  behavior, explicitly out of scope; the enforcing bump was made.
+. The existing WorkItem was revised in place rather than replaced. Correct under
+  the instruction not to create the continuation WorkItem, and it rewrites no
+  frozen state.
+. Review artifact identity is now per-WorkItem, not per-Run. A retried attempt of
+  the same WorkItem would reuse the same filename -- but that is now a WorkItem
+  decision requiring no profile change, which is exactly the boundary the fix
+  establishes.
+. `docs/backlog/wfc_reviews` does not yet exist. Correct: Git tracks no empty
+  directory and preflight requires no existence of scope or artifact paths.
+. The positive test now pins `profile.revision == policy.revision == "2"`
+  literally, so a future bump requires a test edit. Consistent with a proof of
+  one exact bundle.
+. Repository-wide `ruff` debt is pre-existing and unrelated (baseline 357 errors,
+  candidate 356, measured with ruff 0.16.8); the candidate's own test file is
+  clean where the baseline file had an import-order error. The repository has no
+  CI workflow.
+. `a1_path_shape` forbids a trailing slash, so `docs/backlog/wfc_reviews` is the
+  only well-formed spelling of the namespace; there is no directory/file
+  ambiguity to exploit.
+
+== Independent validation
+
+Executed against the pristine candidate worktree (clean tree, HEAD `0ba506c`),
+in a scratchpad virtualenv, with the package installed from
+`git archive 0ba506c` so no build artifact entered the repository. The worktree
+was verified clean before and after every step.
+
+* `git status --porcelain` -- empty, before and after
+* `git diff --check` -- exit 0
+* committed-vs-worktree parity for all three governance files -- identical
+* `pytest tests/architecture/test_self_development_governance.py` -- 2 passed
+* focused governance/operator/preflight/durable unit selection -- 68 passed
+* full `pytest` -- *370 passed*, 0 failed
+* `ruff check` on the changed test file -- clean
+
+=== Provider-free production preflight proof
+
+Production `_preflight` was called directly against the *real* repository at
+HEAD `0ba506c` with a state-root path that does not exist, using the historical
+operator input set. Result: *ADMITTED*; `state_root.exists()` is `False`
+afterwards -- no Run state allocated, no provider invoked.
+
+Mechanically demonstrated through production seams (`_preflight`,
+`_within_scope`), all passing:
+
+* exact review/rereview scope `('docs/backlog/wfc_reviews',)`
+* exact policy ceiling: six implementation paths plus the namespace
+* exact WorkItem mapping
+  `{'review': ('docs/backlog/wfc_reviews/developer_ergonomics_review.adoc',)}`
+* mapped artifact inside *both* `WorkItem.scope` and `review.authorized_scope`
+* historical `docs/backlog/first_wfc_on_wfc_dogfood_review.adoc` *absent* from
+  `review` and from `rereview` authority
+* unrelated `docs/backlog/standalone_project_bootstrap_2026-09-22.adoc` rejected
+* bare `docs/backlog` rejected; sibling-prefix `docs/backlog/wfc_reviews_evil.adoc`
+  rejected
+* `governance` outside review scope and outside the WorkItem ceiling;
+  `src/workflow_coordinator/operator.py` outside every phase scope
+* implementation and review authority disjoint in both directions
+* `rereview` actions `('review',)`, durable `none`
+* no action outside `{edit, commit, review}` anywhere
+* state root absent after the proof
+
+=== Control proving the BUG invariant (question 5 / M2)
+
+Three bundles materialized in disposable repositories from *committed* candidate
+text (`git show 0ba506c:<path>`):
+
+[cols="1,3,2",options="header"]
+|===
+|Case |Mutation |Production `_preflight`
+
+|A |none -- committed candidate bundle |ADMITTED
+|B |`WorkItem.scope` + `durable_artifacts.review` + policy ceiling widened to
+`docs/backlog/outside_wfc_review.adoc`; *phase authority unchanged*
+|REJECTED -- "durable artifact for phase review is outside WorkItem or phase
+scope"
+|C |as B, *plus* `review`/`rereview` `authorized_scope` widened |ADMITTED
+|===
+
+A admits, so the mutation is not rejected for an unrelated reason. B rejects with
+only phase authority withheld. C admits once phase authority is granted. The
+decisive leg is therefore `Phase.authorized_scope`, and neither `WorkItem.scope`
+nor the policy ceiling: *a WorkItem durable-artifact mapping cannot enlarge phase
+authority.* No state root was allocated in any case.
+
+== Disposition and permitted next steps
+
+`BUG-WFC-PROFILE-DURABLE-ARTIFACT-INSTANCE-COUPLING` is *fixed* by candidate
+`0ba506c` and is ready for maintainer acceptance.
+
+*ACCEPTED FOR CONSUMER-GOVERNANCE PROMOTION / BUG CLOSURE.*
+
+The next permitted lifecycle step, in order:
+
+. update/close the BUG record -- carrying forward I1's acknowledgement that the
+  namespace is the write ceiling, and optionally M3's convention note;
+. then create the fresh continuation WorkItem;
+. then perform provider-free Attempt-3 preparation.
+
+Attempt 3 is neither created nor started by this review. M1 and M2 are
+non-gating and may be folded into ordinary later test maintenance.
