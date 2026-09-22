@@ -15,8 +15,11 @@ implementation are required.
 ====
 
 Plan date:: 2026-09-22
-Required baseline:: `main` at `0b5260f64f0e66211bca0e6634e76ad02506fc1d`
-Baseline subject:: `docs: record accepted carve-out heads`
+Original plan baseline:: `main` at `0b5260f64f0e66211bca0e6634e76ad02506fc1d`
+Original plan baseline subject:: `docs: record accepted carve-out heads`
+Original plan commit:: `8ae55aafbd573ad93aa45e87a7e45c0de671ec23`
+Correction authority:: independent review at
+`ff86da329baa463c67a65176a335317a03529b75`
 Planned endpoint:: *standalone WFC is ready for its first WFC-on-WFC dogfood WorkItem*
 
 == 1. Purpose and bounded decision
@@ -152,6 +155,17 @@ has `remote.origin.pushurl=DISABLED`. The maintainer created and configured it.
 The bootstrap consumes this fact; it must not create, recreate, reconfigure,
 update, install into, or otherwise mutate that clone.
 
+The runtime clone is source/history authority, not an installation prefix. Its
+accepted tree is exported at the exact detached commit into a temporary local
+copy outside both clones. A separately located runtime virtual environment then
+receives a non-editable install from that export. Build isolation may be
+disabled and dependencies pre-provisioned so executing a commit already present
+locally does not require network access. Every runtime execution artifact --
+the virtual environment, export, build/install scratch, caches, and Run state --
+stays outside the runtime and development clones. The runtime clone must remain
+free of `.venv`, `build/`, `dist/`, `*.egg-info`, source edits, ref movement,
+remote changes, and generated execution state.
+
 == 3. Proposed current-authority model
 
 === 3.1 One explicit index, not historical re-curation
@@ -196,13 +210,14 @@ WorkItems. It does not restate architecture.
 |`governance/self-development/`
 |Committed executable self-development envelope
 |Maintainer-owned policy, one bounded profile, component manifest, and selected
-prompt components. A committed WorkItem and task add item-specific authority;
-these reusable files alone authorize no Run.
+prompt components. Bootstrap also commits the concrete first-dogfood WorkItem
+and task described in section 7; the reusable files alone authorize no Run.
 
 |`governance/work-items/`
 |Per-item maintainer authorization
-|Future committed WorkItem/task pairs. The bootstrap creates no first dogfood
-WorkItem here; that is an explicit post-bootstrap maintainer action.
+|Committed WorkItem/task pairs. Slice B2 creates exactly the first-dogfood pair
+as authorized `NEXT` work but does not execute it. Later pairs remain explicit
+maintainer actions.
 
 |`src/`, package resource, `pyproject.toml`
 |Executable/package behavior
@@ -365,6 +380,13 @@ decision based on observed interruption/recovery pain. Do not inherit old slice
 authorization or order.
 
 |WATCH
+|Imported C6 Conventional-Commit subject grammar concern
+|The consumer convention embedded in commit-subject validation is inert while
+this standalone project deliberately uses Conventional Commits. Revisit only if
+dogfood shows rejection of otherwise valid WFC commits; it is not bootstrap or
+first-dogfood work.
+
+|WATCH
 |Parallel agents, TUI, Pi adapter, multi-agent hierarchy, multi-repo mutation,
 large outer-loop/product-management automation
 |Observe, but do not promote merely because other tools offer them. Require a
@@ -400,6 +422,29 @@ remote configuration are execution authority. They are never payload paths.
 The development clone is the only repository supplied through `--repository`
 for WFC self-development. The external state root is outside both clones and is
 new per Run.
+
+==== 6.1.1 Runtime execution environment
+
+Runtime N is launched from a dedicated virtual environment outside both clones.
+The maintainer creates that environment from a temporary export of the exact
+accepted runtime commit, installs the export non-editably, and verifies at
+least `wfc --help` provider-free. The launch contract records the runtime commit
+and puts that environment's `bin` directory on `PATH`; it never executes the
+development package. Preparing or replacing this environment is an explicit
+maintainer/bootstrap operation, not automatic runtime promotion. The external
+Run state root is separate from the runtime environment as well as both clones.
+
+==== 6.1.2 Development/evidence environment
+
+A second, separate development/evidence virtual environment supplies the
+development checkout's trusted evidence tools. It is prepared outside both
+clones with ordinary `python3 -m venv` and `pip` using the repository's `dev`
+extra (an exported exact development tree may be used to avoid derived output
+in the checkout). Its `bin` directory is placed first on the Coordinator's
+captured `PATH`, so the portable evidence argv `python -m pytest -q` resolves
+mechanically from the repository root. This environment is not runtime N and
+does not change which WFC installation coordinates the Run. Neither environment
+introduces a dependency manager or repository-local environment framework.
 
 Do not use `git worktree` as the primary model. Separate clones and object stores
 prevent payload commits or ref movement from implicitly changing runtime
@@ -450,19 +495,22 @@ records it but bootstrap does not manage or test-write that configuration.
 
 A genuinely unattended Run has no interactive approval route. The current
 adapter's `approval=never` setting is necessary behavior, not a sufficient
-security boundary. Long-term enforcement must be Coordinator-owned and
-verifiable rather than an accumulation of provider approval modes or prompt
-rules. The likely experiment is an OS-level `bwrap`/equivalent boundary that
-limits reachable and mutable surfaces while Coordinator-owned Git/evidence
-authority remains outside. Bootstrap records this invariant and limitation only;
-it neither claims containment nor implements a sandbox.
+security boundary. Its requested `--sandbox workspace-write` mode is also
+provider-owned inner behavior; the Coordinator does not establish or verify it
+as an OS/environment boundary. Long-term enforcement must be Coordinator-owned
+or Coordinator-verifiable rather than an accumulation of provider approval or
+sandbox modes and prompt rules. The likely experiment is an OS-level
+`bwrap`/equivalent boundary that limits reachable and mutable surfaces while
+Coordinator-owned Git/evidence authority remains outside. Bootstrap records
+this invariant and limitation only; it neither claims containment nor
+implements a sandbox.
 
 == 7. Minimum committed self-development governance
 
 === 7.1 Proposed committed files
 
-Bootstrap Slice 2 should add only this consumer-style set, using existing schema
-and engine behavior:
+Bootstrap Slice B2 adds only this consumer-style governing bundle, using
+existing schema and engine behavior:
 
 [source,text]
 ----
@@ -474,25 +522,41 @@ governance/
     prompts/
       developer.txt
       reviewer.txt
+  work-items/
+    developer-ergonomics.yaml
+    developer-ergonomics-task.txt
 ----
 
-The policy supplies a standalone logical repository identity, a `governance`
-input root, an explicit payload ceiling, a small Hop ceiling, the existing
-`edit`/`commit`/`review` actions, and only evidence commands needed by the first
-dogfood (initially the provider-free existing test command). It grants no push,
-runtime, remote, shell, or provider-selection capability.
+The policy uses logical repository identity `workflow-coordinator`, governance
+root `governance`, exactly the payload ceiling in section 7.2, Hop ceiling `4`,
+the existing `edit`/`commit`/`review` actions, and one provider-free evidence
+command whose argv is `python -m pytest -q`. It grants no push, runtime, remote,
+arbitrary shell, or provider-selection capability. Four Hops are required by
+the fixed convergence sequence; although the engine hard maximum is five, this
+profile permits only four: the engine's nominal fifth spare Hop is deliberately
+not granted. The first dogfood therefore permits only one correction and
+re-review cycle. A finding at the final re-review stops for the maintainer
+rather than starting a second cycle.
 
-The profile is one finite implement -> independent review -> correct -> fresh
-re-review workflow, using only the existing route/review model. The two short
-prompt components clarify role-specific work; they do not duplicate the
-package-owned operating contract or introduce a prompt framework. The component
-manifest pins them through the current manifest mechanism.
+The profile is one finite investigate -> independent review -> correct -> fresh
+re-review workflow, using only the existing route/review model demonstrated by
+the consumer-neutral fixture. Its routes are investigate -> review, review ->
+correct, correct -> rereview, and rereview -> complete on acceptance or ->
+correct when findings remain (where the four-Hop budget forces a safe stop).
+The two short selected role components serve the developer/corrector and
+reviewer/rereviewer respectively. They do not duplicate the package-owned
+operating contract or introduce a prompt framework. No additional policy
+prompt component is needed; the manifest pins exactly the two selected role
+components through the current mechanism.
 
-No WorkItem or task is included in this reusable set. For each Run, the
-maintainer separately authors and commits a concrete pair under
-`governance/work-items/`, selects the accepted profile, names exact payload
-paths, and pins the expected development HEAD. The WFC/agent must not author the
-policy or unrestricted WorkItem under which it will operate.
+The WorkItem and task are part of B2 so production preflight can validate the
+actual first-dogfood envelope before any provider invocation. They are committed
+as maintainer-authorized `NEXT` work, select this profile, carry the exact scope
+and per-phase durable-artifact mapping below, and are invoked later with the
+exact accepted development HEAD. Their presence does not start a Run. This
+authority comes from maintainer/bootstrap acceptance; neither WFC nor its agent
+may author, widen, or replace the policy, profile, WorkItem, or task under which
+it operates.
 
 === 7.2 Smallest decision forced by fixed profile scopes
 
@@ -502,14 +566,50 @@ profile would therefore require every WorkItem to carry a broad fixed scope.
 Bootstrap must not invent templating or a new policy abstraction to hide this
 fact.
 
-The small decision is to make the single profile reusable for the bounded first
-developer-ergonomics workflow and its correction/re-review Hops, with the exact
-least-authority path set finalized by the maintainer during Slice 2. Likely
-payload areas are `Makefile`, the Ruff-only portion of `pyproject.toml`, one
-small snapshot-script area, the existing package-boundary guard, and narrowly
-related developer docs/tests. `src/`, `governance/`, runtime paths, remotes, and
-unrelated docs/tests remain outside unless a concrete need is independently
-authorized.
+The one-purpose profile and WorkItem use this exact implementation payload set:
+
+* `Makefile`;
+* `README.md`;
+* `pyproject.toml`;
+* `scripts/wfc_snapshot.py`;
+* `tests/unit/test_wfc_snapshot.py`; and
+* `tests/architecture/test_package_boundaries.py`.
+
+The policy ceiling and WorkItem scope contain exactly those paths plus the
+dedicated review artifact
+`docs/backlog/first_wfc_on_wfc_dogfood_review.adoc`. Generated snapshots are
+evidence/output, not committed payload. `src/`, `governance/`,
+`docs/project_memory.adoc`, runtime paths, remotes, every other documentation or
+test path, and all other repository paths are outside the first-dogfood
+authority. This closes the trust boundary in the plan; B2 may transcribe these
+values but may not broaden them to make the profile reusable.
+
+The phase authority is exact:
+
+* `investigate` may use `edit` and `commit` only on the six implementation
+  paths. Its durable-artifact mode is `optional`.
+* `review` uses `review`, `edit`, and `commit` only because its durable artifact
+  is `required`. Its sole `authorized_scope` and sole mapped artifact are
+  `docs/backlog/first_wfc_on_wfc_dogfood_review.adoc`; it has no implementation
+  mutation authority. It may inspect the committed implementation delta, as in
+  the accepted convergence mechanics.
+* `correct` may use `edit` and `commit` only on the six implementation paths.
+  Its durable-artifact mode is `optional`, and it must not mutate the review
+  artifact.
+* `rereview` has only `review`, has `durable_artifact: none`, and receives no
+  `edit` or `commit` authority. Its `authorized_scope` is the review-artifact
+  path, matching the existing accepted observation-only convergence shape.
+
+The WorkItem uses the modern per-phase `durable_artifacts` mapping to map the
+review phase to the dedicated review artifact. It supplies no legacy
+`--durable-artifact` argument. This is mandatory because a non-initial required
+artifact cannot be satisfied through that legacy argv route.
+
+The invariant is explicit: *review-artifact mutation authority is not
+implementation mutation authority*. The review path is disjoint from every
+implementation path; the implementation phases cannot mutate it, and the
+review phase cannot mutate implementation payload. The rereviewer observes and
+disposes findings without mutating either set.
 
 After dogfood, either reuse that exact profile for similarly scoped work or make
 one explicit profile revision/new bounded profile. Do not add variables,
@@ -517,32 +617,51 @@ inheritance, a registry, or a general profile framework during bootstrap.
 
 === 7.3 Coherence checks without a provider
 
-Add at most one small architecture test,
-`tests/architecture/test_self_development_governance.py`, or an equivalently
-small existing-test extension. It should:
+Add one small architecture test,
+`tests/architecture/test_self_development_governance.py`. The primary proof
+must materialize a clean
+disposable Git repository at an exact forty-character HEAD containing the
+concrete governing bundle, then call the production parser and `_preflight`
+path with that actual WorkItem, profile, policy, manifest, task, and a new
+external state-root path. This exercises production governing-input admission,
+phase-scope containment, action domination, WorkItem ceiling and Hop rules,
+component/evidence reference coherence, the per-phase durable-artifact mapping,
+and `prepare_evidence_commands` resolution. It stops before operator dispatch
+and invokes no real or fake AI provider.
 
-* load policy, profile, and component manifest through production parsers;
-* prove all selected component paths are tracked and represented by the
-  manifest;
-* prove governance inputs sit under policy governance paths;
-* prove phase scopes do not overlap governance and do not exceed the policy
-  ceiling;
-* prove the profile selects only policy-permitted actions/evidence; and
-* assert that push, runtime-clone paths, and automatic promotion are absent from
-  the committed authority surface.
+The test must not reimplement `_within_scope`, A1 path algebra, phase/WorkItem
+containment, ceiling rules, action domination, evidence-reference coherence,
+Hop limits, or governing-input admission. Focused properties owned by pure
+production seams may call `_admit_a1`, `_selected_evidence_names`,
+`_selected_ids`, `_within_scope`, or `a1_path_shape` directly, but the complete
+bundle proof uses production `_preflight`; no admission rule is copied into
+test-only code. Project-specific assertions are limited to facts production
+admission cannot express, notably that the committed policy ceiling itself
+excludes `governance` and that push, runtime-clone mutation, and automatic
+promotion authority are absent. Even those assertions reuse production path
+semantics where paths are compared.
 
-This is schema/authority validation only. It must not call the operator's
-provider-capable path or invoke a real/fake AI provider.
+The architecture test proves that the selected evidence executable resolves in
+the captured Coordinator environment. B2 validation then runs the exact
+committed `python -m pytest -q` argv once, provider-free, from the development
+repository using the prepared development/evidence environment. It is not run
+recursively from inside the architecture test. Bootstrap cannot claim readiness
+unless both production preflight and that actual evidence execution succeed.
+*No duplicate policy engine* is an acceptance criterion.
 
 == 8. First WFC-on-WFC dogfood WorkItem
 
-The first post-bootstrap maintainer-authored WorkItem is *standalone developer
-ergonomics*. It is deliberately useful and bounded enough for the current
-Codex/Terra-medium execution binding.
+The first WorkItem is *standalone developer ergonomics*. Slice B2 commits its
+exact governing bundle as maintainer-authorized `NEXT` work and validates it
+through production preflight, but does not execute its Run. After independent
+bootstrap acceptance, the next maintainer action can therefore be the actual
+WFC Run rather than another authority-design exercise. The payload is useful
+and bounded enough for the current Codex/Terra-medium execution binding and its
+single correction-cycle budget.
 
 === 8.1 Payload
 
-The WorkItem may authorize only the paths needed to deliver:
+The exact six implementation paths in section 7.2 may deliver only:
 
 * a small Makefile with `make test`, `make lint`, `make format-check`, and
   `make check`;
@@ -554,8 +673,10 @@ The WorkItem may authorize only the paths needed to deliver:
   MINOR, after reading the exact accepted review evidence; and
 * narrowly related development documentation and tests.
 
-The WorkItem does not modify runtime WFC N, change engine architecture, add a
-provider, create a CLI command, or widen its own governance.
+The dedicated review-artifact path is the seventh and only other WorkItem path;
+it is not implementation payload. The WorkItem does not modify runtime WFC N,
+change engine architecture, add a provider, create a CLI command, update
+Project Memory, or widen its own governance.
 
 === 8.2 Snapshot contract
 
@@ -640,9 +761,10 @@ curating the imported corpus.
 
 Exact likely files/areas::
 
-* update `README.md` with the current-index entry point;
+* update `README.md` to delegate current-authority enumeration to the index;
 * update `docs/architecture.md` only with stable standalone authority and
-  self-hosting/promotion invariants;
+  self-hosting/promotion invariants, and make it delegate authority enumeration
+  to the index;
 * add `docs/README.adoc`;
 * add `docs/backlog/README.adoc`; and
 * add the single `docs/project_memory.adoc`.
@@ -655,6 +777,9 @@ constraints.
 Acceptance criteria::
 
 * A fresh reader can identify every authority class from README -> one index.
+* Exactly `docs/README.adoc` enumerates current authority classes;
+  `README.md` and `docs/architecture.md` link and defer to it rather than retain
+  closed or competing enumerations.
 * Project Memory contains only split-forward current state and provenance links.
 * Backlog uses only the five dispositions in section 5 and preserves their
   ordering/boundaries.
@@ -677,58 +802,90 @@ separable.
 
 === Slice B2 -- bounded self-development authority and readiness
 
-Purpose:: Commit the smallest consumer-style authority needed for a maintainer
-to author the first dogfood WorkItem, document how the existing runtime clone is
-used, and prove governance coherence without dispatch.
+Purpose:: Commit the smallest consumer-style authority plus the concrete,
+non-executed first-dogfood WorkItem/task, document how the existing runtime
+clone is executed immutably, and prove the actual bundle coherent and runnable
+without dispatch.
 
-Exact likely files/areas::
+Exact files/areas::
 
-* add the five-file set under `governance/self-development/` from section 7.1;
+* add the five-file reusable set under `governance/self-development/` from
+  section 7.1;
+* add `governance/work-items/developer-ergonomics.yaml` and
+  `governance/work-items/developer-ergonomics-task.txt` as the complete
+  maintainer-authorized first-dogfood item;
 * add `docs/self-development.adoc` with invocation/topology/promotion guidance;
-* add or extend one architecture test under `tests/architecture/` for section
-  7.3; and
+* add `tests/architecture/test_self_development_governance.py` for section 7.3;
+  and
 * refresh `docs/project_memory.adoc` and `docs/backlog/README.adoc` in the same
-  accepted commit to record bootstrap completion and NEXT 1.
+  implementation commit to record `bootstrap implemented, pending independent
+  acceptance` and the committed-but-unexecuted `NEXT 1` item. Only the later
+  independent acceptance or corrective acceptance commit may record bootstrap
+  completion/readiness.
 
 Authority/invariant established:: Maintainer owns governing inputs, policy scope,
 WorkItem/task, push, and promotion; WFC coordinates only the committed envelope;
 the agent cannot edit governance or runtime; accepted runtime N operates on
-development N+1; first dogfood is ready to be authorized but is not yet begun.
+development N+1; first dogfood is concretely authorized but is not executed by
+bootstrap.
 
 Acceptance criteria::
 
 * Production parsers accept policy/profile/manifest and selected component paths.
-* Policy governance roots, ceiling, actions, evidence commands, and Hop limit
-  are explicit and minimal.
-* The one profile has finite current routes, fresh independent review, and a
-  least-authority first-dogfood path set.
-* No committed WorkItem claims blanket authority and no file grants push,
-  runtime mutation, provider selection, hidden retry/resume, or automatic
-  promotion.
-* The self-development guide uses the existing runtime clone as execution
-  authority, the development clone as payload, and an external new state root.
+* A clean exact-HEAD disposable repository and the actual committed WorkItem
+  pass production `_preflight`, including evidence executable resolution,
+  without entering dispatch or calling a provider.
+* The test contains no duplicate implementation of production admission, path,
+  scope, action, evidence, Hop, or governing-input rules.
+* Policy governance roots, exact seven-path ceiling, actions, `4`-Hop limit,
+  finite routes, and `python -m pytest -q` evidence are explicit and minimal.
+* Review has edit/commit only on the dedicated mapped review artifact;
+  investigate/correct have edit/commit only on the six implementation paths;
+  rereview is review-only; the scopes are disjoint as specified in section 7.2.
+* The WorkItem uses its per-phase `durable_artifacts` mapping for `review`; the
+  guide supplies no legacy `--durable-artifact` argument.
+* No committed file grants blanket scope, push, runtime mutation, provider
+  selection, hidden retry/resume, or automatic promotion.
+* The self-development guide names the immutable runtime execution method: an
+  external virtual environment installed non-editably from a temporary export
+  of exact runtime commit `0b5260f64f0e66211bca0e6634e76ad02506fc1d`, with
+  all install/build/cache/state artifacts outside both clones.
+* From that runtime environment, `wfc --help` starts provider-free and the
+  runtime clone remains byte/ref/config clean, including absence of ignored
+  `.venv`, `build/`, `dist/`, and `*.egg-info` output.
+* A separate external development/evidence environment prepared with the
+  `dev` extra places its `bin` directory on the Coordinator's captured `PATH`;
+  from the development root, the exact committed evidence argv resolves and
+  completes successfully.
 * All tests and document renders pass without provider invocation.
 * After required independent acceptance and any corrective commit, the endpoint
   statement is true: *standalone WFC is ready for its first WFC-on-WFC dogfood
   WorkItem*.
 
-Tests/checks:: Focused governance architecture test; full current pytest suite;
-`asciidoctor --failure-level WARN`; `python -m build` only if already available
-and useful for regression confidence; `git diff --check`; path-scope review; and
-read-only confirmation that runtime HEAD/configuration did not change. Do not
-run the operator or any provider-capable smoke path.
+Tests/checks:: Production-preflight governance architecture test against a clean
+disposable exact-HEAD repository; the exact committed provider-free evidence
+argv (which is also the full current pytest suite); `wfc --help` from the
+external runtime environment; `asciidoctor --failure-level WARN`; `python -m
+build` only if already available and useful for regression confidence; `git
+diff --check`; path-scope review; and before/after read-only confirmation that
+runtime HEAD, refs, configuration, tracked, untracked, and ignored content did
+not change. Do not run the operator past preflight or invoke a real/fake AI
+provider.
 
-Non-scope:: The first WorkItem/task and its payload; Makefile; Ruff; formatting;
-snapshots; CLI redesign; sandbox implementation; old 5C/resumability; provider
-abstraction; second adapter; TUI; parallel or multi-agent execution; multi-repo
-orchestration; automatic push/promotion; broad historical cleanup.
+Non-scope:: Executing the committed first WorkItem/task or implementing any of
+its payload; Makefile; Ruff; formatting; snapshots; the post-carve-out
+`__package__` architecture guard; CLI redesign; sandbox implementation; old
+5C/resumability; provider abstraction; second adapter; TUI; parallel or
+multi-agent execution; multi-repo orchestration; automatic push/promotion;
+broad historical cleanup.
 
 Independent review:: *Required.* Review the combined B1+B2 result adversarially,
 including authority ceilings, profile fixed-scope consequences, two-clone
 non-self-mutation, absence of push/promotion paths, and truthful limitations.
 Resolve blocking findings by ordinary corrective commit before declaring
-readiness. The review is not itself a WFC-on-WFC Run unless separately
-authorized after bootstrap.
+readiness; that accepting/corrective commit updates Project Memory and backlog
+from pending to complete. The review is not itself a WFC-on-WFC Run unless
+separately authorized after bootstrap.
 
 == 11. Ambiguities and smallest dispositions
 
@@ -757,15 +914,36 @@ automation.
 |No. It already exists, is detached/pinned, separate, and push-disabled. It is
 read-only execution authority to bootstrap and dogfood agents.
 
+|How is immutable Runtime N executed?
+|Resolved by bounded preparation contract
+|Install a temporary export of exact Runtime N non-editably into an external
+virtual environment; put its `bin` on `PATH`; keep the clone, build/install
+scratch, caches, and state disjoint. Prove `wfc --help` without network or clone
+mutation.
+
+|How does trusted evidence resolve?
+|Resolved by bounded preparation contract
+|Use a separate external development/evidence virtual environment with the
+repository `dev` extra, captured on Coordinator `PATH`; commit `python -m pytest
+-q`, prove production preparation resolves it, and execute that exact argv
+provider-free before readiness.
+
 |Can one profile be both universal and least-authority?
 |Small explicit decision
 |Not under current fixed profile scopes. Commit one bounded first-dogfood profile
 and defer any generalization until evidence supports it.
 
 |What is the exact first WorkItem scope?
-|Maintainer decision at B2/WorkItem boundary
-|Finalize the least-authority paths after the profile and actual Core snapshot
-implementation are inspected. Do not grant `src/` or all docs/tests by default.
+|Resolved in this plan
+|The six named implementation paths plus the one dedicated review artifact in
+section 7.2 are the complete policy ceiling and WorkItem scope. B2 must not
+broaden them.
+
+|How is review mutation separated from implementation?
+|Resolved in this plan
+|Only `review` can edit/commit the mapped review artifact; only investigate and
+correct can edit/commit implementation paths; rereview is review-only. The
+legacy durable-artifact argv is not used.
 
 |What snapshot grouping/format should be built?
 |Defer to dogfood
@@ -802,12 +980,52 @@ only on measured need.
 available measurements go into the normal Project Memory refresh.
 |===
 
+=== 11.1 Independent-review finding dispositions
+
+All bounded findings from the independent review are closed in the plan as
+follows:
+
+* *I-1:* the review phase's required durable artifact is mapped in the WorkItem
+  to one dedicated path. Review-artifact and implementation mutation scopes are
+  disjoint; rereview is observation/review only; legacy durable-artifact argv is
+  forbidden for this bundle.
+* *I-2:* the complete real bundle must pass production `_preflight` in a clean
+  exact-HEAD disposable repository. Test code may call pure production seams
+  for focused properties but must not duplicate any admission rule or path
+  algebra.
+* *I-3:* exact Runtime N is exported to temporary storage and installed into an
+  external runtime environment. Provider-free `wfc --help` must succeed while
+  the runtime clone remains unchanged, including ignored content.
+* *I-4:* a separate external development/evidence environment supplies a
+  resolvable `python`; production preparation must resolve the committed
+  evidence argv and B2 must actually run it provider-free.
+* *M-1:* B1 makes `docs/README.adoc` the only authority-class enumeration and
+  changes README and architecture to defer to it.
+* *M-2:* the policy/WorkItem limit is four Hops for the four-phase workflow;
+  only one correction/re-review cycle fits, despite the engine hard maximum of
+  five.
+* *M-3:* `docs/project_memory.adoc` is explicitly outside first-dogfood scope;
+  only maintainer acceptance may record the dogfood result there.
+* *M-4:* the B2 implementation commit records pending independent acceptance,
+  not completion; acceptance or its corrective commit records readiness.
+* *M-5:* the accepted post-carve-out `__package__` guard remains an exact
+  first-dogfood payload path/task and is expressly outside bootstrap B2.
+* *M-6:* `--sandbox workspace-write` is recorded as provider-owned,
+  Coordinator-unverified behavior, not the future trusted OS/environment
+  boundary.
+
+The review's otherwise undispositioned imported C6 concern is explicitly
+`WATCH` in section 5. The remaining INFO/WATCH observations retain their
+accepted classifications and do not broaden bootstrap.
+
 == 12. Explicit bootstrap non-scope
 
 Neither this planning commit nor the later two-slice bootstrap includes:
 
 * Makefile, Make targets, Ruff, lint/format configuration, or snapshot tooling;
 * repository snapshot generation or exact snapshot grouping;
+* implementation of the accepted post-carve-out `__package__` guard (it remains
+  first-dogfood payload even though B2 adds a neighboring architecture test);
 * CLI redesign, bundle/status/validation commands, TUI, or assistant UX;
 * sandbox/environment-boundary implementation or a claim of effective
   containment;
@@ -832,9 +1050,19 @@ Each slice and the consolidated accepted state must show:
 * `git diff --check` and the relevant provider-free tests;
 * no unexpected change to `src/`, existing tests, or `pyproject.toml` in B1;
 * only the explicitly authorized governance/test/doc changes in B2;
-* no operator/provider-capable command, provider subprocess, or provider state;
+* the complete committed-but-unexecuted WorkItem/task bundle passes production
+  preflight in a clean exact-HEAD disposable repository;
+* the coherence test contains no duplicate policy/admission engine;
+* external runtime and development/evidence environment locations and captured
+  `PATH` are recorded without committing a machine-specific absolute path;
+* exact Runtime N starts with `wfc --help` provider-free from the external
+  runtime environment, and the committed evidence argv resolves and executes
+  provider-free from the external development/evidence environment;
+* no Run dispatch past direct production preflight, provider subprocess, or
+  provider state (`wfc --help` is the provider-free runtime-start check);
 * no Core worktree/index/ref change;
-* no runtime clone worktree/index/ref/remote/config/environment change; and
+* no runtime clone worktree/index/ref/remote/config/environment change,
+  including no ignored installation/build/cache output; and
 * no GitHub mutation or push.
 
 The B2 independent review consumes committed diffs and validation evidence. It
@@ -849,6 +1077,6 @@ Core, runtime, and GitHub mutations.
 
 After the planning commit, the exact next action is:
 
-*fresh independent adversarial review of the bootstrap plan*
+*fresh bounded independent delta review of this plan correction*
 
-Do not begin that review automatically.
+Do not begin that review or Slice B1 automatically.
