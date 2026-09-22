@@ -55,8 +55,25 @@ def test_prompt_selects_only_phase_components_in_explicit_order_and_keeps_critic
         < package.text.index("\n\n[workflow_policy]")
         < package.text.index("[task]")
     )
-    for critical in ("work_item_id=WI-1", "run_id=RUN-1", "hop_id=H001", "invocation_id=INV-1", "scope=repo", "permitted_routes=done", "output_contract=structured_result_v1"):
+    for critical in ("work_item_id=WI-1", "run_id=RUN-1", "hop_id=H001", "invocation_id=INV-1", "scope=repo", "authorized_actions=edit,commit", "permitted_routes=done", "output_contract=structured_result_v1"):
         assert critical in package.text
+
+
+def test_prompt_projects_current_hop_actions_separately_from_exit_routes():
+    workflow = profile({"implement": phase({"review": route("complete")})})
+    current = workflow.phases["implement"]
+    package = assemble_prompt(
+        run_for(workflow),
+        current,
+        components(("worker", 1), ("testing", 1)),
+        invocation=invocation(),
+        agent_operating_contract=load_agent_operating_contract(),
+        task_payload="task",
+    )
+    header = package.text.split("\n\n", 1)[0]
+
+    assert "\nauthorized_actions=edit,commit\n" in header
+    assert "\npermitted_routes=review\n" in header
 
 
 @pytest.mark.parametrize("size, omitted", [(COMPONENT_LIMIT_BYTES - 1, False), (COMPONENT_LIMIT_BYTES + 1, True)])

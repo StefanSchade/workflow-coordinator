@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+from dataclasses import fields
 
 import pytest
 
 from workflow_coordinator.adapter import Invocation
 from workflow_coordinator import prompt
+from workflow_coordinator.model import RepositoryPolicy, WorkItem, WorkflowProfile
 from workflow_coordinator.operator import run_serial_hops
 from workflow_coordinator.prompt import (
     CONTRACT_ID,
@@ -26,6 +28,8 @@ from workflow_coordinator.vertical import run_one_hop
 from tests.support import phase, profile, route, run_for
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
+
+LEGACY_V1_SHA256 = "058fde8651898afa170160b35d4c6969459130652a69cac1ae2f6112d8e5a194"
 
 
 class _Resource:
@@ -64,13 +68,13 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
 
     assert (CONTRACT_ID, CONTRACT_VERSION, RESOURCE) == (
         "workflow_coordinator.agent_operating_contract",
-        1,
-        "resources/agent_operating_contract_v1.txt",
+        2,
+        "resources/agent_operating_contract_v2.txt",
     )
     assert first.text.startswith(
         "[agent_operating_contract]\n"
         "contract_id=workflow_coordinator.agent_operating_contract\n"
-        "version=1\n"
+        "version=2\n"
     )
     assert first == second and first is not second
     assert first.sha256 == REVIEWED_SHA256
@@ -79,12 +83,20 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
         "contract_id": CONTRACT_ID,
         "version": CONTRACT_VERSION,
         "resource": RESOURCE,
-        "byte_count": 1688,
+        "byte_count": 2445,
         "sha256": REVIEWED_SHA256,
     }
     normalized = " ".join(first.text.split())
     for required in (
         "authorized_scope",
+        "authorized_actions describe the allowed effects and work during the current Hop",
+        "permitted_routes describe only the allowed disposition or exit from the current Hop",
+        "A sole permitted route named review does not make the current Hop review-only",
+        "Evidence names identify Coordinator-owned trusted evidence",
+        "The Coordinator prepares and executes trusted evidence separately according to admitted policy",
+        "Agent-side tests and checks may be useful exploratory validation, but they are not Coordinator-trusted evidence",
+        "Failure to resolve or execute the same authored evidence command in the agent shell is not, by itself, a failure or unavailability of Coordinator-trusted evidence",
+        "must not, by itself, cause an operational escalation",
         "git commit --amend",
         "Read-only Git inspection is allowed",
         "prevail over any conflicting consumer task or component text",
@@ -95,8 +107,43 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
         "trust-boundary authority",
     ):
         assert required in normalized
-    assert "authorized_actions" not in first.text
     assert "human_gates" not in first.text
+
+
+def test_legacy_v1_contract_bytes_cannot_pass_the_v2_digest(monkeypatch):
+    current = load_agent_operating_contract().text
+    legacy = current.replace("version=2\n", "version=1\n", 1).replace(
+        "phase, authorized_scope, authorized_actions,\n"
+        "permitted_routes, evidence names, and output_contract. The [workflow_policy]\n"
+        "block supplies durable_artifact. The result schema is supplied through the\n"
+        "adapter.",
+        "phase, authorized_scope, permitted_routes, evidence\n"
+        "names, and output_contract. The [workflow_policy] block supplies\n"
+        "durable_artifact. The result schema is supplied through the adapter.",
+        1,
+    ).replace(
+        "\n"
+        "authorized_actions describe the allowed effects and work during the current\n"
+        "Hop. permitted_routes describe only the allowed disposition or exit from the\n"
+        "current Hop. A sole permitted route named review does not make the current Hop\n"
+        "review-only.\n"
+        "\n"
+        "Evidence names identify Coordinator-owned trusted evidence. The Coordinator\n"
+        "prepares and executes trusted evidence separately according to admitted policy.\n"
+        "Agent-side tests and checks may be useful exploratory validation, but they are\n"
+        "not Coordinator-trusted evidence. Failure to resolve or execute the same\n"
+        "authored evidence command in the agent shell is not, by itself, a failure or\n"
+        "unavailability of Coordinator-trusted evidence and must not, by itself, cause\n"
+        "an operational escalation.\n",
+        "",
+        1,
+    ).encode("utf-8")
+    assert hashlib.sha256(legacy).hexdigest() == LEGACY_V1_SHA256
+    assert LEGACY_V1_SHA256 != REVIEWED_SHA256
+
+    monkeypatch.setattr(prompt.resources, "files", lambda _package: _Resource(legacy))
+    with pytest.raises(CoordinatorResourceError, match="resource is unavailable"):
+        load_agent_operating_contract()
 
 
 def test_all_four_internal_seams_require_keyword_only_contract_values():
@@ -104,6 +151,14 @@ def test_all_four_internal_seams_require_keyword_only_contract_values():
         parameter = inspect.signature(seam).parameters["agent_operating_contract"]
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
         assert parameter.default is inspect.Parameter.empty
+
+
+def test_consumer_models_and_loader_expose_no_contract_selector_or_replacement():
+    assert not inspect.signature(load_agent_operating_contract).parameters
+    for consumer_model in (WorkItem, WorkflowProfile, RepositoryPolicy, PromptComponent):
+        assert "agent_operating_contract" not in {
+            field.name for field in fields(consumer_model)
+        }
 
 
 def test_prompt_places_complete_contract_once_after_header_before_consumers_and_footer():

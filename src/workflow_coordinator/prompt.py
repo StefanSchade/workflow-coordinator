@@ -15,9 +15,9 @@ CONTEXT_LIMIT_BYTES = 196_608
 DIFF_LIMIT_BYTES = 65_536
 DIFF_FILE_LIMIT = 12
 CONTRACT_ID = "workflow_coordinator.agent_operating_contract"
-CONTRACT_VERSION = 1
-RESOURCE = "resources/agent_operating_contract_v1.txt"
-REVIEWED_SHA256 = "058fde8651898afa170160b35d4c6969459130652a69cac1ae2f6112d8e5a194"
+CONTRACT_VERSION = 2
+RESOURCE = "resources/agent_operating_contract_v2.txt"
+REVIEWED_SHA256 = "c5f3657812b10a2a5367382c5b02db7586bb1917bae3674519c05b130fd0029b"
 
 
 class CoordinatorResourceError(RuntimeError):
@@ -51,7 +51,7 @@ def load_agent_operating_contract() -> AgentOperatingContract:
 
     try:
         content = (
-            resources.files(__package__) / "resources" / "agent_operating_contract_v1.txt"
+            resources.files(__package__) / "resources" / "agent_operating_contract_v2.txt"
         ).read_bytes()
     except (OSError, TypeError) as error:
         raise CoordinatorResourceError("Coordinator operating contract resource is unavailable") from error
@@ -119,6 +119,7 @@ def _header(run: Run, phase: Phase, invocation: Invocation) -> str:
         f"hop_id={invocation.hop_id}\ninvocation_id={invocation.invocation_id}\n"
         f"base_head={run.current_head}\n"
         f"phase={run.phase}\nauthorized_scope={','.join(phase.authorized_scope)}\n"
+        f"authorized_actions={','.join(phase.authorized_actions)}\n"
         f"permitted_routes={routes}\nevidence={','.join(phase.evidence)}\n"
         "output_contract=structured_result_v1\n"
     )
