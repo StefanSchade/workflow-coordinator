@@ -1,0 +1,259 @@
+= First WFC-on-WFC Dogfood Correction -- Independent Review
+
+Independent, fresh-context review of the bounded correction made after the
+first real WFC-on-WFC dogfood attempt. Review only; no implementation, no
+dogfood execution, no provider invocation, no promotion, no push.
+
+== Identity
+
+* Reviewed commit: `f196c90c217401a2c3dd39a03db6ed17c314b80c`
+  -- `fix(prompt): clarify phase authority and trusted evidence`
+* Parent: `76d88fa07ddac5f830be74c40c4655b634d0eb2f`
+* Corrected attempt: `RUN-63312f78f0f4486b82b50fa5ddb36637`,
+  archived in `docs/backlog/first_wfc_on_wfc_dogfood_attempt_2026-09-22.adoc`
+* Runtime N: `0b5260f64f0e66211bca0e6634e76ad02506fc1d`, detached, clean,
+  pushurl DISABLED -- unchanged across the review
+* Core: `ad91eeb067752ae4773f86927071dd6c3aaf8621`, clean -- unchanged
+* Provider invocations: 0
+
+== Verdict
+
+A -- BOUNDED DOGFOOD CORRECTION ACCEPTED; READY FOR MAINTAINER RUNTIME
+PROMOTION.
+
+BLOCKING 0, IMPORTANT 0, MINOR 0, INFO/WATCH 2.
+
+== Scope
+
+Changed paths are exactly the expected five, with V1 replaced by V2 as a
+rename:
+
+[source,text]
+----
+M   src/workflow_coordinator/prompt.py
+R060 .../resources/agent_operating_contract_v1.txt
+  -> .../resources/agent_operating_contract_v2.txt
+M   tests/architecture/test_package_boundaries.py
+M   tests/unit/test_a3_operating_contract.py
+M   tests/unit/test_slice3_vertical.py
+----
+
+No governance, WorkItem, task, docs lifecycle, package-metadata, Runtime-N, or
+Core change. `package-data` is the glob `resources/*.txt`, so the rename needed
+no metadata edit. `git diff --check` is clean for both the commit and the
+worktree.
+
+== FINDING A -- phase action authority: CLOSED
+
+`_header` (`src/workflow_coordinator/prompt.py:114-125`) now projects
+`authorized_actions={','.join(phase.authorized_actions)}` as an independent
+line. `routes` remains `sorted(phase.routes)`. Neither is derived from the
+other.
+
+`Phase.authorized_actions` is `tuple[str, ...]`
+(`src/workflow_coordinator/model.py:147`), so projection is deterministic and
+preserves profile order, matching the existing `authorized_scope` / `evidence`
+convention.
+
+The projected `phase` is the single admitted Phase
+(`vertical.py:157` `phase = profile.phases[run.phase]`) that also feeds
+enforcement at `vertical.py:204` and `vertical.py:230`. There is one authority
+source, not two. Admission already bounds it: `operator.py:244` rejects any
+phase authorizing actions outside `RepositoryPolicy.actions`, so the projection
+cannot advertise more than was admitted. `authorized_actions` is therefore a
+descriptive projection of already-admitted authority, not new authority.
+
+Live render of the exact dogfood shape (`investigate`-like phase,
+`authorized_actions [edit, commit]`, sole route `review`):
+
+[source,text]
+----
+phase=implement
+authorized_scope=repo
+authorized_actions=edit,commit
+permitted_routes=review
+----
+
+The header now truthfully carries both facts simultaneously, which is precisely
+what the first dogfood agent lacked. V2 states the rule generically: a sole
+permitted route named `review` does not make the current Hop review-only.
+
+Reducer route semantics, admission semantics, and phase authority are
+unchanged.
+
+== FINDING B -- trusted evidence: CLOSED
+
+V2 adds a generic paragraph establishing that evidence names identify
+Coordinator-owned trusted evidence; that the Coordinator prepares and executes
+it separately according to admitted policy; that agent-side checks may be
+exploratory validation; that agent-side results are not Coordinator-trusted
+evidence; and that inability to resolve or execute the same authored command in
+the agent shell is not, by itself, a trusted-evidence failure or unavailability
+and must not, by itself, cause operational escalation.
+
+The doubled `by itself` qualifier is load-bearing: it narrows exactly the
+observed miscategorisation without weakening truthful escalation. The closing
+escalation paragraph is retained verbatim, including `operational capability is
+missing`.
+
+The correction exposes no development-venv path, and contains no Python, venv,
+Codex, provider, pytest, interpreter, or dogfood-specific token -- verified by
+grep over the resource. It does not make the agent responsible for trusted
+evidence. `evidence.py` and all evidence preparation/execution code are
+untouched.
+
+== V2 identity: ACCEPTED
+
+The semantic contract change was given an explicit reviewed identity increment
+rather than a silent byte mutation under V1.
+
+* `CONTRACT_ID` unchanged and stable.
+* `CONTRACT_VERSION == 2`; `RESOURCE` points at V2; `version=2` in the resource
+  prologue.
+* `REVIEWED_SHA256 ==
+  c5f3657812b10a2a5367382c5b02db7586bb1917bae3674519c05b130fd0029b` matches the
+  exact V2 bytes (2445) as shipped -- confirmed independently.
+* `git log --follow` over the resource shows exactly two commits: introduction
+  at `9a771f6`, and this rename. V1 bytes were never mutated under V1 identity.
+* Exactly one contract resource exists in the tree and in a pristine export.
+* No negotiation, compatibility reader, fallback, registry, consumer selector,
+  or runtime replacement seam. `load_agent_operating_contract()` takes no
+  parameters; the loader names one resource literally and digest-verifies it.
+  `test_missing_package_resource_has_no_repository_or_cwd_fallback` is retained.
+
+Deleting the V1 package resource is consistent with the accepted one-current-
+contract product model: runtime selects exactly one contract by construction,
+and no accepted authority requires a consumer-visible V1. Retaining V1 bytes in
+the package would have created a second selectable artifact with no selector --
+strictly worse. No backward-compatibility requirement was invented.
+
+Historical records remain historical: the archived Run state root still records
+`agent_operating_contract_v1.txt`, `"version":1`, and digest `058fde86...`.
+Nothing rewrote it.
+
+== Prompt / resource coherence: ACCEPTED
+
+Live render verified: contract text occurs exactly once; ordering is header
+(0) -> complete contract (233, 2445 bytes) -> consumer components (2680) ->
+`[workflow_policy]` / `[task]` -> `[result_output_contract]` footer, which is
+intact and unmodified. Provenance reports V2 truthfully.
+
+Header is deterministic and carries all required fields in order:
+`work_item_id`, `run_id`, `hop_id`, `invocation_id`, `base_head`, `phase`,
+`authorized_scope`, `authorized_actions`, `permitted_routes`, `evidence`,
+`output_contract`. No other prompt shape, limit, omission rule, or ordering
+changed.
+
+Consumer material cannot replace or select the contract: the contract is placed
+before consumers, `assemble_prompt` re-verifies the digest before returning,
+and the new
+`test_consumer_models_and_loader_expose_no_contract_selector_or_replacement`
+asserts no consumer model carries an `agent_operating_contract` field.
+
+== Test quality: ACCEPTED
+
+`test_legacy_v1_contract_bytes_cannot_pass_the_v2_digest` reconstructs the
+historical V1 text from current V2 text and asserts the result hashes to the
+hard-coded `LEGACY_V1_SHA256`. The invariant is genuine, not tautological:
+
+* the comparison target is a hard-coded constant, never a value derived from
+  the current text, so the reconstruction cannot define its own success;
+* `LEGACY_V1_SHA256` was verified against real history -- `git show
+  76d88fa:...agent_operating_contract_v1.txt` hashes to exactly
+  `058fde86...` at 1688 bytes;
+* the reconstruction was executed in isolation and diffed against the actual
+  historical V1 blob: byte-identical, 1688 bytes, same digest;
+* `LEGACY_V1_SHA256 != REVIEWED_SHA256` is asserted directly;
+* the legacy bytes are then fed through the production loader and must raise
+  `CoordinatorResourceError`.
+
+Coupling to current V2 wording fails closed, not open. `str.replace` on an
+absent needle is a silent no-op, so any future contract drift makes the
+reconstruction stop reproducing V1 and the hard-coded digest assertion fails
+loudly. The test cannot silently become tautological or mis-prove the
+invariant. A digest-only fixture would be a defensible alternative but is not a
+finding.
+
+Other test changes:
+
+* `test_package_boundaries` pins V2 identity, byte count 2445, and newly
+  asserts the resource directory contains exactly
+  `["agent_operating_contract_v2.txt"]` -- a real single-current-contract guard.
+* `test_slice3_vertical` adds
+  `test_prompt_projects_current_hop_actions_separately_from_exit_routes`, which
+  proves `authorized_actions=edit,commit` and `permitted_routes=review`
+  coexist in one header; the critical-field tuple was widened, not narrowed.
+* No test was weakened. The only removed assertion,
+  `assert "authorized_actions" not in first.text`, was a V1-era negative that
+  V2 deliberately inverts, and it is replaced by nine positive assertions on
+  the new semantics. All prior invariants -- Git ownership, structured result,
+  no-fallback, digest mismatch, keyword-only seams, omission-limit immunity --
+  remain asserted.
+
+== Regression / authority
+
+No executable authority changed beyond agent-facing information. Diff of the
+authority-bearing modules `model.py`, `serialization.py`, `operator.py`,
+`reducer.py`, `evidence.py`, `git_facts.py`, `vertical.py`, `slice4.py`,
+`adapter.py`, `codex_adapter.py`, `persistence.py` against the parent is empty.
+WorkItem semantics, profile parsing, RepositoryPolicy admission, route
+reduction, evidence preparation/execution, trusted commit mechanics, Hop
+budget, provider binding, Runtime-N topology, and governance are untouched.
+
+Within `prompt.py` the delta is three constants, one loader filename, and one
+header line. `assemble_prompt` logic is unchanged.
+
+== Validation
+
+Executed in an independent venv created for this review, outside Runtime N and
+outside the archived dogfood environment (`python3 -m venv`, pytest 9.1.1,
+PyYAML 6.0.3), with the package installed from a pristine `git archive` export
+of the reviewed commit.
+
+* `python -m pytest -q`: **365 passed**, 0 failed.
+* Focused
+  `tests/unit/test_a3_operating_contract.py`,
+  `tests/unit/test_slice3_vertical.py`,
+  `tests/architecture/test_package_boundaries.py`: **34 passed**.
+* `git diff --check`: clean.
+
+Read-only state re-verified identical before and after the review: Runtime N
+head/status/pushurl, Core head/status, every file digest under the archived Run
+state root, and every file digest under `governance/` including the
+developer-ergonomics WorkItem and task. Development worktree clean at
+`f196c90c...` before the review artifact commit.
+
+== INFO/WATCH
+
+INFO/WATCH 1 -- promotion build hygiene, not a defect in this commit.
+The untracked, gitignored `build/lib/workflow_coordinator/resources/` in the
+development worktree still holds a stale `agent_operating_contract_v1.txt` from
+before the rename. Setuptools' legacy `build/lib` staging directory does not
+prune deleted files, so a wheel built from this dirty tree ships both V1 and
+V2. Confirmed empirically: installing from the worktree shipped both; installing
+from a pristine `git archive` export of the same commit shipped only V2, and
+provenance was V2 in both cases because the loader names V2 literally and
+digest-verifies. Runtime selection is therefore never ambiguous, so this is
+hygiene rather than an authority defect. Because promotion proceeds by export
+and non-editable install, the maintainer should export from a clean tree or
+remove `build/` before building the next Runtime N.
+
+INFO/WATCH 2 -- duplicated resource filename literal, pre-existing.
+`prompt.py:19` defines `RESOURCE` while `prompt.py:54` repeats the filename as
+a literal inside the loader. Divergence is currently caught by
+`test_a3_resource_identity_and_provenance_are_exact`, which reads through
+`prompt.RESOURCE` and compares the bytes to the loaded contract, now reinforced
+by the single-resource assertion. Pre-existing under V1 and adequately guarded;
+no action required.
+
+== Disposition
+
+Finding A closed. Finding B closed. V2 identity treatment accepted. Prompt
+projection accepted. Trusted-evidence clarification accepted. No authority
+widening. No evidence execution semantics changed. Governance and WorkItem
+unchanged. Runtime N unchanged. Core unchanged. Provider invocations 0. Dogfood
+attempt 2 has NOT started.
+
+Next action: the maintainer promotes this accepted candidate to the next
+Runtime N, then starts dogfood attempt 2 with a NEW state root. Promotion and
+attempt 2 were not performed by this review.
