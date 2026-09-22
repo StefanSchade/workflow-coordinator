@@ -112,6 +112,7 @@ def test_installed_module_help_seams_are_provider_free(tmp_path: Path) -> None:
 
 def test_a3_resource_identity_and_provenance_are_exact() -> None:
     contract = prompt.load_agent_operating_contract()
+    assert prompt.__package__ == "workflow_coordinator"
     resource = importlib.resources.files(prompt.__package__) / prompt.RESOURCE
     data = resource.read_bytes()
     assert len(data) == 2445
