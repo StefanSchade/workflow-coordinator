@@ -1,0 +1,331 @@
+= Finding-Identity Contract Correction (V3) -- Review Delta, I1 Closure
+
+Narrow independent follow-up review of the correction made for IMPORTANT
+finding I1 of
+`docs/backlog/first_wfc_on_wfc_dogfood_finding_identity_correction_review_2026-09-22.adoc`.
+
+This artifact supersedes the *verdict* of that review. That review remains
+unmutated historical evidence; its findings, method, and evidence stand as
+written, and only its disposition is updated here. Scope is I1 closure and
+regression containment only -- this is not a new broad architectural review.
+
+Review only; no implementation, no dogfood execution, no provider invocation,
+no promotion, no push.
+
+== Identity
+
+* Correction candidate: `c6e3f245b57f7898be9fd00afb5b780c91cb7492`
+  -- `fix(prompt): restore single current contract resource`
+* Prior review commit: `0e4d221d6e8b8199e1efc4e4407d53d6d112075c`
+  -- `docs(review): assess finding identity contract correction` (verdict B)
+* Originally reviewed product candidate: `be6b3dcac02e11a9630e065fe0db4689d90870ff`
+  -- `fix(prompt): clarify run-local finding identity`
+* Runtime N: `f196c90c217401a2c3dd39a03db6ed17c314b80c`, detached, clean,
+  pushurl DISABLED -- unchanged across this review
+* Core: `ad91eeb067752ae4773f86927071dd6c3aaf8621`, clean -- unchanged
+* Provider invocations: 0
+
+== Verdict
+
+A -- IMPORTANT I1 CLOSED; BOUNDED CONTRACT V3 CORRECTION ACCEPTED; READY FOR
+MAINTAINER RUNTIME PROMOTION.
+
+New BLOCKING 0, new IMPORTANT 0, new MINOR 0, new INFO/WATCH 1.
+Prior M1 and M2 carried forward unchanged and still non-gating.
+
+The accepted product candidate is `c6e3f245`.
+
+== I1 -- one-current-contract package model: CLOSED
+
+I1 required restoration of the previously accepted one-current-contract package
+model, without disturbing the independently reviewed V3 bytes. All five
+required properties were verified independently.
+
+=== 1. Superseded resource removed
+
+`src/workflow_coordinator/resources/agent_operating_contract_v2.txt` is deleted.
+`git ls-files src/workflow_coordinator/resources/` lists exactly one path.
+A filesystem sweep of the entire worktree (tracked and untracked, excluding
+`.git`) finds exactly one `agent_operating_contract_v*` file, the V3 resource.
+No source, test, or packaging file references the V2 resource path any more;
+`pyproject.toml` needed no edit because `package-data` remains the glob
+`resources/*.txt`.
+
+=== 2. Architecture guard restored -- and falsified
+
+The guard in `test_a3_resource_identity_and_provenance_are_exact` is back to:
+
+[source,python]
+----
+) == ["agent_operating_contract_v3.txt"]
+----
+
+This was not accepted on inspection. The guard was *falsified*: a pristine
+export of `c6e3f245` was taken, the historical V2 blob was re-planted into
+`src/workflow_coordinator/resources/`, and the guard was re-run:
+
+[source,text]
+----
+FAILED tests/architecture/test_package_boundaries.py::test_a3_resource_identity_and_provenance_are_exact
+tests/architecture/test_package_boundaries.py:124: AssertionError
+----
+
+The guard cannot pass with V2 accidentally present. In the same planted tree,
+`tests/unit/test_a3_operating_contract.py` still passed in full, which confirms
+the intended separation: the digest tests reconstruct and no longer read the
+file, so detecting an accidentally present resource is the architecture guard's
+sole and unambiguous job.
+
+=== 3. V2 reconstructed from V3, not shipped
+
+`_reconstruct_legacy_v2_bytes()` loads the current contract through the
+production loader and applies exactly two edits, each guarded by a uniqueness
+assertion before it is applied:
+
+[source,python]
+----
+assert current.count(b"version=3\n") == 1
+assert current.count(V3_FINDING_IDENTITY_BLOCK) == 1
+return current.replace(b"version=3\n", b"version=2\n", 1).replace(
+    V3_FINDING_IDENTITY_BLOCK, b"", 1
+)
+----
+
+Verified independently of the test, by parsing `V3_FINDING_IDENTITY_BLOCK` out
+of the test source and replaying the transformation against the resource:
+
+* the block constant is 1045 bytes and occurs in V3 exactly once -- identical
+  to the insertion size computed in the prior review from the V2/V3 diff;
+* `version=3` occurs exactly once;
+* the line-level delta from V3 to the reconstruction is exactly one changed
+  line (`version=3` -> `version=2`) and the removal of the 16-line
+  Finding-identity block. Nothing else is touched.
+
+=== 4. Reconstructed V2 is byte-identical to real history
+
+The reconstruction was compared against the actual historical Git blob
+`be6b3dc:src/workflow_coordinator/resources/agent_operating_contract_v2.txt`,
+not merely against a digest:
+
+[source,text]
+----
+reconstructed        : 2445 bytes  c5f3657812b10a2a5367382c5b02db7586bb1917bae3674519c05b130fd0029b
+historical V2 blob   : 2445 bytes  c5f3657812b10a2a5367382c5b02db7586bb1917bae3674519c05b130fd0029b
+byte-for-byte equal  : True
+----
+
+`LEGACY_V2_SHA256` is a hard-coded literal in the test, derived from nothing in
+the current tree. It was independently corroborated in the prior review against
+the V2 blob at `f196c90`, `49e6f32`, and `be6b3dc`, and against the
+`agent_operating_contract` provenance recorded in the archived Attempt-2 Run
+state root. It is genuinely independent of the current V3 resource.
+
+=== 5. V1 reconstruction remains exact
+
+`git show 76d88fa:src/workflow_coordinator/resources/agent_operating_contract_v1.txt`
+is 1688 bytes hashing to
+`058fde8651898afa170160b35d4c6969459130652a69cac1ae2f6112d8e5a194`, exactly the
+pinned `LEGACY_V1_SHA256`. The V1 test now chains from the reconstructed V2
+rather than from a shipped file, and executing it directly against the
+production loader passes.
+
+=== 6. V3 identity unchanged
+
+The V3 resource is the *same Git object* before and after the correction:
+
+[source,text]
+----
+be6b3dc:...agent_operating_contract_v3.txt -> 5b7d2636b67ba287adb2f930f6a3dc697c2b5aa6
+c6e3f245:...agent_operating_contract_v3.txt -> 5b7d2636b67ba287adb2f930f6a3dc697c2b5aa6
+----
+
+`version=3`, 3490 bytes, SHA-256
+`b5ae6d229afb15f02c9915ffd818a36a752165b3c6a635ac7a1a71a43f49390f`, recomputed
+from the working tree. `prompt.py` is byte-identical to `be6b3dc`, so
+`CONTRACT_ID`, `CONTRACT_VERSION`, `RESOURCE`, and `REVIEWED_SHA256` are
+untouched, and `ACCEPTED_CONTRACT` in `test_package_boundaries.py` still pins
+`3490` / `b5ae6d22...`. The independently reviewed contract bytes were not
+disturbed by their own packaging correction.
+
+== False-green audit of the reconstruction
+
+The prior review flagged reconstruction as carrying a coordinated-drift risk.
+That risk was tested directly rather than argued. Two pristine exports of
+`c6e3f245` were drifted, and in each case *every* pinned constant was
+mechanically re-synced -- `REVIEWED_SHA256` in `prompt.py`, and the digest and
+byte-count literals in both test modules -- simulating a careless but complete
+edit:
+
+[cols="3,2,3"]
+|===
+|Drift |Re-synced constants |Result
+
+|Inside the Finding-identity block
+|yes
+|`test_legacy_v2...` and `test_legacy_v1...` both FAIL -- the
+`count(V3_FINDING_IDENTITY_BLOCK) == 1` assertion bites
+
+|Outside the block, in V2-inherited prose
+|yes
+|`test_legacy_v2...`, `test_legacy_v1...` and the prose-substring test all FAIL
+-- the block is still removed cleanly, but the result no longer hashes to
+`LEGACY_V2_SHA256`
+|===
+
+The reconstruction cannot silently become tautological. The uniqueness
+assertions convert the classic `str.replace` silent-no-op into a loud failure,
+and the hard-coded historical digests catch drift that leaves the block intact.
+
+This is *stronger* than the arrangement I1 objected to. Shipping V2 as a frozen
+file had made both legacy tests inert -- they could no longer fail from contract
+drift, which the prior review recorded as INFO/WATCH 2. Reconstruction
+re-couples them to the live contract with a proven-loud failure mode, so
+INFO/WATCH 2 is also closed by this correction.
+
+== Bounded diff audit
+
+Changed paths are exactly the three expected, with no additions:
+
+[source,text]
+----
+D   src/workflow_coordinator/resources/agent_operating_contract_v2.txt
+M   tests/architecture/test_package_boundaries.py
+M   tests/unit/test_a3_operating_contract.py
+----
+
+Measured against `be6b3dc`, the only change under `src/` is the V2 deletion.
+The diff is byte-empty for `prompt.py` and for every authority-bearing module:
+`model.py`, `serialization.py`, `operator.py`, `reducer.py`, `evidence.py`,
+`git_facts.py`, `vertical.py`, `slice4.py`, `adapter.py`, `codex_adapter.py`,
+`persistence.py`, `proof_harness.py`, `codex_adapter_smoke.py`, `__init__.py`.
+
+No production authority, reducer, Finding-model, structured-result schema or
+parsing, provider-adapter, evidence-execution, or workflow-routing behavior
+changed. No governance, profile, WorkItem, task, docs-lifecycle, or
+package-metadata file changed. The test delta adds and removes no test: the two
+legacy tests were re-anchored in place, which is why the suite totals are
+unchanged.
+
+== Pristine package resource inventory
+
+A pristine `git archive c6e3f245` export contains exactly one contract resource
+and no stale staging directory, egg-info, or bytecode. Building that export
+with `python -m build` yields:
+
+[source,text]
+----
+sdist: workflow_coordinator-0.1.0/src/workflow_coordinator/resources/agent_operating_contract_v3.txt
+wheel: workflow_coordinator/resources/agent_operating_contract_v3.txt  3490  b5ae6d22...
+resource .txt file count in wheel: 1
+----
+
+Installing that wheel non-editably reports `CONTRACT_VERSION 3`,
+`resources/agent_operating_contract_v3.txt`, and a loaded contract of 3490
+bytes hashing to `b5ae6d22...`. Only V3 ships. The one-current-contract model
+holds in the tree, in a pristine export, and in the built artifact.
+
+The current worktree holds no `build/` or `dist/` staging directory, so the
+promotion hazard the prior review recorded as INFO/WATCH 1 is not currently
+armed. It remains a live hazard in principle -- see INFO/WATCH 6.
+
+== Independent validation
+
+Executed in the venv created for the prior review, under the session
+scratchpad, outside Runtime N, Core, and both archived dogfood environments.
+The stale `be6b3dc` install was removed and the package reinstalled
+non-editably from the pristine `c6e3f245` export. pytest 9.1.1, PyYAML 6.0.3,
+CPython 3.13.5. Module origin was printed before running to confirm in-process
+imports resolve to the repository source.
+
+* Focused -- `tests/unit/test_a3_operating_contract.py`,
+  `tests/unit/test_reducer.py`, `tests/unit/test_slice3_vertical.py`,
+  `tests/architecture/test_package_boundaries.py`: *57 passed*, 0 failed.
+* Full suite -- `python -m pytest`: *369 passed*, 0 failed, 18.90s.
+* `git diff --check 0e4d221..c6e3f245`: clean. Worktree: clean.
+* Guard falsification and two coordinated-drift falsifications: all failed
+  loudly as required (details above), each in a scratch export, never in the
+  repository.
+
+Counts are identical to the originally reviewed candidate, consistent with a
+correction that re-anchors two tests without adding or removing any. The
+implementation report's claims -- 57 focused, 369 full, V3 unchanged at 3490 /
+`b5ae6d22...`, reconstructed V2 at 2445 / `c5f36578...`, pristine artifacts
+carrying only V3 -- are reproduced exactly.
+
+== Disposition of prior findings
+
+[cols="1,1,4"]
+|===
+|ID |Status |Basis
+
+|I1
+|CLOSED
+|One-current-contract model restored in tree, pristine export, and wheel;
+guard falsified; reconstruction proven byte-exact against real history and
+proven drift-loud.
+
+|M1
+|CARRIED FORWARD, unchanged, non-gating
+|V3 is the identical Git object `5b7d263` and `reducer.py` is byte-identical,
+so the new-Finding state-authority silence is neither improved nor worsened.
+Intentionally untouched so the independently reviewed V3 bytes stay stable.
+
+|M2
+|CARRIED FORWARD, unchanged, non-gating
+|Same basis: the contract prose is unchanged, so the projected-facts
+enumeration is exactly as previously assessed.
+
+|W2 (prior INFO/WATCH 2)
+|CLOSED
+|The legacy tests are no longer frozen fixtures; they are re-coupled to the
+live contract with a verified-loud failure mode.
+
+|W1, W3, W4, W5 (prior)
+|CARRIED FORWARD
+|Consumer task prose, stale gitignored egg-info, Runtime/venv contract
+vintages, and the duplicated resource filename literal are all untouched by
+this correction and unchanged in character.
+|===
+
+== New INFO/WATCH
+
+INFO/WATCH 6 -- promotion must build from a clean export.
+The architecture guard inspects the *source tree* resource directory, because
+`pythonpath = ["src", "."]` makes in-process imports resolve to `src/`. It
+therefore cannot observe a stale resource that exists only in build output or
+in an installed copy. Setuptools' legacy `build/lib` staging directory does not
+prune deleted files, so a wheel built from a worktree that still carries a
+pre-correction `build/` would ship V2 alongside V3 while the guard stays green.
+No such directory exists right now, and the pristine export was verified to
+ship only V3, so this is promotion hygiene rather than a defect in `c6e3f245`.
+The maintainer should promote by pristine export, as the prior promotion did.
+
+== Disposition
+
+I1 closed. No new BLOCKING findings. No new IMPORTANT findings. No new MINOR
+findings. V3 identity unchanged and byte-identical to the originally reviewed
+candidate. The one-current-contract package invariant is restored and
+independently falsified. M1 and M2 remain open, unchanged, and non-gating by
+prior explicit judgement.
+
+Runtime N unchanged. Core unchanged. Both external historical state roots
+verified byte-identical before and after this review. Governance, profile, and
+WorkItem semantics unchanged. `be6b3dc` and `c6e3f245` were not amended.
+Provider invocations: 0. No dogfood Run was started or resumed.
+
+== Authorized next action
+
+The maintainer promotes the accepted *product* candidate
+
+[source,text]
+----
+c6e3f245b57f7898be9fd00afb5b780c91cb7492
+----
+
+into the separate Runtime N clone, by pristine export. The review-document
+commits (`0e4d221` and this one) are not promoted.
+
+After promotion, a NEW, explicitly authorized Run beginning in the `review`
+phase may be prepared. It is not a resume of historical Attempt 2, which
+remains immutable evidence. Promotion and Run preparation were not performed by
+this review.
