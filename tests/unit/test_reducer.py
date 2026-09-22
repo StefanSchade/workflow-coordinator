@@ -77,6 +77,28 @@ def test_finding_lifecycle_requires_gate_or_human_authority():
     assert resolved.findings[0].state is FindingState.RESOLVED
 
 
+def test_finding_ids_are_allocated_for_null_and_unknown_non_null_ids_fail_closed():
+    workflow = gate_profile()
+    run, _ = charge_hop(run_for(workflow))
+
+    created = apply_finding_deltas(
+        run,
+        (delta(None, "open", invariant="A genuinely new current-Run Finding."),),
+        hop_id="H001",
+        authority=FindingAuthority.AGENT,
+    )
+    assert created.findings[0].finding_id == "F001"
+
+    with pytest.raises(ReductionError, match="unknown Finding ID: M-5"):
+        apply_finding_deltas(
+            run,
+            (delta("M-5", "resolved", invariant="Historical review label."),),
+            hop_id="H001",
+            authority=FindingAuthority.GATE,
+            permitted_gate_operations=("resolve",),
+        )
+
+
 def test_reopen_requires_authority_and_new_material_evidence():
     workflow = gate_profile()
     run, _ = charge_hop(run_for(workflow))

@@ -30,6 +30,7 @@ from tests.support import phase, profile, route, run_for
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
 LEGACY_V1_SHA256 = "058fde8651898afa170160b35d4c6969459130652a69cac1ae2f6112d8e5a194"
+LEGACY_V2_SHA256 = "c5f3657812b10a2a5367382c5b02db7586bb1917bae3674519c05b130fd0029b"
 
 
 class _Resource:
@@ -68,13 +69,13 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
 
     assert (CONTRACT_ID, CONTRACT_VERSION, RESOURCE) == (
         "workflow_coordinator.agent_operating_contract",
-        2,
-        "resources/agent_operating_contract_v2.txt",
+        3,
+        "resources/agent_operating_contract_v3.txt",
     )
     assert first.text.startswith(
         "[agent_operating_contract]\n"
         "contract_id=workflow_coordinator.agent_operating_contract\n"
-        "version=2\n"
+        "version=3\n"
     )
     assert first == second and first is not second
     assert first.sha256 == REVIEWED_SHA256
@@ -83,7 +84,7 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
         "contract_id": CONTRACT_ID,
         "version": CONTRACT_VERSION,
         "resource": RESOURCE,
-        "byte_count": 2445,
+        "byte_count": 3490,
         "sha256": REVIEWED_SHA256,
     }
     normalized = " ".join(first.text.split())
@@ -97,6 +98,16 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
         "Agent-side tests and checks may be useful exploratory validation, but they are not Coordinator-trusted evidence",
         "Failure to resolve or execute the same authored evidence command in the agent shell is not, by itself, a failure or unavailability of Coordinator-trusted evidence",
         "must not, by itself, cause an operational escalation",
+        "finding_id is a run-local authoritative identifier",
+        "A non-null finding_id may be used only when that exact ID is present in the authoritative Finding state projected for the current Run",
+        "historical review artifacts, documents, evidence references, commit messages, filenames",
+        "are not current-Run Finding IDs merely because they look like one",
+        "historical labels may be cited as evidence or provenance, but must not be submitted as existing Finding IDs unless the current Run contains that authoritative ID",
+        "Propose a genuinely new Finding with finding_id = null",
+        "let the Coordinator allocate its run-local ID",
+        "If the current Run has no authoritative Findings, do not resolve or otherwise disposition a historical Finding label as current Run state",
+        "Do not fabricate a Finding delta merely to record that implementation work addressed a historical review concern",
+        "record that fact in summary and/or evidence_refs",
         "git commit --amend",
         "Read-only Git inspection is allowed",
         "prevail over any conflicting consumer task or component text",
@@ -110,9 +121,33 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
     assert "human_gates" not in first.text
 
 
-def test_legacy_v1_contract_bytes_cannot_pass_the_v2_digest(monkeypatch):
-    current = load_agent_operating_contract().text
-    legacy = current.replace("version=2\n", "version=1\n", 1).replace(
+def test_legacy_v2_contract_bytes_remain_exact_and_cannot_pass_v3_digest(monkeypatch):
+    legacy = (
+        prompt.resources.files(prompt.__package__)
+        / "resources"
+        / "agent_operating_contract_v2.txt"
+    ).read_bytes()
+    assert len(legacy) == 2445
+    assert hashlib.sha256(legacy).hexdigest() == LEGACY_V2_SHA256
+    assert legacy.startswith(
+        b"[agent_operating_contract]\n"
+        b"contract_id=workflow_coordinator.agent_operating_contract\n"
+        b"version=2\n"
+    )
+    assert LEGACY_V2_SHA256 != REVIEWED_SHA256
+
+    monkeypatch.setattr(prompt.resources, "files", lambda _package: _Resource(legacy))
+    with pytest.raises(CoordinatorResourceError, match="resource is unavailable"):
+        load_agent_operating_contract()
+
+
+def test_legacy_v1_contract_bytes_remain_reconstructable_from_v2():
+    v2 = (
+        prompt.resources.files(prompt.__package__)
+        / "resources"
+        / "agent_operating_contract_v2.txt"
+    ).read_bytes().decode("utf-8")
+    legacy = v2.replace("version=2\n", "version=1\n", 1).replace(
         "phase, authorized_scope, authorized_actions,\n"
         "permitted_routes, evidence names, and output_contract. The [workflow_policy]\n"
         "block supplies durable_artifact. The result schema is supplied through the\n"
@@ -140,10 +175,6 @@ def test_legacy_v1_contract_bytes_cannot_pass_the_v2_digest(monkeypatch):
     ).encode("utf-8")
     assert hashlib.sha256(legacy).hexdigest() == LEGACY_V1_SHA256
     assert LEGACY_V1_SHA256 != REVIEWED_SHA256
-
-    monkeypatch.setattr(prompt.resources, "files", lambda _package: _Resource(legacy))
-    with pytest.raises(CoordinatorResourceError, match="resource is unavailable"):
-        load_agent_operating_contract()
 
 
 def test_all_four_internal_seams_require_keyword_only_contract_values():

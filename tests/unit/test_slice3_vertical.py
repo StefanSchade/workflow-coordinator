@@ -76,6 +76,23 @@ def test_prompt_projects_current_hop_actions_separately_from_exit_routes():
     assert "\npermitted_routes=review\n" in header
 
 
+def test_prompt_contract_distinguishes_current_run_finding_ids_from_historical_labels():
+    workflow = profile({"work": phase({"done": route("complete")})})
+    package = assemble_prompt(
+        run_for(workflow),
+        workflow.phases["work"],
+        components(("worker", 1), ("testing", 1)),
+        invocation=invocation(),
+        agent_operating_contract=load_agent_operating_contract(),
+        task_payload="Historical review mentions M-5.",
+    )
+    normalized = " ".join(package.text.split())
+
+    assert "finding_id is a run-local authoritative identifier" in normalized
+    assert "are not current-Run Finding IDs merely because they look like one" in normalized
+    assert "Propose a genuinely new Finding with finding_id = null" in normalized
+
+
 @pytest.mark.parametrize("size, omitted", [(COMPONENT_LIMIT_BYTES - 1, False), (COMPONENT_LIMIT_BYTES + 1, True)])
 def test_component_bound_is_visible_not_truncated(size, omitted):
     workflow = profile({"work": phase({"done": route("complete")})})
