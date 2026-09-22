@@ -124,4 +124,4 @@ def test_a3_resource_identity_and_provenance_are_exact() -> None:
     assert sorted(
         path.name for path in resource.parent.iterdir()
         if path.name.startswith("agent_operating_contract_v")
-    ) == ["agent_operating_contract_v2.txt", "agent_operating_contract_v3.txt"]
+    ) == ["agent_operating_contract_v3.txt"]

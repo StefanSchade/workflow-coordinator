@@ -31,6 +31,23 @@ pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
 LEGACY_V1_SHA256 = "058fde8651898afa170160b35d4c6969459130652a69cac1ae2f6112d8e5a194"
 LEGACY_V2_SHA256 = "c5f3657812b10a2a5367382c5b02db7586bb1917bae3674519c05b130fd0029b"
+V3_FINDING_IDENTITY_BLOCK = (
+    b"\nfinding_id is a run-local authoritative identifier. A non-null finding_id may\n"
+    b"be used only when that exact ID is present in the authoritative Finding state\n"
+    b"projected for the current Run. Labels or identifiers in task prose, historical\n"
+    b"review artifacts, documents, evidence references, commit messages, filenames,\n"
+    b"or other repository material are not current-Run Finding IDs merely because\n"
+    b"they look like one. Such historical labels may be cited as evidence or\n"
+    b"provenance, but must not be submitted as existing Finding IDs unless the\n"
+    b"current Run contains that authoritative ID.\n"
+    b"\n"
+    b"Propose a genuinely new Finding with finding_id = null and let the Coordinator\n"
+    b"allocate its run-local ID. If the current Run has no authoritative Findings,\n"
+    b"do not resolve or otherwise disposition a historical Finding label as current\n"
+    b"Run state. Do not fabricate a Finding delta merely to record that implementation\n"
+    b"work addressed a historical review concern; record that fact in summary and/or\n"
+    b"evidence_refs unless it represents a genuinely new current-Run Finding.\n"
+)
 
 
 class _Resource:
@@ -60,6 +77,15 @@ def _package(contract: AgentOperatingContract):
         agent_operating_contract=contract,
         invocation=Invocation("RUN-1", "H001", "INV-1"),
         task_payload="semantic task",
+    )
+
+
+def _reconstruct_legacy_v2_bytes() -> bytes:
+    current = load_agent_operating_contract().text.encode("utf-8")
+    assert current.count(b"version=3\n") == 1
+    assert current.count(V3_FINDING_IDENTITY_BLOCK) == 1
+    return current.replace(b"version=3\n", b"version=2\n", 1).replace(
+        V3_FINDING_IDENTITY_BLOCK, b"", 1
     )
 
 
@@ -122,11 +148,7 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
 
 
 def test_legacy_v2_contract_bytes_remain_exact_and_cannot_pass_v3_digest(monkeypatch):
-    legacy = (
-        prompt.resources.files(prompt.__package__)
-        / "resources"
-        / "agent_operating_contract_v2.txt"
-    ).read_bytes()
+    legacy = _reconstruct_legacy_v2_bytes()
     assert len(legacy) == 2445
     assert hashlib.sha256(legacy).hexdigest() == LEGACY_V2_SHA256
     assert legacy.startswith(
@@ -142,11 +164,7 @@ def test_legacy_v2_contract_bytes_remain_exact_and_cannot_pass_v3_digest(monkeyp
 
 
 def test_legacy_v1_contract_bytes_remain_reconstructable_from_v2():
-    v2 = (
-        prompt.resources.files(prompt.__package__)
-        / "resources"
-        / "agent_operating_contract_v2.txt"
-    ).read_bytes().decode("utf-8")
+    v2 = _reconstruct_legacy_v2_bytes().decode("utf-8")
     legacy = v2.replace("version=2\n", "version=1\n", 1).replace(
         "phase, authorized_scope, authorized_actions,\n"
         "permitted_routes, evidence names, and output_contract. The [workflow_policy]\n"
