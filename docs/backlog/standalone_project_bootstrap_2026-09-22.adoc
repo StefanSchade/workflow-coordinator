@@ -428,11 +428,25 @@ new per Run.
 Runtime N is launched from a dedicated virtual environment outside both clones.
 The maintainer creates that environment from a temporary export of the exact
 accepted runtime commit, installs the export non-editably, and verifies at
-least `wfc --help` provider-free. The launch contract records the runtime commit
-and puts that environment's `bin` directory on `PATH`; it never executes the
-development package. Preparing or replacing this environment is an explicit
-maintainer/bootstrap operation, not automatic runtime promotion. The external
-Run state root is separate from the runtime environment as well as both clones.
+least `<runtime-env>/bin/wfc --help` provider-free. The launch contract records
+the runtime commit and invokes WFC by the absolute executable path
+`<runtime-env>/bin/wfc`; it never executes the development package. For the
+Coordinator launch, the maintainer constructs one explicit `PATH`, in exactly
+this order:
+
+[source,text]
+----
+<development/evidence-env>/bin:<runtime-env>/bin:<remaining trusted base PATH>
+----
+
+That `PATH` is present in the Runtime-N process environment at launch, so
+production `snapshot_environment()` captures exactly it and
+`prepare_evidence_commands()` resolves `python` from the development/evidence
+environment. The runtime environment's `bin` need not be first because the
+Runtime-N WFC executable is selected independently of `PATH`. Preparing or
+replacing the runtime environment is an explicit maintainer/bootstrap
+operation, not automatic runtime promotion. The external Run state root is
+separate from the runtime environment as well as both clones.
 
 ==== 6.1.2 Development/evidence environment
 
@@ -444,7 +458,10 @@ in the checkout). Its `bin` directory is placed first on the Coordinator's
 captured `PATH`, so the portable evidence argv `python -m pytest -q` resolves
 mechanically from the repository root. This environment is not runtime N and
 does not change which WFC installation coordinates the Run. Neither environment
-introduces a dependency manager or repository-local environment framework.
+introduces a dependency manager or repository-local environment framework. The
+self-development guide records resolved preparation facts and may use these
+placeholders for the maintainer's external locations; it does not commit
+machine-specific absolute paths.
 
 Do not use `git worktree` as the primary model. Separate clones and object stores
 prevent payload commits or ref movement from implicitly changing runtime
@@ -641,13 +658,24 @@ excludes `governance` and that push, runtime-clone mutation, and automatic
 promotion authority are absent. Even those assertions reuse production path
 semantics where paths are compared.
 
-The architecture test proves that the selected evidence executable resolves in
-the captured Coordinator environment. B2 validation then runs the exact
-committed `python -m pytest -q` argv once, provider-free, from the development
-repository using the prepared development/evidence environment. It is not run
-recursively from inside the architecture test. Bootstrap cannot claim readiness
-unless both production preflight and that actual evidence execution succeed.
-*No duplicate policy engine* is an acceptance criterion.
+The architecture test proves the committed governing bundle and production
+preflight, including real evidence-executable resolution, using the environment
+in which that test suite runs. It does not by itself prove the environment that
+a later Runtime-N Coordinator process captures. The separate B2
+launch-environment acceptance proof establishes that the actual Runtime-N
+process will capture an equivalent `PATH` and resolve `python` to the same
+development/evidence interpreter.
+
+This architecture test is intentionally environment-dependent because
+production `_preflight` performs real executable resolution. It must run from
+the prepared development/evidence environment. If `python` is absent or cannot
+resolve there, a prerequisite has failed; do not weaken or mock resolution and
+do not fall back to a host `python3` or fake executable. The normal B2 suite
+invocation is the exact committed `python -m pytest -q` argv, run once
+provider-free from the development repository. It is not run recursively from
+inside the architecture test. Bootstrap cannot claim readiness unless both
+production preflight and that actual evidence execution succeed. *No duplicate
+policy engine* is an acceptance criterion.
 
 == 8. First WFC-on-WFC dogfood WorkItem
 
@@ -677,6 +705,17 @@ The dedicated review-artifact path is the seventh and only other WorkItem path;
 it is not implementation payload. The WorkItem does not modify runtime WFC N,
 change engine architecture, add a provider, create a CLI command, update
 Project Memory, or widen its own governance.
+
+During the Run, the sole trusted evidence remains `python -m pytest -q`. The
+first-dogfood agent authors the Ruff dependency/configuration and the `make
+lint`, `make format-check`, and `make check` targets within the already bounded
+`pyproject.toml` and `Makefile` authority; bootstrap does not add Ruff merely to
+pre-validate that future payload. After the Run reaches an accepted local
+candidate, maintainer acceptance refreshes or installs the development
+environment from that candidate's accepted development metadata and executes
+those new targets. These post-Run checks are first-dogfood acceptance evidence,
+not WFC in-Run evidence. Project Memory must preserve that distinction and must
+not claim that WFC's in-Run evidence validated targets it did not execute.
 
 === 8.2 Snapshot contract
 
@@ -850,13 +889,23 @@ Acceptance criteria::
   external virtual environment installed non-editably from a temporary export
   of exact runtime commit `0b5260f64f0e66211bca0e6634e76ad02506fc1d`, with
   all install/build/cache/state artifacts outside both clones.
-* From that runtime environment, `wfc --help` starts provider-free and the
-  runtime clone remains byte/ref/config clean, including absence of ignored
-  `.venv`, `build/`, `dist/`, and `*.egg-info` output.
-* A separate external development/evidence environment prepared with the
-  `dev` extra places its `bin` directory on the Coordinator's captured `PATH`;
-  from the development root, the exact committed evidence argv resolves and
-  completes successfully.
+* From that runtime environment, `<runtime-env>/bin/wfc --help` starts
+  provider-free and the runtime clone remains byte/ref/config clean, including
+  absence of ignored `.venv`, `build/`, `dist/`, and `*.egg-info` output.
+* Before any real WFC-on-WFC provider invocation, one provider-free acceptance
+  proof uses the exact launch `PATH` that the real Run will receive:
+  `<development/evidence-env>/bin`, then `<runtime-env>/bin`, then the remaining
+  trusted base `PATH`. It confirms that the absolute runtime `wfc` and the
+  Runtime-N Python import come from the dedicated non-editable installation
+  prepared from the verified export of accepted Runtime N; invokes the existing
+  production `snapshot_environment()` and `prepare_evidence_commands()` seams
+  in that Runtime-N Python process; confirms that the snapshot observes that
+  exact `PATH` and that the committed `python` resolves to the
+  development/evidence interpreter; and, from the development root under the
+  same `PATH`, executes the exact committed `python -m pytest -q` successfully.
+  It stops before dispatch and invokes no provider. The proved environment and
+  the environment supplied to the first real WFC Run are the same launch
+  contract, not two independently prepared approximations.
 * All tests and document renders pass without provider invocation.
 * After required independent acceptance and any corrective commit, the endpoint
   statement is true: *standalone WFC is ready for its first WFC-on-WFC dogfood
@@ -864,8 +913,8 @@ Acceptance criteria::
 
 Tests/checks:: Production-preflight governance architecture test against a clean
 disposable exact-HEAD repository; the exact committed provider-free evidence
-argv (which is also the full current pytest suite); `wfc --help` from the
-external runtime environment; `asciidoctor --failure-level WARN`; `python -m
+argv (which is also the full current pytest suite); absolute
+`<runtime-env>/bin/wfc --help`; `asciidoctor --failure-level WARN`; `python -m
 build` only if already available and useful for regression confidence; `git
 diff --check`; path-scope review; and before/after read-only confirmation that
 runtime HEAD, refs, configuration, tracked, untracked, and ignored content did
@@ -917,16 +966,18 @@ read-only execution authority to bootstrap and dogfood agents.
 |How is immutable Runtime N executed?
 |Resolved by bounded preparation contract
 |Install a temporary export of exact Runtime N non-editably into an external
-virtual environment; put its `bin` on `PATH`; keep the clone, build/install
-scratch, caches, and state disjoint. Prove `wfc --help` without network or clone
+virtual environment; invoke its `wfc` by absolute path under the single ordered
+launch `PATH`; keep the clone, build/install scratch, caches, and state
+disjoint. Prove absolute `<runtime-env>/bin/wfc --help` without network or clone
 mutation.
 
 |How does trusted evidence resolve?
 |Resolved by bounded preparation contract
 |Use a separate external development/evidence virtual environment with the
-repository `dev` extra, captured on Coordinator `PATH`; commit `python -m pytest
--q`, prove production preparation resolves it, and execute that exact argv
-provider-free before readiness.
+repository `dev` extra. Put its `bin` before the runtime environment's `bin` and
+the remaining trusted base `PATH`; prove that production captures that exact
+launch environment, resolves committed `python -m pytest -q` to the development
+interpreter, and executes that exact argv provider-free before readiness.
 
 |Can one profile be both universal and least-authority?
 |Small explicit decision
@@ -994,11 +1045,16 @@ follows:
   for focused properties but must not duplicate any admission rule or path
   algebra.
 * *I-3:* exact Runtime N is exported to temporary storage and installed into an
-  external runtime environment. Provider-free `wfc --help` must succeed while
-  the runtime clone remains unchanged, including ignored content.
+  external runtime environment. Provider-free absolute
+  `<runtime-env>/bin/wfc --help` must succeed while the runtime clone remains
+  unchanged, including ignored content.
 * *I-4:* a separate external development/evidence environment supplies a
   resolvable `python`; production preparation must resolve the committed
   evidence argv and B2 must actually run it provider-free.
+* *I-4R:* Runtime N is selected by absolute `wfc` path while its process receives
+  the one ordered launch `PATH`. A provider-free B2 proof uses the production
+  environment snapshot and evidence-preparation seams under that same contract
+  before the first real Run.
 * *M-1:* B1 makes `docs/README.adoc` the only authority-class enumeration and
   changes README and architecture to defer to it.
 * *M-2:* the policy/WorkItem limit is four Hops for the four-phase workflow;
@@ -1013,6 +1069,14 @@ follows:
 * *M-6:* `--sandbox workspace-write` is recorded as provider-owned,
   Coordinator-unverified behavior, not the future trusted OS/environment
   boundary.
+* *M-7:* the governance architecture test deliberately performs real executable
+  resolution and therefore runs from the prepared development/evidence
+  environment through the committed `python -m pytest -q`; an unresolvable
+  `python` is a failed prerequisite, not a reason for a fallback or mock.
+* *M-8:* Ruff and the lint/format/check targets remain first-dogfood payload.
+  WFC's in-Run evidence remains pytest only; maintainer acceptance installs the
+  accepted resulting development metadata and runs the new targets without
+  misreporting them as in-Run evidence.
 
 The review's otherwise undispositioned imported C6 concern is explicitly
 `WATCH` in section 5. The remaining INFO/WATCH observations retain their
@@ -1055,11 +1119,13 @@ Each slice and the consolidated accepted state must show:
 * the coherence test contains no duplicate policy/admission engine;
 * external runtime and development/evidence environment locations and captured
   `PATH` are recorded without committing a machine-specific absolute path;
-* exact Runtime N starts with `wfc --help` provider-free from the external
-  runtime environment, and the committed evidence argv resolves and executes
-  provider-free from the external development/evidence environment;
+* exact Runtime N starts with absolute `<runtime-env>/bin/wfc --help`
+  provider-free under the ordered launch `PATH`, and the committed evidence
+  argv resolves and executes provider-free from the external
+  development/evidence environment under that same `PATH`;
 * no Run dispatch past direct production preflight, provider subprocess, or
-  provider state (`wfc --help` is the provider-free runtime-start check);
+  provider state (absolute `<runtime-env>/bin/wfc --help` is the provider-free
+  runtime-start check);
 * no Core worktree/index/ref change;
 * no runtime clone worktree/index/ref/remote/config/environment change,
   including no ignored installation/build/cache output; and
