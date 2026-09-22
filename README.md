@@ -11,8 +11,7 @@ installation.
 For development, install `python -m pip install '.[dev]'`, run
 `python -m pytest`, and build distributions with `python -m build`.
 
-Current standalone authority is this README and [the architecture
-overview](docs/architecture.md). Imported Core-incubator documents are retained
-only as historical provenance under `docs/imported/core-incubator/`. Mechanical
-carve-out provenance is recorded in `docs/provenance/carveout.yaml` and
-`docs/provenance/incubator-commit-map.tsv`.
+The [standalone authority index](docs/README.adoc) is the authoritative
+classification of current documentation, executable surfaces, provenance,
+history, and planning evidence. Start there before maintaining or operating the
+project.
