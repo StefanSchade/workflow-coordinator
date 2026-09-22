@@ -1,0 +1,411 @@
+= Final Delta Review: Standalone Workflow Coordinator Bootstrap Launch-Environment Correction
+:toc: left
+:toclevels: 3
+:sectnums:
+
+[NOTE]
+====
+*INDEPENDENT BOUNDED FINAL DELTA REVIEW -- REVIEW ONLY*
+
+This artifact assesses one correction commit to one planning document. It
+implements neither bootstrap slice, authors no governance, modifies no source,
+tests, package metadata, Project Memory, or runtime clone, invokes no provider,
+changes no Core state, and performs no push or promotion. It does not modify the
+corrected plan.
+====
+
+Review date:: 2026-09-22
+Reviewed correction:: `130859a28e0b33cd88dad264b07487dffb812e29` -- `docs(workflow): close bootstrap launch-environment gap`
+Parent delta review:: `91454bcb76b7d81578be49760e20e312f8047fa0`
+Previously reviewed correction:: `9f0d9e391217aba4bac5c2d12df066331d632c8a`
+Reviewed delta:: `91454bc..130859a`, one file, +99/-33
+Residual scope:: I-4R, M-7, M-8 only
+Verdict:: *A -- FINAL BOOTSTRAP PLAN CORRECTION ACCEPTED; IMPLEMENTATION ARCHITECTURE CLOSED*
+
+== 1. Baseline confirmation and method
+
+The development repository was clean on `main` at
+`130859a28e0b33cd88dad264b07487dffb812e29` with the expected subject and the
+expected parent chain `8ae55aa -> ff86da3 -> 9f0d9e3 -> 91454bc -> 130859a`.
+Both `91454bc` and `9f0d9e3` were confirmed ancestors of the reviewed head. The
+runtime clone was detached at `0b5260f64f0e66211bca0e6634e76ad02506fc1d` with
+`remote.origin.pushurl=DISABLED` and no untracked or ignored content. Core was
+clean at `ad91eeb067752ae4773f86927071dd6c3aaf8621`. No material baseline
+mismatch was found, so the review proceeded.
+
+The correction delta touches exactly one path,
+`docs/backlog/standalone_project_bootstrap_2026-09-22.adoc`. No source, test,
+package-metadata, or governance path is in the delta, and no file was added or
+removed.
+
+Method: the correction's mechanical claims were checked against the executable
+implementation of *Runtime N itself* -- the runtime clone at
+`0b5260f6` -- rather than against the development tree, because the claims are
+about the environment a Runtime-N Coordinator process captures. The seams
+examined were `+evidence.py+` (`+snapshot_environment+`, `+resolve_executable+`,
+`+prepare_evidence_commands+`, `+PRODUCTION_EVIDENCE_RUNNER.observe+`) and
+`+operator.py+` (`+_preflight+`). A repository-wide search for self-re-execution
+paths (`+sys.executable+`, `+execv+`, `+shutil.which+`, a subprocess named
+`wfc`) was also run, because the new `PATH` ordering places a development-tree
+`wfc` ahead of the runtime one.
+
+Findings in this delta: *BLOCKING 0; IMPORTANT 0; MINOR 0; INFO/WATCH 2.*
+Neither INFO item requires a change.
+
+== 2. Verdict
+
+*A -- FINAL BOOTSTRAP PLAN CORRECTION ACCEPTED; IMPLEMENTATION ARCHITECTURE
+CLOSED.*
+
+The correction closes all three residual findings by the smallest repair each
+required, and closes them truthfully rather than by assertion. Every mechanical
+claim it newly makes about production behavior was verified in Runtime N's own
+code and is accurate. The correction widens no authority, adds no evidence
+command, adds no test or tooling to bootstrap, revives no superseded sequencing,
+commits no machine-specific absolute path, and introduces no second evidence or
+workflow framework. No previously accepted finding is reopened or weakened.
+
+The residual risk the parent review identified -- bootstrap declaring readiness
+while the first real Run fails after a provider invocation -- is now eliminated
+by construction rather than deferred, because the launch contract the B2 proof
+exercises and the launch contract the first Run receives are required to be the
+same contract.
+
+== 3. I-4R -- CLOSED
+
+=== 3.1 The launch contract
+
+Section 6.1.1 now states one explicit ordered `PATH`:
+
+[source,text]
+----
+<development/evidence-env>/bin:<runtime-env>/bin:<remaining trusted base PATH>
+----
+
+and separates executable *selection* from executable *resolution*: Runtime N is
+invoked by the absolute path `<runtime-env>/bin/wfc`, while the ordered `PATH`
+decides what `python` means inside that process. The two requirements the parent
+review found unreconciled -- runtime `bin` on `PATH`, development/evidence `bin`
+first -- are now reconciled by making runtime selection independent of `PATH`
+entirely. The plan says so explicitly: "The runtime environment's `bin` need not
+be first because the Runtime-N WFC executable is selected independently of
+`PATH`."
+
+=== 3.2 Mechanical verification against Runtime N
+
+Each required property was checked in the runtime clone, not inferred.
+
+[cols="3,4",options="header"]
+|===
+|Required property |Verified basis in Runtime N
+
+|Runtime N is the accepted installed WFC
+|Invocation is by absolute path, so POSIX `PATH` lookup is bypassed at selection.
+No production code re-executes WFC by name: a repository-wide search of `src/`
+found no `+sys.executable+`, no `+execv+`, no `+shutil.which+`, and no
+subprocess spelled `wfc`. Which WFC coordinates the Run is therefore fully
+determined by the absolute launch path.
+
+|`+snapshot_environment()+` captures the ordered launch `PATH`
+|`+operator.py+`:335 calls `+snapshot_environment()+` with no argument inside
+`+_preflight+`; `+evidence.py+`:84 then reads `+os.environ+` of the running
+process. The captured value is the launch environment of the Runtime-N process,
+with `path_source="inherited"` and a `PATH` digest recorded.
+
+|`+prepare_evidence_commands()+` resolves `python` from the development/evidence
+environment
+|`+operator.py+`:337 passes that same snapshot through as `environment=`, so no
+second capture can drift. `+resolve_executable+` (`+evidence.py+`:109-140)
+treats a bare `python` as a `PATH` search, splits on `os.pathsep`, and returns
+the *first* entry yielding an executable regular file.
+
+|The runtime environment's own `python` cannot accidentally win
+|First-match wins, and `<development/evidence-env>/bin` precedes
+`<runtime-env>/bin` in the mandated order. The runtime `bin/python` is therefore
+unreachable for this lookup. This is the exact inversion of the ordering hazard
+I-4R raised, and it is now a stated acceptance criterion rather than an
+accident of activation order.
+
+|No machine-specific absolute path is committed
+|Every environment location in the plan is a placeholder
+(`<runtime-env>`, `<development/evidence-env>`). Section 6.1.2 adds the explicit
+rule that the self-development guide "records resolved preparation facts and may
+use these placeholders for the maintainer's external locations; it does not
+commit machine-specific absolute paths", and section 13 retains the
+corresponding consolidated check.
+
+|The same launch contract governs the B2 proof and the first real Run
+|The B2 acceptance criterion closes with: "The proved environment and the
+environment supplied to the first real WFC Run are the same launch contract, not
+two independently prepared approximations."
+|===
+
+=== 3.3 One property the plan under-claims
+
+Execution is stronger than the plan asserts, in the plan's favour.
+`+PRODUCTION_EVIDENCE_RUNNER.observe+` (`+evidence.py+`:244-260) re-resolves
+`+authored_argv[0]+` against the *stored* snapshot and then executes
+`+(resolution.invocation_path, *authored_argv[1:])+` -- an absolute interpreter
+path -- with `+env=command.environment.values+`. The evidence child process
+therefore receives the captured launch environment verbatim and performs no
+fresh OS-level `PATH` lookup of its own. Admission-time resolution and
+execution-time resolution cannot diverge. The plan does not need to say this; it
+is recorded here because it removes the last plausible route by which a correctly
+admitted `python` could still execute as a different interpreter.
+
+=== 3.4 The B2 provider-free acceptance proof
+
+The Slice B2 acceptance criterion requires the proof "Before any real WFC-on-WFC
+provider invocation", and each element the residual demanded is present:
+
+* *exact Runtime-N identity* -- "the absolute runtime `wfc` and the Runtime-N
+  Python import come from the dedicated non-editable installation prepared from
+  the verified export of accepted Runtime N";
+* *captured `PATH`* -- "confirms that the snapshot observes that exact `PATH`";
+* *production evidence preparation* -- "invokes the existing production
+  `snapshot_environment()` and `prepare_evidence_commands()` seams in that
+  Runtime-N Python process"; both are public, importable module-level functions
+  in Runtime N, so the proof needs no new seam and no committed harness;
+* *`python` resolution* -- "the committed `python` resolves to the
+  development/evidence interpreter";
+* *successful evidence execution* -- "from the development root under the same
+  `PATH`, executes the exact committed `python -m pytest -q` successfully";
+* *zero provider dispatch* -- "It stops before dispatch and invokes no
+  provider."
+
+The proof is a maintainer acceptance action under the existing B2 criteria. It
+adds no path to the six-path implementation ceiling, no eighth WorkItem path, no
+committed test file, and no new evidence command. It is deliberately not the
+Slice-4A `+proof_harness+`, which is provider-capable and therefore inadmissible
+here; the criterion names the two pure seams instead.
+
+*I-4R is CLOSED.*
+
+== 4. Section 7.3 truthfulness -- corrected
+
+The overstated sentence is gone. The parent review objected to "The architecture
+test proves that the selected evidence executable resolves in the captured
+Coordinator environment." The corrected text draws the distinction the residual
+required:
+
+A. *Governance architecture test* -- "proves the committed governing bundle and
+production preflight, including real evidence-executable resolution, using the
+environment in which that test suite runs."
+
+B. *B2 launch-environment proof* -- "The separate B2 launch-environment
+acceptance proof establishes that the actual Runtime-N process will capture an
+equivalent `PATH` and resolve `python` to the same development/evidence
+interpreter."
+
+The disclaimer between them is explicit: the architecture test "does not by
+itself prove the environment that a later Runtime-N Coordinator process
+captures." No surviving sentence anywhere in the plan claims the architecture
+test proves the future Coordinator environment. The word "equivalent" in B is
+bounded, not loosening: the B2 acceptance criterion forecloses "two
+independently prepared approximations" and requires one shared launch contract.
+
+== 5. M-7 -- CLOSED
+
+Section 7.3 now records the environment dependence as deliberate and states its
+cause in production terms: "This architecture test is intentionally
+environment-dependent because production `_preflight` performs real executable
+resolution."
+
+Each expected behavior is stated:
+
+* *runs from the prepared development/evidence environment* -- "It must run from
+  the prepared development/evidence environment", and the M-7 disposition adds
+  "through the committed `python -m pytest -q`";
+* *unresolvable `python` is a failed prerequisite* -- "If `python` is absent or
+  cannot resolve there, a prerequisite has failed";
+* *no fallback to host `python3`* -- "do not fall back to a host `python3`";
+* *no fake executable* -- "or fake executable";
+* *no weakening or mock of production resolution* -- "do not weaken or mock
+  resolution".
+
+The claim is mechanically accurate. `+_preflight+` reaches
+`+prepare_evidence_commands+` unconditionally at `+operator.py+`:337, and
+`+resolve_executable+` raises `+ExecutableResolutionError+` -- surfaced as
+`+EvidencePreparationError+` -- when no `PATH` entry yields an executable regular
+file. There is no fallback branch in production to mirror, so the prohibition
+describes a property the engine already has rather than one the test must
+simulate. The section 11 disposition entry restates the same boundary in the
+findings ledger.
+
+*M-7 is CLOSED.*
+
+== 6. M-8 -- CLOSED
+
+Section 8.1 now separates the two evidence classes explicitly.
+
+*In-Run WFC evidence* -- "During the Run, the sole trusted evidence remains
+`python -m pytest -q`." This matches section 7.1, which still fixes the policy at
+"one provider-free evidence command whose argv is `python -m pytest -q`". No
+second evidence command was added to the WorkItem.
+
+*Post-Run maintainer acceptance evidence* -- "After the Run reaches an accepted
+local candidate, maintainer acceptance refreshes or installs the development
+environment from that candidate's accepted development metadata and executes
+those new targets." The refresh is sourced from the accepted candidate's own
+metadata, which is the only order in which newly authored Ruff/dev dependencies
+can exist, and it happens after the Run, so no in-flight captured environment is
+disturbed.
+
+Each required confirmation holds:
+
+* *bootstrap does not prematurely add Ruff* -- stated directly ("bootstrap does
+  not add Ruff merely to pre-validate that future payload"), and Ruff remains in
+  both the Slice B2 non-scope list and the section 12 global bootstrap
+  non-scope. The correction chose the second of the parent review's two offered
+  repairs and therefore left the `dev` extra untouched.
+* *first dogfood still authors Ruff, configuration, and the Make targets* --
+  "the first-dogfood agent authors the Ruff dependency/configuration and the
+  `make lint`, `make format-check`, and `make check` targets", and the section
+  8.1 payload list is unchanged.
+* *authored within existing authority* -- "within the already bounded
+  `pyproject.toml` and `Makefile` authority". Both paths are already in the six-
+  path ceiling; no path was added.
+* *Project Memory must not misreport* -- "These post-Run checks are first-dogfood
+  acceptance evidence, not WFC in-Run evidence. Project Memory must preserve that
+  distinction and must not claim that WFC's in-Run evidence validated targets it
+  did not execute." This binds section 8.3's empirical record without adding
+  telemetry machinery, consistent with 8.3's existing prohibition.
+* *no additional workflow authority or evidence framework* -- the post-Run checks
+  are maintainer acceptance actions, outside the Coordinator envelope. No
+  evidence command, phase, route, action, or Hop was added, and the WorkItem
+  still "does not ... update Project Memory".
+
+The correction also generalizes correctly beyond the finding as raised: M-8
+named lint and format-check, and the plan covers `make check` and "other newly
+introduced targets as applicable" in the same disposition.
+
+*M-8 is CLOSED.*
+
+== 7. Regression check
+
+Every protected boundary was re-checked against this delta specifically. None is
+altered or weakened by `130859a2`.
+
+[cols="3,1,4",options="header"]
+|===
+|Accepted boundary |Status |Basis
+
+|Runtime N remains immutable
+|Intact
+|Strengthened, not weakened. The delta replaces `PATH`-based runtime selection
+with absolute-path invocation and keeps "it never executes the development
+package" and "Preparing or replacing the runtime environment is an explicit
+maintainer/bootstrap operation, not automatic runtime promotion". The runtime
+clone cleanliness criterion is unchanged except for the absolute spelling of the
+`wfc --help` check.
+
+|Runtime and evidence environments remain external to both clones
+|Intact
+|Sections 6.1.1 and 6.1.2 retain "outside both clones" and the disjoint state
+root; the delta adds only ordering and placeholder-recording rules.
+
+|Maintainer owns push and promotion
+|Intact
+|Section 6.3 is outside the delta. The B2 authority paragraph is unchanged.
+
+|No provider invoked during bootstrap
+|Intact
+|The one new acceptance criterion is explicitly provider-free and "stops before
+dispatch". Section 12's non-scope is unchanged.
+
+|Exact first-dogfood scope unchanged
+|Intact
+|The section 8.1 payload list and the section 7.2 seven-path ceiling are outside
+the delta. The added paragraph classifies evidence; it adds and removes no
+payload item and no path.
+
+|Four-Hop ceiling unchanged
+|Intact
+|Section 7.1's Hop paragraph and the M-2 disposition are outside the delta.
+
+|No additional evidence command added to the WorkItem
+|Intact
+|Section 7.1 still reads "one provider-free evidence command whose argv is
+`python -m pytest -q`", and section 8.1 reinforces "the sole trusted evidence".
+
+|No B1/B2 implementation started
+|Intact
+|The delta is one documentation file, +99/-33. No governance, source, test, or
+`+pyproject.toml+` path was touched.
+
+|Developer ergonomics remains the first real WFC-on-WFC Run
+|Intact
+|Section 8 and the `NEXT 1` backlog row are unchanged; B2 still commits without
+executing.
+|===
+
+No regression was introduced by `130859a2`.
+
+== 8. INFO / WATCH
+
+W-4 -- The development `wfc` is shadowed by ordering, and that is safe::
+Because the development/evidence environment installs the repository with its
+`dev` extra, its `bin` contains a `wfc` console script for the *development*
+tree, and that `bin` is now first on the launch `PATH`. Any bare `wfc` lookup in
+that environment would therefore select development WFC N+1 rather than runtime
+WFC N. This is not a defect: the correction's absolute-path rule is precisely
+what neutralizes it, and a search of Runtime N's `src/` found no code path that
+resolves or re-executes `wfc` by name. The plan's two remaining bare
+`+wfc run --bundle <dir>+` mentions are a deferred CLI-design evaluation inside
+explicit non-scope, not launch instructions. The property to preserve in the
+NEXT 2 documentation is that the launch command is written as an absolute path,
+never as a bare name inside an activated environment.
+
+W-5 -- Runtime identity remains procedural, as previously accepted::
+W-3 of the parent review noted that the engine performs no self-identification
+check, so "runtime N never executes the development package" rests on the launch
+procedure. That remains true, and the delta improves it: the B2 proof now
+confirms that "the Runtime-N Python import come[s] from the dedicated
+non-editable installation prepared from the verified export of accepted Runtime
+N", which converts a recorded intention into a checked fact at acceptance time,
+even though it is still not enforced per Run. This stays NEXT 2 documentation
+work rather than bootstrap work.
+
+== 9. Validation evidence
+
+* Reviewed correction commit: `130859a28e0b33cd88dad264b07487dffb812e29`.
+* Corrected plan not modified; exactly one artifact added by this review.
+* Source, tests, package metadata, and governance unchanged.
+* Runtime clone unchanged: HEAD `0b5260f64f0e66211bca0e6634e76ad02506fc1d`,
+  detachment, refs, remote configuration, disabled push URL, and absence of
+  untracked and ignored content confirmed read-only. The runtime clone was read
+  only through `git` inspection and file reads.
+* Core unchanged at `ad91eeb067752ae4773f86927071dd6c3aaf8621`; no Core path was
+  written.
+* Provider invocations: 0. No operator, dispatch, Run, or state root was created;
+  no provider-capable path was executed.
+* GitHub mutations and pushes: 0.
+* `asciidoctor --failure-level WARN` renders this artifact without warnings.
+* `git diff --check` passes.
+
+== 10. Implementation readiness
+
+* *I-4R CLOSED.*
+* *M-7 CLOSED.*
+* *M-8 CLOSED.*
+* *No previously accepted finding is reopened.* I-1, I-2, I-3, the closed part of
+  I-4, and M-1 through M-6 are untouched by this delta, as are the authority
+  model, the one-file Project Memory shape, the two-clone model, the four-Hop
+  design, the exact dogfood scope, the B1/B2 slicing, and the old 5C--5E
+  disposition.
+* *Slice B1 may begin with GPT-5.6 Sol Medium.* B1 is documentation only, its
+  file list is exact, and no finding in this review or the parent review touches
+  it.
+* *Slice B2 must not begin automatically.* B2 follows B1 under the maintainer's
+  explicit authorization, and the first dogfood Run follows independent bootstrap
+  acceptance.
+* *No further planning or review cycle is required before B1.* Every remaining
+  B2 value is mechanical transcription or a stated acceptance criterion; no
+  architectural decision remains open.
+
+== 11. Exact next action
+
+Begin Slice B1 with GPT-5.6 Sol Medium, under the plan as it stands at
+`130859a28e0b33cd88dad264b07487dffb812e29`. Do not modify the plan, do not start
+Slice B2 automatically, do not touch the runtime clone or Core, and invoke no
+provider outside the authorized B1 implementation itself.
