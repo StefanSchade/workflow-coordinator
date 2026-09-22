@@ -1,0 +1,217 @@
+= WFC Profile Durable-Artifact Instance Coupling
+:toc: left
+:toclevels: 3
+:sectnums:
+
+Status:: open
+Date:: 2026-09-22
+Discovery context:: First WFC-on-WFC dogfood; preparation of a fresh
+review-continuation Run after Attempt 2 and the accepted finding-identity
+correction.
+
+== Observed behavior
+
+The accepted self-development profile requires a durable artifact in `review`,
+but authorizes only this concrete path in both `review` and `rereview`:
+
+----
+docs/backlog/first_wfc_on_wfc_dogfood_review.adoc
+----
+
+The same path is the only `review` mapping in
+`governance/work-items/developer-ergonomics.yaml`. A fresh continuation Run
+needs a fresh, distinct review artifact. It must not overwrite, reinterpret, or
+reuse historical review evidence or an execution-instance-specific review
+identity.
+
+Creating a new WorkItem alone is insufficient. In
+`src/workflow_coordinator/operator.py`, `_preflight` rejects each mapped
+durable artifact unless it is within both `WorkItem.scope` and the owning
+phase's `authorized_scope`:
+
+----
+not _within_scope(path, work_scope)
+or not _within_scope(path, normalized_phase_scopes[phase_key])
+----
+
+Consequently a new WorkItem can name a new file in its `durable_artifacts`
+mapping, but cannot make that file admissible while the unchanged profile
+authorizes only the first-dogfood path. This is a safe pre-dispatch refusal,
+not a prompt or provider failure.
+
+The named first-dogfood path is not a generic review namespace. At the current
+accepted HEAD it has no tracked file because neither stopped historical Run
+reached its `review` Hop; `git ls-tree -r HEAD --
+docs/backlog/first_wfc_on_wfc_dogfood_review.adoc` is empty. That absence does
+not make the path a safe reusable name: the accepted profile and WorkItem bind
+it to the first dogfood execution instance, whereas the already-created
+Attempt-1/Attempt-2 and correction-review artifacts are frozen historical
+evidence.
+
+== Historical reconstruction
+
+`53d0109` introduced the standalone profile and first WorkItem together.
+The accepted bootstrap plan, section 7.2, says that current profiles have
+concrete `authorized_scope` paths, calls this a *one-purpose profile and
+WorkItem*, fixes the six implementation paths plus the dedicated review path,
+and explicitly says that B2 must not broaden the values merely to make the
+profile reusable. It explains that `review` alone may edit/commit the dedicated
+artifact and that `rereview` is observation-only.
+
+The same section nevertheless identifies the intended division of concerns:
+the WorkItem carries the exact scope and per-phase durable-artifact mapping;
+the mapping is required because the required review phase is non-initial. Its
+post-dogfood instruction is: reuse the exact profile only for similarly scoped
+work, or make an explicit profile revision/new bounded profile. It rejects
+variables, inheritance, registries, and a general profile framework during the
+bootstrap.
+
+The accepted B2 consolidated review independently restated that `_preflight`
+checks every mapped artifact against *both* scopes, that only the review Hop
+receives the mapping, and that the exact seven-path ceiling deliberately has no
+implicit prefix widening. `tests/architecture/test_self_development_governance.py`
+pins that first-dogfood-specific arrangement rather than a universal profile.
+
+The more general Coordinator design history is compatible with that division:
+the imported FTR defines WorkItem, profile, policy, and task as distinguishable
+human-authored inputs; `WorkItem` is semantic input rather than a mutable
+operational entity. Slice 5B introduced `WorkItem.durable_artifacts` as a
+per-phase mapping, replacing the initial-phase-only legacy argv route. Its
+operator admission intentionally preserves phase authority: mapping selects and
+requires an artifact, but does not enlarge an authorized scope.
+
+== Classification
+
+*Confirmed profile-level design gap, not a Coordinator core defect and not an
+intentional permanent one-shot limitation.*
+
+The concrete filename was knowingly introduced for the maximally narrow first
+bootstrap/dogfood envelope, not as a declared permanent name in a reusable
+workflow abstraction. The accepted history also deliberately deferred profile
+generalization. Real fresh-review preparation now supplies the first concrete
+evidence that the one-purpose path cannot be reused as a durable review
+instance.
+
+The Coordinator is correct: it fails closed before dispatch, and the same
+phase `authorized_scope` is enforced again by `trusted_commit`/`observe_hop`.
+No core semantic change is required to preserve the accepted safety invariant.
+
+== Desired invariant and boundary
+
+Profile:: Stable workflow semantics and stable phase authority appropriate to
+the class of work.
+WorkItem:: Maintainer-owned per-item scope plus the exact per-phase durable
+artifact identities for that Run.
+Durable mapping:: Selects the exact artifact that a required phase must create,
+commit, and leave as a regular tracked file; it is not an authority-escalation
+mechanism.
+
+Admission must remain fail closed: a mapped artifact must be contained by both
+the WorkItem and phase scopes. In particular, a WorkItem mapping must never
+grant write authority outside the phase scope.
+
+There is one important current-model limit: because `_preflight` also requires
+each whole phase scope to fit within `WorkItem.scope`, a reusable directory
+phase scope requires the WorkItem to include that directory as well. The exact
+mapping still identifies the required artifact, but is not by itself a general
+per-file commit ceiling. This does not require a core change for the bounded
+consumer fix below; it must remain explicit in its authority review.
+
+== Candidate fixes
+
+[cols="1,2,2,2,2,3",options="header"]
+|===
+|Option |Authority widening |Reusability / complexity |Core semantics and fail-closed admission |Historical compatibility
+
+|A. Authorize all of `docs/backlog`
+|Large: every review Hop could mutate the full backlog area, and the WorkItem
+would have to include it.
+|Reusable but unnecessarily broad; low implementation complexity.
+|No core change; containment remains fail closed, but the admitted ceiling is
+far wider.
+|Poor. The accepted bootstrap expressly rejected implicit prefix widening and
+kept a seven-path ceiling.
+
+|B. Introduce/use `docs/backlog/wfc_reviews/` as a stable review namespace;
+authorize that namespace in a revised profile and policy, while each WorkItem
+maps its exact review file beneath it.
+|Bounded to a dedicated review-only namespace, wider than one file but far
+narrower than the backlog. The WorkItem must also contain the namespace under
+current phase-within-WorkItem admission.
+|Good reuse of the finite review workflow; small explicit consumer-governance
+revision, no templating or framework.
+|No core change. Exact mapping remains required and admission remains
+double-contained; review commits are namespace-authorized rather than
+mapping-authorized-only.
+|Good after dogfood evidence, provided the profile/policy revision explicitly
+records the bounded widening and preserves disjoint implementation/review
+authority.
+
+|C. Let an exact WorkItem durable artifact grant write authority beyond phase
+`authorized_scope`
+|Potentially narrow per file, but reverses the established phase-authority
+ceiling.
+|Looks convenient but introduces an authority exception and more conceptual
+machinery.
+|Requires a core semantic change and weakens the present double-containment
+rule unless a new, separately proven authority model is designed.
+|Poor. Slice 5B and the accepted bootstrap explicitly use mapping as selection
+under phase authority, not as an override.
+
+|D. Create a separate exact-path profile for every concrete review artifact
+|None beyond each individual file.
+|Least reusable and creates profile proliferation; mechanically simple.
+|No core change; preserves the present strictest form of admission.
+|Compatible with the bootstrap's explicit alternative of a new bounded profile,
+but a poor durable replacement for a repeated review class.
+|===
+
+== Recommended smallest next step
+
+Do not change Core. Before creating the fresh continuation WorkItem, prepare a
+separate, reviewable consumer-governance decision for option B: a dedicated,
+stable WFC review namespace with an explicit profile/policy revision and an
+exact per-WorkItem durable-artifact mapping. Its review must acknowledge that
+the namespace, not the individual mapping alone, is the write ceiling under the
+current model. The resulting bounded widening is supported by the now-observed
+reuse need and is materially closer to the accepted design than A or C; it
+avoids D's permanent one-profile-per-artifact coupling.
+
+Until that decision is accepted, the correct action is to leave the profile
+unchanged and not start the continuation Run.
+
+== Non-goals
+
+This record does not:
+
+* modify the accepted profile, policy, WorkItem, task, Coordinator, tests, or
+prompt contract;
+* create the fresh continuation WorkItem or start Attempt 3;
+* reuse, alter, or reinterpret any historical dogfood/review artifact or
+external Run state;
+* add profile variables, inheritance, a registry, a generic profile framework,
+or an authority-override mechanism; or
+* change Runtime N, Core, a runtime clone, or any historical external state
+root.
+
+== Acceptance criteria for the follow-up decision
+
+* The accepted follow-up classifies the final change as consumer governance,
+not an unreviewed Core semantic change.
+* It preserves the invariant that every mapped durable artifact is within both
+the WorkItem and phase scopes.
+* It keeps review artifact authority disjoint from implementation authority and
+excludes governance, runtime, push, and promotion authority.
+* It assigns a fresh exact review artifact path to the fresh WorkItem and does
+not mutate historical evidence.
+* It updates/adds only the narrowly necessary governance and proof coverage
+after separate authorization; this backlog item authorizes none of those edits.
+* A provider-free production-preflight proof demonstrates the accepted revised
+bundle before any provider-capable Run.
+
+== Relation to attempts and frozen state
+
+Attempt 2 remains archived evidence and was not resumed. The planned fresh
+review continuation is not yet a WorkItem and has not started. Attempt 3 has
+not started. Runtime N, Core, and all historical external state roots remain
+frozen and untouched. Provider invocations for this reconstruction: `0`.
