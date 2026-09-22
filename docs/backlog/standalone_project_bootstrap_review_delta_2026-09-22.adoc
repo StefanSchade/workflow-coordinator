@@ -1,0 +1,558 @@
+= Delta Review: Standalone Workflow Coordinator Bootstrap Plan Correction
+:toc: left
+:toclevels: 3
+:sectnums:
+
+[NOTE]
+====
+*INDEPENDENT BOUNDED DELTA REVIEW -- REVIEW ONLY*
+
+This artifact assesses one correction commit to one planning document. It
+implements neither bootstrap slice, authors no governance, modifies no source,
+tests, package metadata, Project Memory, or runtime clone, invokes no provider,
+changes no Core state, and performs no push or promotion. It does not modify the
+corrected plan.
+====
+
+Review date:: 2026-09-22
+Reviewed correction:: `9f0d9e391217aba4bac5c2d12df066331d632c8a` -- `docs(workflow): correct standalone bootstrap plan`
+Parent review:: `ff86da329baa463c67a65176a335317a03529b75`
+Original plan:: `8ae55aafbd573ad93aa45e87a7e45c0de671ec23`
+Reviewed delta:: `ff86da3..9f0d9e3`, one file, +328/-100
+Verdict:: *B -- BOOTSTRAP PLAN CORRECTION NEEDS BOUNDED FOLLOW-UP*
+
+== 1. Baseline confirmation and method
+
+The development repository was clean on `main` at the expected commit with the
+expected subject and parent chain. The runtime clone was detached at
+`0b5260f64f0e66211bca0e6634e76ad02506fc1d` with its own object store,
+`remote.origin.pushurl=DISABLED`, and no untracked or ignored content. Core was
+clean at `ad91eeb067752ae4773f86927071dd6c3aaf8621`. No material baseline
+mismatch was found, so the review proceeded.
+
+The correction delta touches exactly one path,
+`docs/backlog/standalone_project_bootstrap_2026-09-22.adoc`. No source, test,
+package-metadata, or governance path is in the delta.
+
+Method: every new mechanical claim the correction introduces was checked against
+the executable implementation rather than accepted on assertion --
+`+operator.py+` (`+_admit_a1+`, `+_preflight+`, `+_within_scope+`,
+`+_selected_ids+`, `+_selected_evidence_names+`), `+serialization.py+`
+(`+a1_path_shape+`, `+_policy_paths+`, `+_durable_artifacts+`,
+`+_check_action_coherence+`), `+evidence.py+` (`+snapshot_environment+`,
+`+resolve_executable+`, `+prepare_evidence_commands+`), `+reducer.py+` (Hop
+budget), `+vertical.py+` and `+slice4.py+` (dispatch and evidence ordering),
+`+model.py+` (`WorkItem` fields, `hop_limit`), `+pyproject.toml+`, and the
+committed fixture `+tests/fixtures/slice5b_non_dmc.yaml+`.
+
+Finding counts: *BLOCKING 0; IMPORTANT 1; MINOR 2; INFO/WATCH 3.*
+
+== 2. Verdict
+
+*B -- BOOTSTRAP PLAN CORRECTION NEEDS BOUNDED FOLLOW-UP.*
+
+Three of the four IMPORTANT findings are closed truthfully and completely, and
+all six MINOR findings are closed. The correction widens no authority, revives
+no superseded sequencing, and introduces no duplicate policy engine. Its
+mechanical claims are unusually accurate: every property the plan says
+production `+_preflight+` exercises is in fact exercised there, and the phase
+authority it specifies matches the committed fixture token for token.
+
+One residue prevents verdict A. I-4 is closed for the development/evidence
+environment but not for the environment the Coordinator actually captures at
+Run time, and section 7.3 states a proof the proposed test cannot deliver. The
+repair is one acceptance criterion and one corrected sentence. It requires no
+architectural decision, and it does not gate Slice B1.
+
+== 3. Findings
+
+=== 3.1 IMPORTANT
+
+==== I-4R -- Evidence resolution is proven in the wrong process environment, and section 7.3 claims a proof the test cannot deliver
+
+Category:: A -- plan contradiction against observed behavior
+Closes:: incompletely; I-4 residue
+Changes:: plan only; no architecture change
+
+Exact correction text:: Section 6.1.2: "Its `bin` directory is placed first on
+the Coordinator's captured `PATH`". Section 6.1.1: "puts that environment's
+`bin` directory on `PATH`". Section 7.3: "The architecture test proves that the
+selected evidence executable resolves in the captured Coordinator environment."
+Slice B2 acceptance: "from the development root, the exact committed evidence
+argv resolves and completes successfully."
+
+Problem:: `+snapshot_environment+` (`+evidence.py+`:84) captures `+os.environ+`
+of the *running Coordinator process*, and `+resolve_executable+`
+(`+evidence.py+`:125-136) returns the first `PATH` entry that yields an
+executable regular file. The environment that decides which `python` runs
+evidence is therefore the one the runtime-launched Coordinator inherits.
++
+Neither proof the correction schedules observes that environment. The
+architecture test captures the pytest process environment; the B2 evidence run
+captures a shell in the development/evidence environment; `wfc --help` is run
+separately "from the external runtime environment". Section 7.3's sentence is
+consequently not true as written -- the test proves resolution in the test
+runner's environment, not in the Coordinator's.
++
+The two environment requirements are also unreconciled. Section 6.1.1 puts the
+runtime environment's `bin` on `PATH`; a virtual environment's `bin` always
+contains `python`, and the runtime install is a plain non-editable install of
+the runtime export, so it carries no `dev` extra and no `pytest`
+(`+pyproject.toml+` defines `dev = ["build>=1.2", "pytest>=8.2"]`). Section
+6.1.2 requires the development/evidence `bin` to be *first*. Ordinary virtual
+environment activation prepends the activated environment's `bin`, so the
+natural way to launch runtime `wfc` places the runtime `bin` ahead of the
+development/evidence `bin`. The plan states both requirements and never says how
+a single launch satisfies them together, and sets no acceptance criterion on the
+one `PATH` the Coordinator will actually capture.
+
+Consequence:: Under that ordering, admission still succeeds, because the runtime
+environment does provide a resolvable `python`. The failure surfaces later:
+evidence is observed at `+vertical.py+`:254, *after* `+adapter.execute+` at
+`+vertical.py+`:172, which is past the provider-capable boundary. The first
+dogfood Hop therefore spends a real provider invocation and then fails
+`python -m pytest -q` on a missing `pytest` module, exiting 1. I-4's objection
+was that bootstrap would declare readiness while the first Run failed at
+precisely the wrong moment; this residue preserves that failure and moves it from
+exit 2 before any provider to exit 1 after one, which is worse-positioned rather
+than closed.
+
+Smallest bounded repair:: Two edits, both plan-only.
++
+. Replace section 7.3's claim with the truthful one: the architecture test proves
+  the committed argv resolves *in the environment that runs the test suite*.
+. Add one Slice B2 acceptance criterion binding the single launch `PATH` the
+  Coordinator captures: the development/evidence `bin` precedes the runtime
+  `bin` on it; the runtime `wfc` is invoked by its absolute path within the
+  runtime environment rather than by `PATH` lookup; and under that exact `PATH`,
+  `+prepare_evidence_commands+` resolves `python` to the development/evidence
+  interpreter. Record the captured `PATH` order as B2 evidence, still without
+  committing a machine-specific absolute path.
+
+=== 3.2 MINOR
+
+==== M-7 -- The governance architecture test becomes environment-dependent, and the plan does not say so
+
+Category:: D -- documentation clarity
+
+Section 7.3 routes the primary proof through production `+_preflight+`, which
+calls `+prepare_evidence_commands+` and therefore resolves `python` against the
+test process `PATH`. On this host `python` does not resolve at all: `python3` is
+`/usr/bin/python3` with no `pytest` module, and neither Workflow Coordinator
+clone has a virtual environment. The new guard consequently fails for purely
+environmental reasons whenever the suite is launched other than from the
+development/evidence environment -- for example by `python3 -m pytest`.
+
+This is a deliberate and correct consequence of closing I-4 by real resolution
+rather than by assertion, and failing closed is the right direction. It is worth
+stating so that the failure is read as a missing environment rather than as a
+broken governance bundle.
+
+Smallest correction:: One sentence in section 7.3 or Slice B2 recording that the
+governance architecture test requires the development/evidence environment,
+so the full suite is run through the committed `python -m pytest -q` argv.
+
+==== M-8 -- Two of the four required Make targets cannot be verified inside the first Run
+
+Category:: A -- plan contradiction, small
+
+Section 8.1 requires "a small Makefile with `make test`, `make lint`,
+`make format-check`, and `make check`". Section 7.1 now fixes the policy at
+exactly one evidence command, `python -m pytest -q`, and the development/evidence
+environment is prepared from the `dev` extra before the Run. That extra is
+`build` and `pytest` only; Ruff is absent. The agent may add Ruff configuration,
+because `+pyproject.toml+` is in scope, but a dependency added during the Run is
+not installed into an environment prepared before it, and no evidence command
+exercises lint or format.
+
+The authority boundary is unaffected -- this cannot widen scope, and it fails
+closed. The gap is truthfulness: two of the four required targets will be
+authored unverified, and the first dogfood's empirical record (section 8.3)
+should not read that as success.
+
+Smallest correction:: Either pre-provision Ruff in the development/evidence
+environment alongside the `dev` extra, or state in section 8.1 that lint and
+format-check targets are authored but not executed within the first Run and are
+verified by the maintainer at acceptance.
+
+=== 3.3 INFO / WATCH
+
+W-1 -- Absent scope paths are authorized creation, not a defect::
+`Makefile`, `scripts/wfc_snapshot.py` and `tests/unit/test_wfc_snapshot.py` do
+not exist at the baseline; `README.md`, `+pyproject.toml+` and
+`tests/architecture/test_package_boundaries.py` do. This is normal authorized
+creation. `+_preflight+` constrains `WorkItem.scope` only by `+a1_path_shape+`,
+ceiling containment and phase containment, and requires tracked content only for
+governing inputs and selected components. All seven paths are valid A1 shapes and
+mutually non-overlapping, so `+_policy_paths+` accepts the ceiling. The dedicated
+review artifact likewise need not pre-exist.
+
+W-2 -- The dogfood cannot mutate the guard that constrains it::
+Slice B2 adds `tests/architecture/test_self_development_governance.py`, which is
+*not* among the six implementation paths. The first dogfood can therefore edit
+`tests/architecture/test_package_boundaries.py` for its `+__package__+` payload
+while being unable to touch the governance guard. Because the ceiling is stated
+as exact file paths rather than directories, `docs/project_memory.adoc` and
+`docs/backlog/README.adoc` are mechanically unreachable as well, which makes M-3
+an enforced property rather than a narrative one.
+
+W-3 -- Which WFC coordinates the Run is recorded, not verified::
+Section 6.1.1 has the launch contract record the runtime commit. The engine
+performs no self-identification check, so the invariant that runtime N never
+executes the development package rests on the launch procedure alone. This is
+consistent with section 6.4's refusal to claim containment the Coordinator
+cannot verify, and I-4R's repair makes the procedure explicit. It belongs in the
+NEXT 2 documentation rather than in bootstrap work.
+
+== 4. Closure of the four IMPORTANT findings
+
+=== 4.1 I-1 -- Review mutation authority: CLOSED
+
+The corrected section 7.2 fixes the authority boundary in the plan rather than
+delegating it, and every element matches the engine.
+
+[cols="2,2,2,4",options="header"]
+|===
+|Phase |Durable artifact |Actions |Verified against
+
+|`investigate`
+|`optional`
+|`edit`, `commit` on the six implementation paths
+|`+_check_action_coherence+` accepts the pair; `+_preflight+` requires phase
+scope inside `WorkItem.scope`
+
+|`review`
+|`required`
+|`review`, `edit`, `commit` on the review artifact alone
+|`+serialization.py+`:534 forces both tokens for a required artifact
+
+|`correct`
+|`optional`
+|`edit`, `commit` on the six implementation paths
+|as `investigate`
+
+|`rereview`
+|`none`
+|`review` only
+|`+serialization.py+`:514 names this exact shape as valid
+|===
+
+Disjointness holds: `docs/backlog/first_wfc_on_wfc_dogfood_review.adoc` shares no
+prefix with any of the six implementation paths, and `+_policy_paths+` rejects
+overlapping ceiling entries outright.
+
+The modern mapping is correctly made mandatory. `+_preflight+`
+(`+operator.py+`:293-296) rejects the legacy argv route whenever any non-initial
+phase is `required`, and with `durable_artifacts` present it checks each mapped
+path against both `WorkItem.scope` and that phase's own scope
+(`+operator.py+`:274-287). The plan supplies no `+--durable-artifact+` argument,
+which is the only admissible choice.
+
+One engine property strengthens the closure beyond what the plan claims.
+`+vertical.py+`:182 admits a `changes_required` commit from a GATE review phase
+only when `+set(result.commit_intent.paths).issubset(durable_artifacts)+`, so the
+review phase's commit authority is narrowed at execution to the mapped artifact,
+not merely by declared scope.
+
+Governance and Project Memory remain outside first-dogfood mutation scope.
+`+_admit_a1+` (`+operator.py+`:133-147) enforces bidirectional non-overlap
+between every phase scope and `policy.governance_paths`, and no scope path lies
+under `governance`. No reusable-profile convenience widened anything: the plan
+states that B2 "may transcribe these values but may not broaden them to make the
+profile reusable".
+
+*The rereview -> correct route at the four-Hop ceiling fails safe.* With
+`hop_limit` set from `WorkItem.max_autonomous_hops` (`+model.py+`:400) and
+`hop_used` reaching 4 at H004, the `goto` route back to `correct` meets
+`+reducer.py+`:425, which finishes the Run as `AWAITING_HUMAN_BUDGET` with
+`stop_reason="autonomous_hop_budget_exhausted"`. `+confirm_supervisor_route+`
+(`+reducer.py+`:482) applies the same guard. No unauthorized fifth Hop is
+reachable; the budget mechanics stop for the maintainer exactly as the plan
+states.
+
+=== 4.2 I-2 -- No duplicate policy engine: CLOSED
+
+The proposed test satisfies every required property: a clean disposable Git
+repository at an exact forty-character HEAD, the actual WorkItem, profile,
+policy, manifest and task, the real production parser and `+_preflight+` seams,
+a stop before operator dispatch, and no fake or real provider.
+
+The plan's enumeration of what `+_preflight+` exercises was checked claim by
+claim and is accurate: governing-input admission and both Hop ceilings via
+`+_admit_a1+`; phase-scope containment and action domination at
+`+operator.py+`:244-251; the WorkItem ceiling in `+_admit_a1+`; component
+reference coherence through `+_selected_ids+` against the manifest; evidence
+reference coherence through `+_selected_evidence_names+`; the per-phase
+durable-artifact mapping at `+operator.py+`:261-287; and
+`+prepare_evidence_commands+` resolution. Nothing in the list is claimed that
+production does not do.
+
+The prohibition list matches precisely the algebra that exists in production, and
+the allowance for focused calls to `+_admit_a1+`, `+_selected_evidence_names+`,
+`+_selected_ids+`, `+_within_scope+` and `+a1_path_shape+` names five functions
+that all exist under those exact names. The project-specific assertion the plan
+retains -- that the committed ceiling itself excludes `governance` -- is exactly
+the residue `+_admit_a1+` genuinely cannot express, since it checks phase scope
+and `WorkItem.scope` but never the ceiling against `governance_paths`.
+
+No wording permits a test-only reimplementation of any listed rule.
+
+=== 4.3 I-3 -- Immutable runtime execution: CLOSED
+
+The corrected model is both executable and non-mutating. The runtime clone is
+restated as source/history authority rather than an installation prefix; the
+accepted tree is exported at the exact detached commit outside both clones; an
+external runtime virtual environment receives a non-editable install from that
+export; and Run state is separate from both clones and from the runtime
+environment.
+
+The plan requires none of the forbidden things. It explicitly forbids `.venv`,
+`build/`, `dist/`, `+*.egg-info+`, source edits, ref movement, remote changes and
+generated execution state inside the runtime clone, and section 13 now counts
+ignored installation, build and cache output as a runtime worktree change.
+
+The build-isolation clause is bounded and truthful rather than an implicit
+packaging redesign. It is permissive ("may be disabled and dependencies
+pre-provisioned"), changes no packaging metadata, and describes ordinary
+installer flags. The obligation it creates is small and satisfiable: the sole
+runtime dependency is `PyYAML>=6`, and the build requirement is `setuptools>=68`.
+
+Provider-free `wfc --help` is a genuine acceptance proof: `+pyproject.toml+`
+declares `wfc = "workflow_coordinator.operator:main"`, so the console script
+exists and starting it exercises the install without reaching any provider path.
+
+=== 4.4 I-4 -- Runnable evidence environment: CLOSED IN PART
+
+The host-fact objection is closed for the environment the correction describes.
+The development/evidence environment is external to both clones, uses standard
+`python3 -m venv` and `pip` with the repository `dev` extra, commits the portable
+argv `python -m pytest -q`, requires production preparation to resolve it,
+requires B2 to actually run it provider-free before readiness, and forbids
+committing a machine-specific absolute path. The runtime and development/evidence
+environments are described as distinct and are distinct.
+
+What is not closed is the identity between the environment in which resolution is
+proven and the environment the Coordinator captures at Run time, together with
+section 7.3's overstated proof claim. See I-4R.
+
+== 5. Complete non-executed first-dogfood bundle
+
+Slice B2 now commits, and does not execute, all seven artifacts: RepositoryPolicy,
+the one-purpose WorkflowProfile, the component manifest, the developer role
+prompt, the reviewer role prompt, the concrete developer-ergonomics WorkItem, and
+the concrete task text.
+
+Its authority is correctly sourced. Section 7.1 states that the authority "comes
+from maintainer/bootstrap acceptance" and that "neither WFC nor its agent may
+author, widen, or replace the policy, profile, WorkItem, or task under which it
+operates", and section 3.1 records that the reusable files alone authorize no
+Run. Presence is not execution: a Run begins only when the maintainer invokes the
+operator with `+--expected-head+` and a state root.
+
+B2 does not implement the developer-ergonomics payload. Its non-scope list opens
+with "Executing the committed first WorkItem/task or implementing any of its
+payload" and then names Makefile, Ruff, formatting, snapshots and the
+`+__package__+` guard individually.
+
+Moving the WorkItem and task into B2 is not an unauthorized widening of bootstrap
+scope. It is forced by I-2's closure, because production `+_preflight+` cannot be
+exercised without a WorkItem, and it is the shape the review brief prescribes.
+The correction pays for it by narrowing elsewhere: the profile is now one-purpose
+with an exact seven-path ceiling rather than a maintainer decision deferred to
+implementation.
+
+A small accuracy gain is worth noting. The original plan said the WorkItem "pins
+the expected development HEAD"; the correction says it is "invoked later with the
+exact accepted development HEAD". `WorkItem` carries no head field
+(`+model.py+`:85-96) -- `+--expected-head+` is an invocation argument -- so the
+corrected wording is the true one.
+
+== 6. Exact first-dogfood scope
+
+The scope is deliberately narrow and mechanically sound. The six implementation
+paths plus `docs/backlog/first_wfc_on_wfc_dogfood_review.adoc` form the complete
+ceiling and WorkItem scope. All seven are valid A1 shapes and mutually
+non-overlapping. Everything else is excluded, and `src/`, `governance/`,
+`docs/project_memory.adoc`, runtime paths, remotes and all other documentation
+and test paths are named explicitly.
+
+Because the ceiling enumerates exact files rather than directories, the exclusion
+is enforced rather than conventional: no path under `docs/` other than the review
+artifact is reachable, and `+_admit_a1+` independently forbids any phase scope
+overlapping `governance`.
+
+Sufficiency for the stated task holds with one qualification. The Makefile,
+snapshot script and its unit test are covered; Ruff configuration lands in
+`+pyproject.toml+`, which is in scope; the `+__package__+` guard lands in
+`tests/architecture/test_package_boundaries.py`, which is in scope; and
+"narrowly related development documentation" is served by `README.md`. No listed
+payload item silently requires an eighth path. The qualification is M-8: two
+required Make targets cannot be executed inside the Run under the single
+committed evidence command.
+
+Absent paths are authorized creation, not a defect. See W-1.
+
+== 7. Four-Hop semantics
+
+The ceiling is coherent and the plan states the actual behavior truthfully.
+
+`+COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS+` is 5 and `hop_limit` comes from
+`WorkItem.max_autonomous_hops` (`+model.py+`:400), which `+_admit_a1+` caps at
+both the hard maximum and the policy maximum. With both set to 4, the sequence
+investigate H001 -> review H002 -> correct H003 -> rereview H004 fits exactly.
+
+* Only one correction and re-review cycle is possible: a second cycle would need
+  H005 and H006.
+* Acceptance completes in four Hops. At rereview the `accept` route has effect
+  `complete`, which is neither `goto` nor supervisor, so `invocation_needed` is
+  false and the Run completes at H004.
+* A rereview finding cannot cause an unauthorized autonomous H005. The `correct`
+  route is `goto`, `hop_used` equals `hop_limit`, and `+reducer.py+`:425 stops
+  the Run as `AWAITING_HUMAN_BUDGET`.
+
+The plan's own sentence -- "A finding at the final re-review stops for the
+maintainer rather than starting a second cycle" -- is mechanically exact. Its
+explicit refusal of the engine's nominal fifth spare Hop is a deliberate
+least-authority choice and is correctly not disturbed here.
+
+The committed fixture `+tests/fixtures/slice5b_non_dmc.yaml+` already realizes
+this shape with `max_autonomous_hops: 4` in both WorkItem and policy, the same
+four phases with the same durable-artifact modes and action sets, the same
+`durable_artifacts` mapping of `review`, and the same route set including
+`accept: {effect: complete}` and `correct: {effect: goto}`. Slice B2 is
+transcription, not design.
+
+== 8. The six MINOR findings
+
+[cols="1,1,6",options="header"]
+|===
+|Finding |Status |Basis in the corrected plan
+
+|M-1
+|Closed
+|Slice B1 acceptance now reads "Exactly `docs/README.adoc` enumerates current
+authority classes; `README.md` and `docs/architecture.md` link and defer to it
+rather than retain closed or competing enumerations", and both B1 file entries
+were reworded to delegate.
+
+|M-2
+|Closed
+|Section 7.1 states the Hop ceiling of 4, that the engine hard maximum is 5, that
+the fifth spare Hop is deliberately not granted, and that only one
+correction/re-review cycle fits.
+
+|M-3
+|Closed
+|Section 7.2 names `docs/project_memory.adoc` in the excluded-paths sentence;
+section 8.1 adds "update Project Memory" to what the WorkItem does not do.
+Enforced by the exact-path ceiling -- see W-2.
+
+|M-4
+|Closed
+|Slice B2 records `bootstrap implemented, pending independent acceptance`, and
+"Only the later independent acceptance or corrective acceptance commit may record
+bootstrap completion/readiness".
+
+|M-5
+|Closed
+|The `+__package__+` guard appears in B2's non-scope list and in the section 12
+global non-scope, which notes it "remains first-dogfood payload even though B2
+adds a neighboring architecture test". It stays an in-scope payload path via
+`tests/architecture/test_package_boundaries.py`.
+
+|M-6
+|Closed
+|Section 6.4 now records that `+--sandbox workspace-write+` "is also
+provider-owned inner behavior; the Coordinator does not establish or verify it as
+an OS/environment boundary", and generalizes the long-term requirement to
+"provider approval or sandbox modes".
+|===
+
+The imported C6 Conventional-Commit concern is explicitly `WATCH` in section 5,
+with the boundary stated as "it is not bootstrap or first-dogfood work". It does
+not become bootstrap work.
+
+== 9. Preserved accepted architecture
+
+The correction reopened and broadened nothing on the protected list. Each item
+was checked against the delta.
+
+* One current authority index -- unchanged in section 3.1, reinforced by M-1.
+* One-file Project Memory -- section 4 is untouched by the delta.
+* No Project Memory schema, generator or archive machinery -- section 4.4 intact;
+  section 12 still excludes it.
+* Two separate clones, and Runtime N never mutating itself -- section 6.1
+  unchanged, with 6.1.1 and 6.1.2 added beneath it as execution detail.
+* Maintainer-owned push and runtime promotion -- section 6.3 is untouched by the
+  delta.
+* No `git worktree` self-hosting -- the prohibition survives verbatim.
+* Old 5C--5E sequencing superseded -- the `DROP / SUPERSEDED` rows are unchanged.
+* Fixed one-purpose first profile -- strengthened, not generalized: the plan now
+  forbids broadening "to make the profile reusable" and still refuses variables,
+  inheritance and registries.
+* Two bootstrap slices B1/B2 -- unchanged.
+* Developer ergonomics remains the first actual WFC-on-WFC Run -- section 8,
+  `NEXT 1`.
+* Bootstrap still excludes Make, Ruff and snapshot implementation, CLI redesign,
+  sandbox implementation, resumability, provider expansion, TUI, parallelism and
+  multi-repo work -- section 12 is unchanged on every one of these and gained one
+  exclusion.
+
+== 10. Implementation readiness
+
+A. *Is Slice B1 closed enough for Sol Medium implementation?* Yes. B1 changes
+documentation only. Its file list is exact, M-1 gives it the one acceptance
+criterion it lacked, and no finding in this review touches it. I-4R is a B2
+concern.
+
+B. *Is Slice B2 closed enough for Sol Medium implementation after B1?* Yes,
+subject to I-4R. Every other value is mechanical: the fixture supplies the exact
+profile shape, the ceiling and phase authority are transcribed from section 7.2,
+the Hop ceiling is forced, the evidence argv is fixed, and the test's required and
+forbidden seams are named by function. I-4R adds one acceptance criterion and
+corrects one sentence; it does not block starting B2, but it must be settled
+before B2 can claim readiness.
+
+C. *Does any remaining value require a new architectural decision?* No. I-4R is an
+acceptance criterion and a truthfulness correction. M-7 and M-8 are one sentence
+each, or one package pre-provisioned. Everything else is mechanical transcription
+under least authority.
+
+D. *Does B2 leave the repository at the intended endpoint without starting the
+Run?* Yes. B2 commits the complete governing bundle, proves it through production
+preflight, documents immutable runtime execution, and stops. The endpoint
+statement is deferred to independent acceptance, and executing the WorkItem is
+explicitly non-scope.
+
+== 11. Validation evidence
+
+* Reviewed correction commit: `9f0d9e391217aba4bac5c2d12df066331d632c8a`.
+* Corrected plan not modified; exactly one artifact added by this review.
+* Source, tests, and package metadata unchanged.
+* Runtime clone unchanged: HEAD, detachment, refs, remote configuration,
+  disabled push URL, and absence of untracked and ignored content confirmed
+  read-only before and after.
+* Core unchanged at `ad91eeb067752ae4773f86927071dd6c3aaf8621`; no Core path was
+  written.
+* Provider invocations: 0. No operator or provider-capable path was executed; no
+  Run, state root, or dispatch was created.
+* GitHub mutations and pushes: 0.
+* `asciidoctor --failure-level WARN` renders this artifact without warnings.
+* `git diff --check` passes.
+
+== 12. Exact next action
+
+Close I-4R by bounded correction to the plan -- one Slice B2 acceptance criterion
+binding the captured launch `PATH`, and one corrected sentence in section 7.3 --
+optionally folding in M-7 and M-8 in the same pass.
+
+Slice B1 may proceed independently of that correction, because it is documentation
+only and no finding here touches it.
+
+Subject to I-4R:
+
+* the runtime clone remains untouched execution authority;
+* Slice B2 remains later and must not start automatically;
+* bootstrap still ends before the first dogfood Run;
+* developer ergonomics remains the first real WFC-on-WFC payload; and
+* no former Slice 5C--5E authority is revived.
