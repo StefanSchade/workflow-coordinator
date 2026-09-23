@@ -4,11 +4,11 @@ Workflow Coordinator is a bounded, repository-native engine for serial agent
 workflows with explicit Git, evidence, authority, and human-stop boundaries.
 
 The supported package requires Python 3.10 or newer. Install it with
-`python -m pip install .`; inspect the operator with `wfc --help`. Real provider
+`python3 -m pip install .`; inspect the operator with `wfc --help`. Real provider
 execution always requires separate consumer authority and is never implied by
 installation.
 
-For development, install `python -m pip install '.[dev]'`. The small Makefile
+For development, install `python3 -m pip install '.[dev]'`. The small Makefile
 provides `make test`, `make lint`, `make format-check`, `make check`, and
 `make build`. `make lint` runs repository-wide Ruff correctness checks;
 `make format-check` covers the snapshot implementation and its architecture and

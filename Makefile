@@ -1,4 +1,4 @@
-PYTHON ?= python
+PYTHON ?= python3
 
 .PHONY: test lint format-check check build snapshot snapshot-multi
 
