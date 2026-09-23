@@ -27,6 +27,15 @@ GOVERNING_PATHS = (
     "governance/self-development/prompts/developer.txt",
     "governance/self-development/prompts/reviewer.txt",
 )
+CONTINUATION_GOVERNING_PATHS = (
+    "governance/work-items/developer-ergonomics-review.yaml",
+    "governance/self-development/standalone-development-profile.yaml",
+    "governance/self-development/repository-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/developer-ergonomics-review-task.txt",
+    "governance/self-development/prompts/developer.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
 IMPLEMENTATION_PATHS = (
     "Makefile",
     "README.md",
@@ -56,6 +65,7 @@ def _current_text(path: str) -> str:
 def _materialize_bundle(
     tmp_path: Path,
     *,
+    governing_paths: tuple[str, ...] = GOVERNING_PATHS,
     replacements: dict[str, str] | None = None,
 ) -> tuple[Path, str]:
     repository = tmp_path / "repository"
@@ -63,7 +73,7 @@ def _materialize_bundle(
     _git(repository, "init", "--object-format=sha1")
     _git(repository, "config", "user.email", "preflight@example.invalid")
     _git(repository, "config", "user.name", "B2 Preflight")
-    for relative in GOVERNING_PATHS:
+    for relative in governing_paths:
         target = repository / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         text = (replacements or {}).get(relative, _current_text(relative))
@@ -75,16 +85,22 @@ def _materialize_bundle(
     return repository, expected_head
 
 
-def _preflight_args(repository: Path, expected_head: str, state_root: Path) -> argparse.Namespace:
+def _preflight_args(
+    repository: Path,
+    expected_head: str,
+    state_root: Path,
+    *,
+    governing_paths: tuple[str, ...] = GOVERNING_PATHS,
+) -> argparse.Namespace:
     return argparse.Namespace(
         repository=str(repository),
         state_root=str(state_root),
         expected_head=expected_head,
-        work_item=GOVERNING_PATHS[0],
-        profile=GOVERNING_PATHS[1],
-        policy=GOVERNING_PATHS[2],
-        components=GOVERNING_PATHS[3],
-        task=GOVERNING_PATHS[4],
+        work_item=governing_paths[0],
+        profile=governing_paths[1],
+        policy=governing_paths[2],
+        components=governing_paths[3],
+        task=governing_paths[4],
         durable_artifact=[],
         timeout_seconds=900.0,
         executable="unused-before-dispatch",
@@ -149,6 +165,41 @@ def test_current_self_development_bundle_passes_production_preflight(tmp_path: P
     assert prepared.authored_argv == ("python", "-m", "pytest", "-q")
     assert prepared.admission_resolution.invocation_path == sys.executable
     assert environment.values["PATH"].split(":", 1)[0] == str(Path(sys.executable).parent)
+    assert not state_root.exists()
+
+
+def test_review_continuation_bundle_passes_production_preflight(tmp_path: Path):
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=CONTINUATION_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "review-continuation"
+
+    result = _preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=CONTINUATION_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    review = profile.phases["review"]
+
+    artifact = f"{REVIEW_NAMESPACE}/WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-001/review.adoc"
+    assert work_item.work_item_id == "WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-001"
+    assert work_item.initial_phase == "review"
+    assert work_item.max_autonomous_hops == 3
+    assert work_item.scope == policy.work_item_scope_ceiling == (
+        *IMPLEMENTATION_PATHS,
+        REVIEW_NAMESPACE,
+    )
+    assert profile.revision == policy.revision == "2"
+    assert durable_artifacts == {"review": (artifact,)}
+    assert _within_scope(artifact, work_item.scope)
+    assert _within_scope(artifact, review.authorized_scope)
+    assert tuple(review.routes) == ("correct",)
+    assert tuple(profile.phases["correct"].routes) == ("rereview",)
+    assert tuple(profile.phases["rereview"].routes) == ("accept", "correct")
     assert not state_root.exists()
 
 
