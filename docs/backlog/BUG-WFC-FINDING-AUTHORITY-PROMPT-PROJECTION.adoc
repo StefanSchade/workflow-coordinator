@@ -1,0 +1,172 @@
+= BUG-WFC-FINDING-AUTHORITY-PROMPT-PROJECTION -- Finding-Authority Prompt Projection
+
+Type:: bug
+Status:: open
+Date:: 2026-09-23
+Classification:: runtime prompt / operating-contract authority-projection defect
+Discovery:: frozen WFC dogfood Attempt 3,
+`RUN-5733283c7bdd4f9fa0f466423c321dd5`
+Runtime examined:: Runtime N `c6e3f245b57f7898be9fd00afb5b780c91cb7492`
+
+== Observed behavior
+
+The H001 independent review in Attempt 3 created the blocking/open current-Run
+Finding `F001`. H002 was a `correct` Hop. It made and committed the bounded
+implementation correction as `56af453cadcfe4ecc1803892d2249ead0f8cf66c`,
+requested `rereview`, and correctly used `F001` as the current-Run identity.
+It also proposed `F001 -> resolved`.
+
+The Coordinator rejected that disposition with:
+
+----
+mechanical_preemption:invalid_finding_delta:agent cannot perform Finding operation resolve
+----
+
+The rejection happened before route application. `F001` remained open and
+blocking, the Run stopped `awaiting_human`, and one of three Hops remained.
+Both H001 and H002 Coordinator-trusted `pytest -q` observations passed.
+
+The frozen evidence is at
+`/home/stefan/wfc-state/WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-001-20260923-01`.
+That state root is historical evidence and must not be changed or reused.
+
+== Runtime-N reconstruction
+
+Runtime N's `prompt._header` projected WorkItem ID, Run ID, Hop ID,
+invocation ID, base HEAD, phase, scope, actions, routes, evidence, and output
+contract. It did *not* project `finding_authority`.
+
+Runtime N's `operator._reconstructed_context` did project known Findings
+separately. For each current Finding it emitted its run-local ID, state,
+blocking value, provenance, invariant, and evidence references. Thus H002
+could identify the real current-run `F001`; this is not a Finding-ID defect.
+That function emitted `finding_authority` only when the current phase had a
+`review` descriptor. `correct` has no descriptor, so H002 received neither
+that contextual line nor an equivalent empty/none fact.
+
+The V3 operating contract named the projected invocation facts, explained
+run-local Finding identity, and warned against fabricating a delta merely to
+record implementation work. It did not name Finding-disposition authority as
+an invocation fact, did not explain that an absent or empty authority means no
+authoritative disposition operations in the Hop, and did not clearly separate
+evidence concerning a current Finding from authority to change its state.
+
+The structured-result schema requires a Finding delta's `proposed_state` but
+does not condition that syntactic field on the phase. It can therefore
+represent `resolved` in a corrector result; the reducer is intentionally the
+final authorization boundary.
+
+Runtime N's reducer derived permitted operations solely from the pinned phase
+and profile. A gate phase received its configured
+`review.finding_authority`; a non-review `correct` phase received no
+permitted operations. The reducer rejected the H002 resolve and failed closed
+before the requested `rereview` route. This is the required safety behavior.
+
+== Root cause and desired invariant
+
+The defect is the gap between enforced Finding-disposition authority and the
+facts and semantics presented to the agent. Known/current Findings were
+projected, but current-Hop disposition authority was not projected clearly and
+V3 did not define the meaning of its absence. In combination with a schema
+that can syntactically express all Finding states, that gap explains H002's
+otherwise valid correction plus unauthorized resolve proposal.
+
+The invariant is:
+
+----
+The prompt must truthfully project the current phase's admitted Finding
+disposition operations. An agent may change Finding state only through an
+operation named in that projection; empty authority means no authoritative
+Finding disposition in the Hop. The reducer remains the fail-closed,
+authoritative enforcement boundary and the phase/profile remains the sole
+source of that authority.
+----
+
+This is not a reducer defect, Finding-ID defect, consumer WorkItem defect,
+profile-authority defect, or provider failure. It does not require consumer
+task, policy, or profile authority widening.
+
+== Smallest runtime correction specification
+
+Do not implement this specification in this BUG record.
+
+. Add one always-present machine-projected prompt fact using the existing
+  profile term: `finding_authority=<comma-separated permitted operations>`.
+  Its value is derived from the current pinned phase/profile, not consumer
+  task text. A non-gate or otherwise disposition-free Hop emits
+  `finding_authority=` (empty). A gate rereview phase configured with resolve
+  emits `finding_authority=resolve`. Preserve the existing deterministic
+  operation ordering.
+. Revise the agent operating contract to say explicitly that this field is the
+  authority to authoritatively disposition an existing Finding; it is distinct
+  from knowing its run-local identity and from supplying correction evidence.
+  Empty means that no `resolve`, `residual`, `supersede`, or `reopen`
+  operation is permitted in that Hop.
+. State the correction choreography unambiguously: a corrector may edit and
+  commit within its scope, cite new evidence for `F001` in the normal summary
+  and result `evidence_refs`, submit no Finding disposition, and request
+  `rereview`. An independent rereviewer with `finding_authority=resolve`
+  may resolve `F001` only when its evidence establishes closure.
+. Retain the current result schema and reducer enforcement. The schema may
+  remain syntactically capable of representing a Finding delta whose operation
+  is unauthorized; the reducer must continue to reject it independently of
+  prompt wording.
+
+Under Runtime-N reducer semantics, re-sending `F001` as `open` with identical
+blocking/successor values is allowed without disposition authority. It is a
+same-state citation: it is a no-op if evidence is already present, otherwise it
+appends evidence and records `F001` in the Hop's delta IDs. It is not a
+resolve. The cleaner corrector result is nevertheless no Finding delta and
+separate correction evidence in the normal result fields; that avoids an
+unnecessary Finding-ledger update. The contract revision should say both facts
+so that evidence and disposition are not conflated.
+
+Changing the listed invocation facts and their Finding-authority semantics is
+a semantic operating-contract revision. The implementation should therefore
+ship a new current contract revision, conceptually V4, and update its identity,
+digest, loader, and tests. Exactly one current contract resource must be
+shipped. V3 remains historically reconstructable through repository history,
+not as a simultaneous current package API. This BUG does not create V4.
+
+== Non-goals
+
+This BUG must not be resolved by:
+
+* granting `resolve` authority to `correct` because it can edit or commit;
+* weakening or bypassing the reducer's fail-closed authorization check;
+* changing the source of authority from the pinned phase/profile to consumer
+  task text;
+* adding a selector, registry, runtime override, or a consumer authority
+  widening;
+* changing Runtime N, Core, source code, tests, governance, policy, profile,
+  WorkItems, tasks, or operating-contract resources as part of this
+  documentation step; or
+* resuming Attempt 3, creating a continuation WorkItem/state root, or
+  promoting a runtime.
+
+== Acceptance criteria for the future implementation
+
+* A prompt for a phase with no Finding disposition authority explicitly
+  projects empty/none authority.
+* A gate prompt with resolve authority explicitly projects `resolve`.
+* The revised contract distinguishes current-run Finding identity, evidence
+  about a Finding, and authority to disposition it.
+* Contract current-version identity, digest, and resource tests are updated
+  for the new revision, while the old revision remains historically
+  reconstructable.
+* The reducer still rejects an unauthorized resolve independently of prompt
+  text.
+* A deterministic vertical/replay test proves: review creates/open `F001`;
+  correct edits/commits without resolving it; rereview resolves it; then the
+  Run accepts/completes.
+* A negative test proves that a corrector attempt to resolve `F001` still
+  fails closed.
+* No consumer profile or policy authority widening is needed.
+* The full suite is green.
+
+== Lifecycle
+
+This BUG remains *OPEN*. The next permitted lifecycle step is bounded runtime
+implementation of the accepted BUG specification. Only after that work is
+independently reviewed and maintainer-promoted may a fresh continuation
+WorkItem and fresh Run be considered. Attempt 3 must not be resumed.
