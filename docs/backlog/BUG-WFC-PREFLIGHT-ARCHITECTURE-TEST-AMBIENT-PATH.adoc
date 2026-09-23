@@ -1,0 +1,117 @@
+= BUG-WFC-PREFLIGHT-ARCHITECTURE-TEST-AMBIENT-PATH -- Preflight Architecture Test Ambient PATH Dependency
+
+Type:: bug -- test / validation-harness defect
+Status:: closed (accepted fix)
+Date:: 2026-09-23
+Discovery context:: Provider-free Attempt-3 preparation, before Attempt 3 was
+started and before any Attempt-3 Run state was created.
+
+[IMPORTANT]
+====
+This is an ex-post lifecycle record. It was created after both the implementation
+fix and its independent review in order to preserve the audit trail of an actual
+observed failure. This BUG did not exist before commit
+`981286f93db8af9fba85e5bd915174a82b2b61be`; this record does not pretend
+otherwise.
+
+No result was reconstructed or upgraded merely to satisfy lifecycle form. The
+record preserves the failure observed during provider-free preparation and the
+already-completed independent acceptance recorded in
+`docs/backlog/BUG-WFC-PREFLIGHT-ARCHITECTURE-TEST-AMBIENT-PATH_review_001.adoc`.
+====
+
+== Classification
+
+This was a test / validation-harness defect. It was *not* a Coordinator
+production-semantics defect, *not* a governance defect, and *not* an Agent
+Operating Contract defect.
+
+Production behavior was intentional and remains unchanged:
+
+* repository policy defines trusted pytest evidence as
+  `python -m pytest -q`;
+* production `_preflight()` snapshots the inherited environment; and
+* evidence preparation resolves the authored executable `python` against the
+  snapshotted `PATH`.
+
+== Observed behavior
+
+The architecture tests in
+`tests/architecture/test_self_development_governance.py` invoke real production
+`_preflight()`. They accidentally depended on the ambient caller `PATH`
+containing an unqualified executable named `python`.
+
+When pytest itself was launched through an absolute virtual-environment Python
+while the inherited `PATH` was `/usr/bin:/bin`, `git` remained resolvable as
+`/usr/bin/git`, but `python` was unresolved. Both positive
+production-preflight architecture tests therefore failed during evidence-command
+preparation, before reaching their intended assertions. Rerunning under the
+intended WFC launch `PATH`, where the evidence interpreter was available as
+`python`, made the suite pass.
+
+The failure was detected by the provider-free gate. Attempt 3 had not started,
+no provider-capable Run had been created, and no Attempt-3 Run was contaminated.
+
+== Root cause
+
+The architecture proof did not establish its own deterministic
+evidence-command execution environment. It inherited an accidental machine and
+shell precondition: the process that launched pytest also had to expose an
+unqualified `python` on `PATH`, even when pytest itself had been launched using
+an absolute interpreter path.
+
+The production resolver correctly failed closed. The defect was solely in the
+test harness's setup of the environment needed to exercise that production
+behavior.
+
+== Accepted fix
+
+Fixed by:: `981286f93db8af9fba85e5bd915174a82b2b61be` --
+`test(architecture): stabilize preflight evidence path`
+Changed path::
+`tests/architecture/test_self_development_governance.py`
+Independent review::
+`docs/backlog/BUG-WFC-PREFLIGHT-ARCHITECTURE-TEST-AMBIENT-PATH_review_001.adoc`
+Review verdict:: ACCEPT
+
+The commit changes only the test module. Its scoped pytest fixture:
+
+* prepends `Path(sys.executable).parent` to `PATH`;
+* intentionally does not call `.resolve()`, so an active virtual-environment
+  interpreter path is not followed to a system interpreter directory that can
+  lose the virtual environment's `python` entry;
+* preserves the remainder of the inherited `PATH`, including access to `git`;
+* applies to both positive production-preflight tests and the negative
+  containment test; and
+* leaves real `_preflight()`, `snapshot_environment()`,
+  `prepare_evidence_commands()`, and executable resolution intact.
+
+The independent review found BLOCKING 0, IMPORTANT 0, MINOR 0, and INFO/WATCH
+0, and accepted the fix.
+
+== Authority and lifecycle boundary
+
+The fixture controls only the test process environment. It grants no runtime
+authority and changes no production resolution semantics. With the fixture
+absent, a direct invocation of real `_preflight()` under `PATH=/usr/bin:/bin`
+continues to reject the policy command because `python` cannot resolve.
+
+No Coordinator implementation, governance, profile, policy, WorkItem, task,
+Agent Operating Contract, Runtime N, or Core state was changed by the fix.
+
+This BUG is closed as an accepted test-only correction. Attempt 3 remained *NOT
+STARTED* throughout discovery, correction, and independent review. The next
+permitted lifecycle activity is fresh provider-free Attempt-3 preparation; it
+is not part of this record.
+
+== Ex-post provenance
+
+The implementation fix already existed when this BUG record was authored. The
+independent review had also already concluded with verdict ACCEPT before its
+artifact was persisted. These two documents provide durable auditability for
+that real sequence; they do not backdate the BUG, manufacture prior process, or
+upgrade any result for lifecycle appearance.
+
+Provider invocations beyond the current reviewer:: 0
+WFC invocations for this documentation follow-up:: 0
+Attempt-3 state root:: absent
