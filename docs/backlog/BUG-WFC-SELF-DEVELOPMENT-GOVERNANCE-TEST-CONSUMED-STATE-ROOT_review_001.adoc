@@ -1,0 +1,413 @@
+= BUG-WFC-SELF-DEVELOPMENT-GOVERNANCE-TEST-CONSUMED-STATE-ROOT -- Acceptance Review 001
+
+Independent adversarial review of
+`daf06dbe8551683653931801e22e1a23d8dd5aff`,
+`fix(governance): separate run launch state from permanent tests`.
+
+== Identity and scope
+
+Reviewed commit:: `daf06dbe8551683653931801e22e1a23d8dd5aff`
+Parent:: `31d0d244728afe2fb4e9057ffdabbc53d471b8f2` (verified: `git rev-parse
+daf06db^1` returns exactly this hash)
+Subject:: `fix(governance): separate run launch state from permanent tests`
+Files changed::
+* `tests/architecture/test_self_development_governance.py`
+* `governance/work-items/developer-ergonomics-review-004.yaml` (new)
+* `governance/work-items/developer-ergonomics-review-004-task.txt` (new)
+Confirmed via `git diff --stat 31d0d24..daf06db -- . ':!tests/architecture/test_self_development_governance.py' ':!governance/work-items/developer-ergonomics-review-004.yaml' ':!governance/work-items/developer-ergonomics-review-004-task.txt'`: empty output, i.e. no other file changed.
+Provider invocations by this review:: 0
+WFC invocations by this review:: 0
+Runtime, Attempt-5 historical state, and remote refs:: not touched by this review
+
+== Verdict
+
+*ACCEPTED.*
+
+* BLOCKING: 0
+* IMPORTANT: 0
+* MINOR: 0
+* INFO: 1 (durable-artifact reachability, disposed below as harmless)
+
+Exact candidate accepted:: `daf06dbe8551683653931801e22e1a23d8dd5aff`.
+Consumed-state-root BUG acceptance intent satisfied:: yes.
+Fresh-root protection remains intact:: yes.
+Attempt-6 new-Run/rereview semantics are valid:: yes.
+`durable_artifacts.review` mapping:: correct and harmless (see Q4 below).
+Runtime promotion required:: no.
+
+== 1. Consumed-state-root BUG disposition
+
+The only behavioral edit to the permanent architecture test is inside
+`test_attempt_5_bundle_passes_production_preflight`. Before:
+
+[source,python]
+----
+assert not state_root.exists()
+assert not Path(
+    "/home/stefan/wfc-state/"
+    "WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-003-20260923-01"
+).exists()
+----
+
+After:
+
+[source,python]
+----
+assert not state_root.exists()
+----
+
+(the trailing concrete-host-path assertion is deleted; nothing replaces it in
+that test).
+
+Findings:
+
+. The deleted assertion never exercised `_preflight()`. It checked a literal
+  filesystem path on the host running the suite, orthogonal to the
+  `tmp_path`-scoped `state_root` actually passed into `_preflight()` two lines
+  above. It contributed zero coverage of preflight rejection logic; it only
+  encoded "the real Attempt-5 Run has not started yet," a one-time operational
+  fact, as a permanent repository invariant. Removing it is not "deleting
+  useful coverage" -- it never was preflight coverage.
+. `grep -rn "/home/stefan/wfc-state" --include="*.py" .` returns no matches
+  anywhere in the tree. No concrete historical Attempt-5 or future Attempt-6
+  host state path remains encoded as a Python-level invariant. The path
+  remains only in historical/informational `.adoc` records (the BUG itself,
+  the Attempt-5 archive, and prior dogfood records), which is correct --
+  those are historical narrative, not executable invariants.
+. Isolated fresh-root preflight is still exercised and was strengthened:
+  `assert not state_root.exists()` was added immediately before the
+  `_preflight()` call in `test_current_self_development_bundle_passes_production_preflight`,
+  `test_attempt_5_bundle_passes_production_preflight`, and the new
+  `test_attempt_6_bundle_passes_production_preflight`, in addition to the
+  pre-existing post-call assertion. This confirms freshness both before and
+  after the (side-effect-free) preflight call.
+. Production preflight's rejection of an already-existing state root is now
+  covered by a genuine new behavioral test,
+  `test_production_preflight_rejects_consumed_isolated_state_root`, which
+  creates a real directory at the candidate `state_root` and asserts
+  `_preflight()` -- the actual production function imported from
+  `workflow_coordinator.operator` -- raises `OperatorPreflightError` matching
+  `"state root already exists; one-shot operator roots are never overwritten"`.
+  I traced this to `src/workflow_coordinator/operator.py:224-226`:
++
+[source,python]
+----
+state_root = Path(args.state_root).resolve()
+if state_root.exists():
+    raise OperatorPreflightError("state root already exists; one-shot operator roots are never overwritten")
+----
++
+  This check runs before `work_item`/`profile`/`policy`/`task` files are even
+  read, so the new test's use of the *default* (current) governing bundle
+  rather than the historical Attempt-5 bundle is immaterial to what it
+  exercises, and it is not a parallel fake -- it calls the real rejection
+  branch.
+. `test_attempt_5_bundle_passes_production_preflight` still reconstructs
+  Attempt-5's admissibility using an isolated `tmp_path` state root
+  (`tmp_path / "external-state" / "attempt-5"`), not the real consumed host
+  path. Attempt-5 preflight remains reconstructable even though the real
+  historical Attempt-5 root now exists on the host, because the test never
+  depended on the real path in the first place -- only the deleted assertion
+  did.
+. The operational launch-time requirement for a fresh real state root is not
+  weakened: production code in `operator.py` is untouched by this candidate
+  (confirmed by the file-scope diff above), and the new rejection test
+  demonstrates the guard still fires against a real pre-existing directory.
+
+Conclusion: the fix removes exactly the invalid permanent dependency on the
+concrete real Attempt-5 host path, replaces it with a strictly better
+behavioral test of the same production guard, and does not touch or weaken
+production preflight/fresh-root semantics.
+
+== 2. Attempt-6 semantics
+
+Verified directly against `governance/work-items/developer-ergonomics-review-004.yaml`,
+`governance/self-development/standalone-development-profile.yaml`, and
+`governance/self-development/repository-policy.yaml` (the latter two
+unmodified by this candidate):
+
+[cols="1,1,1",options="header"]
+|===
+|Field |Required |Actual
+
+|`work_item_id`
+|`WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-004`
+|matches
+
+|`initial_phase`
+|`rereview`
+|matches
+
+|`max_autonomous_hops`
+|3
+|matches
+
+|profile revision
+|2
+|`revision: "2"` in `standalone-development-profile.yaml`
+
+|policy revision
+|3
+|`revision: "3"` in `repository-policy.yaml`
+
+|policy ceiling
+|5
+|`max_autonomous_hops: 5` in `repository-policy.yaml`
+
+|Coordinator hard ceiling
+|5
+|`COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS = 5` in `src/workflow_coordinator/model.py:25`
+|===
+
+WorkItem scope in the YAML is exactly:
+`Makefile`, `README.md`, `pyproject.toml`, `scripts/wfc_snapshot.py`,
+`tests/unit/test_wfc_snapshot.py`, `tests/architecture/test_package_boundaries.py`,
+`docs/backlog/wfc_reviews` -- matches the required list exactly, in the same
+order, no additions.
+
+Profile topology in `standalone-development-profile.yaml` (unmodified) is
+exactly `review -> correct`, `correct -> rereview`,
+`rereview -> {accept, correct}`, matching the required topology and matching
+`test_attempt_6_bundle_passes_production_preflight`'s assertions.
+
+All of the above is exercised as a genuine production-preflight run (not a
+parallel/hand-rolled check) inside `test_attempt_6_bundle_passes_production_preflight`,
+which passed under `pytest tests/architecture/test_self_development_governance.py -v`
+(7 passed).
+
+== 3. New Run versus resume
+
+`rereview`'s profile entry declares `review: {purpose: "fresh disposition", ...,
+context: fresh}` (unmodified by this candidate), and `src/workflow_coordinator/model.py`'s
+`new_run()` constructs every `Run` with `findings: tuple[Finding, ...] = ()` by
+default -- there is no code path that seeds a new `Run`'s findings from a
+different `Run`, a different `state_root`, or a different `work_item_id`'s
+history. Because Attempt 6 preflights and would launch against a brand-new,
+distinct `state_root` and a brand-new `run_id`, `new_run()` guarantees
+`findings == ()` at Attempt-6's genesis regardless of Attempt-5's `F001`.
+
+`governance/work-items/developer-ergonomics-review-004-task.txt` additionally
+states in plain governance text: "Attempt 5 is frozen historical evidence
+only. Its F001 is not current Run state and must not be copied, reopened,
+imported, or reused, ... If the current repository is clean, request accept.
+... If it is not clean, create a fresh current-Run Finding ... and request
+correct."
+
+`grep -rn "F001|Attempt-5|Attempt 5" governance/` shows F001/Attempt-5 are
+referenced only as historical/advisory context in the new task file and the
+WorkItem's `authority_source` field -- never as a resumable identifier, never
+wired into any test fixture, WorkItem mapping, or Coordinator code path. No
+governance text, fixture, or Coordinator behavior imports or resumes
+Attempt-5 state.
+
+A NEW Run starting directly at `rereview` is semantically valid under current
+Coordinator/preflight behavior: `_preflight()` only requires
+`work_item.initial_phase in profile.phases` (true for `rereview`) and does not
+require that a Run have previously visited `review`. A clean Attempt-6
+rereviewer can therefore validly request `accept` with `findings == ()`
+inherited from nothing, or create a fresh Run-local Finding and request
+`correct` if a current defect is found.
+
+== 4. Durable-artifact mapping -- inspected, not assumed
+
+The WorkItem YAML maps only:
+
+[source,yaml]
+----
+durable_artifacts:
+  review:
+    - docs/backlog/wfc_reviews/WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-004/review.adoc
+----
+
+There is no `rereview` entry. I traced this against
+`src/workflow_coordinator/operator.py:255-282` (`_preflight`, unmodified by
+this candidate), the branch taken whenever `work_item.durable_artifacts is not
+None` (true here):
+
+[source,python]
+----
+for phase_key, phase_value in profile.phases.items():
+    paths = durable_artifacts.get(phase_key, ())
+    if phase_value.durable_artifact is DurableArtifact.REQUIRED and not paths:
+        raise OperatorPreflightError(...)
+    if phase_value.durable_artifact is DurableArtifact.NONE and paths:
+        raise OperatorPreflightError(...)
+    if any(not _within_scope(path, work_scope)
+           or not _within_scope(path, normalized_phase_scopes[phase_key])
+           for path in paths):
+        raise OperatorPreflightError(...)
+----
+
+This loop iterates *every declared phase in the shared profile*, not only
+phases reachable from `work_item.initial_phase`. `standalone-development-profile.yaml`
+declares `review.durable_artifact: required` and `rereview.durable_artifact:
+none` (unmodified). Consequently:
+
+* `phase_key = "review"`: `paths` is the one mapped WI-004 path (non-empty);
+  `REQUIRED` + non-empty is satisfied; the path is within both `work_scope`
+  and `review`'s `authorized_scope` (`docs/backlog/wfc_reviews`) -- passes.
+* `phase_key = "rereview"`: `paths = durable_artifacts.get("rereview", ())`
+  is empty (no `rereview` key in the mapping); `NONE` + empty is satisfied --
+  passes.
+
+Given the profile's actual topology (`review -> correct -> rereview ->
+{accept, correct}`, with nothing routing back into `review` or `investigate`),
+a Run whose `initial_phase` is `rereview` can never transition into `review`
+for the remainder of its lifetime: `correct` only routes to `rereview`, and
+`rereview` only routes to `accept` or `correct`. The mapped `review` artifact
+path is therefore mechanically dead for this specific Run's execution.
+
+Disposition: *(A) correct, harmless mapping* -- not stale or misleading
+governance. Reasoning:
+
+. `_preflight()`'s structural check validates the WorkItem's
+  `durable_artifacts` mapping against *every* phase the shared profile
+  declares, because the same profile file is reused across all
+  developer-ergonomics attempts with different `initial_phase` values
+  (Attempt 4/5 start at `review`; Attempt 6 starts at `rereview`). The
+  validator performs no reachability analysis from `initial_phase`; it cannot
+  distinguish "phase declared but unreachable from this WorkItem's start" from
+  "phase declared and reachable." Supplying the `review` mapping is therefore
+  a mandatory, harmless artifact of reusing this general-purpose profile, not
+  something specific to or newly introduced by this candidate (the mapping
+  mechanism and this exact validation loop are unmodified `operator.py` code
+  predating this commit).
+. The mapped path is a fresh, WI-004-scoped name
+  (`WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-004/review.adoc`), consistent with the
+  precedent already recorded in
+  `docs/backlog/BUG-WFC-PROFILE-DURABLE-ARTIFACT-INSTANCE-COUPLING.adoc`
+  (durable-artifact names must be per-instance, never reused across attempts).
+  It does not collide with, alias, or reinterpret any other attempt's review
+  artifact.
+. Because `review` is unreachable from `rereview` under the current topology,
+  no Hop in Attempt 6 will ever be authorized under `review`'s
+  `authorized_scope`/`authorized_actions`, so the mapping creates no authority
+  ambiguity, no spurious write requirement, and no preflight inconsistency at
+  runtime -- it is validated once, at admission, and then never referenced
+  again by the Run.
+. This is not a defect introduced by the candidate: the candidate does not
+  modify `operator.py`, the profile, or the policy. It is an existing,
+  general property of how a shared profile's structural validation composes
+  with a non-initial-reachable phase, correctly and harmlessly triggered by
+  Attempt-6's `rereview`-first WorkItem.
+
+I record this only as INFO, not a finding requiring correction: a future
+profile change that made phase-reachability-aware validation possible could
+simplify this, but nothing in this candidate requires or motivates that, and
+the task text explicitly forbids broadening profile/policy scope.
+
+== 5. Runtime boundary
+
+Runtime remains pinned at `d875026d2f8ea925788394e7385d1a6f2e77dee2`
+(referenced only in historical `.adoc` provenance records; not present as a
+submodule pointer or code reference touched by this candidate).
+`git diff --stat` for the candidate shows only the two governance files and
+the one test file changed -- no Runtime implementation, reducer/operator/
+vertical semantics, or Agent Operating Contract file is touched. WFC execution
+mechanics continue to be supplied by the already-accepted Runtime; the
+corrected architecture test and Attempt-6 governance are Development-repository
+inputs/evidence surfaces, and trusted pytest executes them against the
+Development/evidence environment (the `.venv` in this repository), not
+against Runtime. No Runtime promotion is required for this candidate.
+
+== 6. Regression quality
+
+Directly inspected (not trusted by name):
+
+* Old concrete-host-path assertion: confirmed gone (diff inspection, and
+  `grep -rn "/home/stefan/wfc-state" --include="*.py" .` returns nothing).
+* Isolated fresh-root preflight: still tested, and strengthened with an
+  additional pre-call `assert not state_root.exists()` in three tests.
+* Consumed isolated root rejection: behaviorally tested against real
+  `_preflight()` and the real `OperatorPreflightError` message text.
+* Attempt-5 preflight: remains reconstructable via an isolated `tmp_path`
+  root, independent of the real historical root's existence.
+* Attempt-6 preflight: genuinely production preflight -- imports and calls
+  `_preflight` from `workflow_coordinator.operator`, the same production
+  entry point used by every other test in the file; not a parallel/fake
+  implementation.
+* No new test depends on future operational state: `test_attempt_6_bundle_passes_production_preflight`
+  and `test_production_preflight_rejects_consumed_isolated_state_root` both
+  use `tmp_path`-scoped, self-contained fixtures; neither reads or depends on
+  any real host path, wall-clock time, or external Run state.
+
+== 7. Scope discipline
+
+Confirmed via `git diff --stat 31d0d24..daf06db -- . ':!tests/architecture/test_self_development_governance.py' ':!governance/work-items/developer-ergonomics-review-004.yaml' ':!governance/work-items/developer-ergonomics-review-004-task.txt'`
+(empty): no Runtime implementation, reducer/operator/vertical semantics, Agent
+Operating Contract V5, profile topology file, policy file, Makefile, README,
+or historical Attempt-5 record was changed by this candidate. The new task
+text (`developer-ergonomics-review-004-task.txt`) itself additionally
+reaffirms these same boundaries as explicit instructions to the future
+Attempt-6 agent.
+
+== Validation evidence
+
+=== Full suite
+
+[source,shell]
+----
+source .venv/bin/activate
+python -m pytest -q -v
+----
+
+Result:: `381 passed in 19.37s`
+
+=== Focused governance-test run
+
+[source,shell]
+----
+python -m pytest tests/architecture/test_self_development_governance.py -v
+----
+
+Result:: `7 passed in 0.60s` (includes both new tests:
+`test_attempt_6_bundle_passes_production_preflight` and
+`test_production_preflight_rejects_consumed_isolated_state_root`)
+
+=== Ruff
+
+[source,shell]
+----
+python -m ruff check .
+----
+
+Result:: `All checks passed!`
+
+=== Bounded ruff format check (per Makefile `format-check` target)
+
+[source,shell]
+----
+python -m ruff format --check scripts/wfc_snapshot.py \
+  tests/unit/test_wfc_snapshot.py tests/architecture/test_package_boundaries.py
+----
+
+Result:: `3 files already formatted`
+
+=== Whitespace check
+
+[source,shell]
+----
+git diff --check 31d0d244728afe2fb4e9057ffdabbc53d471b8f2..daf06dbe8551683653931801e22e1a23d8dd5aff
+----
+
+Result:: no output, exit 0
+
+== Disposition summary
+
+The candidate correctly fixes the consumed-real-state-root test lifecycle
+defect: it removes exactly the invalid permanent dependency on the concrete
+real Attempt-5 host path, adds a strictly stronger behavioral replacement test
+of the same production rejection branch, and touches no production
+preflight/fresh-root code. Attempt-6 governance is internally consistent,
+matches the required WorkItem/profile/policy/topology fields exactly, and by
+construction (`new_run()`'s `findings=()` default plus explicit task-text
+prohibition) cannot inherit Attempt-5's `F001`. The `durable_artifacts.review`
+mapping is correct and mechanically harmless despite being unreachable from
+`rereview`, because the shared profile's structural validator requires a
+mapping for every declared `REQUIRED` phase regardless of reachability from a
+given WorkItem's `initial_phase` -- a pre-existing, unmodified property of
+`operator.py`, not something this candidate introduces or needs to correct.
+No Runtime promotion is required. Full validation (pytest, ruff check, bounded
+ruff format check, `git diff --check`) passed cleanly. No WFC invocation,
+provider invocation, Runtime mutation, historical-state mutation, or remote
+push occurred during this review.
