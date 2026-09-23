@@ -17,6 +17,7 @@ from workflow_coordinator.operator import (
     _selected_ids,
     _within_scope,
 )
+from workflow_coordinator.model import COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GOVERNING_PATHS = (
@@ -152,8 +153,10 @@ def test_current_self_development_bundle_passes_production_preflight(
     exact_scope = (*IMPLEMENTATION_PATHS, REVIEW_NAMESPACE)
 
     assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
-    assert profile.revision == policy.revision == "2"
-    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 4
+    assert profile.revision == "2"
+    assert policy.revision == "3"
+    assert work_item.max_autonomous_hops == 4
+    assert policy.max_autonomous_hops == COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5
     assert tuple(profile.phases) == ("investigate", "review", "correct", "rereview")
     assert durable_artifacts == {"review": (REVIEW_ARTIFACT,)}
     assert tuple(components) == _selected_ids(profile) == ("developer", "reviewer")
@@ -228,7 +231,8 @@ def test_review_continuation_bundle_passes_production_preflight(
         *IMPLEMENTATION_PATHS,
         REVIEW_NAMESPACE,
     )
-    assert profile.revision == policy.revision == "2"
+    assert profile.revision == "2"
+    assert policy.revision == "3"
     assert durable_artifacts == {"review": (artifact,)}
     assert _within_scope(artifact, work_item.scope)
     assert _within_scope(artifact, review.authorized_scope)
@@ -262,7 +266,8 @@ def test_attempt_4_bundle_passes_production_preflight(
     assert work_item.work_item_id == "WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-002"
     assert work_item.initial_phase == "review"
     assert work_item.max_autonomous_hops == 3
-    assert profile.revision == policy.revision == "2"
+    assert profile.revision == "2"
+    assert policy.revision == "3"
     assert work_item.scope == policy.work_item_scope_ceiling == (
         *IMPLEMENTATION_PATHS,
         REVIEW_NAMESPACE,
@@ -299,8 +304,10 @@ def test_attempt_5_bundle_passes_production_preflight(
     artifact = f"{REVIEW_NAMESPACE}/WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-003/review.adoc"
     assert work_item.work_item_id == "WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-003"
     assert work_item.initial_phase == "review"
-    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 4
-    assert profile.revision == policy.revision == "2"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 5
+    assert COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5
+    assert profile.revision == "2"
+    assert policy.revision == "3"
     assert work_item.scope == policy.work_item_scope_ceiling == (
         *IMPLEMENTATION_PATHS,
         REVIEW_NAMESPACE,
