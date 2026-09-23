@@ -684,11 +684,14 @@ def test_changes_required_commit_is_limited_to_declared_review_artifact(tmp_path
     workflow = profile({
         "review": replace(
             phase({"correct": route("goto", "correct")}, review="gate"),
-            authorized_scope=("payload.txt", "review/report.md"),
+            authorized_scope=("review/report.md",),
             durable_artifact=DurableArtifact.REQUIRED,
             evidence=(),
         ),
-        "correct": phase({"done": route("complete")}),
+        "correct": replace(
+            phase({"done": route("complete")}),
+            authorized_scope=("payload.txt",),
+        ),
     })
     run = replace(run_for(workflow, budget=2), current_head=baseline)
     missing = run_one_hop(

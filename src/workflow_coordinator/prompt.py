@@ -15,9 +15,9 @@ CONTEXT_LIMIT_BYTES = 196_608
 DIFF_LIMIT_BYTES = 65_536
 DIFF_FILE_LIMIT = 12
 CONTRACT_ID = "workflow_coordinator.agent_operating_contract"
-CONTRACT_VERSION = 4
-RESOURCE = "resources/agent_operating_contract_v4.txt"
-REVIEWED_SHA256 = "3eb98dddce9a976d7adeb0be35f893cdb04e2d8da1125b2622302ad0a5eeb43c"
+CONTRACT_VERSION = 5
+RESOURCE = "resources/agent_operating_contract_v5.txt"
+REVIEWED_SHA256 = "1c3104057a717383ea6e664cd328172aab1442ae4e5771b1ee42c9f97920d324"
 
 
 class CoordinatorResourceError(RuntimeError):
@@ -51,7 +51,7 @@ def load_agent_operating_contract() -> AgentOperatingContract:
 
     try:
         content = (
-            resources.files(__package__) / "resources" / "agent_operating_contract_v4.txt"
+            resources.files(__package__) / "resources" / "agent_operating_contract_v5.txt"
         ).read_bytes()
     except (OSError, TypeError) as error:
         raise CoordinatorResourceError("Coordinator operating contract resource is unavailable") from error

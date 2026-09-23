@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-from dataclasses import fields
+from dataclasses import fields, replace
 
 import pytest
 
@@ -32,6 +32,7 @@ pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 LEGACY_V1_SHA256 = "058fde8651898afa170160b35d4c6969459130652a69cac1ae2f6112d8e5a194"
 LEGACY_V2_SHA256 = "c5f3657812b10a2a5367382c5b02db7586bb1917bae3674519c05b130fd0029b"
 LEGACY_V3_SHA256 = "b5ae6d229afb15f02c9915ffd818a36a752165b3c6a635ac7a1a71a43f49390f"
+LEGACY_V4_SHA256 = "3eb98dddce9a976d7adeb0be35f893cdb04e2d8da1125b2622302ad0a5eeb43c"
 V4_INVOCATION_FACTS = (
     b"The Coordinator projects these invocation facts: WorkItem ID, Run ID, Hop ID,\n"
     b"invocation ID, base HEAD, phase, authorized_scope, authorized_actions,\n"
@@ -85,6 +86,17 @@ V4_FINDING_AUTHORITY_BLOCK = (
     b"choreography remains configuration-driven; no particular phase name or route is\n"
     b"implied by this contract.\n"
 )
+V5_CURRENT_HOP_AUTHORITY_BLOCK = (
+    b"\n"
+    b"authorized_scope and authorized_actions govern effects performed during the\n"
+    b"current Hop. A requested_route selects an admitted workflow transition; it does\n"
+    b"not perform the target phase's work in the current Hop. The Coordinator projects\n"
+    b"the target phase's authority separately only if and when that Hop executes. Do\n"
+    b"not infer or manufacture target-phase authority, and do not escalate merely\n"
+    b"because anticipated work in a future phase would exceed current-Hop mutation\n"
+    b"authority. Escalate when the current Hop itself needs an effect outside its\n"
+    b"projected authority.\n"
+)
 
 
 class _Resource:
@@ -117,8 +129,17 @@ def _package(contract: AgentOperatingContract):
     )
 
 
-def _reconstruct_legacy_v3_bytes() -> bytes:
+def _reconstruct_legacy_v4_bytes() -> bytes:
     current = load_agent_operating_contract().text.encode("utf-8")
+    assert current.count(b"version=5\n") == 1
+    assert current.count(V5_CURRENT_HOP_AUTHORITY_BLOCK) == 1
+    return current.replace(b"version=5\n", b"version=4\n", 1).replace(
+        V5_CURRENT_HOP_AUTHORITY_BLOCK, b"", 1
+    )
+
+
+def _reconstruct_legacy_v3_bytes() -> bytes:
+    current = _reconstruct_legacy_v4_bytes()
     assert current.count(b"version=4\n") == 1
     assert current.count(V4_INVOCATION_FACTS) == 1
     assert current.count(V4_FINDING_AUTHORITY_BLOCK) == 1
@@ -144,13 +165,13 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
 
     assert (CONTRACT_ID, CONTRACT_VERSION, RESOURCE) == (
         "workflow_coordinator.agent_operating_contract",
-        4,
-        "resources/agent_operating_contract_v4.txt",
+        5,
+        "resources/agent_operating_contract_v5.txt",
     )
     assert first.text.startswith(
         "[agent_operating_contract]\n"
         "contract_id=workflow_coordinator.agent_operating_contract\n"
-        "version=4\n"
+        "version=5\n"
     )
     assert first == second and first is not second
     assert first.sha256 == REVIEWED_SHA256
@@ -159,7 +180,7 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
         "contract_id": CONTRACT_ID,
         "version": CONTRACT_VERSION,
         "resource": RESOURCE,
-        "byte_count": 4842,
+        "byte_count": 5409,
         "sha256": REVIEWED_SHA256,
     }
     normalized = " ".join(first.text.split())
@@ -168,6 +189,13 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
         "authorized_actions describe the allowed effects and work during the current Hop",
         "permitted_routes describe only the allowed disposition or exit from the current Hop",
         "A sole permitted route named review does not make the current Hop review-only",
+        "authorized_scope and authorized_actions govern effects performed during the current Hop",
+        "A requested_route selects an admitted workflow transition",
+        "it does not perform the target phase's work in the current Hop",
+        "The Coordinator projects the target phase's authority separately only if and when that Hop executes",
+        "Do not infer or manufacture target-phase authority",
+        "do not escalate merely because anticipated work in a future phase would exceed current-Hop mutation authority",
+        "Escalate when the current Hop itself needs an effect outside its projected authority",
         "Evidence names identify Coordinator-owned trusted evidence",
         "The Coordinator prepares and executes trusted evidence separately according to admitted policy",
         "Agent-side tests and checks may be useful exploratory validation, but they are not Coordinator-trusted evidence",
@@ -205,7 +233,23 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
     assert "human_gates" not in first.text
 
 
-def test_legacy_v3_contract_bytes_remain_exact_and_cannot_pass_v4_digest(monkeypatch):
+def test_legacy_v4_contract_bytes_remain_exact_and_cannot_pass_v5_digest(monkeypatch):
+    legacy = _reconstruct_legacy_v4_bytes()
+    assert len(legacy) == 4842
+    assert hashlib.sha256(legacy).hexdigest() == LEGACY_V4_SHA256
+    assert legacy.startswith(
+        b"[agent_operating_contract]\n"
+        b"contract_id=workflow_coordinator.agent_operating_contract\n"
+        b"version=4\n"
+    )
+    assert LEGACY_V4_SHA256 != REVIEWED_SHA256
+
+    monkeypatch.setattr(prompt.resources, "files", lambda _package: _Resource(legacy))
+    with pytest.raises(CoordinatorResourceError, match="resource is unavailable"):
+        load_agent_operating_contract()
+
+
+def test_legacy_v3_contract_bytes_remain_exact_and_cannot_pass_v5_digest(monkeypatch):
     legacy = _reconstruct_legacy_v3_bytes()
     assert len(legacy) == 3490
     assert hashlib.sha256(legacy).hexdigest() == LEGACY_V3_SHA256
@@ -221,7 +265,7 @@ def test_legacy_v3_contract_bytes_remain_exact_and_cannot_pass_v4_digest(monkeyp
         load_agent_operating_contract()
 
 
-def test_legacy_v2_contract_bytes_remain_exact_and_cannot_pass_v4_digest(monkeypatch):
+def test_legacy_v2_contract_bytes_remain_exact_and_cannot_pass_v5_digest(monkeypatch):
     legacy = _reconstruct_legacy_v2_bytes()
     assert len(legacy) == 2445
     assert hashlib.sha256(legacy).hexdigest() == LEGACY_V2_SHA256
@@ -296,6 +340,47 @@ def test_prompt_places_complete_contract_once_after_header_before_consumers_and_
         "Return one JSON structured_result_v1 envelope; prose cannot replace fields."
     )
     assert package.agent_operating_contract == contract.provenance()
+
+
+def test_review_prompt_separates_current_hop_authority_from_correct_route_target():
+    contract = load_agent_operating_contract()
+    workflow = profile(
+        {
+            "rereview": replace(
+                phase({"correct": route("goto", "correct")}, review="gate"),
+                authorized_scope=("review/report.md",),
+                authorized_actions=("review",),
+                evidence=(),
+            ),
+            "correct": replace(
+                phase({"rereview": route("goto", "rereview")}),
+                authorized_scope=("future-only/path.txt",),
+                authorized_actions=("edit", "commit"),
+                evidence=(),
+            ),
+        }
+    )
+    current = workflow.phases["rereview"]
+    package = assemble_prompt(
+        run_for(workflow),
+        current,
+        {
+            "worker": PromptComponent("worker", "worker.txt", "HEAD", "worker"),
+            "testing": PromptComponent("testing", "testing.txt", "HEAD", "testing"),
+        },
+        agent_operating_contract=contract,
+        invocation=Invocation("RUN-1", "H001", "INV-1"),
+        task_payload="review the bounded change",
+    )
+
+    assert "phase=rereview\n" in package.text
+    assert "authorized_scope=review/report.md\n" in package.text
+    assert "authorized_actions=review\n" in package.text
+    assert "permitted_routes=correct\n" in package.text
+    assert "future-only/path.txt" not in package.text
+    normalized = " ".join(package.text.split())
+    assert "it does not perform the target phase's work in the current Hop" in normalized
+    assert "do not escalate merely because anticipated work in a future phase" in normalized
 
 
 def test_contract_is_not_subject_to_component_omission_limits():

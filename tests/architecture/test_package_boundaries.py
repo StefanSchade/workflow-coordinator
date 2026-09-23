@@ -27,9 +27,9 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 EXECUTABLE_MODULES = ("operator", "proof_harness", "codex_adapter_smoke")
 ACCEPTED_CONTRACT = {
     "contract_id": "workflow_coordinator.agent_operating_contract",
-    "version": 4,
-    "byte_count": 4842,
-    "sha256": "3eb98dddce9a976d7adeb0be35f893cdb04e2d8da1125b2622302ad0a5eeb43c",
+    "version": 5,
+    "byte_count": 5409,
+    "sha256": "1c3104057a717383ea6e664cd328172aab1442ae4e5771b1ee42c9f97920d324",
 }
 
 
@@ -111,14 +111,14 @@ def test_a3_resource_identity_and_provenance_are_exact() -> None:
     assert prompt.__package__ == "workflow_coordinator"
     resource = importlib.resources.files(prompt.__package__) / prompt.RESOURCE
     data = resource.read_bytes()
-    assert len(data) == 4842
+    assert len(data) == 5409
     assert contract.provenance() == {
         **ACCEPTED_CONTRACT,
-        "resource": "resources/agent_operating_contract_v4.txt",
+        "resource": "resources/agent_operating_contract_v5.txt",
     }
     assert data.decode("utf-8") == contract.text
     assert sorted(
         path.name
         for path in resource.parent.iterdir()
         if path.name.startswith("agent_operating_contract_v")
-    ) == ["agent_operating_contract_v4.txt"]
+    ) == ["agent_operating_contract_v5.txt"]
