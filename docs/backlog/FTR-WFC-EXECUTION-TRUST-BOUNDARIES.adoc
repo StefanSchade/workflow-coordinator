@@ -1,0 +1,115 @@
+= FTR-WFC-EXECUTION-TRUST-BOUNDARIES -- Execution Trust Boundaries
+
+Type:: future technical record
+Status:: proposed / backlog / deferred
+Priority:: deferred; revisit when the stated requirements become concrete
+Date:: 2026-09-23
+Recorded now:: WFC self-development dogfooding and broader security review make
+the distinction between repository mutation scope and later execution trust
+important to preserve before autonomous operation broadens.
+
+== Thesis
+
+Agent visibility, mutation authority, and execution authority are distinct
+trust dimensions and must not be conflated. Ordinary repository path scope is
+necessary but is not sufficient to model all of them, especially where an
+agent-authored artifact can later execute in a more trusted context.
+
+== Trust dimensions
+
+Visibility / read authority:: What repository source, data, and contextual
+information an agent may observe. This includes protected source, datasets,
+credentials, and any surrounding context from which sensitive information can
+be inferred.
+
+Mutation / write authority:: Which files, paths, metadata, Git-adjacent
+surfaces, or other state an agent may modify. Repository/path mutation scope
+is an important current boundary, but it describes only this dimension.
+
+Execution authority:: Which agent-influenced code or configuration may later
+execute, and under which trust context. This dimension includes the authority
+of the later process, its readable data, credentials, filesystem, and network
+access.
+
+== Indirect-execution threat model
+
+A restricted agent can remain dangerous even when direct protected-data access
+is forbidden. It may modify an indirect-execution surface such as Git hooks,
+CI configuration, test discovery/configuration, `conftest.py`, Makefiles,
+build hooks, packaging hooks, Docker/container build or runtime configuration,
+or scripts later run by a trusted maintainer or service.
+
+For example, an agent that cannot directly access protected data can write a
+test, build step, or hook that exfiltrates it. A later trusted test/build
+service executes that artifact with protected data, credentials, filesystem
+access, or network access. The service then becomes a confused deputy. Path
+scope alone does not express this trust transition.
+
+== Candidate design direction (not an accepted implementation)
+
+Potential mechanisms to investigate include Linux namespace/sandboxing such as
+`bwrap`; physically sealing sensitive data from agent visibility; making
+indirect-execution-sensitive surfaces read-only by default; no ambient
+credentials; no network by default where practical; trusted test/build
+harnesses with fixed entry points; separate execution environments for
+agent-authored code; and explicit elevation when protected context or
+sensitive mutation is genuinely required.
+
+There must be *no automatic unlock*. When a task genuinely requires mutation
+of an execution-sensitive surface or protected context, the agent must
+explicitly escalate, a maintainer/operator must authorize the widened context,
+and that widened run must be distinguishable from ordinary sandboxed runs.
+Before trusted execution or promotion, targeted adversarial review should
+examine the newly opened attack surface.
+
+Candidate, non-final event vocabulary is:
+
+----
+requires_protected_read
+requires_execution_surface_mutation
+requires_network
+requires_trusted_test_context
+----
+
+This record neither implements nor schema-commits that vocabulary.
+
+== Trusted test-service boundary
+
+A trusted test service must not become a confused deputy. Where applicable,
+prefer a fixed trusted harness, no network egress, no credentials, protected
+data mounted only when required, a bounded filesystem, and execution of
+agent-authored tests/code with the least authority necessary. If agent-authored
+code must run against protected context, treat it as a distinct trust
+transition rather than ordinary test execution.
+
+== Deployment implication
+
+A cheap/cloud model can often develop generic application, UI, or integration
+code against a bounded internal API without receiving protected source or data.
+Self-hosted execution is needed only when a task genuinely requires protected
+context. This is an architectural option, not a mandatory deployment topology.
+
+== Relationship to existing WFC boundaries
+
+This extends rather than replaces declarative phase authority, repository/path
+mutation scope, Coordinator-owned Git mutation, trusted evidence, and
+independent review. The additional concern is indirect execution and explicit
+trust transitions; it does not replace repository policy, prompt/contract
+authority, or review.
+
+== Non-goals
+
+This FTR does not:
+
+* mandate `bwrap` specifically;
+* implement sandboxing;
+* replace repository policy, prompt/contract authority, or review;
+* guarantee protection against all malicious code;
+* define a complete secret-management system; or
+* require all development to be self-hosted.
+
+== Deferred priority and revisit trigger
+
+No immediate implementation is authorized. Revisit this backlog record when
+protected-data workflows, untrusted-agent containment, trusted test services,
+CI mutation, or broader autonomous operation become concrete requirements.
