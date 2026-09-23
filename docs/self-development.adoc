@@ -45,3 +45,105 @@ Run. Bootstrap B2 validates it provider-free but does not execute it. The
 current adapter's `--sandbox workspace-write` request remains provider-owned
 behavior; it is not trusted Coordinator-owned containment of the host or
 environment.
+
+== Runtime promotion runbook
+
+Development and Runtime are separate clones with separate Git directories and
+object stores (see Topology and preparation). Runtime executes an accepted
+Development commit and stays detached; it never mutates itself.
+
+=== Promotion target
+
+Promotion always targets the exact commit that was independently accepted as
+the desired Runtime implementation identity -- never latest `main`, the
+current Development HEAD, a `git pull`, or a `checkout main`. The maintainer
+selects that commit explicitly.
+
+Review and lifecycle-closure commits may legitimately exist on
+Development/`main` after the accepted implementation commit. That is expected
+shape, not drift:
+
+----
+Development/main:
+
+    implementation
+        e57796c
+           |
+        review
+        8ae4444
+           |
+        closure
+        0012da1
+
+Runtime:
+
+    detached HEAD -> e57796c
+----
+
+The implementation commit is the executable identity; review and closure
+commits are durable repository/governance history that record acceptance and
+disposition, but they are not part of what Runtime executes.
+
+=== Mechanism
+
+Promotion is local and does not require GitHub. The maintainer fetches the
+exact target commit from Development into Runtime and checks it out detached:
+
+[source,shell]
+----
+DEV="$HOME/repos/spreadsheet-handling/workflow-coordinator"
+RUNTIME="$HOME/repos/spreadsheet-handling/workflow-coordinator-runtime"
+TARGET="<exact accepted implementation commit>"
+
+git -C "$RUNTIME" fetch --no-tags "$DEV" "$TARGET"
+git -C "$RUNTIME" checkout --detach "$TARGET"
+----
+
+`TARGET` is always an explicit commit hash, never a branch name or `HEAD`.
+
+Pushing Development history to GitHub (implementation -> review -> closure)
+and promoting Runtime are independent maintainer actions, performable in
+either order. Pushing the closure commit never implies that Runtime should
+move to it.
+
+=== Preconditions
+
+* Development worktree clean.
+* Runtime worktree clean.
+* The accepted implementation commit exists in Development.
+* Runtime is currently detached.
+* `remote.origin.pushurl` on Runtime remains `DISABLED`.
+* The maintainer has separately accepted the implementation/review lifecycle
+  for that commit.
+
+=== Postconditions
+
+* Runtime HEAD equals the exact target commit.
+* Runtime worktree clean.
+* Runtime still detached.
+* `remote.origin.pushurl` remains `DISABLED`.
+
+Promotion remains maintainer-owned and never automatic; Runtime never
+promotes or mutates itself.
+
+=== Normal lifecycle
+
+----
+develop in Development N+1
+    ->
+independent review
+    ->
+lifecycle acceptance/closure
+    ->
+select exact accepted executable commit
+    ->
+maintainer promotes Runtime N
+    ->
+repository history may be pushed independently
+    ->
+later Run uses promoted Runtime N
+----
+
+A maintainer returning later can use this shape to understand why
+Development/`main` and Runtime HEAD intentionally differ, and to repeat the
+promotion safely.
