@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -107,7 +108,20 @@ def _preflight_args(
     )
 
 
-def test_current_self_development_bundle_passes_production_preflight(tmp_path: Path):
+@pytest.fixture
+def preflight_python_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Expose this test environment's invoked interpreter as policy `python`."""
+
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join((str(Path(sys.executable).parent), os.environ.get("PATH", ""))),
+    )
+
+
+def test_current_self_development_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
     repository, expected_head = _materialize_bundle(tmp_path)
 
     state_root = tmp_path / "external-state" / "new-run"
@@ -168,7 +182,10 @@ def test_current_self_development_bundle_passes_production_preflight(tmp_path: P
     assert not state_root.exists()
 
 
-def test_review_continuation_bundle_passes_production_preflight(tmp_path: Path):
+def test_review_continuation_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
     repository, expected_head = _materialize_bundle(
         tmp_path,
         governing_paths=CONTINUATION_GOVERNING_PATHS,
@@ -203,7 +220,10 @@ def test_review_continuation_bundle_passes_production_preflight(tmp_path: Path):
     assert not state_root.exists()
 
 
-def test_work_item_mapping_cannot_enlarge_review_phase_authority(tmp_path: Path):
+def test_work_item_mapping_cannot_enlarge_review_phase_authority(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
     outside_artifact = "docs/backlog/outside_wfc_review.adoc"
     work_item = yaml.safe_load(_current_text(GOVERNING_PATHS[0]))
     work_item["scope"].append(outside_artifact)
