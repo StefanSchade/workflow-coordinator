@@ -1,0 +1,416 @@
+= BUG-WFC-FINDING-AUTHORITY-PROMPT-PROJECTION -- Acceptance Review 001
+
+Fresh independent adversarial acceptance review of the bounded runtime
+implementation of
+`docs/backlog/BUG-WFC-FINDING-AUTHORITY-PROMPT-PROJECTION.adoc`.
+
+Reviewed from repository truth -- committed diff, committed contract bytes,
+production `prompt._header`, production `reducer.reduce_result` /
+`_apply_finding_deltas`, production `serialization._review`, Git history of
+every historical contract revision, built and installed package artifacts, and
+independently executed validation -- not from the implementation summary.
+
+Review only; no implementation, no repair, no dogfood execution, no provider
+invocation, no promotion, no closure, no push, no continuation WorkItem, no
+Attempt-3 resumption.
+
+== Identity
+
+* Candidate: `e57796cfc82df38d0b0eefee86099890c484cace`
+  -- `fix(prompt): project Finding disposition authority`
+* Baseline / parent: `56afccc08c56e78b0bd6037eb04925734a0ac3fa`
+  -- `docs(backlog): preserve deferred WFC hardening concepts`
+* Primary specification: `docs/backlog/BUG-WFC-FINDING-AUTHORITY-PROMPT-PROJECTION.adoc`
+* Frozen incident: `docs/backlog/first_wfc_on_wfc_dogfood_attempt_3_2026-09-23.adoc`,
+  `RUN-5733283c7bdd4f9fa0f466423c321dd5`
+* Boundary / non-goal: `docs/backlog/FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA.adoc`
+* Runtime N: `c6e3f245b57f7898be9fd00afb5b780c91cb7492`, clean,
+  pushurl DISABLED -- unchanged across this review
+* Core: `ad91eeb067752ae4773f86927071dd6c3aaf8621`, clean -- unchanged
+* Frozen Attempt-3 state root
+  `/home/stefan/wfc-state/WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-001-20260923-01`
+  -- read-only, unchanged
+* Worktree at review start and at review end: clean, HEAD exactly as expected
+* Provider invocations: 0
+* WFC Runs started or resumed: 0
+
+== Verdict
+
+*ACCEPTED.* Suitable for subsequent maintainer BUG closure and runtime
+promotion. This artifact performs neither.
+
+BLOCKING 0, IMPORTANT 0, MINOR 3, INFO/WATCH 3.
+
+Every BUG acceptance criterion is met. The projection is configuration-driven,
+authority is not widened anywhere, the reducer remains the independent
+fail-closed boundary, exactly one current contract resource ships with the
+claimed provenance, and the deferred FTR was not implemented. No MINOR or
+INFO finding touches the authority model or gates acceptance.
+
+== Independent reconstruction of the Attempt-3 failure
+
+Reconstructed from production code without reusing the frozen state root. A
+gate `review` phase with `finding_authority: [resolve]` created blocking/open
+`F001`; the Run then entered a `review: null` correction phase; that phase
+proposed `F001 -> resolved` alongside a valid `rereview` route request.
+
+`reducer.reduce_result` derives authority solely from the pinned phase: a
+non-review phase falls to `authority = FindingAuthority.AGENT` with
+`permitted_operations = ()` (`reducer.py:378-380`), `_finding_operation`
+classifies `open -> resolved` as `resolve` (`reducer.py:90`), and
+`_may_dispose` returns `False` for AGENT (`reducer.py:99-108`).
+
+Observed stop reason, byte-identical to the frozen record:
+
+----
+mechanical_preemption:invalid_finding_delta:agent cannot perform Finding operation resolve
+----
+
+`F001` remained `FindingState.OPEN` and the Hop recorded
+`finding_delta_ids == ()`. The diagnosis in the BUG record is confirmed: the
+reducer was correct; the gap was projection, not enforcement.
+
+== Prompt-projection assessment
+
+`prompt._header` (`prompt.py:114-127`) is unconditional, so every assembled
+prompt carries exactly one machine `finding_authority=` fact line.
+`vertical.run_one_hop` is the sole prompt-assembly seam
+(`vertical.py:165`), and the operator drives it, so no Hop can bypass it.
+
+Independently observed:
+
+* non-review phase -- exactly one header line `finding_authority=`
+* gate phase with `[resolve]` -- exactly one header line `finding_authority=resolve`
+* gate phase with `[resolve, reopen]` -- `finding_authority=resolve,reopen`,
+  admitted profile order preserved, no re-sorting
+
+The value is derived from `phase.review.finding_authority` only. Production
+sources contain no phase-name literal for `review`, `correct`, `rereview`,
+`investigate`, or `independent_review`; grep over
+`src/workflow_coordinator/*.py` returns nothing. The projection therefore
+follows admitted configuration, not choreography.
+
+Duplicate projection is removed rather than added: `operator.py:389` previously
+emitted a second, conditional `finding_authority=` line inside
+`_reconstructed_context`, which is exactly the line whose absence for a
+`review: null` phase caused the incident. The one-line deletion is correct and
+leaves the reconstructed context emitting `review_authority` and
+`blocking_policy` only. No conflicting projection remains.
+
+Header field order matches the order the V4 contract enumerates
+(`... permitted_routes, finding_authority, evidence names, output_contract`).
+
+== Authority assessment
+
+No widening on any surface.
+
+* `edit`/`commit` in `authorized_actions` has no path to Finding disposition;
+  `reduce_result` never consults `authorized_actions` for authority.
+* A non-review phase still receives `permitted_operations = ()`.
+* Consumer task/component text is not an authority source; the projected value
+  is read from the pinned `Phase`, and the contract retains "These
+  Coordinator-level rules prevail over any conflicting consumer task or
+  component text."
+* No selector, registry, or runtime override was introduced.
+* `reducer.py`, `serialization.py`, `model.py`, and `adapter.py` are untouched
+  by the candidate; reducer semantics are neither weakened nor bypassed.
+* Enforcement verified by execution, not by trusting tests: the corrector
+  resolve is rejected with the exact Attempt-3 stop reason, and an advisory
+  review proposing `resolve` is rejected identically.
+
+== V4 contract assessment
+
+`src/workflow_coordinator/resources/agent_operating_contract_v4.txt` adds two
+paragraphs and one invocation-fact name. It generically separates the three
+concepts the BUG requires:
+
+* identity -- "A run-local finding_id identifies an authoritative current-Run
+  Finding."
+* evidence -- "A Hop may report evidence or summary information concerning a
+  Finding as permitted by the result protocol."
+* authority -- "Only operations named by the projected finding_authority may
+  authoritatively change Finding state."
+
+Empty authority is unambiguous: "An empty projected value, finding_authority=,
+means no authoritative Finding disposition operation is permitted in this Hop,
+including resolve, residual, supersede, or reopen." The enumeration matches
+`_finding_operation` exactly.
+
+The non-goal is stated directly: "Correction, edit, or commit authority does
+not imply Finding disposition authority."
+
+Correction evidence is explicitly not disposition: the disposition-free
+correction Hop is told to report evidence through `evidence_refs` and summary
+and to "normally submit no Finding delta merely to state that the correction
+addressed a Finding."
+
+The same-state-citation sentence was checked against the reducer rather than
+accepted: `_apply_finding_deltas` takes the `same_state` branch
+(`reducer.py:192-216`) without consulting `_may_dispose`, so citing an existing
+open Finding to append evidence is genuinely permitted without disposition
+authority. The contract's preference for the cleaner no-delta form is
+correctly advisory, not authority-bearing.
+
+No concrete choreography is encoded. No phase name and no route name appears;
+the text closes with "Workflow choreography remains configuration-driven; no
+particular phase name or route is implied by this contract." Adversarial
+re-reading found no wording that implies authority beyond the projected
+configuration.
+
+== Verified provenance and digest
+
+Recomputed independently from the working tree, from the installed package,
+and from the built wheel and sdist -- all three agree:
+
+----
+contract_id: workflow_coordinator.agent_operating_contract
+version:     4
+resource:    resources/agent_operating_contract_v4.txt
+byte_count:  4842
+sha256:      3eb98dddce9a976d7adeb0be35f893cdb04e2d8da1125b2622302ad0a5eeb43c
+----
+
+The loader pins the same digest (`prompt.REVIEWED_SHA256`) and fails closed via
+`CoordinatorResourceError` on any mismatch, both in `load_agent_operating_
+contract` and again in `assemble_prompt`.
+
+== Package-resource result
+
+Exactly one current Agent Operating Contract resource ships. V3 does not remain
+beside V4.
+
+* working tree `src/workflow_coordinator/resources/` -- only
+  `agent_operating_contract_v4.txt`
+* `git ls-tree -r HEAD` -- one contract resource path
+* installed package resources -- `['agent_operating_contract_v4.txt']`
+* wheel -- `workflow_coordinator/resources/agent_operating_contract_v4.txt`,
+  4842 bytes, digest as above
+* sdist -- the same single path
+
+The packaging guard in `tests/architecture/test_package_boundaries.py` asserts
+the `agent_operating_contract_v*` listing equals `["agent_operating_contract_
+v4.txt"]`, so a resurrected V3 resource fails the suite.
+
+== Historical reconstruction result
+
+V3 reconstruction is exact and non-tautological. `_reconstruct_legacy_v3_bytes`
+derives V3 from the live V4 bytes by three pinned surgical substitutions and is
+then checked against a pinned length and digest:
+
+----
+V3: byte_count 3490, sha256 b5ae6d229afb15f02c9915ffd818a36a752165b3c6a635ac7a1a71a43f49390f
+----
+
+Both values were verified against repository truth by extracting
+`56afccc:src/workflow_coordinator/resources/agent_operating_contract_v3.txt`
+and recomputing -- they match exactly.
+
+The test is drift-detecting rather than circular because the literal V3
+invocation-facts paragraph is embedded in the test, and every byte V4 shares
+with V3 must survive reconstruction for the pinned digest to hold. Accidental
+edits to any shared paragraph therefore break the test; edits confined to the
+new V4-only block are correctly caught by the V4 digest test instead.
+
+V2 and V1 remain intact and chain off the V3 reconstruction. Both were also
+verified against Git history rather than trusted:
+
+----
+V2: byte_count 2445, sha256 c5f3657812b10a2a5367382c5b02db7586bb1917bae3674519c05b130fd0029b  (added in f196c90)
+V1: byte_count 1688, sha256 058fde8651898afa170160b35d4c6969459130652a69cac1ae2f6112d8e5a194  (added in 9a771f6)
+----
+
+Each legacy reconstruction additionally asserts that the legacy bytes cannot
+pass the current loader.
+
+== Reducer fail-closed result
+
+Independently executed, not inferred from tests:
+
+* `review: null` phase proposing `F001 -> resolved` ->
+  `mechanical_preemption:invalid_finding_delta:agent cannot perform Finding operation resolve`;
+  `F001` stays OPEN; `finding_delta_ids == ()`
+* advisory review phase proposing `F001 -> resolved` -> identical rejection
+* gate phase whose `finding_authority` omits `resolve` -> rejection at the
+  `reduce`/`run_one_hop` level (`tests/unit/test_slice5b.py:1298`)
+* `tests/unit/test_reducer.py:62` proves the same at the
+  `apply_finding_deltas` API level
+
+Rejection precedes route application in all cases and is reached with no
+reference to prompt text, so enforcement is independent of prompt wording.
+
+== Replay / convergence result
+
+`tests/architecture/test_replays.py::test_replay_j_non_domain_specific_complex_
+profile_converges_generically` proves the sequence on a fixture profile whose
+vocabulary is its own (`bug_investigation`, `fix`, `independent_review`,
+`correction`, `rereview`): Finding open -> disposition-free correction
+(`result("rereview")` with no delta) -> `correction.findings[0].state is OPEN`
+and `correction.hops[-1].finding_delta_ids == ()` -> authorized fresh rereview
+-> resolve -> `RunStatus.COMPLETED`. It also asserts the production sources stay
+domain-neutral.
+
+`tests/unit/test_slice5b.py::test_integrated_non_dmc_four_hop_convergence_uses_
+fresh_context_and_truthful_evidence` proves the same end-to-end through
+`run_serial_hops`, including the operator-reconstructed context, with
+`finding_delta_ids == [(), ("F001",), (), ("F001",)]`, final state `resolved`,
+evidence `("review-observation", "fresh-rereview")`, and `COMPLETED`. Its H003
+Hop asserts `"finding_authority=resolve" not in request.prompt` and its H004
+Hop asserts `"finding_authority=resolve" in request.prompt`, so the projection
+is exercised inside the convergence path.
+
+Genericity is carried by configuration, not by phase names: the three new
+prompt tests use `arbitrary_worker`, `arbitrary_gate`, and `unnamed_gate`, and
+no production source hard-codes a phase name.
+
+== Structured-result boundary
+
+The deferred FTR was not implemented, correctly.
+`adapter.validated_result(raw, expected)` still takes no `Phase` and performs
+no phase-scoped narrowing; `ROUTING_RESULT_ENVELOPE_CONTRACT` is unchanged; a
+`proposed_state` of `resolved` remains syntactically expressible in any Hop.
+The reducer remains the final authorization boundary, and no automatic
+repair or sanitization was added.
+
+== Scope / collateral change
+
+Eight files changed, each justified by this BUG:
+
+* `src/workflow_coordinator/prompt.py` -- projection plus V4 identity/digest
+* `src/workflow_coordinator/operator.py` -- one-line removal of the now
+  duplicate conditional projection
+* `resources/agent_operating_contract_v3.txt -> _v4.txt` -- semantic revision
+* five test files -- provenance, projection, choreography, packaging
+
+Unchanged: governance authority, profiles, repository policy, WorkItems/tasks,
+deferred FTR semantics, Core, Runtime N checkout, frozen Attempt-3 evidence,
+reducer, serialization, model, adapter. No unnecessary production change was
+found; the production delta is 13 changed lines plus the contract text.
+
+`git diff --check 56afccc..e57796c` -- clean, exit 0.
+
+== Findings
+
+=== BLOCKING (0)
+
+None.
+
+=== IMPORTANT (0)
+
+None.
+
+=== MINOR
+
+*MINOR-1 -- the projection re-derives authority with a weaker rule than the
+reducer.*
+
+`prompt._header` uses `phase.review.finding_authority if phase.review is not
+None else ()`. `reduce_result` instead yields `()` for an ADVISORY review
+regardless of the descriptor's `finding_authority` (`reducer.py:370-380`).
+Constructed directly, an advisory phase carrying `finding_authority=("resolve",)`
+projects `finding_authority=resolve` while the reducer rejects the resolve --
+an untruthful projection.
+
+Non-gating and not reachable through an admitted profile:
+`serialization._review` rejects advisory plus non-empty authority with
+"advisory review cannot carry Finding disposition authority", and
+`workflow_profile_from_yaml` is the only production profile source. The
+truthfulness invariant nevertheless now rests on a validator in a different
+module rather than on one shared derivation.
+
+Suggested (not performed): a single `effective_finding_authority(phase)` helper
+consumed by both `_header` and `reduce_result`, plus a guard test asserting the
+projected value equals the reducer's admitted operations for gate, advisory,
+and non-review phases.
+
+*MINOR-2 -- a tautological assertion in the integrated convergence test.*
+
+`tests/unit/test_slice5b.py:414` asserts `"finding_authority=" in
+request.prompt`. The V4 contract body itself contains the literal
+`finding_authority=,` (contract line 45), so that substring is present in every
+prompt regardless of what the header projects; the assertion cannot fail.
+
+Non-gating: the empty-authority acceptance criterion is proven
+non-tautologically by
+`test_prompt_projects_explicit_empty_finding_authority_for_non_review_phase`,
+which counts exact header lines, and the neighbouring negative assertion at
+line 415 is meaningful. The line should become a whole-line or count assertion.
+
+*MINOR-3 -- no regression guard against re-introducing duplicate projection.*
+
+The three new prompt tests count `finding_authority=` lines in the header block
+only (`package.text.split("\n\n", 1)[0]`). Nothing counts machine
+`finding_authority=` fact lines across the whole assembled prompt including the
+operator-reconstructed `[context]` block -- which is precisely where the
+removed duplicate lived. Restoring the deleted `operator.py` line would fail no
+test.
+
+Non-gating: for a gate phase the restored line would carry the same value, so
+no conflicting projection would arise today. It is still the exact surface this
+candidate changed and deserves a guard.
+
+=== INFO / WATCH
+
+*INFO-1 -- empty authority versus genuinely new Findings.* Creating a Finding
+in state `open` maps to operation `None` (`reducer.py:82`) and stays permitted
+without disposition authority. The new V4 paragraph enumerates only
+resolve/residual/supersede/reopen, and the permission to propose a new Finding
+is carried by the older V3 paragraph. Combined reading is correct; watch for an
+agent in a disposition-free Hop withholding a genuinely new blocking Finding.
+
+*INFO-2 -- ordering asymmetry.* `permitted_routes` is `sorted()`;
+`finding_authority` preserves admitted profile order. Both are deterministic,
+and the latter matches both the removed operator line and the reducer's
+order-independent membership test. Noted so that a future "consistency" change
+does not silently alter projected prompt text.
+
+*INFO-3 -- fixture vocabulary.* `tests/fixtures/slice5b_non_dmc.yaml`
+(unchanged by this candidate) uses `investigate`/`review`/`correct`/`rereview`,
+mirroring the self-development choreography. Genericity is nevertheless proven
+independently by replay J's distinct vocabulary, by the three new
+arbitrarily-named prompt phases, and by the absence of phase-name literals in
+production sources.
+
+== Independent validation
+
+All commands executed in a disposable environment built from the repository's
+own declared requirements; no repository requirement was missing and no
+validation was weakened.
+
+[cols="2,3",options="header"]
+|===
+|Check |Result
+
+|Focused: prompt projection, operating contract, reducer Finding authority,
+vertical/replay convergence, package boundaries
+|120 passed
+
+|Full suite `pytest`
+|375 passed, 0 failed
+
+|`ruff check .` (Makefile `lint`)
+|All checks passed
+
+|`ruff format --check` on the documented bounded file set (Makefile
+`format-check`)
+|3 files already formatted
+
+|`git diff --check 56afccc..e57796c`
+|clean, exit 0
+
+|Package build and install, wheel and sdist resource inspection
+|exactly one contract resource, digest exact
+
+|Independent reducer fail-closed reproduction
+|Attempt-3 stop reason reproduced byte-identically
+
+|Independent V1/V2/V3 digest verification against Git history
+|all three exact
+|===
+
+== Lifecycle
+
+The BUG's acceptance criteria are met. The next permitted step is maintainer
+BUG closure and runtime promotion, performed outside this review. This review
+performed no closure, no promotion, no push, and started no WFC Run. The three
+MINOR findings and three INFO/WATCH notes are recorded for optional future
+hardening; none of them gates acceptance or affects the authority model.
