@@ -56,6 +56,15 @@ ATTEMPT_5_GOVERNING_PATHS = (
     "governance/self-development/prompts/developer.txt",
     "governance/self-development/prompts/reviewer.txt",
 )
+ATTEMPT_6_GOVERNING_PATHS = (
+    "governance/work-items/developer-ergonomics-review-004.yaml",
+    "governance/self-development/standalone-development-profile.yaml",
+    "governance/self-development/repository-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/developer-ergonomics-review-004-task.txt",
+    "governance/self-development/prompts/developer.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
 IMPLEMENTATION_PATHS = (
     "Makefile",
     "README.md",
@@ -146,6 +155,7 @@ def test_current_self_development_bundle_passes_production_preflight(
     state_root = tmp_path / "external-state" / "new-run"
     args = _preflight_args(repository, expected_head, state_root)
 
+    assert not state_root.exists()
     result = _preflight(args)
     work_item, profile, policy = result[5:8]
     components, durable_artifacts = result[8:10]
@@ -291,6 +301,7 @@ def test_attempt_5_bundle_passes_production_preflight(
     )
     state_root = tmp_path / "external-state" / "attempt-5"
 
+    assert not state_root.exists()
     result = _preflight(_preflight_args(
         repository,
         expected_head,
@@ -319,10 +330,62 @@ def test_attempt_5_bundle_passes_production_preflight(
     assert tuple(profile.phases["correct"].routes) == ("rereview",)
     assert tuple(profile.phases["rereview"].routes) == ("accept", "correct")
     assert not state_root.exists()
-    assert not Path(
-        "/home/stefan/wfc-state/"
-        "WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-003-20260923-01"
-    ).exists()
+
+
+def test_attempt_6_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=ATTEMPT_6_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "attempt-6"
+
+    assert not state_root.exists()
+    result = _preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=ATTEMPT_6_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+
+    assert work_item.work_item_id == "WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-004"
+    assert work_item.initial_phase == "rereview"
+    assert work_item.max_autonomous_hops == 3
+    assert profile.revision == "2"
+    assert policy.revision == "3"
+    assert policy.max_autonomous_hops == COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5
+    assert work_item.scope == policy.work_item_scope_ceiling == (
+        *IMPLEMENTATION_PATHS,
+        REVIEW_NAMESPACE,
+    )
+    assert durable_artifacts == {
+        "review": (
+            f"{REVIEW_NAMESPACE}/WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-004/review.adoc",
+        ),
+    }
+    assert tuple(profile.phases["review"].routes) == ("correct",)
+    assert tuple(profile.phases["correct"].routes) == ("rereview",)
+    assert tuple(profile.phases["rereview"].routes) == ("accept", "correct")
+    assert not state_root.exists()
+
+
+def test_production_preflight_rejects_consumed_isolated_state_root(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    repository, expected_head = _materialize_bundle(tmp_path)
+    state_root = tmp_path / "external-state" / "consumed-run"
+    state_root.mkdir(parents=True)
+
+    with pytest.raises(
+        OperatorPreflightError,
+        match="state root already exists; one-shot operator roots are never overwritten",
+    ):
+        _preflight(_preflight_args(repository, expected_head, state_root))
 
 
 def test_work_item_mapping_cannot_enlarge_review_phase_authority(
