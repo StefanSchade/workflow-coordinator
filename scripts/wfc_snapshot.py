@@ -53,8 +53,7 @@ def _files(repository: Path, output: Path) -> list[Path]:
             continue
         relative = path.relative_to(repository)
         if any(
-            part in EXCLUDED_DIRECTORIES or part.endswith(".egg-info")
-            for part in relative.parts
+            part in EXCLUDED_DIRECTORIES or part.endswith(".egg-info") for part in relative.parts
         ):
             continue
         try:
@@ -77,9 +76,7 @@ def _tree(repository: Path, output: Path) -> str:
 
     def visit(directory: Path, prefix: str, depth: int) -> None:
         entries = []
-        for path in sorted(
-            directory.iterdir(), key=lambda item: (not item.is_dir(), item.name)
-        ):
+        for path in sorted(directory.iterdir(), key=lambda item: (not item.is_dir(), item.name)):
             if (
                 path == output
                 or path.name in EXCLUDED_DIRECTORIES
@@ -110,9 +107,7 @@ def _render_snapshot(title: str, sections: list[tuple[str, str]]) -> str:
 
     for index, (label, _) in enumerate(sections):
         heading = f"==== File: {label} ===="
-        target = next(
-            number for number, line in enumerate(lines, start=1) if line == heading
-        )
+        target = next(number for number, line in enumerate(lines, start=1) if line == heading)
         lines[6 + index] = f"{target:06d} | {label}"
     numbered = (f"{number:06d} | {line}" for number, line in enumerate(lines, start=1))
     return "\n".join(numbered) + "\n"
@@ -140,9 +135,7 @@ def create_snapshots(repository: Path, output: Path) -> list[Path]:
         written.append(destination)
     tree_destination = output / "wfc_repository_tree.txt"
     tree_destination.write_text(
-        _render_snapshot(
-            "wfc_repository_tree", [("<repository tree>", _tree(repository, output))]
-        ),
+        _render_snapshot("wfc_repository_tree", [("<repository tree>", _tree(repository, output))]),
         encoding="utf-8",
     )
     written.append(tree_destination)

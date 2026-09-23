@@ -22,9 +22,7 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
         "def test_value(): pass\n", encoding="utf-8"
     )
     (repository / "docs" / "guide.md").write_text("# Guide\n", encoding="utf-8")
-    (repository / "governance" / "policy.yaml").write_text(
-        "version: 1\n", encoding="utf-8"
-    )
+    (repository / "governance" / "policy.yaml").write_text("version: 1\n", encoding="utf-8")
     (repository / "README.md").write_text("# Example\n", encoding="utf-8")
     (repository / ".git").mkdir()
     (repository / ".git" / "config").write_text("ignored\n", encoding="utf-8")
@@ -54,13 +52,9 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
     }
     for path in output.iterdir():
         lines = path.read_text(encoding="utf-8").splitlines()
-        assert all(
-            line.startswith(f"{number:06d} | ") for number, line in enumerate(lines, 1)
-        )
+        assert all(line.startswith(f"{number:06d} | ") for number, line in enumerate(lines, 1))
         toc_heading = next(
-            number
-            for number, line in enumerate(lines)
-            if line.endswith("Table of Contents")
+            number for number, line in enumerate(lines) if line.endswith("Table of Contents")
         )
         toc_entries = lines[toc_heading + 3 :]
         for line in toc_entries:
@@ -70,12 +64,10 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
             target, label = entry.split(" | ", 1)
             target_number = int(target)
             assert lines[target_number - 1].endswith(f"==== File: {label} ====")
-    assert "src/workflow_coordinator/module.py" in (
-        output / "wfc_source_and_tests.txt"
-    ).read_text(encoding="utf-8")
-    assert "docs/guide.md" in (output / "wfc_docs_and_governance.txt").read_text(
+    assert "src/workflow_coordinator/module.py" in (output / "wfc_source_and_tests.txt").read_text(
         encoding="utf-8"
     )
+    assert "docs/guide.md" in (output / "wfc_docs_and_governance.txt").read_text(encoding="utf-8")
     tree = (output / "wfc_repository_tree.txt").read_text(encoding="utf-8")
     assert "repository/" in tree
     assert ".git" not in tree

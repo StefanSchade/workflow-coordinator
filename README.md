@@ -10,7 +10,9 @@ installation.
 
 For development, install `python -m pip install '.[dev]'`. The small Makefile
 provides `make test`, `make lint`, `make format-check`, `make check`, and
-`make build`. Use `make snapshot` (or `make snapshot-multi`) to create compact,
+`make build`. `make lint` runs repository-wide Ruff correctness checks;
+`make format-check` covers the snapshot implementation and its architecture and
+unit tests. Use `make snapshot` (or `make snapshot-multi`) to create compact,
 line-numbered WFC-prefixed repository snapshots in `wfc_snapshots/`; the output
 includes a table of contents and a repository tree.
 

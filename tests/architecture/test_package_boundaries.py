@@ -81,18 +81,14 @@ def test_production_uses_relative_imports_without_source_bootstrap() -> None:
         REPOSITORY_ROOT / "tests/unit/test_operator.py",
         REPOSITORY_ROOT / "tests/unit/test_a2_evidence_commands.py",
     ):
-        assert '"workflow_coordinator.evidence.' not in test_path.read_text(
-            encoding="utf-8"
-        )
+        assert '"workflow_coordinator.evidence.' not in test_path.read_text(encoding="utf-8")
 
 
 def test_all_modules_import_under_final_identity_only() -> None:
     names = [workflow_coordinator.__name__]
     names.extend(
         item.name
-        for item in pkgutil.walk_packages(
-            workflow_coordinator.__path__, "workflow_coordinator."
-        )
+        for item in pkgutil.walk_packages(workflow_coordinator.__path__, "workflow_coordinator.")
     )
     for name in names:
         module = importlib.import_module(name)
@@ -122,6 +118,7 @@ def test_a3_resource_identity_and_provenance_are_exact() -> None:
     }
     assert data.decode("utf-8") == contract.text
     assert sorted(
-        path.name for path in resource.parent.iterdir()
+        path.name
+        for path in resource.parent.iterdir()
         if path.name.startswith("agent_operating_contract_v")
     ) == ["agent_operating_contract_v3.txt"]

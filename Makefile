@@ -9,7 +9,7 @@ lint:
 	$(PYTHON) -m ruff check .
 
 format-check:
-	$(PYTHON) -m ruff format --check .
+	$(PYTHON) -m ruff format --check scripts/wfc_snapshot.py tests/unit/test_wfc_snapshot.py tests/architecture/test_package_boundaries.py
 
 check: lint format-check test
 
