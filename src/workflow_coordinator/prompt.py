@@ -15,9 +15,9 @@ CONTEXT_LIMIT_BYTES = 196_608
 DIFF_LIMIT_BYTES = 65_536
 DIFF_FILE_LIMIT = 12
 CONTRACT_ID = "workflow_coordinator.agent_operating_contract"
-CONTRACT_VERSION = 3
-RESOURCE = "resources/agent_operating_contract_v3.txt"
-REVIEWED_SHA256 = "b5ae6d229afb15f02c9915ffd818a36a752165b3c6a635ac7a1a71a43f49390f"
+CONTRACT_VERSION = 4
+RESOURCE = "resources/agent_operating_contract_v4.txt"
+REVIEWED_SHA256 = "3eb98dddce9a976d7adeb0be35f893cdb04e2d8da1125b2622302ad0a5eeb43c"
 
 
 class CoordinatorResourceError(RuntimeError):
@@ -51,7 +51,7 @@ def load_agent_operating_contract() -> AgentOperatingContract:
 
     try:
         content = (
-            resources.files(__package__) / "resources" / "agent_operating_contract_v3.txt"
+            resources.files(__package__) / "resources" / "agent_operating_contract_v4.txt"
         ).read_bytes()
     except (OSError, TypeError) as error:
         raise CoordinatorResourceError("Coordinator operating contract resource is unavailable") from error
@@ -113,6 +113,7 @@ def _selected_ids(phase: Phase) -> tuple[str, ...]:
 
 def _header(run: Run, phase: Phase, invocation: Invocation) -> str:
     routes = ", ".join(sorted(phase.routes))
+    finding_authority = phase.review.finding_authority if phase.review is not None else ()
     return (
         "[identity]\n"
         f"work_item_id={run.work_item_id}\nrun_id={invocation.run_id}\n"
@@ -120,7 +121,8 @@ def _header(run: Run, phase: Phase, invocation: Invocation) -> str:
         f"base_head={run.current_head}\n"
         f"phase={run.phase}\nauthorized_scope={','.join(phase.authorized_scope)}\n"
         f"authorized_actions={','.join(phase.authorized_actions)}\n"
-        f"permitted_routes={routes}\nevidence={','.join(phase.evidence)}\n"
+        f"permitted_routes={routes}\nfinding_authority={','.join(finding_authority)}\n"
+        f"evidence={','.join(phase.evidence)}\n"
         "output_contract=structured_result_v1\n"
     )
 

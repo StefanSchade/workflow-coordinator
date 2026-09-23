@@ -360,15 +360,15 @@ def test_replay_j_non_domain_specific_complex_profile_converges_generically():
         ),
         role="independent reviewer",
     ).run
-    run = process(
+    correction = process(
         run,
         workflow,
-        result(
-            "rereview",
-            findings=(delta("F001", "open", invariant="Bug reproduces.", evidence="correction"),),
-        ),
+        result("rereview"),
         role="corrector",
     ).run
+    assert correction.findings[0].state is FindingState.OPEN
+    assert correction.hops[-1].finding_delta_ids == ()
+    run = correction
     run = process(
         run,
         workflow,

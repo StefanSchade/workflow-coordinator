@@ -31,6 +31,21 @@ pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
 LEGACY_V1_SHA256 = "058fde8651898afa170160b35d4c6969459130652a69cac1ae2f6112d8e5a194"
 LEGACY_V2_SHA256 = "c5f3657812b10a2a5367382c5b02db7586bb1917bae3674519c05b130fd0029b"
+LEGACY_V3_SHA256 = "b5ae6d229afb15f02c9915ffd818a36a752165b3c6a635ac7a1a71a43f49390f"
+V4_INVOCATION_FACTS = (
+    b"The Coordinator projects these invocation facts: WorkItem ID, Run ID, Hop ID,\n"
+    b"invocation ID, base HEAD, phase, authorized_scope, authorized_actions,\n"
+    b"permitted_routes, finding_authority, evidence names, and output_contract. The\n"
+    b"[workflow_policy] block supplies durable_artifact. The result schema is supplied\n"
+    b"through the adapter.\n"
+)
+V3_INVOCATION_FACTS = (
+    b"The Coordinator projects these invocation facts: WorkItem ID, Run ID, Hop ID,\n"
+    b"invocation ID, base HEAD, phase, authorized_scope, authorized_actions,\n"
+    b"permitted_routes, evidence names, and output_contract. The [workflow_policy]\n"
+    b"block supplies durable_artifact. The result schema is supplied through the\n"
+    b"adapter.\n"
+)
 V3_FINDING_IDENTITY_BLOCK = (
     b"\nfinding_id is a run-local authoritative identifier. A non-null finding_id may\n"
     b"be used only when that exact ID is present in the authoritative Finding state\n"
@@ -47,6 +62,28 @@ V3_FINDING_IDENTITY_BLOCK = (
     b"Run state. Do not fabricate a Finding delta merely to record that implementation\n"
     b"work addressed a historical review concern; record that fact in summary and/or\n"
     b"evidence_refs unless it represents a genuinely new current-Run Finding.\n"
+)
+V4_FINDING_AUTHORITY_BLOCK = (
+    b"\n"
+    b"Finding identity, Finding evidence, and Finding disposition authority are\n"
+    b"distinct. A run-local finding_id identifies an authoritative current-Run\n"
+    b"Finding. A Hop may report evidence or summary information concerning a Finding\n"
+    b"as permitted by the result protocol. Only operations named by the projected\n"
+    b"finding_authority may authoritatively change Finding state. An empty projected\n"
+    b"value, finding_authority=, means no authoritative Finding disposition operation\n"
+    b"is permitted in this Hop, including resolve, residual, supersede, or reopen.\n"
+    b"\n"
+    b"Correction, edit, or commit authority does not imply Finding disposition\n"
+    b"authority. In a disposition-free correction Hop, perform the bounded correction,\n"
+    b"report correction evidence through normal result evidence_refs and summary\n"
+    b"fields, and normally submit no Finding delta merely to state that the correction\n"
+    b"addressed a Finding. Request the configured next route and leave authoritative\n"
+    b"Finding disposition to a later phase that has the configured authority. A\n"
+    b"same-state citation of an existing open Finding may add evidence without\n"
+    b"disposition authority, but an unnecessary Finding-ledger update is less clear\n"
+    b"than reporting correction evidence in the normal result fields. Workflow\n"
+    b"choreography remains configuration-driven; no particular phase name or route is\n"
+    b"implied by this contract.\n"
 )
 
 
@@ -80,8 +117,20 @@ def _package(contract: AgentOperatingContract):
     )
 
 
-def _reconstruct_legacy_v2_bytes() -> bytes:
+def _reconstruct_legacy_v3_bytes() -> bytes:
     current = load_agent_operating_contract().text.encode("utf-8")
+    assert current.count(b"version=4\n") == 1
+    assert current.count(V4_INVOCATION_FACTS) == 1
+    assert current.count(V4_FINDING_AUTHORITY_BLOCK) == 1
+    return (
+        current.replace(b"version=4\n", b"version=3\n", 1)
+        .replace(V4_INVOCATION_FACTS, V3_INVOCATION_FACTS, 1)
+        .replace(V4_FINDING_AUTHORITY_BLOCK, b"", 1)
+    )
+
+
+def _reconstruct_legacy_v2_bytes() -> bytes:
+    current = _reconstruct_legacy_v3_bytes()
     assert current.count(b"version=3\n") == 1
     assert current.count(V3_FINDING_IDENTITY_BLOCK) == 1
     return current.replace(b"version=3\n", b"version=2\n", 1).replace(
@@ -95,13 +144,13 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
 
     assert (CONTRACT_ID, CONTRACT_VERSION, RESOURCE) == (
         "workflow_coordinator.agent_operating_contract",
-        3,
-        "resources/agent_operating_contract_v3.txt",
+        4,
+        "resources/agent_operating_contract_v4.txt",
     )
     assert first.text.startswith(
         "[agent_operating_contract]\n"
         "contract_id=workflow_coordinator.agent_operating_contract\n"
-        "version=3\n"
+        "version=4\n"
     )
     assert first == second and first is not second
     assert first.sha256 == REVIEWED_SHA256
@@ -110,7 +159,7 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
         "contract_id": CONTRACT_ID,
         "version": CONTRACT_VERSION,
         "resource": RESOURCE,
-        "byte_count": 3490,
+        "byte_count": 4842,
         "sha256": REVIEWED_SHA256,
     }
     normalized = " ".join(first.text.split())
@@ -134,6 +183,15 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
         "If the current Run has no authoritative Findings, do not resolve or otherwise disposition a historical Finding label as current Run state",
         "Do not fabricate a Finding delta merely to record that implementation work addressed a historical review concern",
         "record that fact in summary and/or evidence_refs",
+        "Finding identity, Finding evidence, and Finding disposition authority are distinct",
+        "A run-local finding_id identifies an authoritative current-Run Finding",
+        "A Hop may report evidence or summary information concerning a Finding",
+        "Only operations named by the projected finding_authority may authoritatively change Finding state",
+        "finding_authority=, means no authoritative Finding disposition operation is permitted in this Hop",
+        "Correction, edit, or commit authority does not imply Finding disposition authority",
+        "normally submit no Finding delta merely to state that the correction addressed a Finding",
+        "Request the configured next route",
+        "Workflow choreography remains configuration-driven",
         "git commit --amend",
         "Read-only Git inspection is allowed",
         "prevail over any conflicting consumer task or component text",
@@ -147,7 +205,23 @@ def test_production_loader_has_exact_identity_prologue_digest_and_repeatability(
     assert "human_gates" not in first.text
 
 
-def test_legacy_v2_contract_bytes_remain_exact_and_cannot_pass_v3_digest(monkeypatch):
+def test_legacy_v3_contract_bytes_remain_exact_and_cannot_pass_v4_digest(monkeypatch):
+    legacy = _reconstruct_legacy_v3_bytes()
+    assert len(legacy) == 3490
+    assert hashlib.sha256(legacy).hexdigest() == LEGACY_V3_SHA256
+    assert legacy.startswith(
+        b"[agent_operating_contract]\n"
+        b"contract_id=workflow_coordinator.agent_operating_contract\n"
+        b"version=3\n"
+    )
+    assert LEGACY_V3_SHA256 != REVIEWED_SHA256
+
+    monkeypatch.setattr(prompt.resources, "files", lambda _package: _Resource(legacy))
+    with pytest.raises(CoordinatorResourceError, match="resource is unavailable"):
+        load_agent_operating_contract()
+
+
+def test_legacy_v2_contract_bytes_remain_exact_and_cannot_pass_v4_digest(monkeypatch):
     legacy = _reconstruct_legacy_v2_bytes()
     assert len(legacy) == 2445
     assert hashlib.sha256(legacy).hexdigest() == LEGACY_V2_SHA256

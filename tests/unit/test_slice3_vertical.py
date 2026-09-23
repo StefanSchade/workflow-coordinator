@@ -76,6 +76,70 @@ def test_prompt_projects_current_hop_actions_separately_from_exit_routes():
     assert "\npermitted_routes=review\n" in header
 
 
+def test_prompt_projects_explicit_empty_finding_authority_for_non_review_phase():
+    workflow = profile({"arbitrary_worker": phase({"next": route("complete")})})
+    current = workflow.phases["arbitrary_worker"]
+    package = assemble_prompt(
+        run_for(workflow),
+        current,
+        components(("worker", 1), ("testing", 1)),
+        invocation=invocation(),
+        agent_operating_contract=load_agent_operating_contract(),
+        task_payload="task",
+    )
+    header = package.text.split("\n\n", 1)[0]
+
+    assert header.splitlines().count("finding_authority=") == 1
+
+
+def test_prompt_projects_configured_finding_authority_independent_of_phase_name():
+    workflow = profile(
+        {
+            "arbitrary_gate": phase(
+                {"next": route("complete")},
+                review="gate",
+                finding_authority=("resolve",),
+            )
+        }
+    )
+    current = workflow.phases["arbitrary_gate"]
+    package = assemble_prompt(
+        run_for(workflow),
+        current,
+        components(("worker", 1), ("testing", 1)),
+        invocation=invocation(),
+        agent_operating_contract=load_agent_operating_contract(),
+        task_payload="task",
+    )
+    header = package.text.split("\n\n", 1)[0]
+
+    assert header.splitlines().count("finding_authority=resolve") == 1
+
+
+def test_prompt_preserves_admitted_finding_authority_operation_order():
+    workflow = profile(
+        {
+            "unnamed_gate": phase(
+                {"next": route("complete")},
+                review="gate",
+                finding_authority=("resolve", "reopen"),
+            )
+        }
+    )
+    current = workflow.phases["unnamed_gate"]
+    package = assemble_prompt(
+        run_for(workflow),
+        current,
+        components(("worker", 1), ("testing", 1)),
+        invocation=invocation(),
+        agent_operating_contract=load_agent_operating_contract(),
+        task_payload="task",
+    )
+    header = package.text.split("\n\n", 1)[0]
+
+    assert header.splitlines().count("finding_authority=resolve,reopen") == 1
+
+
 def test_prompt_contract_distinguishes_current_run_finding_ids_from_historical_labels():
     workflow = profile({"work": phase({"done": route("complete")})})
     package = assemble_prompt(

@@ -386,7 +386,6 @@ def _reconstructed_context(
             (
                 f"review_authority={phase.review.authority.value}",
                 f"blocking_policy={phase.review.blocking_policy}",
-                f"finding_authority={','.join(phase.review.finding_authority)}",
             )
         )
     for finding in run.findings:

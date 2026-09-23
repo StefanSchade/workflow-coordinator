@@ -411,12 +411,12 @@ class ScriptedConvergenceAdapter:
             }
         elif hop == "H003":
             assert "finding=F001|state=open|blocking=true" in request.prompt
+            assert "finding_authority=" in request.prompt
+            assert "finding_authority=resolve" not in request.prompt
             self.repository.joinpath("payload.txt").write_text("corrected\n")
             result_value = {
                 **common, "outcome": "completed", "requested_route": "rereview",
-                "findings": [{"finding_id": "F001", "invariant": "Payload must satisfy the generic invariant.",
-                              "blocking": True, "proposed_state": "open",
-                              "evidence_refs": ["correction-evidence"]}],
+                "findings": [],
                 "commit_intent": {"paths": ["payload.txt"],
                                   "subject": "fix(workflow): WI-GENERIC-5B H003 correct"},
                 "summary": "correction supplied evidence without disposition",
@@ -424,6 +424,7 @@ class ScriptedConvergenceAdapter:
         else:
             assert hop == "H004"
             assert "prior_hop=H003" in request.prompt
+            assert "finding_authority=resolve" in request.prompt
             result_value = {
                 **common, "outcome": "completed", "requested_route": "accept",
                 "findings": [{"finding_id": "F001", "invariant": "Payload must satisfy the generic invariant.",
@@ -498,10 +499,10 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
     assert [hop.hop_id for hop in final.hops] == ["H001", "H002", "H003", "H004"]
     assert len({request.invocation.invocation_id for request in adapter.requests}) == 4
     assert all(request.invocation.hop_id in request.prompt for request in adapter.requests)
-    assert [hop.finding_delta_ids for hop in final.hops] == [(), ("F001",), ("F001",), ("F001",)]
+    assert [hop.finding_delta_ids for hop in final.hops] == [(), ("F001",), (), ("F001",)]
     assert final.findings[0].state.value == "resolved"
     assert final.findings[0].evidence_refs == (
-        "review-observation", "correction-evidence", "fresh-rereview"
+        "review-observation", "fresh-rereview"
     )
     assert len(revalidations) == 3
     assert runner.observe_calls == ["fake_check"] * 4
