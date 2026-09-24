@@ -1,0 +1,511 @@
+= BUG-WFC-SELF-DEVELOPMENT-PREFLIGHT-PYTHON-ALIAS-IDENTITY -- Acceptance Review 001
+
+Independent adversarial review of
+`a9edf0c87dd5f9cc252e60a3eb82753f27fe9478`,
+`fix(governance): compare canonical evidence interpreter identity`.
+
+== Identity and scope
+
+Reviewed commit:: `a9edf0c87dd5f9cc252e60a3eb82753f27fe9478`
+Parent:: `5c64ddcbed9bd6185d46fcaf8aed59c7aab55282` (verified: `git rev-parse
+a9edf0c^1` returns exactly this hash)
+Subject:: `fix(governance): compare canonical evidence interpreter identity`
+Files changed::
+* `docs/backlog/BUG-WFC-SELF-DEVELOPMENT-PREFLIGHT-PYTHON-ALIAS-IDENTITY.adoc` (new)
+* `governance/work-items/developer-ergonomics-review-005.yaml` (new)
+* `governance/work-items/developer-ergonomics-review-005-task.txt` (new)
+* `tests/architecture/test_self_development_governance.py`
+Confirmed via `git diff --stat 5c64ddc..a9edf0c -- . ':!docs/backlog/BUG-WFC-SELF-DEVELOPMENT-PREFLIGHT-PYTHON-ALIAS-IDENTITY.adoc' ':!governance/work-items/developer-ergonomics-review-005.yaml' ':!governance/work-items/developer-ergonomics-review-005-task.txt' ':!tests/architecture/test_self_development_governance.py'`:
+empty output, i.e. no other file changed.
+Provider invocations by this review:: 0
+WFC invocations by this review:: 0
+Runtime, historical Run state, and remote refs:: not touched by this review
+
+== Verdict
+
+*ACCEPTED.*
+
+* BLOCKING: 0
+* IMPORTANT: 0
+* MINOR: 0
+* INFO: 0 (the durable-artifact reachability INFO from the prior
+  consumed-state-root review remains undisturbed and is not reopened -- see
+  Q8 below)
+
+Exact candidate accepted:: `a9edf0c87dd5f9cc252e60a3eb82753f27fe9478`.
+Canonical interpreter identity is the correct invariant:: yes (see Q1).
+Negative copied-interpreter regression is meaningful:: yes (see Q3).
+`make check`:: pass, end to end.
+Full pytest:: `383 passed in 19.64s`.
+Attempt-7 preparation:: valid.
+Runtime promotion required:: no.
+
+== 1. Interpreter identity semantics
+
+`ExecutableResolution` (`src/workflow_coordinator/evidence.py:42-46`) declares
+both fields the candidate compares:
+
+[source,python]
+----
+@dataclass(frozen=True)
+class ExecutableResolution:
+    invocation_path: str
+    canonical_path: str
+    stat_fingerprint: StatFingerprint
+----
+
+`resolve_executable` (`evidence.py:109-140`) populates them from the same PATH
+search:
+
+[source,python]
+----
+return ExecutableResolution(
+    invocation_path=candidate,
+    canonical_path=os.path.realpath(candidate),
+    stat_fingerprint=fingerprint,
+)
+----
+
+`invocation_path` is the literal PATH-selected spelling (whatever alias the
+authored argv[0] happened to resolve through, relative to the repository-root
+PATH-selection rule); `canonical_path` is that same selection's
+`os.path.realpath` result -- i.e. the actual filesystem target after following
+every symlink. This pair is not new: `git log -p --follow -- evidence.py`
+shows both fields present since `b67def9` ("implement carve-out A2 evidence
+commands"), long before this fix, and `canonical_path` is already surfaced
+through production's own evidence plan (`operator.py:475-476`,
+`_prepared_evidence_plan`) and persisted (`persistence.py:40-41`). The
+candidate therefore reuses an existing, already-load-bearing production
+resolver surface; it does not invent a parallel test-only definition of
+identity.
+
+The corrected assertion in
+`test_current_self_development_bundle_passes_production_preflight`
+(`tests/architecture/test_self_development_governance.py:218-224`) is:
+
+[source,python]
+----
+assert prepared.admission_resolution.invocation_path == str(Path(sys.executable).parent / "python")
+assert prepared.admission_resolution.canonical_path == str(Path(sys.executable).resolve())
+----
+
+This is a materially stronger proof than "the values happen to be equal": it
+asserts `invocation_path` is genuinely *not* `sys.executable` (it is the
+sibling `python` name in the same directory) while `canonical_path` *is*
+exactly `sys.executable`'s own resolved path. This directly proves the
+intended invariant -- policy-authored trusted evidence (`python -m pytest -q`)
+resolves to the same Development/evidence interpreter that is running the
+test suite -- and specifically rules out the four weaker readings the review
+brief asked to exclude:
+
+* not same alias spelling (the test asserts the spellings *differ*);
+* not same directory (a same-directory-only check would not require
+  `canonical_path == Path(sys.executable).resolve()`; the new negative test in
+  Q3 proves a same-named executable in a *different* directory is correctly
+  rejected as different identity);
+* not "executable exists" (existence is necessary for `resolve_executable` to
+  return at all, but the identity assertion is a separate, additional
+  equality against `sys.executable`'s canonical path);
+* not "basename looks like Python" (the negative test's `alternate_python` is
+  also named `python` and also a real, executable CPython binary; it is
+  correctly distinguished anyway, because canonicalization is by realpath
+  target, not by name or by "is this a Python interpreter").
+
+I verified `sys.executable` and its sibling in this repository's own
+Development environment (`.venv`) directly:
+
+[source,shell]
+----
+$ ls -la .venv/bin | grep -i python
+lrwxrwxrwx 1 stefan stefan  7 python -> python3
+lrwxrwxrwx 1 stefan stefan 16 python3 -> /usr/bin/python3
+----
+
+i.e. exactly the alias chain the BUG describes: `python -> python3 ->
+/usr/bin/python3`. Both `python` and `python3` realpath to the identical
+target, so the corrected assertion holds for the real reason the BUG
+describes, not by test-environment coincidence.
+
+== 2. Symlink / alias correctness
+
+`canonical_path = os.path.realpath(candidate)` is the right level of identity
+for this invariant, and no material inode/copy/symlink distinction makes it
+incorrect:
+
+* The alias in question (`python` vs `python3` inside one venv's `bin/`) is a
+  pure symlink chain to one underlying regular file. `realpath` is defined to
+  fully resolve symlink chains to their final target, so it is neither
+  under-resolving (it does not stop at the first symlink hop -- it would
+  correctly collapse `python -> python3 -> /usr/bin/python3` even if the chain
+  were one hop longer) nor over-resolving beyond what the invariant needs (it
+  does not compare file *content*, hashes, version strings, or inode/device
+  numbers -- see below for why that would be the wrong, stronger
+  requirement).
+* `resolve_executable` separately computes `stat_fingerprint`
+  (`st_dev`/`st_ino`/`st_mode`/`st_size`/`st_mtime_ns`,
+  `evidence.py:96-106`) and exposes it on `ExecutableResolution`, but the
+  candidate does not use inode-level fingerprint equality for this test. That
+  is the correct choice: the trusted-evidence contract this BUG concerns is
+  "the policy-authored command resolves to the same intended interpreter
+  binary," which is exactly what a resolved-path identity captures. Requiring
+  inode/device equality in addition would be a *stronger* invariant than the
+  contract promises (it would, for example, incorrectly fail if the
+  Development environment's `python3` were ever replaced via
+  hardlink-breaking reinstall between admission and observation, which the
+  BUG does not concern) -- the review brief's instruction not to invent a
+  stronger identity requirement without justification is respected.
+* `realpath` resolving "too aggressively" would only be a concern if two
+  *conceptually distinct* interpreters could collapse to one canonical path.
+  That cannot happen here: `realpath` only follows symlinks/normalizes a
+  single path's own chain; it never merges two independently-selected
+  candidate paths that happen to be hardlinks to the same inode without a
+  symlink relationship (hardlinks are not traversed or collapsed by
+  `realpath` at all). The venv's actual `python`/`python3` pair is a symlink
+  chain, not independent hardlinks, so this is the exact case `realpath` is
+  designed to collapse correctly.
+* `realpath` resolving "insufficiently" would mean two spellings that should
+  be identical are reported as different. That is not observed: both
+  `.venv/bin/python` and `.venv/bin/python3` realpath to the same
+  `/usr/bin/python3` target on this host, matching the assertion.
+
+No stronger or different identity definition is warranted; the diff does not
+invent one.
+
+== 3. Negative regression
+
+`test_production_preflight_identifies_different_python_interpreter_identity`
+(`test_self_development_governance.py:227-249`):
+
+[source,python]
+----
+alternate_bin = tmp_path / "alternate-bin"
+alternate_bin.mkdir()
+alternate_python = alternate_bin / "python"
+shutil.copy2(sys.executable, alternate_python)
+
+monkeypatch.setenv(
+    "PATH",
+    os.pathsep.join((str(alternate_bin), os.environ["PATH"])),
+)
+...
+result = _preflight(_preflight_args(repository, expected_head, state_root))
+prepared = result[13]["pytest"]
+
+assert prepared.admission_resolution.canonical_path == str(alternate_python.resolve())
+assert prepared.admission_resolution.canonical_path != str(Path(sys.executable).resolve())
+----
+
+Findings:
+
+. This is not tautological. `shutil.copy2` follows `sys.executable`'s own
+  symlink chain and copies the underlying *bytes* of the real interpreter
+  binary into a brand-new regular file at a distinct path
+  (`alternate_bin/python`), not a symlink and not a hardlink. The copy is
+  therefore byte-identical in content to the real interpreter yet a genuinely
+  different filesystem object at a genuinely different canonical path. The
+  test asserts the two `canonical_path` values differ -- proving
+  canonicalization discriminates by resolved *path identity*, not by file
+  content, executable format, or "is this also a working CPython
+  interpreter." A content-based or basename-based identity definition would
+  have wrongly treated `alternate_python` as the same interpreter; this test
+  would fail against such a (weaker/wrong) implementation, so it is not
+  vacuous.
+. `alternate_bin` is prepended ahead of the venv's own `bin/` on `PATH`
+  (`preflight_python_path`'s fixture PATH is still present later in the same
+  variable, per the `os.pathsep.join((str(alternate_bin),
+  os.environ["PATH"]))` construction), so `resolve_executable`'s PATH-ordered
+  search (`evidence.py:125-132`, first match wins) deterministically selects
+  `alternate_bin/python` and not the venv's `python`. This is not an
+  incidental filesystem detail; it is the exact mechanism
+  (`resolve_executable`'s documented first-match PATH semantics) that the
+  admission resolver uses in production, so the test exercises the real
+  selection path, not a hand-rolled stand-in.
+. The test does not assert or require that production preflight *reject* or
+  raise on this mismatch. It only asserts the two `canonical_path` values are
+  observably different. This is the correct scope: nothing in
+  `RepositoryPolicy`, `_preflight`, or `prepare_evidence_commands` promises to
+  compare the resolved trusted-evidence interpreter against `sys.executable`
+  of the *test process* -- that comparison is a property the architecture
+  test itself checks (to prove the policy's `python` and the suite's own
+  running interpreter are the same one), not a runtime admission guarantee
+  the system makes about arbitrary PATH contents. Asserting a rejection here
+  would incorrectly require production behavior the system does not offer;
+  the candidate correctly avoids that overreach, matching the review brief's
+  instruction on this point.
+. `shutil.copy2` preserves the executable permission bits, and I confirmed
+  `_fingerprint` (`evidence.py:96-106`, `S_ISREG` + `os.access(X_OK)`) accepts
+  the copy without needing any special-casing in the test -- no unstated
+  production leniency is being relied on.
+
+Conclusion: the negative test meaningfully exercises the intended identity
+boundary (canonical *path* identity, not content or name) without asserting
+production behavior the system does not promise.
+
+== 4. No production weakening
+
+The full scoped-diff exclusion command above returns empty output, and I
+independently confirmed no changes to:
+
+* `src/workflow_coordinator/evidence.py` (resolver: `resolve_executable`,
+  `ExecutableResolution`, `prepare_evidence_commands` -- all byte-identical to
+  parent);
+* `src/workflow_coordinator/operator.py` (`_preflight`, evidence-plan
+  projection);
+* `governance/self-development/repository-policy.yaml` (pytest evidence argv
+  is still exactly `python -m pytest -q`, revision `"3"`, ceiling `5`);
+* `governance/self-development/standalone-development-profile.yaml`
+  (revision `"2"`, topology unchanged);
+* `Makefile` / `README.md` (still `PYTHON ?= python3`, `test: $(PYTHON) -m
+  pytest -q`);
+* `src/workflow_coordinator/resources/agent_operating_contract_v5.txt`
+  (Agent Operating Contract V5, present in the tree, untouched by this diff);
+* `governance/self-development/components.yaml`, prompts, or any other
+  profile/policy/component file.
+
+The candidate is exactly what it claims: a test-file behavioral correction
+plus new governance work-item preparation files. No RepositoryPolicy evidence
+argv, Makefile/README developer command, operator/reducer/evidence resolver
+implementation, profile topology, or hop ceiling changed.
+
+== 5. `make check` truth
+
+Reproduced end-to-end using this repository's own `.venv` (which mirrors the
+real alias chain the BUG describes: `.venv/bin/python -> python3 ->
+/usr/bin/python3`):
+
+[source,shell]
+----
+$ source .venv/bin/activate
+$ which python python3
+/home/stefan/repos/spreadsheet-handling/workflow-coordinator/.venv/bin/python
+/home/stefan/repos/spreadsheet-handling/workflow-coordinator/.venv/bin/python3
+$ make check
+python3 -m ruff check .
+All checks passed!
+python3 -m ruff format --check scripts/wfc_snapshot.py tests/unit/test_wfc_snapshot.py tests/architecture/test_package_boundaries.py
+3 files already formatted
+python3 -m pytest -q
+........................................................................ [ 18%]
+........................................................................ [ 37%]
+........................................................................ [ 56%]
+........................................................................ [ 75%]
+........................................................................ [ 93%]
+.......................                                                  [100%]
+$ echo $?
+0
+----
+
+`make check` exit code: `0`. I did not accept on the previously-failing
+individual test alone; the full `make check` composite target (`lint
+format-check test`) was run and passed as a whole.
+
+== 6. Attempt-7 governance
+
+Verified directly against the new
+`governance/work-items/developer-ergonomics-review-005.yaml` and the
+unmodified `standalone-development-profile.yaml` /
+`repository-policy.yaml`:
+
+[cols="1,1,1",options="header"]
+|===
+|Field |Required |Actual
+
+|`work_item_id`
+|`WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-005`
+|matches
+
+|`initial_phase`
+|`rereview`
+|matches
+
+|`max_autonomous_hops`
+|3
+|matches
+
+|profile revision
+|2
+|`revision: "2"` in `standalone-development-profile.yaml`
+
+|policy revision
+|3
+|`revision: "3"` in `repository-policy.yaml`
+
+|policy ceiling
+|5
+|`max_autonomous_hops: 5` in `repository-policy.yaml`
+
+|Coordinator hard ceiling
+|5
+|`COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS = 5` in `src/workflow_coordinator/model.py:25`
+|===
+
+WorkItem scope in `developer-ergonomics-review-005.yaml` is exactly:
+`Makefile`, `README.md`, `pyproject.toml`, `scripts/wfc_snapshot.py`,
+`tests/unit/test_wfc_snapshot.py`, `tests/architecture/test_package_boundaries.py`,
+`docs/backlog/wfc_reviews` -- matches the required list exactly, same order,
+no additions.
+
+Profile topology (unmodified) is exactly `review -> correct`, `correct ->
+rereview`, `rereview -> {accept, correct}`.
+
+All of this is exercised as a genuine production-preflight run, not a
+parallel/hand-rolled check, inside the new
+`test_attempt_7_bundle_passes_production_preflight`
+(`test_self_development_governance.py:412-450`), which imports and calls the
+same `_preflight` used by every other test in the file and asserts on its
+returned `work_item`, `profile`, `policy`, and `durable_artifacts` tuples
+directly. This test passed as part of the 9-test governance file run below.
+
+== 7. Fresh Run semantics
+
+No resume/retry semantics are implied or introduced:
+
+* `src/workflow_coordinator/model.py`'s `new_run()` constructs every `Run`
+  with `findings: tuple[Finding, ...] = ()` by default (unchanged by this
+  candidate); there is no code path that seeds a new `Run`'s findings from a
+  prior `Run`, `state_root`, or `work_item_id`.
+* Attempt 6 (`RUN-c0564126e2874c9c96e0a5c4d8571e80`) completed with `Findings:
+  none` per the historical record this review's brief cites, so there is
+  nothing for a fresh Attempt 7 to inherit from Attempt 6 even in principle.
+* Attempt 5's `F001` remains frozen historical evidence; nothing in this
+  diff's new files (`developer-ergonomics-review-005.yaml`,
+  `-005-task.txt`) references `F001` or Attempt 5 as a resumable identifier.
+  `grep -rn "F001" governance/` shows no match introduced by this candidate.
+* A Run whose `initial_phase` is `rereview` is semantically valid under
+  current, unmodified `_preflight()` behavior, which only requires
+  `work_item.initial_phase in profile.phases` (true for `rereview`) and does
+  not require the Run to have previously visited `review`.
+* `governance/work-items/developer-ergonomics-review-005-task.txt` states in
+  plain governance text that a clean reviewer should request `accept`, and
+  that any current defect must become a fresh current-Run Finding "with an
+  identity allocated by the Coordinator" -- explicitly current-Run-scoped,
+  not a resumed identity.
+
+== 8. Durable artifact / state-root conventions
+
+I did not reopen the independently accepted INFO from
+`BUG-WFC-SELF-DEVELOPMENT-GOVERNANCE-TEST-CONSUMED-STATE-ROOT_review_001.adoc`
+regarding the structural `durable_artifacts.review` mapping being present but
+mechanically unreachable from a `rereview`-initial WorkItem. Nothing in this
+candidate contradicts that prior disposition: `developer-ergonomics-review-005.yaml`
+maps only `review` (matching the same pattern as `-004.yaml` before it), and
+`operator.py`'s structural validator that produced that INFO is unmodified.
+
+No concrete future Attempt-7 host state-root absence is encoded as a
+permanent repository invariant. `test_attempt_7_bundle_passes_production_preflight`
+uses `tmp_path / "external-state" / "attempt-7"`, a `pytest`-managed temporary
+path, and asserts only `not state_root.exists()` around the preflight call --
+it does not assert anything about
+`/home/stefan/wfc-state/WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-005-20260924-01`.
+I confirmed with `grep -rn "wfc-state" --include="*.py" .` that no Python-level
+test references that concrete future host path; it appears only in this
+review's own instructions and remains, correctly, an operational
+launch-time concern rather than a repository invariant.
+
+== 9. Runtime boundary
+
+Runtime remains pinned at `d875026d2f8ea925788394e7385d1a6f2e77dee2`. I
+verified this directly against the sibling clone:
+
+[source,shell]
+----
+$ cd ../workflow-coordinator-runtime && git rev-parse HEAD && git status --short
+d875026d2f8ea925788394e7385d1a6f2e77dee2
+----
+
+(clean; no output from `git status --short`). The candidate's scoped diff
+(Q4 above) touches no Runtime implementation, evidence-resolver behavior, or
+operator/preflight semantics -- `evidence.py` and `operator.py` are
+byte-identical to the parent commit. Runtime promotion is unnecessary: this
+candidate changes only Development test/governance surfaces (an architecture
+test's assertions and new WorkItem/task governance files), and trusted pytest
+for this repository already executes against the Development/evidence `.venv`
+environment, not against Runtime.
+
+== Validation evidence
+
+=== Full suite
+
+[source,shell]
+----
+source .venv/bin/activate
+python -m pytest -q
+----
+
+Result:: `383 passed in 19.64s`
+
+=== Focused governance-test run
+
+[source,shell]
+----
+python -m pytest tests/architecture/test_self_development_governance.py -v
+----
+
+Result:: `9 passed in 0.74s` (includes both new tests:
+`test_production_preflight_identifies_different_python_interpreter_identity`
+and `test_attempt_7_bundle_passes_production_preflight`; up from 7 passed
+before this candidate)
+
+=== Ruff
+
+[source,shell]
+----
+python -m ruff check .
+----
+
+Result:: `All checks passed!`
+
+=== Bounded ruff format check (per Makefile `format-check` target)
+
+[source,shell]
+----
+python -m ruff format --check scripts/wfc_snapshot.py \
+  tests/unit/test_wfc_snapshot.py tests/architecture/test_package_boundaries.py
+----
+
+Result:: `3 files already formatted`
+
+=== `make check`
+
+[source,shell]
+----
+make check
+----
+
+Result:: exit `0`, all three sub-targets (`lint format-check test`) passed
+
+=== Whitespace check
+
+[source,shell]
+----
+git diff --check 5c64ddcbed9bd6185d46fcaf8aed59c7aab55282..a9edf0c87dd5f9cc252e60a3eb82753f27fe9478
+----
+
+Result:: no output, exit 0
+
+== Disposition summary
+
+The candidate correctly replaces a literal-alias-spelling comparison
+(`invocation_path == sys.executable`) with a canonical-identity comparison
+(`canonical_path == Path(sys.executable).resolve()`), using the existing,
+already-load-bearing production resolver surface (`ExecutableResolution`,
+present since `b67def9`) rather than inventing a parallel test-only identity
+definition. The corrected assertion is strictly stronger than the one it
+replaces, because it additionally proves `invocation_path` genuinely differs
+from `sys.executable` while `canonical_path` matches exactly, ruling out
+same-spelling, same-directory, existence-only, and basename-only readings of
+the invariant. The added negative test proves canonicalization discriminates
+by resolved path identity (not content, not name) using a genuinely distinct,
+byte-identical copy of the interpreter, and correctly stops short of
+asserting a production rejection the system does not promise. No production
+code (`evidence.py`, `operator.py`, RepositoryPolicy, Makefile, README, Agent
+Operating Contract V5, profile, or policy) was touched. `make check` passes
+end to end; the full suite passes (`383 passed`); `ruff check`, the bounded
+`ruff format --check`, and `git diff --check` all pass cleanly. Attempt-7
+governance preparation (`WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-005`,
+`initial_phase: rereview`, `max_autonomous_hops: 3`, unchanged profile/policy
+revisions and ceilings, unchanged scope and topology) is valid and exercised
+by genuine production preflight. Runtime remains pinned and untouched; no
+Runtime promotion is required. No WFC invocation, provider invocation,
+Runtime mutation, historical-state mutation, or remote push occurred during
+this review.
