@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -62,6 +63,15 @@ ATTEMPT_6_GOVERNING_PATHS = (
     "governance/self-development/repository-policy.yaml",
     "governance/self-development/components.yaml",
     "governance/work-items/developer-ergonomics-review-004-task.txt",
+    "governance/self-development/prompts/developer.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+ATTEMPT_7_GOVERNING_PATHS = (
+    "governance/work-items/developer-ergonomics-review-005.yaml",
+    "governance/self-development/standalone-development-profile.yaml",
+    "governance/self-development/repository-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/developer-ergonomics-review-005-task.txt",
     "governance/self-development/prompts/developer.txt",
     "governance/self-development/prompts/reviewer.txt",
 )
@@ -208,8 +218,34 @@ def test_current_self_development_bundle_passes_production_preflight(
     assert tuple(prepared_evidence) == ("pytest",)
     prepared = prepared_evidence["pytest"]
     assert prepared.authored_argv == ("python", "-m", "pytest", "-q")
-    assert prepared.admission_resolution.invocation_path == sys.executable
+    assert prepared.admission_resolution.invocation_path == str(Path(sys.executable).parent / "python")
+    assert prepared.admission_resolution.canonical_path == str(Path(sys.executable).resolve())
     assert environment.values["PATH"].split(":", 1)[0] == str(Path(sys.executable).parent)
+    assert not state_root.exists()
+
+
+def test_production_preflight_identifies_different_python_interpreter_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    preflight_python_path: None,
+):
+    alternate_bin = tmp_path / "alternate-bin"
+    alternate_bin.mkdir()
+    alternate_python = alternate_bin / "python"
+    shutil.copy2(sys.executable, alternate_python)
+
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join((str(alternate_bin), os.environ["PATH"])),
+    )
+    repository, expected_head = _materialize_bundle(tmp_path)
+    state_root = tmp_path / "external-state" / "different-interpreter"
+
+    result = _preflight(_preflight_args(repository, expected_head, state_root))
+    prepared = result[13]["pytest"]
+
+    assert prepared.admission_resolution.canonical_path == str(alternate_python.resolve())
+    assert prepared.admission_resolution.canonical_path != str(Path(sys.executable).resolve())
     assert not state_root.exists()
 
 
@@ -365,6 +401,47 @@ def test_attempt_6_bundle_passes_production_preflight(
     assert durable_artifacts == {
         "review": (
             f"{REVIEW_NAMESPACE}/WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-004/review.adoc",
+        ),
+    }
+    assert tuple(profile.phases["review"].routes) == ("correct",)
+    assert tuple(profile.phases["correct"].routes) == ("rereview",)
+    assert tuple(profile.phases["rereview"].routes) == ("accept", "correct")
+    assert not state_root.exists()
+
+
+def test_attempt_7_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=ATTEMPT_7_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "attempt-7"
+
+    assert not state_root.exists()
+    result = _preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=ATTEMPT_7_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+
+    assert work_item.work_item_id == "WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-005"
+    assert work_item.initial_phase == "rereview"
+    assert work_item.max_autonomous_hops == 3
+    assert profile.revision == "2"
+    assert policy.revision == "3"
+    assert policy.max_autonomous_hops == COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5
+    assert work_item.scope == policy.work_item_scope_ceiling == (
+        *IMPLEMENTATION_PATHS,
+        REVIEW_NAMESPACE,
+    )
+    assert durable_artifacts == {
+        "review": (
+            f"{REVIEW_NAMESPACE}/WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-005/review.adoc",
         ),
     }
     assert tuple(profile.phases["review"].routes) == ("correct",)
