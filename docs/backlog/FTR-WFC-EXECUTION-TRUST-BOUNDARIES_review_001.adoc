@@ -1,0 +1,571 @@
+= FTR-WFC-EXECUTION-TRUST-BOUNDARIES -- Security Architecture Review 001
+
+Independent adversarial security-architecture review of
+`docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc` at
+`cf68a1b5cac34127ffa979faac581acbb36d8f14`
+(`docs(backlog): clarify trust authority provenance`), read together with its
+companion `docs/backlog/FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW.adoc` at
+`f92a428` (`docs(backlog): define generic elevated privilege workflow`).
+
+The candidate's recent evolution is `56afccc` -> `b59ba54`
+(`docs(backlog): clarify information trust boundaries`) -> `cf68a1b`. This is a
+full architecture review of the current text, not a delta rereview; the two
+recent commits are treated as the parts most in need of attack.
+
+Documentation/concept review only. No implementation, governance, Runtime,
+Run-state, profile, policy, test, or remote change; no WFC or provider
+invocation; no push.
+
+== Verdict
+
+*MATERIAL_REVISION_REQUIRED.*
+
+The basic separation of visibility, mutation, and execution authority is sound
+and is the right decomposition; nothing found argues for rejection. The
+provenance invariant added by `cf68a1b` is the correct invariant and is stated
+in the correct direction. Three security invariants nevertheless need bounded
+conceptual correction before this record can be relied on as the preserved
+design direction: the provenance chain has no stated base case and no stated
+resolution rule (F-I1); the egress/return half of information authority is
+present as one clause and its prior formulation survives only in an explicitly
+non-authoritative directory (F-I2); and the trigger for mandatory defensive
+review is stated two different ways across the two records, one of which is a
+predicate the mutating agent could assess for itself (F-I3).
+
+Each correction is a small number of sentences inside the existing sections. No
+finding asks for IAM, capability tokens, DLP, a classification taxonomy, a
+policy engine, a provider router, or a sandbox design, and none of them is
+resolved by adding such a platform.
+
+Finding counts: BLOCKING 0, IMPORTANT 3, MINOR 3, INFO 3.
+
+== 1. Authority provenance
+
+The `cf68a1b` paragraph is mechanically clear on five of the six required
+propositions. "Agents may request additional visibility or capability, but they
+do not create authority" states request/grant separation; "A higher loop may
+evaluate a request and select or delegate to a compatible binding only within
+that envelope; it must not invent or widen the envelope" denies the higher loop
+manufacturing power; "agent-to-agent delegation cannot bootstrap authority: the
+delegating component must already have explicit human-derived authority to grant
+the specific bounded capability or context" denies peer-granted authority; and
+the closing pair "Requesting authority is not granting it, and selecting within
+authority is not widening it" names the select/widen distinction as a first-class
+rule rather than leaving it to inference.
+
+The envelope shape is also not speculative. `_admit_a1` already enforces the same
+domination relation in two dimensions: `work_item.scope` must lie within
+`policy.work_item_scope_ceiling`, and `work_item.max_autonomous_hops` must not
+exceed `policy.max_autonomous_hops`, both fail-closed at admission
+(`src/workflow_coordinator/operator.py:102-165`). `governance/self-development/repository-policy.yaml`
+carries both fields at `schema_version: 3`. The FTR's envelope invariant is
+therefore a generalization of an enforced relation to further dimensions
+(visibility, execution boundary, network), not a new abstraction. That is the
+strongest evidence that the invariant is implementable, and it is worth the FTR
+saying so in one clause.
+
+Scenario A resolves correctly: a peer agent saying "approved" is a delegation,
+and the delegation clause requires the delegating component to already hold
+explicit human-derived authority for that exact bounded context, so the peer's
+assertion is inert. Scenario F resolves correctly: "I need network access" is a
+request; `requires_network` is listed as a request event, not a grant, and the
+envelope sentence covers "network capability" by name. Scenario B resolves
+correctly: selection between two pre-admitted bindings is explicitly not
+widening, so no new human act is required.
+
+=== F-I1 (IMPORTANT) -- the provenance chain is stated as a prohibition, without a base case or a resolution rule
+
+The invariant terminates in "an authority envelope ultimately derived from
+previously admitted human/maintainer-authorized policy, WorkItem, execution
+configuration, or equivalent governed input". Two things that the chain's
+soundness depends on are absent.
+
+First, the base case. "Previously admitted" and "human/maintainer-authorized"
+are joined into one phrase as if they were the same property. In this repository
+they are not. Admission proves that a governing input is tracked at the pinned
+HEAD and structurally coherent; it does not prove authorship. `WorkItem.authority_source`
+is a free string (`model.py:89`), is carried through serialization
+(`serialization.py:358,370`), and is never checked -- the committed fixtures
+read `authority_source: fixture` and `authority_source: accepted task`. The
+pre-split review recorded this as F1 and it remains open: the Coordinator's own
+trusted commit can satisfy the "committed at pinned HEAD" proof, and Git author
+identity does not separate Coordinator commits from maintainer commits
+(`docs/imported/core-incubator/agent_workflow_coordinator_concept_followup_outer_loop_authority_review_2026-09-14.adoc`,
+F1). A chain whose every link forbids widening still yields agent-created
+authority if its first link can be agent-authored.
+
+Second, the resolution rule. The FTR says who may *not* widen; it does not say
+what the evaluator reads when deciding what the envelope contains. This is the
+missing closure for the circular case `A -> B -> C`. The delegation clause stops
+B from granting, but nothing states that the entity evaluating C's claim must
+resolve the envelope from an input that A, B, and C could not author. The
+pre-split F7 already has the sentence in usable form -- "a recommendation becomes
+authority only through an input the recommending Hop cannot author -- a human,
+trusted policy pinned before the Hop, or a separately declared gate phase" --
+and the pre-split T4 states the read-side analogue, that the label must not be
+computed from agent-cited sources because `evidence_refs` are untrusted input.
+
+Two sentences close both facets: state that an input carries admitted authority
+only when its provenance is mechanically distinguishable from agent output, and
+that the envelope must be resolved from inputs pinned before the requesting Hop
+rather than from any assertion made by the requesting, delegating, or receiving
+component. Neither sentence designs a schema, and the FTR can keep declining to
+design one; "policy", "WorkItem", and "execution configuration" are adequate as
+carrier names precisely because `governance/` already instantiates them.
+
+Current exposure is procedural rather than open: `_admit_a1` rejects any phase
+`authorized_scope` overlapping `policy.governance_paths`, the ceiling excludes
+`governance/`, `git_facts.py:372` raises `pinned policy/profile mutation` as an
+anomaly, and `docs/README.adoc` states that "Committed governance alone neither
+starts nor authorizes a Run; each real Run additionally requires explicit
+maintainer authorization." The gap is forward-looking, which is exactly the
+horizon this record exists to serve.
+
+== 2. Who defines the trust boundary
+
+Adequately established for the read side. "The ordinary worker must not be able
+to widen its own visibility, and prompt instructions are semantic guidance
+rather than containment" denies the agent the boundary definition directly;
+"Protected paths or data must instead be absent, sealed, or otherwise
+technically inaccessible to an incompatible execution boundary" moves the
+decision into the environment; and "it does not authorize the ordinary worker to
+reveal or mount the protected context for itself" forecloses the specific
+"I should run locally, therefore I may read X" move named in the brief.
+
+"This path is safe to mount" and "this network destination is acceptable" are
+covered by the envelope sentence, which names visibility, mutation, execution,
+network capability, and execution-boundary trust as the dimensions that may not
+be self-widened.
+
+"This data is not confidential" is the one listed decision the record does not
+reach. On the read side it is moot, because unreachable data cannot be
+misclassified into reach. On the write side it is live, and it is handled below
+as part of F-I2: an agent declaring its own derived output unprotected is a
+declassification, and declassification authority is not addressed.
+
+== 3. Visibility versus mutation/execution
+
+The distinction is sound, and the non-obvious half of it is correct.
+
+Mandatory defensive review is rightly not triggered by protected reading alone.
+The FTR gives the right reason rather than a convenient one: "A later review
+cannot undo disclosure to an unauthorized provider or execution boundary."
+Control for pure visibility therefore has to be placed before disclosure, which
+is what "selecting a compatible technical information boundary *before*
+protected information is exposed" says. A review-shaped control after the fact
+would be theatre.
+
+The combined case is explicit and closes the escape the brief asked about:
+"When work needs both protected visibility and execution-sensitive mutation,
+both controls apply; a compatible information boundary does not remove the
+review requirement." Scenario D resolves correctly and by direct quotation --
+the local confidential worker that also edits `conftest.py` gets both control
+sets, and the compatible information boundary buys it nothing on the mutation
+side.
+
+The escape that does remain is not through the read rule but through the trigger
+predicate; see F-I3.
+
+== 4. Technical containment
+
+Sufficient for a backlog concept, and correctly ordered. The candidate list
+covers filesystem visibility, readable/writable separation
+("constraining writable paths separately from readable paths"), Git metadata,
+indirect-execution-sensitive surfaces, ambient credentials, network/egress,
+separate execution environments for agent-authored code, and trusted test/build
+services with fixed entry points and least authority. `bwrap` is named as "one
+candidate Linux mechanism, not a required implementation" and appears again in
+the non-goals, so no mechanism is mandated.
+
+Prompt instructions are treated as semantic guidance rather than containment in
+both records, and the elevated-privilege FTR states the migration direction
+explicitly: the future mechanism "must replace *reliance on prompt-only
+enforcement* for a privileged boundary crossing", while prompts continue to
+describe semantic authority. The preference for "technically unavailable" over
+"instructed not to access" is stated as a rule, not an aspiration.
+
+=== F-N3 (INFO) -- reachable-surface identity is the honest disclosure bound and the containment list stops just short of it
+
+"Making protected or unneeded paths unavailable rather than merely prohibited"
+is the right instinct, but the surface a boundary actually provides is not
+identified by the tracked tree. Ignored content is invisible to
+`_observe_repository` by construction (`status --porcelain --untracked-files=all`
+respects ignore rules), and `.git` metadata carries other branches, reflog,
+remote URLs, and stashes. The pre-split T1/T3 recorded the consequence:
+disclosure may be claimed only for a surface the Coordinator constructed or
+verified, and a manifest of the form "checkout at HEAD X" is provably incomplete
+because two Runs at the same HEAD have different surfaces depending on local
+residue. The FTR names Git metadata but not ignored or out-of-tree residue.
+Adding "ignored and untracked residue" to the same clause costs one phrase and
+preserves the distinction between an exported tree and a live checkout for
+whoever implements this. Nothing to correct in the concept.
+
+== 5. Confused deputy and indirect execution
+
+The strongest section of the record. The threat model is stated as its own
+section rather than folded into containment, the surface list is complete for
+the purpose (Git hooks, CI configuration, test discovery/configuration,
+`conftest.py`, Makefiles, build hooks, packaging hooks, Docker build and runtime
+configuration, scripts later run by a trusted maintainer or service), the
+mechanism is named correctly ("A later trusted test/build service executes that
+artifact with protected data, credentials, filesystem access, or network
+access"), and the conclusion is the one that matters: "Path scope alone does not
+express this trust transition."
+
+Scenario E composes correctly across the two records. The trust FTR forbids
+automatic unlock and requires escalation plus a run distinguishable from
+ordinary sandboxed runs; the elevated-privilege FTR supplies the invariant that
+closes the maintainer-side hole by name -- "a newly written Git hook running
+inside the agent sandbox but not through a more privileged host-side Git
+operation before review" -- and generalizes it as "Before defensive review
+succeeds, modified privileged state must not influence execution in a more
+trusted or more privileged boundary." A restricted agent conceptually cannot
+cause a more privileged process to act for it before privileged review.
+
+=== F-M3 (MINOR) -- the threat is already instantiated in this Runtime, and the revisit trigger implies it is still hypothetical
+
+"Trusted test-service boundary" describes a future service, and "Deferred
+priority and revisit trigger" lists "trusted test services, CI mutation" among
+the conditions that would make the record concrete. One instance is concrete
+now. After the Hop and its trusted commit, `vertical.py:254-256` executes the
+policy-admitted evidence commands in the agent-mutated checkout under
+`CWD_POLICY = "canonical-repository-root-v1"` and
+`ENVIRONMENT_POLICY = "coordinator-inherited-environment-v1"`
+(`evidence.py:23-24`). The self-development policy's evidence command is
+`python -m pytest -q`, and `pyproject.toml` -- which carries
+`[tool.pytest.ini_options]` with `testpaths` and `addopts` -- is inside
+`work_item_scope_ceiling`. Argv digest and executable stat fingerprint are
+pinned, so the *command* is pinned; what pytest loads is not, and `addopts`
+alone can load a plugin.
+
+This does not change the concept, which already covers "test
+discovery/configuration" and services. It changes the deferral premise: the
+record defers partly on the ground that these requirements are not yet
+concrete. Current mitigation is genuine -- path scope plus maintainer-supervised
+self-development -- and is the same posture prior reviews accepted. Naming the
+in-Run evidence execution as the nearest existing instance of the modelled
+transition would sharpen the revisit trigger and cost one sentence.
+
+== 6. Information egress and the return path
+
+The record has one clause: "Only results permitted by policy return to the
+ordinary workflow." Its shape is fail-closed and its placement is inside
+"Deployment implication", where it reads as a remark about a delegation topology
+rather than as an invariant of the architecture. It is not enough, and this is
+the finding the brief was right to press.
+
+=== F-I2 (IMPORTANT) -- information authority is stated as an ingress predicate; the egress half is one clause and its prior formulation survives only where it is explicitly non-authoritative
+
+Three specific gaps sit behind the single clause.
+
+*Derived output has no stated label.* The FTR does not say what relation holds
+between a protected input and an artifact derived from it. Without that
+relation, "results permitted by policy" has no subject: a summary of proprietary
+source is not obviously a "result" carrying protection. The pre-split F4 stated
+the rule in its minimal form -- derived items inherit the join of their sources,
+a lower label may be assigned only by an explicit human/policy-owned
+declassification recorded as provenance, and dropping an item from a disclosure
+set is not declassification -- and T4 added the necessary qualification that the
+join must be taken over the provided surface, not over agent-cited sources.
+Scenario C is decided by that rule and by nothing currently in the FTR.
+
+*Sinks are not enumerated, and several are already live.* The return path is not
+only the next phase's prompt. `Hop.summary`, `Finding` prose, `RoutingResult`
+summaries, and the CommitIntent subject are agent-authored prose that reaches
+`run.json`, `checkpoint.json` (`persistence.py:201`), `execution-evidence.json`,
+and commit subjects; `docs/README.adoc` classifies backlog review artifacts as
+preserved planning evidence and the incubator review instructions assume review
+artifacts may be committed to a public repository. The pre-split T2 named the
+consequence precisely: "the exfiltration path is the sanctioned effect, not a
+bypass", because `trusted_commit` validates paths, subject, and worktree facts
+and has no notion of content or audience. An FTR that lists the laundering
+channels the brief names -- summaries, generated files, logs, prompts, scratch,
+model output -- and states that Coordinator-owned durable state and commit
+subjects are themselves sinks, preserves the direction; one that does not,
+leaves an implementer to rediscover it.
+
+*The prior formulation is not preserved anywhere authoritative.* T2's egress
+rule is expressed in a form that explicitly avoids the platform this review is
+told to resist -- every sink carries an audience label, derived output may land
+in a sink only if its label is dominated by the sink's audience, "No content
+scanner or DLP is implied; the check compares two labels". That text lives in
+`docs/imported/core-incubator/`, which `docs/README.adoc` classifies as
+"pre-split historical evidence, not current standalone authority", and a grep
+across `docs/` outside `imported/` finds no reference to it; `project_memory.adoc`
+does not carry it either. This backlog FTR is in practice the only
+forward-carrying record of the direction, which makes the omission a
+preservation failure rather than a redundancy.
+
+The correction is two or three sentences and a cross-reference: state that
+information authority has an ingress and an egress predicate; state that derived
+output carries its source's protection until an authority inside the same
+envelope declassifies it, and that summarizing, regenerating, or logging is not
+declassification; state that the Coordinator's own durable state and commits are
+sinks. Selecting a protected binding then authorizes input visibility only, which
+is the proposition the brief asked to be made explicit and which the current text
+implies but never says.
+
+== 7. Local or self-hosted execution
+
+Treated as a binding, not as a trust decision. "Local/self-hosted execution is
+one possible boundary, not a provider-specific rule" is explicit; the delegation
+target is "a bounded execution binding compatible with the information, such as
+a local or self-hosted model", where the load-bearing word is "bounded" and
+local appears as an example; the non-goals include "require all development to
+be self-hosted"; and the compatible worker is required to have "network, egress,
+and credentials bounded consistently with the information's sensitivity"
+regardless of where it runs. The record does not say `local == trusted`.
+
+=== F-M2 (MINOR) -- compatibility is never said to be a property of the enforced boundary rather than of the hosting location, and the retention dimension is missing
+
+The proposition is carried by example and by adjective; it is never stated. One
+clause -- compatibility is a property of what the boundary enforces, not of where
+it runs -- would make it unmissable, and is cheap because the record already has
+the bounding list to point at.
+
+That list is also short by one dimension. It covers filesystem visibility,
+credentials, network, and egress, which is most of what distinguishes a
+compatible boundary; it does not cover retention -- logging, telemetry, scratch,
+and unintended persistence. For a provider choice retention is implicit in
+"disclosure to an unauthorized provider", which the record does name. For a local
+process it is the dimension most likely to be assumed away, and it is where a
+local model with a verbose log or a cached session quietly stops being
+compatible. Adding "retention, logging, and persistence" to the existing bounding
+clause is a phrase, not a secret-management architecture.
+
+== 8. Model and provider binding
+
+Compatible with the later separation, and prematurely designs none of it. The
+record speaks of an "execution binding" and a "compatible execution boundary"
+without fixing how a binding is named, selected, or scored; the non-goals
+exclude "delegation/router architecture"; and the deployment section disclaims
+"an outer-loop planner, automatic model router, provider selection algorithm, or
+new workflow profile". The higher loop's power is confined to selection inside
+the envelope by the provenance paragraph, which is the one constraint that has
+to survive into whatever binding architecture arrives.
+
+=== F-N2 (INFO) -- the binding concept now partially answers an open question in the companion record
+
+The elevated-privilege FTR's open questions include "Do elevated phases require a
+distinct provider or model policy?". The trust FTR's binding-compatibility
+direction supplies the shape of that answer -- a phase-declared requirement
+checked fail-closed against binding facts -- without answering it. This is
+healthy composition, not a conflict. Worth knowing when either record is next
+revised; nothing to correct.
+
+== 9. Delegation
+
+The topology preserves least authority, and the one sentence that makes it work
+is present: the delegation "does not authorize the ordinary worker to reveal or
+mount the protected context for itself". The requesting agent therefore does not
+acquire the protected context by requesting it -- it reports a requirement and
+the work moves, which is the property that distinguishes this topology from an
+escalation ladder. "The compatible worker receives only the visibility needed for
+its task" bounds the delegate. Widening is denied by the envelope sentence, and
+nested delegation is denied by the bootstrap clause, which binds the delegating
+component at every level rather than only the first, so recursion gains nothing.
+
+The remaining leg is the return path, which F-I2 covers: nothing currently stops
+return data from exceeding the ordinary workflow's visibility authority except
+the unelaborated clause "Only results permitted by policy return to the ordinary
+workflow".
+
+== 10. Human authorization semantics
+
+The envelope model is expressed, and per-Hop human approval is not required. The
+deployment section says "a future higher loop *or* human operator may make the
+authority/policy decision", and the provenance paragraph permits the higher loop
+to "evaluate a request and select or delegate to a compatible binding" inside the
+envelope. Human involvement returns only for widening: "it must not invent or
+widen the envelope or independently authorize new disclosure".
+
+This also matches the system as it stands. `docs/README.adoc` records that
+governance is "current authority only within their explicit declared ceilings"
+and that each Run additionally requires explicit maintainer authorization, after
+which the Run proceeds autonomously up to `max_autonomous_hops`. The admitted
+envelope is already the unit of human authorization at Run granularity; the FTR
+extends the same granularity to visibility and execution-boundary dimensions
+rather than introducing a per-delegation gate. Scenario B is decided by the text
+alone and needs no new human act.
+
+== 11. Relationship to the defensive-review record
+
+The intended division holds in outline. The trust FTR defines containment,
+indirect execution, and trust transitions; the elevated-privilege FTR defines the
+escalation/work/mandatory-review topology and the invariant that privileged state
+must not influence a more trusted boundary before review. Each points at the
+other by path, the elevated FTR states the complementarity in a dedicated
+section, and its non-goals include "duplicate or supersede the technical-containment
+work in `FTR-WFC-EXECUTION-TRUST-BOUNDARIES`". Neither silently supersedes the
+other, and their vocabularies do not collide: envelope, higher loop, binding, and
+compatible boundary are the trust FTR's terms; escalation, elevated work,
+privilege payload, and aspect are the elevated FTR's.
+
+The rules do collide in one place.
+
+=== F-I3 (IMPORTANT) -- the trigger for mandatory defensive review is stated two different ways, and one of them is self-assessable
+
+The trust FTR keys the mandatory control to a consequence: "Mutation or
+execution-authority elevation *that can influence a more trusted boundary* is
+additionally subject to the explicit elevated-privilege workflow and mandatory
+defensive review". The elevated-privilege FTR keys it to the crossing itself:
+"Some work legitimately crosses an ordinary-agent authority boundary. The generic
+workflow pattern for such work is explicit privilege escalation, bounded
+elevated-privilege work, and mechanically mandatory defensive review", with "no
+ordinary route from elevated-privilege work that bypasses the defensive review".
+
+Two consequences follow.
+
+*The consequence-shaped trigger is a predicate someone must evaluate, and the
+record does not say who may not.* "Can influence a more trusted boundary" is
+precisely the judgement the indirect-execution section spends a page showing is
+hard -- the whole point of that section is that a surface's downstream influence
+is non-obvious. Left as written, an implementer or an agent may reason that a
+particular execution-surface edit cannot influence anything more trusted and
+thereby skip a mandatory control, which is the same shape of escape the read rule
+was carefully drafted to avoid. The trigger should be the class of surface
+mutated, with "cannot influence a more trusted boundary" available only as a
+fail-closed determination made by the authority that granted the elevation, never
+by the mutating agent.
+
+*The elevated FTR's aspect list contains read-shaped aspects that the trust FTR
+routes away from mandatory review.* Its illustrative aspects include "sensitive or
+realistic test data" and "network capability". The trust FTR names "realistic
+protected test or staging data" as a subject of pure visibility elevation, for
+which it explicitly states that mandatory defensive review is not required, and
+lists `requires_network` beside `requires_protected_read` in the same candidate
+vocabulary. A reader routing "the agent must read realistic protected test data"
+gets mandatory review from one record and no mandatory review from the other.
+
+Both records are reconcilable, because the elevated FTR calls its list
+"illustrative" and "not a closed taxonomy" and the trust FTR supplies the real
+discriminator. Reconciling them should not be left to the reader: one sentence in
+the elevated FTR stating that the aspect names what was elevated while the
+mutation/execution criterion decides whether its workflow applies, and one
+sentence in the trust FTR making the influence predicate an authority
+determination rather than a property to be argued, removes the divergence.
+
+=== F-M1 (MINOR) -- "an authority must authorize" is the one phrase that, read alone, admits agent self-authorization
+
+`b59ba54` replaced "a maintainer/operator must authorize the widened context"
+with "an authority must authorize the widened capability". The genericization is
+correct and deliberate -- it is what makes autonomous selection inside an
+envelope possible, per section 10 -- but the replacement term is undefined at its
+point of use. "An authority" is repaired two paragraphs earlier by the provenance
+sentence, and a reader who arrives at "Candidate design direction" through the
+table of contents does not have it. Binding the phrase to the envelope where it
+occurs, for example "an authority within the admitted envelope", costs four words
+and removes the only sentence in the document a motivated reader could quote in
+support of a peer-granted unlock.
+
+=== F-N1 (INFO) -- an accepted backlog record already depends on this one's containment, and this record does not acknowledge the dependency
+
+`FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`, accepted at rereview 002, gates its R2
+same-Hop retry on containment work defined here: its residual-risk section states
+that current primitives cannot prove "no unresolved side effect" and names
+escaped descendant processes, writes outside Git or the repository, network and
+external-service mutation, credentials, and mutable caches, then makes R2 depend
+on the direction in `FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc`. This record's
+"Relationship to existing WFC boundaries" lists declarative phase authority,
+mutation scope, Coordinator-owned Git mutation, trusted evidence, and independent
+review, but not the recovery record. A backlog record that another backlog record
+blocks on should say so, so that revisiting this one surfaces what unblocks.
+Observation only.
+
+== 12. Minimality and backlog fitness
+
+Appropriately bounded, and the boundary is defended in the text rather than left
+to good intentions. The non-goals exclude mandating `bwrap`, implementing
+sandboxing, a complete information-classification taxonomy, a delegation/router
+architecture, replacing repository policy or prompt/contract authority or review,
+guaranteeing protection against all malicious code, a complete secret-management
+system, and requiring self-hosted development. The deployment section separately
+disclaims an outer-loop planner, model router, provider selection algorithm, and
+new workflow profile. The event vocabulary is marked "Candidate, non-final" and
+followed by "This record neither implements nor schema-commits that vocabulary."
+The priority line and revisit trigger keep the record deferred and name the
+conditions that would reopen it.
+
+Nothing in the document drifts toward IAM, capability tokens, DLP, a policy
+engine, or a sandbox implementation. Length is 168 lines, which is proportionate
+to a record whose purpose is to keep a direction from being lost.
+
+The three IMPORTANT findings do not reverse this judgement, and none of them is
+answered by building a platform. F-I1 asks for a base case and a resolution rule
+-- two sentences, both already drafted in prior repository text. F-I2 asks for an
+egress predicate whose prior formulation was explicitly constructed to avoid DLP.
+F-I3 asks for a trigger restatement across two records. Adding all three leaves
+the record under two hundred lines and still deferred.
+
+This FTR is suitable to remain deferred backlog architecture, and is useful for
+future implementation planning in its current shape; the revisions asked for here
+make it reliable as the thing later planning is built on, which is the standard
+the verdict applies.
+
+== 13. Scenario dispositions
+
+Scenario A:: *Correct.* The peer's "approved" is inert; the delegation clause
+requires the peer to already hold explicit human-derived grant authority for that
+exact bounded context.
+
+Scenario B:: *Correct.* Selection between two pre-admitted bindings is explicitly
+not widening; no new human approval is implied, and section 10's envelope model
+supports it.
+
+Scenario C:: *Under-determined.* The governing clause exists but carries no rule
+about derived output, no sink notion, and no declassification authority. Decided
+by F-I2, not by the current text.
+
+Scenario D:: *Correct and explicit.* Both control sets apply by direct statement;
+the information boundary does not remove the review requirement.
+
+Scenario E:: *Correct across the two records.* The trust FTR forbids automatic
+unlock; the elevated FTR forbids privileged state influencing a more trusted
+boundary before review and names the host-side Git operation specifically.
+
+Scenario F:: *Correct.* The request/grant separation is stated, `requires_network`
+is a request event, and network capability is named in the envelope sentence.
+
+== 14. Validation
+
+* candidate HEAD confirmed `cf68a1b5cac34127ffa979faac581acbb36d8f14`,
+  subject `docs(backlog): clarify trust authority provenance`; worktree clean at
+  review start;
+* `git diff --check` -- no output, no whitespace errors;
+* exactly one path changed:
+  `docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES_review_001.adoc`;
+* both candidate FTRs unmodified; no `src/`, `tests/`, `governance/`, Runtime,
+  Run-state, profile, policy, or remote change;
+* no WFC, provider, or LLM invocation; no push.
+
+== Final statement
+
+`FTR-WFC-EXECUTION-TRUST-BOUNDARIES` at `cf68a1b` is a coherent and
+appropriately bounded backlog architecture concept whose central decomposition
+survives attack. Its strongest contribution is the pairing of the three-dimension
+separation with the non-obvious routing call that follows from it: protected
+reading alone does not earn a mandatory defensive review, because the only
+effective control for disclosure precedes disclosure, while any work that also
+touches an execution-sensitive surface earns both control sets. That is the
+correct call and the record states the correct reason for it. The provenance
+invariant added by `cf68a1b` is the right invariant, stated in the right
+direction, and shaped like a domination relation `_admit_a1` already enforces.
+
+The strongest remaining security concern is egress. Selecting a compatible
+protected binding is a decision about what a worker may *receive*; the record
+treats information authority almost entirely as that ingress question and leaves
+the return path to a single clause in a section about deployment topology. Under
+the current text a protected worker may lawfully read confidential source, write
+a derived assessment into its authorized scope, and have the Coordinator commit
+it -- the sanctioned effect, not a bypass. The prior formulation that closes this
+is DLP-free and already written, and it survives only in a directory this
+repository classifies as non-authoritative.
+
+Verdict: *MATERIAL_REVISION_REQUIRED* -- three bounded conceptual corrections
+(F-I1, F-I2, F-I3), three minor observations (F-M1, F-M2, F-M3), three
+informational observations (F-N1, F-N2, F-N3). The record should remain deferred
+backlog architecture after revision.
+
+This review is documentation-only. It made no WFC, provider, Runtime, Run-state,
+governance, profile, policy, test, or remote mutation, and changed no file other
+than this review artifact.
