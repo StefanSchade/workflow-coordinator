@@ -1,0 +1,725 @@
+= FTR-WFC-ATOMIC-HOP-RECOVERY -- Architecture Convergence Review 001
+
+Independent adversarial architecture review of commit
+`e1bab1c4cda01b64b5b3141bc452689f815cbd26`
+(`docs(backlog): define atomic hop recovery model`) against parent
+`a1ae882a10dc9ed6b067d31269647779a932419e`.
+
+Review only. This review made no implementation, governance, profile, Runtime,
+or historical Run-state change; invoked neither WFC nor a provider; mutated no
+Run state; and did not push. It is a concept-convergence assessment, not an
+implementation task.
+
+== Verdict
+
+*MATERIAL_REVISION_REQUIRED.*
+
+The overall direction is correct and unusually well grounded. The candidate's
+factual account of current repository behavior is accurate on every claim this
+review independently checked, its non-goals are disciplined, and its refusal to
+relabel semantic failure as transient is right. It should not yet guide
+implementation, because its central budget vocabulary is internally
+contradictory against the fail-closed path it claims to preserve, its retry
+predicate over-claims what the repository's own observation primitives prove,
+and it does not evaluate the cheapest competing design that the repository
+already contains in unwired form.
+
+Finding counts:
+
+* BLOCKING: 1
+* IMPORTANT: 5
+* MINOR: 4
+* INFO: 3
+
+== Entry gate, reviewed delta, and validation
+
+At review entry `HEAD` was exactly
+`e1bab1c4cda01b64b5b3141bc452689f815cbd26` and `git status --porcelain` was
+empty. The parent was determined from Git (`git rev-parse HEAD^`) rather than
+assumed.
+
+The parent-to-candidate delta contains exactly one path,
+`docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`, 640 insertions, 0 deletions.
+There is no delta under `src/workflow_coordinator/**`, `tests/**`,
+`governance/**`, `scripts/**`, or any other document. The candidate is
+documentation-only.
+
+Validation performed:
+
+* `git diff --check a1ae882a10dc9ed6b067d31269647779a932419e..e1bab1c4cda01b64b5b3141bc452689f815cbd26`
+  -- no output, no whitespace errors;
+* `git show --stat e1bab1c` -- one file, docs-only, as above;
+* `.venv/bin/python -m ruff check .` -- *All checks passed!*;
+* `.venv/bin/python -m pytest` -- *383 passed in 19.38s*.
+
+The ambient interpreter (`/usr/bin/python3`) has neither `ruff` nor `pytest`,
+so `make check` fails at its `lint` step outside the project virtual
+environment; both tools were therefore run from `.venv/bin/python`. This is an
+environment observation about this review shell, not a defect in the
+candidate.
+
+Provider inspection was restricted to static local `--help` output
+(`codex exec --help`, `codex exec resume --help`, `codex --version`). No
+provider execution, network call, WFC invocation, or Run-state mutation
+occurred.
+
+== 1. Verification of current implementation facts
+
+Every lettered claim in the review brief was checked against source rather than
+accepted from the document.
+
+[cols="1,1,4",options="header"]
+|===
+|Claim |Result |Grounding
+
+|A -- one post-dispatch invocation charges one Hop, not multiple disposable
+Attempts beneath one logical Hop
+|*Verified*
+|`model.record_hop` (`src/workflow_coordinator/model.py:405`) increments
+`hop_used` to `run.hop_used + 1` and appends `hop.compact()`, refusing any
+sequence other than `hop_used + 1` and any duplicate `hop_id`. No call site
+allocates a second invocation under one `hop_id`. `vertical.run_one_hop`
+derives `hop_id = f"H{run.hop_used + 1:03d}"`
+(`src/workflow_coordinator/vertical.py:162`), so Hop identity is a pure
+function of consumed budget.
+
+|B -- a valid semantic `Outcome.FAILED` is recorded and charged before
+reduction
+|*Verified*
+|`vertical.py:286` calls `record_hop` with `invocation_status="accepted"` and
+`outcome=result.outcome.value`; `reduce_result` is only called afterwards at
+`vertical.py:289`. `reducer.py:349` then routes `Outcome.FAILED` to
+`_stop_for_human(run, "result_failed")`. The Hop is charged first and stopped
+second.
+
+|C -- post-dispatch candidate absence, malformed output, or unclassified
+failure synthesizes an uncertain Hop and `reconcile_required`
+|*Verified*
+|`vertical.py:176` raises `ExecutionResultValidationError` when
+`candidate_result is None`; `validated_result` failures are wrapped the same
+way. `slice4.run_real_one_hop` catches that at `slice4.py:210` and any other
+exception at `slice4.py:218`, both routing to `recover_uncertain`
+(`slice4.py:183`). `persistence.recover_uncertain_dispatch`
+(`persistence.py:112`) records a Hop with `role="uncertain_dispatch"` and
+`invocation_status="acceptance_not_disproved"`, then calls `require_reconcile`.
+The dispatch marker is deliberately *not* unlinked on this path.
+
+|D -- unchanged HEAD and a clean worktree do not make the invocation
+automatically replayable
+|*Verified*
+|`recover_uncertain_dispatch` has no branch on `current_head == marker.base_head`
+and no branch on repository cleanliness. It charges unconditionally once a
+marker exists. This implements `WFC-AUTO-02` in
+`docs/imported/core-incubator/FTR-AGENT-WORKFLOW-COORDINATOR-P5.adoc:505-512`.
+
+|E -- failed or interrupted execution is not transactionally rolled back
+|*Verified*
+|`git_facts._observe_repository` (`git_facts.py:218`) only reports; nothing in
+`git_facts.py` resets or cleans. `slice4.recover_uncertain` observes and
+records, and `vertical.py` converts `TrustedCommitError` into a recorded
+anomaly rather than a rollback.
+`tests/unit/test_slice4b_git_authority.py:120-134` asserts that unrelated dirty
+tracked and untracked state is preserved byte-for-byte while the Run fails
+closed; `tests/unit/test_git_facts.py:61-64,178-180` assert the same for
+preflight and post-Hop observation.
+
+|F -- existing primitives do not already provide a safe process-level retry or
+re-entry command
+|*Verified*
+|`operator.main` rejects an existing state root outright
+(`operator.py:224-225`, "one-shot operator roots are never overwritten") and
+always creates a new Run. `reducer.resume_after_reconcile`
+(`reducer.py:559`), `serialization.load_run`, and
+`persistence.load_dispatch_marker` exist but have no production caller; they
+are library seams only. `git_facts.preflight_state_root` is likewise
+production-dead (referenced only from `tests/unit/test_git_facts.py`).
+
+|G -- execution evidence assumes about one row per charged Hop despite the word
+`attempts`
+|*Verified*
+|`operator._execution_evidence` (`operator.py:493`) derives its row from
+`run.hops[-1]`, and `run_serial_hops` appends a row only when
+`hop_run.outcome is not None and run.hops` (`operator.py:583-595`). The
+`recover_uncertain(None)` path therefore produces a charged uncertain Hop with
+*no* evidence row. `HopSummary` (`model.py:260`) carries neither
+`invocation_id` nor an Attempt ordinal, so evidence and Hop history are
+correlated only positionally.
+|===
+
+No mismatch was found between the candidate's "Current implementation facts"
+section and the repository. Two additional facts the candidate states were also
+confirmed: `CodexCliError` is raised only before `subprocess.Popen`
+(`codex_adapter.py:154-168`), so the marker-clearing branches at
+`slice4.py:212-216` really are proven-no-execution paths; and the vertical
+acceptance path never gates candidate validation on `returncode` or
+`timed_out`, so a candidate written before a timeout kill is still accepted
+(`codex_adapter.py:181`, `vertical.py:176`).
+
+== 2. Findings
+
+=== F-B1 (BLOCKING) -- "accepted Hops are the only semantic history" contradicts the uncertain-dispatch charge the FTR claims to preserve
+
+Recovery invariant 1 states that "Accepted Hops remain the only semantic
+history that can update Findings, route/phase, accepted HEAD, or the semantic
+Hop budget", and the budget section states that "`max_autonomous_hops` counts
+accepted Hops only in the target model".
+
+That is false of the behavior the FTR elsewhere promises to keep.
+`recover_uncertain_dispatch` appends a Hop whose `outcome` is `uncertain` and
+whose `invocation_status` is `acceptance_not_disproved` into `run.hops`,
+increments `hop_used` through `record_hop`, and advances `current_head` to the
+independently observed head (`persistence.py:112-160`). That Hop is by the
+FTR's own taxonomy *not* accepted -- no candidate was accepted, no Attempt was
+accepted -- yet it is semantic history and it consumes semantic budget. Slice R2
+simultaneously promises to "Keep conservative charged/reconciliation behavior
+for every uncertain or mutated case."
+
+The document therefore contains two mutually exclusive rules, and the one
+stated as an *invariant* is the wrong one. An implementer reading invariant 1
+literally would conclude that an uncertain dispatch must stop charging
+`max_autonomous_hops`, which is precisely the fail-closed weakening the review
+brief's section 6 asks to be prevented. The confusion is not hypothetical
+vocabulary drift: the repository already uses `invocation_status="accepted"`
+for a semantically *failed* Hop (`vertical.py:286`), so "accepted Hop" is an
+actively ambiguous term against existing code.
+
+Required correction: replace the single word "accepted" with an explicit
+three-way charging rule. A defensible formulation, consistent with both current
+code and the FTR's intent:
+
+* a *charged Hop* is any Hop appended to `run.hops`; it always consumes
+  `max_autonomous_hops`;
+* an Attempt whose candidate was validated and correlated produces a charged
+  Hop *regardless of its semantic `Outcome`*, including `Outcome.FAILED`;
+* an Attempt that cannot be disproved as having been accepted produces a
+  charged *uncertain* Hop and `reconcile_required`;
+* only a *proven-transient, candidate-free, fully quiescent* discarded Attempt
+  produces no Hop at all.
+
+Then restate invariant 1 in terms of reduction authority rather than history:
+only a Hop carrying a validated correlated candidate may reach
+`reduce_result`. That is both true today and true in the target model.
+
+=== F-I1 (IMPORTANT) -- `Outcome.FAILED` budget treatment is never stated, although the brief marks it the decisive terminology case
+
+The FTR says a valid semantic `Outcome.FAILED` "is not made transient merely
+because another model invocation might produce a better answer", which settles
+*retry eligibility*. It never states whether such an invocation is an accepted
+Hop that consumes semantic budget. Under `record_hop` it does
+(`model.py:405-430`, `vertical.py:286`), and under `WFC-AUTO-02` it must
+("whether it succeeds, fails, or yields malformed output").
+
+Because the target model is described as counting "accepted Hops only", a
+reader can reach the opposite conclusion by reading "accepted" as "succeeded".
+The revision must say, in one sentence and in the budget section rather than
+the taxonomy table, that a validated correlated candidate consumes one semantic
+Hop irrespective of `Outcome`, and that this is unchanged from today.
+
+=== F-I2 (IMPORTANT) -- the retry predicate over-claims "no unresolved side effect"; ignored paths are invisible to the exact primitive it relies on
+
+The retry predicate requires "clean tracked/untracked state and resolved
+submodules" plus "no unresolved external side effect". The first is a real
+observable; the second is not derivable from it, and the FTR's general caveat
+("Repository cleanliness proves only repository cleanliness") is stated once in
+prose and then not reflected in the conjunctive list, which reads as if the
+list is sufficient.
+
+The concrete gap is repository-grounded and specific:
+
+* `_observe_repository` runs `git status --porcelain=v1 --untracked-files=all`
+  (`git_facts.py:222`), which by construction excludes *ignored* paths.
+* This checkout ignores `__pycache__/`, `*.py[cod]`, `.pytest_cache/`,
+  `.venv/`, `build/`, `dist/`, `*.egg-info/`, `.coverage`, and `htmlcov/`
+  (`.gitignore`).
+* The agent runs under `--sandbox workspace-write` (`codex_adapter.py:146-153`),
+  which authorizes writes anywhere in the workspace, ignored paths included.
+* The Coordinator then executes trusted `pytest` as evidence with
+  `cwd=command.repository` and the Coordinator's inherited environment
+  (`evidence.py:259-261`, `governance/self-development/repository-policy.yaml`).
+
+A discarded Attempt can therefore leave ignored-path content that a later
+trusted evidence execution imports and runs with Coordinator authority, while
+`observe_repository` truthfully reports the worktree clean. That is exactly the
+confused-deputy transition described in
+`docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc`.
+
+Honesty requires two qualifications, and the revision should make both:
+
+. This hazard is *pre-existing*, not created by retry. It already spans Hop N to
+  Hop N+1 within one Run, because `run_serial_hops` re-enters with the same
+  repository and the same evidence commands (`operator.py:539-594`). Retry does
+  not introduce a new class of exposure; it adds one more crossing of an
+  already-unguarded boundary.
+. It nevertheless falsifies the predicate's *claim*. The revision should either
+  drop "no unresolved side effect" from the machine-derived conjunction and
+  demote it to a named residual risk, or add an explicit dependency on the
+  deferred containment work in `FTR-WFC-EXECUTION-TRUST-BOUNDARIES` before R2
+  may be implemented.
+
+The related review brief items are disposed as follows: submodules are covered
+(`unresolved_submodules`, `git_facts.py:230-232`); untracked non-ignored files
+are covered (`git_facts.py:222-229`); *ignored* files, writes outside the
+repository, subprocess descendants that escape the killed process group,
+network and credential effects, and mutable caches are *not* covered by any
+current primitive and must be named as such.
+
+=== F-I3 (IMPORTANT) -- `allowed next action` is outer-loop policy leaking inward, and the repository already contains the correct pattern
+
+The watchdog seam proposes exposing "allowed next action such as
+`continue_session`, `retry_same_hop`, `fresh_successor`, `human_reconcile`, or
+`none`, with required authority", and then a decision table mapping classes to
+actions.
+
+Mixing a classification fact with a chosen action in one field is the same
+coupling the FTR's own non-goals reject ("solving the outer
+coordinator/watchdog"). It also duplicates authority: the inner WFC would be
+asserting what a future outer coordinator is permitted to do, while having no
+knowledge of that coordinator's budget, task selection, or human policy.
+
+The repository already demonstrates the right shape.
+`reducer.permitted_route_keys` (`reducer.py:579`) derives the *finite permitted
+set* from profile and status, is published into the checkpoint as
+`next_permitted_route_keys` (`persistence.py:218`), and is documented as
+deriving "finite choices; route authority is never read from Run state". Route
+*selection* remains the agent's request and the reducer's validation, not a
+value read back from state.
+
+Recommended correction: rename the field to something like
+`permitted_recovery_actions`, define it as the mechanically derived set of
+actions whose predicates currently hold (possibly empty), and state explicitly
+that WFC never selects among them and never initiates a successor Run. Delete
+the decision table, or move it into an explicitly non-normative "an outer loop
+might apply" note. This is answer *B* to the brief's question 11, with the
+addition that a *permitted set* is still a useful fail-closed contract -- an
+empty set is a genuine inner-WFC fact -- whereas a single chosen action is not.
+
+=== F-I4 (IMPORTANT) -- the cheapest competing design is never evaluated: the reconcile/resume seam already exists and is merely unwired
+
+The FTR's comparison of same-Hop retry against fresh successor Runs is a false
+dichotomy. There is a third option, strictly cheaper than R2, that the document
+does not mention:
+
+`reducer.resume_after_reconcile` (`reducer.py:559`) already transitions a
+`RECONCILE_REQUIRED` Run back to `READY` after verifying the phase resolves,
+`run.anomalies` is empty, `current_head` is unchanged, and `hop_used` is within
+budget. `serialization.load_run` and `persistence.load_dispatch_marker` already
+exist. What is missing is only an operator entrypoint, because
+`operator.main` refuses an existing state root (`operator.py:224-225`).
+
+The consequence for the FTR's decisive case is material. Its argument for R2
+rests almost entirely on Run-local Finding preservation: "if H001 review created
+F001 and H002 correction hit quota before an accepted result, a clean same-Hop
+H002 retry preserves F001. A fresh Run cannot treat F001 as authoritative
+without repeating review." That is true of a *fresh Run*. It is not true of
+reconcile-then-resume: the Run object, its `findings` tuple, its phase, and its
+pinned governing identity all survive in `run.json`, and resume continues at
+H003 with F001 intact.
+
+The real residual value of R2 over a wired resume command is therefore
+narrower than the FTR presents: *one charged Hop of budget, and one human
+touch*. On this repository's actual work items that is one Hop out of three
+(`governance/work-items/developer-ergonomics-review-005.yaml`,
+`max_autonomous_hops: 3`).
+
+The revision must add this third option to the comparison table and re-argue
+R2 against it, not only against fresh successor Runs. This review's own
+assessment of the three brief cases, with that option included:
+
+[cols="1,2,2",options="header"]
+|===
+|Case |Simplest correct operation |Reason
+
+|A -- H001 review creates F001, H002 correction hits quota
+|Reconcile + resume (wired), not same-Hop retry
+|Findings are preserved either way. Retry saves exactly one charged Hop over
+resume. That saving does not justify adapter classification, Attempt lifecycle,
+crash-safe multi-marker ordering, and caps as a *first* implementation.
+
+|B -- a bad Agent Operating Contract is exposed and corrected
+|Fresh successor Run
+|Governing truth changed; the old Run must stay frozen. The FTR is correct and
+this case needs no new mechanism. It is already operationally routine here: a
+new WorkItem YAML with an explicit `initial_phase` plus one operator
+invocation, as `developer-ergonomics-review-00{2,3,4,5}.yaml` demonstrate.
+
+|C -- a clean review Hop hits quota before producing any result
+|Fresh successor Run
+|No Run-local Findings exist to preserve and `initial_phase` is already
+selectable. Retry buys only the avoidance of a new state root.
+|===
+
+The FTR's conclusion that fresh successor Runs are "not an adequate substitute
+for ALL transient retries" is literally true but load-bearing beyond its
+strength: it is carried entirely by Case A, and Case A is served by a cheaper
+mechanism the FTR does not consider.
+
+=== F-I5 (IMPORTANT) -- the motivating event has no recorded occurrence in this repository, and the FTR does not say so
+
+The document is "Recorded now" because "Provider quota exhaustion and other
+transient failures expose a gap". No repository evidence of such an event is
+cited, and this review found none. Across seven dogfood attempts
+(`docs/backlog/first_wfc_on_wfc_dogfood_attempt_{2..7}*.adoc` and the closure
+records), every recorded failure is semantic, governance, or implementation
+defect. The strings `uncertain_dispatch` and `acceptance_not_disproved` appear
+nowhere in `docs/` outside this FTR and the imported P5 record, i.e. the
+conservative recovery path has been exercised only by tests
+(`tests/unit/test_operator.py:288-303`), never in operation. Runs in this
+repository are 1--3 Hops.
+
+This does not invalidate the concept, and the FTR's staging is the right
+instinct. But an architecture-convergence document that proposes an Attempt
+lifecycle, scratch sealing infrastructure, process re-entry, provider
+continuation, and a watchdog seam should state plainly that its motivating
+frequency is currently *unmeasured*, and should make R2 conditional on measured
+occurrences rather than on R0/R1 merely being possible. The revision should add
+an explicit evidence gate, for example: R2 is not opened until the R1 ledger
+records transient, candidate-free, quiescent Attempts at a rate that makes the
+one-Hop resume cost material.
+
+== 3. Minor findings
+
+=== F-M1 (MINOR) -- attempt-specific result paths are a liveness and observability need, not a correctness precondition
+
+The trace section states that a retry design "cannot simply overwrite the
+current single marker or fixed result file". The marker half is right. The
+result-file half over-states the risk, and the over-statement matters because it
+inflates R2's apparent cost.
+
+`CodexCliAdapter.execute` truncates `result-message.json` before launch
+(`codex_adapter.py:163`) and reads it after
+(`codex_adapter.py:181`), and `validated_result` rejects any envelope whose
+`(run_id, hop_id, invocation_id)` triple does not match the dispatched
+`Invocation` (`adapter.py:112-115`). Because every Attempt allocates a fresh
+`invocation_id` (`operator.py:560`), a stale or orphan-written result from a
+predecessor Attempt *cannot* be mistaken for a successor's result; it fails
+correlation and falls into the existing conservative uncertain path.
+
+The genuine cost is loss of progress, not loss of safety: an orphaned
+descendant that writes the fixed path after the successor's own write converts
+a valid successor result into a charged uncertain Hop. The revision should
+re-characterize attempt-specific paths accordingly, and should credit
+invocation correlation as an already-present safety property that R2 inherits
+rather than must build.
+
+=== F-M2 (MINOR) -- the crash-safe marker ordering is named as a requirement but never stated, although it is the one ordering rule that actually matters
+
+The FTR asks for "an ordering that cannot lose the fact that an earlier
+invocation may have run" and lists the precise transition as an open question.
+The rule is derivable today and should simply be written down, because getting
+it backwards is the only way R2 can produce an unsafe replay.
+
+Today `dispatch.json` is a single fixed path (`slice4.py:174`), written before
+execution (`slice4.py:176`) and unlinked only after the post-Hop Run and
+checkpoint are durable (`slice4.py:220-222`). `recover_uncertain_dispatch`
+is already idempotent against a marker whose `hop_id` is present in `run.hops`
+(`persistence.py:128-161`), so a crash between post-Hop publication and marker
+retirement cannot double-charge.
+
+The rule R2 needs is therefore: *no window may exist in which no marker
+covers a possibly-live Attempt.* The successor Attempt's marker must be durable
+before the predecessor's is retired, never the reverse; and since both markers
+share `run_id`, `hop_id`, `sequence`, and `base_head`, and differ only in
+`invocation_id`, a crash inside that overlap still recovers to exactly one
+charged uncertain Hop under the existing logic. Stating this converts the open
+question into a bounded design constraint and removes the temptation to build a
+transaction system.
+
+=== F-M3 (MINOR) -- the rendered Codex argv omits authority-relevant flags
+
+The FTR renders the adapter invocation as
+`codex exec --ephemeral --json --sandbox workspace-write --output-schema ... --output-last-message ... -`
+and marks it "approximately". The actual argv (`codex_adapter.py:146-153`) also
+carries `--ask-for-approval never`, `--color never`, `--model` (default
+`gpt-5.6-terra`), `-c model_reasoning_effort="medium"`, and `--cd <repository>`.
+
+`--ask-for-approval never` and the model/reasoning binding are not cosmetic in
+a retry document: the binding is part of what a retry would have to hold
+constant or deliberately vary, and the FTR itself lists "binding/capability
+facts" in the Attempt record while its own argv rendering hides them.
+
+=== F-M4 (MINOR) -- the FTR does not name the accepted normative rules its R2 would revise
+
+The FTR correctly says "A future same-Hop retry must explicitly revise that
+narrow contract rather than pretend it was already supported", but references
+`FTR-AGENT-WORKFLOW-COORDINATOR-P5` only as a document. The rules concerned are
+identified there by ID:
+
+* `WFC-AUTO-02` -- "Every invocation accepted by the agent adapter consumes one
+  Hop whether it succeeds, fails, or yields malformed output... once the atomic
+  dispatch marker exists, acceptance that cannot be disproved is conservatively
+  charged as one Hop and never replayed."
+  (`docs/imported/core-incubator/FTR-AGENT-WORKFLOW-COORDINATOR-P5.adoc:505-512`)
+* `WFC-AUTO-03` -- "V1 has no hidden retry."
+  (`...P5.adoc:514-517`)
+* `WFC-AUTO-05` -- resume requires explicit maintainer action.
+
+A convergence FTR that proposes narrowing an accepted normative rule should
+name the rule IDs and the exact narrowing, so the later supersession is
+reviewable as a delta rather than as a re-reading.
+
+== 4. Informational observations
+
+=== F-N1 (INFO) -- Run -> Hop -> Attempt is justified, but the minimal form is a record extension, not a new lifecycle entity
+
+Answering the brief's section 2 adversarially: a separate Attempt *lifecycle
+entity* is not needed, and a durable Attempt *record* is.
+
+Against a new entity: three of the four facts an Attempt needs are already
+durable and already correlated. `Invocation` carries
+`(run_id, hop_id, invocation_id)` (`adapter.py:32-35`); `DispatchMarker`
+persists those plus `sequence`, `base_head`, and `budget_reserved`
+(`model.py:363`); `execution-evidence.json` is already `schema_version: 2` with
+a row array literally named `attempts` (`operator.py:525-528`) recording
+binding, timeout, return code, timeout flag, candidate presence, HEAD range,
+commits, and trusted observations.
+
+What is genuinely missing is small and is exactly three things: rows are keyed
+off `run.hops[-1]` instead of off the invocation (`operator.py:493-495`); the
+exception path `recover_uncertain(None)` (`slice4.py:218-219`) produces no row
+at all; and there is no Attempt ordinal or structured disposition. R1 can be
+implemented as decoupling the evidence row from `run.hops`, always emitting a
+row, and adding `attempt_ordinal` plus
+`disposition ∈ {not_started, discarded, accepted, uncertain}`. That is an
+extension of an existing published artifact, not a second state machine.
+
+For R2 the durable record becomes necessary rather than merely useful, because
+several `invocation_id` values then map to one `hop_id` and the marker must
+distinguish them. The FTR's conclusion is therefore correct; its framing as a
+new lifecycle tier is heavier than the evidence requires and should be softened
+to "Attempt is a durable record subordinate to a Hop, carried by the existing
+evidence and marker surfaces".
+
+Answering the brief's remaining sub-questions: the ledger is necessary for
+retry *correctness* only from R2 onward; for R1 it is observability, which is
+its stated purpose and is legitimate. `HopSummary` should gain an accepted
+`invocation_id` reference, because otherwise the accepted Attempt is
+identifiable only by position in a separately published file, which is exactly
+the correlation weakness the rest of the system avoids.
+
+=== F-N2 (INFO) -- provider continuation is already decidable from static local facts; R0 should shrink accordingly
+
+The FTR treats provider continuation as an open investigation and lists it
+first in its decision summary. Two static facts, observed locally without
+invoking a provider, make most of that branch decidable now
+(`codex-cli 0.147.0`):
+
+* `codex exec --ephemeral` is documented as "Run without persisting session
+  files to disk";
+* `codex exec resume` is documented as "Resume a previous session by id or pick
+  the most recent with --last", operating on *recorded* sessions.
+
+These are mutually exclusive by definition. Provider-session resume is not
+merely unwired in WFC; it is structurally unavailable for any invocation that
+passes `--ephemeral`. Enabling it would require persisting provider-owned
+session state, which is untrusted execution state living outside the external
+state root that `slice4._require_external_state_root` deliberately keeps
+disjoint from the agent workspace, and which the imported governance review
+already treats as an information-classification surface.
+
+This review's position: WFC should keep `--ephemeral` and decline provider
+session continuation, recording that as a deliberate architectural property
+rather than an open question. The FTR's own R0 text already asks the right
+question ("Decide explicitly whether WFC wants a persistent provider session at
+all. A provider session is untrusted execution state, not authoritative Run
+state") -- but its decision summary and taxonomy give continuation first
+position and full taxonomy weight, which is not neutral. The revision should
+either resolve it as a stated non-goal or demote it below retry.
+
+What remains genuinely unknown, and is the only thing R0 should investigate, is
+whether the `--json` JSONL event stream or the exit code carries a stable
+structured quota/transient signal. Today that stream is captured only as a
+16 KiB tail (`codex_adapter._bounded`, `codex_adapter.py:84`), is reduced to
+free-text `diagnostics` (`codex_adapter.py:182-184`), and is dropped entirely
+from `execution-evidence.json` (`operator.py:493-504`). The FTR's refusal to
+classify quota by matching prose such as "5 hour limit" is correct and should be
+retained verbatim.
+
+R0 so narrowed is cheap: persist the JSONL stream and exit code for real
+invocations and read them afterwards. It requires no new semantics and can be
+merged into R1.
+
+=== F-N3 (INFO) -- the scratch section is the FTR's least evidence-backed material and should be compressed, not deleted
+
+Answering the brief's section 10: option *B*, premature overdesign, with the
+core semantics kept.
+
+The intended semantics ("salvage, not resume") are right, and the security
+posture is mostly right: the FTR explicitly says that "Labels and delimiters do
+not contain prompt injection" and that least-authority sandboxing, no automatic
+execution, no authority derivation, and independent verification "remain the
+real controls". That is the correct statement of the brief's warning -- the
+prompt warning is not itself a security boundary -- and it is stated strongly
+enough.
+
+Three problems remain. First, proportionality: roughly seventy lines specify a
+directory layout, a manifest, eligibility predicates, and exact prompt wording
+for a mechanism the FTR itself defers past R2, for a failure whose frequency is
+unmeasured (F-I5). Second, one eligibility gate does not exist: "compatible
+information classification and successor reachable surface" presumes a
+classification mechanism, and `prompt.ContextItem` (`prompt.py:89-95`) carries
+only `reference` and `content`, with every item rendered into an undifferentiated
+`[context]` block (`prompt.py:172-177`). There is no label to compare. Third,
+the sandbox exposure claim is directional only: a "narrow per-Attempt scratch
+exchange, bounded by the sandbox" is asserted without reference to any existing
+containment, and `FTR-WFC-EXECUTION-TRUST-BOUNDARIES` explicitly lists
+sandboxing as *candidate* direction, not an implemented guarantee.
+
+Recommended: compress to a named deferred option carrying only the
+non-negotiables -- never authoritative, never a Finding or disposition, never
+governing input, never restored session state, Coordinator-sealed after process
+termination, no authority widening to make it readable, no automatic execution
+-- plus an explicit prerequisite on a prompt trust-label mechanism that does not
+yet exist. Move the layout, manifest schema, and prompt wording into a note
+marked as illustration pending evidence.
+
+== 5. Disposition of the remaining brief questions
+
+Current conservative contract (brief section 6):: R2 can revise the contract for
+a machine-proven subset *provided* F-B1 is corrected. As written, invariant 1
+would weaken the fail-closed path for uncertain dispatch, which is the one case
+that must not change. The FTR is otherwise correct and careful here: its
+eligibility is conjunctive and positive, semantic failure and malformed output
+are explicitly excluded from transient classification, governing/authority
+change forces a fresh successor Run, and Finding import between Runs is a stated
+non-goal. `_governing_inputs_unchanged` and the inter-Hop
+`stop_continuation("governing_input_changed", ...)` path
+(`operator.py:555-559`) already enforce the governing-truth half of this at Hop
+granularity, which the revision should cite as the precedent it extends.
+
+Budget model (brief section 7):: The separation of semantic Hop budget from
+technical Attempt allowance is correct and is the FTR's cleanest idea. Leaving
+the configuration location open is appropriate and should not be forced. Two
+gaps: the FTR does not say that Attempt allowance must be bounded by something
+*durable* across a Coordinator crash -- an in-memory retry counter would silently
+reset and produce the unbounded loop the section is meant to prevent -- and it
+does not state that exhausting Attempt allowance must fall back to the existing
+charged/reconcile behavior rather than to a new terminal state. Both belong in
+the revision. The claim that continuation consumes no Attempt is consistent but
+becomes moot if F-N2 is accepted.
+
+Process-loss scope (brief section 12):: R1 and R2 can and should be implemented
+for an intact Coordinator process only. Durable Attempt identity does not imply
+process-level re-entry: the marker already survives a crash and
+`recover_uncertain_dispatch` already handles re-entry idempotently at the Hop
+level; an Attempt ordinal adds a field to artifacts that are already atomically
+published (`persistence.atomic_write_json`, `persistence.py:88`). The FTR's own
+open question ("Should process-loss recovery be introduced with R2 or only
+after safe in-process retry has produced evidence?") should be closed in the
+revision as *after*, with one exception: the resume entrypoint argued in F-I4 is
+itself a process-level re-entry command and is worth building first, because it
+serves Case A at a fraction of R2's cost.
+
+Relationship to other security work (brief section 14):: No conflict found. The
+FTR does not attempt generic elevated privilege, correctly names
+`FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW` as the separate deferred
+mechanism, and does not weaken the trust-boundary direction. Two cross-reference
+corrections are needed and are covered above: the scratch section asserts
+sandbox bounding that `FTR-WFC-EXECUTION-TRUST-BOUNDARIES` lists only as
+candidate direction (F-N3), and the retry predicate's side-effect claim depends
+on containment that does not yet exist (F-I2). The FTR's statement that scratch
+"respects the trust-boundary principles" should be weakened to "depends on"
+them.
+
+FTR quality and decision readiness (brief section 16):: Structure is good. The
+document does separate current repository truth, target semantics,
+recommendations, non-goals, and open questions, and its "Current implementation
+facts" section is the most accurate part of it. Speculative material worded as
+established fact is confined to the budget invariant (F-B1), the predicate's
+side-effect sufficiency (F-I2), and the necessity framing of attempt-specific
+result paths (F-M1). The internal contradiction is F-B1 against the R2 text;
+terminology drift is the overloading of "accepted" across invocation status,
+candidate validation, Attempt selection, reducer route acceptance, and semantic
+history.
+
+== 6. Bounded revision plan
+
+For a subsequent concept-revision pass. Nothing here should be implemented as
+code.
+
+. Replace "accepted Hop" throughout with the three-way charging rule in F-B1,
+  and restate recovery invariant 1 in terms of reduction authority rather than
+  history. Add one sentence putting `Outcome.FAILED` on the charged side
+  (F-I1).
+. Add reconcile-then-resume as a third column in the "Same-Hop retry versus
+  fresh start-over" table, re-argue Case A against it, and record that the
+  residual value of R2 is one charged Hop plus one human touch (F-I4).
+. State the empirical basis honestly: no recorded transient interruption to
+  date; make R2 conditional on R1-measured occurrences (F-I5).
+. Rewrite the retry predicate so that machine-derivable conjuncts and residual
+  risks are visually separate. Name ignored paths, out-of-repository writes,
+  escaped descendants, network, and credentials as unobservable by current
+  primitives, and make R2 depend on `FTR-WFC-EXECUTION-TRUST-BOUNDARIES`
+  (F-I2).
+. Rename `allowed next action` to a derived permitted *set*, cite
+  `permitted_route_keys` as the precedent, and delete or de-normativize the
+  decision table (F-I3).
+. Resolve provider continuation as a non-goal on the static
+  `--ephemeral` / `exec resume` exclusivity, and reduce R0 to the JSONL/exit-code
+  question, merged into R1 (F-N2).
+. Reframe Attempt as a durable record extending `execution-evidence.json` and
+  `DispatchMarker`, name the three concrete gaps, and propose an accepted
+  `invocation_id` reference on `HopSummary` (F-N1).
+. Write down the marker ordering rule (successor marker durable before
+  predecessor retirement) and re-characterize attempt-specific result paths as
+  liveness, crediting invocation correlation (F-M1, F-M2).
+. Compress the scratch section to non-negotiables plus a stated prerequisite on
+  a prompt trust-label mechanism (F-N3).
+. Name `WFC-AUTO-02`, `WFC-AUTO-03`, and `WFC-AUTO-05` as the rules R2 would
+  narrow; correct the rendered argv (F-M4, F-M3).
+. Add the two budget gaps: Attempt allowance must be durable across crash, and
+  its exhaustion falls back to charged/reconcile.
+
+Recommended sequence after revision, replacing R0/R1/R2:
+
+----
+R1  narrowed R0 + Attempt observation
+      persist JSONL/exit code; decouple evidence rows from run.hops;
+      always emit a row; add attempt ordinal + disposition;
+      publish a derived permitted-recovery-action set.
+      No semantic change.
+
+R1.5  wire the existing reconcile/resume seam into an operator entrypoint
+      serves Case A; preserves Run-local Findings; costs one charged Hop.
+
+R2  bounded clean-base same-Hop retry
+      opened only if R1 evidence shows the one-Hop cost is material.
+
+R3  scratch, process-loss recovery -- unchanged deferral.
+----
+
+Each slice has independent value, R1 changes no safety semantics, and R1.5 is
+smaller than R2 while covering the FTR's own decisive case.
+
+== 7. Architectural assessment summary
+
+Strongest positive:: The separation of semantic Hop budget from technical
+Attempt allowance, combined with the refusal to relabel `Outcome.FAILED`,
+malformed output, reducer preemption, or authority defects as transient. That
+boundary is the load-bearing idea, it is correct, and it keeps the reducer and
+Finding layers entirely out of the retry mechanism -- which is why the concept
+is genuinely small where it matters.
+
+Strongest concern:: The document commits to the more expensive of two
+mechanisms for its own decisive case without evaluating the cheaper one that
+already exists in the repository in unwired form, while the motivating failure
+has never been observed in operation. Combined with the budget-vocabulary
+contradiction, that is enough to require revision before implementation.
+
+== Final statement
+
+Exact candidate `e1bab1c4cda01b64b5b3141bc452689f815cbd26` requires material
+revision. Its account of current repository behavior is accurate on all seven
+verified claims; its direction, staging instinct, non-goals, and budget
+separation are sound; and it should be revised rather than rejected. The
+central architecture is not fundamentally wrong, so `REJECTED` does not apply;
+the budget-invariant contradiction, the over-claimed retry predicate, the
+unevaluated resume alternative, the policy leakage in the watchdog seam, and
+the unstated empirical basis together exceed what `ACCEPTED` with bounded
+observations can absorb.
+
+The delta reviewed is documentation-only:
+`docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`, 640 insertions, no other path.
+`git diff --check` between parent and candidate reports no whitespace errors,
+`ruff check .` passes, and the full suite passes at 383 tests. This review made
+no WFC, provider, Runtime, Run-state, or remote mutation, and changed no file
+other than this review artifact.
