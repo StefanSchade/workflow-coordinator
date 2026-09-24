@@ -1,0 +1,292 @@
+= FTR-WFC-EXECUTION-TRUST-BOUNDARIES -- Delta Rereview 002
+
+Bounded delta rereview of commit
+`b7adc7759aae35d151fe81df9335b27d18b09cd3`
+(`docs(backlog): tighten execution trust invariants`) against
+`FTR-WFC-EXECUTION-TRUST-BOUNDARIES_review_001.adoc`
+(`2833b71`, verdict `MATERIAL_REVISION_REQUIRED`).
+
+Scope is F-I1, F-I2, and F-I3 only. This is not a fresh architecture review.
+Repository archaeology established in review 001 is not repeated; the revised
+text was re-verified against those facts, and previously accepted areas are not
+reopened. The delta touches exactly the two candidate FTRs, 96 insertions and 38
+deletions, no other path.
+
+Documentation review only. No implementation, governance, Runtime, Run-state,
+profile, policy, test, or remote change; no WFC or provider invocation; no push.
+
+== Verdict
+
+*ACCEPTED.*
+
+F-I1, F-I2, and F-I3 are resolved. All fifteen specifically required properties
+are present in the revised text, most of them as explicit sentences rather than
+as implications a reader must reconstruct. The revision adds 58 net lines and
+introduces no platform: no lattice, schema, scanner, DLP engine, taint tracker,
+router, or sandbox design appears, and the non-goals are unweakened.
+
+One new MINOR and two new INFO observations are recorded. None blocks the record
+or changes a disposition. The prior MINOR and INFO observations from review 001
+stand unchanged except F-M1, which the revision resolved in passing; none of
+them was reopened here.
+
+Finding counts for this delta: BLOCKING 0, IMPORTANT 0, MINOR 1, INFO 2.
+
+== 1. F-I1 -- authority provenance base case and resolution rule
+
+*RESOLVED.*
+
+All five required properties are stated.
+
+*Authority roots mechanically distinguishable from agent output.* "Policy, a
+WorkItem, execution configuration, or equivalent governed input carries
+authority only when its provenance is mechanically distinguishable from
+agent-produced output." This is the sentence review 001 asked for, and it
+attaches the property to the carriers rather than leaving it as a background
+assumption.
+
+*Commit, tracking, pinning, and admission do not establish authority.* "Being
+committed, tracked, pinned at `HEAD`, structurally valid, or admitted by
+ordinary repository checks is not by itself proof that an input is an authority
+root." This negates the conflation review 001 identified, and it negates it in
+exactly the terms the repository makes true: admission proves tracking at the
+pinned HEAD and structural coherence, and `WorkItem.authority_source` remains a
+free string (`model.py:89`, `serialization.py:358,370`) that nothing checks. The
+enumeration matches the mechanism rather than gesturing at it.
+
+*Effective authority resolves only from independently admitted inputs fixed
+before the requester could influence them.* "For a requesting Hop or component,
+the effective envelope must be resolved only from authority-bearing inputs fixed
+or admitted independently of and before that requester could author or influence
+them." This is the resolution rule whose absence review 001 identified as the
+missing closure, and the ordering constraint ("before") is explicit.
+
+*Requester, peer, receiver, and generated artifacts cannot bootstrap.*
+"Assertions by the requesting worker, a delegating peer, the receiving worker,
+or their generated artifacts do not become authority merely by being referenced,
+committed, or passed onward." The four roles are enumerated, which closes the
+`A -> B -> C` case directly, and "merely by being ... committed" names the
+specific pre-split F1 channel: agent output landed by the trusted commit path
+and read back as a later Run's governing input.
+
+*Autonomy inside an admitted envelope survives.* "Once authoritatively admitted
+under this provenance rule, that envelope supports automation without a new
+human act per Hop; widening it requires new authority from its protected root."
+This is compatible with the present model, where per-Run maintainer
+authorization admits an envelope and the Run then proceeds up to
+`max_autonomous_hops`.
+
+=== F-N1 (INFO) -- the delegation clause is now phrased as attenuation rather than as grant authority
+
+The superseded text required that "the delegating component must already have
+explicit human-derived authority to grant the specific bounded capability or
+context". The revision reads "an agent may delegate only authority it was
+explicitly granted". Holding a capability and being authorized to re-delegate it
+are not the same property, so read alone this is marginally weaker.
+
+It is not a regression in effect, because the resolution rule dominates: the
+receiving component's effective envelope is resolved from independently admitted
+inputs, so a peer's purported delegation can at most select within what the
+envelope already admits for the receiver. Recorded for precision only.
+
+=== F-N2 (INFO) -- the non-human root disjunct is admitted without its own provenance chain
+
+The envelope may now be "rooted in human/maintainer-derived authority *or* in a
+separately governed authority source whose provenance is mechanically protected
+from the requesting and delegating components". The generalization is reasonable
+and probably necessary outside a single-maintainer repository, and the guard
+clause does the needed work for the attack this FTR cares about, since an
+agent-produced source fails "mechanically distinguishable from agent-produced
+output".
+
+What the record does not say is what makes a source "separately governed", or
+that this disjunct must not become the way an automated system terminates its
+own chain. For a deferred backlog record that is acceptable; it is worth one
+sentence whenever the envelope is next specified.
+
+== 2. F-I2 -- ingress and egress information flow
+
+*RESOLVED.*
+
+The new `Information flow and derived output` section supplies all seven
+required properties.
+
+Ingress and egress are named as two predicates in the opening sentence.
+Selecting a protected binding is explicitly bounded to input visibility:
+"Selecting a protected, local, or self-hosted execution binding authorizes only
+its bounded input visibility; it does not authorize arbitrary output to return
+to a less-trusted or cloud boundary." Derived output retains protection: "Derived
+output retains at least the combined protection requirements of the protected
+sources provided to the execution until an explicit, independently authorized
+declassification permits disclosure to a lower-trust sink." Laundering channels
+are closed by name: "Summarizing, paraphrasing, transforming, regenerating,
+logging, committing, or copying information is not itself declassification."
+Self-declassification is denied outright, with the authority located: "the
+producing agent cannot self-declassify", and "Declassification authority must
+come from the admitted human/policy-owned envelope."
+
+Two details are better than review 001 asked for.
+
+The join is taken over "the protected sources *provided to the execution*", not
+over sources the producing agent cites. That is the correction the pre-split T4
+made, and taking it now avoids computing a label from untrusted `evidence_refs`.
+"At least" makes the rule a floor rather than a ceiling, which is the fail-closed
+direction.
+
+The sink list is concrete rather than generic, and it matches the surfaces review
+001 established as live: "model prompts and context, summaries and Findings,
+generated files, review artifacts, logs, diagnostics and scratch space,
+Run/checkpoint/evidence state, commit subjects and messages, and other
+Coordinator-owned durable output". `Hop.summary` reaching `checkpoint.json`
+(`persistence.py:201`), `run.json`, `execution-evidence.json`, commit subjects,
+and publishable backlog review artifacts are all inside that enumeration.
+
+Neutrality is preserved explicitly: "Future implementation may use labels and
+authority comparison, but this rule defines no classification lattice, schema,
+content scanner, DLP engine, or taint-tracking mechanism."
+
+The weak clause in `Deployment implication` was replaced rather than left to
+coexist: "Output may return to the ordinary workflow only under the
+information-egress and declassification rule above." Scenario C is now decided by
+the text.
+
+== 3. F-I3 -- defensive-review trigger
+
+*RESOLVED.*
+
+Both records now carry the same trigger in near-identical words. Trust FTR: "If
+a phase receives mutation or execution authority over a surface classified by the
+admitted authority envelope as requiring elevated handling, the explicit
+elevated-privilege workflow and mandatory defensive review ... apply."
+Elevated-privilege FTR: "The mandatory trigger is a phase receiving mutation or
+execution authority over a surface that the admitted authority envelope
+classifies as requiring elevated handling." The elevated FTR's thesis and its
+`Relationship to execution trust boundaries` section were re-keyed to the same
+formulation, so the divergence is closed at all four places it appeared rather
+than patched at one.
+
+Self-assessment is denied in both records and in three places in the trust FTR:
+"not the worker's claim about whether its change can influence something
+trusted", "The worker cannot waive review; any exemption must come from the
+governing authority that classified or granted the elevation", and, in the
+candidate-design section, "the worker's consequence assessment does not".
+
+The "influence a more trusted boundary" language survives exactly where it
+belongs. It is gone as a trigger the worker evaluates, and retained unchanged as
+the containment invariant the system must enforce: "Before defensive review
+succeeds, modified privileged state must not influence execution in a more
+trusted or more privileged boundary." Separating the invariant from the trigger
+is the right split and is the substance of the fix.
+
+Pure visibility elevation is now exempted in the elevated FTR too, closing the
+cross-record ambiguity: "Pure visibility elevation is governed by the
+pre-disclosure information-boundary rules in the execution-trust-boundaries FTR,
+not by mandatory defensive review merely because protected data was read." The
+combined case retains both control sets ("both controls apply"), so Scenario D
+still resolves; the superseded emphasis clause "a compatible information boundary
+does not remove the review requirement" is dropped, which slightly softens the
+statement without changing the rule.
+
+Aspects no longer determine topology: "An `aspect` describes what kind of
+authority is elevated; it does not by itself determine which control topology
+applies." The two aspects review 001 named as read-shaped are dispositioned
+directly -- "Sensitive data or network capability may implicate visibility,
+mutation, execution, or multiple dimensions" -- and the trust FTR adds the
+matching clause, "Network capability is not intrinsically assigned to either
+route".
+
+=== F-M1 (MINOR) -- the classification-based trigger has a completeness precondition and no stated fail-closed default
+
+The trigger now fires when the admitted envelope classifies a surface as
+requiring elevated handling. That correctly removes the worker's judgement from
+the control path. It also makes the control silent wherever the envelope
+classifies nothing, and the record does not say what happens then.
+
+The seam is narrow but concrete, and review 001 already recorded its present
+instance. `pyproject.toml` carries `[tool.pytest.ini_options]`, sits inside
+`work_item_scope_ceiling` in `governance/self-development/repository-policy.yaml`,
+and the Coordinator executes `python -m pytest -q` in the agent-mutated checkout
+after the Hop (`vertical.py:254-256`). Nothing in governance classifies that
+surface as requiring elevated handling. Under the superseded consequence-shaped
+trigger such an edit was caught, badly, by a predicate the worker assessed; under
+the revised trigger it is caught only if the envelope says so.
+
+Three things keep this MINOR rather than a reopening. The escalation requirement
+is independent of the classification and is keyed to a category the record itself
+enumerates: "When a task genuinely requires mutation of an execution-sensitive
+surface, the agent must explicitly escalate", with `Indirect-execution threat
+model` listing Git hooks, CI configuration, test discovery/configuration,
+`conftest.py`, Makefiles, build hooks, packaging hooks, container configuration,
+and scripts later run by a trusted service. "No automatic unlock" and the
+distinguishable-run requirement are unchanged. And the elevated FTR's containment
+invariant still binds anything that did escalate.
+
+The fix is one clause whenever the envelope is specified: an envelope that does
+not classify a surface the threat model names as execution-sensitive is a gap in
+the envelope, not an exemption from review. Recorded so that the classification
+dependency is visible to whoever implements it; it does not change the F-I3
+disposition, and every alternative trigger considered in review 001 was worse.
+
+== 4. Regression check
+
+No regression that changes a disposition. The delta is additive in substance:
+every deleted sentence is replaced by a stronger or equal one, the non-goals are
+untouched, and the candidate event vocabulary remains marked non-final and
+schema-uncommitted. The record grew from 168 to 210 lines, which remains
+proportionate.
+
+Two incidental improvements are worth recording. Review 001's F-M1 is resolved --
+"an authority must authorize" now reads "an authority within the admitted envelope
+must authorize", removing the one phrase that, read alone, admitted a
+peer-granted unlock. And the elevated FTR's thesis no longer scopes its topology
+by "crosses an ordinary-agent authority boundary", a phrase broad enough to pull
+protected reading into mandatory review.
+
+Review 001's remaining observations -- F-M2 (compatibility as a property of the
+enforced boundary rather than the hosting location; retention as a bounding
+dimension), F-M3 (the evidence-command instance and the revisit trigger), F-N1
+(the recovery record's dependency on this containment), F-N2 (the companion
+record's provider/model open question), and F-N3 (ignored and untracked residue
+in the reachable surface) -- are unaffected by this revision and stand as
+non-blocking. F-M2's retention concern is partly answered from the egress side,
+since "logs, diagnostics and scratch space" are now named sinks. None was
+reopened.
+
+== 5. Validation
+
+* revision confirmed at `b7adc7759aae35d151fe81df9335b27d18b09cd3`,
+  subject `docs(backlog): tighten execution trust invariants`; worktree clean at
+  rereview start;
+* `git diff --check` -- no output, no whitespace errors;
+* exactly one path changed by this rereview:
+  `docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES_review_002.adoc`;
+* both candidate FTRs and `review_001` unmodified; no `src/`, `tests/`,
+  `governance/`, Runtime, Run-state, profile, policy, or remote change;
+* no WFC, provider, or LLM invocation; no push.
+
+== Final statement
+
+Commit `b7adc7759aae35d151fe81df9335b27d18b09cd3` resolves all three IMPORTANT
+findings of review 001. Authority provenance now has a base case and a resolution
+rule, and states both in terms the repository makes true. Information authority
+now has an egress half, with the join taken over provided sources, laundering
+channels closed by name, self-declassification denied, and the Coordinator's own
+durable state and commit metadata recognized as sinks. The defensive-review
+trigger is identical in both records, is governed by admitted classification
+rather than worker judgement, and leaves the containment invariant intact where
+it belongs.
+
+The strongest property of the revision is that it fixed the trigger by splitting
+it: "can influence a more trusted boundary" was the wrong question to ask a
+worker and the right invariant to impose on a system, and the revision now asks
+it only of the system. The residual concern is the mirror of that choice -- a
+classification-driven trigger is silent on surfaces nobody classified (F-M1) --
+and it is a wording gap in a deferred record, not a broken invariant.
+
+`FTR-WFC-EXECUTION-TRUST-BOUNDARIES` is accepted as preserved backlog
+architecture and remains suitable to stay deferred. No implementation is
+authorized or obligated by this record.
+
+This rereview is documentation-only. It made no WFC, provider, Runtime,
+Run-state, governance, profile, policy, test, or remote mutation, and changed no
+file other than this rereview artifact.
