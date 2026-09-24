@@ -1,0 +1,243 @@
+= FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW -- Generic Elevated-Privilege Workflow with Defensive Review
+
+Type:: future technical record
+Status:: proposed / backlog / NOT NOW
+Priority:: deferred; design before any further one-off privileged self-development exception
+Date:: 2026-09-24
+Recorded now:: A deliberately stopped attempt to dogfood a Development-profile
+optimization showed that protected governance mutation needs a generic
+authority and review pattern, not a governance-specific bypass.
+
+== Thesis
+
+Some work legitimately crosses an ordinary-agent authority boundary. The
+generic workflow pattern for such work is explicit privilege escalation,
+bounded elevated-privilege work, and mechanically mandatory defensive review
+before ordinary workflow can continue. The reason for elevation is payload,
+not a distinct workflow topology per protected area.
+
+----
+ordinary workflow
+    |
+    v
+explicit privilege escalation
+    |
+    v
+elevated-privilege work
+    |
+    v
+mandatory defensive review
+    |                         |
+    | issue                   | clean
+    v                         v
+elevated-privilege work    continue ordinary workflow
+----
+
+There must be no ordinary route from elevated-privilege work that bypasses the
+defensive review. A problem found by defensive review returns to
+elevated-privilege work, and its correction returns to defensive review again;
+the issue must not be downgraded into ordinary mutation authority while it is
+active.
+
+== Relationship to execution trust boundaries
+
+This FTR is complementary to
+`docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc`, not a duplicate of it.
+That record concerns technical containment, sandboxing, indirect execution,
+and trust boundaries such as filesystem, credentials, and network access. This
+record concerns the generic orchestration and authority pattern that decides
+when and how a bounded privilege crossing is represented and defensively
+reviewed.
+
+The two must be designed together: elevated authority must be technically
+enforced, while the technical boundary needs an explicit workflow-level
+authority grant and mandatory review. Existing/planned bubblewrap work is a
+directly relevant containment direction, but this FTR does not prescribe a
+final `bwrap` implementation.
+
+== Current limitation and migration direction
+
+Today, part of the practical boundary is communicated through the Agent
+Operating Contract and prompt-level authority description. An obedient agent
+is told that particular areas and actions are outside its ordinary authority
+and is expected not to cross that boundary.
+
+That is useful semantic guidance, but it is not sufficient technical
+containment against a malicious, compromised, or prompt-injected agent. The
+future mechanism must replace *reliance on prompt-only enforcement* for a
+privileged boundary crossing. Prompts and the Agent Operating Contract should
+continue to describe semantic authority and expected agent behavior; they must
+not remain the sole control preventing an ordinary agent from exercising
+elevated capabilities.
+
+Likely technical enforcement dimensions include filesystem mounts and writable
+paths, Git metadata visibility and writability, executable/tool availability,
+network access, environment and credentials, external service/data access, and
+capability differences between ordinary and elevated phases. The Workflow
+Coordinator should know the authority granted to a phase and the selected
+execution boundary should enforce it.
+
+== Generic privilege payload
+
+Escalation should carry a structured payload into both elevated work and its
+defensive review. The schema is future design work, but should be able to
+express at least:
+
+* privilege aspect;
+* reason for escalation;
+* authorized scope;
+* allowed actions or capabilities;
+* execution boundary;
+* relevant risks; and
+* required defensive-review focus.
+
+The aspect is intentionally open-ended. Illustrative aspects include
+governance, Git metadata/hooks, CI or execution configuration, staging/test
+environments, sensitive or realistic test data, network capability, and future
+protected project areas. This is not a closed taxonomy and must not become a
+separate set of hard-coded workflow stages.
+
+== Mutation authority is distinct from execution authority
+
+Write/mutation privilege is not execution/consumption privilege. Elevated work
+may need to modify a normally protected artifact and exercise or test that
+modified state realistically. Delaying every privileged write until after
+review would unnecessarily prevent useful quality checks.
+
+The required invariant is stronger:
+
+____
+A privileged mutation may be exercised before defensive review only inside an
+execution boundary whose authority is no greater than the authority granted to
+the mutating agent. Before defensive review succeeds, modified privileged
+state must not influence execution in a more trusted or more privileged
+boundary.
+____
+
+Examples include a newly written Git hook running inside the agent sandbox but
+not through a more privileged host-side Git operation before review; modified
+governance being tested without silently replacing authority governing the
+active Run; and code using sensitive staging/test data being unable to gain
+unrestricted network or data-exfiltration capability merely because the
+workflow entered an elevated phase.
+
+The execution-trust-boundaries FTR provides the related threat model for
+indirect execution and confused-deputy risks.
+
+== Mandatory defensive review
+
+Defensive review is not merely a generic code-quality review. It receives the
+same privilege and risk payload as elevated work, so it can examine the
+boundary that was crossed. Its mechanically mandatory questions include:
+
+* Did the change broaden authority or create a new execution trigger?
+* Can it escape its intended sandbox or capability boundary?
+* Can it influence a more trusted process before acceptance?
+* Can it weaken or bypass the control that required escalation?
+* Can the workflow avoid subsequent defensive review?
+* Did the change exceed its authorized scope or capabilities?
+
+Clean defensive review permits continuation of ordinary workflow. An issue
+requires the loop `defensive_review -> elevated_privilege_work ->
+defensive_review`; acceptance must represent a mechanically recorded,
+independent disposition, not a declaration by the elevated worker.
+
+== Motivating governance self-modification case
+
+Governance is the immediate motivating use case, but only an `aspect` in the
+privilege payload, never its own special elevated-stage implementation.
+
+The current Development profile is revision 2 with effective topology:
+
+----
+review -> correct
+correct -> rereview
+rereview -> accept | correct
+----
+
+The desired future profile optimization is approximately `review -> rereview
+| correct`, while retaining `correct -> rereview` and `rereview -> accept |
+correct`. A clean initial review would still require independent rereview and
+would never gain a direct `review -> accept` route.
+
+The attempted preparation correctly stopped rather than creating a special
+case: selected governing inputs are integrity-checked against their admitted
+digests after accepted Hops; the selected profile is itself a governing input;
+and current A1/preflight governance protection prevents ordinary writable scope
+from overlapping governance paths. Ordinary self-development therefore
+intentionally cannot write its selected governing profile. Prompt/contract
+rules also communicate that the action is outside ordinary authority.
+
+This is conservative current behavior, but its prompt-only portion is not a
+sufficient long-term security boundary. The generic mechanism should
+eventually replace that reliance for privileged boundary crossing without
+granting unrestricted governance writes or weakening ordinary authority.
+
+The desired future semantic shape is:
+
+----
+current Run authority remains fixed to admitted governance truth
+    |
+    v
+elevated work produces/tests successor governance inside its bounded authority
+    |
+    v
+mandatory defensive review evaluates the privileged change
+    |
+    v
+only successful review permits ordinary continuation / future-Run adoption
+----
+
+Exact snapshot, testing, promotion, and adoption mechanics remain unresolved
+design questions; this FTR does not claim that current Runtime implements
+them.
+
+== Not now
+
+This mechanism is intentionally deferred. A correct implementation spans
+workflow semantics, authority modeling, defensive review, execution
+containment/sandboxing, and potentially network, data, credential, and tool
+capability control.
+
+Do not introduce a temporary governance-specific Runtime exception such as
+`allow_governance_writes: true`. Do not disable governing-input integrity merely
+to enable profile self-modification. The profile optimization that exposed this
+need should instead be handled separately for now, for example by a
+maintainer-owned between-Run profile change, or remain deferred.
+
+== Non-goals
+
+This FTR does not:
+
+* design one workflow stage per privilege aspect;
+* implement the mechanism now;
+* replace semantic Agent Operating Contract guidance entirely;
+* grant unrestricted governance writes;
+* define every future privilege type up front;
+* make privileged state trusted merely because an elevated agent produced it;
+* weaken normal ordinary-agent authority; or
+* duplicate or supersede the technical-containment work in
+  `FTR-WFC-EXECUTION-TRUST-BOUNDARIES`.
+
+== Open design questions
+
+* What is the exact privilege-payload schema?
+* Who or what may request escalation, and which authority approves it?
+* How are phase-specific sandbox and capability differences represented?
+* How is current governing truth frozen while successor governance is tested?
+* Which actions constitute consumption by a more trusted boundary?
+* How is defensive-review acceptance represented and enforced mechanically?
+* How do promotion and adoption after review work?
+* How do Git, filesystem, network, credentials, and external-data capabilities
+  map onto one generic abstraction?
+* Do elevated phases require a distinct provider or model policy?
+* What audit and evidence are required for a privilege grant and defensive
+  review?
+
+== Roadmap relationship
+
+This is a future generic security/orchestration feature. It is not required to
+finish the closed developer-ergonomics workstream. It should be designed before
+further one-off privileged self-development exceptions are introduced. Future
+governance, Git-hook, CI, sensitive-data, or similar requirements should
+reference this FTR rather than creating independent ad-hoc mechanisms.
