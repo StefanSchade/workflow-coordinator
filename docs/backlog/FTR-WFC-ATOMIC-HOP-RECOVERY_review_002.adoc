@@ -1,0 +1,325 @@
+= FTR-WFC-ATOMIC-HOP-RECOVERY -- Delta Rereview 002
+
+Bounded delta rereview of commit
+`5a5f13ffb5cf58978867b05a9aebb4d6f983135e`
+(`docs(backlog): revise atomic hop recovery model`) against its parent
+`571de7122e974185bd971764c36f63484ee0a880`
+(`docs(review): assess atomic hop recovery model`).
+
+This is a delta rereview of the revision against
+`FTR-WFC-ATOMIC-HOP-RECOVERY_review_001.adoc`, not a fresh architecture review.
+Repository archaeology already established in review 001 is not repeated; only
+facts the revision newly depends on, changes, or disputes were re-verified.
+
+Review only. No implementation, governance, Runtime, or Run-state change; no
+WFC or provider invocation; no push.
+
+== Verdict
+
+*ACCEPTED.*
+
+The revision resolves the blocking finding and all five important findings, and
+resolves all four minor and all three informational observations as well. It is
+shorter (452 lines, down from 640), its remaining claims about this repository
+are accurate, and it no longer argues for same-Hop retry as a necessity. Three
+new MINOR observations and two new INFO observations are recorded below; none
+blocks decision or implementation, and the document is suitable as
+architecture-convergence input in its current form.
+
+Finding counts for this delta: BLOCKING 0, IMPORTANT 0, MINOR 3, INFO 2.
+
+== Delta scope and validation
+
+The parent-to-candidate delta contains exactly one path,
+`docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`, 436 insertions and 624
+deletions. No other document, no `src/workflow_coordinator/**`, no `tests/**`,
+no `governance/**`. Review 001 is untouched.
+
+* `git diff --check 571de71..5a5f13f` -- no output, no whitespace errors;
+* `.venv/bin/python -m ruff check .` -- *All checks passed!*;
+* `.venv/bin/python -m pytest` -- *383 passed*.
+
+== 1. Disposition of original findings
+
+=== F-B1 (BLOCKING) -- "accepted Hop" contradicted the uncertain-dispatch charge
+
+*RESOLVED.*
+
+"Precise vocabulary and authority" now defines Charged Hop, Candidate-bearing
+Hop, Uncertain Hop, Attempt, Discarded Attempt, Reconcile/resume, and Fresh
+successor Run as separate terms, and closes with an explicit prohibition: the
+FTR "does not use a bare word such as 'accepted' to stand for more than one of
+them." "Charging and reduction rules" states the three-way rule this review
+asked for, including "every charged Hop consumes `max_autonomous_hops`,
+including an uncertain Hop," and restates the old invariant 1 correctly as a
+*reduction* rule: "only a Hop carrying a validated, correlated candidate may
+reach `reduce_result`."
+
+Both halves match the repository. `record_hop` increments `hop_used` for any
+appended Hop (`model.py:405-430`), `recover_uncertain_dispatch` appends the
+`uncertain_dispatch` Hop through that same function (`persistence.py:128-155`),
+and no uncertain path calls the reducer -- `reduce_result` is reached only from
+`vertical.run_one_hop` after `validated_result` succeeds
+(`vertical.py:176-189,289`).
+
+No regression: the four distinctions are used consistently in the decision
+summary, the charging rules, the budget section, and the R2 gate.
+
+=== F-I1 (IMPORTANT) -- `Outcome.FAILED` budget treatment unstated
+
+*RESOLVED.*
+
+Stated three times and unambiguously: in the decision summary ("charged
+regardless of semantic Outcome, including `Outcome.FAILED`"), as charging rule
+2, and in "Budget and durable trace semantics" ("consumes one semantic Hop
+irrespective of its Outcome, including `Outcome.FAILED`; this is unchanged from
+current semantics"). The "unchanged from current semantics" qualifier is
+correct and is the part that matters -- `vertical.py:286` charges before
+`reducer.py:349` stops the Run.
+
+=== F-I2 (IMPORTANT) -- retry predicate over-claimed "no unresolved side effect"
+
+*RESOLVED.*
+
+"Future R2 eligibility" is now split into "A. Machine-derived repository and
+recovery predicates" and "B. Residual risks outside current observability". B
+opens with "Current primitives do not prove 'no unresolved side effect'" and
+names ignored repository paths, writes outside Git or the repository, escaped
+descendant processes, network and external service mutation, credentials, and
+mutable caches. It also adopts this review's own qualification -- "a
+pre-existing trust-boundary gap across ordinary Hops, not a new class of retry
+vulnerability" -- and makes R2 depend on the containment direction in
+`FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc`, while stating that containment is
+not designed here.
+
+One residual wording defect survives the fix and is recorded below as N-M1.
+
+=== F-I3 (IMPORTANT) -- `allowed next action` was outer-loop policy leaking inward
+
+*RESOLVED.*
+
+"Recovery facts exposed by the inner WFC" renames the field to
+`permitted_recovery_actions`, defines it as a mechanically derived finite set
+that "may be empty", cites the `permitted_route_keys` /
+`next_permitted_route_keys` precedent by name, and adds the two prohibitions
+that were missing: the inner WFC "must not select among retry, same-Run resume,
+fresh successor, or human handling, and it must not initiate a successor Run."
+The former decision table is demoted explicitly: "Any example mapping from a
+recovery class to an action is therefore non-normative outer-loop behavior, not
+a reducer decision table."
+
+=== F-I4 (IMPORTANT) -- the reconcile/resume alternative was never evaluated
+
+*RESOLVED*, and promoted from omission to the document's primary
+recommendation.
+
+The comparison is now a three-column table (same-Hop retry / reconcile + resume
+same Run / fresh successor Run), Cases A, B, and C are dispositioned
+individually, and the load-bearing correction is present verbatim in substance:
+"The residual value of same-Hop retry is useful but modest. It must not be
+described as necessary merely to preserve Findings." Case A now reads
+"Reconcile and resume the same Run is a valid cheap MVP path... R2 would save
+one Hop and one human action," which matches this review's assessment.
+
+The revision's description of the seams was re-verified rather than accepted:
+
+* `serialization.load_run()` reconstructs the Run from `run.json` -- correct;
+* `persistence.load_dispatch_marker()` reconstructs correlated dispatch facts
+  -- correct;
+* `reducer.resume_after_reconcile()` moves a `RECONCILE_REQUIRED` Run to
+  `READY` "only when the phase still resolves, anomalies are absent, current
+  HEAD equals the reconciled Run HEAD, and used Hops do not exceed the limit"
+  -- correct and complete against `reducer.py:559-576`;
+* uncertain-dispatch recovery "is idempotent when the marker's Hop is already
+  in history" -- correct (`persistence.py:157-161`);
+* the missing seam is the operator: `_preflight()` rejects an existing state
+  root (`operator.py:203,224-225`) and `main()` always creates a new Run
+  (`operator.py:673`) -- correct;
+* the operator plan records "input paths, pinned revision, governing digests,
+  executable, timeout, and evidence plan" -- correct
+  (`operator.py:683-698`: `inputs.pinned_revision`, `components` digests,
+  `governing_inputs`, `executable`, `timeout_seconds`, `evidence`).
+
+The asserted publication ordering for the new entrypoint -- persist the
+reconciled/resumed Run and checkpoint *before* retiring the predecessor marker
+or permitting any later dispatch -- is the correct rule for the current fixed
+`dispatch.json` path (`slice4.py:174-176,220-222`), because a crash inside that
+window lands on the idempotent already-charged branch rather than on a second
+charge.
+
+The claim that this entrypoint "can be implemented independently of R1" is
+technically correct: nothing in the reload/validate/reconcile/resume path
+consumes Attempt evidence.
+
+=== F-I5 (IMPORTANT) -- the motivating event's frequency was unstated
+
+*RESOLVED.*
+
+A new "Empirical basis and scope" section states that seven dogfood attempts
+are recorded, that none records an operational `uncertain_dispatch` or
+transient provider interruption, that observed failures were semantic,
+governance, or implementation defects, and that "the frequency and cost of
+quota or other transient interruption loss are therefore unmeasured." R2 is
+correspondingly gated: it opens "only if R1 or equivalent operational evidence
+records real transient, candidate-free, quiescent Attempts and shows that their
+charged-Hop plus explicit-reconciliation cost is material enough to justify
+R2."
+
+=== Minor and informational findings from review 001
+
+All resolved, briefly:
+
+* *F-M1* -- "Budget and durable trace semantics" now states that invocation
+  correlation already prevents silent consumption of stale predecessor content
+  and that attempt-specific result paths are "primarily a liveness,
+  observability, and overwrite-risk improvement, not the core safety
+  precondition."
+* *F-M2* -- the ordering rule is written down as mandatory: "there must be no
+  window in which no durable marker covers a possibly-live Attempt," successor
+  marker durable before predecessor retirement, explicitly "not a proposal for
+  a general transaction system."
+* *F-M3* -- the argv description now includes `--ask-for-approval never`,
+  `--model`, the reasoning-effort configuration, and `--cd <repository>`.
+* *F-M4* -- `WFC-AUTO-02`, `WFC-AUTO-03`, and `WFC-AUTO-05` are named, their
+  content is rendered accurately against
+  `FTR-AGENT-WORKFLOW-COORDINATOR-P5.adoc:505-527`, and the FTR states it "does
+  not supersede those rules."
+* *F-N1* -- Attempt is now defined as "not a new independent lifecycle tier or
+  state machine," the three concrete gaps are listed, and R1 "should extend
+  these existing surfaces, not create a second persistence system."
+* *F-N2* -- provider-session continuation is a stated non-goal; the
+  `--ephemeral` / recorded-session tension is described as a local help fact
+  without over-claiming CLI capability, and R1's provider question is narrowed
+  to the JSONL/exit-status signal.
+* *F-N3* -- scratch is compressed from roughly seventy lines to fourteen,
+  retains only the non-negotiables, and states its dependency on "suitable
+  prompt/context trust labels and technical containment, neither of which this
+  FTR supplies."
+
+== 2. New findings
+
+=== N-M1 (MINOR) -- the quiescence conjunct is hedged into vacuity inside the machine-derived list
+
+Section A requires "predecessor process termination and absence of a concurrent
+Attempt, but only to the degree the execution boundary can actually observe
+them." Read literally, a boundary that observes nothing satisfies this conjunct
+vacuously, which is the one shape a fail-closed conjunctive predicate must not
+have.
+
+The revision's intent is clearly honesty rather than permissiveness, and the
+rest of the document supplies the correct rule: section B lists escaped
+descendant processes as an uncovered residual risk, and R2 is told to "retain
+conservative charging for every ambiguous or ineligible case." The defect is
+local placement. The unobservable remainder belongs in section B, and section A
+should say that an Attempt whose termination cannot be established is
+*ineligible* for retry. This must not survive into an actual R2 predicate
+design; it is not a decision blocker now, because R2 is deferred and separately
+gated.
+
+=== N-M2 (MINOR) -- a current-truth fact relevant to R1's disposition vocabulary was dropped
+
+The original FTR recorded that "a valid correlated candidate is currently
+processed even when transport return code or timeout flags are non-success,
+because the vertical acceptance path does not gate candidate validation on
+those transport flags." That sentence is gone from the revision, and nothing
+replaces it.
+
+It remains true (`codex_adapter.py:181` reads the last-message file
+unconditionally after a timeout kill; `vertical.py:176` gates only on
+`candidate_result is None`), and it bears directly on R1's proposed disposition
+set `not_started | candidate_validated | discarded | uncertain` and on the
+search for a "stable structured transient signal": a timed-out invocation may
+still be candidate-bearing, so `timed_out` and a non-zero return code are not
+by themselves transient markers. Restoring one sentence to "Current repository
+facts" would prevent an implementer from assuming otherwise.
+
+=== N-M3 (MINOR) -- the `Priority::` line is the only text that reads as a scheduling commitment
+
+The header reads `Priority:: small recovery MVP; later work is evidence-gated`.
+Every other relevant passage is correctly permissive -- "may implement R1.5
+first, stop there, and return project effort to spreadsheet-handling/DMC work",
+"R2 is not presumed to follow", and the non-goal "implementation approval
+through this architecture record". A reader scanning only the header could take
+the MVP as scheduled rather than as the recommended shape *if* recovery work is
+undertaken. One qualifier, for example "small recovery MVP if pursued", removes
+the ambiguity.
+
+=== N-I1 (INFO) -- `operator-plan.json` already publishes a declared `retry` fact
+
+`operator.py:692` writes `"retry": False` into the operator plan, and
+`tests/unit/test_operator.py:231` asserts it. The FTR does not mention this
+surface. It is consistent with the revision: R1.5 performs no replay, so
+`retry: False` stays truthful. R2 would be the first change to make it false,
+so that field is a small, already-published place where the P5 supersession the
+FTR defers would become visible. Worth knowing when R2 is designed; nothing to
+correct now.
+
+=== N-I2 (INFO) -- R1.5's coverage is bounded by the anomaly gate, which the FTR does not state
+
+`resume_after_reconcile` refuses any Run whose `anomalies` tuple is non-empty
+(`reducer.py:565-566`), and `recover_uncertain` appends observed Git anomalies
+to the recovered Run (`slice4.py:192-193`). No seam clears anomalies. A future
+R1.5 entrypoint therefore resumes only the *clean* interruption -- which is
+precisely the motivating quota case -- while an interruption that left dirty or
+out-of-scope repository state is not resumable and must be dispositioned some
+other way, most plausibly as a fresh successor Run.
+
+This is correct fail-closed behavior and does not weaken the FTR's argument,
+but the R1.5 description would be sharper for naming the boundary rather than
+leaving a designer to discover it.
+
+== 3. MVP and overengineering check
+
+*Yes.* The revised FTR supports the bounded project decision:
+
+  "Implement, if desired, a small explicit reconcile/resume CLI/operator path;
+   otherwise return to WFC generalization and DMC work. Do not treat R1/R2/R3
+   as mandatory follow-on implementation."
+
+The supporting text is explicit rather than inferred:
+
+* "Smallest useful implementation slice" states that "The practical MVP may
+  implement R1.5 first, stop there, and return project effort to
+  spreadsheet-handling/DMC work. R1 may proceed independently when its
+  observability value warrants it. R2 is not presumed to follow."
+* R1.5 is stated to be independent of R1 and "substantially smaller than R2",
+  which this review verified against the seams.
+* R2 is conditional on measured evidence and on containment work that is
+  explicitly not designed here.
+* R3 "remain[s] deferred and evidence-driven. Neither blocks a practical
+  recovery MVP."
+* The non-goals list ends with "implementation approval through this
+  architecture record", and the decision summary states the FTR "does not
+  approve an implementation or supersede current semantics."
+* The closing sentence makes the do-nothing path the default: "Until those
+  questions are answered by evidence and a separately reviewed change, explicit
+  reconcile/resume and fresh successor Runs are the practical recovery
+  mechanisms, and current charging semantics remain authoritative."
+
+No text creates an implementation obligation. The `Priority::` header line
+(N-M3) is the only phrase a reader could misread as scheduling, and it is a
+one-word fix that does not affect the decision.
+
+Nothing in the revision reintroduces platform scope. Watchdog policy, outer
+loop, elevated privilege, provider-session persistence, scratch, and
+generalized process-restart recovery are all non-goals, and the
+`permitted_recovery_actions` seam is bounded to derived permission with an
+explicit prohibition on selection and initiation.
+
+== Final statement
+
+Commit `5a5f13ffb5cf58978867b05a9aebb4d6f983135e` is accepted as
+architecture-convergence input. The one blocking and five important findings of
+review 001 are resolved, the four minor and three informational observations
+are resolved, and the revision introduces no blocking or important regression.
+Three minor and two informational observations are recorded here and may be
+addressed opportunistically or left standing; none of them changes the
+document's conclusions.
+
+Current conservative semantics remain authoritative, no recovery implementation
+is obligated by this record, and a small explicit reconcile/resume operator path
+is a sound optional MVP whose seams were verified to exist.
+
+The delta reviewed is documentation-only. This rereview made no WFC, provider,
+Runtime, Run-state, or remote mutation, and changed no file other than this
+rereview artifact.
