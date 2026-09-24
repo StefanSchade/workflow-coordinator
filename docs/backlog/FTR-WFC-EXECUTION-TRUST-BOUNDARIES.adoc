@@ -31,6 +31,33 @@ execute, and under which trust context. This dimension includes the authority
 of the later process, its readable data, credentials, filesystem, and network
 access.
 
+== Independent elevation semantics
+
+Visibility/read elevation and mutation/execution elevation are independent.
+A pure visibility elevation is controlled primarily by selecting a compatible
+technical information boundary *before* protected information is exposed. The
+ordinary worker must not be able to widen its own visibility, and prompt
+instructions are semantic guidance rather than containment. Protected paths or
+data must instead be absent, sealed, or otherwise technically inaccessible to
+an incompatible execution boundary. A later review cannot undo disclosure to
+an unauthorized provider or execution boundary.
+
+The compatible worker receives only the visibility needed for its task, with
+network, egress, and credentials bounded consistently with the information's
+sensitivity. This rule may protect proprietary source code,
+business-confidential information or trade secrets, sensitive datasets,
+credentials, realistic protected test or staging data, and context from which
+protected information may be inferred. It does not imply that all such
+information has one classification or define a complete classification scheme.
+
+A pure protected-read elevation does not by itself require the mandatory
+defensive-review workflow. Mutation or execution-authority elevation that can
+influence a more trusted boundary is additionally subject to the explicit
+elevated-privilege workflow and mandatory defensive review described by
+`FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW`. When work needs both protected
+visibility and execution-sensitive mutation, both controls apply; a compatible
+information boundary does not remove the review requirement.
+
 == Indirect-execution threat model
 
 A restricted agent can remain dangerous even when direct protected-data access
@@ -48,19 +75,24 @@ scope alone does not express this trust transition.
 == Candidate design direction (not an accepted implementation)
 
 Potential mechanisms to investigate include Linux namespace/sandboxing such as
-`bwrap`; physically sealing sensitive data from agent visibility; making
-indirect-execution-sensitive surfaces read-only by default; no ambient
-credentials; no network by default where practical; trusted test/build
-harnesses with fixed entry points; separate execution environments for
-agent-authored code; and explicit elevation when protected context or
-sensitive mutation is genuinely required.
+`bwrap`; exposing only the filesystem paths required by an execution; making
+protected or unneeded paths unavailable rather than merely prohibited;
+constraining writable paths separately from readable paths; constraining Git
+metadata and indirect-execution-sensitive surfaces; no ambient credentials;
+restricted network/egress where required; and separate execution environments
+for agent-authored code. Trusted test/build services are distinct boundaries
+and should use fixed entry points and the least authority practical. `bwrap` is
+one candidate Linux mechanism, not a required implementation.
 
 There must be *no automatic unlock*. When a task genuinely requires mutation
-of an execution-sensitive surface or protected context, the agent must
-explicitly escalate, a maintainer/operator must authorize the widened context,
-and that widened run must be distinguishable from ordinary sandboxed runs.
-Before trusted execution or promotion, targeted adversarial review should
-examine the newly opened attack surface.
+of an execution-sensitive surface, the agent must explicitly escalate, an
+authority must authorize the widened capability, and that run must be
+distinguishable from ordinary sandboxed runs. Before the changed state can
+influence a more trusted boundary, it remains subject to the mandatory
+defensive-review pattern in the elevated-privilege FTR. A protected-read
+requirement instead needs an authorized, compatible information boundary
+before disclosure; it does not authorize the ordinary worker to reveal or
+mount the protected context for itself.
 
 Candidate, non-final event vocabulary is:
 
@@ -84,10 +116,16 @@ transition rather than ordinary test execution.
 
 == Deployment implication
 
-A cheap/cloud model can often develop generic application, UI, or integration
-code against a bounded internal API without receiving protected source or data.
-Self-hosted execution is needed only when a task genuinely requires protected
-context. This is an architectural option, not a mandatory deployment topology.
+A cloud-hosted worker can often perform generic work against public or bounded
+context without receiving protected source or data. If it reports that a
+subproblem requires protected context, a future higher loop or human operator
+may make the authority/policy decision and delegate that subproblem to a
+bounded execution binding compatible with the information, such as a local or
+self-hosted model. Only results permitted by policy return to the ordinary
+workflow. Local/self-hosted execution is one possible boundary, not a
+provider-specific rule. This records an architectural implication only; it
+does not design an outer-loop planner, automatic model router, provider
+selection algorithm, or new workflow profile.
 
 == Relationship to existing WFC boundaries
 
@@ -103,6 +141,8 @@ This FTR does not:
 
 * mandate `bwrap` specifically;
 * implement sandboxing;
+* define a complete information-classification taxonomy or delegation/router
+  architecture;
 * replace repository policy, prompt/contract authority, or review;
 * guarantee protection against all malicious code;
 * define a complete secret-management system; or
