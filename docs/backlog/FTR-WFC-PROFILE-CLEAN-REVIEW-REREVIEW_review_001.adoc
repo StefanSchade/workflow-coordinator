@@ -1,0 +1,251 @@
+= FTR-WFC-PROFILE-CLEAN-REVIEW-REREVIEW -- Acceptance Review 001
+
+Independent adversarial acceptance review of commit
+`cb41c8be7648342fc5ebbb4d3e89438c5fc455ab` (`governance: allow clean review to
+proceed to rereview`) against parent
+`f92a428da4d2a71fdb123451c7a22296baf63d57`.
+
+Review only. This review made no implementation, profile, Runtime, or
+historical Run-state change; invoked neither WFC nor a provider; mutated no
+Run state; and did not push.
+
+== Verdict
+
+*ACCEPTED.* Exact candidate `cb41c8be7648342fc5ebbb4d3e89438c5fc455ab` is
+accepted. Standalone-developer-ergonomics profile revision 3 correctly
+introduces `review -> rereview` while preserving `review -> correct`,
+`correct -> rereview`, and `rereview -> accept | correct`, so a clean initial
+review must still pass through an independent rereview before completion, and
+`review -> accept` remains structurally impossible.
+
+Finding count: BLOCKING 0, IMPORTANT 0, MINOR 0, INFO 1.
+
+== Entry gate and reviewed delta
+
+At review entry, `HEAD` was exactly `cb41c8be7648342fc5ebbb4d3e89438c5fc455ab`
+and `git status --short` was empty, matching the expected review scope.
+
+The exact parent-to-candidate delta contains two paths only:
+
+* `governance/self-development/standalone-development-profile.yaml`
+* `tests/architecture/test_self_development_governance.py`
+
+There is no delta under `src/workflow_coordinator/**`, `docs/backlog/FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW.adoc`,
+any other backlog/history document, or any frozen historical WorkItem
+definition (`governance/work-items/developer-ergonomics-review-00{2,3,4,5}.yaml`
+and their task files are untouched). `git diff --check` between parent and
+candidate reports no whitespace errors. The commit is authored and committed
+by the maintainer (`Dr. Stefan Schade`), consistent with a between-Run,
+maintainer-owned governance edit rather than a WFC-authored self-modification.
+
+== 1. Exact profile change
+
+The YAML delta is exactly three lines: `revision: "2"` -> `revision: "3"`, and
+one new route line, `rereview: {effect: goto, target: rereview}`, inserted
+under `phases.review.routes`. `review -> correct` is retained unchanged
+immediately below it. `phases.correct.routes` still contains only
+`rereview: {effect: goto, target: rereview}`, and `phases.rereview.routes`
+still contains exactly `accept: {effect: complete}` and
+`correct: {effect: goto, target: correct}`. Roles (`review.role` and
+`rereview.role` both remain `independent_reviewer`), `authorized_scope`,
+`authorized_actions`, `durable_artifact` (`required` for `review`, `none` for
+`rereview`), the `review:` block (`purpose`, `breadth`, `authority: gate`,
+`context: fresh`, `blocking_policy: blocking_only`, `trigger`, `exit`,
+`finding_authority: [resolve]`, `failed_evidence_route: correct` on `review`
+only), and the untouched `investigate`/`correct` implementation-scope
+configuration are all byte-identical to revision 2. No other phase, scope, or
+policy field changed.
+
+*Route order has no production semantic effect.* `phase.routes` is a mapping
+keyed by route name. `reducer.reduce_result` resolves the agent's requested
+route with `phase.routes.get(result.requested_route)`
+(`src/workflow_coordinator/reducer.py:356`), a key lookup independent of
+insertion order. `reducer.permitted_route_keys` enumerates the finite choice
+set as `tuple(sorted(phase.routes))`
+(`src/workflow_coordinator/reducer.py:597`), and the agent-facing prompt
+renders the same set via `", ".join(sorted(phase.routes))`
+(`src/workflow_coordinator/prompt.py:115`). Both consumers re-sort by key
+regardless of declaration order, so placing `rereview` before `correct` in the
+YAML is deterministic presentation only and changes no selection, default, or
+gating behavior.
+
+== 2. Four-eyes invariant
+
+Confirmed mechanically, not only from YAML:
+
+* *Clean initial review cannot complete directly.* `phases.review.routes`
+  contains only `rereview` and `correct` -- no `accept` key exists. In
+  `reduce_result`, an agent requesting `accept` from `review` resolves
+  `route = phase.routes.get("accept")` to `None`, which the reducer rejects
+  as `mechanical_preemption:unknown_route:accept` and stops for human
+  attention (`reducer.py:356-363`). There is no code path by which `review`
+  can reach `RunStatus.COMPLETED`.
+* *Clean initial review must go to rereview.* The only routes out of `review`
+  are `rereview` (goto) and `correct` (goto); a clean review's only
+  non-defect exit is `rereview`.
+* *Rereview remains independent.* `rereview.role` is `independent_reviewer`
+  (same as `review`), and `review.context` is required to equal `"fresh"` for
+  every review phase -- `serialization._review` raises
+  `ValidationError` if `context != "fresh"` (`serialization.py:441-442`); this
+  is the only supported value in Slice 1, so it cannot be weakened per-phase.
+  `vertical.py:286` records each Hop's review context as `"fresh"`
+  unconditionally. Rereview therefore gets the same independent-context
+  guarantee as the original review, not a reuse of the first reviewer's
+  context.
+* *Initial review with a defect can still go to correction.* `review ->
+  correct` is retained unchanged.
+* *Correction must still go to rereview.* `phases.correct.routes` still
+  contains only `rereview`.
+* *Rereview may accept or return to correction.* `phases.rereview.routes`
+  still contains exactly `accept` (complete) and `correct` (goto), unchanged
+  from revision 2.
+
+Both required semantic paths are therefore live and exclusive:
+`review -> rereview -> accept` (clean) and
+`review -> correct -> rereview -> accept|correct` (defect found), and
+`review -> accept` is unreachable by construction of the routes mapping, not
+merely by convention.
+
+== 3. No Runtime implementation dependency
+
+No path under `src/workflow_coordinator/**` appears in the candidate diff.
+The pinned Runtime clone at `workflow-coordinator-runtime` is confirmed
+detached at exactly `d875026d2f8ea925788394e7385d1a6f2e77dee2` with a clean
+worktree. `reducer.py` and `serialization.py` in that pinned Runtime are
+byte-identical to the current development copy (`diff` exit 0 both files).
+Since route dispatch, permitted-route enumeration, and prompt rendering are
+all generic over `phase.routes` (section 1), the already-pinned Runtime
+supports an arbitrary number of profile-defined routes from `review` --
+including the new `rereview` route -- with no code change and no Runtime
+promotion required.
+
+== 4. Historical-attempt test semantics
+
+Inspected `_materialize_bundle`
+(`tests/architecture/test_self_development_governance.py:104-124`): for every
+governing path it writes `_current_text(path)`, i.e. the *live* file content
+at `PROJECT_ROOT`, into a synthetic one-commit repository, unless a test
+supplies an explicit `replacements` override (only
+`test_work_item_mapping_cannot_enlarge_review_phase_authority` does). The
+`ATTEMPT_4`..`ATTEMPT_7_GOVERNING_PATHS` tuples each pair one per-attempt,
+frozen WorkItem/task file (e.g.
+`governance/work-items/developer-ergonomics-review-002.yaml`, itself untouched
+by this candidate) with the *same, shared* profile/policy/components/prompt
+paths used by every other test in the module -- always the current live
+files.
+
+This is Possibility A. These tests do not attempt to reconstruct or replay
+historical Attempt truth: `_materialize_bundle` has no facility to pin a
+historical profile snapshot, and it always resolves the shared paths (indices
+1-3 of each `*_GOVERNING_PATHS` tuple) to whatever the profile/policy/
+components currently are. The test names read literally --
+`test_attempt_N_bundle_passes_production_preflight` -- and that is exactly
+what each proves: that the named historical WorkItem definition, combined
+with the *current* governing profile/policy bundle, still passes *current*
+production preflight. Updating the expected `profile.revision` from `"2"` to
+`"3"` in these five tests is therefore the correct action, not a
+falsification of history: it keeps the assertions truthful to what
+`_materialize_bundle` actually constructs.
+
+This is also an established convention, not a pattern newly introduced by the
+candidate. Commit `0e85a751b76cdeb2a78f1ddc55141b9656c8a814`
+(`governance: raise self-development hop ceiling to five`) previously applied
+the identical edit shape -- splitting a combined
+`profile.revision == policy.revision == "2"` assertion and bumping
+`policy.revision` to `"3"` -- across this same set of tests (current,
+continuation, attempt_4, attempt_5) when `repository-policy.yaml` last
+changed. The candidate is the second application of that precedent, this time
+for the profile revision.
+
+Classification: acceptable architecture-test convention, not a defect. The
+one residual observation (INFO, non-blocking) is naming clarity: a reader
+unfamiliar with `_materialize_bundle` could misread "attempt_N" as implying
+exact historical replay of admitted governance, when it actually asserts
+present-day compatibility of a historical WorkItem shape against the live
+bundle. A future docstring on `_materialize_bundle` or a module-level comment
+stating this explicitly would remove the ambiguity; it is not required for
+this candidate's correctness and no such change should be bundled into this
+governance edit.
+
+Frozen historical archive docs (`docs/backlog/first_wfc_on_wfc_dogfood_attempt_*.adoc`)
+and the per-attempt WorkItem/task files themselves are unchanged by this
+candidate, consistent with "historical docs and frozen Run state must remain
+unchanged."
+
+== 5. Preflight/current bundle semantics
+
+`test_current_self_development_bundle_passes_production_preflight` and all
+five follow-on bundle tests pass (see Validation). Under revision 3:
+
+* `policy.revision == "3"` (unchanged);
+* `policy.governance_paths == ("governance",)` (unchanged);
+* `work_item.scope == policy.work_item_scope_ceiling ==
+  (*IMPLEMENTATION_PATHS, REVIEW_NAMESPACE)` -- ordinary writable scope is not
+  broadened, and `governance`, `src`, and `workflow-coordinator-runtime` all
+  remain outside the ceiling;
+* `work_item.max_autonomous_hops == 4` and
+  `policy.max_autonomous_hops == COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5`
+  (unchanged, matches the prior hop-ceiling commit);
+* `COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5` (Coordinator hard max,
+  unchanged).
+
+None of these values were touched by the candidate diff; they are asserted
+here as confirmation that the profile revision bump did not silently ride
+along with an unrelated policy change.
+
+== 6. FTR boundary
+
+`docs/backlog/FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW.adoc` is untouched
+by this candidate (confirmed by `git diff --stat` scoped to that path,
+empty). Its thesis (generic bounded privilege escalation with mandatory
+defensive review before an agent Run resumes ordinary authority) is out of
+scope here: this candidate is a plain maintainer git commit made outside any
+WFC-mediated Run, editing one governance YAML and its accompanying
+architecture test -- not an agent exercising elevated authority inside a Run.
+It adds no governance-write bypass (`policy.governance_paths` and
+`work_item_scope_ceiling` are unchanged and still exclude `governance`), no
+weakening of governing-input integrity (`_materialize_bundle`/preflight
+mechanics are untouched), no elevated-privilege mechanism, and no Runtime
+exception (section 3). The FTR remains correctly deferred and unimplemented.
+
+== Validation
+
+Executed from the candidate worktree without WFC or provider invocation:
+
+* full `pytest -q` (`workflow-coordinator`, candidate worktree):
+  *383 passed*, 0 failed;
+* `tests/architecture/test_self_development_governance.py` in isolation:
+  *9 passed*, including all six bundle/attempt tests and the two negative
+  tests (`test_production_preflight_rejects_consumed_isolated_state_root`,
+  `test_work_item_mapping_cannot_enlarge_review_phase_authority`);
+* `ruff check .`: *All checks passed!*;
+* bounded `ruff format --check` (`scripts/wfc_snapshot.py`,
+  `tests/unit/test_wfc_snapshot.py`, `tests/architecture/test_package_boundaries.py`,
+  per `Makefile:format-check`): *3 files already formatted*;
+* `make check` (lint, bounded format-check, full test): all three steps
+  passed, exit 0;
+* `git diff --check f92a428da4d2a71fdb123451c7a22296baf63d57..cb41c8be7648342fc5ebbb4d3e89438c5fc455ab`:
+  no output, no whitespace errors.
+
+== Final acceptance statement
+
+Exact candidate `cb41c8be7648342fc5ebbb4d3e89438c5fc455ab` is accepted.
+Profile revision 3 topology is
+`review -> rereview | correct`, `correct -> rereview`,
+`rereview -> accept | correct`. `review -> accept` remains impossible because
+no `accept` key exists in `phases.review.routes`, and the reducer treats an
+unrecognized requested route as a mechanical preemption that halts for human
+attention rather than falling through to completion. Rereview remains an
+independent review phase: same `independent_reviewer` role, same mandatory
+`context: fresh`, same gate authority as the original review. Route order
+within the YAML has no production semantic effect -- every consumer
+(`reduce_result`, `permitted_route_keys`, prompt rendering) operates on
+`phase.routes` as a key-addressed mapping and/or re-sorts it. The
+historical-attempt test edits correctly update `profile.revision`
+expectations to match what `_materialize_bundle` actually constructs
+(current live governance bundle plus a named historical WorkItem shape); this
+is an established, precedented convention and not a falsification of history.
+No change under `src/workflow_coordinator/**` is present, and the pinned
+Runtime already contains byte-identical `reducer.py`/`serialization.py`, so
+no Runtime promotion is required. This review made no WFC, provider,
+Runtime, Run-state, or remote mutation.
