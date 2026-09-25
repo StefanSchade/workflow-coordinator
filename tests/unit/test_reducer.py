@@ -1,4 +1,5 @@
 from dataclasses import fields, replace
+import inspect
 
 import pytest
 
@@ -9,6 +10,7 @@ from workflow_coordinator.model import (
     MechanicalFacts,
     Run,
     RunStatus,
+    WorkflowRole,
 )
 from workflow_coordinator.reducer import (
     ReductionError,
@@ -41,7 +43,7 @@ def gate_profile():
                     "accept": route("complete"),
                     "correct": route("goto", "correction"),
                 },
-                role="reviewer",
+                role="independent_reviewer",
                 review="gate",
                 finding_authority=("resolve", "residual", "supersede", "reopen"),
             ),
@@ -363,3 +365,31 @@ def test_stopped_run_cannot_accept_another_invocation_even_with_budget_remaining
     ).run
     with pytest.raises(ValueError, match="status prohibits invocation"):
         charge_hop(stopped)
+
+
+def test_reducer_semantics_are_independent_of_role_persona_binding_provider_and_domain():
+    worker_profile = profile({"work": phase({"done": route("complete")})})
+    reviewer_profile = profile(
+        {
+            "work": replace(
+                worker_profile.phases["work"],
+                role=WorkflowRole.INDEPENDENT_REVIEWER,
+            )
+        }
+    )
+    worker_run, worker_hop = charge_hop(run_for(worker_profile, budget=1))
+    reviewer_run, reviewer_hop = charge_hop(run_for(reviewer_profile, budget=1))
+
+    assert reduce_result(
+        worker_run, result("done"), worker_profile, hop_id=worker_hop
+    ) == reduce_result(
+        reviewer_run, result("done"), reviewer_profile, hop_id=reviewer_hop
+    )
+    assert {
+        "persona",
+        "adapter",
+        "provider",
+        "model",
+        "reasoning",
+        "subject_domain",
+    }.isdisjoint(inspect.signature(reduce_result).parameters)

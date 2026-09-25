@@ -24,6 +24,7 @@ from .model import (
     RouteEffect,
     WorkItem,
     WorkflowProfile,
+    WorkflowRole,
     new_run,
 )
 from .evidence import (
@@ -63,7 +64,7 @@ def _git(repository: Path, *args: str) -> str:
 
 def _proof_profile() -> WorkflowProfile:
     phase = Phase(
-        role="worker",
+        role=WorkflowRole.WORKER,
         role_components=("worker",),
         modifier_components=(),
         repository_policy_components=("policy",),
@@ -75,7 +76,7 @@ def _proof_profile() -> WorkflowProfile:
         review=None,
         routes={"complete": Route(RouteEffect.COMPLETE)},
     )
-    return WorkflowProfile(1, "slice4-disposable-proof", "proof-r1", {"proof": phase})
+    return WorkflowProfile(2, "slice4-disposable-proof", "proof-r1", {"proof": phase})
 
 
 def _proof_components() -> dict[str, PromptComponent]:
@@ -189,8 +190,9 @@ def run_disposable_proof(
     association = register_checkout(state_root, repository)
     profile = _proof_profile()
     work_item = WorkItem(
-        1, WORK_ITEM_ID, "future maintainer authorization required", "slice4-disposable-proof",
+        2, WORK_ITEM_ID, "future maintainer authorization required", "slice4-disposable-proof",
         "disposable-proof", ("disposable-proof",), "proof", 1,
+        {WorkflowRole.WORKER: "bounded proof worker"},
     )
     policy = RepositoryPolicy(
         3, "slice4-proof-policy", "proof-r2", ("disposable-proof",),
@@ -217,6 +219,8 @@ def run_disposable_proof(
                           f"`PROOF.md` with subject `{EXPECTED_SUBJECT}`, then return route `complete`. "
                           f"The result invocation_id is `{invocation_id}`."),
             invocation_id=invocation_id, timeout_seconds=timeout_seconds, executable=executable,
+            persona=work_item.personas[WorkflowRole.WORKER],
+            model="gpt-5.6-terra", reasoning_effort="medium",
             evidence_runner=PRODUCTION_EVIDENCE_RUNNER,
             evidence_commands=evidence_commands,
         )

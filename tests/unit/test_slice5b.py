@@ -20,6 +20,7 @@ from workflow_coordinator.model import (
     RepositoryPolicy,
     RunStatus,
     WorkItem,
+    WorkflowRole,
     new_run,
 )
 from workflow_coordinator.operator import (
@@ -311,11 +312,18 @@ def fixture_repository(tmp_path: Path, *, data: dict[str, object] | None = None)
 
 
 def preflight_args(repository: Path, state_root: Path, *, legacy=()) -> argparse.Namespace:
+    bindings = state_root.parent / f"{state_root.name}-bindings.yml"
+    bindings.write_text(
+        "schema_version: 1\nbindings:\n"
+        "  worker: {adapter: codex_cli, model: fixture-worker, reasoning: medium}\n"
+        "  independent_reviewer: {adapter: codex_cli, model: fixture-reviewer, reasoning: high}\n"
+    )
     return argparse.Namespace(
         repository=str(repository), state_root=str(state_root),
         expected_head=git(repository, "rev-parse", "HEAD"),
         work_item="work.yml", profile="profile.yml", policy="policy.yml",
         components="components.yml", task="task.txt",
+        execution_bindings=str(bindings),
         durable_artifact=list(legacy), timeout_seconds=1.0, executable="local",
     )
 
@@ -453,7 +461,7 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
     (
         admitted_contract, observed_repository, observed_state, _paths, texts, item, workflow,
         policy, components, artifact_map, legacy_artifacts, governing, active_runner,
-        evidence_commands, evidence_environment,
+        evidence_commands, evidence_environment, _binding_source, execution_configuration,
     ) = _preflight(
         preflight_args(repository, state_root), evidence_runner=runner
     )
@@ -486,6 +494,7 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
         run, workflow, repository, components,
         state_root=state_root, association=association,
         agent_operating_contract=admitted_contract, task_payload=texts["task"], governing=governing,
+        personas=item.personas, execution_configuration=execution_configuration,
         timeout_seconds=1, executable="local", adapter=adapter,
         durable_artifacts_by_phase=artifact_map,
         evidence_runner=active_runner,
@@ -513,7 +522,7 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
     persisted = json.loads(
         (state_root / "checkouts" / association.checkout_id / "execution-evidence.json").read_text()
     )
-    assert persisted["schema_version"] == 2
+    assert persisted["schema_version"] == 3
     assert persisted["attempts"] == evidence
     assert not (state_root / "checkouts" / association.checkout_id / "dispatch.json").exists()
     assert git(repository, "status", "--porcelain") == ""
@@ -527,8 +536,8 @@ def test_five_hop_budget_stops_before_h006_without_reservation_or_retry(tmp_path
         authorized_scope=("payload.txt",), evidence=(),
     )})
     item = WorkItem(
-        1, "WI-BUDGET-5B", "fixture", "profile.yml", "repo",
-        ("payload.txt",), "loop", 5,
+        2, "WI-BUDGET-5B", "fixture", "profile.yml", "repo",
+        ("payload.txt",), "loop", 5, {WorkflowRole.WORKER: "fixture worker"},
     )
     policy = RepositoryPolicy(
         3, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 5,
@@ -558,7 +567,8 @@ def test_five_hop_budget_stops_before_h006_without_reservation_or_retry(tmp_path
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
         state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="loop",
-        governing={}, timeout_seconds=1, executable="local", adapter=adapter,
+        governing={}, timeout_seconds=1,
+        personas={WorkflowRole.WORKER: "fixture worker"}, executable="local", adapter=adapter,
         durable_artifacts=("payload.txt",),
     )
     assert final.status is RunStatus.AWAITING_HUMAN_BUDGET
@@ -614,7 +624,7 @@ def test_unsuccessful_outcomes_do_not_require_artifact_or_route(tmp_path, outcom
         ResultAdapter(base_result("again", outcome=outcome)),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-1",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task", invocation_id="INV-1",
         durable_artifacts=("review/report.md",),
     )
     assert vertical.reduction.run.stop_reason == expected
@@ -641,7 +651,7 @@ def test_unsuccessful_outcomes_forbid_commit_intent(tmp_path, outcome):
         ),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-1",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task", invocation_id="INV-1",
         durable_artifacts=("review/report.md",),
     )
     assert "commit intent is not permitted" in (vertical.reduction.run.stop_reason or "")
@@ -670,7 +680,7 @@ def test_required_evidence_error_not_run_and_malformed_hard_stop(
         ResultAdapter(base_result("accept")),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-1",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task", invocation_id="INV-1",
         evidence_runner=FakeEvidenceRunner(status=status),
         evidence_commands=prepared_evidence(repository, ("fake_check",)),
     )
@@ -699,7 +709,7 @@ def test_changes_required_commit_is_limited_to_declared_review_artifact(tmp_path
         ResultAdapter(base_result("correct", outcome="changes_required")),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-missing",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task", invocation_id="INV-missing",
         durable_artifacts=("review/report.md",),
     )
     assert "required durable artifact" in (missing.reduction.run.stop_reason or "")
@@ -717,7 +727,7 @@ def test_changes_required_commit_is_limited_to_declared_review_artifact(tmp_path
         ),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-1",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task", invocation_id="INV-1",
         durable_artifacts=("review/report.md",),
     )
     assert accepted.reduction.run.phase == "correct"
@@ -736,7 +746,7 @@ def test_changes_required_commit_is_limited_to_declared_review_artifact(tmp_path
         ),
         {"worker": PromptComponent("worker", "worker", baseline, "worker"),
          "testing": PromptComponent("testing", "testing", baseline, "testing")},
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-1",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task", invocation_id="INV-1",
         durable_artifacts=("review/report.md",),
     )
     assert "commit intent is not permitted" in (rejected.reduction.run.stop_reason or "")
@@ -768,8 +778,9 @@ def test_reconstructed_context_encodes_agent_values_and_attributes_outcome(tmp_p
         }
     )
     run = new_run(
-        WorkItem(1, "WI-CONTEXT", "fixture", "profile.yml", "repo",
-                 ("payload.txt",), "review", 2),
+        WorkItem(2, "WI-CONTEXT", "fixture", "profile.yml", "repo",
+                 ("payload.txt",), "review", 2,
+                 {WorkflowRole.WORKER: "fixture worker"}),
         workflow,
         RepositoryPolicy(
             3, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 2,
@@ -833,6 +844,7 @@ def test_reconstructed_context_encodes_agent_values_and_attributes_outcome(tmp_p
         association=association,
         agent_operating_contract=load_agent_operating_contract(), task_payload="task",
         governing={},
+        personas={WorkflowRole.WORKER: "fixture worker"},
         timeout_seconds=1,
         executable="local",
         adapter=adapter,
@@ -911,7 +923,7 @@ def test_vertical_clean_evidence_fail_uses_declared_gate_failure_route(tmp_path)
         repository,
         ResultAdapter(base_result("accept")),
         _components_for(baseline),
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task",
         invocation_id="INV-FAIL-ROUTE",
         evidence_runner=FakeEvidenceRunner(status="fail"),
         evidence_commands=prepared_evidence(repository, ("fake_check",)),
@@ -932,7 +944,7 @@ def test_vertical_clean_evidence_fail_without_route_stops_exactly(tmp_path):
         repository,
         ResultAdapter(base_result("accept")),
         _components_for(baseline),
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task",
         invocation_id="INV-FAIL-STOP",
         evidence_runner=FakeEvidenceRunner(status="fail"),
         evidence_commands=prepared_evidence(repository, ("fake_check",)),
@@ -985,7 +997,7 @@ def test_direct_agent_commit_cannot_satisfy_required_artifact(tmp_path):
             mutate=lambda repo: repo.joinpath(path).write_text("direct\n"),
         ),
         _components_for(baseline),
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task",
         invocation_id="INV-DIRECT",
         durable_artifacts=(path,),
     )
@@ -1014,7 +1026,7 @@ def test_commitintent_deletion_cannot_satisfy_required_artifact(tmp_path):
             mutate=lambda repo: repo.joinpath(path).unlink(),
         ),
         _components_for(baseline),
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task",
         invocation_id="INV-DELETE",
         durable_artifacts=(path,),
     )
@@ -1043,7 +1055,7 @@ def test_required_artifact_subset_does_not_satisfy_multiple_paths(tmp_path):
             mutate=lambda repo: repo.joinpath(paths[0]).write_text("after\n"),
         ),
         _components_for(baseline),
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task",
         invocation_id="INV-SUBSET",
         durable_artifacts=paths,
     )
@@ -1076,7 +1088,7 @@ def test_required_artifact_rejects_tracked_symlink_to_external_content(tmp_path)
             mutate=create_symlink,
         ),
         _components_for(baseline),
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task",
         invocation_id="INV-SYMLINK",
         durable_artifacts=(artifact,),
     )
@@ -1095,7 +1107,7 @@ def test_injected_runner_has_no_name_authority_and_policy_definition_is_admitted
     result = _preflight(
         preflight_args(repository, tmp_path / "state"), evidence_runner=runner
     )
-    assert tuple(result[-2]) == ("git_version",)
+    assert tuple(result[-4]) == ("git_version",)
     assert runner.observe_calls == []
     assert not (tmp_path / "state").exists()
 
@@ -1185,7 +1197,7 @@ def test_malformed_trusted_observation_hard_stops_before_routing(
         repository,
         ResultAdapter(base_result("accept")),
         _components_for(baseline),
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task",
         invocation_id="INV-MALFORMED",
         evidence_runner=FixedObservationRunner(),
         evidence_commands=commands,
@@ -1240,7 +1252,7 @@ def test_advisory_changes_required_cannot_commit_review_artifact(tmp_path):
             mutate=lambda repo: repo.joinpath(artifact).write_text("report\n"),
         ),
         _components_for(baseline),
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task",
         invocation_id="INV-ADVISORY",
         durable_artifacts=(artifact,),
     )
@@ -1294,7 +1306,7 @@ def test_changes_required_artifact_does_not_grant_finding_disposition(tmp_path):
             mutate=lambda repo: repo.joinpath(artifact).write_text("report\n"),
         ),
         _components_for(baseline),
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task",
         invocation_id="INV-NO-AUTHORITY",
         durable_artifacts=(artifact,),
     )
@@ -1318,8 +1330,9 @@ def test_direct_serial_driver_rejects_limit_above_five_before_dispatch(tmp_path)
         }
     )
     run = new_run(
-        WorkItem(1, "WI-LIMIT", "fixture", "profile.yml", "repo",
-                 ("payload.txt",), "loop", 6),
+        WorkItem(2, "WI-LIMIT", "fixture", "profile.yml", "repo",
+                 ("payload.txt",), "loop", 6,
+                 {WorkflowRole.WORKER: "fixture worker"}),
         workflow,
         RepositoryPolicy(
             3, "policy", "1", ("repo",), ("governance",), ("payload.txt",), 5,
@@ -1350,6 +1363,7 @@ def test_direct_serial_driver_rejects_limit_above_five_before_dispatch(tmp_path)
             association=association,
             agent_operating_contract=load_agent_operating_contract(), task_payload="task",
             governing={},
+            personas={WorkflowRole.WORKER: "fixture worker"},
             timeout_seconds=1,
             executable="local",
             adapter=adapter,

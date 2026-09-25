@@ -12,7 +12,7 @@ import subprocess
 import uuid
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 from .git_facts import GitPreflightError, observe_repository, preflight_hop, repository_identity
 from .evidence import (
@@ -26,7 +26,10 @@ from .evidence import (
 from .model import (
     COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
     DurableArtifact,
+    ExecutionBinding,
+    RunExecutionConfiguration,
     RunStatus,
+    WorkflowRole,
     new_run,
 )
 from .persistence import (
@@ -46,6 +49,7 @@ from .serialization import (
     a1_path_shape,
     component_manifest_from_yaml,
     repository_policy_from_yaml,
+    run_execution_configuration_from_yaml,
     work_item_from_yaml,
     workflow_profile_from_yaml,
 )
@@ -194,6 +198,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--policy", required=True)
     parser.add_argument("--components", required=True)
     parser.add_argument("--task", required=True)
+    parser.add_argument("--execution-bindings", required=True)
     parser.add_argument("--durable-artifact", action="append", default=[])
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("--executable", default="codex")
@@ -224,6 +229,13 @@ def _preflight(
     state_root = Path(args.state_root).resolve()
     if state_root.exists():
         raise OperatorPreflightError("state root already exists; one-shot operator roots are never overwritten")
+    binding_source = Path(args.execution_bindings).resolve()
+    try:
+        binding_text = binding_source.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise OperatorPreflightError(
+            "execution-binding source is unavailable or not UTF-8"
+        ) from error
     input_paths = {name: _relative_path(getattr(args, name), context=name.replace("_", " "))
                    for name in ("work_item", "profile", "policy", "components", "task")}
     texts = {name: _pinned_text(repository, args.expected_head, path, context=name.replace("_", " "))
@@ -233,10 +245,40 @@ def _preflight(
         profile = workflow_profile_from_yaml(texts["profile"])
         policy = repository_policy_from_yaml(texts["policy"])
         manifest = component_manifest_from_yaml(texts["components"])
+        execution_configuration = run_execution_configuration_from_yaml(binding_text)
     except ValidationError as error:
         raise OperatorPreflightError(str(error)) from error
     if _relative_path(work_item.profile_ref, context="WorkItem.profile_ref") != input_paths["profile"]:
         raise OperatorPreflightError("WorkItem.profile_ref does not identify the supplied profile path")
+    profile_roles = {phase.role for phase in profile.phases.values()}
+    persona_roles = set(work_item.personas)
+    if persona_roles != profile_roles:
+        missing = sorted(role.value for role in profile_roles - persona_roles)
+        unknown = sorted(role.value for role in persona_roles - profile_roles)
+        details = []
+        if missing:
+            details.append("missing roles: " + ", ".join(missing))
+        if unknown:
+            details.append("unknown roles: " + ", ".join(unknown))
+        raise OperatorPreflightError(
+            "WorkItem.personas must exactly match roles used by the profile ("
+            + "; ".join(details)
+            + ")"
+        )
+    binding_roles = set(execution_configuration.bindings)
+    if binding_roles != profile_roles:
+        missing = sorted(role.value for role in profile_roles - binding_roles)
+        unknown = sorted(role.value for role in binding_roles - profile_roles)
+        details = []
+        if missing:
+            details.append("missing roles: " + ", ".join(missing))
+        if unknown:
+            details.append("unknown roles: " + ", ".join(unknown))
+        raise OperatorPreflightError(
+            "Run execution bindings must exactly match roles used by the profile ("
+            + "; ".join(details)
+            + ")"
+        )
     policy_actions = set(policy.actions)
     work_scope = _normalized_scope(work_item.scope, context="WorkItem.scope")
     normalized_phase_scopes: dict[str, tuple[str, ...]] = {}
@@ -346,6 +388,7 @@ def _preflight(
         agent_operating_contract, repository, state_root, input_paths, texts, work_item, profile, policy,
         components, durable_artifacts, legacy_artifacts, governing, evidence_runner,
         {command.command_name: command for command in prepared_evidence}, environment,
+        binding_source, execution_configuration,
     )
 
 
@@ -447,16 +490,15 @@ def _reconstructed_context(
     )
 
 
-def _execution_binding(adapter, *, executable: str) -> dict[str, object]:
-    """Resolve the concrete binding for this invocation without selecting one."""
-    selected = adapter
-    if selected is None:
-        selected = CodexCliAdapter(Path("."), executable=executable)
-    if isinstance(selected, CodexCliAdapter):
-        return {"adapter": "codex_cli", "executable": selected.executable,
-                "model": selected.model, "reasoning": selected.reasoning_effort}
-    return {"adapter": "local", "executable": executable,
-            "model": None, "reasoning": None}
+def _binding_evidence(binding: ExecutionBinding, *, executable: str) -> dict[str, object]:
+    """Project the same admitted value used to construct the production adapter."""
+
+    return {
+        "adapter": binding.adapter,
+        "executable": executable,
+        "model": binding.model,
+        "reasoning": binding.reasoning,
+    }
 
 
 def _prepared_evidence_plan(
@@ -490,10 +532,16 @@ def _prepared_evidence_plan(
     }
 
 
-def _execution_evidence(run, outcome, *, invocation_id: str, binding: dict[str, object], timeout_seconds: float,
+def _execution_evidence(run, outcome, *, invocation_id: str, phase: str,
+                        workflow_role: WorkflowRole, persona: str,
+                        binding: dict[str, object], timeout_seconds: float,
                         observations: tuple[object, ...] = ()) -> dict[str, object]:
     hop = run.hops[-1]
-    return {"hop_id": hop.hop_id, "invocation_id": invocation_id, **binding,
+    return {"hop_id": hop.hop_id, "invocation_id": invocation_id,
+            "phase": phase, "workflow_role": workflow_role.value,
+            "persona": persona,
+            "persona_sha256": hashlib.sha256(persona.encode("utf-8")).hexdigest(),
+            **binding,
             "context": "fresh", "timeout_seconds": timeout_seconds,
             "returncode": outcome.returncode, "timed_out": outcome.timed_out,
             "candidate_result_present": outcome.candidate_result is not None,
@@ -509,6 +557,8 @@ def run_serial_hops(
     run, profile, repository: Path, components: dict[str, PromptComponent], *, state_root: Path,
     association, agent_operating_contract: AgentOperatingContract, task_payload: str,
     governing: dict[str, str], timeout_seconds: float,
+    personas: Mapping[WorkflowRole, str],
+    execution_configuration: RunExecutionConfiguration | None = None,
     executable: str = "codex", adapter=None, durable_artifacts: tuple[str, ...] = (),
     durable_artifacts_by_phase: dict[str, tuple[str, ...]] | None = None,
     evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
@@ -525,7 +575,7 @@ def run_serial_hops(
     def publish_execution_evidence() -> None:
         atomic_write_json(
             checkout_state_root(state_root, association) / "execution-evidence.json",
-            {"schema_version": 2, "attempts": evidence},
+            {"schema_version": 3, "attempts": evidence},
         )
 
     def stop_continuation(reason: str, question: str):
@@ -558,7 +608,45 @@ def run_serial_hops(
                     "governing_input_changed", "Pinned governing input changed after the prior Hop."
                 )
         invocation_id = f"INV-{uuid.uuid4().hex}"
-        binding = _execution_binding(adapter, executable=executable)
+        phase_key = run.phase
+        workflow_role = profile.phases[phase_key].role
+        try:
+            persona = personas[workflow_role]
+        except KeyError as error:
+            raise OperatorPreflightError(
+                f"no admitted persona for workflow role: {workflow_role.value}"
+            ) from error
+        if adapter is None:
+            if execution_configuration is None:
+                raise OperatorPreflightError(
+                    "production execution requires explicit resolved bindings"
+                )
+            try:
+                resolved_binding = execution_configuration.bindings[workflow_role]
+            except KeyError as error:
+                raise OperatorPreflightError(
+                    f"no admitted execution binding for workflow role: {workflow_role.value}"
+                ) from error
+            if resolved_binding.adapter != "codex_cli":
+                raise OperatorPreflightError(
+                    f"unsupported execution adapter: {resolved_binding.adapter}"
+                )
+            run_root = checkout_state_root(state_root, association)
+            execution_adapter = CodexCliAdapter(
+                run_root,
+                model=resolved_binding.model,
+                reasoning_effort=resolved_binding.reasoning,
+                executable=executable,
+            )
+            binding = _binding_evidence(resolved_binding, executable=executable)
+        else:
+            execution_adapter = adapter
+            binding = {
+                "adapter": "local",
+                "executable": executable,
+                "model": None,
+                "reasoning": None,
+            }
         phase_artifacts = (
             durable_artifacts
             if run.hop_used == 0 and durable_artifacts
@@ -568,8 +656,9 @@ def run_serial_hops(
             run, profile, repository, components,
             agent_operating_contract=agent_operating_contract,
             state_root=state_root, association=association,
-            task_payload=task_payload, invocation_id=invocation_id,
-            timeout_seconds=timeout_seconds, executable=executable, adapter=adapter,
+            task_payload=task_payload, invocation_id=invocation_id, persona=persona,
+            timeout_seconds=timeout_seconds, executable=executable,
+            adapter=execution_adapter,
             durable_artifacts=phase_artifacts,
             context_items=_reconstructed_context(
                 run, profile, repository, phase_artifacts, prior_observations
@@ -587,6 +676,7 @@ def run_serial_hops(
             evidence.append(
                 _execution_evidence(
                     run, hop_run.outcome, invocation_id=invocation_id,
+                    phase=phase_key, workflow_role=workflow_role, persona=persona,
                     binding=binding, timeout_seconds=timeout_seconds,
                     observations=observations,
                 )
@@ -677,11 +767,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             agent_operating_contract, repository, state_root, paths, texts, item, profile, policy,
             components, durable, legacy_durable, governing, active_evidence_runner,
             prepared_evidence, evidence_environment,
+            binding_source, execution_configuration,
         ) = _preflight(args, evidence_runner=PRODUCTION_EVIDENCE_RUNNER)
         run_id = f"RUN-{uuid.uuid4().hex}"
         run = new_run(item, profile, policy, run_id=run_id, baseline_head=args.expected_head)
         state_root.mkdir(parents=True)
-        plan = {"schema_version": 1, "repository": str(repository), "expected_baseline": args.expected_head,
+        plan = {"schema_version": 2, "repository": str(repository), "expected_baseline": args.expected_head,
                 "inputs": {**paths, "pinned_revision": args.expected_head},
                 "components": {key: {"path": value.path, "digest": value.digest} for key, value in components.items()},
                 "durable_artifacts": {
@@ -689,6 +780,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }, "legacy_durable_artifacts": list(legacy_durable),
                 "state_root": str(state_root), "run_id": run_id,
                 "executable": args.executable, "timeout_seconds": args.timeout_seconds,
+                "execution_bindings_source": str(binding_source),
+                "role_personas": {
+                    role.value: persona for role, persona in item.personas.items()
+                },
+                "role_bindings": {
+                    role.value: {
+                        "adapter": binding.adapter,
+                        "model": binding.model,
+                        "reasoning": binding.reasoning,
+                    }
+                    for role, binding in execution_configuration.bindings.items()
+                },
                 "max_autonomous_hops": item.max_autonomous_hops, "retry": False,
                 "agent_operating_contract": agent_operating_contract.provenance(),
                 "governing_inputs": governing,
@@ -721,6 +824,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             run, profile, repository, components, state_root=state_root, association=association,
             agent_operating_contract=agent_operating_contract,
             task_payload=texts["task"], governing=governing, timeout_seconds=args.timeout_seconds,
+            personas=item.personas,
+            execution_configuration=execution_configuration,
             executable=args.executable, durable_artifacts=legacy_durable,
             durable_artifacts_by_phase=durable,
             evidence_runner=active_evidence_runner,

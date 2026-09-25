@@ -145,7 +145,7 @@ def _durable_artifact_anomalies(
 def run_one_hop(
     run: Run, profile: WorkflowProfile, repository: Path, adapter: AgentExecutionPort, components: dict[str, PromptComponent],
     *, agent_operating_contract: AgentOperatingContract, task_payload: str,
-    invocation_id: str, durable_artifacts: tuple[str, ...] = (),
+    invocation_id: str, persona: str, durable_artifacts: tuple[str, ...] = (),
     execution_timeout_seconds: float = 0.0,
     registered_checkout_validator: Callable[[], None] | None = None,
     context_items: tuple[ContextItem, ...] = (),
@@ -164,7 +164,7 @@ def run_one_hop(
     try:
         prompt = assemble_prompt(
             run, phase, components, agent_operating_contract=agent_operating_contract,
-            invocation=invocation, task_payload=task_payload,
+            invocation=invocation, persona=persona, task_payload=task_payload,
             context=context_items,
         )
     except Exception as error:
@@ -283,7 +283,7 @@ def run_one_hop(
     if observation_errors:
         required_error = observation_errors[0]
     required_failed = any(item.status == "fail" for item in observations)
-    accepted = record_hop(run, Hop(hop_id, run.hop_used + 1, run.phase, phase.role, "fresh", "local", "local",
+    accepted = record_hop(run, Hop(hop_id, run.hop_used + 1, run.phase, phase.role.value, "fresh", "local", "local",
                                    run.current_head, delta.end_head, delta.actual_commits, "accepted", result.outcome.value,
                                    (), result.evidence_refs, None, None, result.summary, "agent"))
     reduction = reduce_result(

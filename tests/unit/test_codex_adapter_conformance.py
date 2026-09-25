@@ -62,7 +62,9 @@ def test_projection_derives_from_canonical_semantic_contract_facts():
 
 def test_codex_argv_is_adapter_owned_and_request_is_provider_neutral(tmp_path: Path):
     request = AgentExecutionRequest(Invocation("RUN", "H001", "INV"), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 1)
-    adapter = CodexCliAdapter(tmp_path, executable="fake-codex")
+    adapter = CodexCliAdapter(
+        tmp_path, model="explicit-model", reasoning_effort="high", executable="fake-codex"
+    )
     argv = adapter.argv(request, tmp_path / "schema.json", tmp_path / "result.json")
     assert argv[:4] == ("fake-codex", "--ask-for-approval", "never", "exec")
     assert "--output-schema" in argv and "--output-last-message" in argv
@@ -71,10 +73,19 @@ def test_codex_argv_is_adapter_owned_and_request_is_provider_neutral(tmp_path: P
 
 
 def test_adapter_rejects_an_unsupported_result_contract_before_launch(tmp_path: Path):
-    adapter = CodexCliAdapter(tmp_path, executable="must-not-run")
+    adapter = CodexCliAdapter(
+        tmp_path, model="explicit-model", reasoning_effort="high", executable="must-not-run"
+    )
     request = AgentExecutionRequest(Invocation("RUN", "H001", "INV"), "prompt", tmp_path, "other-contract", 1)
     with pytest.raises(RuntimeError, match="unsupported result contract"):
         adapter.execute(request)
+
+
+def test_production_adapter_has_no_model_or_reasoning_fallback(tmp_path: Path):
+    with pytest.raises(TypeError):
+        CodexCliAdapter(tmp_path)
+    with pytest.raises(ValueError, match="explicit and non-empty"):
+        CodexCliAdapter(tmp_path, model="", reasoning_effort="high")
 
 
 def test_conformance_rejects_constructs_outside_the_projection_subset():

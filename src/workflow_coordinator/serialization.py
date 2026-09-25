@@ -8,6 +8,7 @@ from dataclasses import dataclass, fields
 from enum import Enum
 from pathlib import Path
 from pathlib import PurePosixPath
+from types import MappingProxyType
 from typing import Any, Mapping, TypeVar
 
 import yaml
@@ -22,6 +23,7 @@ from .model import (
     DurableArtifact,
     EDIT_ACTION,
     EvidenceCommand,
+    ExecutionBinding,
     Escalation,
     Finding,
     FindingDelta,
@@ -36,9 +38,11 @@ from .model import (
     RouteEffect,
     RoutingResult,
     Run,
+    RunExecutionConfiguration,
     RunStatus,
     WorkItem,
     WorkflowProfile,
+    WorkflowRole,
 )
 
 
@@ -169,6 +173,17 @@ def _integer(value: Any, *, context: str, positive: bool = False) -> int:
 def _version(value: Any, *, context: str) -> int:
     version = _integer(value, context=context)
     if version != 1:
+        raise ValidationError(f"{context} has unsupported version: {version}")
+    return version
+
+
+def _migrated_version(value: Any, *, context: str, expected: int) -> int:
+    version = _integer(value, context=context)
+    if version < expected:
+        raise ValidationError(
+            f"{context} {version} is unsupported; migration to schema_version {expected} is required"
+        )
+    if version != expected:
         raise ValidationError(f"{context} has unsupported version: {version}")
     return version
 
@@ -308,6 +323,35 @@ def _durable_artifacts(value: Any, *, context: str) -> dict[str, tuple[str, ...]
     return result
 
 
+def _persona(value: Any, *, context: str) -> str:
+    persona = _string(value, context=context)
+    if persona.splitlines() != [persona]:
+        raise ValidationError(f"{context} must be a single-line string")
+    if len(persona.encode("utf-8")) > 512:
+        raise ValidationError(f"{context} must not exceed 512 UTF-8 bytes")
+    return persona
+
+
+def _execution_value(value: Any, *, context: str) -> str:
+    selected = _string(value, context=context)
+    if selected.splitlines() != [selected] or "\0" in selected:
+        raise ValidationError(f"{context} must be a single-line value")
+    return selected
+
+
+def _personas(value: Any) -> Mapping[WorkflowRole, str]:
+    raw = _mapping(value, context="WorkItem.personas")
+    if not raw:
+        raise ValidationError("WorkItem.personas must not be empty")
+    personas: dict[WorkflowRole, str] = {}
+    for raw_role, raw_persona in raw.items():
+        role = _enum(WorkflowRole, raw_role, context="WorkItem.personas role")
+        personas[role] = _persona(
+            raw_persona, context=f"WorkItem.personas.{role.value}"
+        )
+    return MappingProxyType(personas)
+
+
 def _enum(enum_type: type[EnumType], value: Any, *, context: str) -> EnumType:
     try:
         return enum_type(value)
@@ -361,11 +405,14 @@ def work_item_from_yaml(text: str) -> WorkItem:
             "scope",
             "initial_phase",
             "max_autonomous_hops",
+            "personas",
         },
         optional={"profile_labels", "durable_artifacts"},
     )
     return WorkItem(
-        schema_version=_version(data["schema_version"], context="WorkItem.schema_version"),
+        schema_version=_migrated_version(
+            data["schema_version"], context="WorkItem.schema_version", expected=2
+        ),
         work_item_id=_string(data["work_item_id"], context="WorkItem.work_item_id"),
         authority_source=_string(data["authority_source"], context="WorkItem.authority_source"),
         profile_ref=_string(data["profile_ref"], context="WorkItem.profile_ref"),
@@ -377,6 +424,7 @@ def work_item_from_yaml(text: str) -> WorkItem:
             context="WorkItem.max_autonomous_hops",
             positive=True,
         ),
+        personas=_personas(data["personas"]),
         profile_labels=_strings(data.get("profile_labels", []), context="WorkItem.profile_labels"),
         durable_artifacts=(
             _durable_artifacts(data["durable_artifacts"], context="WorkItem.durable_artifacts")
@@ -593,7 +641,9 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
         if len(set(evidence)) != len(evidence):
             raise ValidationError(f"{phase_context}.evidence references must be unique")
         phases[phase_key] = Phase(
-            role=_string(phase_data["role"], context=f"{phase_context}.role"),
+            role=_enum(
+                WorkflowRole, phase_data["role"], context=f"{phase_context}.role"
+            ),
             role_components=_strings(
                 components["role"], context=f"{phase_context}.components.role"
             ),
@@ -631,10 +681,55 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
                     f"profile.phases.{phase_key}.review.failed_evidence_route must name a goto route"
                 )
     return WorkflowProfile(
-        schema_version=_version(data["schema_version"], context="profile.schema_version"),
+        schema_version=_migrated_version(
+            data["schema_version"], context="profile.schema_version", expected=2
+        ),
         profile_id=_string(data["profile_id"], context="profile.profile_id"),
         revision=_string(data["revision"], context="profile.revision"),
         phases=phases,
+    )
+
+
+def run_execution_configuration_from_yaml(text: str) -> RunExecutionConfiguration:
+    """Parse the strict Codex-only MVP binding grammar exactly once upstream."""
+
+    data = _fields(
+        _yaml_mapping(text, context="Run execution configuration"),
+        context="Run execution configuration",
+        required={"schema_version", "bindings"},
+    )
+    raw_bindings = _mapping(
+        data["bindings"], context="Run execution configuration.bindings"
+    )
+    bindings: dict[WorkflowRole, ExecutionBinding] = {}
+    for raw_role, raw_binding in raw_bindings.items():
+        role = _enum(
+            WorkflowRole,
+            raw_role,
+            context="Run execution configuration.bindings role",
+        )
+        context = f"Run execution configuration.bindings.{role.value}"
+        binding = _fields(
+            raw_binding,
+            context=context,
+            required={"adapter", "model", "reasoning"},
+        )
+        adapter = _string(binding["adapter"], context=f"{context}.adapter")
+        if adapter != "codex_cli":
+            raise ValidationError(f"{context}.adapter must be codex_cli")
+        bindings[role] = ExecutionBinding(
+            adapter=adapter,
+            model=_execution_value(binding["model"], context=f"{context}.model"),
+            reasoning=_execution_value(
+                binding["reasoning"], context=f"{context}.reasoning"
+            ),
+        )
+    return RunExecutionConfiguration(
+        schema_version=_version(
+            data["schema_version"],
+            context="Run execution configuration.schema_version",
+        ),
+        bindings=MappingProxyType(bindings),
     )
 
 

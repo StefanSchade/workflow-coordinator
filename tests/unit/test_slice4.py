@@ -164,7 +164,7 @@ def test_invoke_codex_writes_the_canonical_structured_result_schema(repository, 
     state = tmp_path / "external"
     association = register_checkout(state, repository)
     executable = _fake(tmp_path, "pass\n")
-    invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, executable=str(executable))
+    invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
     emitted = json.loads((state / "checkouts" / association.checkout_id / "structured-result.schema.json").read_text())
     assert emitted == structured_result_envelope_openai_schema()
 
@@ -212,7 +212,7 @@ def test_nonempty_invalid_result_is_not_established(repository, tmp_path, payloa
     state = tmp_path / "external"
     association = register_checkout(state, repository)
     executable = _fake(tmp_path, "import pathlib,sys\np=pathlib.Path(sys.argv[sys.argv.index('--output-last-message')+1]); p.write_text(" + repr(payload) + ")\n")
-    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, executable=str(executable))
+    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
     assert outcome.candidate_result == payload
 
 
@@ -220,7 +220,7 @@ def test_nonzero_without_result_is_uncertain(repository, tmp_path):
     state = tmp_path / "external"
     association = register_checkout(state, repository)
     executable = _fake(tmp_path, "import sys\nsys.exit(7)\n")
-    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, executable=str(executable))
+    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
     assert outcome.returncode == 7 and outcome.candidate_result is None
 
 
@@ -238,14 +238,15 @@ output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001
     workflow = replace(workflow, phases={"work": replace(workflow.phases["work"], authorized_scope=("PROOF.md",), evidence=())})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
-    result = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
+    result = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
     assert result.reduction.run.status.value == "completed"
     assert result.reduction.run.hop_used == 1 and result.reduction.run.hops[0].actual_commits
     assert result.checkpoint["state"]["status"] == "completed" and (repository / "PROOF.md").read_text() == "after\n"
     argv = json.loads((state / "checkouts" / association.checkout_id / "argv.json").read_text())
     assert argv[:3] == ["--ask-for-approval", "never", "exec"]
-    for token in ("--ephemeral", "--json", "--color", "never", "--sandbox", "workspace-write", "--model", "gpt-5.6-terra", "-"):
+    for token in ("--ephemeral", "--json", "--color", "never", "--sandbox", "workspace-write", "--model", "explicit-test-model", "-"):
         assert token in argv
+    assert 'model_reasoning_effort="high"' in argv
     assert argv[argv.index("--cd") + 1] == str(repository.resolve())
     for option in ("--output-schema", "--output-last-message"):
         assert Path(argv[argv.index(option) + 1]).is_relative_to(state.resolve())
@@ -257,7 +258,7 @@ def test_timeout_kills_process_group_descendant(repository, tmp_path):
     association = register_checkout(state, repository)
     child_pid = tmp_path / "descendant.pid"
     executable = _fake(tmp_path, f"import subprocess,time\np=subprocess.Popen(('sleep','30'))\nopen({str(child_pid)!r},'w').write(str(p.pid))\ntime.sleep(30)\n")
-    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=0.1, executable=str(executable))
+    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=0.1, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
     assert outcome.timed_out
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
@@ -278,7 +279,7 @@ def test_real_driver_recovers_post_spawn_uncertainty_with_external_anchors(repos
     workflow = profile({"work": phase({"done": route("complete")})})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
-    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
+    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
     run_root = state / "checkouts" / association.checkout_id
     assert outcome.vertical is None and outcome.run.hop_used == 1
     assert outcome.run.status.value == "reconcile_required"
@@ -312,7 +313,7 @@ output.write_text(json.dumps({{"schema_version": 1, "run_id": "RUN-1", "hop_id":
     import workflow_coordinator.vertical as vertical
 
     monkeypatch.setattr(vertical, "observe_hop", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("post-execution observation failure")))
-    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
+    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
 
     run_root = state / "checkouts" / association.checkout_id
     assert executions.read_text() == "1" and (repository / "PROOF.md").read_text() == "after\n"
@@ -338,7 +339,7 @@ def test_real_driver_fails_closed_for_unclassified_execution_boundary_exception(
         raise RuntimeError("execution boundary became unavailable")
 
     monkeypatch.setattr(CodexCliAdapter, "execute", unexpected_execute)
-    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2)
+    outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, model="explicit-test-model", reasoning_effort="high")
 
     run_root = state / "checkouts" / association.checkout_id
     assert executions == ["INV-1"]
@@ -353,7 +354,7 @@ def test_real_driver_preserves_no_hop_for_unlaunchable_executable(repository, tm
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
     with pytest.raises(Slice4Error, match="pre-acceptance"):
-        run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(tmp_path / "missing-codex"))
+        run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(tmp_path / "missing-codex"))
     assert run.hop_used == 0
     assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
 
@@ -366,7 +367,7 @@ def test_real_boundary_refuses_ineligible_or_exhausted_run_before_marker(reposit
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=budget), current_head=head, baseline_head=head, hop_used=used)
     with pytest.raises(Slice4Error, match="not dispatch-eligible"):
-        run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2)
+        run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="fixture", invocation_id="INV-1", timeout_seconds=2)
     assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
 
 
@@ -379,7 +380,7 @@ def test_real_driver_cleans_marker_for_local_prompt_failure_before_spawn(reposit
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
     with pytest.raises(ValueError, match="prompt component"):
-        run_real_one_hop(run, workflow, repository, {"testing": _components()["testing"]}, state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, executable=str(executable))
+        run_real_one_hop(run, workflow, repository, {"testing": _components()["testing"]}, state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
     assert not executions.exists() and run.hop_used == 0
     assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
     assert (repository / "PROOF.md").read_text() == "before\n"

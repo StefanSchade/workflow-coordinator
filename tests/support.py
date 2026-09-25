@@ -24,6 +24,7 @@ from workflow_coordinator.model import (
     Run,
     WorkItem,
     WorkflowProfile,
+    WorkflowRole,
     new_run,
     record_hop,
 )
@@ -60,7 +61,7 @@ def phase(
             finding_authority=finding_authority,
         )
     return Phase(
-        role=role,
+        role=WorkflowRole(role),
         role_components=(role,),
         modifier_components=(),
         repository_policy_components=("testing",),
@@ -76,7 +77,7 @@ def phase(
 
 def profile(phases: dict[str, Phase], *, profile_id: str = "fixture") -> WorkflowProfile:
     return WorkflowProfile(
-        schema_version=1, profile_id=profile_id, revision="profile-r1", phases=phases
+        schema_version=2, profile_id=profile_id, revision="profile-r1", phases=phases
     )
 
 
@@ -88,7 +89,7 @@ def run_for(
 ) -> Run:
     selected_phase = initial_phase or next(iter(workflow.phases))
     item = WorkItem(
-        schema_version=1,
+        schema_version=2,
         work_item_id="WI-1",
         authority_source="accepted fixture",
         profile_ref="fixture.yaml",
@@ -96,6 +97,10 @@ def run_for(
         scope=("repo",),
         initial_phase=selected_phase,
         max_autonomous_hops=budget,
+        personas={
+            WorkflowRole.WORKER: "fixture worker",
+            WorkflowRole.INDEPENDENT_REVIEWER: "fixture independent reviewer",
+        },
     )
     policy = RepositoryPolicy(
         schema_version=3,

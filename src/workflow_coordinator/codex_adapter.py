@@ -139,9 +139,19 @@ class CodexCliAdapter:
     """Concrete single-provider implementation of the execution port."""
 
     result_directory: Path
+    model: str
+    reasoning_effort: str
     executable: str = "codex"
-    model: str = "gpt-5.6-terra"
-    reasoning_effort: str = "medium"
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("model", self.model),
+            ("reasoning_effort", self.reasoning_effort),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Codex CLI {name} must be explicit and non-empty")
+            if value.splitlines() != [value] or "\0" in value:
+                raise ValueError(f"Codex CLI {name} must be a single-line value")
 
     def argv(self, request: AgentExecutionRequest, schema: Path, result: Path) -> tuple[str, ...]:
         return (

@@ -82,6 +82,30 @@ class Outcome(CoordinatorValue):
     FAILED = "failed"
 
 
+class WorkflowRole(CoordinatorValue):
+    """Closed phase-function vocabulary; role names grant no authority."""
+
+    WORKER = "worker"
+    INDEPENDENT_REVIEWER = "independent_reviewer"
+
+
+@dataclass(frozen=True)
+class ExecutionBinding:
+    """One explicit, authority-neutral production execution choice."""
+
+    adapter: str
+    model: str
+    reasoning: str
+
+
+@dataclass(frozen=True)
+class RunExecutionConfiguration:
+    """Immutable role-keyed MVP projection prepared once for one Run."""
+
+    schema_version: int
+    bindings: Mapping[WorkflowRole, ExecutionBinding]
+
+
 @dataclass(frozen=True)
 class WorkItem:
     schema_version: int
@@ -92,6 +116,7 @@ class WorkItem:
     scope: tuple[str, ...]
     initial_phase: str
     max_autonomous_hops: int
+    personas: Mapping[WorkflowRole, str]
     profile_labels: tuple[str, ...] = ()
     durable_artifacts: Mapping[str, tuple[str, ...]] | None = None
 
@@ -138,7 +163,7 @@ class Route:
 
 @dataclass(frozen=True)
 class Phase:
-    role: str
+    role: WorkflowRole
     role_components: tuple[str, ...]
     modifier_components: tuple[str, ...]
     repository_policy_components: tuple[str, ...]

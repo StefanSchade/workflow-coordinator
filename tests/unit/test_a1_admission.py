@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from workflow_coordinator.model import EvidenceCommand, RepositoryPolicy, WorkItem
+from workflow_coordinator.model import EvidenceCommand, RepositoryPolicy, WorkItem, WorkflowRole
 from workflow_coordinator.operator import OperatorPreflightError, _admit_a1
 from tests.support import phase, profile, route
 
@@ -15,7 +15,7 @@ pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
 def work_item(scope=("src/pkg/file.py",), *, hops=2):
     return WorkItem(
-        1,
+        2,
         "WI-A1",
         "fixture",
         "docs/ai_info/workflow/profile.yml",
@@ -23,6 +23,7 @@ def work_item(scope=("src/pkg/file.py",), *, hops=2):
         scope,
         "work",
         hops,
+        {WorkflowRole.WORKER: "fixture worker"},
     )
 
 

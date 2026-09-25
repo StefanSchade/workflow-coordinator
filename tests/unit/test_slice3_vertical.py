@@ -47,7 +47,7 @@ def test_prompt_selects_only_phase_components_in_explicit_order_and_keeps_critic
     current = workflow.phases["work"]
     selected = replace(current, role_components=("role",), modifier_components=("modifier",), repository_policy_components=("policy",))
     workflow = replace(workflow, phases={"work": selected})
-    package = assemble_prompt(run_for(workflow), selected, components(("role", 2), ("modifier", 2), ("policy", 2), ("absent", 2)), invocation=invocation(), agent_operating_contract=load_agent_operating_contract(), task_payload="task")
+    package = assemble_prompt(run_for(workflow), selected, components(("role", 2), ("modifier", 2), ("policy", 2), ("absent", 2)), invocation=invocation(), agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task")
     assert [item["id"] for item in package.selected_components] == ["role", "modifier", "policy"]
     assert "absent" not in package.text
     assert (
@@ -68,7 +68,7 @@ def test_prompt_projects_current_hop_actions_separately_from_exit_routes():
         components(("worker", 1), ("testing", 1)),
         invocation=invocation(),
         agent_operating_contract=load_agent_operating_contract(),
-        task_payload="task",
+        persona="fixture persona", task_payload="task",
     )
     header = package.text.split("\n\n", 1)[0]
 
@@ -85,7 +85,7 @@ def test_prompt_projects_explicit_empty_finding_authority_for_non_review_phase()
         components(("worker", 1), ("testing", 1)),
         invocation=invocation(),
         agent_operating_contract=load_agent_operating_contract(),
-        task_payload="task",
+        persona="fixture persona", task_payload="task",
     )
     header = package.text.split("\n\n", 1)[0]
 
@@ -109,7 +109,7 @@ def test_prompt_projects_configured_finding_authority_independent_of_phase_name(
         components(("worker", 1), ("testing", 1)),
         invocation=invocation(),
         agent_operating_contract=load_agent_operating_contract(),
-        task_payload="task",
+        persona="fixture persona", task_payload="task",
     )
     header = package.text.split("\n\n", 1)[0]
 
@@ -133,7 +133,7 @@ def test_prompt_preserves_admitted_finding_authority_operation_order():
         components(("worker", 1), ("testing", 1)),
         invocation=invocation(),
         agent_operating_contract=load_agent_operating_contract(),
-        task_payload="task",
+        persona="fixture persona", task_payload="task",
     )
     header = package.text.split("\n\n", 1)[0]
 
@@ -148,7 +148,7 @@ def test_prompt_contract_distinguishes_current_run_finding_ids_from_historical_l
         components(("worker", 1), ("testing", 1)),
         invocation=invocation(),
         agent_operating_contract=load_agent_operating_contract(),
-        task_payload="Historical review mentions M-5.",
+        persona="fixture persona", task_payload="Historical review mentions M-5.",
     )
     normalized = " ".join(package.text.split())
 
@@ -160,7 +160,7 @@ def test_prompt_contract_distinguishes_current_run_finding_ids_from_historical_l
 @pytest.mark.parametrize("size, omitted", [(COMPONENT_LIMIT_BYTES - 1, False), (COMPONENT_LIMIT_BYTES + 1, True)])
 def test_component_bound_is_visible_not_truncated(size, omitted):
     workflow = profile({"work": phase({"done": route("complete")})})
-    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", size), ("testing", 1)), invocation=invocation(), agent_operating_contract=load_agent_operating_contract(), task_payload="task")
+    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", size), ("testing", 1)), invocation=invocation(), agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task")
     assert bool(package.omissions) is omitted
     assert ("x" * 30 in package.text) is not omitted
     if omitted:
@@ -170,7 +170,7 @@ def test_component_bound_is_visible_not_truncated(size, omitted):
 @pytest.mark.parametrize("size, omitted", [(CONTEXT_LIMIT_BYTES - 2, False), (CONTEXT_LIMIT_BYTES + 1, True)])
 def test_total_context_bound_has_a_reference_for_every_excluded_item(size, omitted):
     workflow = profile({"work": phase({"done": route("complete")})})
-    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", 1), ("testing", 1)), invocation=invocation(), agent_operating_contract=load_agent_operating_contract(), task_payload="task", context=(ContextItem("artifact://large", "z" * size),))
+    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", 1), ("testing", 1)), invocation=invocation(), agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task", context=(ContextItem("artifact://large", "z" * size),))
     assert any(item["reference"] == "artifact://large" for item in package.omissions) is omitted
     assert ("z" * 30 in package.text) is not omitted
 
@@ -178,7 +178,7 @@ def test_total_context_bound_has_a_reference_for_every_excluded_item(size, omitt
 @pytest.mark.parametrize("size, files, omitted", [(DIFF_LIMIT_BYTES - 1, 1, False), (DIFF_LIMIT_BYTES + 1, 1, True), (1, DIFF_FILE_LIMIT, False), (1, DIFF_FILE_LIMIT + 1, True)])
 def test_diff_bounds_are_visible_and_exact(size, files, omitted):
     workflow = profile({"work": phase({"done": route("complete")})})
-    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", 1), ("testing", 1)), invocation=invocation(), agent_operating_contract=load_agent_operating_contract(), task_payload="task", diff="d" * size, diff_base="base", diff_head="head", changed_paths=tuple(f"src/{number}" for number in range(files)))
+    package = assemble_prompt(run_for(workflow), workflow.phases["work"], components(("worker", 1), ("testing", 1)), invocation=invocation(), agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task", diff="d" * size, diff_base="base", diff_head="head", changed_paths=tuple(f"src/{number}" for number in range(files)))
     assert (package.inline_diff is None) is omitted
     if omitted:
         row = next(item for item in package.omissions if item["kind"] == "diff")
@@ -220,7 +220,7 @@ def test_one_invocation_identity_is_projected_dispatched_and_validated(repositor
     workflow = profile({"work": replace(phase({"done": route("complete")}), evidence=())})
     run = replace(run_for(workflow, budget=1), current_head=subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip())
     adapter = CapturingAdapter(envelope())
-    completed = run_one_hop(run, workflow, repository, adapter, components(("worker", 1), ("testing", 1)), agent_operating_contract=load_agent_operating_contract(), task_payload="tiny", invocation_id="INV-1")
+    completed = run_one_hop(run, workflow, repository, adapter, components(("worker", 1), ("testing", 1)), agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="tiny", invocation_id="INV-1")
     assert completed.reduction.run.status.value == "completed"
     assert completed.reduction.run.hops[0].actual_commits == ()
     assert "WI-1/RUN-1 completed H001" in completed.terminal
@@ -273,7 +273,7 @@ def test_git_subject_postcondition_charges_invalid_commits_and_rejects_collision
             repository,
             adapter,
             components(("worker", 1), ("testing", 1)),
-            agent_operating_contract=load_agent_operating_contract(), task_payload="tiny",
+            agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="tiny",
             invocation_id="INV-1",
         ).reduction.run.status.value == "completed"
     else:
@@ -283,7 +283,7 @@ def test_git_subject_postcondition_charges_invalid_commits_and_rejects_collision
             repository,
             adapter,
             components(("worker", 1), ("testing", 1)),
-            agent_operating_contract=load_agent_operating_contract(), task_payload="tiny",
+            agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="tiny",
             invocation_id="INV-1",
         )
         assert stopped.reduction.run.status.value == "awaiting_human"
@@ -303,7 +303,7 @@ def test_durable_artifact_required_charges_post_acceptance_failure(repository):
         repository,
         CommitAdapter(repository, "feat(workflow): WI-1 H001 ordinary change", envelope()),
         components(("worker", 1), ("testing", 1)),
-        agent_operating_contract=load_agent_operating_contract(), task_payload="tiny",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="tiny",
         invocation_id="INV-1",
     )
     assert stopped.reduction.run.status.value == "awaiting_human"
@@ -324,7 +324,7 @@ def test_out_of_scope_post_acceptance_anomaly_still_charges_and_checkpoints(repo
         repository,
         CommitAdapter(repository, "feat(workflow): WI-1 H001 leaked path", envelope(), "docs/leak"),
         components(("worker", 1), ("testing", 1)),
-        agent_operating_contract=load_agent_operating_contract(), task_payload="tiny",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="tiny",
         invocation_id="INV-1",
     )
     assert stopped.reduction.run.status.value == "awaiting_human"
@@ -350,7 +350,7 @@ def test_durable_artifact_required_accepts_an_in_scope_committed_artifact(reposi
             }
         )
     )
-    completed = run_one_hop(run, required, repository, adapter, components(("worker", 1), ("testing", 1)), agent_operating_contract=load_agent_operating_contract(), task_payload="tiny", invocation_id="INV-1", durable_artifacts=("src/change",))
+    completed = run_one_hop(run, required, repository, adapter, components(("worker", 1), ("testing", 1)), agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="tiny", invocation_id="INV-1", durable_artifacts=("src/change",))
     assert completed.reduction.run.status.value == "completed"
 
 

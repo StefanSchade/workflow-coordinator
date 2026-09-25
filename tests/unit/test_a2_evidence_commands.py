@@ -154,7 +154,7 @@ def test_timeout_is_non_boolean_integer_in_hard_range(timeout):
 
 
 def test_duplicate_phase_reference_is_rejected_only_by_serialization():
-    document = """schema_version: 1
+    document = """schema_version: 2
 profile_id: duplicate
 revision: r1
 phases:
@@ -476,7 +476,7 @@ def test_post_evidence_git_reobservation_preempts_normal_completion(repository, 
         run, workflow, repository, CompletedAdapter(),
         {"worker": PromptComponent("worker", "worker", head, "worker"),
          "testing": PromptComponent("testing", "testing", head, "testing")},
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-A2",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task", invocation_id="INV-A2",
         evidence_runner=MutatingRunner(), evidence_commands=commands,
     )
     assert vertical.reduction.run.status is not RunStatus.COMPLETED
@@ -508,7 +508,7 @@ def test_phase_reference_order_is_execution_order(repository):
         run, workflow, repository, CompletedAdapter(),
         {"worker": PromptComponent("worker", "worker", head, "worker"),
          "testing": PromptComponent("testing", "testing", head, "testing")},
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task", invocation_id="INV-ORDER",
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task", invocation_id="INV-ORDER",
         evidence_runner=runner, evidence_commands=commands,
     )
     assert completed.reduction.run.status is RunStatus.COMPLETED

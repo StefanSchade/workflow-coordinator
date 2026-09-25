@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from importlib import resources
 from typing import Mapping
@@ -15,9 +16,9 @@ CONTEXT_LIMIT_BYTES = 196_608
 DIFF_LIMIT_BYTES = 65_536
 DIFF_FILE_LIMIT = 12
 CONTRACT_ID = "workflow_coordinator.agent_operating_contract"
-CONTRACT_VERSION = 5
-RESOURCE = "resources/agent_operating_contract_v5.txt"
-REVIEWED_SHA256 = "1c3104057a717383ea6e664cd328172aab1442ae4e5771b1ee42c9f97920d324"
+CONTRACT_VERSION = 6
+RESOURCE = "resources/agent_operating_contract_v6.txt"
+REVIEWED_SHA256 = "7abf57ab315965c4266674efdb71c6cd1415989cdb771b9232501563862ca8f7"
 
 
 class CoordinatorResourceError(RuntimeError):
@@ -51,7 +52,7 @@ def load_agent_operating_contract() -> AgentOperatingContract:
 
     try:
         content = (
-            resources.files(__package__) / "resources" / "agent_operating_contract_v5.txt"
+            resources.files(__package__) / "resources" / "agent_operating_contract_v6.txt"
         ).read_bytes()
     except (OSError, TypeError) as error:
         raise CoordinatorResourceError("Coordinator operating contract resource is unavailable") from error
@@ -119,7 +120,8 @@ def _header(run: Run, phase: Phase, invocation: Invocation) -> str:
         f"work_item_id={run.work_item_id}\nrun_id={invocation.run_id}\n"
         f"hop_id={invocation.hop_id}\ninvocation_id={invocation.invocation_id}\n"
         f"base_head={run.current_head}\n"
-        f"phase={run.phase}\nauthorized_scope={','.join(phase.authorized_scope)}\n"
+        f"phase={run.phase}\nworkflow_role={phase.role.value}\n"
+        f"authorized_scope={','.join(phase.authorized_scope)}\n"
         f"authorized_actions={','.join(phase.authorized_actions)}\n"
         f"permitted_routes={routes}\nfinding_authority={','.join(finding_authority)}\n"
         f"evidence={','.join(phase.evidence)}\n"
@@ -134,6 +136,7 @@ def assemble_prompt(
     *,
     agent_operating_contract: AgentOperatingContract,
     invocation: Invocation,
+    persona: str,
     task_payload: str,
     context: tuple[ContextItem, ...] = (),
     diff: str | None = None,
@@ -166,6 +169,12 @@ def assemble_prompt(
         else:
             blocks.append(component.content)
             used += component.byte_size
+    blocks.append(
+        "[persona_guidance]\n"
+        "source=work_item\n"
+        "authority=none\n"
+        f"persona_json={json.dumps(persona, ensure_ascii=True)}"
+    )
     blocks.append("[workflow_policy]\n" + f"durable_artifact={phase.durable_artifact.value}\n")
     blocks.append("[task]\n" + task_payload)
     for item in context:

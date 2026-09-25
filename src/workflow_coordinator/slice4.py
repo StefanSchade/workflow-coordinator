@@ -134,14 +134,20 @@ def checkout_state_root(state_root: Path, association: CheckoutAssociation) -> P
 
 def invoke_codex(
     *, repository: Path, state_root: Path, association: CheckoutAssociation,
-    prompt: str, expected: Invocation, timeout_seconds: float, executable: str = "codex",
+    prompt: str, expected: Invocation, timeout_seconds: float,
+    model: str, reasoning_effort: str, executable: str = "codex",
 ) -> AgentExecutionOutcome:
     """Compatibility wrapper for the concrete Codex execution port."""
     _require_external_state_root(state_root, repository)
     validate_checkout(state_root, repository)
     run_root = checkout_state_root(state_root, association)
     try:
-        return CodexCliAdapter(run_root, executable=executable).execute(
+        return CodexCliAdapter(
+            run_root,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            executable=executable,
+        ).execute(
             AgentExecutionRequest(expected, prompt, repository, ROUTING_RESULT_ENVELOPE_CONTRACT, timeout_seconds)
         )
     except CodexCliError as error:
@@ -152,7 +158,9 @@ def run_real_one_hop(
     run: Run, profile: WorkflowProfile, repository: Path, components: dict[str, PromptComponent],
     *, agent_operating_contract: AgentOperatingContract, state_root: Path,
     association: CheckoutAssociation, task_payload: str,
-    invocation_id: str, timeout_seconds: float, executable: str = "codex",
+    invocation_id: str, persona: str, timeout_seconds: float, executable: str = "codex",
+    model: str | None = None,
+    reasoning_effort: str | None = None,
     durable_artifacts: tuple[str, ...] = (),
     adapter: AgentExecutionPort | None = None,
     context_items: tuple[ContextItem, ...] = (),
@@ -162,6 +170,8 @@ def run_real_one_hop(
     """Plug the concrete process boundary into the sole accepted vertical path."""
     if not dispatch_eligible(run):
         raise Slice4Error("Run is not dispatch-eligible")
+    if adapter is None and (model is None or reasoning_effort is None):
+        raise Slice4Error("explicit model and reasoning are required for Codex execution")
     hop_id = f"H{run.hop_used + 1:03d}"
     try:
         preflight_hop(repository, expected_repository=repository, expected_head=run.current_head)
@@ -174,7 +184,12 @@ def run_real_one_hop(
     dispatch_path = run_root / "dispatch.json"
     write_run_snapshot(run_root / "run.json", run)
     write_dispatch_marker(dispatch_path, marker)
-    execution_port = adapter or CodexCliAdapter(run_root, executable=executable)
+    execution_port = adapter or CodexCliAdapter(
+        run_root,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        executable=executable,
+    )
 
     def require_registered_checkout() -> None:
         if validate_checkout(state_root, repository) != association:
@@ -200,7 +215,8 @@ def run_real_one_hop(
         vertical = run_one_hop(
             run, profile, repository, execution_port, components, task_payload=task_payload,
             agent_operating_contract=agent_operating_contract,
-            invocation_id=invocation_id, durable_artifacts=durable_artifacts,
+            invocation_id=invocation_id, persona=persona,
+            durable_artifacts=durable_artifacts,
             execution_timeout_seconds=timeout_seconds,
             registered_checkout_validator=require_registered_checkout,
             context_items=context_items,

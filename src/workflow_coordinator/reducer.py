@@ -59,7 +59,7 @@ def _with_hop_decision(reduction: Reduction, hop_id: str) -> Reduction:
 
 
 def _profile_phase(run: Run, profile: WorkflowProfile):
-    if run.schema_version != 1 or profile.schema_version != 1:
+    if run.schema_version != 1 or profile.schema_version != 2:
         return None, "unsupported state/profile schema version"
     if run.profile_id != profile.profile_id or run.profile_revision != profile.revision:
         return None, "pinned profile identity changed"

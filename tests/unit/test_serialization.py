@@ -3,11 +3,12 @@ import json
 import pytest
 import yaml
 
-from workflow_coordinator.model import DurableArtifact, RouteEffect, new_run
+from workflow_coordinator.model import DurableArtifact, Hop, RouteEffect, WorkflowRole, new_run
 from workflow_coordinator.serialization import (
     ValidationError,
     repository_policy_from_yaml,
     routing_result_from_data,
+    run_execution_configuration_from_yaml,
     run_from_json,
     run_to_json,
     work_item_from_yaml,
@@ -18,7 +19,7 @@ pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
 
 WORK_ITEM_YAML = """
-schema_version: 1
+schema_version: 2
 work_item_id: WI-1
 authority_source: accepted task
 profile_ref: workflow.yaml
@@ -26,6 +27,9 @@ repository: repo
 scope: [scripts]
 initial_phase: implement
 max_autonomous_hops: 1
+personas:
+  worker: senior software developer
+  independent_reviewer: adversarial code reviewer
 profile_labels: [routine]
 """
 
@@ -45,12 +49,12 @@ evidence_commands:
 """
 
 PROFILE_YAML = """
-schema_version: 1
+schema_version: 2
 profile_id: routine
 revision: profile-r1
 phases:
   implement:
-    role: implementer
+    role: worker
     components:
       role: [implementer]
       modifiers: []
@@ -68,7 +72,7 @@ phases:
       child: {effect: suspend_for_prerequisite}
       halt: {effect: stop}
   review:
-    role: reviewer
+    role: independent_reviewer
     components:
       role: [reviewer]
       modifiers: [independent]
@@ -122,6 +126,7 @@ def test_strict_yaml_loads_work_item_profile_and_policy():
     policy = repository_policy_from_yaml(POLICY_YAML)
 
     assert item.max_autonomous_hops == 1
+    assert item.personas[WorkflowRole.WORKER] == "senior software developer"
     assert profile.phases["review"].durable_artifact is DurableArtifact.REQUIRED
     assert {route.effect for route in profile.phases["implement"].routes.values()} == set(
         RouteEffect
@@ -193,7 +198,7 @@ def test_repository_policy_old_versions_and_v3_shape_fail_closed():
     "document",
     [
         WORK_ITEM_YAML + "unknown: true\n",
-        WORK_ITEM_YAML.replace("1\nprofile_labels", "0\nprofile_labels"),
+        WORK_ITEM_YAML.replace("max_autonomous_hops: 1", "max_autonomous_hops: 0"),
     ],
 )
 def test_invalid_work_item_yaml_fails_closed(document):
@@ -204,7 +209,7 @@ def test_invalid_work_item_yaml_fails_closed(document):
 def test_profile_unknown_field_and_invalid_effect_fail_closed():
     with pytest.raises(ValidationError, match="unknown fields"):
         workflow_profile_from_yaml(
-            PROFILE_YAML.replace("role: implementer", "role: implementer\n    surprise: true", 1)
+            PROFILE_YAML.replace("role: worker", "role: worker\n    surprise: true", 1)
         )
     with pytest.raises(ValidationError, match="must be one of"):
         workflow_profile_from_yaml(PROFILE_YAML.replace("effect: complete", "effect: teleport", 1))
@@ -282,12 +287,12 @@ def test_required_durable_artifact_with_edit_and_commit_is_accepted():
 
 def test_non_mutating_observation_phase_needs_no_commit_action():
     document = """
-schema_version: 1
+schema_version: 2
 profile_id: observe-only
 revision: profile-r1
 phases:
   observe:
-    role: observer
+    role: worker
     components:
       role: [observer]
       modifiers: []
@@ -303,6 +308,65 @@ phases:
 """
     profile = workflow_profile_from_yaml(document)
     assert profile.phases["observe"].authorized_actions == ("review",)
+
+
+@pytest.mark.parametrize("role", ["developer", "observer", "prepare", "verify"])
+def test_profile_rejects_values_outside_closed_workflow_role_vocabulary(role):
+    with pytest.raises(ValidationError, match="must be one of: worker, independent_reviewer"):
+        workflow_profile_from_yaml(PROFILE_YAML.replace("role: worker", f"role: {role}", 1))
+
+
+@pytest.mark.parametrize(
+    ("personas_yaml", "message"),
+    [
+        ("personas: {}", "missing fields|personas"),
+        ("personas:\n  architect: expert", "must be one of"),
+        ("personas:\n  worker: ''", "non-empty"),
+        ("personas:\n  worker: |\n    first\n    second", "single-line"),
+        ("personas:\n  worker: '" + "x" * 513 + "'", "512 UTF-8 bytes"),
+    ],
+)
+def test_persona_shape_rejects_unknown_empty_multiline_and_oversized_values(
+    personas_yaml, message
+):
+    document = WORK_ITEM_YAML.replace(
+        "personas:\n  worker: senior software developer\n"
+        "  independent_reviewer: adversarial code reviewer",
+        personas_yaml,
+    )
+    with pytest.raises(ValidationError, match=message):
+        work_item_from_yaml(document)
+
+
+def test_execution_binding_parser_is_strict_explicit_and_immutable():
+    parsed = run_execution_configuration_from_yaml(
+        """schema_version: 1
+bindings:
+  worker: {adapter: codex_cli, model: worker-model, reasoning: medium}
+  independent_reviewer: {adapter: codex_cli, model: reviewer-model, reasoning: high}
+"""
+    )
+    assert parsed.bindings[WorkflowRole.WORKER].model == "worker-model"
+    assert parsed.bindings[WorkflowRole.INDEPENDENT_REVIEWER].reasoning == "high"
+    with pytest.raises(TypeError):
+        parsed.bindings[WorkflowRole.WORKER] = parsed.bindings[WorkflowRole.WORKER]
+
+
+@pytest.mark.parametrize(
+    ("binding", "message"),
+    [
+        ("{adapter: other, model: m, reasoning: high}", "adapter must be codex_cli"),
+        ("{adapter: codex_cli, reasoning: high}", "missing fields: model"),
+        ("{adapter: codex_cli, model: m}", "missing fields: reasoning"),
+        ("{adapter: codex_cli, model: '', reasoning: high}", "non-empty"),
+    ],
+)
+def test_execution_binding_parser_rejects_unsupported_or_incomplete_bindings(
+    binding, message
+):
+    document = f"schema_version: 1\nbindings:\n  worker: {binding}\n"
+    with pytest.raises(ValidationError, match=message):
+        run_execution_configuration_from_yaml(document)
 
 
 def test_result_validation_rejects_unknown_missing_and_malformed_fields():
@@ -358,6 +422,30 @@ def test_run_json_round_trip_is_deterministic_and_strict():
     data["next_route_keys"] = ["finish"]
     with pytest.raises(ValidationError, match="unknown fields"):
         run_from_json(json.dumps(data))
+
+
+def test_hop_role_remains_open_trace_data_outside_phase_workflow_roles():
+    hop = Hop(
+        "H001",
+        1,
+        "recovery",
+        "uncertain_dispatch",
+        "fresh",
+        "start",
+        None,
+        "base",
+        "base",
+        (),
+        "uncertain",
+        "failed",
+        (),
+        (),
+        None,
+        "reconcile",
+        "fixture",
+        "coordinator",
+    )
+    assert hop.compact().role == "uncertain_dispatch"
 
 
 def test_new_run_rejects_unknown_initial_phase():

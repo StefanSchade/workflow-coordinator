@@ -27,7 +27,7 @@ GOVERNING_PATHS = (
     "governance/self-development/repository-policy.yaml",
     "governance/self-development/components.yaml",
     "governance/work-items/developer-ergonomics-task.txt",
-    "governance/self-development/prompts/developer.txt",
+    "governance/self-development/prompts/worker.txt",
     "governance/self-development/prompts/reviewer.txt",
 )
 CONTINUATION_GOVERNING_PATHS = (
@@ -36,7 +36,7 @@ CONTINUATION_GOVERNING_PATHS = (
     "governance/self-development/repository-policy.yaml",
     "governance/self-development/components.yaml",
     "governance/work-items/developer-ergonomics-review-task.txt",
-    "governance/self-development/prompts/developer.txt",
+    "governance/self-development/prompts/worker.txt",
     "governance/self-development/prompts/reviewer.txt",
 )
 ATTEMPT_4_GOVERNING_PATHS = (
@@ -45,7 +45,7 @@ ATTEMPT_4_GOVERNING_PATHS = (
     "governance/self-development/repository-policy.yaml",
     "governance/self-development/components.yaml",
     "governance/work-items/developer-ergonomics-review-002-task.txt",
-    "governance/self-development/prompts/developer.txt",
+    "governance/self-development/prompts/worker.txt",
     "governance/self-development/prompts/reviewer.txt",
 )
 ATTEMPT_5_GOVERNING_PATHS = (
@@ -54,7 +54,7 @@ ATTEMPT_5_GOVERNING_PATHS = (
     "governance/self-development/repository-policy.yaml",
     "governance/self-development/components.yaml",
     "governance/work-items/developer-ergonomics-review-003-task.txt",
-    "governance/self-development/prompts/developer.txt",
+    "governance/self-development/prompts/worker.txt",
     "governance/self-development/prompts/reviewer.txt",
 )
 ATTEMPT_6_GOVERNING_PATHS = (
@@ -63,7 +63,7 @@ ATTEMPT_6_GOVERNING_PATHS = (
     "governance/self-development/repository-policy.yaml",
     "governance/self-development/components.yaml",
     "governance/work-items/developer-ergonomics-review-004-task.txt",
-    "governance/self-development/prompts/developer.txt",
+    "governance/self-development/prompts/worker.txt",
     "governance/self-development/prompts/reviewer.txt",
 )
 ATTEMPT_7_GOVERNING_PATHS = (
@@ -72,7 +72,7 @@ ATTEMPT_7_GOVERNING_PATHS = (
     "governance/self-development/repository-policy.yaml",
     "governance/self-development/components.yaml",
     "governance/work-items/developer-ergonomics-review-005-task.txt",
-    "governance/self-development/prompts/developer.txt",
+    "governance/self-development/prompts/worker.txt",
     "governance/self-development/prompts/reviewer.txt",
 )
 IMPLEMENTATION_PATHS = (
@@ -131,6 +131,14 @@ def _preflight_args(
     *,
     governing_paths: tuple[str, ...] = GOVERNING_PATHS,
 ) -> argparse.Namespace:
+    binding_source = state_root.parent / f"{state_root.name}-bindings.yml"
+    binding_source.parent.mkdir(parents=True, exist_ok=True)
+    binding_source.write_text(
+        "schema_version: 1\nbindings:\n"
+        "  worker: {adapter: codex_cli, model: worker-model, reasoning: medium}\n"
+        "  independent_reviewer: {adapter: codex_cli, model: reviewer-model, reasoning: high}\n",
+        encoding="utf-8",
+    )
     return argparse.Namespace(
         repository=str(repository),
         state_root=str(state_root),
@@ -140,6 +148,7 @@ def _preflight_args(
         policy=governing_paths[2],
         components=governing_paths[3],
         task=governing_paths[4],
+        execution_bindings=str(binding_source),
         durable_artifact=[],
         timeout_seconds=900.0,
         executable="unused-before-dispatch",
@@ -179,7 +188,7 @@ def test_current_self_development_bundle_passes_production_preflight(
     assert policy.max_autonomous_hops == COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5
     assert tuple(profile.phases) == ("investigate", "review", "correct", "rereview")
     assert durable_artifacts == {"review": (REVIEW_ARTIFACT,)}
-    assert tuple(components) == _selected_ids(profile) == ("developer", "reviewer")
+    assert tuple(components) == _selected_ids(profile) == ("worker", "reviewer")
     investigate = profile.phases["investigate"]
     review = profile.phases["review"]
     correct = profile.phases["correct"]
