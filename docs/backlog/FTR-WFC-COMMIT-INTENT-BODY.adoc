@@ -1,0 +1,227 @@
+= FTR-WFC-COMMIT-INTENT-BODY -- Optional Multiline Commit Body for CommitIntent
+
+Type:: future technical record
+Status:: proposed / backlog / deferred
+Priority:: low; revisit during an ordinary WFC implementation cycle, and
+before any Runtime promotion intended to support richer commit-message
+conventions
+Date:: 2026-09-25
+Recorded now:: the first real standalone-WFC Core DMC consumer Run,
+`RUN-a9f9d68c73fc4b83b4662327cf6bf1f2` (WorkItem `DMC-RELKEY-C0-S1`), exposed
+a general `CommitIntent` capability gap. It is not evidence of a current WFC
+defect.
+
+== Context and current accepted behavior
+
+`RUN-a9f9d68c73fc4b83b4662327cf6bf1f2` ran against Core commits
+`061f7e64dd211c33cf2181a338fa551e982ddec9` (task preparation),
+`efe3187b1095e97d3840670d258535ff67948ab1` (H001 implementation), and
+`a39846610f4b6c01f75ce685c20483dac4f0fccb` (H002 independent review), with
+external immutable Run state preserved at
+`/home/stefan/wfc-runs/dmc-relkey-c0-s1-20260925-01`.
+
+The observed sequence:
+
+* H001 implemented Slice 1 (the private relation-key identity owner and its
+  contract tests) and the Coordinator's trusted evidence
+  (`diff_hygiene`, `git_version`, `pytest_relation_keys`) passed.
+* H002, an independent reviewer, found no semantic or scope defect in the
+  implementation.
+* H002 nevertheless opened one blocking Finding, `F001`, because the
+  governing Core task
+  (`docs/ai_info/workflows/dogfood/dmc_relkey_c0_s1/task.txt`, "AGENT GIT
+  RULE") required every WorkItem commit to carry
++
+[source,text]
+----
+DMC-Work-Item: DMC-RELKEY-C0-S1
+DMC-Phase: <phase>
+----
++
+as trailers, and the actual implementation commit's subject
+(`feat(DMC-RELKEY-C0-S1): add relation-key identity owner H001`) carried the
+WorkItem identity inline but no trailers.
+* H003 correctly declined to touch source or tests, since none required
+  correction.
+* H003 also correctly declined to perform an agent-owned `git commit
+  --amend`, consistent with the operating contract's prohibition on
+  agent-owned mutating Git operations.
+* The Run stopped `awaiting_human` with `stop_reason:
+  mechanical_preemption:human_authority:operational`, and
+  `run.json`'s `human_question` asks for a Coordinator-owned metadata
+  correction mechanism for the existing commit.
+
+=== Important nuance: the task, not WFC policy, mandated trailers
+
+Core's general guidance,
+`docs/ai_info/git_and_workflow.adoc` section "DMC-family commit identity
+(recommended, not yet enforced)", states family/cycle identity may be made
+visible in a commit *either* as a subject-line tag *or* as trailers, and is
+explicitly "a traceability recommendation, not a binding rule". The specific
+`dmc_relkey_c0_s1` task instructions strengthened this into a mandatory
+trailer requirement ("AGENT GIT RULE" in that task's `task.txt`), which is
+stricter than Core's own general policy.
+
+This FTR is therefore *not* evidence that WFC currently violates its own
+commit-identity contract, and current RELKEY work should proceed without
+waiting for it. It records a useful missing general capability that a real
+consumer legitimately exercised: `CommitIntent` cannot express a multiline
+commit body even when a consumer has a legitimate reason to request one.
+
+== Current CommitIntent / trusted_commit limitation (verified from code)
+
+Verified against Runtime `ec397b6148f031162f4478c7b9323d326844abab` / current
+WFC `HEAD` `41595e92ca56b834283005effb43bf910d78ba2f`:
+
+* `CommitIntent` (`src/workflow_coordinator/model.py:205-213`) has exactly
+  two fields, `paths` and `subject`. There is no body field.
+* The structured-result schema admits only these same two keys:
+  `COMMIT_INTENT_REQUIRED_KEYS = ("paths", "subject")`
+  (`src/workflow_coordinator/serialization.py:85`), enforced by
+  `_commit_intent()` (`src/workflow_coordinator/serialization.py:761-768`),
+  which parses only `paths` and `subject` from the incoming JSON object.
+* `trusted_commit()` (`src/workflow_coordinator/git_facts.py:432-509`)
+  validates `intent.subject` via `commit_subject_error()`
+  (`src/workflow_coordinator/git_facts.py:156-164`: single non-empty line,
+  Conventional-Commit-compatible, must contain both the WorkItem ID and Hop
+  ID tokens) and then creates the commit with exactly
++
+[source,text]
+----
+git commit --no-verify -m <subject> --
+----
++
+(`src/workflow_coordinator/git_facts.py:486`) -- a single `-m`, so Git treats
+the whole argument as the commit subject; there is no mechanism to supply an
+additional body.
+* Post-commit verification
+  (`src/workflow_coordinator/git_facts.py:499-508`) re-reads the committed
+  message with `git show -s --format=%s` (subject only) and compares it
+  against `intent.subject`. There is nothing to verify a body against,
+  because none can be requested.
+* The agent-facing operating contract
+  (`src/workflow_coordinator/resources/agent_operating_contract_v6.txt:84-87`)
+  describes a `CommitIntent` as proposing "the paths actually changed and a
+  Conventional-Commit-compatible subject containing the projected WorkItem ID
+  and Hop ID" -- consistent with the two-field model; it makes no mention of
+  a body.
+
+No existing test (`tests/unit/test_serialization.py`,
+`tests/unit/test_slice4b_git_authority.py`, `tests/unit/test_slice4.py`,
+`tests/unit/test_slice5b.py`, `tests/unit/test_a2_evidence_commands.py`,
+`tests/unit/test_codex_adapter_smoke.py`, `tests/unit/test_operator.py`,
+`tests/unit/test_proof_harness.py`) exercises a commit body, because none
+exists to test.
+
+== Core idea
+
+Extend `CommitIntent` with an optional multiline body, kept deliberately
+generic:
+
+----
+CommitIntent:
+    paths
+    subject
+    optional multiline body
+----
+
+The Coordinator remains the sole Git mutation authority. A future
+implementation may allow an agent to *request* a bounded commit body, which
+the Coordinator validates and supplies to the trusted commit operation --
+never an agent-selected Git argv, never agent-owned Git.
+
+The important architectural idea is generic commit-message body support, not
+DMC-specific trailer support. For example, a future DMC consumer could
+request:
+
+----
+subject:
+  feat(DMC-RELKEY-C0-S1): add relation-key identity owner H001
+
+body:
+  DMC-Work-Item: DMC-RELKEY-C0-S1
+  DMC-Phase: implement
+----
+
+Git itself already interprets trailer-shaped final body lines; the
+Coordinator need not parse or understand DMC trailers to carry a body.
+
+== Non-goals
+
+This FTR explicitly excludes:
+
+* a DMC-specific trailer parser;
+* a trailer registry;
+* automatic trailer generation;
+* generic Git argv exposure to agents;
+* agent-owned Git of any kind;
+* amend/rebase/history-rewrite support (Coordinator- or agent-owned);
+* retroactive repair of the `DMC-RELKEY-C0-S1` Run or its commits;
+* any change to WorkItem authority;
+* a new commit-message templating subsystem; and
+* any implementation in this task -- this record is documentation only.
+
+== Future acceptance questions
+
+A later implementation slice must address at least:
+
+. *Model/schema* -- `CommitIntent` can represent an optional multiline body
+  without making it mandatory for existing subject-only consumers.
+. *Validation* -- `subject` remains independently validated exactly as
+  today; `body` is bounded and rejects unsafe or invalid representations
+  (for example embedded NUL bytes); exact newline semantics (line endings,
+  trailing newline handling, blank-line separation from the subject) must be
+  made explicit.
+. *Trusted Git* -- the Coordinator creates exactly one ordinary commit using
+  only the admitted `subject`/`body` and the explicit path set, with no
+  shell interpolation and no agent-selected Git argv (for example via a
+  Coordinator-constructed `-F`/message-file mechanism rather than
+  concatenated `-m` flags).
+. *Observation* -- post-commit verification confirms the actual committed
+  *complete* message (not only `%s`) agrees with the admitted intent, body
+  included.
+. *Compatibility* -- existing subject-only `CommitIntent` consumers, tests,
+  and adapters remain valid and unaffected when no body is requested.
+. *Operating Contract / result schema* -- the agent-facing contract
+  (`agent_operating_contract_v6.txt` and the structured-result schema)
+  accurately states that a body may be proposed, and that proposing one
+  still grants no Git authority beyond what `CommitIntent` already grants.
+. *Information-flow / trust* -- a commit body is another Coordinator-owned
+  durable output sink carrying agent-authored prose, alongside existing
+  sinks such as the commit subject and structured-result summary. A future
+  implementation and its review must account for that consistently with the
+  repository's existing information-egress direction and trust model. This
+  FTR does not design a new DLP system; it only flags the surface for
+  consistent treatment when implemented.
+. *Tests* -- cover subject-only (regression), subject+body, multiline body,
+  the exact persisted complete message, rejection cases (oversized body,
+  NUL bytes, disallowed structure), and preservation of sole Coordinator Git
+  authority (no path by which an agent's body content can select Git
+  behavior beyond message content).
+
+== Activation criterion
+
+This FTR remains deferred while subject-only `CommitIntent` continues to
+satisfy actual consumer tasks, including DMC-family work under Core's
+general (recommended, not enforced) identity guidance. Promote it when an
+accepted consumer task has a legitimate, recurring need for a structured
+commit body that subject-line identity tokens cannot satisfy -- as
+`RUN-a9f9d68c73fc4b83b4662327cf6bf1f2` already showed once for a task that
+locally mandated trailers -- or ahead of a Runtime promotion intended to
+support richer commit-message conventions generally. A single isolated
+occurrence, as recorded here, is not by itself sufficient to justify
+immediate implementation.
+
+== Classification
+
+Small observed capability gap / deferred enhancement, not a current
+emergency defect. The current WFC behaved safely and correctly throughout
+`RUN-a9f9d68c73fc4b83b4662327cf6bf1f2`: H001 implemented correctly, H002
+reviewed independently and correctly, and H003 correctly refused both an
+unwarranted source change and an agent-owned commit amend, stopping
+`awaiting_human` for operational escalation rather than taking an
+unauthorized action. The Run stopped only because its specific consumer task
+required something the current `CommitIntent` cannot express; Core's general
+DMC guidance did not itself require trailers. Subject-based identity already
+supplied useful WorkItem/Hop genealogy. Current RELKEY work should proceed
+without waiting for this FTR.
