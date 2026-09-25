@@ -182,7 +182,7 @@ def test_current_self_development_bundle_passes_production_preflight(
     exact_scope = (*IMPLEMENTATION_PATHS, REVIEW_NAMESPACE)
 
     assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
-    assert profile.revision == "3"
+    assert profile.revision == "4"
     assert policy.revision == "3"
     assert work_item.max_autonomous_hops == 4
     assert policy.max_autonomous_hops == COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5
@@ -291,7 +291,7 @@ def test_review_continuation_bundle_passes_production_preflight(
         *IMPLEMENTATION_PATHS,
         REVIEW_NAMESPACE,
     )
-    assert profile.revision == "3"
+    assert profile.revision == "4"
     assert policy.revision == "3"
     assert durable_artifacts == {"review": (artifact,)}
     assert _within_scope(artifact, work_item.scope)
@@ -327,7 +327,7 @@ def test_attempt_4_bundle_passes_production_preflight(
     assert work_item.work_item_id == "WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-002"
     assert work_item.initial_phase == "review"
     assert work_item.max_autonomous_hops == 3
-    assert profile.revision == "3"
+    assert profile.revision == "4"
     assert policy.revision == "3"
     assert work_item.scope == policy.work_item_scope_ceiling == (
         *IMPLEMENTATION_PATHS,
@@ -369,7 +369,7 @@ def test_attempt_5_bundle_passes_production_preflight(
     assert work_item.initial_phase == "review"
     assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 5
     assert COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5
-    assert profile.revision == "3"
+    assert profile.revision == "4"
     assert policy.revision == "3"
     assert work_item.scope == policy.work_item_scope_ceiling == (
         *IMPLEMENTATION_PATHS,
@@ -408,7 +408,7 @@ def test_attempt_6_bundle_passes_production_preflight(
     assert work_item.work_item_id == "WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-004"
     assert work_item.initial_phase == "rereview"
     assert work_item.max_autonomous_hops == 3
-    assert profile.revision == "3"
+    assert profile.revision == "4"
     assert policy.revision == "3"
     assert policy.max_autonomous_hops == COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5
     assert work_item.scope == policy.work_item_scope_ceiling == (
@@ -450,7 +450,7 @@ def test_attempt_7_bundle_passes_production_preflight(
     assert work_item.work_item_id == "WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-005"
     assert work_item.initial_phase == "rereview"
     assert work_item.max_autonomous_hops == 3
-    assert profile.revision == "3"
+    assert profile.revision == "4"
     assert policy.revision == "3"
     assert policy.max_autonomous_hops == COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5
     assert work_item.scope == policy.work_item_scope_ceiling == (

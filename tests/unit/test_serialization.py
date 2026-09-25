@@ -369,6 +369,29 @@ def test_execution_binding_parser_rejects_unsupported_or_incomplete_bindings(
         run_execution_configuration_from_yaml(document)
 
 
+@pytest.mark.parametrize(
+    ("schema_version", "message"),
+    [
+        ("0", "unsupported version: 0"),
+        ("2", "unsupported version: 2"),
+        ("99", "unsupported version: 99"),
+        ("-1", "unsupported version: -1"),
+        ("'1'", "must be an integer"),
+        ("1.0", "must be an integer"),
+        ("true", "must be an integer"),
+    ],
+)
+def test_execution_binding_parser_admits_only_binding_schema_version_one(
+    schema_version, message
+):
+    document = (
+        f"schema_version: {schema_version}\nbindings:\n"
+        "  worker: {adapter: codex_cli, model: m, reasoning: medium}\n"
+    )
+    with pytest.raises(ValidationError, match=message):
+        run_execution_configuration_from_yaml(document)
+
+
 def test_result_validation_rejects_unknown_missing_and_malformed_fields():
     with pytest.raises(ValidationError, match="unknown fields"):
         routing_result_from_data(valid_result_data(extra=True))
