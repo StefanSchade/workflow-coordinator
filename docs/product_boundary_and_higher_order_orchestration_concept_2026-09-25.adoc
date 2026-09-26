@@ -67,16 +67,44 @@ ____
 Bring your own orchestration; WFC supplies governed execution.
 ____
 
+Stated more explicitly: *orchestration decides what should happen next; WFC
+decides whether that bounded work is admissible and under which conditions it may
+become effective.* Those conditions are, conceptually, scope, authority, allowed
+actions and effects, evidence, review and assurance obligations, privilege and
+elevation, execution boundary, information and capability compatibility, and
+trusted durable effects with audit evidence. In one line, WFC is a governance and
+execution-control layer for agentic software development -- not another
+orchestration framework, and not a project planner.
+
+The point is not to move teams onto one orchestration framework. Callers may be
+LangGraph, another planner or agent framework, CI, a human operator,
+project-specific orchestration, or systems that do not exist yet. The value is
+that a team should not have to reimplement the same security and GRC rules
+independently in its LangGraph graphs, its prompts, its bespoke Python loops, and
+each of its coding-agent wrappers.
+
 Many prospective users already own an agent-orchestration stack. What they
 generally lack is scope and authority enforcement, trusted Git effects, trusted
 evidence, mechanically enforced independent review, capability admission,
-deterministic fail-closed behavior, and filesystem containment -- the last of
-which WFC does *not* yet provide and which this document assigns to Level 0 as
-future work rather than claiming as present capability (§11.2, §21.1). WFC can
-supply that governance layer without replacing anyone's orchestration -- but
+deterministic fail-closed behavior, and containment of the executing agent. WFC
+can supply that governance layer without replacing anyone's orchestration -- but
 only if the dependency direction is strictly one-way (`orchestrator -> WFC`,
 never `WFC -> orchestrator`), and only if a caller may *request* authority while
 never *granting* it.
+
+Two qualifications belong in the summary rather than a footnote, because the
+sentence above is easy to over-read. First, several of the controls that make it
+attractive -- containment, resource and effect classification, derived security
+and assurance floors, profile admission against those floors -- are *future
+product direction*, not current capability; §5.1 is the register that keeps
+current, currently-missing, and future separate. Second, the governed-execution
+architecture is a boundary against *agentic* self-escalation and accidental
+bypass, not Zero-Trust enforcement against the authorized humans and
+administrators who define the governance; §11.1 states that threat model
+explicitly. Today the formulation holds for a trusted or cooperative caller under
+external operator control. Extending it to an untrusted programmatic orchestrator
+is future work gated on a protected caller boundary (§11.1) and on governing-input
+provenance (§11.6).
 
 The most security-relevant conclusion is that *workflow topology must not
 determine the security floor*. A caller that may select a simpler workflow
@@ -177,7 +205,7 @@ Inspected in the standalone WFC repository at
 
 | `docs/backlog/FTR-WFC-COMMIT-INTENT-BODY.adoc`
 | First real Core DMC consumer Run `RUN-a9f9d68c73fc4b83b4662327cf6bf1f2` and
-  its `awaiting_human` stop; Coordinator-sole Git authority.
+  its `awaiting_human` stop; Coordinator-owned Git authority as a design rule.
 
 | `docs/backlog/first_wfc_on_wfc_dogfood_attempt_7_2026-09-24.adoc`
 | Closure of the developer-ergonomics workstream; the deferred
@@ -324,7 +352,7 @@ ____
 
 Level-0 responsibilities. Items 1--9 describe behavior that exists today and
 should remain; item 10 names a duty that is assigned to Level 0 but is not yet
-built (§11.2):
+built (§11.3):
 
 . *Admission.* Deterministic preflight of a pinned bundle: governing inputs must
   lie inside policy `governance_paths`; no phase `authorized_scope` may overlap
@@ -343,9 +371,13 @@ built (§11.2):
   workflow role.
 . *Trusted evidence.* Coordinator-executed evidence commands from policy, not
   agent-reported success.
-. *Trusted Git effects.* The Coordinator alone mutates Git, from an admitted
-  `CommitIntent` over an explicit path set, with post-commit verification. Agents
-  own no Git.
+. *Trusted Git effects.* A Coordinator-owned trusted-commit path exists and is
+  what current governed flows use: an admitted `CommitIntent` over an explicit
+  path set, with the phase's `edit` and `commit` authority checked before Git is
+  mutated and the committed message verified afterwards. The package-owned Agent
+  Operating Contract forbids agent-owned mutating Git. Coordinator-sole Git
+  mutation remains the desired invariant; it is not yet mechanically proven
+  against a hostile worker (§5.1).
 . *Bounded convergence.* Every appended Hop is charged; budgets are finite;
   review gates and Finding authority are declared, not negotiated.
 . *Fail-closed stops.* Unknown, malformed, uncertain, or preempted outcomes stop
@@ -353,10 +385,86 @@ built (§11.2):
 . *Durable Run evidence.* Run, Hop, Finding, evidence and dispatch records
   outside the target repository, reconstructable and auditable.
 . *Containment (future).* The trusted derivation and enforcement of the concrete
-  execution envelope. This is *not* current behavior; see §11.2.
+  execution envelope. This is *not* current behavior; see §11.3.
 
 *[INVARIANT]* Level 0 owns every mechanism by which authority is checked,
 effects are made, and evidence is produced.
+
+=== 5.1 Current capability, current limits, and future direction
+
+This register matters more than any individual claim in the document. A
+product statement that silently promotes future direction into current
+capability is the failure mode most likely to survive into a README.
+
+*Current capability.* Bounded WorkItems; committed and pinned governing inputs,
+re-verified by digest between Hops; explicit policy ceilings over WorkItem scope,
+Hop budget and actions; governance paths excluded from phase scope; declarative
+workflow profiles; bounded autonomous Hops; separated workflow role, persona and
+execution binding; Coordinator-executed trusted evidence; a Coordinator-owned
+trusted-commit mechanism used by current governed flows; fail-closed observation
+and reduction; durable Run evidence outside the target repository; and modeled,
+unit-tested reducer suspension and reconciliation primitives.
+
+*Current limits, stated plainly.*
+
+[cols="2,3",options="header"]
+|===
+| Limit | Consequence
+
+| No Coordinator-owned or Coordinator-verified OS/environment containment. The
+  provider adapter only *requests* a provider-owned sandbox mode.
+| Containment is not a present control. Present assurance comes from admission,
+  post-effect observation, trusted evidence, and independent review.
+
+| The legacy observed-commit path is still admitted. When a result carries no
+  `CommitIntent`, the Hop is observed over whatever commits appeared;
+  `claim_mismatch` is computed at the Git boundary but not consulted on that
+  path; no single-commit bound is applied there; and the phase's `edit`/`commit`
+  authority is checked only on the `CommitIntent` path.
+| A hostile worker that commits directly, within scope and with a conforming
+  subject, is not currently rejected *as an unauthorized mutator*.
+  Coordinator-sole Git mutation is the desired invariant, not a present proof.
+
+| No mechanical governing-input authorship root. `authority_source` is
+  unverified prose, and "tracked at the pinned commit" proves only that the
+  input existed there.
+| Across Runs, "committed" still cannot be mechanically distinguished from
+  "authorized" (§11.6).
+
+| No resource or effect classification, no derived security floor, no derived
+  assurance floor, no profile admission against derived floors, no
+  strongest-floor join over mixed resources, and no deferred-effect
+  classification.
+| The three-axis model (§11.2) and the derivation pipeline (§11.3) are future
+  design. Today's control is the explicitly configured policy and profile,
+  authored by a human.
+
+| No protected caller identity and no programmatic Higher-Loop authority path;
+  the surface is a one-shot CLI.
+| An external orchestrator is currently admitted only as a cooperative caller
+  under operator discipline (§11.1).
+
+| No production operator entrypoint for prerequisite authorization, return, and
+  resume; the operator is one-shot and rejects an existing state root.
+| Suspension and return are modeled and tested, not an end-to-end capability
+  (§13.2).
+
+| Production substrate limits: Git/repository-native, one Codex-CLI-compatible
+  production adapter.
+| Truthful substrate facts, not evidence that WFC should become a general
+  security platform.
+|===
+
+*Future product direction.* An orchestration-neutral governed-execution
+boundary; capability and security admission; resource and effect classification;
+assurance-floor derivation and profile admission against it; privilege and
+elevation handling with mandatory defensive review; verified execution
+boundaries where the work requires them; and a clean external caller/result
+interface.
+
+*[INVARIANT]* These three registers must not be collapsed. Every
+security-shaped sentence elsewhere in this document describes the third register
+unless it appears in the first.
 
 == 6. What is explicitly not WFC
 
@@ -381,6 +489,11 @@ Two consequences are easy to get wrong:
   "maintenance" (roadmap reconciliation, archival moves, memory curation,
   closure records) is still a repository mutation and still belongs inside a
   bounded Level-0 WorkItem. See §14.1.
+* *Governing an opaque artifact is not understanding it.* WFC may govern a
+  bounded edit to a Level-1 plan ledger, obligation record, or closure artifact
+  without knowing what an Epic or a Cycle is, exactly as it governs any other
+  path. Refusing domain knowledge is not refusing to be used for these effects;
+  see §8.6.
 
 == 7. Level 1 -- the evolving body of work (the Higher Loop)
 
@@ -393,7 +506,7 @@ DMC and RELKEY work:
   repository truth and open obligations.
 . *Preparation.* Produce the concrete bounded request: scope, task, expected
   anchor, requested profile, requested capabilities, persona, evidence
-  expectations -- subject to the authorship constraint in §11.5.
+  expectations -- subject to the authorship constraint in §11.6.
 . *Relationship custody.* Maintain parent/child, dependency, blocking,
   supersession and closure relations between work.
 . *Prerequisite discovery.* Recognise that a bounded child concern must exist
@@ -423,8 +536,9 @@ Five independent reasons, each sufficient on its own.
 because the item is fully specified before it starts. There is no equivalent
 decision at Level 1: the Epic's eventual size is not knowable in advance, so the
 only thing that can be well-bounded is the *next* action. An abstraction whose
-core operation is "admit a fully specified item" has nothing to offer a layer
-whose defining problem is that the item does not exist yet.
+core operation is "admit a fully specified item" therefore cannot carry the
+Level-1 lifecycle -- though it remains exactly the right primitive for each
+bounded action that lifecycle produces (§8.6).
 
 *8.2 Different truth relation.* Level 0 is pinned: governing inputs are read at
 an expected anchor and their digests are re-checked after accepted Hops; drift
@@ -452,9 +566,28 @@ semi-trusted at best*: it is where intelligence, experimentation, prompt
 influence, and external inputs live. Making them the same abstraction would make
 the experimental layer part of the trusted computing base.
 
-*[INVARIANT]* Any design that makes Level 1 an instance of the Level-0
-abstraction thereby puts programme-level intelligence inside the security
+*[INVARIANT]* The long-lived Level-1 lifecycle is not representable as one
+Level-0 Run, and WFC must not own Level-1 planning semantics or topology. A
+design that puts the planning engine, its goal custody, or its work topology
+inside WFC thereby puts programme-level intelligence inside the security
 boundary. That is the failure mode this concept exists to prevent.
+
+*8.6 Not self-similar, but compositional.* The argument above is about lifecycle
+and ownership, not about a ban on using Level 0. The two statements are
+compatible and both are needed:
+
+*[INVARIANT]* Level 1 owns the semantics; Level 0 owns the effects. Individual
+Level-1 effects -- preparation and planning artifacts, semantic-ledger
+maintenance, lifecycle reconciliation, closure artifacts and closure reviews --
+may themselves be bounded governed WFC WorkItems, and normally should be.
+
+Reusing the governed-execution primitive for a bounded effect is not the same as
+placing the orchestration engine inside WFC. The distinction is sharp: WFC sees a
+path set, an action set, a profile and an anchor; it does not see an Epic. The
+mistake the absolute wording invited was the opposite and worse one -- a designer
+concluding that WFC must not govern plan revisions or ledger edits, and therefore
+letting a semi-trusted orchestrator mutate exactly the records that define its own
+obligations and closure criteria directly (§12).
 
 == 9. Epics, open planning horizons, and control signals
 
@@ -584,9 +717,117 @@ relations that real DMC work demonstrably needed.
 == 11. Security and authority boundary
 
 This is the section where Level 1 being intelligent, persistent, agentic, or
-compromised must make no difference.
+compromised should make no difference to what can actually happen -- within the
+trust assumptions that §11.1 now makes explicit rather than leaving implied.
 
-=== 11.1 Three axes that must not be collapsed
+=== 11.1 Threat model: what WFC governs, and what it assumes
+
+Every claim in this section rests on a trust anchor, and naming that anchor is a
+product-scope decision rather than a technical detail. WFC governs *agentic*
+execution: its purpose is to prevent agentic self-escalation and hidden
+governance bypass. It is not a Zero-Trust enforcement system against the
+authorized humans and administrators who define the governance in the first
+place.
+
+*[INVARIANT]* WFC protects governance from agentic self-escalation, not from the
+administrators who define that governance.
+
+*[INVARIANT]* Do not recursively secure the authority root against itself.
+
+==== In scope
+
+WFC is intended to prevent or constrain:
+
+* an agent deciding its own authority;
+* an agent widening its own scope;
+* an agent selecting a workflow profile to bypass mandatory review;
+* an agent turning a capability *request* into a capability *grant*;
+* one agent granting another authority it does not itself possess;
+* prompt injection promoting an ordinary worker into a privileged actor;
+* indirect or deferred execution turning bounded mutation into privilege
+  escalation;
+* agent-authored governance becoming authority merely because it was committed;
+* a higher-order agentic orchestrator silently or accidentally acquiring an
+  alternative mutation or effect path that bypasses the intended governed path;
+* agentic components weakening the policy, review, evidence, containment, or
+  privilege requirements that constrain them.
+
+==== Out of scope as a WFC product security goal
+
+WFC does not attempt to mechanically prevent:
+
+* an authorized repository administrator deliberately editing or disabling
+  governance;
+* host root replacing or patching WFC itself;
+* two authorized maintainers deliberately colluding to defeat four-eyes review;
+* an authorized human misrepresenting identity outside WFC's identity and trust
+  boundary;
+* an authorized developer deliberately editing policy and runtime together
+  outside the governed process;
+* a developer intentionally choosing to use Git or repository access outside
+  WFC;
+* an administrator intentionally rewriting history or audit artifacts with
+  authority they already hold outside WFC.
+
+These are organizational, administrative, and platform trust assumptions, not
+recursive deficiencies WFC must solve. Corporate governance legitimately
+combines technical enforcement against agentic actors with organizational
+controls and work instructions for authorized humans. Treating the existence of
+trusted administrators as a design defect yields an unbuildable product.
+
+==== Two cases that must not be conflated
+
+An independent adversarial review of this concept observed correctly that a
+Higher Loop running as the same OS user can write files, invoke Git, run
+commands, read credentials and use the network directly, and that WFC never
+observes that act. The observation is right, and it decomposes into two cases
+with different answers.
+
+*Case A -- in scope.* A semi-trusted Higher Loop is *architecturally* given
+arbitrary repository-write, Git, command, network, credential, or equivalent
+agentic effect mechanisms, and can therefore mutate governed resources around
+WFC. That defeats the governed-execution architecture. It is a design error, not
+a residual risk.
+
+*[INVARIANT]* Agentic Higher-Loop effects intended to mutate governed resources
+flow through Level 0. A design that also equips the orchestrator with its own
+direct effect mechanisms over the same governed resources is inadmissible,
+whether or not it intends to use them. The designed agentic path must not
+contain an unintended alternate effect path that defeats WFC policy.
+
+*Case B -- out of scope as enforcement.* An authorized developer or repository
+administrator intentionally opens a shell and bypasses WFC using authority they
+legitimately possess outside the governed agentic workflow. That is an accepted
+administrative trust assumption and, if it happens, a governance violation
+addressed organizationally.
+
+*[INVARIANT]* This concept claims no technical prevention of Case B. Any product
+statement implying that WFC makes an authorized human or administrator unable to
+bypass it is wrong and must be corrected.
+
+*[HYPOTHESIS]* Stronger OS or process isolation of the Higher Loop -- a
+restricted containment domain, a target repository not writable by the
+orchestrator, a distinct OS identity for mutation, or WFC behind a separately
+privileged broker or service -- is *optional deployment hardening*, and a likely
+requirement for genuinely autonomous threat models later. None of it is a
+universal prerequisite for the basic WFC product, and this concept adopts none
+of it.
+
+*[OPEN]* Which protected deployment boundary a given installation should choose
+is unresolved, and is properly an integration decision rather than a product
+decision.
+
+==== What must not be inferred from this section
+
+Nothing here establishes a universal WFC requirement for signed policy,
+hardware-backed identity, remote attestation, immutable external audit storage,
+cryptographic approval provenance, separate administrative security domains, or
+HSM-backed Git provenance. Each may be useful in some future deployment. None is
+a product prerequisite without independent evidence, and adopting them
+speculatively would trade a buildable governance layer for an unbuildable
+platform.
+
+=== 11.2 Three axes that must not be collapsed
 
 [cols="1,2,3",options="header"]
 |===
@@ -627,7 +868,7 @@ an upgrade is more usable and probably still safe, because the caller still
 cannot author the upgraded profile; but it also makes Level 0 a recommender,
 which deserves scrutiny before it is chosen.
 
-=== 11.2 The envelope is derived inside Level 0
+=== 11.3 The envelope is derived inside Level 0
 
 A caller may *request* capabilities: repository write, network, secrets,
 elevated execution. A caller must never *select* the concrete mechanisms:
@@ -662,20 +903,34 @@ execute
 
 [CAUTION]
 ====
-*Current-state correction.* This pipeline describes a future capability, not
-present behavior. Accepted architecture states plainly that no Coordinator-owned
-or Coordinator-verified OS/environment containment boundary is currently
-claimed; the adapter's `--ask-for-approval never --sandbox workspace-write`
-request is provider-owned behavior. Today, the enforced Level-0 boundaries are
-admission-time scope domination, declared phase actions, Coordinator-sole Git
-mutation, trusted evidence, worktree-cleanliness preemption, and fail-closed
-stops. The containment half is deferred work tracked by
+*Current-state correction.* *Every stage of this pipeline is future
+capability.* It is tempting to read the gap as "only containment is missing";
+that reading is wrong. Current `RepositoryPolicy` has repository scope,
+governance paths, a WorkItem path ceiling, a Hop ceiling, an action list and
+evidence commands. It has no resource classes, no capability or data
+classification, no profile allowlist, no security floor and no assurance floor.
+Current preflight checks requested values against those explicit ceilings; it
+derives nothing. Specifically absent today: resource and effect classification;
+security-floor derivation; assurance-floor derivation; profile admission against
+derived floors; the strongest-floor join over a mixed-resource WorkItem;
+deferred-effect classification; and Coordinator-owned or Coordinator-verified
+containment (the adapter's `--ask-for-approval never --sandbox workspace-write`
+request is provider-owned behavior).
+
+Today's enforced Level-0 boundaries are admission-time scope domination,
+declared phase actions, the Coordinator-owned trusted-commit path used by
+governed flows, trusted evidence, worktree-cleanliness preemption, and
+fail-closed stops -- and the assurance actually obtained for a given WorkItem
+comes from the policy and profile a human authored for it. The derivation
+machinery above is supported in direction by
 `FTR-WFC-EXECUTION-TRUST-BOUNDARIES` and
-`FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW`. This concept must not be read as
-claiming the containment exists.
+`FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW`, both of which are
+proposed/deferred records. Neither supplies a current mechanism, and this
+concept must not be read as claiming otherwise. The worked example in §11.2 is
+therefore future design, not a description of what admission does now.
 ====
 
-=== 11.3 Repository resource policy: classes, not path allow-lists
+=== 11.4 Repository resource policy: classes, not path allow-lists
 
 The needed policy shape is richer than `path -> sandbox yes/no`:
 
@@ -711,7 +966,7 @@ classification plus mandatory review can.
 applicable requirement governs, or the WorkItem is split. Mixed scope never
 resolves downward.
 
-=== 11.4 Policy is not an output of the agent it governs
+=== 11.5 Policy is not an output of the agent it governs
 
 *[INVARIANT]* Policy is a trusted *input* to an execution, never an ordinary
 mutable output of the agent being governed. The effective authority must be
@@ -731,7 +986,14 @@ outside the target repository, or repository policy pinned to an accepted
 commit/hash and mutable only through a separately privileged governance process.
 This concept records the invariant and declines to choose the representation.
 
-=== 11.5 Level 1 is untrusted orchestration
+=== 11.6 Level 1 leads orchestration and holds no authority
+
+"Untrusted" is the wrong single word for Level 1, and using it invites the
+misreading that WFC currently constrains an adversary. The accurate statement is
+narrower: Level 1 is *not an authority*. It is where judgement, experimentation
+and external input live, so it must never be the place where authority is
+created -- and, per §11.1 Case A, it must not be architected with its own effect
+path around Level 0 either.
 
 [cols="1,1",options="header"]
 |===
@@ -760,14 +1022,44 @@ would manufacture the next Run's governance from agent output.
 
 *[INVARIANT]* Before any Level-1 automation materializes governing inputs,
 governing-input provenance must be mechanically distinguishable from
-agent-produced output. Until then, a Level-1 loop must either stop for a human
-act of authorship, or be restricted to selecting among governing bundles a human
-has already authored and committed.
+agent-produced output.
+
+Two consequences are easy to state too weakly. First, the interim arrangement --
+a Level-1 loop that stops so an independently trusted operator authors or
+approves the exact bundle, or that selects only among bundles already authored
+and committed by one -- is a *procedural* control, not mechanical closure of the
+precondition. Nothing in current admission can distinguish a maintainer-prepared
+bundle from an agent-written bundle whose `authority_source` says
+"maintainer-prepared"; the operator's separate act, not the repository state, is
+what carries the authority. This concept must not be read as claiming the
+precondition is met.
+
+Second, the general rule is broader than "a human wrote it". The accepted
+authority-provenance rule permits a human/maintainer root *or* a separately
+governed authority source whose provenance is mechanically protected from the
+requesting and delegating components; and once such an envelope is
+authoritatively admitted, it can support automation without a new human act per
+Hop or per item.
+
+*[INVARIANT]* One human act per WorkItem is *not* an architectural invariant. A
+separately protected authority source may pre-authorize a bounded family or
+envelope of future WorkItems. What is invariant is that the envelope is rooted
+outside, and fixed before, the actor that requests work within it.
 
 *[HYPOTHESIS]* "Request a profile" should mean *select among pre-authorized
 profiles admitted by trusted policy*, never *supply a profile document*. The
 profile is itself a governing input; a caller that can author one can author its
-own topology, which is precisely the escalation §11.1 forbids.
+own topology, which is precisely the escalation §11.2 forbids.
+
+*The effect-path precondition.* Beside the authorship precondition sits the
+distinct requirement from §11.1 Case A: the table above is meaningful only if
+the orchestrator's *only* route to a governed effect is through Level 0. A
+Higher Loop that is handed its own repository write, Git, command, credential or
+network mechanisms over the same resources does not become governed by being
+polite about calling WFC. The two preconditions are independent -- provenance
+answers "who authorized this work", effect-path answers "could the work have
+happened without asking at all" -- and both must hold before an untrusted
+programmatic caller is admissible.
 
 *Escalation direction.* A child may request or escalate; it may never grant
 itself wider authority. A future vocabulary may usefully distinguish
@@ -777,14 +1069,14 @@ envelope) from `escalate_human` (ask outside the machine entirely).
 *[INVARIANT]* No escalation path may terminate inside the component that
 benefits from it.
 
-=== 11.6 Checkpoint state is not repository truth
+=== 11.7 Checkpoint state is not repository truth
 
 [cols="1,2",options="header"]
 |===
 | Artefact | What it is
 
 | Level-1 checkpoint / LangGraph persistence | operational continuity: where the orchestrator was
-| Git history, accepted durable artifacts, curated Level-1 domain state | semantic truth: what the repository and the programme actually are
+| Git history, accepted durable artifacts, protected Epic authority and the semantic ledger (§12.1) | semantic truth: what the repository and the programme actually are
 |===
 
 *[INVARIANT]* On resume, repository anchors must be re-verified against the
@@ -802,20 +1094,71 @@ sessions. This creates an obligation Level 0 does not have.
 
 *[INVARIANT]* Process restart must be semantically invisible.
 
-Conceptually persistent (representation deliberately unspecified):
+=== 12.1 Three classes of durable state, not one blob
 
-* Epic identity and specification;
-* goal;
-* authority envelope;
-* closure criteria;
-* accepted planning state;
-* plan revision / version;
-* work and dependency state;
-* open obligations;
-* suspended continuations and their return anchors;
-* last accepted repository anchor;
-* maintenance obligations;
-* closure evidence and residual risks.
+A single durable "EpicState" is the wrong shape, because it silently mixes things
+with different authority. Determinism and schema validity are not authority: a
+small validator can prove that a mutation is well-formed while accepting an
+entirely unauthorized semantic change. Three classes must therefore be
+distinguished, with representation deliberately unspecified.
+
+[cols="1,2,2",options="header"]
+|===
+| Class | Contents | Who may change it
+
+| *Protected / admitted Epic authority*
+| Epic identity; goal; maximum authority envelope; closure criteria; and the
+  rules naming which actors may revise each of those.
+| Only a protected authority root, through an explicit, recorded revision. Not
+  the orchestration engine, and not a model call.
+
+| *Durable semantic work state (ledger)*
+| Accepted plan revisions; open obligations; dependencies and relationships;
+  parent/child relations; supersession; maintenance obligations; closure events;
+  and the evidence or provenance for each semantically consequential transition.
+| The engine may *propose* events; a deterministic kernel may validate them; each
+  event carries its transition authority and evidence. Audit-preserving, so a
+  later reader can see what changed and on what basis.
+
+| *Operational orchestrator checkpoint*
+| Current node position; caches; transient routing state; anything rebuildable.
+| Freely, by the engine. Disposable by construction: losing it costs time, never
+  truth.
+|===
+
+*[INVARIANT]* Authority-expanding and obligation-erasing events must be rooted in
+an admitted authority source, or in mechanically verified evidence under a rule
+pre-authorized by one. The events needing this care are exactly the tempting
+ones: widening a goal or authority envelope; revising closure criteria; deleting
+an obligation; accepting a child as complete; superseding work; and closing an
+Epic. `CHILD_ACCEPTED` in particular should bind to a verified WFC result rather
+than to the engine's own assertion that the child went well.
+
+*[INVARIANT]* Restart reconstructs and reconciles from the protected
+specification and the semantic ledger. It never regenerates authority or
+obligations from a model call. An engine that could rebuild its own obligations
+by asking a model has no obligations.
+
+*[OPEN]* Whether the ledger is append-only event sourcing or an equivalently
+audit-preserving representation is unresolved; append-only is one way to obtain
+the property, not a requirement this concept imposes.
+
+*Where each class lives, and what that implies for §11.1 Case A.* The three
+classes answer the otherwise awkward question of which Level-1 writes must flow
+through Level 0. The operational checkpoint is Level-1's own disposable store and
+needs no governance, because losing or corrupting it costs time rather than
+truth. Protected Epic authority is the opposite: wherever it lives, it must be
+rooted outside the engine that operates under it, so the engine never holds a
+direct write path to it. The semantic ledger is the interesting middle. If it is
+a durable repository artifact -- which the existing prose record suggests is
+natural here -- then edits to it are ordinary bounded Level-0 work (§8.6), and
+Case A's rule applies unchanged. If a deployment instead keeps it outside the
+repository for operational reasons, it must not simultaneously be the record that
+authority decisions rest on unless it is protected to the same standard.
+Splitting "disposable", "audit-preserving" and "protected" is what keeps that
+choice from silently becoming an authority decision.
+
+=== 12.2 Resume and replan
 
 *[INVARIANT]* `resume != replan`.
 
@@ -838,7 +1181,10 @@ Run disposition notes carry why a Run stopped and how work continues; the
 roadmap carries sequence and status; Project Memory carries curated orientation.
 A first Level-1 implementation is therefore better understood as *reading and
 extending an existing human-maintained record* than as introducing a new store
-with no history in it.
+with no history in it. The caveat from §12.1 applies to that record too: it is
+prose authored by a maintainer, which makes it good semantic material and a
+plausible seed for the protected specification and the ledger, but not by itself
+a mechanically protected authority root.
 
 The anti-pattern this rules out is a Level-1 loop that, on every process start,
 re-derives its plan from an LLM call over current repository state. Such a loop
@@ -886,13 +1232,27 @@ wrong.
 Run. Level 1 owns the *semantics* of what the child is, whether it should exist,
 and what the parent should do afterwards.
 
-Level 0 already contains a precise, deterministic return-address primitive:
-a `suspend_for_prerequisite` route effect stops the Run for explicit human
-authorization; authorization records a child Run identity and pins
+Level 0 already *models and unit-tests* a precise, deterministic return-address
+primitive: a `suspend_for_prerequisite` route effect stops the Run for explicit
+human authorization; authorization records a child Run identity and pins
 `suspension_head`; the return path reconciles with `reason =
 prerequisite_return` against `reconcile_anchor = suspension_head`; and resume
-requires an explicit act. What is *not* authorized is the outer dispatch that
-would create and launch the child automatically.
+requires an explicit act.
+
+Current-state precision matters here. Those fields and pure functions exist and
+have coverage, but the production operator is one-shot: it rejects an existing
+state root and exposes no entrypoint that calls prerequisite authorization,
+prerequisite return, or resume. The same operator gap is recorded for
+reconcile/resume generally in `FTR-WFC-ATOMIC-HOP-RECOVERY`. So the mechanics are
+*modeled and tested*, not an end-to-end capability, and outer-dispatched children
+remain unauthorized. The ownership boundary below is unaffected by that gap.
+
+Concretely, a Level-0 worker or reviewer may legitimately discover and report
+"I cannot proceed correctly until concern X is resolved", and Level 0 may model,
+signal, and suspend on that. Everything semantic about X is Level 1's: whether X
+becomes a real child or subtopic at all; its identity; its relationship to the
+parent; its bounded goal; its return relationship; whether it becomes the next
+active work; and what happens to the parent once the child is accepted.
 
 *[HYPOTHESIS]* The right reading is therefore not "parent/child belongs
 entirely to Level 1", but: the *continuation mechanism and its anchor* are
@@ -949,7 +1309,7 @@ topologies at Level 0:
 |===
 
 *[INVARIANT]* The profile choice above is a *request*. Which one is admissible
-is decided by §11.1's derivation, from the resource classes actually touched.
+is decided by §11.2's derivation, from the resource classes actually touched.
 
 === 14.2 Closure may be harder than planning
 
@@ -1020,7 +1380,7 @@ depends on the orchestration it governs cannot be the boundary for it.
 === 15.3 What LangGraph must not become
 
 *[INVARIANT]* LangGraph must not become the security boundary. Its checkpointer
-is operational continuity, not repository truth (§11.6). Its interrupt/resume is
+is operational continuity, not repository truth (§11.7). Its interrupt/resume is
 convenience, not authority. Human-in-the-loop inside a LangGraph node is *not*
 the same as a Level-0 human gate: the former is a pause the orchestrator chose,
 the latter is a stop the governance engine enforced.
@@ -1042,7 +1402,7 @@ A caller may plausibly provide or request:
 * repository;
 * expected repository anchor;
 * WorkItem;
-* requested workflow profile (as a selection, per §11.5);
+* requested workflow profile (as a selection, per §11.6);
 * requested actions and effects;
 * requested execution class;
 * bounded scope;
@@ -1067,7 +1427,7 @@ is evidence that the interface is a projection problem rather than a redesign.
 
 *[OPEN]* The concrete schema is deliberately not fixed here. Nothing yet
 justifies choosing between a stable machine-readable CLI result contract, a
-library API, or a service boundary; and the *authorship precondition* in §11.5
+library API, or a service boundary; and the *authorship precondition* in §11.6
 must be satisfied before a programmatic caller is safe regardless of schema.
 
 *[INVARIANT]* Whatever the schema, the result must be a *report*, never a
@@ -1161,22 +1521,31 @@ using WFC as the Level-0 executor.* The Relation-Key Identity Epic is the
 obvious candidate, because it already has a goal, accepted slices, a dependency
 shape, real Run history, and unfinished lifecycle obligations.
 
-A first implementation may consist of a small number of use-case-specific
-nodes:
+Given §11.1 and §11.6, the honest shape of that first loop is a *supervised
+continuation assistant*, not unattended automation. Its value is that it removes
+the tracking, reconciliation and bookkeeping burden that the real RELKEY work
+imposed on a human -- which is most of the burden -- while leaving the
+authority-bearing act where it currently has to be.
+
+It may: reconcile durable Level-1 state; observe repository and DMC state;
+track obligations and return points; recommend or select the next bounded action;
+prepare a candidate request; select among choices where authority genuinely
+already exists; ingest WFC outcomes; update the Level-1 state it is permitted to
+update; and identify maintenance and closure candidates.
+
+For *new* governing authority it must stop before independently authoritative
+materialization and launch, and hand control to an independently trusted operator
+or an equivalent protected authority source.
 
 [source,text]
 ----
-load / reconcile durable Level-1 state
-observe current DMC state from repository truth
-choose next bounded action
-plan / prepare if necessary
-authority / admission request
-invoke WFC
-ingest WFC result
-update Level-1 durable state
-maintenance check
-closure check
-pause / continue
+load protected Epic specification + semantic ledger
+reconcile repository anchor and already-accepted WFC results
+compute eligible and open obligations deterministically
+recommend one next bounded action, or select one exact pre-prepared bundle
+  -> stop: independent operator authors/approves the bundle and launches WFC
+ingest the immutable WFC result deterministically
+append evidence-linked obligation / maintenance / closure state
 ----
 
 *[INVARIANT]* Operations whose correctness is decidable must not be delegated to
@@ -1187,22 +1556,41 @@ a discovered concern warrants a child, whether closure criteria are met --
 justifies a model call. Making every node agentic is how a small loop becomes an
 unreviewable one.
 
-*[INVARIANT]* Given §11.5, the first implementation must stop for human
-authorship of governing inputs, or select among human-authored bundles. Either
-is acceptable; silently materializing its own governance is not. This keeps the
-first loop genuinely useful -- it removes tracking, reconciliation and
-bookkeeping burden -- without requiring the unsolved provenance mechanism first.
+*[INVARIANT]* That stop is a *procedural* control and must not be described as
+mechanical closure of the governing-input precondition (§11.6). It is
+nonetheless the correct first arrangement: it obtains real value now without
+pretending the unsolved provenance mechanism exists, and it does not foreclose
+the later, broader option of a protected authority source pre-authorizing a
+bounded family of WorkItems.
 
-Explicitly *not* part of a first adoption: a generic Level-1 framework, a
-plugin architecture, a node registry, a DSL for work graphs, an abstraction over
-orchestration frameworks, or a schema intended for other projects.
+*[HYPOTHESIS]* For this first slice a small versioned structure -- stable IDs,
+dependencies, supersession, open obligations, return anchors, and a plan revision
+number -- is sufficient. Nothing in the RELKEY evidence yet earns an explicit
+graph engine. Whether LangGraph reduces the application code at this size is an
+open question, not a premise; a structured state file and ordinary control code
+may be simpler.
+
+Explicitly *not* part of a first adoption: automatic governing-input
+materialization; unattended WFC launch; a generic Level-1 framework; a generic
+graph schema; a plugin architecture; a node registry; a work-graph DSL; an
+abstraction over orchestration frameworks; multi-repository mutation; parallel
+children; model/provider routing; a generic privilege or resource taxonomy; a
+second workflow engine; or a schema intended for other projects.
 
 == 20. Design principles
 
 . WFC is a bounded governed executor, not a project planner.
 . Level 1 and Level 0 solve different problem classes; they are not recursively
   identical workflow loops.
-. Bring your own orchestration; WFC supplies governed execution.
+. Bring your own orchestration; WFC supplies governed execution. Orchestration
+  decides *what* should happen next; WFC decides *whether* bounded work is
+  admissible and *under which conditions* it may become effective.
+. WFC protects governance from agentic self-escalation, not from the
+  administrators who define that governance. Do not recursively secure the
+  authority root against itself.
+. Agentic effects on governed resources flow through Level 0. An orchestrator
+  that also holds its own direct effect path over the same resources is not
+  governed, however politely it calls WFC.
 . Higher-level orchestration may request authority but never grant it.
 . Workflow topology cannot weaken security or assurance floors.
 . Concrete containment and privilege envelopes are derived inside trusted
@@ -1214,28 +1602,45 @@ orchestration frameworks, or a schema intended for other projects.
   repeated use.
 . WFC must have no dependency on LangGraph.
 . Maintenance and closure are Level-1 responsibilities, but their repository
-  mutations are still executed through bounded Level-0 work.
-. Policy that governs an agent must not be mutable by that agent within the
-  execution it governs.
+  mutations are still executed through bounded Level-0 work. Level 1 owns the
+  semantics; Level 0 owns the effects -- including bounded effects on Level-1's
+  own durable artifacts.
+. Effective governing authority must be independently rooted and fixed or
+  admitted before the requesting actor can influence it. Agent output does not
+  become authority merely because it was committed, referenced, copied,
+  summarized, or passed through another component.
 . Prefer fail-closed admission over silent profile or security downgrades.
 . The Higher Loop may be intelligent and experimental; WFC stays deliberately
   boring and deterministic where authority matters.
+. Never let a current-capability claim and a future-direction claim share a
+  sentence (§5.1).
 
 == 21. Conflicts and tensions with currently accepted material
 
 Surfaced rather than silently resolved.
 
-=== 21.1 Containment is asserted as a Level-0 duty but does not exist yet
+=== 21.1 Containment, derivation, and caller mediation are all future
 
 `docs/architecture.md` states that no Coordinator-owned or Coordinator-verified
 OS/environment containment boundary is claimed, and `docs/self-development.adoc`
-states that the adapter's sandbox request is provider-owned. §11.2 assigns
-containment derivation to Level 0. These are compatible only because §11.2 is
-labelled a future requirement. *Nothing in this concept may be cited as evidence
-that containment exists.* If a Level-1 loop is built before containment, its
-security rests on scope admission, Coordinator-sole Git authority, trusted
-evidence, and human review -- which is the current honest position and should be
-stated as such to any consumer.
+states that the adapter's sandbox request is provider-owned. §11.3 assigns
+envelope derivation to Level 0. These are compatible only because §11.3 is
+labelled a future requirement.
+
+The gap is wider than containment, and describing it as "only containment is
+missing" would itself be a defect. Absent today: resource and effect
+classification, security-floor derivation, assurance-floor derivation, profile
+admission against derived floors, the mixed-resource join, deferred-effect
+classification, Coordinator-verified containment of the worker, and any mediation
+of the *caller* (§11.1). *Nothing in this concept may be cited as evidence that
+any of these exist.*
+
+If a Level-1 loop is built before them, its security rests on admission-time
+scope domination, declared actions, the Coordinator-owned trusted-commit path
+used by governed flows, trusted evidence, worktree-cleanliness preemption,
+fail-closed stops, human-authored policy and profiles, and independent review --
+which is the current honest position and should be stated as such to any
+consumer.
 
 === 21.2 "Bring your own orchestration" has an unsatisfied precondition
 
@@ -1244,9 +1649,13 @@ pinned anchor" is the only proof of authorization, and an automated caller that
 commits governing inputs manufactures its own authority. The same review's W4
 warned that a generic carve-out would export the "committed equals authorized"
 assumption to consumers whose repositories are not maintainer-only. The product
-direction in §1 and §16 therefore carries a hard precondition (§11.5) and must
-not be marketed or implemented as an open programmatic entry point before it is
-met.
+direction in §1 and §16 therefore carries two hard preconditions -- provenance
+(§11.6) and the effect path (§11.1 Case A) -- and must not be marketed or
+implemented as an open programmatic entry point for untrusted callers before both
+are met. For a trusted or cooperative caller under external operator control the
+formulation holds today; that is a materially weaker claim than the sentence
+alone suggests, and the difference belongs in any product text derived from this
+concept.
 
 === 21.3 Review finding F2 has been closed by implementation
 
@@ -1272,7 +1681,7 @@ is real and is recorded here rather than glossed over.
 The interactive assistant (C) is *not* resolved by this concept. An authoring
 assistant is plausibly a third thing, orthogonal to both levels; its "LLM
 proposes -> WFC validates -> human approves -> WFC materializes" shape is a
-direct response to the same authorship problem in §11.5 and may turn out to be
+direct response to the same authorship problem in §11.6 and may turn out to be
 the mechanism that satisfies it.
 
 === 21.5 Backlog disposition is unchanged
@@ -1287,10 +1696,99 @@ the serial-execution and one-WorkItem-one-repository constraints stand.
 === 21.6 Parent/child is not purely Level 1
 
 The naive statement "parent/child belongs to Level 1" contradicts the existing
-model, which already contains `suspend_for_prerequisite`, `child_run_id`,
-`suspension_head`, and a `prerequisite_return` reconcile anchor. §13.2 states
-the corrected split. Outer-dispatched children remain unauthorized, and this
-concept does not authorize them.
+model, which already defines `suspend_for_prerequisite`, `child_run_id`,
+`suspension_head`, and a `prerequisite_return` reconcile anchor, with unit
+coverage for the reducer transitions over them. §13.2 states the corrected split
+and the equally important current-state limit: those mechanics are modeled and
+tested, not wired into the one-shot production operator. Outer-dispatched
+children remain unauthorized, and this concept does not authorize them.
+
+=== 21.7 Corrections applied after independent adversarial review
+
+This revision responds to the independent review at
+`docs/product_boundary_and_higher_order_orchestration_concept_2026-09-25_review_001.adoc`
+(verdict B -- sound direction, material corrections required before
+product-scope realignment). The review object was the first version of this
+document, commit `4e2d6ae7505baaf895d53940413cf7e813871e6b`. That artifact is
+frozen evidence and was not modified; its section references point at the first
+version, whose §11 subsections are numbered one lower than this revision's
+because §11.1 was inserted.
+
+[cols="1,3",options="header"]
+|===
+| Finding | Disposition in this revision
+
+| F-B1 (BLOCKING) -- an untrusted Higher Loop can bypass WFC entirely; no
+  protected caller boundary
+| Accepted in substance and split by an explicit maintainer product-scope
+  decision (§11.1). Case A -- an agentic orchestrator architecturally holding an
+  alternate effect path -- is in scope and now an INVARIANT. Case B -- an
+  authorized human or administrator deliberately bypassing WFC -- is explicitly
+  *out of scope as a WFC product security goal*, and the concept now claims no
+  technical prevention of it. Stronger caller isolation is recorded as optional
+  deployment hardening and a likely future requirement for autonomous threat
+  models, not a universal product prerequisite. The BYO sentence is qualified in
+  §1 and §21.2.
+
+| F-I1 -- "Coordinator alone mutates Git" overstates current truth
+| Accepted (§5 item 6, §5.1). Coordinator-sole Git mutation is restated as the
+  desired invariant, not a present proof, while the legacy observed-commit path is
+  admitted and worker containment is unverified. Confirmed against current source:
+  with no `CommitIntent` the Hop is observed over whatever commits appeared,
+  `claim_mismatch` is computed but not consulted there, no single-commit bound
+  applies, and phase `edit`/`commit` authority is checked only on the
+  `CommitIntent` path.
+
+| F-I2 -- Level-1 durable state mixes authority, semantics, and continuity
+| Accepted (§12.1). Protected Epic authority, an audit-preserving semantic ledger
+  with transition provenance, and a disposable checkpoint are now separate;
+  authority-expanding and obligation-erasing events must root in a protected
+  source or verified WFC evidence; restart never regenerates authority or
+  obligations from a model call. Append-only event sourcing left OPEN.
+
+| F-I3 -- the first-MVP F1 escape hatch is procedural, not mechanical
+| Accepted (§11.6, §19). The operator stop is named a *procedural* control that
+  does not close the precondition; the MVP is recast as a supervised continuation
+  assistant; and one human act per WorkItem is explicitly *not* an architectural
+  invariant, since a separately protected source may pre-authorize a bounded
+  family.
+
+| F-I4 -- the non-self-similarity claim is too absolute
+| Accepted (§8.1, §8.5, §8.6, §6). The "nothing to offer" wording is gone, the
+  closing invariant is narrowed to lifecycle and ownership, and the compositional
+  rule is stated: Level 1 owns the semantics, Level 0 owns the effects --
+  including bounded effects on Level-1's own artifacts.
+
+| F-I5 -- current resource/security/assurance enforcement is narrower than the
+  three-axis model
+| Accepted (§11.3, §5.1, §21.1). *Every* stage of the derivation pipeline is
+  marked future, with an explicit list of what current policy and preflight do not
+  contain; the §11.2 worked example is labelled future design; both cited FTRs are
+  described as proposed/deferred records supplying no current mechanism. The
+  three-axis separation itself is retained.
+
+| F-M1 -- suspension/return is reducer semantics, not an operator capability
+| Accepted (§13.2, §5.1). Level 0 *models and unit-tests* the mechanics; the
+  one-shot operator exposes no prerequisite authorize/return/resume entrypoint.
+  Ownership unchanged.
+
+| F-M2 -- the principles summary weakened the cross-Run policy invariant
+| Accepted (§20). The principle now carries the full provenance rule: authority
+  must be independently rooted and fixed before the requester can influence it,
+  and agent output does not become authority by being committed, referenced,
+  copied, summarized, or passed through another component.
+
+| F-W1--F-W5 (INFO/WATCH)
+| Preserved as observations, not promoted to requirements. Graph-primary stays a
+  HYPOTHESIS with a small versioned structure sufficient for the first slice; the
+  reducer insight stays conditional on protected event authority (§12.1);
+  LangGraph stays optional and replaceable, and §19 now records that it may not be
+  needed at all; deferred-effect classification follows effects and provenance
+  rather than filenames; current substrate limits appear in §5.1.
+|===
+
+The review's own scope statement is respected: it authorized this correction's
+*content*, not any implementation, FTR, index change, or README rewrite.
 
 == 22. Implications for the existing WFC roadmap and FTRs
 
@@ -1301,16 +1799,20 @@ Direction only; no disposition is changed by this document.
 | Existing record | Implication
 
 | `FTR-WFC-EXECUTION-TRUST-BOUNDARIES`
-| Becomes more load-bearing, not less. §11.2--§11.3 depend on exactly its
+| Becomes more load-bearing, not less, and remains proposed/deferred: it supplies
+  no current mechanism. §11.3--§11.4 depend on exactly its
   visibility/mutation/execution separation, its authority-provenance rule, and
   its indirect-execution threat model. The resource-class policy sketched in
-  §11.3 is a candidate concretization of that record, not a competing design.
+  §11.4 is a candidate concretization of that record, not a competing design.
+  Caller mediation (§11.1) is added to *this concept*, not to that record's
+  accepted disposition.
 
 | `FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW`
-| Supplies the assurance-floor mechanism §11.1 requires. Its "no ordinary route
-  bypasses defensive review" rule is what makes profile admission meaningful; a
-  requested profile that omits the mandatory review is inadmissible rather than
-  accommodated.
+| Remains NOT NOW and supplies no current mechanism. Its "no ordinary route
+  bypasses defensive review" shape is the natural future home of the assurance
+  floor §11.2 requires: once derivation exists, a requested profile that omits a
+  mandatory review would be inadmissible rather than accommodated. Today the
+  review that happens is the review the supplied profile requests.
 
 | `FTR-WFC-ARCHITECTURAL-CORE-AND-CONSOLIDATION-BOUNDARIES`
 | Reinforced. Level-1 vocabulary must never reach the deterministic core; the
@@ -1320,7 +1822,7 @@ Direction only; no disposition is changed by this document.
 
 | `FTR-WFC-ROLE-PERSONA-EXECUTION-BINDING`
 | Directly relevant to §17. Its one-directional phase/binding relation is the
-  Level-0 precedent for §11.1's request-versus-grant asymmetry.
+  Level-0 precedent for §11.2's request-versus-grant asymmetry.
 
 | `FTR-WFC-ATOMIC-HOP-RECOVERY`
 | Boundary confirmed. Its distinction between recovering an interrupted Attempt
@@ -1335,7 +1837,7 @@ Direction only; no disposition is changed by this document.
 | Profile optimization deferred by dogfood attempt 7
 | Gains additional motivation: §14.1 argues that several simple Level-0 profiles
   (including `execute -> complete`) are genuinely needed for maintenance work.
-  §11.1 constrains how they may be selected. Any future profile work should treat
+  §11.2 constrains how they may be selected. Any future profile work should treat
   topology and assurance floor as separate concerns from the outset.
 
 | Backlog `WATCH` entries
@@ -1359,7 +1861,11 @@ This concept does not:
   automatic parent resumption, or unattended operation;
 * weaken any current trusted-evidence, trusted-Git, admission, or review
   behavior;
-* claim that containment exists;
+* claim that containment, resource classification, or assurance derivation
+  exists;
+* claim Zero-Trust enforcement against authorized humans or administrators
+  (§11.1);
+* claim that the governing-input authorship precondition is mechanically closed;
 * promote, demote, or reorder any backlog item;
 * create FTRs; or
 * become a LangGraph tutorial.
@@ -1372,22 +1878,30 @@ Interface::
 * What is the exact WFC external invocation contract, and is it a CLI result
   schema, a library API, or a service?
 * Does profile admission reject outright, or reject and name an admissible
-  upgraded profile (§11.1)?
-* What satisfies the governing-input authorship precondition (§11.5) -- a human
+  upgraded profile (§11.2)?
+* What satisfies the governing-input authorship precondition (§11.6) -- a human
   act, an approval-provenance mechanism, an authoring assistant, or
   operator-owned governance outside the target repository?
 
 Security::
+* Which protected deployment boundary should an installation choose for an
+  untrusted orchestrator -- containment domain, non-writable repository, distinct
+  OS identity, or a privileged broker (§11.1)?
+* What is the concrete representation of an approval or provenance root that
+  would make governing-input authorship mechanical rather than procedural?
 * What is the representation and location of the trusted repository/resource
-  policy?
+  policy -- outside the target repository, or in a separately governed surface?
 * What is the exact mapping from resource class and action to security and
   assurance floors?
 * What is the approval model for elevated or privileged execution, and who may
   request it?
-* How are containment controls verified, rather than merely requested?
+* How are worker containment and trusted-test containment *verified*, rather
+  than merely requested?
 
 Level-1 design::
-* What is the durable Level-1 persistence representation?
+* What is the durable Level-1 persistence representation, and what is the
+  revision protocol for protected Epic authority (§12.1)?
+* Does a first small implementation need LangGraph at all?
 * How much of the Work Graph should be explicit versus simple structured plan
   data?
 * What is the exact relationship between orchestrator checkpointing and durable
