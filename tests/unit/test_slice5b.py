@@ -1317,7 +1317,7 @@ def test_changes_required_artifact_does_not_grant_finding_disposition(tmp_path):
     assert vertical.reduction.run.hops[-1].finding_delta_ids == ()
 
 
-def test_direct_serial_driver_rejects_limit_above_five_before_dispatch(tmp_path):
+def test_direct_serial_driver_rejects_limit_above_cap_before_dispatch(tmp_path):
     repository = fixture_repository(tmp_path)
     baseline = commit_all(repository)
     workflow = profile(
@@ -1331,7 +1331,7 @@ def test_direct_serial_driver_rejects_limit_above_five_before_dispatch(tmp_path)
     )
     run = new_run(
         WorkItem(2, "WI-LIMIT", "fixture", "profile.yml", "repo",
-                 ("payload.txt",), "loop", 6,
+                 ("payload.txt",), "loop", 21,
                  {WorkflowRole.WORKER: "fixture worker"}),
         workflow,
         RepositoryPolicy(
@@ -1353,7 +1353,7 @@ def test_direct_serial_driver_rejects_limit_above_five_before_dispatch(tmp_path)
     adapter = CountingAdapter()
     state = tmp_path / "state"
     association = register_checkout(state, repository)
-    with pytest.raises(OperatorPreflightError, match="above five"):
+    with pytest.raises(OperatorPreflightError, match="above 20"):
         run_serial_hops(
             run,
             workflow,

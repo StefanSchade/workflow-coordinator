@@ -169,10 +169,16 @@ def test_repository_policy_v3_rejects_duplicate_or_overlapping_roots(field, path
         repository_policy_from_yaml(policy_yaml(**{field: paths}))
 
 
-@pytest.mark.parametrize("value", [True, 0, -1, 6])
+@pytest.mark.parametrize("value", [True, 0, -1, 21])
 def test_repository_policy_v3_rejects_invalid_hop_ceiling(value):
     with pytest.raises(ValidationError, match="max_autonomous_hops"):
         repository_policy_from_yaml(policy_yaml(max_autonomous_hops=value))
+
+
+@pytest.mark.parametrize("value", [1, 5, 6, 20])
+def test_repository_policy_v3_accepts_hop_ceiling_up_to_coordinator_hard_maximum(value):
+    policy = repository_policy_from_yaml(policy_yaml(max_autonomous_hops=value))
+    assert policy.max_autonomous_hops == value
 
 
 def test_repository_policy_old_versions_and_v3_shape_fail_closed():

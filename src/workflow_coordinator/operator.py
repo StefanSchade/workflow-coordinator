@@ -159,7 +159,9 @@ def _admit_a1(work_item, profile, policy, governing_paths) -> None:
             + ", ".join(outside_ceiling)
         )
     if work_item.max_autonomous_hops > COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS:
-        raise OperatorPreflightError("Slice-5B supports at most five autonomous Hops")
+        raise OperatorPreflightError(
+            f"Slice-5B supports at most {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS} autonomous Hops"
+        )
     if work_item.max_autonomous_hops > policy.max_autonomous_hops:
         raise OperatorPreflightError(
             "WorkItem.max_autonomous_hops exceeds repository policy maximum: "
@@ -293,7 +295,9 @@ def _preflight(
         if any(not _within_scope(path, work_scope) for path in phase_scope):
             raise OperatorPreflightError(f"profile phase {phase_key} authorized scope exceeds WorkItem.scope")
     if work_item.max_autonomous_hops > COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS:
-        raise OperatorPreflightError("Slice-5B supports at most five autonomous Hops")
+        raise OperatorPreflightError(
+            f"Slice-5B supports at most {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS} autonomous Hops"
+        )
     if work_item.initial_phase not in profile.phases:
         raise OperatorPreflightError(f"WorkItem.initial_phase is absent from supplied profile: {work_item.initial_phase}")
     initial_phase = profile.phases[work_item.initial_phase]
@@ -567,7 +571,9 @@ def run_serial_hops(
 ):
     """Run the finite Slice-5B serial loop without reserving a future Hop."""
     if run.hop_limit > COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS:
-        raise OperatorPreflightError("Slice-5B serial driver refuses a Hop limit above five")
+        raise OperatorPreflightError(
+            f"Slice-5B serial driver refuses a Hop limit above {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS}"
+        )
     evidence: list[dict[str, object]] = []
     artifact_map = dict(durable_artifacts_by_phase or {})
     prior_observations: tuple[object, ...] = ()

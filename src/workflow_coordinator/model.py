@@ -22,7 +22,7 @@ from typing import Mapping
 # mutating Git metadata and the sandbox is unchanged.
 EDIT_ACTION = "edit"
 COMMIT_ACTION = "commit"
-COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS = 5
+COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS = 20
 COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS = 900
 
 

@@ -14,6 +14,7 @@ from workflow_coordinator.operator import main, run_serial_hops
 from workflow_coordinator.operator import _pinned_text
 from workflow_coordinator.adapter import AgentExecutionOutcome
 from workflow_coordinator.model import (
+    COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
     ExecutionBinding,
     RepositoryPolicy,
     WorkItem,
@@ -325,17 +326,71 @@ def test_operating_contract_failure_is_canonical_pre_run_refusal(
     assert not counter.exists()
 
 
-def test_n_greater_than_five_rejects_pinned_clean_input_before_execution(repository: Path, tmp_path: Path, capsys):
+def test_n_greater_than_cap_rejects_pinned_clean_input_before_execution(repository: Path, tmp_path: Path, capsys):
     counter = tmp_path / "counter"
     executable = malformed_fake(tmp_path, counter)
     work = repository / "work.yml"
-    work.write_text(work.read_text().replace("max_autonomous_hops: 1", "max_autonomous_hops: 6"))
+    work.write_text(work.read_text().replace("max_autonomous_hops: 1", "max_autonomous_hops: 21"))
     expected_head = commit(repository)
     command = args(repository, tmp_path / "state", str(executable))
     assert command[command.index("--expected-head") + 1] == expected_head
     assert main(args(repository, tmp_path / "state", str(executable))) == 2
-    assert "at most five autonomous Hops" in capsys.readouterr().err
+    assert "at most 20 autonomous Hops" in capsys.readouterr().err
     assert not counter.exists()
+
+
+def _work_item_and_policy_with_hops(hops: int) -> tuple[WorkItem, RepositoryPolicy]:
+    item = WorkItem(
+        schema_version=2,
+        work_item_id="WI-HOP-CAP",
+        authority_source="fixture",
+        profile_ref="fixture.yaml",
+        repository="repo",
+        scope=("repo",),
+        initial_phase="work",
+        max_autonomous_hops=hops,
+        personas={WorkflowRole.WORKER: "fixture worker"},
+    )
+    policy = RepositoryPolicy(
+        schema_version=3,
+        policy_id="policy",
+        revision="policy-r1",
+        scope=("repo",),
+        governance_paths=("governance",),
+        work_item_scope_ceiling=("repo",),
+        max_autonomous_hops=hops,
+        actions=("edit", "commit"),
+        evidence_commands={},
+    )
+    return item, policy
+
+
+@pytest.mark.parametrize("hops", [1, 5, 6, COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS])
+def test_admit_a1_accepts_hop_ceiling_up_to_coordinator_hard_maximum(hops):
+    workflow = profile({"work": phase({"finish": route("complete")})})
+    item, policy = _work_item_and_policy_with_hops(hops)
+    operator._admit_a1(item, workflow, policy, governing_paths=())
+
+
+def test_admit_a1_rejects_hop_ceiling_above_coordinator_hard_maximum():
+    workflow = profile({"work": phase({"finish": route("complete")})})
+    item, policy = _work_item_and_policy_with_hops(COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS + 1)
+    with pytest.raises(
+        operator.OperatorPreflightError,
+        match=f"at most {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS} autonomous Hops",
+    ):
+        operator._admit_a1(item, workflow, policy, governing_paths=())
+
+
+def test_admit_a1_still_enforces_work_item_within_policy_ceiling():
+    workflow = profile({"work": phase({"finish": route("complete")})})
+    item, policy = _work_item_and_policy_with_hops(COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS)
+    policy = replace(policy, max_autonomous_hops=COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS - 1)
+    with pytest.raises(
+        operator.OperatorPreflightError,
+        match="WorkItem.max_autonomous_hops exceeds repository policy maximum",
+    ):
+        operator._admit_a1(item, workflow, policy, governing_paths=())
 
 
 def test_dirty_and_malformed_results_do_not_retry(repository: Path, tmp_path: Path):
