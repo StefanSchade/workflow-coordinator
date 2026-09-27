@@ -33,11 +33,39 @@ truth:
 
 This is intentionally a lean subset of Core's model. It has no `findings`,
 `reviews`, `review_sets`, `ftrs`, `ftr_dependencies`, or `releases` tables, no
-`extracted/`/`derived/`/`staging/`/`pipelines/`/`plugins/`/`templates/`
-directories, no generated context report, no ODS workbook integration, no
-Jinja2, and no JSON Schema or generation scripts. Add another canonical table
-only when concrete evidence shows these four cannot represent the required
-memory.
+`extracted/`/`derived/`/`plugins/`/`templates/` directories, no generated
+context report, no candidate or commit-signal extraction, no health report, no
+Jinja2 rendering, and no JSON Schema. Add another canonical table only when
+concrete evidence shows these four cannot represent the required memory.
+
+== Spreadsheet round trip
+
+The four tables can be inspected and edited as an ODS workbook. The flow is
+deliberately one-directional in authority terms:
+
+[source,text]
+----
+project_memory/canonical/*.json      (authoritative)
+    -> make memory-export            -> project_memory.ods
+    -> edit the workbook
+    -> make memory-import            -> project_memory/staging/*.json
+    -> make memory-check             -> diff staging against canonical
+    -> make memory-promote           -> explicit copy back into canonical
+----
+
+`make memory-check` reimports the workbook and diffs it against canonical, so
+it fails whenever the two disagree; that failure is the review signal, not an
+error to route around. `make memory-promote-reimport-checked` is the normal
+path: it reimports, diffs, and only then promotes. Promotion is never implicit,
+and the workbook is never authority.
+
+`make memory-setup` installs the pinned `sheets-run` tooling from
+`requirements/spreadsheet-handling.txt`. That pin is maintainer tooling only --
+no `workflow_coordinator` source imports it -- and `SHEETS_RUN=<path>` overrides
+the executable if it is already available elsewhere. `project_memory.ods`, the
+contents of `project_memory/staging/`, and any generated `_meta.yaml` (workbook
+column presentation, not memory data) are generated artifacts and stay
+untracked.
 
 == What this is not
 
@@ -47,16 +75,18 @@ memory.
   `docs/backlog/FTR-WFC-*.adoc`, review artifacts, and Git history remain the
   detailed provenance layer; canonical memory is intentionally lossy relative
   to that history and links back to it via `commit_refs` and `source_path`.
-* Not automatically generated or promoted. There is no extraction pipeline,
-  no staging area, and no generation script in this lean version. All four
-  files are curated and updated manually.
+* Not automatically generated or promoted. Nothing extracts memory content from
+  commits, reviews, or documents in this lean version. The only mechanical path
+  into these files is the explicit, diff-checked workbook promotion described
+  under <<Spreadsheet round trip>>; otherwise the four files are curated and
+  updated by hand.
 * Not a task list. Concerns are steering fields, not a backlog; the backlog
   itself remains `docs/backlog/README.adoc`.
 
 == Updating this memory
 
-Edit the JSON files directly. Keep `id` values unique per table, keep
-`concern_event_xrefs` entries pointing at existing `concern_events`/`concerns`
-rows, and keep new concerns few and broad rather than one per bug or commit.
-`docs/project_memory.adoc` is a short pointer into this directory, not a
-second copy of this data.
+Edit the JSON files directly, or edit the workbook and promote it as described
+above. Keep `id` values unique per table, keep `concern_event_xrefs` entries
+pointing at existing `concern_events`/`concerns` rows, and keep new concerns few
+and broad rather than one per bug or commit. `docs/project_memory.adoc` is a
+short pointer into this directory, not a second copy of this data.

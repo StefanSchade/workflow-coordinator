@@ -16,6 +16,14 @@ unit tests. Use `make snapshot` (or `make snapshot-multi`) to create compact,
 line-numbered WFC-prefixed repository snapshots in `wfc_snapshots/`; the output
 includes a table of contents and a repository tree.
 
+Project Memory lives in [`project_memory/`](project_memory/README.adoc), whose
+canonical JSON tables are authoritative. `make memory-export` renders them as an
+ODS workbook, `make memory-check` reimports the workbook into
+`project_memory/staging/` and diffs it against canonical, and
+`make memory-promote-reimport-checked` promotes a verified workbook back into
+canonical. Promotion is always explicit; `make memory-setup` installs the pinned
+maintainer-only spreadsheet tooling.
+
 The [standalone authority index](docs/README.adoc) is the authoritative
 classification of current documentation, executable surfaces, provenance,
 history, and planning evidence. Start there before maintaining or operating the

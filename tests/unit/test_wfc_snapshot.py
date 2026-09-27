@@ -15,6 +15,18 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
     (repository / "tests" / "unit").mkdir(parents=True)
     (repository / "docs").mkdir()
     (repository / "governance").mkdir()
+    (repository / "project_memory" / "canonical").mkdir(parents=True)
+    (repository / "project_memory" / "staging").mkdir()
+    (repository / "project_memory" / "README.adoc").write_text("= Memory\n", encoding="utf-8")
+    (repository / "project_memory" / "canonical" / "concerns.json").write_text(
+        '[{"id": "CONC-EXAMPLE"}]\n', encoding="utf-8"
+    )
+    (repository / "project_memory" / "canonical" / "_meta.yaml").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    (repository / "project_memory" / "staging" / "concerns.json").write_text(
+        '[{"id": "CONC-STAGED"}]\n', encoding="utf-8"
+    )
     (repository / "src" / "workflow_coordinator" / "module.py").write_text(
         "value = 1\n", encoding="utf-8"
     )
@@ -46,6 +58,7 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
     assert completed.returncode == 0, completed.stderr
     assert {path.name for path in output.iterdir()} == {
         "wfc_docs_and_governance.txt",
+        "wfc_project_memory.txt",
         "wfc_repo_infrastructure.txt",
         "wfc_source_and_tests.txt",
         "wfc_repository_tree.txt",
@@ -68,6 +81,15 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
         encoding="utf-8"
     )
     assert "docs/guide.md" in (output / "wfc_docs_and_governance.txt").read_text(encoding="utf-8")
+    memory = (output / "wfc_project_memory.txt").read_text(encoding="utf-8")
+    assert "project_memory/README.adoc" in memory
+    assert "project_memory/canonical/concerns.json" in memory
+    assert "CONC-EXAMPLE" in memory
+    assert "project_memory/staging" not in memory
+    assert "CONC-STAGED" not in memory
+    assert "_meta.yaml" not in memory
     tree = (output / "wfc_repository_tree.txt").read_text(encoding="utf-8")
     assert "repository/" in tree
     assert ".git" not in tree
+    assert "canonical/" in tree
+    assert "staging" not in tree

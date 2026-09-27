@@ -19,8 +19,13 @@ EXCLUDED_DIRECTORIES = {
 }
 TEXT_SUFFIXES = {".adoc", ".json", ".md", ".py", ".toml", ".txt", ".yaml", ".yml"}
 ROOT_TEXT_FILES = {"LICENSE", "Makefile", "README.md"}
+# Generated Project Memory review surfaces: the workbook, its staging area, and
+# its presentation metadata are transient, so they stay out of snapshots.
+EXCLUDED_RELATIVE_DIRECTORIES = {("project_memory", "staging")}
+EXCLUDED_FILE_NAMES = {"_meta.yaml", "project_memory.ods"}
 GROUPS = {
     "wfc_docs_and_governance.txt": ("docs", "governance"),
+    "wfc_project_memory.txt": ("project_memory",),
     "wfc_repo_infrastructure.txt": (),
     "wfc_source_and_tests.txt": ("src", "tests"),
 }
@@ -43,7 +48,14 @@ def _parse_arguments() -> argparse.Namespace:
 
 
 def _is_snapshot_file(path: Path) -> bool:
+    if path.name in EXCLUDED_FILE_NAMES:
+        return False
     return path.suffix in TEXT_SUFFIXES or path.name in ROOT_TEXT_FILES
+
+
+def _is_excluded_directory(relative: Path) -> bool:
+    parts = relative.parts
+    return any(parts[: len(excluded)] == excluded for excluded in EXCLUDED_RELATIVE_DIRECTORIES)
 
 
 def _files(repository: Path, output: Path) -> list[Path]:
@@ -55,6 +67,8 @@ def _files(repository: Path, output: Path) -> list[Path]:
         if any(
             part in EXCLUDED_DIRECTORIES or part.endswith(".egg-info") for part in relative.parts
         ):
+            continue
+        if _is_excluded_directory(relative):
             continue
         try:
             path.read_text(encoding="utf-8")
@@ -81,6 +95,8 @@ def _tree(repository: Path, output: Path) -> str:
                 path == output
                 or path.name in EXCLUDED_DIRECTORIES
                 or path.name.endswith(".egg-info")
+                or path.name in EXCLUDED_FILE_NAMES
+                or _is_excluded_directory(path.relative_to(repository))
             ):
                 continue
             entries.append(path)
