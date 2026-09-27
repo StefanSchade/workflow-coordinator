@@ -1,0 +1,370 @@
+= Coordinator hard autonomous-Hop ceiling 5 -> 20 -- Acceptance Review 001
+
+Independent bounded review of
+`dcb1da0403e0af430a883288f61e593162ee9e47`,
+`feat: raise Coordinator hard autonomous-Hop ceiling to 20`.
+
+== Identity and scope
+
+Reviewed commit:: `dcb1da0403e0af430a883288f61e593162ee9e47`
+Parent:: `4767309fbd5e8feee06029e407ae1548b64499a9` (verified: `git rev-parse
+dcb1da0^1` returns exactly this hash)
+Subject:: `feat: raise Coordinator hard autonomous-Hop ceiling to 20`
+Files changed::
+* `src/workflow_coordinator/model.py` (+1/-1)
+* `src/workflow_coordinator/operator.py` (+9/-3)
+* `tests/architecture/test_self_development_governance.py`
+* `tests/unit/test_operator.py`
+* `tests/unit/test_serialization.py`
+* `tests/unit/test_slice5b.py`
+Confirmed via `git diff --stat dcb1da0^..dcb1da0 -- . ':!src/workflow_coordinator/model.py' ':!src/workflow_coordinator/operator.py' ':!tests/architecture/test_self_development_governance.py' ':!tests/unit/test_operator.py' ':!tests/unit/test_serialization.py' ':!tests/unit/test_slice5b.py'`: empty output, i.e. no other file changed.
+Provider invocations by this review:: 0
+WFC invocations by this review:: 0
+Runtime, Core, governance surfaces, and remote refs:: not touched by this review
+
+== Verdict
+
+*ACCEPTED.*
+
+* BLOCKING: 0
+* IMPORTANT: 0
+* MINOR: 0
+* INFO: 2 (surviving `Slice-5B` nomenclature; non-authoritative historical
+  `.adoc` records still citing 5 -- both disposed below as non-defects)
+
+Hard ceiling still exists:: yes, at exactly 20.
+Three-layer ceiling relationship preserved:: yes,
+`WorkItem.max_autonomous_hops <= RepositoryPolicy.max_autonomous_hops <=
+COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS`, each link independently enforced.
+Configured policies/WorkItems widened:: no.
+Schema shape changed:: no.
+Runtime promotion required by this Development-repository candidate:: no
+(Runtime already carries the aligned constant independently; see section 7).
+
+== 1. The constant
+
+`src/workflow_coordinator/model.py:25`:
+
+[source,python]
+----
+COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS = 20
+----
+
+Exactly one production line changed in `model.py`
+(`git diff --numstat dcb1da0^..dcb1da0 -- src/` reports `1 1`). The adjacent
+`COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS = 900` is unchanged.
+
+== 2. Enforcement layers, inspected individually
+
+The ceiling is enforced at four independent points, none removed, all now
+deriving both the comparison and the diagnostic from the single constant.
+
+[cols="1,2,3",options="header"]
+|===
+|Layer |Site |Guard
+
+|RepositoryPolicy parsing
+|`serialization.py:448-455`
+|`_integer(..., positive=True)`, then `max_autonomous_hops >
+COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS` raises `ValidationError`
+(`"policy.max_autonomous_hops exceeds Coordinator hard maximum: 20"`)
+
+|A1 admission
+|`operator.py:161-164`
+|`work_item.max_autonomous_hops > COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS` raises
+`OperatorPreflightError`
+
+|Operator preflight
+|`operator.py:297-300`
+|same predicate, independent second site on the production `_preflight()` path
+
+|Serial-Hop driver
+|`operator.py:573-576`
+|`run.hop_limit > COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS` raises
+`OperatorPreflightError` before any dispatch
+|===
+
+`serialization.py` is *not* in the candidate's changed-path set: its guard
+already read the constant symbolically and its message already interpolated
+the constant, so raising the constant propagated there with no edit. That is
+the correct outcome, not an omission -- verified by reading the unmodified
+source, not inferred from the absence of a diff hunk.
+
+The `WorkItem <= RepositoryPolicy` link is a *separate* comparison at
+`operator.py:165-168`, untouched by this candidate:
+
+[source,python]
+----
+if work_item.max_autonomous_hops > policy.max_autonomous_hops:
+    raise OperatorPreflightError(
+        "WorkItem.max_autonomous_hops exceeds repository policy maximum: "
+        f"{work_item.max_autonomous_hops} > {policy.max_autonomous_hops}"
+    )
+----
+
+It is ordered *after* the hard-ceiling check, so a WorkItem at exactly 20 with
+a policy at 19 passes the product ceiling and is then refused by the policy
+ceiling. `test_admit_a1_still_enforces_work_item_within_policy_ceiling`
+exercises precisely that configuration, which is what makes it a genuine proof
+of independence rather than a restatement of the hard-ceiling check.
+
+WorkItem YAML parsing (`serialization.py:422-425`) validates only
+`positive=True` and does not itself apply the hard ceiling. That is pre-existing
+and unchanged; admission and preflight are the enforcing layers for WorkItem,
+and both fire. Likewise `Run.hop_limit` deserialization
+(`serialization.py:894`) is positive-only, with `run_serial_hops` as the
+enforcing layer. Neither asymmetry is introduced, widened, or narrowed by this
+candidate, and neither is in scope here.
+
+== 3. Diagnostics
+
+`grep -rni "\bfive\b" src tests governance scripts` returns no matches (exit 1).
+The retired literal English boundary is gone from every executable and
+governance surface. The three former hardcoded messages are now f-strings over
+the constant:
+
+[source,python]
+----
+f"Slice-5B supports at most {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS} autonomous Hops"
+f"Slice-5B serial driver refuses a Hop limit above {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS}"
+----
+
+INFO 1 -- surviving `Slice-5B` label:: `Slice-5B` remains in the two admission
+messages, the serial-driver message, and `run_serial_hops`'s docstring
+(4 occurrences in `src/`, 6 across `src/` + `tests/`). `5B` names the delivery
+slice, not a Hop count; it was already decoupled from the numeric boundary
+before this candidate and carries no product-truth claim about the ceiling.
+Recorded as INFO, nomenclature only. No correction manufactured.
+
+== 4. Configured policies and WorkItems
+
+No governance file is in the changed-path set. Current values, read directly:
+
+[cols="2,1",options="header"]
+|===
+|Surface |`max_autonomous_hops`
+
+|`governance/self-development/repository-policy.yaml:16`
+|5
+
+|`governance/work-items/developer-ergonomics.yaml:15`
+|4
+
+|`governance/work-items/developer-ergonomics-review.yaml:15`
+|3
+
+|`governance/work-items/developer-ergonomics-review-002.yaml:15`
+|3
+
+|`governance/work-items/developer-ergonomics-review-003.yaml:15`
+|5
+
+|`governance/work-items/developer-ergonomics-review-004.yaml:15`
+|3
+
+|`governance/work-items/developer-ergonomics-review-005.yaml:15`
+|3
+|===
+
+The self-development policy intentionally remains at 5. Nothing was widened
+by the product-ceiling increase; every configured WorkItem remains at or below
+the configured policy ceiling, which now sits strictly below the product
+ceiling.
+
+The four edited architecture-test assertions *decouple* rather than widen. The
+prior form chained three facts into one identity:
+
+[source,python]
+----
+assert policy.max_autonomous_hops == COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 5
+----
+
+That assertion was only true because the configured policy value and the
+product ceiling coincidentally shared the value 5; it encoded "policy is
+pinned to the product ceiling," which was never the intended invariant. The
+new form asserts the configured value on its own
+(`assert policy.max_autonomous_hops == 5`) and pins the product ceiling
+separately and literally at
+`tests/architecture/test_self_development_governance.py:371`
+(`assert COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 20`). This is a strict
+improvement in what the suite guards, and it is why no configured governance
+value needed to move.
+
+== 5. Schema and unrelated semantics
+
+No schema shape changed: `model.py`'s diff is the single constant line; no
+dataclass field, `schema_version` value, required-field set, or
+`_fields(...)`/`_policy_version(...)` contract is touched. `serialization.py`
+is unmodified.
+
+No reducer, route, Finding, retry/Attempt, persona/binding, trust, Git, or
+evidence semantics changed. `reducer.py`, `slice4.py`, `adapter.py`,
+`proof_harness.py`, `vertical`/Run reduction, the packaged operating contract
+under `src/workflow_coordinator/resources/`, and every governance profile and
+prompt component are outside the changed-path set. The three `operator.py`
+hunks are diagnostics-only; `operator.py:801`'s `"retry": False` projection and
+the surrounding admission/preflight ordering are byte-identical to the parent.
+
+No current authority document asserts a five-Hop product boundary:
+`grep -rniE "autonomous.?hop|hard (max|ceiling)|hop ceiling"` over `README.md`,
+`docs/architecture.md`, `docs/project_memory.adoc`, `docs/self-development.adoc`,
+`docs/README.adoc`, and `src/workflow_coordinator/resources/` returns nothing.
+The candidate therefore owes no authority-doc update.
+
+INFO 2 -- historical records still citing 5:: `COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS = 5`
+survives in `docs/imported/core-incubator/FTR-AGENT-WORKFLOW-COORDINATOR-P5.adoc`
+(lines 3580, 3585) and in four prior review/bootstrap artifacts under
+`docs/backlog/`. Per `docs/README.adoc`, `imported/core-incubator/` is
+"pre-split historical evidence, not current standalone authority" and
+`backlog/` review artifacts "preserve proposals, reasoning, and review
+outcomes" -- historical narrative, not executable invariants or current
+authority. Rewriting them would falsify the record of what was true at the
+time. Recorded as INFO; no correction required or performed.
+
+== 6. Test materiality -- verified by mutation, not by name
+
+Collected node IDs (`pytest --collect-only -q -o addopts=""`) prove the
+required matrix exists at two independent layers:
+
+[cols="1,2,2",options="header"]
+|===
+|Value |RepositoryPolicy parsing |A1 admission
+
+|1
+|`..._accepts_hop_ceiling_up_to_coordinator_hard_maximum[1]`
+|`test_admit_a1_accepts_hop_ceiling_up_to_coordinator_hard_maximum[1]`
+
+|5
+|`...[5]`
+|`...[5]`
+
+|6
+|`...[6]`
+|`...[6]`
+
+|20
+|`...[20]` (literal)
+|`...[20]` (via the constant)
+
+|21 -- rejected
+|`test_repository_policy_v3_rejects_invalid_hop_ceiling[21]`
+|`test_admit_a1_rejects_hop_ceiling_above_coordinator_hard_maximum`
+|===
+
+Plus, independent of the hard ceiling:
+`test_admit_a1_still_enforces_work_item_within_policy_ceiling` (new) and the
+pre-existing `tests/unit/test_a1_admission.py::test_a1_rejects_work_item_hops_above_policy_ceiling`;
+end-to-end CLI refusal via
+`test_n_greater_than_cap_rejects_pinned_clean_input_before_execution` (21,
+asserting `"at most 20 autonomous Hops"` on stderr, exit 2, and
+`not counter.exists()` -- i.e. refusal *before* execution); and driver-level
+refusal via `test_direct_serial_driver_rejects_limit_above_cap_before_dispatch`
+(`hop_limit=21`, matching `"above 20"`).
+
+The A1 parametrization uses `COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS` rather than
+a literal, so on its own it would follow a regressed constant. It is pinned
+from outside by the literal `20` in the serialization parametrization and by
+`test_self_development_governance.py:371`. To confirm the suite is genuinely
+load-bearing rather than self-consistent, the constant was temporarily reverted
+to 5 in the working tree and the full suite re-run:
+
+----
+6 failed, 417 passed in 20.37s
+
+FAILED tests/architecture/test_self_development_governance.py::test_attempt_5_bundle_passes_production_preflight
+FAILED tests/unit/test_operator.py::test_n_greater_than_cap_rejects_pinned_clean_input_before_execution
+FAILED tests/unit/test_operator.py::test_admit_a1_accepts_hop_ceiling_up_to_coordinator_hard_maximum[6]
+FAILED tests/unit/test_serialization.py::test_repository_policy_v3_accepts_hop_ceiling_up_to_coordinator_hard_maximum[6]
+FAILED tests/unit/test_serialization.py::test_repository_policy_v3_accepts_hop_ceiling_up_to_coordinator_hard_maximum[20]
+FAILED tests/unit/test_slice5b.py::test_direct_serial_driver_rejects_limit_above_cap_before_dispatch
+----
+
+All four enforcement layers plus the literal pin fail under the mutation. The
+working tree was restored with `git checkout -- src/workflow_coordinator/model.py`
+and re-verified at `= 20`; `git status --short` afterwards shows only the
+pre-existing untracked `wfc_snapshots/`.
+
+== 7. Boundary discipline
+
+Core (`/home/stefan/repos/spreadsheet-handling/core`, a separate repository)
+and Runtime (`/home/stefan/repos/spreadsheet-handling/workflow-coordinator-runtime`,
+a separate repository) were not modified by the candidate -- which is confined
+to this repository -- nor by this review. Runtime's working tree is clean and
+it independently carries the aligned values
+(`model.py:25` = 20, `test_self_development_governance.py:371` asserts 20) at
+its own `30da7d4`, so no promotion action is owed by this Development-repository
+candidate. Runtime alignment was observed read-only and is outside this
+review's mandate.
+
+== Validation evidence
+
+=== Whitespace check
+
+[source,shell]
+----
+git diff --check dcb1da0^..dcb1da0
+----
+
+Result:: no output, exit 0
+
+=== Focused affected tests
+
+[source,shell]
+----
+.venv/bin/python -m pytest -p no:cacheprovider -o addopts="" -q \
+  tests/unit/test_operator.py tests/unit/test_serialization.py \
+  tests/unit/test_slice5b.py tests/architecture/test_self_development_governance.py
+----
+
+Result:: 184 passed, 0 failed
+
+=== Hop-ceiling slice
+
+[source,shell]
+----
+.venv/bin/python -m pytest -p no:cacheprovider -o addopts="" -v \
+  -k "hop_ceiling or hop_cap or above_cap or greater_than_cap or policy_ceiling or hop_limit" tests/
+----
+
+Result:: `17 passed, 406 deselected in 0.35s`
+
+=== Full suite
+
+[source,shell]
+----
+.venv/bin/python -m pytest -p no:cacheprovider -o addopts="" -q tests/
+----
+
+Result:: `423 passed in 20.52s`
+
+=== Ruff and bounded format check (Makefile targets)
+
+[source,shell]
+----
+PYTHON=.venv/bin/python make lint format-check
+----
+
+Result:: `All checks passed!` and `3 files already formatted`
+
+== Disposition summary
+
+The candidate does exactly one product thing: it moves the single Coordinator
+hard autonomous-Hop ceiling from 5 to 20. The ceiling still exists and is still
+enforced at all four independent points -- RepositoryPolicy parsing, A1
+admission, operator preflight, and the serial-Hop driver -- with every
+comparison and every diagnostic now derived from the constant, so the retired
+literal English boundary "five" is absent from all executable and governance
+surfaces. The `WorkItem <= RepositoryPolicy` link remains a separate,
+independently enforced comparison, newly proven at the boundary case
+(WorkItem 20 against policy 19). No configured policy or WorkItem was widened;
+the self-development policy deliberately stays at 5, and the edited
+architecture assertions decouple configured values from the product ceiling
+instead of tracking it. No schema shape and no reducer, route, Finding,
+retry/Attempt, persona/binding, trust, Git, or evidence semantics changed. Test
+materiality was confirmed by mutation rather than accepted from the
+implementation report: reverting the constant to 5 fails six tests spanning all
+four layers. The changed-path set is exactly six files and provably nothing
+else. Two INFO observations (`Slice-5B` nomenclature; non-authoritative
+historical records citing 5) are non-defects and were deliberately not
+"corrected." No WFC invocation, provider invocation, Runtime or Core mutation,
+governance mutation, or remote push occurred during this review.
