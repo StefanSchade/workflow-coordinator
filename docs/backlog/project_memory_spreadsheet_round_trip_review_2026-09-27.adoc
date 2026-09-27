@@ -1,0 +1,925 @@
+= Project Memory spreadsheet round trip -- Architecture Review 001
+
+Independent bounded architectural/tooling review of
+`aa219a6fbf42d8f7d1c6d3706cb155f921df0040`,
+`feat(memory): add spreadsheet round-trip tooling`.
+
+== Identity and scope
+
+Reviewed commit:: `aa219a6fbf42d8f7d1c6d3706cb155f921df0040`
+Parent:: `98efeae6fbf678386d30b15fd8d81e91bf8a5bd5` (verified: `git rev-parse
+aa219a6^1` returns exactly this hash), `docs(memory): structure standalone WFC
+project memory`
+Files changed (10)::
+* `.gitignore` (+4)
+* `Makefile` (+59)
+* `README.md` (+8)
+* `project_memory/README.adoc` (+43/-13)
+* `project_memory/pipelines/memory/json_to_ods.yaml` (new, +12)
+* `project_memory/pipelines/memory/ods_to_json.yaml` (new, +12)
+* `project_memory/staging/.gitignore` (new, +2)
+* `requirements/spreadsheet-handling.txt` (new, +12)
+* `scripts/wfc_snapshot.py` (+16)
+* `tests/unit/test_wfc_snapshot.py` (+22)
+Confirmed via `git diff --stat aa219a6^..aa219a6` with all ten paths excluded:
+empty output, i.e. no other file changed.
+Reviewer role:: independent. This review did not implement `aa219a6`, did not
+modify any implementation file, did not correct any finding, and did not push.
+Provider invocations by this review:: 0
+WFC invocations by this review:: 0
+Core:: inspected READ-ONLY (see section 11). Not modified.
+Runtime:: not inspected beyond `git status`/`git rev-parse`. Not modified.
+Canonical Project Memory:: not mutated. All empirical probes ran against
+`git archive aa219a6` extractions in the session scratchpad; the live
+`project_memory/canonical/`, `project_memory/staging/`, and
+`project_memory.ods` were read but never written.
+
+== Verdict
+
+*B -- CHANGES REQUIRED.*
+
+* IMPORTANT: 3
+* MINOR: 5
+* INFO: 1
+
+The JSON <-> ODS transformation itself is sound: the unchanged round trip is
+*byte-identical*, the workbook carries exactly the four WFC tables and no
+Core-only tables, the snapshot group is correct, and the dependency boundary
+genuinely holds. The defect is in the review/promotion protocol layered on top
+of that transformation.
+
+In one sentence: *the workflow cannot promote a reviewed change, and can promote
+an unreviewed one.* The documented promotion path aborts on exactly the
+situation it exists to serve (an intentional workbook edit), while the
+undocumented bare `make memory-promote` -- the only path that can actually
+promote an edit -- performs no check of any kind and is bound to nothing the
+maintainer saw.
+
+Answers to the eight primary architectural questions, in order:
+
+[cols="1,4",options="header"]
+|===
+|# |Answer
+
+|1 -- clear preview of exactly what promotion would change?
+|Partially. The `diff -ru` output *is* legible and correctly scoped, but it is
+delivered as a build failure, not as review output.
+
+|2 -- preview treated as review information rather than failure?
+|*No.* `diff` exit 1 propagates as `make` exit 2 and aborts the pipeline.
+
+|3 -- clear operator action meaning "I approve this promotion"?
+|*No.* `make memory-promote` means "copy whatever is in staging"; it is
+indistinguishable from an accident and records nothing.
+
+|4 -- does promotion apply the same staging state that was reviewed?
+|*No.* Proven: staging can be promoted after it has ceased to correspond to the
+workbook (section 5.2), and under `make -j` the diffed state and the promoted
+state are provably different (section 4).
+
+|5 -- can stale staging accidentally be promoted?
+|*Yes*, with exit 0 and no warning (section 5.2).
+
+|6 -- can a partial/failed import leave promotable staging?
+|*Yes* for a partial set (2-of-4 promotes cleanly, canonical left a blend);
+*no* for a total failure (glob failure aborts). See section 5.3.
+
+|7 -- transformation validation vs content-change approval represented cleanly?
+|*No.* The names conflate them, and one name is factually wrong
+(`memory-diff-reimport` never reimports). See section 6.
+
+|8 -- does `make -j` introduce ordering/race problems?
+|*Yes*, inside `memory-check`, reproducibly, with unmodified tooling
+(section 4). The commit message's claim to the contrary is false.
+|===
+
+== 1. What the implementation actually is
+
+Six targets plus a guard, all `.PHONY`, `Makefile:42-80`:
+
+[source,make]
+----
+memory-export: check-sheets-run
+	$(SHEETS_RUN) --config $(MEMORY_PIPELINE_DIR)/json_to_ods.yaml
+
+memory-import: check-sheets-run
+	@test -f $(MEMORY_WORKBOOK) || { ... exit 1; }
+	@mkdir -p $(MEMORY_STAGING_DIR)
+	@find $(MEMORY_STAGING_DIR) -mindepth 1 ! -name .gitignore -exec rm -rf {} +
+	$(SHEETS_RUN) --config $(MEMORY_PIPELINE_DIR)/ods_to_json.yaml
+
+memory-diff-reimport:
+	diff -ru $(MEMORY_DIFF_EXCLUDES) $(MEMORY_CANONICAL_DIR) $(MEMORY_STAGING_DIR)
+
+memory-check: memory-import memory-diff-reimport
+
+memory-promote:
+	@test -d $(MEMORY_STAGING_DIR) || { ... exit 1; }
+	cp -f $(MEMORY_STAGING_DIR)/*.json $(MEMORY_CANONICAL_DIR)/
+
+memory-promote-reimport-checked:
+	$(MAKE) memory-check
+	$(MAKE) memory-promote
+----
+
+The two pipeline configs are plain `json_dir` <-> `ods` inverses with no
+projection, plugin, template, or derived-query step. That claim in the commit
+message is accurate and is the reason the round trip is byte-exact.
+
+The whole protocol therefore rests on two load-bearing facts:
+
+. `memory-check` has *no recipe*. It is the empty target
+  `memory-check: memory-import memory-diff-reimport`, so its behaviour is
+  entirely determined by GNU Make's prerequisite semantics -- which are
+  *unordered* under `-j`.
+. `diff`'s exit status is the only gate. There is no separate notion of
+  "difference found" versus "transformation broken".
+
+Everything below follows from those two facts.
+
+== 2. Round-trip integrity (case A: no intentional edit)
+
+This is the part that works, and it works well.
+
+All four canonical files parse as JSON arrays:
+`concern_events.json` (14 rows), `concern_event_xrefs.json` (19),
+`concerns.json` (4), `decisions.json` (9).
+
+`make memory-export` produced an 11 374-byte `project_memory.ods` containing
+exactly five sheets:
+
+----
+concern_event_xrefs, concern_events, concerns, decisions, _meta
+----
+
+with row counts matching canonical plus one header row each (20 / 15 / 5 / 10).
+No `findings`, `reviews`, `review_sets`, `ftrs`, `ftr_dependencies`, `releases`,
+`assessment_scale_mappings`, or `ext_*` sheet is present -- i.e. no Core-only
+canonical memory table leaked through the adapted pipeline. The four
+`*_filter` / `*_table` / `*_header` / `*_body` entries also present in
+`content.xml` are ODF database-ranges and named expressions, not sheets;
+counting only `<table:table table:name=...>` confirms the five above.
+
+`make memory-export && make memory-import && make memory-diff-reimport`:
+
+----
+diff -ru --exclude=_meta.yaml --exclude=.gitignore project_memory/canonical project_memory/staging
+DIFF_EXIT=0
+concerns identical
+concern_events identical
+concern_event_xrefs identical
+decisions identical
+----
+
+`cmp` reports all four files *byte*-identical, not merely semantically equal.
+The transformation invariant holds exactly. This is a real and useful property
+and the commit earns full credit for it.
+
+== 3. IMPORTANT 1 -- the documented promotion path cannot promote any intentional edit
+
+OBSERVED::
+A deliberate single-cell workbook edit (`concerns` sheet, `title` of
+`CONC-WFC-LEVEL0-EMPIRICAL-CONFIDENCE`) was made and
+`make memory-promote-reimport-checked` -- the path `README.md` and
+`project_memory/README.adoc` both name as "the normal path" -- was run:
++
+----
+make memory-check
+make[1]: Entering directory '.../probe'
+sheets-run --config project_memory/pipelines/memory/ods_to_json.yaml
+project_memory/staging
+diff -ru ... project_memory/canonical/concerns.json project_memory/staging/concerns.json
+-    "title": "Empirical Confidence in Level-0 Bounded Execution",
++    "title": "Empirical Confidence in Level-0 Bounded Execution [REVIEW PROBE EDIT]",
+make[1]: *** [Makefile:66: memory-diff-reimport] Error 1
+make: *** [Makefile:80: memory-promote-reimport-checked] Error 2
+PROMOTE_CHECKED_EXIT=2
+canonical UNCHANGED (0 hits)
+----
++
+The delta was rendered correctly and legibly. Then the pipeline aborted and
+canonical was not touched. `memory-promote` never ran.
+
+RISK / SEMANTIC GAP::
+The target's success condition is `diff` exit 0, i.e. "staging is identical to
+canonical", i.e. "the workbook contains no change". The only workbook that
+`memory-promote-reimport-checked` will ever promote is one whose promotion is a
+*no-op*. The target is not a checked promotion; it is a round-trip self-test
+with a redundant copy appended.
++
+Consequently the entire documented protocol is unreachable for its intended
+purpose. The maintainer who follows the README hits `Error 2`, and the only way
+forward is bare `make memory-promote` -- which is exactly the unchecked path the
+design was built to avoid. The tooling does not merely fail to enforce the
+review boundary; it actively pushes the operator off the reviewed path onto the
+unreviewed one.
++
+`project_memory/README.adoc` states both halves of the contradiction in
+adjacent sentences: "it fails whenever the two disagree; that failure is the
+review signal, not an error to route around" immediately followed by
+"`make memory-promote-reimport-checked` is the normal path: it reimports,
+diffs, and only then promotes." If the failure is the review signal, the target
+that aborts on it cannot be the normal path for acting on that signal. This is
+not only a documentation defect -- there is no target that implements the
+described intent.
+
+RECOMMENDED PROPERTY::
+A non-empty canonical-vs-staging delta produced by a deliberate edit must be
+presentable to the maintainer as *review output with a success exit status*, and
+there must exist a reachable operator action that promotes that reviewed delta.
+"Round trip is lossless" and "the proposed content change is approved" must be
+two distinct questions with two distinct answers.
+
+POSSIBLE IMPLEMENTATION (not architecture)::
+Split the single `diff` consumer into two targets: one invariant target that
+keeps today's fail-on-difference semantics and is documented as "run this on an
+*unedited* workbook to validate the transformation", and one preview target
+(`diff ... || true`, or `diff` with an explicit exit-code branch) that always
+exits 0 and whose output is the proposed canonical change. Promotion then
+follows the preview rather than the invariant.
+
+== 4. IMPORTANT 2 -- `make -j` promotes never-reviewed content with exit 0
+
+OBSERVED::
+`memory-check: memory-import memory-diff-reimport` lists two prerequisites with
+no ordering relation. GNU Make is free to run them concurrently under `-j`, and
+does. With the *unmodified* pinned `sheets-run` and no artificial delay, on a
+tree where staging had been left equal to canonical and the workbook then
+edited:
++
+----
+run 1 exit=0 unreviewed_in_canonical=1
+run 2 exit=0 unreviewed_in_canonical=1
+run 3 exit=0 unreviewed_in_canonical=1
+----
++
+(`make -j4 memory-promote-reimport-checked`, three consecutive runs.) The
+observed interleaving, made deterministic with a `sleep 3` shim around the same
+binary to confirm the mechanism:
++
+----
+make memory-check
+diff -ru ... project_memory/canonical project_memory/staging     <-- runs FIRST, against STALE staging
+sheets-run --config .../ods_to_json.yaml                          <-- import runs AFTER the diff
+project_memory/staging
+make memory-promote
+cp -f project_memory/staging/*.json project_memory/canonical/     <-- copies the JUST-IMPORTED, never-diffed state
+EXIT=0
+canonical after: 1
+----
++
+`diff` compared canonical against the *previous* staging snapshot, found no
+difference, and passed. `memory-import` then replaced staging with the edited
+content. `memory-promote` then copied that content into canonical. The
+maintainer saw a clean run, exit 0, and no diff output at all. Canonical
+silently acquired a change that was never displayed.
++
+The same race also fires on `make -j memory-check` alone, which then reports
+success while having validated a state that no longer exists.
+
+RISK / SEMANTIC GAP::
+This inverts the intended boundary completely: the mechanism designed to
+guarantee "nothing reaches canonical unreviewed" becomes, under a standard
+`make` flag, a mechanism that writes unreviewed content to canonical *and
+reports success*. It is worse than having no check, because the green result is
+affirmatively misleading.
++
+The commit message asserts: "Promotion uses sub-makes so the check cannot be
+raced past under `make -j`." That is false as stated. The sub-makes correctly
+serialise the *outer* pair (`memory-check` strictly before `memory-promote`) --
+a genuine improvement over Core, see section 8 -- but the race is *inside*
+`memory-check`, and the inner `$(MAKE) memory-check` inherits the jobserver
+through `MAKEFLAGS`, so `-j` propagates into exactly the unordered pair. The
+comment at `Makefile:77-78` ("so an unverified staging snapshot can never be
+promoted") documents a property the code does not have.
++
+This is also the reason the race is not exotic: `sheets-run` is a Python CLI
+that takes on the order of a second, `diff` over four small JSON files is
+effectively instantaneous, so under `-j` the diff wins the race essentially
+always -- 3/3 here without any shim.
+
+RECOMMENDED PROPERTY::
+Whatever state is presented to the maintainer for review must be the state that
+is promoted. No `make` invocation mode may cause the compared state and the
+promoted state to differ, and no invocation mode may cause a comparison to
+report on a state that is subsequently replaced before promotion.
+
+POSSIBLE IMPLEMENTATION (not architecture)::
+The minimal fix is to stop expressing sequencing as unordered prerequisites:
+give `memory-check` a recipe that calls `$(MAKE) memory-import` then
+`$(MAKE) memory-diff-reimport`, matching the style already used at
+`Makefile:79-80`; or add `.NOTPARALLEL:` to the memory section; or make
+`memory-diff-reimport` depend on `memory-import`. Any of these removes the
+race. A stronger property -- that the *reviewed bytes* equal the *promoted
+bytes* even when review and promotion are separated in time -- needs more than
+ordering; see section 9.
+
+== 5. IMPORTANT 3 -- promotion is bound to nothing that was reviewed
+
+`memory-promote`'s entire precondition is `test -d project_memory/staging`. The
+directory's *existence* is checked; its provenance, freshness, completeness, and
+review status are not.
+
+=== 5.1 There is no approval action
+
+There is no target, file, or gesture whose meaning is "I have reviewed this
+proposed canonical change and approve promotion". `make memory-promote` means
+"copy `staging/*.json` over `canonical/`". Nothing distinguishes a considered
+approval from a mistyped target, a shell-history re-run, or a `make` invoked in
+the wrong directory. Nothing records afterwards that a review occurred, so the
+promotion is also unauditable: the resulting canonical diff is
+indistinguishable from a hand edit.
+
+=== 5.2 Stale staging promotes cleanly (question 5: yes)
+
+OBSERVED:: staging was populated from an edited workbook; the workbook was then
+re-exported from canonical, so it no longer contained the edit; staging was left
+untouched by that export. Then:
++
+----
+staging holds edit: 1
+workbook now contains probe edit: False
+--- staging untouched by export: 1
+cp -f project_memory/staging/*.json project_memory/canonical/
+PROMOTE_EXIT=0
+canonical now has stale edit: 1
+----
++
+Canonical was mutated with content that no longer corresponded to the workbook,
+exit 0, no warning.
++
+This is not a contrived sequence. `project_memory/staging/` is *not cleared
+after a successful promotion*, so a populated staging directory is the normal
+resting state of the repository. It is the resting state right now: the
+operator's live tree carries a full four-table `project_memory/staging/` and a
+`project_memory.ods`, both timestamped `21:34` (the commit time). A
+`make memory-promote` typed in that tree today would succeed silently. The
+realistic damage case is a `git pull` that advances canonical, followed by a
+promote from staging predating it: another maintainer's canonical edits are
+reverted with no diff shown and no error.
+
+=== 5.3 Partial staging promotes cleanly (question 6: yes, for partial)
+
+OBSERVED:: with staging reduced to 2 of 4 tables:
++
+----
+baseline staging: 4 json
+simulated partial staging: 2 json
+cp -f project_memory/staging/*.json project_memory/canonical/
+PROMOTE_EXIT=0
+canonical files after: concern_events.json concern_event_xrefs.json concerns.json decisions.json
+----
++
+Exit 0. Canonical is left a *blend*: two tables from the workbook, two from
+before. Because `concern_event_xrefs` is a relation table over
+`concern_events`/`concerns`, a blend is precisely the state in which referential
+integrity can silently break -- and nothing here validates that.
++
+A *total* import failure does fail safe. With `SHEETS_RUN=false`:
++
+----
+make: *** [Makefile:59: memory-import] Error 1
+staging after failed import: [.gitignore ]
+cp: cannot stat 'project_memory/staging/*.json': No such file or directory
+make: *** [Makefile:72: memory-promote] Error 1
+----
++
+The unexpanded glob aborts the copy. Good -- but by accident of shell globbing,
+not by design, and it does not cover the partial case.
+
+=== 5.4 Promotion is copy-only (INFO)
+
+`cp -f staging/*.json canonical/` never deletes. A table removed from the
+workbook leaves its canonical file in place. Deletion is therefore not
+expressible through the workbook surface. The diff *would* show
+`Only in canonical: ...`, but per section 3 a maintainer cannot act on a
+non-empty diff, so this is currently unreachable rather than dangerous.
+Recorded as INFO.
+
+RECOMMENDED PROPERTY (for 5.1-5.3)::
+Promotion must apply a *complete* table set that is demonstrably the one the
+maintainer reviewed. A staging snapshot that is stale relative to the workbook,
+or incomplete relative to the canonical table set, must not be promotable
+silently.
+
+POSSIBLE IMPLEMENTATION (not architecture)::
+Two independent options, deliberately not presented as equivalent:
++
+--
+* *Re-derivation.* Make promotion itself re-run the import from the workbook and
+  print the delta immediately before the copy, so "reviewed" and "promoted"
+  come from the same workbook read within one target. This removes staleness
+  and partiality by construction and adds no new file format. For a
+  single-maintainer repository where review and promotion happen seconds apart,
+  this is very likely sufficient and is the proportionate choice.
+* *Fingerprint binding.* Have the preview step record a hash of the staged
+  content (or of the workbook) and have promote refuse unless the current
+  staging still matches. This is the only option that survives review and
+  promotion being separated in time or across sessions.
+--
++
+Per the review brief, hashes/stamps are *not* recommended merely for strength.
+The evidence here points at re-derivation as the smaller robust mechanism; a
+stamp becomes justified only if the maintainer wants review and promotion to be
+separable steps. A completeness assertion (all four expected table files present
+before copying) is cheap and worth having under either option.
++
+Removing staging is *not* recommended: no evidence was found that the trust
+boundary it provides is preserved elsewhere, and re-derivation still needs an
+inspectable materialised proposal.
+
+== 6. MINOR 4 -- names and documentation conflate the two meanings (question 7)
+
+The vocabulary does not distinguish transformation validation from
+content-change approval; in two places it misdescribes the code.
+
+[cols="2,3,3",options="header"]
+|===
+|Target |Name implies |Actually does
+
+|`memory-diff-reimport`
+|diff *and* reimport
+|diffs only -- it has no prerequisites at all, so it silently compares whatever
+stale staging happens to exist, and does not even require `sheets-run`
+
+|`memory-check`
+|generic validation
+|round-trip equality assertion; passes only when the workbook encodes no change
+
+|`memory-promote-reimport-checked`
+|promote an approved change
+|promote a workbook that round-trips to *identical* canonical, i.e. promote a
+no-op (section 3)
+|===
+
+There is no target whose name means "show me the proposed change" and none whose
+name means "approve". `project_memory/README.adoc` compounds this by calling the
+aborting target "the normal path" one sentence after describing its failure as
+"the review signal" (section 3).
+
+RECOMMENDED PROPERTY:: target names and prose must let a maintainer tell, without
+reading the recipe, whether a target asserts an invariant or advances a content
+change.
+
+== 7. MINOR 5 -- import is destructive before it is successful, and success is hard to read
+
+`memory-import` wipes staging (`find ... -exec rm -rf {} +`) *before* invoking
+`sheets-run`. A failed import therefore destroys the previously staged proposal
+and leaves nothing reviewable. In the total-failure case promote then aborts
+(section 5.3), so this is a loss-of-work issue rather than a correctness one.
+
+Separately, "did the import succeed?" is not reliably legible. A workbook
+corrupted by truncating the `content.xml` root element produced an ~85 KB
+`====== SAX FAILED TO PARSE ==========` diagnostic on output -- and then
+*exited 0* with a complete and correct four-table staging set (row counts
+4/14/19/9, `DIFF_EXIT=0` against canonical). The tolerant parse is upstream
+`sheets-run`/odfpy behaviour, not something `aa219a6` introduced, but it means
+a maintainer cannot judge import success from output volume or alarming text,
+and the workflow offers no positive confirmation of its own.
+
+RECOMMENDED PROPERTY:: a failed or partial import must not destroy a
+previously reviewable proposal, and import success must be asserted by the
+workflow rather than inferred from upstream output.
+
+POSSIBLE IMPLEMENTATION:: import to a fresh temporary directory and swap it into
+place only on success; assert the expected table set exists afterwards.
+
+== 8. Snapshot assessment
+
+This part of the commit is correct. `make snapshot-multi` (run with
+`--output` redirected to the scratchpad; the live `wfc_snapshots/` was not
+touched) produced `wfc_project_memory.txt`, 38 194 bytes, containing exactly:
+
+----
+project_memory/README.adoc
+project_memory/canonical/concern_event_xrefs.json
+project_memory/canonical/concern_events.json
+project_memory/canonical/concerns.json
+project_memory/canonical/decisions.json
+project_memory/pipelines/memory/json_to_ods.yaml
+project_memory/pipelines/memory/ods_to_json.yaml
+----
+
+with full contents, not bare filenames (29 occurrences of
+`CONC-WFC-LEVEL0-EMPIRICAL-CONFIDENCE`, 11 of `DEC-WFC`). Verified against the
+brief's checklist:
+
+* dedicated, useful Project Memory group -- yes, and the pipeline configs are
+  included too, which is a bonus over the commit message's claim.
+* `project_memory/README.adoc` included -- yes.
+* all four canonical JSON tables with contents -- yes.
+* staging / workbook / presentation metadata excluded -- yes, from both the
+  group files and `wfc_repository_tree.txt`; grepping the tree for
+  `staging`, `_meta`, and `.ods` returns nothing, while `canonical/` and both
+  pipeline YAMLs appear.
+* existing grouping/tree behaviour coherent -- yes. `project_memory` is a new
+  first-element prefix in `GROUPS`; `docs`/`governance` and `src`/`tests`
+  groups and the `wfc_repo_infrastructure.txt` fallback are unchanged, and the
+  four other snapshot files are still produced.
+* `EXCLUDED_RELATIVE_DIRECTORIES` -- correctly scoped as a *path prefix*
+  (`("project_memory", "staging")`), so a `staging/` directory elsewhere would
+  not be suppressed. Good.
+
+=== MINOR 6 -- filename exclusion is broader than the stated intent
+
+`EXCLUDED_FILE_NAMES = {"_meta.yaml", "project_memory.ods"}` is matched on
+`path.name` alone, repo-wide, in both `_is_snapshot_file` and `_tree`. The
+`.gitignore` rule added by the same commit is correctly scoped
+(`/project_memory/**/_meta.yaml`); the snapshot rule is not, so the two
+surfaces disagree about what the exclusion means.
+
+Classification: *MINOR, not IMPORTANT.* No collision exists today --
+`git ls-files | grep _meta` is empty, and the only `_meta.yaml` and only `.ods`
+anywhere on disk are `project_memory/staging/_meta.yaml` and
+`project_memory.ods`, both already covered by the scoped rules. The risk is
+prospective: any future `_meta.yaml` anywhere in the repository (a packaged
+resource under `src/workflow_coordinator/resources/`, a governance manifest)
+would silently vanish from snapshot *contents and from the tree* -- invisible
+rather than merely empty, with no warning. Given that snapshots are the
+LLM/review handoff surface, a silently absent file is a meaningful loss.
+
+RECOMMENDED PROPERTY:: an exclusion motivated by one directory's generated
+artifacts should not be able to hide an unrelated file elsewhere.
+
+POSSIBLE IMPLEMENTATION:: express both as relative-path exclusions, as
+`EXCLUDED_RELATIVE_DIRECTORIES` already does.
+
+=== MINOR 7 -- two exclusions are unasserted (test materiality by mutation)
+
+`tests/unit/test_wfc_snapshot.py` was extended substantively, not cosmetically:
+it creates `project_memory/{README.adoc,canonical/concerns.json,canonical/_meta.yaml,staging/concerns.json}`
+and asserts group membership, content presence, staging absence, `_meta.yaml`
+absence, and tree shape. Materiality was confirmed by mutation rather than
+accepted from the diff -- six mutations applied to a scratch copy of the
+committed script, test re-run after each:
+
+[cols="3,1",options="header"]
+|===
+|Mutation |Result
+
+|drop `"project_memory.ods"` from `EXCLUDED_FILE_NAMES`
+|*passed (survives)*
+
+|drop `"_meta.yaml"` from `EXCLUDED_FILE_NAMES`
+|failed (caught)
+
+|`EXCLUDED_RELATIVE_DIRECTORIES = set()`
+|failed (caught)
+
+|delete the `wfc_project_memory.txt` group entry
+|failed (caught)
+
+|remove `_is_excluded_directory` from the tree filter
+|failed (caught)
+
+|remove `path.name in EXCLUDED_FILE_NAMES` from the tree filter
+|*passed (survives)*
+|===
+
+Four of six are genuinely load-bearing. Two survive: the workbook exclusion is
+entirely untested (the fixture creates no `.ods`, and an `.ods` suffix is
+outside `TEXT_SUFFIXES` anyway, so that entry matters *only* for the tree), and
+the tree's filename-based exclusion is unasserted (the fixture's `_meta.yaml`
+sits in `canonical/`, and the tree assertions check only `canonical/` present
+and `staging` absent). Adding a `project_memory.ods` to the fixture plus an
+`assert "_meta.yaml" not in tree` and `assert ".ods" not in tree` would close
+both.
+
+== 9. Dependency-boundary assessment
+
+Clean. No finding.
+
+* *Maintainer tooling only* -- the pin lives solely in
+  `requirements/spreadsheet-handling.txt`. `pyproject.toml` declares
+  `dependencies = ["PyYAML>=6"]` and `dev = ["build>=1.2", "pytest>=8.2", "ruff>=0.6"]`;
+  neither mentions spreadsheet-handling. `make memory-setup` is the only
+  consumer.
+* *Product/runtime code does not import it* -- verified against the *guard*,
+  not just by grep. `tests/architecture/test_package_boundaries.py:62` AST-checks
+  every production module for absolute `spreadsheet_handling` imports, and
+  `:98` asserts `"spreadsheet_handling" not in sys.modules` after importing
+  every `workflow_coordinator` submodule. `grep -rn spreadsheet src/` returns
+  nothing. The pre-existing guard genuinely still holds.
+* *Reproducible pin* -- an exact 40-character commit,
+  `ad91eeb067752ae4773f86927071dd6c3aaf8621`. Verified read-only in the Core
+  clone: the commit exists, is an ancestor of `origin/main`, and is in fact
+  *exactly* `origin/main` (`git rev-parse --short origin/main` -> `ad91eeb0`).
+  The requirements comment's claim is accurate. The pin at that revision does
+  provide the `json_dir` <-> `ods` pipeline this round trip uses -- confirmed
+  empirically by installing precisely that revision into a throwaway venv and
+  running the real targets.
+* *No dependency on the sibling Core working tree* -- both pipeline YAMLs use
+  repository-relative paths (`./project_memory/...`); nothing references `../core`.
+* *No runtime promotion or WFC authority semantics affected* -- no `src/`,
+  `governance/`, or `resources/` file is in the changed-path set.
+* *Symmetry with Core's venv system is correctly not attempted* -- WFC's
+  lightweight `SHEETS_RUN ?= sheets-run` + `command -v` guard is proportionate,
+  and the brief explicitly does not require reproducing Core's stamp/venv
+  machinery. No finding on that axis.
+
+=== MINOR 8 -- install and discovery are not tied together
+
+`memory-setup` installs with `$(PYTHON) -m pip install -r ...` where
+`PYTHON ?= python3`, i.e. by default the ambient interpreter -- plausibly the
+system one, where PEP 668 may refuse outright. `check-sheets-run` then resolves
+`sheets-run` from `$PATH`. The two halves are independent: installing with
+`PYTHON=.venv/bin/python` puts `sheets-run` in `.venv/bin`, which the `PATH`
+lookup will not find unless the venv is activated, while conversely any ambient
+`sheets-run` on `PATH` satisfies the guard.
+
+That second direction is the substantive one: the sibling Core dev venv at
+`../core/.venv/bin/sheets-run` *does* exist on this machine and is built from
+Core's working tree (`cad877c2`), 200+ commits past the pin. If it is on `PATH`,
+`make memory-check` runs an unpinned build while `requirements/spreadsheet-handling.txt`
+suggests the pin is in force. Nothing verifies the provenance of the resolved
+executable. Core's own guard is stricter here -- it tests
+`-x "$(VENV)/bin/sheets-run"`, a specific path, not a `PATH` lookup.
+
+Classification MINOR: the pin *is* reproducible, and `SHEETS_RUN=<path>` gives
+the operator an explicit escape. The gap is that the reproducible pin is not
+the *enforced* input.
+
+== 10. GNU Make ordering and parallelism assessment
+
+Summarised here; evidence in section 4.
+
+[cols="2,1,3",options="header"]
+|===
+|Construct |`-j` safe? |Note
+
+|`memory-export`
+|yes
+|single recipe, no prerequisite pair
+
+|`memory-import`
+|yes internally
+|recipe lines are sequential; but destructive-before-successful (section 7)
+
+|`memory-diff-reimport`
+|n/a
+|no prerequisites at all -- always diffs whatever staging exists
+
+|`memory-check`
+|*NO*
+|`memory-import` and `memory-diff-reimport` are unordered prerequisites; diff
+wins the race and validates stale staging (IMPORTANT 2)
+
+|`memory-promote`
+|yes
+|single recipe
+
+|`memory-promote-reimport-checked`
+|*NO*
+|outer pair correctly serialised by sub-makes, but `-j` propagates via
+`MAKEFLAGS` into the inner `memory-check` race, so the net result is an exit-0
+promotion of unreviewed content
+|===
+
+The sub-make construction at `Makefile:79-80` is the right instinct and is a
+real improvement over Core (section 11). It was simply applied one level too
+high.
+
+== 11. Core Project Memory cross-check (read-only)
+
+Core at `/home/stefan/repos/spreadsheet-handling/core` was inspected read-only:
+`Makefile` (lines 25-60, 278-375), `project_memory/README.adoc`,
+`project_memory/canonical/`, `project_memory/staging/`, `git ls-files`, and two
+warm-storage review artifacts. No Core file was modified, no Core `make` target
+was executed, and `git status --porcelain` in Core reports 0 entries at
+`cad877c2`. Core's `SNAPSHOT_MAX_FILES` is outside this review's scope and was
+neither reported nor altered (it currently reads `?= 20` and Core's tree is
+clean, so the operator's mentioned local edit is not present at review time --
+noted only to confirm nothing was disturbed). The probe venv installed the
+pinned revision via a read-only `git+file://` clone, which does not write to the
+Core repository.
+
+*Did WFC inherit a sound protocol, or a weakness already present in Core?*
+Core has the same weakness. The conceptual defect is *inherited, not
+WFC-invented.*
+
+Core `Makefile:348-365`:
+
+[source,make]
+----
+memory-check: memory-import memory-diff-reimport
+memory-diff-reimport:
+	diff -ru --exclude='.gitignore' "$(MEMORY_CANONICAL_DIR)" "$(MEMORY_STAGING_DIR)"
+memory-promote:
+	@test -d "$(MEMORY_STAGING_DIR)" || (echo "Missing ..." >&2; exit 1)
+	cp -f "$(MEMORY_STAGING_DIR)"/*.json "$(MEMORY_CANONICAL_DIR)/"
+memory-promote-reimport-checked: memory-check memory-promote
+----
+
+Point by point:
+
+* *Does Core conflate unchanged round-trip equality with review of an
+  intentional change?* Yes -- identically. Same `diff -ru` as the sole gate,
+  same empty-target `memory-check`, same `test -d`-only promote, same absence
+  of any preview or approval target. Core's `project_memory/README.adoc` states
+  the intent ("`staging/` must not be promoted blindly") but provides no
+  mechanism that makes it true.
+* *Core already knows.* Core's own
+  `docs/warm_storage/global_reviews/project_memory_september_curation_review_2026-09-18.adoc:160`
+  records finding *PMR-W1*: "The existing `memory-check` cannot distinguish
+  pre-existing from new drift... `memory-check` is a raw `diff -ru` over
+  reimported staging, and three files already fail." That is the same gap this
+  review reaches independently, and it is open in Core.
+* *Core is strictly worse on `-j`.* Core's
+  `memory-promote-reimport-checked: memory-check memory-promote` uses
+  *prerequisites* where WFC uses sub-makes. Demonstrated on an isolated
+  Makefile replica of Core's exact prerequisite shape (Core's own targets were
+  never run):
++
+----
+--- serial ---                 --- make -j4 ---
+import START                   import START
+import END                     diff RUN
+diff RUN                       promote RUN      <-- promote fires while import is still running
+promote RUN                    import END
+----
++
+Under `-j`, Core's `promote` can copy a *half-written* staging directory
+concurrently with the import writing it. WFC's sub-makes eliminate that
+specific failure mode. *WFC's sub-make change is a genuine partial correction of
+an inherited Core defect,* and any Core fix should adopt it.
+* *WFC also improved `_meta.yaml` handling.* Core's `memory-promote` explicitly
+  copies `staging/_meta.yaml` into `canonical/` and Core's diff excludes only
+  `.gitignore`, so in Core presentation metadata is part of canonical. WFC
+  excludes `_meta.yaml` from the diff, gitignores it, and promotes only
+  `*.json`. Verified across five probe trees: `_meta.yaml` never appears in WFC
+  `canonical/` after export, import, or promote, so *generated `_meta.yaml`
+  cannot become canonical Project Memory data* (brief item 10 -- satisfied).
+* *Core carries extra risk surface WFC deliberately omits* --
+  `memory-stage-extracted` writes generated `ext_*.json` into
+  `canonical/` itself, and `memory-refresh-workbook` chains extract -> stage ->
+  export. WFC has none of this, which makes WFC the cleaner place to establish
+  the corrected protocol first.
+
+*Is the same conceptual correction applicable to Core Project Memory?* Yes, and
+a later Core Project Memory correction should be considered: the
+preview/approval split (section 3), the `memory-check` ordering fix
+(section 4), and the review-to-promotion binding (section 5) all apply to Core
+essentially unchanged, plus Core's additional `-j` promote race. No Core
+implementation patch is prescribed here; the maintainer decides separately, and
+Core's PMR-W1 is the existing hook for it.
+
+=== Explicit non-scope: Core domain contracts
+
+Core's `registries/domain_contracts` workflow is *out of scope* and its
+findings must not be generalised from. It is noted only as a comparison point:
+Core already defines `DOMAIN_CONTRACTS_ODS_STAMP` and
+`DOMAIN_CONTRACTS_STAGING_STAMP`, i.e. Core has already solved a
+binding-the-reviewed-artifact problem in that domain with stamp/checker
+semantics. That is evidence the problem is recognised in Core -- *not* a
+recommendation to import that machinery into Project Memory, whose
+proportionality question (section 5, POSSIBLE IMPLEMENTATION) is different and
+probably answered by re-derivation rather than stamps. No assessment of the
+domain-contract workflow's own correctness is offered or implied.
+
+== 12. Recommended conceptual target state
+
+The property to establish, stated without prescribing a mechanism:
+
+. *Two questions, two targets.* "Does the workbook round-trip losslessly?"
+  (invariant; empty diff required; failure is a defect) is separate from "What
+  would promotion change?" (review information; non-empty output is normal;
+  exit 0).
+. *The proposed change is visible before canonical mutation,* as review output
+  rather than as a build failure.
+. *A distinct operator action carries the meaning "approved".*
+. *Promotion applies the state that was reviewed* -- complete, corresponding to
+  the reviewed workbook, and not silently substituted by any `make` invocation
+  mode.
+. *No invocation mode, `-j` included, can reorder review and promotion or
+  report on a state that is then replaced.*
+. *A failed or partial import cannot leave a promotable or misleading staging
+  state,* and does not destroy the prior reviewable proposal.
+
+Smallest mechanism that appears to deliver 1-6, offered as a direction and not
+as architecture: keep staging; split the diff consumer into an invariant target
+and an always-exit-0 preview target; give `memory-check` a recipe with explicit
+sub-makes instead of unordered prerequisites; have promotion re-derive staging
+from the workbook and print the delta within the same target, immediately before
+an atomic, completeness-asserted copy. Content fingerprints are *not*
+recommended at this stage -- they buy the additional property that review and
+promotion may be separated in time, which no evidence here shows the maintainer
+needs, and they add a file format and a staleness mode of their own. If that
+separation is wanted, a fingerprint is the right mechanism; the choice belongs
+to the maintainer, not to this review.
+
+Removing staging is not recommended. The trust boundary it is intended to
+provide is not preserved anywhere else, and the fix for the findings above needs
+a materialised, inspectable proposal.
+
+== 13. Commands and probes executed
+
+All memory targets ran against `git archive aa219a6` extractions in the session
+scratchpad, never the live tree. `sheets-run` came from a throwaway venv holding
+the *pinned* revision, installed via a read-only local clone:
+
+[source,shell]
+----
+python3 -m venv probevenv
+probevenv/bin/pip install "spreadsheet-handling @ \
+  git+file:///home/stefan/repos/spreadsheet-handling/core@ad91eeb067752ae4773f86927071dd6c3aaf8621"
+git archive aa219a6 | tar -x -C <scratch>/probeN
+----
+
+[cols="3,2",options="header"]
+|===
+|Probe |Result
+
+|all four canonical JSON files parse
+|14 / 19 / 4 / 9 rows
+
+|`make memory-export`
+|exit 0, 11 374-byte workbook, 5 sheets, no Core-only tables
+
+|unchanged `memory-export -> memory-import -> memory-diff-reimport`
+|exit 0; `cmp` byte-identical on all four tables
+
+|deliberate edit -> `memory-import` -> `memory-diff-reimport`
+|delta rendered correctly; `make` Error 1, exit 2
+
+|deliberate edit -> `make memory-promote-reimport-checked`
+|*exit 2, canonical unchanged -- documented path cannot promote* (IMPORTANT 1)
+
+|stale staging -> `make memory-promote`
+|*exit 0, canonical mutated from a workbook-divergent snapshot* (IMPORTANT 3)
+
+|2-of-4 staging -> `make memory-promote`
+|*exit 0, canonical left a blend* (IMPORTANT 3)
+
+|failed import (`SHEETS_RUN=false`) -> `make memory-promote`
+|import Error 1, staging emptied, promote aborts on unexpanded glob
+
+|corrupt workbook (truncated root element) -> `make memory-import`
+|exit 0 with ~85 KB SAX diagnostic; staging complete and correct (MINOR 5)
+
+|`make -j4 memory-check`
+|*diff ran before import, passed against stale staging* (IMPORTANT 2)
+
+|`make -j4 memory-promote-reimport-checked`, real `sheets-run`, x3
+|*3/3 exit 0, unreviewed edit promoted into canonical* (IMPORTANT 2)
+
+|Core prerequisite-shape replica, `-j4`
+|`promote` fires before import completes (section 11)
+
+|`_meta.yaml` reaching canonical, 5 probe trees
+|never -- canonical holds exactly the four JSON files
+
+|`python scripts/wfc_snapshot.py --output <scratch>`
+|5 files; memory group 38 194 B; exclusions correct in group and tree
+
+|6 mutations of `wfc_snapshot.py`
+|4 caught, 2 survive (MINOR 7)
+
+|`pytest tests/unit/test_wfc_snapshot.py`
+|1 passed
+
+|`pytest tests/` (full suite)
+|*423 passed* in 20.47s
+
+|`PYTHON=.venv/bin/python make lint format-check`
+|`All checks passed!`; `3 files already formatted`
+
+|`git diff --check aa219a6^..aa219a6`
+|no output, exit 0
+
+|Core pin `ad91eeb0` provenance
+|exists, ancestor of `origin/main`, and equals `origin/main`
+|===
+
+== 14. Disposition summary
+
+The transformation half of `aa219a6` is good work: a byte-exact `json_dir` <->
+`ods` round trip with no projection or plugin step, a correctly scoped snapshot
+group that makes canonical memory discoverable with contents, a genuinely clean
+maintainer-only dependency with a reproducible pin and an intact architecture
+guard, a `_meta.yaml` treatment safer than Core's, and a sub-make construction
+that removes a real `-j` defect Core still has.
+
+The review half does not yet mean what it says. `memory-check` answers "does the
+workbook encode no change?", and that answer is wired to `make`'s exit status,
+so the documented promotion path aborts on every intentional edit and promotes
+only no-ops -- while the bare `memory-promote` that a blocked maintainer will
+reach for checks nothing, is bound to nothing reviewed, and will silently
+promote stale or partial staging. Under `make -j` the two defects compound into
+the worst case: exit 0, no diff shown, unreviewed content in canonical,
+reproduced 3/3 with unmodified tooling against the commit message's explicit
+claim that sub-makes prevent it.
+
+The boundary the staging area is meant to provide is therefore not yet real.
+Nothing needs to be thrown away to make it real -- staging is the right shape,
+and the fixes are small: separate the invariant from the preview, order
+`memory-check`'s two steps explicitly, and make promotion apply a complete
+snapshot derived from the workbook the maintainer just looked at. The
+conceptual defect is inherited from Core Project Memory, where it is already
+recorded as open finding PMR-W1 and where the `-j` exposure is larger; a Core
+correction should be considered separately, and Core's domain-contract workflow
+is explicitly outside this assessment.
+
+*B -- CHANGES REQUIRED*: 3 IMPORTANT, 5 MINOR, 1 INFO. No finding was fixed in
+this reviewer context; no implementation file, Core file, Runtime file, or
+canonical Project Memory file was modified; no commit was amended; no push
+occurred.
