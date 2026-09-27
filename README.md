@@ -18,11 +18,13 @@ includes a table of contents and a repository tree.
 
 Project Memory lives in [`project_memory/`](project_memory/README.adoc), whose
 canonical JSON tables are authoritative. `make memory-export` renders them as an
-ODS workbook, `make memory-check` reimports the workbook into
-`project_memory/staging/` and diffs it against canonical, and
-`make memory-promote-reimport-checked` promotes a verified workbook back into
-canonical. Promotion is always explicit; `make memory-setup` installs the pinned
-maintainer-only spreadsheet tooling.
+ODS workbook; after editing it, `make memory-preview` reimports it into
+`project_memory/staging/` and prints the proposed canonical delta as review
+output, and `make memory-promote` is the separate operator action approving
+exactly the proposal that was previewed. `make memory-roundtrip-check` is the
+independent transformation invariant for an *unedited* workbook and is not an
+approval gate. Promotion is always explicit; `make memory-setup` installs the
+pinned maintainer-only spreadsheet tooling.
 
 The [standalone authority index](docs/README.adoc) is the authoritative
 classification of current documentation, executable surfaces, provenance,

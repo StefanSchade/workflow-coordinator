@@ -48,24 +48,61 @@ deliberately one-directional in authority terms:
 project_memory/canonical/*.json      (authoritative)
     -> make memory-export            -> project_memory.ods
     -> edit the workbook
-    -> make memory-import            -> project_memory/staging/*.json
-    -> make memory-check             -> diff staging against canonical
-    -> make memory-promote           -> explicit copy back into canonical
+    -> make memory-preview           -> project_memory/staging/*.json + proposed delta
+    -> read the delta
+    -> make memory-promote           -> approve exactly that proposal
 ----
 
-`make memory-check` reimports the workbook and diffs it against canonical, so
-it fails whenever the two disagree; that failure is the review signal, not an
-error to route around. `make memory-promote-reimport-checked` is the normal
-path: it reimports, diffs, and only then promotes. Promotion is never implicit,
-and the workbook is never authority.
+Three separate questions, three separate targets. Conflating them is what makes
+a review boundary decorative, so the vocabulary keeps them apart:
+
+`make memory-roundtrip-check`:: *Transformation invariant.* Reimports the
+workbook into a throwaway directory and requires the result to equal canonical
+JSON exactly. Run it on an *unedited* workbook: a non-empty delta there means
+the JSON -> ODS -> JSON transformation lost something, which is a defect. It
+never reads or writes staging, so it is not, and cannot be used as, the approval
+gate for an intentional content edit.
+`make memory-preview`:: *Proposal preview.* Imports the edited workbook into a
+fresh temporary directory, asserts the exact expected table set
+(`concerns.json`, `concern_events.json`, `concern_event_xrefs.json`,
+`decisions.json`) and that every imported table parses, and only then replaces
+the staging proposal. It then prints the canonical-vs-staging delta as *review
+information* and exits 0 -- a non-empty delta is the normal, expected result of
+an intentional edit, not a failure. A failed or incomplete import refuses
+without touching the previous proposal.
+`make memory-promote`:: *Operator approval.* The distinct action meaning "I
+approve exactly the proposal I just reviewed". It refuses unless staging is
+complete, staging still carries the fingerprint that was previewed, and
+canonical still carries the baseline fingerprint the proposal was reviewed
+against. After a successful promotion the proposal is consumed, so a stale
+approval cannot be replayed.
+
+The binding is `reviewed canonical baseline` + `reviewed staging content` ->
+`promoted canonical content`. `memory-preview` records both fingerprints under
+`project_memory/.proposal/` (untracked) and prints them; that record identifies
+which proposal was previewed and is *not* authority and *not* approval. The
+workbook deliberately stays outside the binding: it is an editing source, so
+re-exporting or further editing it after a preview does not invalidate the
+proposal that was already materialised and reviewed. Any change to canonical or
+to staging does, and then a fresh `make memory-preview` is required.
+
+Each target is a single process that sequences import, comparison, and mutation
+internally. No correctness property depends on Make prerequisite ordering, so
+`make -j` cannot diff before importing, replace a proposal between its review
+and its promotion, promote a staging state that was never displayed, or promote
+against a canonical baseline that has moved. Preview and promotion are separate
+invocations by design: asking one parallel invocation for both
+(`make -j memory-preview memory-promote`) still cannot promote an undisplayed
+proposal -- the promotion either refuses or approves an outstanding previously
+previewed one -- but it removes the reading step the protocol exists to create.
 
 `make memory-setup` installs the pinned `sheets-run` tooling from
 `requirements/spreadsheet-handling.txt`. That pin is maintainer tooling only --
 no `workflow_coordinator` source imports it -- and `SHEETS_RUN=<path>` overrides
 the executable if it is already available elsewhere. `project_memory.ods`, the
-contents of `project_memory/staging/`, and any generated `_meta.yaml` (workbook
-column presentation, not memory data) are generated artifacts and stay
-untracked.
+contents of `project_memory/staging/`, `project_memory/.proposal/`, and any
+generated `_meta.yaml` (workbook column presentation, not memory data) are
+generated artifacts and stay untracked.
 
 == What this is not
 
@@ -77,9 +114,9 @@ untracked.
   to that history and links back to it via `commit_refs` and `source_path`.
 * Not automatically generated or promoted. Nothing extracts memory content from
   commits, reviews, or documents in this lean version. The only mechanical path
-  into these files is the explicit, diff-checked workbook promotion described
-  under <<Spreadsheet round trip>>; otherwise the four files are curated and
-  updated by hand.
+  into these files is the previewed and separately approved workbook promotion
+  described under <<Spreadsheet round trip>>; otherwise the four files are
+  curated and updated by hand.
 * Not a task list. Concerns are steering fields, not a backlog; the backlog
   itself remains `docs/backlog/README.adoc`.
 
