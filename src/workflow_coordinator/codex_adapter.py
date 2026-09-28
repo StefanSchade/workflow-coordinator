@@ -19,6 +19,7 @@ from .adapter import (
     AgentExecutionOutcome,
     AgentExecutionRequest,
     ExecutionNotStartedError,
+    Invocation,
 )
 from .persistence import atomic_write_json, atomic_write_text
 from .serialization import (
@@ -121,14 +122,25 @@ def routing_result_openai_schema() -> dict[str, Any]:
     }
 
 
-def structured_result_envelope_openai_schema() -> dict[str, Any]:
-    """Return the exact strict schema supplied by ``CodexCliAdapter``."""
+def structured_result_envelope_openai_schema(invocation: Invocation) -> dict[str, Any]:
+    """Return the exact strict schema supplied by ``CodexCliAdapter``.
+
+    Correlation identity is Coordinator-owned dispatch data known exactly before
+    the provider is entered, so each identity field projects as a one-element
+    typed enum of its dispatched value instead of free generative text.  This
+    only narrows what the provider may emit; ``adapter.validated_result``
+    remains the independent provider-neutral byte-exact correlation authority
+    over whatever the returned envelope actually contains.
+    """
+    def dispatched(value: str) -> dict[str, Any]:
+        return {"type": "string", "enum": [value]}
     return {
         "type": "object", "additionalProperties": False,
         "required": list(STRUCTURED_RESULT_ENVELOPE_KEYS),
         "properties": {
-            "schema_version": {"type": "integer", "enum": [1]}, "run_id": {"type": "string"},
-            "hop_id": {"type": "string"}, "invocation_id": {"type": "string"},
+            "schema_version": {"type": "integer", "enum": [1]},
+            "run_id": dispatched(invocation.run_id), "hop_id": dispatched(invocation.hop_id),
+            "invocation_id": dispatched(invocation.invocation_id),
             "result": routing_result_openai_schema(),
         },
     }
@@ -169,7 +181,7 @@ class CodexCliAdapter:
         try:
             schema = self.result_directory / "structured-result.schema.json"
             result = self.result_directory / "result-message.json"
-            atomic_write_json(schema, structured_result_envelope_openai_schema())
+            atomic_write_json(schema, structured_result_envelope_openai_schema(request.invocation))
             atomic_write_text(result, "")
             child = subprocess.Popen(
                 self.argv(request, schema, result), stdin=subprocess.PIPE, stdout=subprocess.PIPE,

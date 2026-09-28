@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,8 @@ from workflow_coordinator.adapter import (
     ROUTING_RESULT_ENVELOPE_CONTRACT,
     AgentExecutionRequest,
     Invocation,
+    ResultValidationError,
+    validated_result,
 )
 from workflow_coordinator.codex_adapter import (
     CodexCliAdapter,
@@ -20,41 +23,50 @@ from workflow_coordinator.codex_adapter import (
 from workflow_coordinator.serialization import FINDING_DELTA_KEYS, ROUTING_RESULT_REQUIRED_KEYS
 
 
+def _invocation(run_id: str = "RUN-A", hop_id: str = "H003", invocation_id: str = "INV-X") -> Invocation:
+    return Invocation(run_id, hop_id, invocation_id)
+
+
+def _envelope_schema(invocation: Invocation | None = None) -> dict:
+    """The projection is invocation-specific, so every schema test dispatches one."""
+    return structured_result_envelope_openai_schema(invocation or _invocation())
+
+
 def test_exact_codex_projection_conforms_to_supported_openai_strict_subset():
-    assert_openai_strict_schema(structured_result_envelope_openai_schema())
+    assert_openai_strict_schema(_envelope_schema())
 
 
 def test_schema_version_uses_the_documented_single_value_enum_in_both_envelopes():
-    schema = structured_result_envelope_openai_schema()
+    schema = _envelope_schema()
     assert schema["properties"]["schema_version"] == {"type": "integer", "enum": [1]}
     assert schema["properties"]["result"]["properties"]["schema_version"] == {"type": "integer", "enum": [1]}
 
 
 def test_conformance_rejects_both_historical_live_defects():
-    opaque = structured_result_envelope_openai_schema()
+    opaque = _envelope_schema()
     opaque["properties"]["result"] = {"type": "object"}
     with pytest.raises(OpenAIStrictSchemaError, match="object must be strict"):
         assert_openai_strict_schema(opaque)
-    untyped_enum = structured_result_envelope_openai_schema()
+    untyped_enum = _envelope_schema()
     del untyped_enum["properties"]["schema_version"]["type"]
     with pytest.raises(OpenAIStrictSchemaError, match="explicit type"):
         assert_openai_strict_schema(untyped_enum)
 
 
 def test_conformance_walks_nested_properties_arrays_and_nullable_anyof_branches():
-    schema = structured_result_envelope_openai_schema()
+    schema = _envelope_schema()
     nested = schema["properties"]["result"]["properties"]
     del nested["findings"]["items"]["properties"]["invariant"]["type"]
     with pytest.raises(OpenAIStrictSchemaError, match="invariant: explicit type"):
         assert_openai_strict_schema(schema)
-    schema = structured_result_envelope_openai_schema()
+    schema = _envelope_schema()
     del schema["properties"]["result"]["properties"]["escalation"]["anyOf"][0]["type"]
     with pytest.raises(OpenAIStrictSchemaError, match=r"anyOf\[0\]: explicit type"):
         assert_openai_strict_schema(schema)
 
 
 def test_projection_derives_from_canonical_semantic_contract_facts():
-    result = structured_result_envelope_openai_schema()["properties"]["result"]
+    result = _envelope_schema()["properties"]["result"]
     assert set(result["required"]) == set(ROUTING_RESULT_REQUIRED_KEYS)
     finding = result["properties"]["findings"]["items"]
     assert set(finding["required"]) == set(FINDING_DELTA_KEYS)
@@ -89,11 +101,76 @@ def test_production_adapter_has_no_model_or_reasoning_fallback(tmp_path: Path):
 
 
 def test_conformance_rejects_constructs_outside_the_projection_subset():
-    schema = structured_result_envelope_openai_schema()
+    schema = _envelope_schema()
     schema["properties"]["result"]["oneOf"] = []
     with pytest.raises(OpenAIStrictSchemaError, match="unsupported keywords"):
         assert_openai_strict_schema(schema)
-    schema = structured_result_envelope_openai_schema()
+    schema = _envelope_schema()
     schema["properties"]["schema_version"] = {"type": "integer", "const": 1}
     with pytest.raises(OpenAIStrictSchemaError, match="unsupported keywords"):
         assert_openai_strict_schema(schema)
+
+
+def test_dispatched_correlation_identity_is_projected_as_exact_value_enums():
+    schema = _envelope_schema(_invocation("RUN-A", "H003", "INV-X"))["properties"]
+    assert schema["run_id"] == {"type": "string", "enum": ["RUN-A"]}
+    assert schema["hop_id"] == {"type": "string", "enum": ["H003"]}
+    assert schema["invocation_id"] == {"type": "string", "enum": ["INV-X"]}
+
+
+def test_identity_projection_is_invocation_specific_with_no_unconstrained_fallback():
+    first = _envelope_schema(_invocation("RUN-A", "H003", "INV-X"))["properties"]
+    second = _envelope_schema(_invocation("RUN-B", "H004", "INV-Y"))["properties"]
+    for field in ("run_id", "hop_id", "invocation_id"):
+        assert first[field] != second[field]
+        assert len(first[field]["enum"]) == 1 and len(second[field]["enum"]) == 1
+    with pytest.raises(TypeError):
+        structured_result_envelope_openai_schema()
+
+
+def test_invocation_specific_identity_projection_stays_inside_the_strict_subset():
+    schema = _envelope_schema(_invocation("RUN-A", "H003", "INV-X"))
+    assert_openai_strict_schema(schema)
+    del schema["properties"]["run_id"]["type"]
+    with pytest.raises(OpenAIStrictSchemaError, match="run_id: explicit type"):
+        assert_openai_strict_schema(schema)
+
+
+def test_execute_writes_the_schema_derived_from_the_exact_dispatched_invocation(tmp_path: Path):
+    executable = tmp_path / "fake-codex"
+    executable.write_text("#!/usr/bin/env python3\npass\n")
+    executable.chmod(0o755)
+    invocation = _invocation("RUN-WIRED", "H007", "INV-WIRED")
+    request = AgentExecutionRequest(invocation, "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5)
+    adapter = CodexCliAdapter(tmp_path, model="explicit-model", reasoning_effort="high", executable=str(executable))
+
+    adapter.execute(request)
+
+    emitted = json.loads((tmp_path / "structured-result.schema.json").read_text(encoding="utf-8"))
+    assert emitted == structured_result_envelope_openai_schema(invocation)
+    assert emitted["properties"]["run_id"]["enum"] == ["RUN-WIRED"]
+
+
+def test_execute_never_repairs_a_divergent_returned_identity(tmp_path: Path):
+    """The adapter must not manufacture the identity ``validated_result`` checks."""
+    divergent = json.dumps({
+        "schema_version": 1, "run_id": "RUN-WIRED,", "hop_id": "H007", "invocation_id": "INV-WIRED",
+        "result": {"schema_version": 1, "outcome": "completed", "requested_route": "done",
+                   "scope_changed": False, "requires_human": False, "escalation": None, "findings": [],
+                   "claimed_commits": [], "commit_intent": None, "evidence_refs": [], "summary": "done"},
+    })
+    executable = tmp_path / "fake-codex"
+    executable.write_text(
+        "#!/usr/bin/env python3\nfrom pathlib import Path\n"
+        f"Path({str(tmp_path / 'result-message.json')!r}).write_text({divergent!r})\n"
+    )
+    executable.chmod(0o755)
+    invocation = _invocation("RUN-WIRED", "H007", "INV-WIRED")
+    request = AgentExecutionRequest(invocation, "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5)
+    adapter = CodexCliAdapter(tmp_path, model="explicit-model", reasoning_effort="high", executable=str(executable))
+
+    outcome = adapter.execute(request)
+
+    assert json.loads(outcome.candidate_result)["run_id"] == "RUN-WIRED,"
+    with pytest.raises(ResultValidationError, match="does not correlate"):
+        validated_result(outcome.candidate_result, invocation)

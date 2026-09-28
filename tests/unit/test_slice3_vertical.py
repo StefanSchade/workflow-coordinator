@@ -188,7 +188,8 @@ def test_diff_bounds_are_visible_and_exact(size, files, omitted):
 def test_result_validation_accepts_only_complete_correlated_structured_envelope():
     expected = type("Expected", (), {"run_id": "RUN-1", "hop_id": "H001", "invocation_id": "INV-1"})()
     assert validated_result(envelope(), expected).requested_route == "done"
-    for raw in ("{", envelope(hop_id="H002"), envelope(invocation_id="INV-2"), json.dumps({"schema_version": 1})):
+    for raw in ("{", envelope(run_id="RUN-2"), envelope(run_id="RUN-1,"), envelope(hop_id="H002"),
+                envelope(invocation_id="INV-2"), json.dumps({"schema_version": 1})):
         with pytest.raises(ResultValidationError):
             validated_result(raw, expected)
 

@@ -135,7 +135,7 @@ def _known_good_envelope():
 
 
 def test_codex_projection_makes_every_object_strict_and_complete():
-    schema = structured_result_envelope_openai_schema()
+    schema = structured_result_envelope_openai_schema(_expected())
     result = schema["properties"]["result"]
     escalation = result["properties"]["escalation"]["anyOf"][1]
     finding = result["properties"]["findings"]["items"]
@@ -147,12 +147,12 @@ def test_codex_projection_makes_every_object_strict_and_complete():
 
 
 def test_codex_projection_tracks_routing_result_validator_contract():
-    result = structured_result_envelope_openai_schema()["properties"]["result"]
+    result = structured_result_envelope_openai_schema(_expected())["properties"]["result"]
     assert set(result["required"]) == set(ROUTING_RESULT_REQUIRED_KEYS)
 
 
 def test_codex_projection_tracks_complete_finding_delta_contract():
-    finding = structured_result_envelope_openai_schema()["properties"]["result"]["properties"]["findings"]["items"]
+    finding = structured_result_envelope_openai_schema(_expected())["properties"]["result"]["properties"]["findings"]["items"]
     properties = finding["properties"]
     assert set(finding["required"]) == set(FINDING_DELTA_KEYS)
     assert properties["finding_id"]["type"] == ["string", "null"]
@@ -166,13 +166,13 @@ def test_invoke_codex_writes_the_canonical_structured_result_schema(repository, 
     executable = _fake(tmp_path, "pass\n")
     invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
     emitted = json.loads((state / "checkouts" / association.checkout_id / "structured-result.schema.json").read_text())
-    assert emitted == structured_result_envelope_openai_schema()
+    assert emitted == structured_result_envelope_openai_schema(_expected())
 
 
 def test_known_good_envelope_passes_adapter_validation_and_provider_schema():
     envelope = _known_good_envelope()
     assert validated_result(json.dumps(envelope), _expected()).summary == "done"
-    _assert_matches_schema(envelope, structured_result_envelope_openai_schema())
+    _assert_matches_schema(envelope, structured_result_envelope_openai_schema(_expected()))
 
 
 def test_state_root_nesting_is_rejected_before_any_trusted_write(repository, tmp_path):
