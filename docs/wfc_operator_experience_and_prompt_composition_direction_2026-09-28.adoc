@@ -1,0 +1,336 @@
+= WFC Operator Experience and Deterministic Prompt Composition -- Direction Notes
+:toc:
+:toclevels: 2
+
+Status:: *NON-NORMATIVE DIRECTION NOTE. AUTHORIZES NOTHING. NOT IMPLEMENTATION AUTHORITY.*
+
+Date:: 2026-09-28.
+
+Scope:: Operator-experience and prompt-composition direction for the
+standalone Workflow Coordinator (WFC), informed by real WFC-on-WFC use and by
+the first Latin-course foreign-domain dogfood attempt. Records observed
+operator friction, a product goal, a composition hypothesis already partly
+evidenced by `assemble_prompt()`, and open questions. Does not modify the
+accepted Level-0/Level-1 boundary, does not authorize a Run, and does not
+propose a CLI redesign.
+
+Anchor:: standalone WFC `a10b0b1fefa67a602de90282c4edb5cbe4b168c3`. Sibling
+Core inspected read-only as precedent, not as a WFC requirement.
+
+[IMPORTANT]
+====
+This note creates no FTR, contract ID, schema, command name, or roadmap
+promotion. Every claim below is labelled *OBSERVED CURRENT FACT*, *PRODUCT
+GOAL*, *DIRECTION / HYPOTHESIS*, *OPEN QUESTION*, or *NON-GOAL*. It does not
+reopen or restate
+`product_boundary_and_higher_order_orchestration_concept_2026-09-25.adoc`
+(the Concept) beyond citing it; where the two overlap, the Concept and its
+accepted reviews remain authoritative.
+====
+
+== 1. Why this note exists
+
+*[OBSERVED CURRENT FACT]* The Concept and its two accepted reviews settled
+the Level-0/Level-1 product boundary and the "bring your own orchestration"
+thesis. They deliberately left operator UX design for later, pending real
+Runs (Concept §16, §19, §24). Two real data points now exist that earlier
+drafts did not have: sustained WFC-on-WFC self-development (the
+`first_wfc_on_wfc_dogfood_attempt_*` series and its BUG/FTR backlog), and the
+first foreign-domain consumer attempt,
+`RUN-39f7984a68ff4de68c3e039971451b88` against the Latin course repository,
+which surfaced `BUG-WFC-GENERATIVE-CORRELATION-IDENTITY` (open, unfixed, this
+note makes no claim about its disposition).
+
+*[OBSERVED CURRENT FACT]* In both cases, preparing a WFC invocation --
+choosing WorkItem scope, profile, policy, components, task payload, and
+execution bindings -- was performed with substantial LLM assistance from the
+maintainer's own tooling, not from WFC itself. That is tolerable today. It is
+not a satisfactory dependency for a governance product, and is the concern
+this note records.
+
+== 2. Product goal
+
+*[PRODUCT GOAL]* For an ordinary multi-stage task (implementation -> review
+-> correction -> re-review), using WFC should eventually require less human
+coordination than manually dispatching and supervising the same agents by
+hand. A governance system for LLM execution should not require a second LLM
+merely to determine how to invoke it correctly.
+
+*[NON-GOAL]* Optimizing every task for WFC. A tiny one-off edit may remain
+below the threshold where WFC preparation cost is worth paying; the product
+does not need to chase that floor.
+
+*[PRODUCT GOAL, restated as an invariant to preserve]* Optional LLM-assisted
+authoring is compatible with WFC and already plausible (Concept §21.4's
+authoring-assistant hypothesis). Mandatory LLM assistance to operate WFC
+correctly is not the desired end state: the deterministic execution and
+governance path must remain usable by a human operator without an authoring
+LLM in the loop.
+
+== 3. The friction is mixed, not uniform
+
+*[OBSERVED CURRENT FACT]* What today gets lumped together as "operator
+preparation burden" is at least four different things:
+
+[cols="1,4",options="header"]
+|===
+| Class | Example
+
+| A. genuine governance decision an operator must make
+| which repository, which WorkItem scope, which policy/profile, whether this
+  work warrants elevated review
+
+| B. explicit safety/authorization gate the operator should see
+| the authorship precondition (Concept §11.6): an independently trusted act
+  authorizing this exact bundle; resume/reconcile requiring explicit action
+
+| C. deterministic mechanics WFC could derive itself
+| Run/Hop/invocation identity, current phase, authorized scope and actions,
+  permitted routes, finding authority, evidence list -- all already computed
+  by `_header()` in `src/workflow_coordinator/prompt.py`
+
+| D. historical commissioning/development ceremony that should eventually
+  disappear from ordinary product use
+| bootstrap-era scaffolding, repeated re-derivation of facts the standalone
+  split already settled
+|===
+
+*[DIRECTION / HYPOTHESIS]* Future UX work should classify real friction into
+A-D from actual Runs before designing any command, rather than guessing which
+class a given pain point belongs to. Collapsing B into C would silently
+remove a safety gate; collapsing C into A would burden the operator with
+facts WFC already knows.
+
+== 4. Level 0 / Level 1 / Project Memory boundary (preserved, not reopened)
+
+*[OBSERVED CURRENT FACT]* This note changes nothing in the Concept's
+boundary. Restated only to bound what follows:
+
+* Level 0 (WFC) executes one already-bounded, authorized WorkItem; it admits
+  and pins governing inputs, deterministically projects phase/role/authority/
+  Run facts, executes under explicit scope/actions/evidence/review
+  obligations, and produces a trusted auditable result. It does not decide
+  what long-lived work should exist next (Concept §5, §6).
+* Level 1 (the Higher Loop) reasons over an evolving body of work, may select
+  or prepare bounded future WorkItems, may decide which strategic or
+  historical context is relevant, and may use project-specific state such as
+  spreadsheet-handling Project Memory. It requests Level-0 execution and
+  never grants itself Level-0 authority (Concept §7, §11.6).
+
+*[NON-GOAL]* Making the spreadsheet-handling Project Memory schema
+(`concerns` / `concern_events` / `decisions`) part of generic WFC. That
+structure is project-specific strategic-steering state and aligns with Level
+1, not Level 0 (Concept §6, §18). Project Memory *may* be one producer of
+context that reaches WFC from outside; it is not the WFC context interface.
+
+*[DIRECTION / HYPOTHESIS]* WFC-owned context and externally-selected context
+remain two different things:
+
+. *Level-0-derivable execution context* -- Run/Hop/invocation identity,
+  current phase, scope and allowed actions, permitted routes, current Run
+  Findings, observed Git/evidence facts, prior Hop/result facts already part
+  of Run authority. This is what `_header()` already projects deterministically
+  today.
+. *Externally selected/materialized context* -- architecture background,
+  prior strategic decisions, predecessor reviews, issue/epic context,
+  Project-Memory-derived material, other organizational knowledge. Selecting
+  *which* of this is relevant is a Level-1 judgement (Concept §7 item 3) and
+  must not silently migrate into the Level-0 deterministic core.
+
+*[NON-GOAL]* Designing a generic `ContextProvider`/plugin framework now. The
+exact eventual interface for externally-materialized context is left open
+(§7 below).
+
+== 5. Deterministic prompt composition: current reality
+
+*[OBSERVED CURRENT FACT]* WFC already implements a meaningful slice of
+"prompt as deterministic build artifact, not free-form authored text."
+`assemble_prompt()` (`src/workflow_coordinator/prompt.py:132-207`) composes,
+in fixed order, from versioned and admitted inputs: an `[identity]` block
+mechanically projected from `Run`/`Phase`/`Invocation` (`_header()`); the
+package-owned Agent Operating Contract, loaded via `importlib.resources` and
+admitted only if its SHA-256 matches `REVIEWED_SHA256` so a consumer cannot
+select or replace it; selected `PromptComponent`s in the FTR's declared
+role/modifier/policy ordering, each carrying path, revision and content
+digest, individually and collectively size-bounded with every omission
+recorded rather than dropped; `[persona_guidance]` marked `authority=none`;
+`[workflow_policy]`; `[task]`; bounded size-tracked `[context]` items; an
+optional bounded `[diff]`; and a fixed `[result_output_contract]` trailer.
+The returned `PromptPackage` carries the assembled text plus the contract's
+provenance, every component reference, and every omission -- provenance and
+omissions are already first-class outputs of composition, not something a
+future subsystem would need to invent. Describe this accurately as existing
+evidence, not as a future subsystem that does not yet exist in any form.
+
+== 6. Deterministic prompt composition: the extended hypothesis
+
+*[DIRECTION / HYPOTHESIS]* The final provider prompt for *any* Hop --
+including a Hop whose task-specific instruction is genuinely small, e.g. a
+20-minute engineering task -- is best understood as the deterministic
+concatenation of:
+
+* the package-owned Agent Operating Contract (fixed, reviewed, digest-pinned;
+  already true);
+* mechanically projected Run/Hop/phase/authority facts (already true, via
+  `_header()`);
+* selected repository-policy components (already true);
+* selected role/persona components (already true);
+* review/assurance obligation components (already expressed through phase
+  `review` and `finding_authority`; not yet a separately named component
+  class);
+* the task-specific payload (already true, and, per the observed friction in
+  §1 and §3, the part that should shrink to the genuinely task-specific
+  residue once classes B/C stop leaking into it);
+* bounded externally supplied context, selected at Level 1 (§4 item 2; not
+  yet a distinct, named input class in `assemble_prompt()`'s signature -- it
+  currently arrives as opaque `ContextItem`s with no source/authority
+  metadata beyond a reference string);
+* the output/result contract trailer (already true).
+
+*[DIRECTION / HYPOTHESIS]* Under this reading, a human should not need to
+hand-author a 500-700 line prompt for an ordinary task. Most of that length
+is reusable, versioned material WFC (or a Level-1 caller) already owns or can
+derive; the genuinely task-specific instruction is comparatively small. This
+is a hypothesis about where prompt *length* comes from, not a claim that
+`assemble_prompt()`'s current signature or component taxonomy is final.
+
+*[OPEN QUESTION]* Whether "review/assurance obligation" deserves its own
+component class distinct from repository-policy/role components, or whether
+phase-derived `review`/`finding_authority` facts already cover it adequately.
+
+*[OPEN QUESTION]* Whether externally-supplied context items should carry
+structured provenance/authority metadata (source, selecting actor, admission
+basis) rather than today's bare `reference` string, and whether that
+metadata belongs in the `PromptPackage` result or only in the Level-1
+caller's own record.
+
+*[NON-GOAL]* Fixing an API for any of the above now. Command names, field
+names, and component-class boundaries are illustrative only.
+
+== 7. External precedent (read-only; not a WFC requirement)
+
+*[OBSERVED CURRENT FACT]* The sibling Core repository already runs a smaller,
+independent instance of the same idea outside any governance engine. Core's
+`scripts/reformation_slice.sh driver NAME [--source PATH]... [--test-hint
+PATH]...` deterministically prints a complete, ready-to-paste agent prompt
+composed from: fixed operating rules; a fixed "read first" file list plus one
+variable slice-document path; small variable source/test-hint bullets
+supplied on the command line; a fixed numbered workflow; and a fixed
+closing-report contract. No LLM is invoked to produce that prompt. Core's
+`make memory-context` similarly renders a generated, deterministic
+`current_context.adoc` report (`project_memory.plugins.render_context`) from
+structured Project Memory state, for a human or agent to read as bounded
+context rather than re-deriving it by inspection each time.
+
+*[OBSERVED CURRENT FACT]* Both are useful confirmation that non-LLM
+deterministic composition of a rich, reusable prompt is already working
+practice one repository over -- not a novel or speculative idea.
+
+*[NON-GOAL]* Treating Core-specific structures as WFC requirements. Core's
+`reformation_slice.sh` is a plain bash text generator with no admission,
+authority, or trust semantics of its own; Core's Project Memory schema is
+explicitly out of generic WFC scope (§4). What generalizes is the *shape* --
+fixed reusable material plus a small variable residue, assembled
+deterministically -- not any Core file, schema, or vocabulary.
+
+== 8. Corporate governance angle
+
+*[DIRECTION / HYPOTHESIS]* A plausible enterprise value proposition, stated
+without marketing hype, is that an organization can mechanically enforce and
+later reconstruct: which WorkItem and repository revision were admitted; who
+or what authorized the Run where provenance exists; which policy/profile
+governed it; which model/provider/reasoning binding executed each role;
+whether an independent review actually occurred; whether stronger
+assurance/defensive review was required for sensitive resource classes;
+which evidence commands ran; which Findings/routes/results occurred; which
+commits actually became trusted effects; and which prompt components and
+context were presented to the model.
+
+*[NON-GOAL]* Claiming WFC already provides all of the above as a complete
+enterprise GRC product. Per the Concept's own register discipline (§5.1):
+governing-input admission, trusted evidence, trusted commits, durable Run
+records, and component/omission provenance in `PromptPackage` are *current
+capability*. Resource/effect classification, derived security and assurance
+floors, and mechanical governing-input authorship proof remain *future
+direction* (Concept §5.1, §11.2-§11.3, §11.6). This note does not narrow or
+widen that register; a legible, reconstructable record is simply what a
+governance-oriented buyer would ask such a product to prove, and
+prompt-composition provenance (§5-§6) is one concrete building block toward
+it.
+
+== 9. Operator-facing surface (illustrative only)
+
+*[DIRECTION / HYPOTHESIS]* A future operator-facing surface might expose
+prompt composition, provenance, and omissions for inspection -- for example
+something like `validate`, `plan`/`preview`, `run`, `status`/`inspect`, or
+optional `assist`/authoring help. These names are hypotheses for discussion,
+not committed commands, FTRs, or roadmap items. Today's single `wfc` entry
+point (Concept §16) is the only current surface.
+
+*[OPEN QUESTION]* Which of the A-D friction classes (§3) each such
+illustrative surface would actually address, once classified from real
+Runs rather than guessed in advance.
+
+== 10. Empirical development strategy
+
+*[DIRECTION / HYPOTHESIS]* The intended learning sequence, recorded so that
+UX work stays evidence-driven rather than speculative:
+
+. finish the current structured-result correlation BUG
+  (`BUG-WFC-GENERATIVE-CORRELATION-IDENTITY`, open as of this note);
+. independently review that correction;
+. promote the corrected Runtime;
+. perform a fresh Latin-course foreign-domain Run;
+. write the consumer/operator runbook from both the failed
+  (`RUN-39f7984a68ff4de68c3e039971451b88`) and the successful real paths;
+. classify actual operator friction using §3's A-D categories;
+. choose one small, high-value UX/CLI slice from repeated real pain, not from
+  this note's illustrative list;
+. use that slice as a future WFC-on-WFC task and evaluate whether WFC itself
+  reduced maintainer effort.
+
+*[OBSERVED CURRENT FACT]* Step 1 is not complete: the BUG record is open and
+documentation-only; no fix, adapter change, or Runtime promotion has
+occurred. Real tool usage is treated here as an empirical input to product
+design, not a demonstration exercise to be narrated after the fact.
+
+== 11. Explicit non-goals (consolidated)
+
+This note does not:
+
+* authorize any implementation, Run, provider invocation, CLI change, or
+  repository split;
+* propose a broad CLI redesign or freeze any command name;
+* make the spreadsheet-handling Project Memory schema part of generic WFC;
+* design a generic `ContextProvider`/plugin framework;
+* change `assemble_prompt()`, its component taxonomy, or any resource,
+  policy, profile, or test;
+* modify the Concept, its accepted reviews, or the standalone backlog
+  disposition;
+* claim WFC is a complete enterprise GRC product;
+* resolve whether an authoring assistant is a third concern or the mechanism
+  satisfying the Concept §11.6 authorship precondition (left to the Concept's
+  own open question);
+* authorize repair, resumption, or reinterpretation of
+  `RUN-39f7984a68ff4de68c3e039971451b88`.
+
+== 12. Open questions (consolidated)
+
+* Does review/assurance-obligation material deserve its own prompt-component
+  class, or is phase-derived `review`/`finding_authority` sufficient (§6)?
+* Should externally supplied context carry structured provenance metadata,
+  and where should it live (§6)?
+* Which A-D friction class does each candidate future surface actually
+  address, once measured from real Runs (§3, §9)?
+* What is the smallest first UX/CLI slice repeated real pain actually
+  justifies, once §10's sequence produces evidence -- deliberately
+  unanswered here?
+
+== 13. Relationship to existing authority
+
+*[OBSERVED CURRENT FACT]* No current Coordinator behavior, governance,
+policy, profile, resource, test, Project Memory record, frozen Run state, or
+provider state was inspected for mutation and none was changed in producing
+this note. This note is planning/review evidence in the sense of
+`docs/README.adoc`'s classification: it records disposition and reasoning and
+does not itself grant Run authority.
