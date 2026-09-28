@@ -1,0 +1,475 @@
+= Project Memory spreadsheet round trip correction -- Architecture Rereview 002
+
+Independent adversarial rereview of
+`d201af5d231654d16c4293c369ac034e099c204e`,
+`fix(memory): bind Project Memory promotion to a reviewed proposal`, against
+the original implementation and independent review.
+
+This was a review-only activity. It did not implement a correction, redesign
+the feature, invoke WFC, invoke an AI provider, promote live Project Memory, or
+push. Core and workflow-coordinator-runtime were inspected only for identity
+and status and were not modified.
+
+== Identity and scope
+
+Correction reviewed:: `d201af5d231654d16c4293c369ac034e099c204e`
+Correction parent:: `56f4a04fd0319c0f80b10baa8616f17e59da9419`
+Original independent review::
+`56f4a04fd0319c0f80b10baa8616f17e59da9419`,
+`docs(review): require changes to Project Memory round trip`
+Original implementation:: `aa219a6fbf42d8f7d1c6d3706cb155f921df0040`,
+`feat(memory): add spreadsheet round-trip tooling`
+Original implementation parent::
+`98efeae6fbf678386d30b15fd8d81e91bf8a5bd5`
+Inspected WFC baseline / initial HEAD::
+`d201af5d231654d16c4293c369ac034e099c204e` on `main`, five commits ahead of
+`origin/main`
+Initial WFC status:: one pre-existing untracked `wfc_snapshots/` directory;
+no tracked modification
+Core identity/status:: `cad877c27362ef07f0a0f255b9cc80702e44bb97`,
+clean before and after
+workflow-coordinator-runtime identity/status::
+`dcb1da0403e0af430a883288f61e593162ee9e47`, clean before and after
+
+The parent chain was verified directly:
+
+[source,text]
+----
+aa219a6^1 = 98efeae6fbf678386d30b15fd8d81e91bf8a5bd5
+56f4a04^1 = aa219a6fbf42d8f7d1c6d3706cb155f921df0040
+d201af5^1 = 56f4a04fd0319c0f80b10baa8616f17e59da9419
+----
+
+The correction changes exactly eight paths:
+
+[source,text]
+----
+M  .gitignore
+M  Makefile
+M  README.md
+M  project_memory/README.adoc
+A  scripts/memory_proposal.py
+M  scripts/wfc_snapshot.py
+A  tests/unit/test_memory_proposal.py
+M  tests/unit/test_wfc_snapshot.py
+----
+
+No `src/`, governance, package metadata, dependency pin, pipeline behavior,
+Core, or Runtime path is in the correction diff. Both pipeline files and the
+canonical-table contract were nevertheless inspected because they are inputs
+to the protocol under review.
+
+== Verdict
+
+*B -- CHANGES REQUIRED.*
+
+* BLOCKING: 0
+* IMPORTANT: 1 new
+* MINOR: 2 new
+* INFO / bounded residual: 1
+
+The correction is a substantial and mostly correct repair. In ordinary serial
+operation it implements a deterministic byte-exact binding from the displayed
+four-table proposal and displayed four-table canonical baseline to promotion.
+It cleanly separates unchanged-round-trip verification from proposal review,
+removes the original Make prerequisite race, validates complete parseable table
+sets, preserves an earlier proposal after importer failure, rejects subsequent
+staging or canonical mutation, and consumes the marker after a normal
+promotion.
+
+It is not yet a sound reference implementation of the deliberately strong
+guarantee under concurrency. Promotion performs marker load, staging read,
+canonical read, identity checks, four writes, and marker removal without a
+lock, compare-and-swap, or other exclusive consumption boundary. Two promotion
+processes can therefore validate the same marker and baseline before either
+consumes them, after which both write and both report success. This was not
+hypothetical: both promotions succeeded in 14 of 30 independent parallel
+attempts.
+
+That is material here because the reviewed design explicitly promises that a
+successful promotion consumes the proposal and that replay without a fresh
+preview is rejected. It also means the second process can write after the first
+has moved canonical away from the baseline it checked. The finding is not
+lowered merely because both processes happened to carry the same reviewed
+bytes, and it is separate from the accepted crash-atomicity residual.
+
+== Original IMPORTANT finding dispositions
+
+[cols="2,1,5",options="header"]
+|===
+|Original finding |Disposition |Rationale
+
+|1 -- checked promotion semantics
+|*CLOSED*
+|`memory-roundtrip-check` requires an empty delta and fails on an intentional
+edit, while `memory-preview` renders an intentional delta as review information
+and exits 0. `memory-promote` is the separate approval action. Makefile,
+`README.md`, `project_memory/README.adoc`, implementation, regression tests,
+and real pinned-tool execution agree on that semantic split. A stale comment
+in the reverse pipeline is recorded separately as MINOR 2; it does not restore
+the original diff-as-gate defect.
+
+|2 -- ordering / parallel execution race
+|*CLOSED*
+|The original unordered `memory-import` / `memory-diff-reimport` prerequisite
+pair no longer exists. Each public protocol target is one recipe and one Python
+process; import, validation, rendering, and proposal replacement are sequenced
+inside `preview`, while validation, copy, and consumption are sequenced inside
+`promote`. `make -j4` cannot reproduce the original stale-staging check followed
+by promotion of a different import. The newly found cross-process promotion
+race is a different check-to-write/consume gap and is reported separately.
+
+|3 -- promotion not bound to reviewed identity
+|*PARTIALLY CLOSED*
+|For a single promotion process, the binding is correct and complete: exact
+table names, JSON parseability, per-file byte digests, a deterministic folded
+table-set fingerprint, staging revalidation, and canonical-baseline
+revalidation all work. Staging and canonical mutations are refused, a later
+workbook edit is irrelevant by design, promotion copies the captured reviewed
+bytes, and normal replay is refused. The binding is not exclusive from check
+through consumption, so simultaneous promoters can both pass against one
+marker and both succeed. The strong end-to-end identity/consumption guarantee
+is therefore not fully closed.
+|===
+
+== Protocol reconstruction
+
+=== Distinct invariant and review meanings
+
+The Make graph exposes only the three intended targets:
+
+[source,make]
+----
+memory-roundtrip-check:
+	$(MEMORY_PROTOCOL) roundtrip-check
+
+memory-preview:
+	$(MEMORY_PROTOCOL) preview
+
+memory-promote:
+	$(MEMORY_PROTOCOL) promote
+----
+
+The retired `memory-import`, `memory-diff-reimport`, `memory-check`, and
+`memory-promote-reimport-checked` targets have no recipe or alias. There is no
+Make path that accidentally retains the original unchecked copy or unordered
+prerequisite graph.
+
+`_roundtrip_check` reads canonical, imports into a random throwaway directory,
+renders any byte delta, and refuses when the delta is non-empty. It never reads
+or writes staging or the marker. `_preview` uses the same isolated-import
+shape, but treats the delta as successful review output. The target semantics
+are now genuinely different rather than two names over the same `diff` exit
+code.
+
+=== Completeness, validity, and failed-import behavior
+
+`_read_table_set` requires exactly these four `*.json` names:
+
+[source,text]
+----
+concern_event_xrefs.json
+concern_events.json
+concerns.json
+decisions.json
+----
+
+It reports missing and unexpected JSON tables and UTF-8/JSON parse failures.
+Both preview and promotion use this reader. Partial staging cannot promote, and
+an unexpected canonical JSON table also stops the protocol rather than being
+silently blended.
+
+Preview imports beneath a random directory under `.proposal/`. The importer
+must exit zero and the temporary output must be the complete parseable table
+set before `_replace_staging` runs. Importer exit failure, partial output, and
+malformed JSON therefore leave the existing staging and marker untouched. The
+regression suite covers all three cases; an independent failed-command probe
+also verified identical hashes for all four staged tables and the marker before
+and after refusal, followed by successful promotion of the earlier proposal.
+
+Successful replacement builds a complete incoming directory and changes the
+staging directory by same-filesystem rename. This is materially safer than the
+original clear-before-import behavior.
+
+=== Fingerprint construction
+
+The fingerprint is sufficiently deterministic and complete for the promised
+content identity:
+
+. each of the exact four table files is read as bytes after UTF-8/JSON
+  validation;
+. SHA-256 is computed over every file's complete byte sequence;
+. the aggregate starts with the algorithm/domain line
+  `sha256-table-set-v1\n`;
+. entries are folded in sorted filename order as
+  `filename + NUL + hexadecimal file digest + newline`.
+
+Filenames, file boundaries, all bytes, and the algorithm version are therefore
+unambiguous. The marker stores the per-table digests and aggregate for both the
+canonical baseline and staging proposal. An independent recomputation matched
+both marker aggregates exactly and matched every stored per-table digest.
+
+The marker also records a workbook digest, correctly marked informational. The
+workbook is an editing input, not the materialized review boundary, so a later
+workbook rewrite does not invalidate staging. A real end-to-end probe re-exported
+the workbook after preview and still promoted precisely the previously
+displayed staging proposal.
+
+=== Sequential promotion
+
+In a single process, `_promote`:
+
+. loads a versioned marker;
+. requires complete parseable staging and canonical table sets;
+. recomputes both aggregate fingerprints;
+. refuses staging or canonical-baseline drift;
+. writes the already-read staged bytes to all four canonical names; and
+. removes the marker.
+
+Independent probes confirmed refusal after a valid-byte staging mutation and
+after a valid-byte canonical mutation, with canonical otherwise unchanged.
+Normal promotion made canonical byte-identical to staging, removed the marker,
+and a following serial replay refused.
+
+=== Make parallelism
+
+No public target has multiple prerequisites, and the Python operation owns the
+ordering inside each recipe. The original `make -j` defect is gone. Focused
+tests and real pinned-tool probes passed with `-j4` for the invariant, preview,
+mutation refusal, and promotion paths.
+
+The correction tests named as parallel checks mostly invoke one target under
+`make -j4`; `-j` cannot create internal recipe parallelism there. The one
+two-target test (`memory-preview memory-promote`) allows either refusal or
+promotion after output. Those tests cover the original Make graph failure, but
+they do not exercise two promotion processes contending for one marker. That
+missing falsification case is exactly where new IMPORTANT 1 survives.
+
+== New findings
+
+=== IMPORTANT 1 -- promotion identity checks and marker consumption are not exclusive
+
+OBSERVED:: `_promote` at `scripts/memory_proposal.py:353-383` loads the marker,
+reads staging, reads canonical, compares both fingerprints, writes the four
+tables one by one, and only then unlinks the marker. There is no lock or atomic
+claim of the marker around that sequence.
+
+Independent probe:: A valid edited proposal was previewed once. For each of 30
+fresh copies of that exact state, two independent `make memory-promote`
+processes were started concurrently. Outcomes:
+
+[source,text]
+----
+both_succeeded=14 exactly_one_succeeded=16 attempts=30
+----
+
+A separately captured double-success run produced:
+
+[source,text]
+----
+first_rc=0 second_rc=0
+Promoted reviewed proposal 010a30b8... onto baseline 98e765b9...: concerns.json.
+Proposal consumed. Promoting again requires a fresh 'make memory-preview'.
+Promoted reviewed proposal 010a30b8... onto baseline 98e765b9...: concerns.json.
+Proposal consumed. Promoting again requires a fresh 'make memory-preview'.
+----
+
+Why it is material:: Both processes can read the marker and canonical baseline
+before either writes or unlinks. At least one successful write/consume sequence
+then occurs after the other process has begun moving canonical away from the
+baseline both checked. More directly, one preview authorizes two successful
+promotion actions even though both report that they consumed the proposal.
+This falsifies the documented replay and consumption property and leaves a
+check-to-write TOCTOU inside the exact-baseline guarantee.
+
+Required property:: Claiming/validating the reviewed marker, checking staging
+and canonical, performing promotion, and consuming the marker must be one
+exclusive protocol critical section. With two simultaneous promotion attempts,
+at most one may succeed from one preview. The implementation mechanism is left
+to the correction author; this review does not redesign it.
+
+This is not the known multi-file crash residual. No process, machine, or
+filesystem failure was injected, and both processes completed normally. The
+defect is concurrent successful reuse of one approval identity.
+
+=== MINOR 2 -- the reverse-pipeline documentation names a removed target
+
+`project_memory/pipelines/memory/ods_to_json.yaml:3-5` still says that
+`make memory-diff-reimport` compares staging with canonical. That target was
+removed by the correction and the comment describes the old protocol. The
+primary READMEs and Makefile are correct, so this does not reopen original
+IMPORTANT 1, but a maintainer reading the pipeline at the point of use is sent
+to a nonexistent command.
+
+=== MINOR 3 -- canonical directory symlinks are followed and can redirect promotion
+
+The fixed repository layout is resolved only at the repository root.
+`_read_table_set` and `_atomic_write_bytes` do not refuse symlinked canonical or
+staging paths. In an isolated reviewed-state copy, `project_memory/canonical`
+was replaced with a symlink to a directory outside the repository containing
+the exact reviewed baseline. `memory-promote` returned success and wrote the
+reviewed proposal into the outside target; the original in-repository directory
+remained unchanged.
+
+[source,text]
+----
+Promoted reviewed proposal 010a30b8... onto baseline 98e765b9...: concerns.json.
+outside target: contains [REREVIEW EDIT]
+original in-repository directory: unchanged
+----
+
+The content identity check still did what it was coded to do, so this is MINOR
+rather than a second IMPORTANT identity bypass. It is nevertheless an
+accidental file-selection and write-boundary weakness in maintainer tooling:
+the command reports promotion of repository canonical Project Memory while its
+writes may be redirected outside the repository. The strong path should refuse
+such directory/file topology rather than silently following it.
+
+== Additional adversarial dispositions
+
+Partial table-set promotion:: refused before writes; covered by focused test
+and direct implementation inspection.
+Stale staging proposal:: refused by proposal fingerprint in serial operation.
+Stale canonical baseline:: refused by baseline fingerprint in serial operation;
+not exclusive under concurrent promotion (IMPORTANT 1).
+Failed-import state destruction:: importer failure, partial import, and invalid
+JSON preserve the earlier valid proposal. Directory-replacement crash recovery
+is not claimed.
+Malformed imported JSON:: refused before staging replacement.
+Unexpected/missing canonical JSON tables:: refused by exact table-name set.
+Temporary-file behavior:: marker and each canonical file use a same-directory
+temporary file plus `os.replace`; staging uses directory rename on the same
+filesystem. These are sound for individual replacement operations.
+Alternate Make bypass:: none found. Retired targets are absent. The test-only
+import-command seam still passes through completeness, JSON, preview, and
+fingerprint validation.
+Manual canonical editing:: documented as an alternative curation path and not
+presented as spreadsheet promotion; it does not weaken the meaning of the
+spreadsheet targets.
+Snapshot scope:: staging, `.proposal/`, and the root workbook are excluded by
+repository-relative paths; an unrelated `_meta.yaml` remains included. No
+broader filename exclusion remains. A generated snapshot in a scratch output
+contained the README, both pipeline files, and all four canonical tables, while
+its repository tree omitted staging, `.proposal/`, and the workbook.
+Core/Runtime coupling:: none introduced. The maintainer-only dependency pin is
+unchanged; no production source imports spreadsheet-handling.
+Feature boundary:: correction changes only the eight expected WFC Project
+Memory/tooling/test paths listed above.
+
+== Known bounded residual -- accepted as a non-finding
+
+The four canonical JSON files are written by four individual atomic file
+replacements, not one filesystem transaction. A process, machine, or filesystem
+failure at exactly the wrong point may therefore leave a mixed canonical set.
+The implementation has no WAL, journal, or crash recovery.
+
+This rereview does *not* classify that deliberate residual as a defect. The
+documentation promises exact identity checks and individual protocol ordering;
+it does not claim multi-file transactional or crash-atomic promotion. New
+IMPORTANT 1 is different because it is reproducible with two normally
+completing processes and contradicts explicit consume/replay semantics.
+
+== Validation and reproduced evidence
+
+All live-memory mutation probes ran against `git archive d201af5` extractions
+under `/tmp`, never the working tree. The real spreadsheet probes used a wheel
+built from a `git archive` of the exact pinned spreadsheet-handling revision
+`ad91eeb067752ae4773f86927071dd6c3aaf8621`; package import provenance was
+confirmed to resolve to the isolated copy. Core's environment supplied already
+installed third-party dependencies but Core itself was not written.
+
+[cols="3,3",options="header"]
+|===
+|Command / probe |Result
+
+|`git status --short`, `git rev-parse HEAD`, history/parent inspection
+|HEAD and ancestry exactly as recorded above; only pre-existing untracked
+`wfc_snapshots/`
+
+|full original review artifact, all 925 lines
+|read in full before verdict
+
+|`git diff --name-status` / `--stat` / full correction diff
+|exactly eight correction paths; implementation, tests, docs, snapshots, and
+ignore rules inspected
+
+|focused pytest: `test_memory_proposal.py`, `test_wfc_snapshot.py`, and
+`test_package_boundaries.py`
+|*24 passed*
+
+|`.venv/bin/python -m pytest -q`
+|*442 passed*
+
+|`.venv/bin/python -m ruff check .`
+|`All checks passed!`
+
+|bounded Ruff format check from `make format-check`
+|`5 files already formatted`
+
+|`git diff --check 56f4a04..d201af5` and worktree `git diff --check`
+|clean
+
+|real pinned `memory-export` -> `make -j4 memory-roundtrip-check`
+|exit 0; four tables byte-identical to canonical; staging and marker untouched
+
+|real ODS cell edit -> `make -j4 memory-preview`
+|exit 0; exact edit rendered; baseline and proposal fingerprints printed;
+canonical unchanged
+
+|staging valid-byte mutation after preview -> promote
+|exit 2 through Make; fingerprint mismatch refusal; canonical unchanged
+
+|canonical valid-byte mutation after preview -> promote
+|exit 2 through Make; baseline mismatch refusal; no proposal overlay
+
+|preview -> re-export workbook -> promote -> replay
+|promotion applied the reviewed proposal, canonical equaled staging, marker
+removed; replay exit 2 / refused
+
+|valid preview -> importer command failure -> compare -> promote
+|failed preview exit 2; all staged-table and marker hashes unchanged; earlier
+proposal still promoted successfully
+
+|independent fingerprint recomputation
+|all per-table digests and both folded aggregates matched the marker exactly
+
+|two concurrent promotions over one preview, 30 fresh copies
+|*14 both succeeded; 16 exactly one succeeded* (IMPORTANT 1)
+
+|captured concurrent promotion retry
+|both exit 0 on attempt 4; both report promotion and consumption of the same
+proposal/baseline
+
+|canonical-directory symlink probe
+|promotion exit 0 and wrote outside the repository (MINOR 3)
+
+|scratch `wfc_snapshot.py --output ...`
+|five snapshot files; canonical Project Memory present; generated review
+surfaces absent from file headings and repository tree
+
+|AsciiDoc render of this review artifact
+|performed after authoring; output written under `/tmp`, not the repository
+|===
+
+No repository-provided dedicated documentation checker exists. `asciidoctor`
+was used directly for this artifact.
+
+== Conclusion and proportionality boundary
+
+`d201af5` closes the original semantic conflation and Make dependency race and
+implements the intended content fingerprints correctly. It partially closes
+the reviewed-identity finding: the serial path is rigorous, but proposal
+consumption and exact-baseline validation are not exclusive under concurrent
+promotion. Because concurrency was an explicit adversarial review axis and the
+strong design explicitly promises one-use promotion, that remaining gap is
+material.
+
+*B -- CHANGES REQUIRED*: original IMPORTANT dispositions are CLOSED, CLOSED,
+and PARTIALLY CLOSED; one new IMPORTANT and two new MINOR findings.
+
+Acceptance was not granted. When a later rereview does accept this correction,
+that acceptance will validate the strong staged-proposal design as implemented;
+it will not decide whether this complexity is proportionate for the current WFC
+Project Memory use case. That architectural proportionality decision remains
+deliberately deferred, and nothing in this verdict argues that the stronger
+protocol must remain the permanent WFC architecture.
