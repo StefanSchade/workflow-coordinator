@@ -1,0 +1,385 @@
+= Project Memory Git review boundary implementation -- Independent Review
+:toc:
+
+Independent adversarial review of
+`871ab14f78686628e7acd77850f4dd5a6bc72ccd`,
+`refactor(memory): use Git as spreadsheet review boundary`, against its parent
+baseline and the deliberately simplified contract established by
+`DEC-WFC-010`.
+
+This was a review-only activity. It did not correct the implementation,
+redesign the feature, invoke WFC, invoke an AI provider, modify Core or
+workflow-coordinator-runtime, or push. The only tracked artifact created by
+the review is this document.
+
+== Identity and scope
+
+Implementation reviewed:: `871ab14f78686628e7acd77850f4dd5a6bc72ccd`
+Implementation parent / baseline::
+`91f883a4a7ddc1d9111a016d91583e0e22016225`
+Current repository truth inspected::
+`6a7a0f3ceaa20eb49af6b2ab70d7730e33355919`
+Initial WFC status:: one pre-existing untracked `wfc_snapshots/` directory;
+no tracked modification
+Core identity/status:: `cad877c27362ef07f0a0f255b9cc80702e44bb97`,
+clean before and after
+workflow-coordinator-runtime identity/status::
+`dcb1da0403e0af430a883288f61e593162ee9e47`, clean before and after
+
+The reviewed history was read in order:
+
+[source,text]
+----
+aa219a6  feat(memory): add spreadsheet round-trip tooling
+56f4a04  docs(review): require changes to Project Memory round trip
+d201af5  fix(memory): bind Project Memory promotion to a reviewed proposal
+773ea97  docs(review): require changes to Project Memory proposal binding
+91f883a  docs(memory): record spreadsheet staging experiment and simplification decision
+871ab14  refactor(memory): use Git as spreadsheet review boundary
+6a7a0f3  docs(memory): record the Git-backed spreadsheet simplification
+----
+
+The parent chain was verified directly:
+
+[source,text]
+----
+871ab14^1 = 91f883a4a7ddc1d9111a016d91583e0e22016225
+6a7a0f3^1 = 871ab14f78686628e7acd77850f4dd5a6bc72ccd
+----
+
+The canonical records read in full were `DEC-WFC-010`,
+`CONC-WFC-MEMORY-PROMOTION-PROTOCOL-PROPORTIONALITY`,
+`SIG-ACT-WFC-MEMORY-STAGING-EXPERIMENT`, and
+`SIG-ACT-WFC-MEMORY-GIT-REVIEW-BOUNDARY`, including their cross-reference.
+
+== Architectural boundary applied by this review
+
+This review evaluates the smaller Git-backed contract and expressly does not
+reopen the retired strong-staging architecture. The absence of a lock,
+proposal identity, approval marker, fingerprint, one-shot promotion, journal,
+WAL, or cross-file crash transaction is not a finding.
+
+The accepted contract has two persistent representations: the four canonical
+JSON files and the editable ODS workbook. A temporary imported JSON directory
+may exist only for the duration of one process. An imported edit becomes an
+ordinary dirty Git worktree; `git diff` is review, a normal commit is
+acceptance, and restore/discard is rejection. Concurrent multi-maintainer
+editing and import are not supported requirements.
+
+== Verdict
+
+*CHANGES REQUIRED.*
+
+* BLOCKING: 0
+* IMPORTANT: 0
+* MINOR: 1
+* INFO / bounded observations: 1
+
+The Git-backed architecture is correctly implemented for the documented
+serial maintainer flow. The retired state machine is gone; import is
+fail-closed before canonical mutation; the dirty-canonical guard works;
+replacement, path, round-trip, and ordinary Git review/restore/commit behavior
+passed independent probes; and the real pinned spreadsheet tool completed the
+expected workflow.
+
+Acceptance is withheld only because the current Makefile and Project Memory
+README make a blanket guarantee for every Make invocation mode, including
+parallel execution, that the shared workbook and canonical surfaces do not
+support. A deterministic `memory-export` / `memory-import` parallel probe lost
+the workbook edit while both targets reported success. This is not a request
+for locking or for resurrection of the promotion protocol. The supported
+serial workflow is not defective; the current concurrency claim is false.
+
+== Findings
+
+=== F-M1 -- MINOR -- the blanket `make -j` safety guarantee is false
+
+Affected claim:: `Makefile` lines 46--47 and
+`project_memory/README.adoc` lines 89--91 state that because no target is a
+prerequisite of another and each target is one process, no Make invocation
+mode, including `-j`, can act on stale output.
+
+Concrete evidence:: A disposable clone at current truth `6a7a0f3` was exported
+with the exact pinned spreadsheet-handling source
+`ad91eeb067752ae4773f86927071dd6c3aaf8621`. The `concerns` sheet was then
+edited through ODF to append the unique marker
+`[PARALLEL EDIT MUST SURVIVE]`; the marker was confirmed in `content.xml`.
+
+A wrapper delayed only the `ods_to_json.yaml` invocation for two seconds, then
+the following was run:
+
+[source,shell]
+----
+make -j2 memory-export memory-import \
+  SHEETS_RUN=/tmp/.../sheets-run-delay-import
+----
+
+Both recipes started. `memory-export` overwrote the edited shared
+`project_memory.ods` from canonical JSON while `memory-import` was delayed.
+Import then read the newly exported no-edit workbook rather than the workbook
+that existed when the invocation began. Both targets exited zero; import
+reported `canonical Project Memory is byte-identical`; `git diff --
+project_memory/canonical` was empty; and the marker was absent from the final
+workbook.
+
+Why this violates the current contract:: The implementation and documentation
+explicitly make parallel Make safety a current guarantee. Self-contained
+processes do not make their shared mutable inputs and outputs independent:
+`memory-export` writes the same workbook that `memory-import` reads. Related
+combinations also share canonical JSON. The probe therefore directly
+contradicts the stated guarantee. It does not demonstrate a defect in the
+supported serial maintainer workflow or create a requirement for concurrent
+maintainers.
+
+Smallest proportionate correction:: Remove the blanket parallel-safety claim
+from the Makefile comment and `project_memory/README.adoc`, and say that memory
+targets which share the workbook or canonical JSON must be invoked serially.
+Do not add locking, leases, promotion identity, or transaction machinery. If
+parallel target combinations are to remain claimed as supported, they instead
+need explicit ordering/serialization and a regression test; that is a larger
+contract than `DEC-WFC-010` requires.
+
+Test gap:: `test_make_import_is_one_self_contained_target` invokes only one
+target under `make -j`; it cannot falsify interaction between different
+targets. The structural assertion that each recipe is one process is true but
+does not establish isolation across the shared workbook.
+
+=== I-1 -- INFO -- canonical-directory symlink refusal is deliberately stricter than the diagnostic wording
+
+The canonical-directory path check refuses whenever the resolved path differs
+from the fixed repository-owned spelling. The outside-repository symlink probe
+was refused and no outside byte changed. A committed individual table symlink
+was safely replaced at its in-repository directory entry by `os.replace`; the
+outside target did not change.
+
+An additional probe redirected `project_memory/canonical` to
+`project_memory/canonical-real` inside the same disposable repository. It was
+also refused, but the message called that resolved target "outside the
+repository-owned location". This is a stricter-than-required refusal with
+imprecise wording, not a write escape and not an acceptance finding. If the
+diagnostic is touched later, "redirects away from the fixed repository-owned
+path" would describe the implemented check more exactly.
+
+== Contract reconstruction and evidence
+
+=== Retired state machine removal
+
+`scripts/memory_proposal.py`, `tests/unit/test_memory_proposal.py`, and
+`project_memory/staging/` are deleted. The Makefile exposes only
+`memory-export`, `memory-import`, and `memory-roundtrip-check`; no live target
+or alias provides `memory-preview` or `memory-promote`. `.gitignore` retains
+only the generated workbook rule for this feature, and snapshot exclusions no
+longer name staging or proposal state.
+
+A live-tree search found retired names only in canonical historical/decision
+records, explanatory negative assertions, and tests proving absence. No
+persistent proposal, baseline/proposal fingerprint, approval marker, replay
+lifecycle, promotion operation, lock, lease, claim, or hidden acceptance state
+remains. The `wfc-memory-import-*` and `wfc-memory-roundtrip-*` directories are
+random process-local temporary buffers and are removed in `finally`; they have
+no persistent identity or approval meaning.
+
+=== Import failure boundary
+
+Independent fake-runner probes captured SHA-256 hashes for all four canonical
+tables before each import. Canonical bytes and Git status remained unchanged
+after:
+
+* runner exit 9;
+* a missing whole `decisions.json` table;
+* an unexpected `releases.json` table;
+* malformed `decisions.json`;
+* a missing workbook;
+* an unavailable runner, which returned the dedicated exit 127; and
+* inability to execute Git while checking canonical status.
+
+The implementation reads and JSON-parses the exact imported table set in a
+throwaway directory before entering the replacement loop. This is the promised
+pre-mutation failure boundary. No cross-file crash-atomicity claim was inferred
+or required.
+
+=== Dirty-canonical refusal
+
+Independent probes covered a valid tracked table modification, deletion of a
+tracked expected table, an untracked unexpected JSON table, and an untracked
+non-JSON file beneath canonical. Each refused without overwriting the existing
+state. A non-zero/unavailable Git-status path also refused. The normal real-tool
+workflow refused a second import after the first import had made
+`concerns.json` dirty.
+
+The deletion and unexpected-JSON cases refuse even earlier as incomplete or
+unexpected canonical table sets; the untracked non-JSON case reaches the Git
+guard. All satisfy the narrow contract that import must not silently overwrite
+an existing canonical edit. No repository-wide cleanliness requirement was
+inferred.
+
+=== Complete replacement and filesystem behavior
+
+The expected model is exactly these JSON tables:
+
+[source,text]
+----
+concern_event_xrefs.json
+concern_events.json
+concerns.json
+decisions.json
+----
+
+A missing whole table and an unexpected JSON table were refused. Removing one
+row from a valid fake workbook succeeded and changed the `concerns` row count
+from five to four, proving that whole-table completeness is not confused with
+row preservation. Replacement preserved an unusual ordinary `0751` rwx mode.
+
+The canonical-directory symlink escape and committed individual-table symlink
+probes established the relevant path behavior: the former refuses before
+conversion, while rename replaces the latter symlink itself rather than
+following it. No outside write was observed. The implementation correctly
+makes no promise of multi-file crash atomicity.
+
+=== Round-trip invariant
+
+With the real pinned tool, hashes of all four canonical tables and the
+maintainer workbook were identical before and after
+`memory-roundtrip-check`, which reported four byte-identical tables. The check
+created and consumed its own temporary workbook.
+
+A deliberately lossy fake export removed the first concern's `title`. The
+check exited 1, printed a unified `concerns.json` delta containing `title`, and
+reported the invariant violation. Canonical hashes stayed identical and a
+sentinel maintainer workbook stayed byte-identical. This is transformation
+verification only; it was not treated as content approval.
+
+=== Git as acceptance boundary
+
+The real-tool disposable workflow was:
+
+[source,text]
+----
+memory-export
+memory-roundtrip-check
+ODF edit of concerns.title
+memory-import
+git status / git diff
+second memory-import (refused because canonical was dirty)
+git restore -- project_memory/canonical
+memory-import again
+ordinary git add + git commit
+----
+
+The first import produced only
+` M project_memory/canonical/concerns.json`, and `git diff` showed exactly the
+ODS title edit. Restore returned the clone to a clean canonical state. Reimport
+then reproduced the same edit, and an ordinary scratch commit
+`6cb24a6` accepted it. No hidden marker or staging identity was needed and the
+implementation did not commit automatically.
+
+== Real spreadsheet-handling integration
+
+The requirement pins spreadsheet-handling at
+`ad91eeb067752ae4773f86927071dd6c3aaf8621`. `git ls-remote` over HTTPS
+independently confirmed that exact SHA as spreadsheet-handling `main`. The
+source at that exact Git object was archived from the local Core repository
+into `/tmp`; `PYTHONPATH` was fixed to the archived `src/`, and Core's existing
+virtual environment supplied dependencies without changing Core.
+
+Real pinned-tool results:
+
+* export produced a valid ODS workbook;
+* unchanged canonical -> temporary ODS -> temporary JSON passed for all four
+  byte-identical tables without changing canonical or the maintainer workbook;
+* an ODF cell edit imported as one ordinary canonical Git diff;
+* a second import refused while that diff existed;
+* Git restore rejected the change and a later ordinary scratch commit accepted
+  it; and
+* the parallel export/import probe reproduced F-M1 with the same pinned tool.
+
+No AI provider or WFC execution surface was invoked.
+
+== Test assessment
+
+The new tests genuinely cover the main supported serial contract: edited
+workbook -> Git diff -> restore, dirty tracked-canonical refusal, failed,
+partial, unexpected, and malformed import preservation, directory-symlink
+escape refusal, lossless/lossy transformation behavior, and structural removal
+of the retired protocol.
+
+Independent probes supplied cases absent from the suite: missing workbook,
+missing runner, Git-status failure, tracked deletion, untracked JSON and
+non-JSON additions, valid row deletion, unusual rwx mode, individual table
+symlink replacement, and real Git commit acceptance. All passed. Those gaps do
+not expose another implementation defect. The material missing falsifier is
+the cross-target parallel case in F-M1.
+
+== Project Memory accuracy
+
+`6a7a0f3` truthfully records implementation fact rather than acceptance.
+`SIG-ACT-WFC-MEMORY-GIT-REVIEW-BOUNDARY` says the old concurrent-promotion gap
+is moot rather than fixed and says no locking, lease, journal, or transaction
+machinery was added. The concern remains `watching`, its posture is
+`simplified_forward_pending_independent_review`, and its next action still
+requires this independent review before closure. It does not overstate
+acceptance and does not require a second architecture decision.
+
+== Validation
+
+[cols="3,5",options="header"]
+|===
+|Command / probe |Result
+
+|`.venv/bin/python -m pytest -q tests/unit/test_memory_workbook.py tests/unit/test_wfc_snapshot.py`
+|15 focused test cases passed
+
+|independent adversarial probe harness under `/tmp`
+|16 groups passed: failure boundary, dirty states, Git failure, row deletion,
+mode, symlinks, and lossy invariant
+
+|`make check PYTHON=.venv/bin/python`
+|Ruff check clean; five bounded files already formatted; full suite 437 passed
+
+|`git diff --check 91f883a..871ab14`
+|clean
+
+|`git diff --check 871ab14..6a7a0f3`
+|clean
+
+|real pinned `memory-export` and `memory-roundtrip-check`
+|valid ODS; four tables byte-identical; no canonical or workbook mutation by
+the invariant
+
+|real pinned ODF edit / import / second import / restore / reimport / commit
+|one visible canonical diff; dirty refusal; rejection and normal Git acceptance
+both worked
+
+|real pinned `make -j2 memory-export memory-import` with delayed import
+|both exit zero but edit lost and canonical remains clean (F-M1)
+
+|AsciiDoc rendering of this artifact and `project_memory/README.adoc`
+|performed after authoring with output under `/tmp`
+|===
+
+No repository-provided dedicated documentation checker exists.
+
+== Review hygiene note
+
+All mutation and integration probes were designed for disposable clones. One
+internal-directory-symlink probe was initially issued from the live WFC
+directory rather than its clone. It ran export, moved the canonical directory,
+created a symlink, and reached the path refusal; no import conversion or
+canonical write occurred. The original directory was immediately restored,
+every canonical blob was verified equal to `HEAD`, and the ignored workbook
+was regenerated as a valid real export with the pinned tool. Subsequent
+tracked status contained only this review artifact plus the pre-existing
+`wfc_snapshots/`; final verification is recorded after the review commit.
+
+`wfc_snapshots/` was not read for evidence, modified, deleted, or added. Core
+and workflow-coordinator-runtime remained clean at their initial commits.
+
+== Conclusion
+
+The simplification in `871ab14` successfully removes the retired custom
+promotion state machine and implements the intended Git-backed serial
+maintainer workflow. The implementation safety properties and real spreadsheet
+integration are sound within that contract. The repository is nevertheless
+*CHANGES REQUIRED* because its current blanket `make -j` statement claims more
+than the shared workbook permits. Correct that statement proportionately;
+do not add concurrency machinery or revive strong staging.
