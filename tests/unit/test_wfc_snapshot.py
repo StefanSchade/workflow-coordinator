@@ -90,3 +90,21 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
     assert ".git" not in tree
     assert "canonical/" in tree
     assert "project_memory.ods" not in tree
+
+
+def test_snapshot_tool_defaults_output_to_build_snapshots(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "README.md").write_text("# Example\n", encoding="utf-8")
+    script = Path(__file__).resolve().parents[2] / "scripts" / "wfc_snapshot.py"
+
+    completed = subprocess.run(
+        [sys.executable, str(script), "--repository", str(repository)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (repository / "build" / "snapshots" / "wfc_repository_tree.txt").is_file()
+    assert not (repository / "wfc_snapshots").exists()

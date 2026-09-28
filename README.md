@@ -13,7 +13,7 @@ provides `make test`, `make lint`, `make format-check`, `make check`, and
 `make build`. `make lint` runs repository-wide Ruff correctness checks;
 `make format-check` covers the snapshot implementation and its architecture and
 unit tests. Use `make snapshot` (or `make snapshot-multi`) to create compact,
-line-numbered WFC-prefixed repository snapshots in `wfc_snapshots/`; the output
+line-numbered WFC-prefixed repository snapshots in `build/snapshots/`; the output
 includes a table of contents and a repository tree.
 
 Project Memory lives in [`project_memory/`](project_memory/README.adoc), whose

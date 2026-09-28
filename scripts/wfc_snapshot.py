@@ -45,7 +45,7 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        help="directory for WFC snapshot files (default: <repository>/wfc_snapshots)",
+        help="directory for WFC snapshot files (default: <repository>/build/snapshots)",
     )
     return parser.parse_args()
 
@@ -162,7 +162,7 @@ def main() -> int:
     repository = arguments.repository.resolve()
     if not repository.is_dir():
         raise SystemExit(f"repository does not exist: {repository}")
-    output = arguments.output or repository / "wfc_snapshots"
+    output = arguments.output or repository / "build" / "snapshots"
     for path in create_snapshots(repository, output):
         print(path)
     return 0
