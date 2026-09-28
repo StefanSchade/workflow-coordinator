@@ -16,22 +16,13 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
     (repository / "docs").mkdir()
     (repository / "governance").mkdir()
     (repository / "project_memory" / "canonical").mkdir(parents=True)
-    (repository / "project_memory" / "staging").mkdir()
     (repository / "project_memory" / "README.adoc").write_text("= Memory\n", encoding="utf-8")
     (repository / "project_memory" / "canonical" / "concerns.json").write_text(
         '[{"id": "CONC-EXAMPLE"}]\n', encoding="utf-8"
     )
-    (repository / "project_memory" / "staging" / "_meta.yaml").write_text("{}\n", encoding="utf-8")
-    (repository / "project_memory" / "staging" / "concerns.json").write_text(
-        '[{"id": "CONC-STAGED"}]\n', encoding="utf-8"
-    )
-    (repository / "project_memory" / ".proposal").mkdir()
-    (repository / "project_memory" / ".proposal" / "proposal.json").write_text(
-        '{"staged_proposal": {"fingerprint": "PROPOSAL-FINGERPRINT"}}\n', encoding="utf-8"
-    )
     (repository / "project_memory.ods").write_text("workbook\n", encoding="utf-8")
-    # An unrelated `_meta.yaml` outside the generated review surfaces must survive:
-    # the exclusions are repository-relative, not bare filenames.
+    # An unrelated `_meta.yaml` must survive: the exclusion is repository-relative,
+    # not a bare filename.
     (repository / "src" / "workflow_coordinator" / "resources" / "_meta.yaml").write_text(
         "packaged: true\n", encoding="utf-8"
     )
@@ -94,14 +85,8 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
     assert "project_memory/README.adoc" in memory
     assert "project_memory/canonical/concerns.json" in memory
     assert "CONC-EXAMPLE" in memory
-    assert "project_memory/staging" not in memory
-    assert "CONC-STAGED" not in memory
-    assert "project_memory/.proposal" not in memory
-    assert "PROPOSAL-FINGERPRINT" not in memory
     tree = (output / "wfc_repository_tree.txt").read_text(encoding="utf-8")
     assert "repository/" in tree
     assert ".git" not in tree
     assert "canonical/" in tree
-    assert "staging" not in tree
-    assert ".proposal" not in tree
     assert "project_memory.ods" not in tree

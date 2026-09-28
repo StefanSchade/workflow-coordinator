@@ -19,16 +19,12 @@ EXCLUDED_DIRECTORIES = {
 }
 TEXT_SUFFIXES = {".adoc", ".json", ".md", ".py", ".toml", ".txt", ".yaml", ".yml"}
 ROOT_TEXT_FILES = {"LICENSE", "Makefile", "README.md"}
-# Generated Project Memory review surfaces are transient, so they stay out of
-# snapshots.  Both rules are repository-relative: a bare-filename rule would
+# The generated Project Memory workbook is transient, so it stays out of
+# snapshots.  The rule is repository-relative: a bare-filename rule would
 # silently hide an unrelated file elsewhere in the repository from snapshot
-# contents and from the tree.  Generated `_meta.yaml` presentation metadata needs
-# no rule of its own because the round trip only ever writes it inside these two
-# excluded directories.
-EXCLUDED_RELATIVE_DIRECTORIES = {
-    ("project_memory", "staging"),
-    ("project_memory", ".proposal"),
-}
+# contents and from the tree.  The workbook is the only generated round-trip
+# artifact inside the repository -- import converts into a temporary directory
+# outside it -- so no other exclusion is needed.
 EXCLUDED_RELATIVE_FILES = {("project_memory.ods",)}
 GROUPS = {
     "wfc_docs_and_governance.txt": ("docs", "governance"),
@@ -59,10 +55,7 @@ def _is_snapshot_file(path: Path) -> bool:
 
 
 def _is_excluded_path(relative: Path) -> bool:
-    parts = relative.parts
-    if parts in EXCLUDED_RELATIVE_FILES:
-        return True
-    return any(parts[: len(excluded)] == excluded for excluded in EXCLUDED_RELATIVE_DIRECTORIES)
+    return relative.parts in EXCLUDED_RELATIVE_FILES
 
 
 def _files(repository: Path, output: Path) -> list[Path]:

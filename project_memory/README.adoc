@@ -40,90 +40,87 @@ concrete evidence shows these four cannot represent the required memory.
 
 == Spreadsheet round trip
 
-The four tables can be inspected and edited as an ODS workbook. The flow is
-deliberately one-directional in authority terms:
+The four tables can be inspected and edited as an ODS workbook. There are
+exactly two persistent representations -- canonical JSON and the workbook --
+and Git is the review, acceptance, and rollback boundary:
 
 [source,text]
 ----
 project_memory/canonical/*.json      (authoritative)
     -> make memory-export            -> project_memory.ods
     -> edit the workbook
-    -> make memory-preview           -> project_memory/staging/*.json + proposed delta
-    -> read the delta
-    -> make memory-promote           -> approve exactly that proposal
+    -> make memory-import            -> canonical JSON, as working-tree changes
+    -> git diff                      -> read the change
+    -> git commit                    (accept)   or   git restore  (reject)
 ----
 
-Three separate questions, three separate targets. Conflating them is what makes
-a review boundary decorative, so the vocabulary keeps them apart:
-
-`make memory-roundtrip-check`:: *Transformation invariant.* Reimports the
-workbook into a throwaway directory and requires the result to equal canonical
-JSON exactly. Run it on an *unedited* workbook: a non-empty delta there means
+`make memory-export`:: Renders canonical JSON into `project_memory.ods`.
+`make memory-import`:: Converts the edited workbook into a fresh temporary
+directory outside the repository, requires the conversion to succeed and to
+produce exactly the expected table set (`concerns.json`, `concern_events.json`,
+`concern_event_xrefs.json`, `decisions.json`) with every table parsing as JSON,
+and only then replaces the canonical files. A failed, partial, or malformed
+conversion therefore leaves canonical Project Memory exactly as Git recorded
+it. The temporary directory is defensive implementation machinery with no
+identity: it is not a proposal, it is not awaiting approval, and it is
+discarded when the process ends.
+`make memory-roundtrip-check`:: *Transformation invariant.* Renders canonical
+JSON to a temporary workbook, reimports that into a temporary directory, and
+requires the result to equal canonical JSON exactly. A non-empty delta means
 the JSON -> ODS -> JSON transformation lost something, which is a defect. It
-never reads or writes staging, so it is not, and cannot be used as, the approval
-gate for an intentional content edit.
-`make memory-preview`:: *Proposal preview.* Imports the edited workbook into a
-fresh temporary directory, asserts the exact expected table set
-(`concerns.json`, `concern_events.json`, `concern_event_xrefs.json`,
-`decisions.json`) and that every imported table parses, and only then replaces
-the staging proposal. It then prints the canonical-vs-staging delta as *review
-information* and exits 0 -- a non-empty delta is the normal, expected result of
-an intentional edit, not a failure. A failed or incomplete import refuses
-without touching the previous proposal.
-`make memory-promote`:: *Operator approval.* The distinct action meaning "I
-approve exactly the proposal I just reviewed". It refuses unless staging is
-complete, staging still carries the fingerprint that was previewed, and
-canonical still carries the baseline fingerprint the proposal was reviewed
-against. After a successful promotion the proposal is consumed, so a stale
-approval cannot be replayed.
+writes neither canonical JSON nor the maintainer's `project_memory.ods`.
 
-The binding is `reviewed canonical baseline` + `reviewed staging content` ->
-`promoted canonical content`. `memory-preview` records both fingerprints under
-`project_memory/.proposal/` (untracked) and prints them; that record identifies
-which proposal was previewed and is *not* authority and *not* approval. The
-workbook deliberately stays outside the binding: it is an editing source, so
-re-exporting or further editing it after a preview does not invalidate the
-proposal that was already materialised and reviewed. Any change to canonical or
-to staging does, and then a fresh `make memory-preview` is required.
+Import refuses to start when `project_memory/canonical/` already carries
+uncommitted changes, so it can never silently overwrite a canonical edit made
+by hand; commit or discard that edit first. Row deletions and other content
+edits inside a valid workbook are ordinary data editing, but a missing table in
+the converted result is an incomplete import and is rejected rather than
+treated as a request to delete a canonical table. The importer also refuses a
+`project_memory/canonical/` that a symbolic link redirects outside the
+repository, and replaces each table by renaming onto its canonical name, so no
+write can escape the repository-owned directory.
 
-Each target is a single process that sequences import, comparison, and mutation
-internally. No correctness property depends on Make prerequisite ordering, so
-`make -j` cannot diff before importing, replace a proposal between its review
-and its promotion, promote a staging state that was never displayed, or promote
-against a canonical baseline that has moved. Preview and promotion are separate
-invocations by design: asking one parallel invocation for both
-(`make -j memory-preview memory-promote`) still cannot promote an undisplayed
-proposal -- the promotion either refuses or approves an outstanding previously
-previewed one -- but it removes the reading step the protocol exists to create.
+The four canonical files are replaced individually after the complete result
+has been validated. No cross-file transactional or crash-atomic guarantee is
+claimed: a process, machine, or filesystem failure during the replacement could
+leave a mixed canonical state, which `git status` and `git restore` recover.
+There is deliberately no journal, lock, or recovery protocol.
+
+No memory target is a prerequisite of another, and each is one self-contained
+process, so no `make` invocation mode -- `-j` included -- can act on stale
+output. The stronger staged-proposal/fingerprint promotion protocol that
+preceded this design, together with its reviews, remains available in Git
+history (`aa219a6`, `56f4a04`, `d201af5`, `773ea97`); see `DEC-WFC-010` for why
+it was not carried forward.
 
 `make memory-setup` installs the pinned `sheets-run` tooling from
 `requirements/spreadsheet-handling.txt`. That pin is maintainer tooling only --
 no `workflow_coordinator` source imports it -- and `SHEETS_RUN=<path>` overrides
-the executable if it is already available elsewhere. `project_memory.ods`, the
-contents of `project_memory/staging/`, `project_memory/.proposal/`, and any
-generated `_meta.yaml` (workbook column presentation, not memory data) are
-generated artifacts and stay untracked.
+the executable if it is already available elsewhere. `project_memory.ods` is a
+generated artifact and stays untracked.
 
 == What this is not
 
 * Not an authorization source. A concern, event, or decision here grants no
-  Run, push, or promotion authority.
+  Run or push authority.
 * Not a replacement for detailed evidence. `docs/backlog/BUG-WFC-*.adoc`,
   `docs/backlog/FTR-WFC-*.adoc`, review artifacts, and Git history remain the
   detailed provenance layer; canonical memory is intentionally lossy relative
   to that history and links back to it via `commit_refs` and `source_path`.
-* Not automatically generated or promoted. Nothing extracts memory content from
-  commits, reviews, or documents in this lean version. The only mechanical path
-  into these files is the previewed and separately approved workbook promotion
-  described under <<Spreadsheet round trip>>; otherwise the four files are
-  curated and updated by hand.
+* Not automatically generated. Nothing extracts memory content from commits,
+  reviews, or documents in this lean version, and nothing commits on the
+  maintainer's behalf. The only mechanical path into these files is the
+  validated workbook import described under <<Spreadsheet round trip>>, whose
+  result is an ordinary reviewable working-tree change; otherwise the four
+  files are curated and updated by hand.
 * Not a task list. Concerns are steering fields, not a backlog; the backlog
   itself remains `docs/backlog/README.adoc`.
 
 == Updating this memory
 
-Edit the JSON files directly, or edit the workbook and promote it as described
-above. Keep `id` values unique per table, keep `concern_event_xrefs` entries
-pointing at existing `concern_events`/`concerns` rows, and keep new concerns few
-and broad rather than one per bug or commit. `docs/project_memory.adoc` is a
+Edit the JSON files directly, or edit the workbook and import it as described
+above, then review the result with `git diff` and commit it. Keep `id` values
+unique per table, keep `concern_event_xrefs` entries pointing at existing
+`concern_events`/`concerns` rows, and keep new concerns few and broad rather
+than one per bug or commit. `docs/project_memory.adoc` is a
 short pointer into this directory, not a second copy of this data.
