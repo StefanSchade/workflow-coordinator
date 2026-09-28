@@ -1,0 +1,350 @@
+= BUG-WFC-GENERATIVE-CORRELATION-IDENTITY -- Generative Correlation Identity in Provider Result Projection
+
+Type:: bug
+Status:: open (documentation-only classification; not implemented)
+Date:: 2026-09-28
+Classification:: adapter-owned provider schema-projection defect (unnecessary
+generative correlation identity)
+Discovery:: first Latin-course foreign-domain consumer WFC dogfood attempt,
+`RUN-39f7984a68ff4de68c3e039971451b88`, work item
+`WI-LATIN-STORY-02-DOGFOOD-001`
+
+== Observed behavior
+
+The first Latin-course consumer Run crossed the real provider boundary. H001
+dispatched a `worker` invocation with:
+
+----
+run_id=RUN-39f7984a68ff4de68c3e039971451b88
+hop_id=H001
+invocation_id=INV-545c87e4dbc84ebf9ce668e0613e8ee4
+----
+
+The Codex process returned code 0 and a structured-result envelope
+(`result-message.json`) that is well-formed JSON, schema version 1, with a
+correct `hop_id`, correct `invocation_id`, a syntactically valid `result`
+whose `outcome` is `completed`, and a `commit_intent` naming exactly the
+authorized Story-2 paths. Its `run_id` field is:
+
+----
+"run_id":"RUN-39f7984a68ff4de68c3e039971451b88,"
+----
+
+a trailing comma is part of the returned string, so it does not equal the
+dispatched `run_id`. `adapter.validated_result()` compares
+`(envelope["run_id"], envelope["hop_id"], envelope["invocation_id"])` against
+`(expected.run_id, expected.hop_id, expected.invocation_id)` for exact tuple
+equality (`src/workflow_coordinator/adapter.py:112-115`) and raised
+`ResultValidationError("structured result identity does not correlate to
+dispatch")`. `vertical.run_one_hop()` re-raised this as
+`ExecutionResultValidationError` before any Git or evidence-trust processing
+occurred. `slice4.run_real_one_hop()`'s `except ExecutionResultValidationError`
+branch called `recover_uncertain(error.outcome)`, which ran
+`persistence.recover_uncertain_dispatch()`.
+
+Consistent with the maintainer-supplied facts and the preserved
+`operator-summary.json`:
+
+* HEAD is unchanged (`base_head == current_head ==
+  e29bd98c264e383c52ecab1e0f4c058a86770426`);
+* no Coordinator trusted commit exists (`commits: []`);
+* no in-Run trusted evidence executed after the semantic rejection
+  (`trusted_observations: []` on the H001 execution-evidence row);
+* H001 was charged exactly once as an `uncertain_dispatch` Hop with
+  `invocation_status=acceptance_not_disproved`, `outcome=uncertain`
+  (`hop_used=1`, `hop_limit=6`, matching the reported 5/6 remaining budget);
+* `run_status=reconcile_required`,
+  `stop_reason=reconcile_requires_explicit_resume`;
+* the repository anomaly record is `["dirty tracked state"]`
+  (`worktree_clean=false`), matching the worker's untracked edits to exactly
+  the three authorized Story-2 files
+  (`daten/latein/stories/story_02.json`, `daten/latein/vocabulary.json`,
+  `daten/latein/vocabulary/story_02.json`), confirmed by
+  `H001-worker-status.txt` in the preserved evidence bundle.
+
+Post-H001 external consumer checks against that dirty worktree (`make
+check-story STORY=2`, `make check-vocab`, `git diff --check`) succeeded, which
+is empirical Latin-domain evidence that the discarded candidate did bounded,
+plausible, in-scope work. That content is not this BUG's subject matter.
+
+== Exact failed invariant
+
+The structured-result envelope must correlate exactly, byte for byte, to the
+dispatched `(run_id, hop_id, invocation_id)` before its `result` payload may
+be treated as the Hop's semantic outcome. It did not: `hop_id` and
+`invocation_id` matched exactly; `run_id` carried one trailing byte the
+dispatched value does not have. The envelope therefore failed correlation as
+a whole, and no partial or majority-field acceptance occurred.
+
+== Why the current fail-closed behavior is correct
+
+This is not a bug in `validated_result()`, the reducer, or Hop accounting.
+Rejecting on a non-exact match, refusing to apply any Git/evidence trust
+before correlation succeeds, and charging the attempt as an uncertain Hop
+under `reconcile_required` rather than silently discarding or retrying it are
+exactly the documented invariants:
+
+* `WFC-AUTO-02` (`docs/imported/core-incubator/FTR-AGENT-WORKFLOW-COORDINATOR-P5.adoc:504-511`):
+  once the atomic dispatch marker exists, acceptance that cannot be disproved
+  is conservatively charged as one Hop and never replayed.
+* `WFC-AUTO-03` (ibid.:513-516): V1 has no hidden retry.
+* `WFC-AUTO-05` (ibid.:523-526): resume requires explicit maintainer action
+  and verified current HEAD/clean state; used Hops never reset.
+* `docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc` (accepted architecture-
+  convergence input, not superseded by this BUG): "Invocation correlation
+  already prevents stale predecessor result content from being silently
+  consumed as the successor result: validation checks
+  `run_id`/`hop_id`/`invocation_id`" (line ~360); "a semantic failure must not
+  become retryable merely because another model invocation might produce a
+  better answer... [a] malformed or uncorrelated output... is likewise not
+  reclassified as a transient interruption" (lines 113-117).
+
+None of the rejected approaches enumerated by the maintainer (punctuation
+trimming, whitespace/punctuation normalization, prefix matching, fuzzy
+matching, accepting on two-of-three field agreement, trusting return code 0,
+trusting in-scope repository changes, editing the persisted failed result, or
+silent retry) is compatible with these invariants, and this BUG does not
+propose any of them. `validated_result(raw, expected_invocation)` is correct
+today and must remain the exact-match, provider-neutral, fail-closed
+correlation authority.
+
+== Root-cause classification
+
+`src/workflow_coordinator/codex_adapter.py` builds the Codex-specific OpenAI
+Structured Outputs projection of the envelope
+(`structured_result_envelope_openai_schema()`, lines 124-134). Its
+`run_id`, `hop_id`, and `invocation_id` properties are each projected as
+unconstrained `{"type": "string"}` (lines 130-131). The function takes no
+`Invocation` argument and `CodexCliAdapter.execute()` calls it with none
+(line 172), even though `execute()` already receives `request:
+AgentExecutionRequest`, whose `request.invocation` carries the exact
+dispatched `run_id`/`hop_id`/`invocation_id`
+(`src/workflow_coordinator/adapter.py:32-35, 46`) before the provider is ever
+invoked.
+
+The Coordinator therefore asks the model to *regenerate*, as free-form text,
+three values it already knows exactly and will later require to match
+byte-for-byte. That is a category error:
+
+----
+correlation identity is Coordinator-owned deterministic data,
+not semantic content requiring model generation.
+----
+
+`hop_id` and `invocation_id` were reproduced correctly in this Attempt;
+`run_id` was not. Nothing in the current schema, prompt, or provider contract
+makes exact reproduction of an opaque, already-known identifier structurally
+necessary -- the model is free to emit any string in that slot, and on this
+occasion it emitted one extra trailing byte.
+
+This preserves, and does not blur, the existing architectural distinction:
+
+* provider-specific structured-output projection remains
+  `codex_adapter.py`'s concern;
+* provider-neutral `validated_result()` remains the sole semantic
+  correlation authority and needs no behavior change.
+
+Semantic acceptance is not being moved into Codex-specific code by this
+classification; only the *shape of what the model is asked to produce* in
+that code is implicated.
+
+== Likely bounded correction (investigated, not implemented)
+
+Options considered:
+
+A. **Invocation-specific exact-value schema projection.** Thread
+   `request.invocation` into `structured_result_envelope_openai_schema()` and
+   constrain `run_id`, `hop_id`, `invocation_id` each to a one-element
+   `enum` of the exact dispatched value (the same JSON Schema construct
+   already used for `schema_version` and other closed vocabularies in this
+   file, e.g. lines 96, 113, 130). The model is no longer free to emit an
+   arbitrary string in those three slots; the returned envelope still
+   contains them, and `validated_result()` still performs its own,
+   independent, byte-exact comparison against `expected` -- unchanged.
+
+B. **Adapter wrapping/injecting correlation IDs after provider output.**
+   Have `CodexCliAdapter.execute()` overwrite or splice
+   `run_id`/`hop_id`/`invocation_id` into the candidate JSON after the
+   process returns, before returning `AgentExecutionOutcome`. Rejected: this
+   makes the downstream `validated_result()` correlation check tautological
+   for the Codex adapter -- it would always pass by construction, because the
+   adapter, not the provider, would be the one asserting correlation. It also
+   destroys the diagnostic signal used in this very Attempt (a divergent
+   returned identity is evidence about *provider/schema-conformance
+   behavior*, and silently repairing it before validation would erase that
+   signal for every future Attempt). It would make provider-conformance
+   drift invisible instead of visible.
+
+C. **Prompt-only reinforcement.** Strengthen the prompt's wording asking the
+   model to reproduce the IDs exactly. Rejected as insufficient on its own:
+   this Attempt's prompt-equivalent instruction (see
+   `codex_adapter_smoke.py:_prompt()`, "Use these exact correlation IDs...")
+   already states the requirement in the closely related smoke path, and nothing
+   in the repository's own architecture treats natural-language reinforcement
+   as a substitute for structural narrowing where a schema construct is
+   available (compare the accepted precedent in
+   `docs/backlog/FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA.adoc`: "schema narrowing is
+   usability and error prevention"). Prompt wording may still be worth
+   revisiting, but not as the sole or primary correction.
+
+D. **Tolerant/normalized validation.** Explicitly rejected per the
+   maintainer's non-scope list and per `FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`'s
+   own conservative-charging rationale; would weaken the exact-match
+   invariant this BUG exists to preserve.
+
+Option A is the likely correction: it best preserves the current trust
+model because it changes only what the model is asked (and structurally
+permitted) to produce, not what `validated_result()` independently checks.
+`validated_result()`'s comparison remains meaningful and non-tautological
+under A -- it is still comparing two independently-sourced values (the
+Coordinator's `expected` and the provider's returned envelope), it just
+becomes much harder for the provider side to diverge by accident. Under B,
+by contrast, the two sides of that comparison would no longer be
+independent for the Codex adapter, which is exactly the outcome to avoid.
+
+Whether an invocation-specific schema is regenerated per Hop (schema and
+result-message paths are already per-`result_directory`, so this appears
+mechanically straightforward) is an implementation detail for later review,
+not decided here.
+
+== Non-scope
+
+This BUG does not authorize changes to:
+
+* `adapter.validated_result()` or its exact-match semantics;
+* the reducer or its fail-closed authorization boundary;
+* Git reconciliation, Run-state semantics, or Hop accounting;
+* automatic retry or generic recovery redesign (see
+  `docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`, which remains the
+  separate, evidence-gated authority for recovery/retry policy);
+* a new provider abstraction or adapter registry;
+* the phase-scoped result schema direction (see Relationship below);
+* Level-1/outer-loop orchestration;
+* any Latin-domain code, data, or content;
+* Project Memory tooling or curation.
+
+If the correction can be shipped without changing
+`adapter.validated_result()` at all -- which option A implies -- that is a
+desirable boundary for the eventual implementation to preserve, subject to
+repository truth at implementation time.
+
+== Relationship to FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA
+
+That FTR concerns narrowing the *semantic result capabilities* admitted by
+phase/profile (permitted routes, Finding-disposition authority, escalation
+surface, commit-intent capability) so that a phase-authority-invalid but
+schema-valid output becomes harder to express. It is deferred pending
+materially recurring schema-valid/phase-authority-invalid failures.
+
+This BUG is narrower and orthogonal: the three fields at issue
+(`run_id`/`hop_id`/`invocation_id`) are not semantic result content at all --
+they are Coordinator-owned dispatch identity that exists prior to, and
+independent of, any phase/profile authority question. Narrowing them to
+their exact dispatched value is not "phase-scoped result schema" in that
+FTR's sense, has a single occurrence with a concrete, already-observed
+provider divergence (not merely a theoretical concern), and does not depend
+on the FTR's activation criterion. This BUG is not merged into that FTR, and
+resolving this BUG does not on its own satisfy or advance the FTR's
+activation criterion.
+
+== Frozen-attempt / future-runtime boundary
+
+This BUG does *not* authorize repair, resumption, or continuation of
+`RUN-39f7984a68ff4de68c3e039971451b88`. That Run's `reconcile_required`
+state, its charged uncertain H001, and its dirty worktree are valid
+fail-closed historical evidence and must not be mutated, repaired in place,
+normalized, or reinterpreted. No automatic retry is authorized by this
+record.
+
+Three separate decisions must not be conflated:
+
+. fixing future structured-result projection (this BUG, once implemented and
+  independently reviewed);
+. deciding separately, as a maintainer-owned action, how to dispose of the
+  frozen failed Run (e.g. explicit reconcile/resume of the same Run per
+  `FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`'s R1.5 direction, or a fresh successor
+  Run/WorkItem); and
+. promoting an accepted WFC Runtime, which must occur before any fixed
+  behavior may govern a fresh Latin Run.
+
+A future runtime correction does not retroactively make the malformed
+`RUN-39f7984a68ff4de68c3e039971451b88` H001 candidate trustworthy. Only a
+fresh continuation WorkItem and fresh Run, dispatched under a promoted,
+corrected Runtime, may be considered -- and only after explicit maintainer
+authorization.
+
+== Acceptance criteria for a future implementation
+
+* The exact dispatched `run_id`, `hop_id`, and `invocation_id` constrain the
+  provider-visible structured-output schema for that invocation (e.g. via a
+  one-element `enum` per field, threaded from `request.invocation`).
+* The model is no longer free to emit arbitrary values for those three
+  fields.
+* The schema remains valid under
+  `assert_openai_strict_schema()` / the currently supported Codex/OpenAI
+  strict Structured Outputs subset.
+* `adapter.validated_result()` still independently rejects a deliberately
+  uncorrelated envelope; its exact-match comparison is unchanged.
+* No normalization, trimming, or fuzzy acceptance is introduced anywhere in
+  the correlation path.
+* Malformed/uncorrelated `FakeAdapter`/fake-adapter results continue to fail
+  closed in tests.
+* Hop accounting (`record_hop`, `recover_uncertain_dispatch`) and
+  reconciliation behavior (`reducer.resume_after_reconcile`,
+  `RunStatus.RECONCILE_REQUIRED`) remain unchanged.
+* Existing adapter conformance tests
+  (`tests/unit/test_codex_adapter_conformance.py`) and the full WFC test
+  suite pass; new conformance tests cover the invocation-specific
+  enum-constrained projection.
+* A bounded real-adapter smoke (`codex_adapter_smoke.py`) may be required
+  only after implementation review and explicit maintainer authorization; it
+  is not authorized by this BUG record.
+* A Runtime promotion is required before the fixed behavior may govern a
+  fresh Latin Run; this BUG record does not authorize that promotion.
+
+== Evidence pointers
+
+* Expected/returned Run ID divergence and full envelope: preserved
+  `result-message.json` under the frozen state root's checkout
+  (`~/wfc-runs/latin-story02-c0-20260928-01/checkouts/<checkout-id>/result-message.json`,
+  local maintainer scratch; read-only).
+* Dispatched identity: sibling `dispatch.json` in the same checkout
+  directory, matching `run_id=RUN-39f7984a68ff4de68c3e039971451b88` (no
+  trailing comma), `hop_id=H001`,
+  `invocation_id=INV-545c87e4dbc84ebf9ce668e0613e8ee4`.
+* Run-level disposition: `operator-summary.json` at the frozen state root
+  (`run_status=reconcile_required`, `hop_used=1`, `hop_limit=6`,
+  `worktree_clean=false`, `anomalies=["dirty tracked state"]`).
+* Worker dirty-worktree scope: `H001-worker-status.txt` and
+  `H001-worker-dirty.diff`/`.patch` in the preserved external evidence bundle
+  (`~/wfc-ops/latin-story02-c0-20260928-01/`, local maintainer scratch;
+  read-only), confirming exactly the three authorized Story-2 paths were
+  touched.
+* Post-H001 external consumer checks:
+  `~/wfc-ops/latin-story02-c0-20260928-01/H001-check-story2.log`,
+  `H001-check-story2.exitcode`, `H001-check-vocab.log`,
+  `H001-check-vocab.exitcode` (all recording success against the dirty
+  worktree).
+* Current repository truth for the defect: `adapter.py:103-119`
+  (`validated_result`), `codex_adapter.py:124-134, 164-172`
+  (`structured_result_envelope_openai_schema`, `CodexCliAdapter.execute`),
+  `slice4.py:197-232` (`ExecutionResultValidationError` handling and
+  `recover_uncertain`), `persistence.py:112-` (`recover_uncertain_dispatch`).
+* Architectural precedent: `docs/imported/core-incubator/FTR-AGENT-WORKFLOW-COORDINATOR-P5.adoc`
+  section 6.1 (`WFC-AUTO-02/03/05`);
+  `docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`;
+  `docs/backlog/FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA.adoc`.
+
+Local scratch paths above (`~/wfc-ops/...`, `~/wfc-runs/...`) are cited only
+to let the evidence be relocated by a maintainer with filesystem access; they
+are not asserted as permanent product architecture, consistent with existing
+WFC historical-attempt conventions (e.g. `docs/backlog/FTR-WFC-FINDING-AUTHORITY-PROMPT-PROJECTION.adoc`'s
+citation of a `/home/stefan/wfc-state/...` frozen root).
+
+== Lifecycle
+
+This BUG is *open*. It records a documentation-only classification of a
+first-real-provider correlation defect. No fix, adapter change, prompt
+change, smoke run, WFC invocation, or provider call was made in producing
+this record. `RUN-39f7984a68ff4de68c3e039971451b88`, the Latin repository,
+`workflow-coordinator-runtime`, and all provider state remain untouched.
