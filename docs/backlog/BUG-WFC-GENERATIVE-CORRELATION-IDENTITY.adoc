@@ -56,8 +56,8 @@ Consistent with the maintainer-supplied facts and the preserved
 * `run_status=reconcile_required`,
   `stop_reason=reconcile_requires_explicit_resume`;
 * the repository anomaly record is `["dirty tracked state"]`
-  (`worktree_clean=false`), matching the worker's untracked edits to exactly
-  the three authorized Story-2 files
+  (`worktree_clean=false`), matching the worker's uncommitted tracked
+  modifications to exactly the three authorized Story-2 files
   (`daten/latein/stories/story_02.json`, `daten/latein/vocabulary.json`,
   `daten/latein/vocabulary/story_02.json`), confirmed by
   `H001-worker-status.txt` in the preserved evidence bundle.
@@ -195,12 +195,21 @@ D. **Tolerant/normalized validation.** Explicitly rejected per the
 Option A is the likely correction: it best preserves the current trust
 model because it changes only what the model is asked (and structurally
 permitted) to produce, not what `validated_result()` independently checks.
-`validated_result()`'s comparison remains meaningful and non-tautological
-under A -- it is still comparing two independently-sourced values (the
-Coordinator's `expected` and the provider's returned envelope), it just
-becomes much harder for the provider side to diverge by accident. Under B,
-by contrast, the two sides of that comparison would no longer be
-independent for the Codex adapter, which is exactly the outcome to avoid.
+Under A, the provider-facing schema is itself derived from the same
+dispatched `Invocation` that `expected` is built from, so the schema-side
+and `expected`-side values are not conceptually unrelated -- narrowing the
+schema is precisely how the Coordinator's already-known value reaches the
+provider. What matters is that `validated_result()` remains the
+provider-neutral semantic correlation boundary and independently
+re-enforces exact equality on whatever the returned envelope actually
+contains, regardless of how the provider-facing schema was derived or how
+narrowly it constrained the model; it does not trust or skip that check
+merely because the schema was narrowed, and it would equally reject a
+Codex response that, despite the enum constraint, still returned a
+divergent value. Under B, by contrast, the adapter itself -- not the
+provider -- would be the one asserting correlation by construction,
+collapsing that independent check into a tautology for the Codex adapter,
+which is exactly the outcome to avoid.
 
 Whether an invocation-specific schema is regenerated per Hop (schema and
 result-message paths are already per-`result_directory`, so this appears
@@ -249,12 +258,53 @@ activation criterion.
 
 == Frozen-attempt / future-runtime boundary
 
-This BUG does *not* authorize repair, resumption, or continuation of
+This BUG does *not* itself authorize repair, resumption, or continuation of
 `RUN-39f7984a68ff4de68c3e039971451b88`. That Run's `reconcile_required`
-state, its charged uncertain H001, and its dirty worktree are valid
+state, its charged uncertain H001, and its dirty tracked state are valid
 fail-closed historical evidence and must not be mutated, repaired in place,
 normalized, or reinterpreted. No automatic retry is authorized by this
 record.
+
+This is not a categorical prohibition on same-Run reconcile/resume as a WFC
+mechanism. Explicit same-Run reconcile/resume remains a valid recovery
+mechanism in general, per `FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`'s accepted R1.5
+direction and the existing `reducer.resume_after_reconcile()` seam, wherever
+the accepted recovery predicates permit it: it preserves Run-local Findings,
+phase, and pinned governing truth for a fresh subsequent Hop, and it never
+normalizes, repairs, rewrites, or semantically accepts the malformed,
+uncorrelated H001 candidate itself. A future corrected Runtime does not
+retroactively make that H001 result trustworthy, whether or not the Run is
+later resumed.
+
+Concretely, `RUN-39f7984a68ff4de68c3e039971451b88` currently carries
+`anomalies=["dirty tracked state"]` (`operator-summary.json`), and
+`reducer.resume_after_reconcile()` raises `"reconcile anomalies must be
+resolved before resume"` whenever `run.anomalies` is non-empty
+(`src/workflow_coordinator/reducer.py:565-566`). This concrete state is
+therefore not presently resumable through that seam as recorded -- the
+mechanism is not unavailable in general, but this Run's own anomaly does not
+currently satisfy the seam's precondition. Where Runtime, contract,
+governing truth, or other admitted system truth instead changes -- for
+example once this BUG's correction ships and a Runtime is promoted -- a
+fresh successor Run is the appropriate continuation mechanism, rather than
+resuming a Run pinned to superseded truth.
+
+Preserve the distinction between:
+
+* safe recovery of existing WFC authority (explicit same-Run reconcile/resume
+  of an eligible, anomaly-free Run, preserving Findings/phase/governing
+  truth, once the accepted predicates are satisfied);
+* salvage of an invalid candidate (never authorized: the H001 result is
+  never normalized, repaired, or semantically accepted, however the Run is
+  eventually disposed);
+* a fresh successor Run (appropriate once governing/Runtime/contract truth
+  changes; does not implicitly inherit Run-local Findings); and
+* same-Hop/provider-session replay (not this BUG's subject; a separately
+  evidence-gated, deferred R2 concern per `FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`).
+
+The final disposition of the frozen Latin attempt -- reconcile/resume once
+otherwise eligible, or a fresh successor WorkItem/Run -- remains an explicit
+maintainer decision, not something this BUG record decides or authorizes.
 
 Three separate decisions must not be conflated:
 
@@ -268,9 +318,12 @@ Three separate decisions must not be conflated:
   behavior may govern a fresh Latin Run.
 
 A future runtime correction does not retroactively make the malformed
-`RUN-39f7984a68ff4de68c3e039971451b88` H001 candidate trustworthy. Only a
-fresh continuation WorkItem and fresh Run, dispatched under a promoted,
-corrected Runtime, may be considered -- and only after explicit maintainer
+`RUN-39f7984a68ff4de68c3e039971451b88` H001 candidate trustworthy, and does
+not by itself make that Run resumable -- its `dirty tracked state` anomaly
+would still need to be independently addressed under
+`resume_after_reconcile()`'s existing precondition. Only a fresh
+continuation WorkItem and fresh Run, dispatched under a promoted, corrected
+Runtime, may be considered -- and only after explicit maintainer
 authorization.
 
 == Acceptance criteria for a future implementation
