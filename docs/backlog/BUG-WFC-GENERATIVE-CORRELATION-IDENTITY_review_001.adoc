@@ -1,0 +1,307 @@
+= BUG-WFC-GENERATIVE-CORRELATION-IDENTITY -- Acceptance Review 001
+
+Independent review of commit `a390ac23b42f69112af8f4c81cd171795920873a`
+(`fix(adapter): constrain structured-result correlation identity`) against
+parent `976cd87e1df01c7a601792abd52ec1fa18dcd6ed` and
+`docs/backlog/BUG-WFC-GENERATIVE-CORRELATION-IDENTITY.adoc`.
+
+Review only. This review made no implementation, BUG-status, profile,
+Runtime, or historical Run-state change; invoked neither WFC nor a real
+provider; and did not push.
+
+== Verdict
+
+*A -- ACCEPT.*
+
+Finding count: BLOCKING 0, IMPORTANT 0, MINOR 0, INFO/WATCH 2.
+
+The candidate implements exactly Option A from the BUG record: it threads
+`request.invocation` into `structured_result_envelope_openai_schema()` and
+narrows `run_id`/`hop_id`/`invocation_id` to one-element `string` enums of
+the exact dispatched values. `adapter.validated_result()` is byte-unchanged
+and remains the sole, independent, provider-neutral correlation authority.
+The Codex adapter performs no rewrite, normalization, trimming, injection,
+repair, substitution, or reconstruction of the returned envelope before
+`validated_result()` sees it -- the rejected Option B tautology is not
+present.
+
+== Entry gate and reviewed delta
+
+At review entry, `HEAD` was exactly `a390ac23b42f69112af8f4c81cd171795920873a`
+and `git status --short` showed only an untracked, pre-existing
+`wfc_snapshots/` directory unrelated to this commit (not created or touched
+by this review).
+
+`git diff 976cd87..a390ac2 --stat` shows exactly four paths:
+
+* `src/workflow_coordinator/codex_adapter.py` (+14/-6)
+* `tests/unit/test_codex_adapter_conformance.py` (+82/-13)
+* `tests/unit/test_slice3_vertical.py` (+2/-1)
+* `tests/unit/test_slice4.py` (+6/-6)
+
+No other path is touched. In particular `src/workflow_coordinator/adapter.py`,
+`reducer.py`, `persistence.py`, `prompt.py`, `codex_adapter_smoke.py`,
+`model.py`, and `serialization.py` are byte-unchanged in this delta.
+
+== 1. Root-cause fit
+
+The BUG's root-cause classification is that
+`structured_result_envelope_openai_schema()` projected `run_id`/`hop_id`/
+`invocation_id` as unconstrained `{"type": "string"}`, asking the model to
+regenerate Coordinator-owned deterministic identity as free text. The
+candidate's only behavioral change is to that projection: each identity
+field now projects as `{"type": "string", "enum": [<dispatched value>]}` via
+a local `dispatched()` helper. Nothing else in the generative surface
+(`result`, `routing_result_openai_schema()`, `schema_version`) is touched.
+This is a narrow, exact fit to the classified defect -- it does not touch
+semantic result content, `validated_result()`, or Hop/reducer mechanics.
+
+== 2. Invocation-specific schema
+
+Confirmed directly in `codex_adapter.py:125-146`:
+
+* `run_id`, `hop_id`, `invocation_id` are each `dispatched(invocation.<field>)`
+  = `{"type": "string", "enum": [value]}` -- exact dispatched value, explicit
+  `type: "string"` retained (not dropped in favor of a bare `const`, which
+  would fall outside `_STRICT_KEYS`).
+* `structured_result_envelope_openai_schema()` now requires an `invocation:
+  Invocation` positional argument; calling it with no arguments raises
+  `TypeError` (verified interactively and exercised by
+  `test_identity_projection_is_invocation_specific_with_no_unconstrained_fallback`).
+  There is no optional/default parameter and no production call site passes
+  `None` or omits it -- the only production call is
+  `CodexCliAdapter.execute()` -> `structured_result_envelope_openai_schema(request.invocation)`
+  (`codex_adapter.py:184`), and `grep` confirms this is the only non-test
+  call site in `src/`.
+* The projection is genuinely invocation-specific: two different
+  `Invocation`s produce different one-element enums for all three fields
+  (`test_identity_projection_is_invocation_specific_with_no_unconstrained_fallback`),
+  and `test_execute_writes_the_schema_derived_from_the_exact_dispatched_invocation`
+  proves the schema **written to disk** by `execute()` matches the schema
+  built directly from the same `Invocation` passed into
+  `AgentExecutionRequest`.
+
+== 3. Provider-neutral authority preservation
+
+`adapter.validated_result()` is absent from the diff; independent inspection
+of the current file (`src/workflow_coordinator/adapter.py:103-119`) shows it
+is byte-identical in effect to the BUG's cited pre-fix line numbers: it still
+parses JSON, checks the exact envelope key set, checks `schema_version == 1`,
+and compares `(envelope["run_id"], envelope["hop_id"],
+envelope["invocation_id"])` against `(expected.run_id, expected.hop_id,
+expected.invocation_id)` by tuple equality, raising `ResultValidationError`
+on any mismatch.
+
+`CodexCliAdapter.execute()` (`codex_adapter.py:164-199`) writes the
+invocation-specific schema, runs the subprocess, and returns
+`AgentExecutionOutcome(candidate, ...)` where `candidate = result.read_text(...)
+or None` -- the raw file content, unmodified. There is no code path in
+`execute()` that parses, rewrites, or touches the JSON body of the returned
+result before construction of `AgentExecutionOutcome`. This is independently
+proven, not just inspected: `test_execute_never_repairs_a_divergent_returned_identity`
+drives a fake executable that writes an envelope with the exact historical
+`"run_id": "RUN-WIRED,"` trailing-comma defect, asserts
+`outcome.candidate_result` still contains the divergent value verbatim, and
+then asserts `validated_result(outcome.candidate_result, invocation)` still
+raises `ResultValidationError` with `"does not correlate"`. This directly
+demonstrates the rejected Option B tautology is not present: correlation
+enforcement still lives solely in `validated_result()`, and a schema-side
+narrowing does not, and structurally cannot, cause the adapter to
+self-assert correlation.
+
+== 4. Strict-schema compatibility
+
+`assert_openai_strict_schema()` and `_STRICT_KEYS` in `codex_adapter.py` are
+unchanged by the diff. `_STRICT_KEYS` already includes `"enum"` (it is used
+pre-existingly for `schema_version`, `Outcome`, `FindingState`, and
+`ESCALATION_KINDS`), so `{"type": "string", "enum": [value]}` is squarely
+inside the pre-existing accepted subset -- no validator change was needed or
+made. `test_invocation_specific_identity_projection_stays_inside_the_strict_subset`
+exercises `assert_openai_strict_schema()` directly against the new
+invocation-specific schema (positive case) and against a mutated copy with
+`type` deleted from `run_id` (negative case, still walks and rejects
+correctly). This is deterministic/offline conformance evidence only, as the
+BUG record anticipates; no real-provider (Codex CLI / OpenAI) acceptance was
+tested or is claimed, and the BUG's acceptance criteria do not require it
+for this implementation review.
+
+== 5. Test adequacy
+
+Each item the review brief asked to verify is covered by a specific test,
+not merely restated internals:
+
+* exact-value identity enums --
+  `test_dispatched_correlation_identity_is_projected_as_exact_value_enums`.
+* per-Invocation variation --
+  `test_identity_projection_is_invocation_specific_with_no_unconstrained_fallback`.
+* absence of the old unconstrained helper path -- same test's
+  `pytest.raises(TypeError)` on the zero-argument call, which is only
+  possible because the parameter is now mandatory.
+* exact `request.invocation` wiring through `CodexCliAdapter.execute()` --
+  `test_execute_writes_the_schema_derived_from_the_exact_dispatched_invocation`,
+  which launches a real (fake) subprocess through `execute()` and diffs the
+  schema file actually written on disk against the schema built directly
+  from the same `Invocation`.
+* continued provider-neutral rejection of wrong run/hop/invocation identity
+  -- `test_slice3_vertical.py`'s `test_result_validation_accepts_only_complete_correlated_structured_envelope`
+  now also covers a fully divergent `run_id="RUN-2"` in addition to the
+  pre-existing `hop_id`/`invocation_id` mismatch cases.
+* the historical trailing-comma identity failure -- reproduced verbatim
+  twice: as `envelope(run_id="RUN-1,")` in `test_slice3_vertical.py`
+  (unit-level, against `validated_result` directly) and as the
+  `"RUN-WIRED,"` fixture in `test_execute_never_repairs_a_divergent_returned_identity`
+  (adapter-level, through a real subprocess round trip).
+* absence of post-hoc adapter repair --
+  `test_execute_never_repairs_a_divergent_returned_identity`, discussed under
+  axis 3 above.
+
+`test_slice4.py`'s four updated call sites
+(`test_codex_projection_makes_every_object_strict_and_complete`,
+`..._tracks_routing_result_validator_contract`,
+`..._tracks_complete_finding_delta_contract`,
+`test_invoke_codex_writes_the_canonical_structured_result_schema`,
+`test_known_good_envelope_passes_adapter_validation_and_provider_schema`)
+are mechanical adaptations to the new required parameter using the existing
+`_expected() = Invocation("RUN-1", "H001", "INV-1")` fixture; they continue
+to exercise the semantic-projection and `invoke_codex()`-writes-to-disk
+paths they exercised before, now correctly passing an `Invocation` rather
+than silently exercising a no-longer-existent no-argument path.
+
+No test in the diff merely re-asserts a schema literal against itself
+without exercising a production boundary (subprocess execution, file I/O,
+or `validated_result()`).
+
+== 6. Regression / scope review
+
+Confirmed via the four-path diff stat and direct reading of unchanged files:
+
+* `RoutingResult` / `routing_result_openai_schema()`: unchanged (not in the
+  diff; `routing_result_openai_schema()` body is byte-identical).
+* envelope key set: `STRUCTURED_RESULT_ENVELOPE_KEYS` (imported, not
+  redefined) is unchanged; `structured_result_envelope_openai_schema()`
+  still requires exactly the same five top-level keys.
+* reducer, routes, Findings, Git authority, Hop charging, reconcile/resume,
+  retries: `reducer.py`, `persistence.py`, `vertical.py`, `slice4.py`'s
+  `run_real_one_hop`/`recover_uncertain` logic are absent from the diff.
+* prompts: `prompt.py` and `codex_adapter_smoke.py` are absent from the
+  diff; the smoke prompt's "Use these exact correlation IDs..." prose
+  (`codex_adapter_smoke.py:36`) is retained verbatim, consistent with the
+  BUG record treating its possible redundancy as not itself a defect.
+* phase-scoped result semantics / provider abstraction:
+  `AgentExecutionPort`, `AgentExecutionRequest`, `AgentExecutionOutcome`,
+  and `Invocation` in `adapter.py` are unchanged; `codex_adapter.py` only
+  imports the pre-existing `Invocation` type, which is not a new dependency
+  direction (`codex_adapter.py` already depended on `adapter.py`).
+
+Only one production call site of `structured_result_envelope_openai_schema()`
+exists (`codex_adapter.py:184`, inside `CodexCliAdapter.execute()`),
+confirmed by repository-wide grep; it is correctly updated to pass
+`request.invocation`.
+
+== 7. Historical Latin boundary
+
+Nothing in the diff touches `RUN-39f7984a68ff4de68c3e039971451b88`, the
+Latin repository, `workflow-coordinator-runtime`, frozen Run state, or
+Project Memory. The diff is confined to `src/workflow_coordinator/` and
+`tests/unit/` within this repository's own source tree. The BUG record's
+own text is unmodified by this commit (it was already finalized by
+`a10b0b1`, prior to this fix commit). No repair, resumption, or
+reinterpretation of the frozen candidate is implied or performed.
+
+== Potential point inspected, not a defect
+
+The invocation-specific schema is written to the same
+`structured-result.schema.json` filename under `result_directory`
+(`= checkout_state_root(state_root, association)`, i.e. per-checkout, not
+per-Hop-history) on every `execute()` call, exactly as it was before this
+fix -- this commit changes schema *content*, not the artifact pathname or
+retention scheme. Per the review brief, this is not broadened into a
+schema-retention/audit redesign, as no concrete correctness or authority
+defect follows from it: `validated_result()` never reads that file, only the
+freshly dispatched Codex process does, and each `execute()` call overwrites
+it with the schema for its own current `Invocation` immediately before
+launching that same process. INFO/WATCH only, not BLOCKING/IMPORTANT/MINOR.
+
+== 8. Findings
+
+INFO/WATCH (2), no BLOCKING/IMPORTANT/MINOR:
+
+* INFO/WATCH -- `structured-result.schema.json` pathname is not unique per
+  invocation (pre-existing behavior, unchanged by this commit; discussed
+  above). Worth carrying as a note if schema-retention/audit ever becomes a
+  live concern, not actionable now.
+* INFO/WATCH -- The smoke prompt's "Use these exact correlation IDs..."
+  sentence (`codex_adapter_smoke.py:36`) is now partially redundant with the
+  strict-schema enum constraint for a conformant provider. The BUG record
+  explicitly does not authorize prompt cleanup on this basis, and removing
+  defense-in-depth wording carries its own small risk if a future provider
+  path ever bypasses strict-schema enforcement, so no change is recommended.
+
+== Validation
+
+Executed from the candidate worktree (`HEAD = a390ac23b42f69112af8f4c81cd171795920873a`)
+without WFC or real-provider invocation:
+
+* focused suite (`test_codex_adapter_conformance.py`, `test_slice3_vertical.py`,
+  `test_slice4.py`): all passed.
+* full `.venv/bin/python -m pytest -q`: all passed (442 tests collected,
+  exit code 0; the repository's custom collection reporter prints per-file
+  counts rather than a final aggregate summary line, so the count above is
+  from `--collect-only`, and the pass/fail result is from the run's exit
+  code).
+* `ruff check .`: passed, no findings.
+* repository-standard bounded `ruff format --check` (the exact file set the
+  Makefile's `format-check` target covers): passed, 5 files already
+  formatted. (That target does not cover `codex_adapter.py` or the changed
+  test files; those are consistent with this repository's pre-existing
+  wide-line style elsewhere in the same files, e.g. unmodified lines in
+  `routing_result_openai_schema()`, and are not a regression introduced by
+  this commit.)
+* `git diff --check 976cd87..a390ac2`: passed, no whitespace errors.
+
+== Final report
+
+1. Verdict: *A -- ACCEPT.*
+2. Review artifact: this file,
+   `docs/backlog/BUG-WFC-GENERATIVE-CORRELATION-IDENTITY_review_001.adoc`.
+3. Findings by severity: BLOCKING 0, IMPORTANT 0, MINOR 0, INFO/WATCH 2 (see
+   above).
+4. BUG acceptance criteria: all satisfied by this commit --
+   invocation-specific one-element string enums for `run_id`/`hop_id`/
+   `invocation_id`; no arbitrary-value freedom for those fields; strict-schema
+   conformance preserved without validator weakening;
+   `validated_result()` unchanged and still independently rejects a
+   deliberately uncorrelated envelope; no normalization/trimming/fuzzy
+   acceptance introduced anywhere in the correlation path; malformed/
+   uncorrelated results continue to fail closed in tests; Hop
+   accounting/reconciliation code paths untouched; conformance and full
+   suite pass; new conformance tests cover the invocation-specific
+   projection. No real-provider smoke was run or claimed, consistent with
+   the BUG record explicitly not authorizing one here.
+5. `validated_result()` remains a meaningful, independent, fail-closed
+   correlation boundary: it is byte-unchanged, is exercised end-to-end
+   (including through a real subprocess round trip) against a reproduction
+   of the exact historical trailing-comma defect, and continues to reject
+   it -- the schema-side narrowing does not make it tautological.
+6. Independent validation results: focused and full pytest, Ruff lint,
+   repository-standard Ruff format-check, and `git diff --check` all passed
+   (see Validation above).
+7. A real-provider smoke is not required for acceptance of this
+   implementation commit; the BUG record explicitly defers it to a separate,
+   later, maintainer-authorized step, and offline strict-schema conformance
+   evidence is what this BUG's acceptance criteria actually require.
+8. Residual risk to carry into a fresh Latin Run: none blocking. The fix
+   narrows generative freedom for identity fields but does not, and per the
+   BUG record should not, weaken `validated_result()`'s independent check --
+   a future divergence (schema-conformance drift, provider bug) would still
+   be caught and would still fail closed, exactly as the original defect
+   was. The two INFO/WATCH items above are non-blocking and do not bear on
+   Run correctness.
+9. Final `git status --short`: only the pre-existing untracked
+   `wfc_snapshots/` directory, unrelated to and untouched by this review.
+10. Confirmed: no real provider, `workflow-coordinator-runtime`, Latin
+    repository state, frozen Run state, Project Memory, or remote was read
+    for mutation or mutated by this review. Only local, offline
+    inspection, `pytest`, `ruff`, and `git diff --check` were run against
+    the existing candidate worktree; this review artifact file is the only
+    file written.
