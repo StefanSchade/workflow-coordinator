@@ -75,6 +75,15 @@ ATTEMPT_7_GOVERNING_PATHS = (
     "governance/self-development/prompts/worker.txt",
     "governance/self-development/prompts/reviewer.txt",
 )
+GENERATIVE_ECHO_AUDIT_GOVERNING_PATHS = (
+    "governance/work-items/generative-echo-audit.yaml",
+    "governance/self-development/standalone-development-profile.yaml",
+    "governance/self-development/repository-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/generative-echo-audit-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
 IMPLEMENTATION_PATHS = (
     "Makefile",
     "README.md",
@@ -466,6 +475,85 @@ def test_attempt_7_bundle_passes_production_preflight(
     assert "accept" not in profile.phases["review"].routes
     assert tuple(profile.phases["correct"].routes) == ("rereview",)
     assert tuple(profile.phases["rereview"].routes) == ("accept", "correct")
+    assert not state_root.exists()
+
+
+def test_generative_echo_audit_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Bounded architecture-assessment WorkItem: preflight-only proof.
+
+    This governing bundle commissions an investigation, not an
+    implementation: it must parse, stay within policy/profile authority,
+    start at ``review``, carry a two-Hop-happy-path/three-Hop budget, name
+    exactly one durable artifact, and hold no mutation authority over any
+    inspected production source. WorkItem.scope carries the same ceiling as
+    the developer-ergonomics chain -- the shared profile's ``investigate``/
+    ``correct`` phases mechanically require it (their authorized_scope must
+    lie within WorkItem.scope even though this WorkItem never reaches those
+    phases in practice) -- but the phases this WorkItem actually starts and
+    can reach, ``review``/``rereview``, are independently scoped by the
+    profile to the review namespace alone, so actual mutation authority is
+    narrower than the ceiling in practice.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=GENERATIVE_ECHO_AUDIT_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "generative-echo-audit"
+
+    assert not state_root.exists()
+    result = _preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=GENERATIVE_ECHO_AUDIT_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    review = profile.phases["review"]
+    rereview = profile.phases["rereview"]
+
+    artifact = f"{REVIEW_NAMESPACE}/WI-WFC-GENERATIVE-ECHO-AUDIT-001/review.adoc"
+
+    assert work_item.work_item_id == "WI-WFC-GENERATIVE-ECHO-AUDIT-001"
+    assert work_item.initial_phase == "review"
+    assert work_item.max_autonomous_hops == 3
+    assert profile.revision == "4"
+    assert policy.revision == "3"
+
+    # WorkItem.scope equals the shared policy ceiling: the profile's
+    # `investigate`/`correct` phases mechanically require their
+    # authorized_scope (IMPLEMENTATION_PATHS) to lie within WorkItem.scope,
+    # so a narrower WorkItem.scope is preflight-rejected even though this
+    # WorkItem never reaches those phases in practice.
+    assert work_item.scope == policy.work_item_scope_ceiling == (
+        *IMPLEMENTATION_PATHS,
+        REVIEW_NAMESPACE,
+    )
+
+    # No mutation authority is granted over any inspected production source:
+    # `src/` is not part of the ceiling at all, and this WorkItem's only
+    # reachable phases (review/rereview) are independently scoped by the
+    # profile to the review namespace alone.
+    assert not _within_scope("src", work_item.scope)
+    assert not _within_scope("src/workflow_coordinator/reducer.py", work_item.scope)
+    assert not _within_scope("src/workflow_coordinator/model.py", work_item.scope)
+    assert review.authorized_scope == rereview.authorized_scope == (REVIEW_NAMESPACE,)
+    assert set(IMPLEMENTATION_PATHS).isdisjoint(review.authorized_scope)
+
+    assert durable_artifacts == {"review": (artifact,)}
+    assert _within_scope(artifact, work_item.scope)
+    assert _within_scope(artifact, review.authorized_scope)
+    assert tuple(review.routes) == ("rereview", "correct")
+    assert "accept" not in review.routes
+    assert tuple(rereview.routes) == ("accept", "correct")
+    assert review.role == rereview.role == "independent_reviewer"
+    assert review.durable_artifact.value == "required"
+    assert rereview.durable_artifact.value == "none"
+
     assert not state_root.exists()
 
 

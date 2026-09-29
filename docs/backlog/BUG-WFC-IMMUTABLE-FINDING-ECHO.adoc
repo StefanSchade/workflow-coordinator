@@ -1,0 +1,179 @@
+= BUG-WFC-IMMUTABLE-FINDING-ECHO -- Generative Echo of an Existing Finding's Immutable Invariant
+
+Type:: bug
+Status:: open (investigation commissioned, not yet corrected)
+Date:: 2026-09-29
+Classification:: provider-facing result-contract defect (unnecessary generative
+re-emission of Coordinator-owned immutable Finding state); structurally similar
+to, but not assumed identical to, the closed
+`docs/backlog/BUG-WFC-GENERATIVE-CORRELATION-IDENTITY.adoc`
+Discovery:: Latin Story-2 foreign-domain consumer dogfood, attempt
+`latin-story02-c0-20260929-03`, work item `WI-LATIN-STORY-02-DOGFOOD-001`,
+Run `RUN-b57dcdacecb142239cb80a45015da0bf`, Runtime
+`a390ac23b42f69112af8f4c81cd171795920873a`
+
+== Observed behavior
+
+The Run exercised a bounded, freshly-granted Commission scope (five vocabulary
+records) against the `latein` consumer repository:
+
+* H001 `worker` `completed`: made the authorized Story-2 corrections; trusted
+  Coordinator commit `latein@3d60514`.
+* H002 `independent_reviewer` `changes_required`: found blocking current-Run
+  Finding F001 -- VOCAB-0053's declension was linguistically invalid;
+  requested `route: correct`.
+* H003 `worker` `completed`: corrected VOCAB-0053; trusted checks passed;
+  trusted Coordinator commit `latein@9a09000`.
+* H004 `independent_reviewer` (rereview) semantically concluded that H003
+  correctly resolved F001: all configured evidence passed, and the
+  structured-result envelope correlated validly to its dispatch (`run_id`,
+  `hop_id`, `invocation_id` all matched exactly -- the closed correlation-
+  identity defect did not recur).
+
+H004's result payload nonetheless failed mechanically. To close F001, its
+finding-delta referenced F001's existing `finding_id` but supplied an
+`invariant` string that paraphrased F001's original invariant text rather
+than reproducing it byte-for-byte. `reducer.py` correctly rejects this:
+`delta.invariant != previous.invariant` raises `ReductionError(f"Finding
+{previous.finding_id} invariant cannot be rewritten")`
+(`src/workflow_coordinator/reducer.py:189-190`, reached from the existing-
+Finding branch of the finding-delta loop, `reducer.py:185-190`). The
+Coordinator preempted the rereview before accepting any disposition for F001:
+`stop_reason=mechanical_preemption:invalid_finding_delta:Finding F001
+invariant cannot be rewritten`. Run stopped `awaiting_human` at hop 4 of 6,
+two hops unused.
+
+No state corruption occurred. Both prior trusted commits (`latein@3d60514`,
+`latein@9a09000`) stand unchanged; the Latin worktree remained clean at
+`9a09000`; no unauthorized commit was made; `run.json`'s top-level `findings`
+still lists only F001 with `state: open`. The full Attempt-03 progression is
+recorded in `workflow-coordinator-run-evidence/project_memory/run_ledger.adoc`
+("Latin Story-2, attempt 03 -- bounded scope grant exercised successfully,
+then mechanical preemption on a finding-schema violation").
+
+== Exact failed invariant
+
+Any finding-delta that references an existing `finding_id` must reproduce
+that Finding's `invariant` exactly, byte-for-byte, whether or not the
+proposed disposition changes the Finding's state. The reducer enforces this
+unconditionally, before considering `proposed_state`, `blocking`, or any
+other field of the delta (`reducer.py:189-190`). H004's delta did not: the
+underlying linguistic judgment that F001 was resolved was correct, but the
+resupplied `invariant` text was not the original string.
+
+== Why the current fail-closed behavior is correct
+
+This is not a bug in the reducer's existing-Finding protection. An agent must
+not be able to rewrite the semantic identity of an existing Finding merely by
+referencing its `finding_id` -- that is exactly the invariant
+`reducer.py:189-190` exists to enforce, and this BUG does not propose
+weakening it. Rejecting a non-exact match and refusing to apply any
+disposition before that match succeeds is the intended fail-closed behavior,
+consistent with the same general design posture documented for the
+correlation-identity case.
+
+== Root-cause classification (established facts only)
+
+`FindingDelta.invariant` is a required `str` field
+(`src/workflow_coordinator/model.py:196`), and the Codex/OpenAI structured-
+result schema projects it as an unconstrained `{"type": "string"}`
+(`src/workflow_coordinator/codex_adapter.py:95`). There is no schema-level
+distinction between a finding-delta that creates a new Finding (where the
+model is the sole author of `invariant`, and free-form generation is
+semantically correct) and a finding-delta that references an existing
+`finding_id` (where the Coordinator already holds the authoritative
+`invariant` in Run state, and any independent regeneration is redundant with,
+and in this Attempt diverged from, that already-known value). The shape
+observed:
+
+----
+Coordinator already owns immutable Finding.invariant
+    ->
+projected to the model as a free-form string field
+    ->
+model must emit the value again to reference the Finding
+    ->
+free-form generation
+    ->
+reducer checks exact equality against Coordinator-held state
+    ->
+harmless paraphrase (same semantic conclusion) causes fail-closed stop
+----
+
+This resembles the closed correlation-identity defect's shape structurally
+(Coordinator-owned identity -> generative re-emission -> a small textual
+divergence -> exact-match validation failure), but this BUG does not assert
+they share a root cause, a schema location, or an implementation fix. That
+question -- and whether either is representative of a broader family, or each
+is an isolated case -- is the open investigation question this record
+commissions, not something this BUG record decides.
+
+== Non-scope
+
+This BUG does not authorize:
+
+* any change to `reducer.py`'s existing-Finding invariant protection or its
+  fail-closed behavior;
+* any change to `model.py`, `serialization.py`, `adapter.py`,
+  `codex_adapter.py`, `prompt.py`, the Agent Operating Contract, or
+  `vertical.py`;
+* redesign of atomic Finding-delta reduction or partial-result salvage (H004
+  also proposed a genuinely new, out-of-scope linguistic Finding
+  (VOCAB-0061); because Finding-delta application is atomic and the F001
+  delta was invalid, that second candidate was never admitted into
+  authoritative Run state -- this is recorded here only as an adjacent
+  UX/diagnostic observation, not as a defect this BUG covers);
+* implementation of any correction; this BUG record is investigation-only;
+* repair, resumption, or continuation of the frozen
+  `RUN-b57dcdacecb142239cb80a45015da0bf`, or reinterpretation of its
+  `awaiting_human` stop, its two trusted commits, or F001's state;
+* mutation of `workflow-coordinator-runtime`, the `latein` repository, or any
+  Run-evidence archive.
+
+== Relationship to the broader generative-echo question
+
+This BUG's narrow, established fact is: an existing Finding's `invariant` is
+Coordinator-owned immutable state that the current provider-facing result
+contract nonetheless asks the model to regenerate as free-form text, and the
+reducer's independent exact-match check is correct to reject a divergent
+regeneration. Whether this is one isolated defect or a member of a small
+coherent family of similarly-shaped fields elsewhere in the result contract
+(existing Finding blocking state, successor_ref, proposed Finding
+disposition, evidence_refs, and the likely-false-positive candidates
+`requested_route`, `proposed_state`, `escalation`, `evidence_refs`,
+`CommitIntent`, `claimed_commits`, `summary`) is an open architecture
+question. It is commissioned to a bounded WFC self-development Run,
+`WI-WFC-GENERATIVE-ECHO-AUDIT-001`, whose durable product is an independently
+reviewed architecture-assessment artifact at
+`docs/backlog/wfc_reviews/WI-WFC-GENERATIVE-ECHO-AUDIT-001/review.adoc`. That
+assessment's conclusions are not prejudged by this record and do not
+automatically become additional BUGs merely by being raised in the
+assessment.
+
+== Evidence pointers
+
+* Full Attempt-03 progression and disposition:
+  `workflow-coordinator-run-evidence/project_memory/run_ledger.adoc`
+  ("Latin Story-2, attempt 03").
+* Archived Run evidence:
+  `workflow-coordinator-run-evidence/archive/foreign-domain-dogfood/latin-story-02/latin-story02-c0-20260929-03/manifest.json`
+  and sibling `run/operator-summary.json`,
+  `run/checkouts/968715a6-9e1a-488e-bbbf-475641cac19c/result-message.json`.
+* Current repository truth for the defect:
+  `src/workflow_coordinator/reducer.py:185-190` (existing-Finding invariant
+  protection), `src/workflow_coordinator/model.py:194-196,232-234`
+  (`FindingDelta`/`Finding`), `src/workflow_coordinator/codex_adapter.py:95`
+  (unconstrained `invariant` string projection).
+* Closed, structurally related precedent:
+  `docs/backlog/BUG-WFC-GENERATIVE-CORRELATION-IDENTITY.adoc`.
+
+== Lifecycle
+
+This BUG is *open*. No correction is authorized or implemented by this
+record. A bounded architecture assessment has been commissioned
+(`WI-WFC-GENERATIVE-ECHO-AUDIT-001`) to investigate whether this is an
+isolated defect or part of a small coherent family, and to identify the
+smallest justified correction boundary; that assessment does not itself
+authorize implementation. No Runtime, Latin repository, frozen Run state,
+Project Memory, or remote was mutated, and no WFC Run was started, by this
+record.
