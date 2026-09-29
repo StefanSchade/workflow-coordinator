@@ -1,0 +1,236 @@
+= WI-WFC-GENERATIVE-ECHO-AUDIT-001 -- Generative-Echo Architecture Assessment
+:toc:
+
+Type:: independent architecture review
+Status:: assessment complete; submit to rereview
+Date:: 2026-09-29
+Scope:: provider-facing result contract only; no production source, workflow,
+profile, policy, prompt component, frozen Attempt, runtime state, or Latin
+repository state was modified.
+
+== Question and method
+
+This review tests the proposition that a result field is a *generative echo*
+only when all of the following hold: the Coordinator already has the field's
+authoritative value for the selected object before provider output; the
+provider contract nevertheless asks the model to generate that value; and a
+later mechanical check requires equality (or an equivalent restatement).
+Merely being validated against Coordinator policy, or being recorded by the
+Coordinator after it is proposed, is not enough.
+
+I traced the canonical data classes and parser, the Codex strict-schema
+projection, provider-neutral envelope validation, reconstructed prompt
+context, reducer application, and trusted commit path.  The focused tests
+listed in the work item were also inspected.  A local exploratory run of
+their combined pytest selection exited successfully.  That run is not
+Coordinator-trusted evidence; the configured `pytest` evidence remains
+Coordinator-owned.
+
+== Facts already corrected: envelope correlation
+
+`run_id`, `hop_id`, and `invocation_id` are Coordinator dispatch facts.  They
+are retained in the envelope as a correlation reference, then checked by
+exact tuple equality in `adapter.validated_result()`.  Their prior
+free-form-provider projection was therefore a generative echo.  The current
+Codex projection fixes precisely that problem: each is an invocation-specific
+one-value string enum, while provider-neutral validation still makes the
+independent byte-exact comparison.  The corresponding conformance tests
+assert both properties.
+
+This is a closed, isolated correction in its implementation location:
+the adapter can know the exact one permissible value before dispatch.  It is
+nevertheless a member of the same architectural pattern as the material
+existing-Finding cases below.
+
+== Existing-Finding result neighborhood
+
+The Coordinator reconstruction exposes each existing Finding's identifier,
+state, blocking value, invariant prose, evidence references, and, when
+present, successor reference.  Despite labels such as
+`agent_attributed_finding_prose`, those values come from authoritative `Run`
+state at reconstruction time; their original provenance does not make their
+current value generative.
+
+[cols="1,1,2,2,3",options="header"]
+|===
+|Field |Coordinator-owned value already available? |Mechanical treatment |Classification |Conclusion
+
+|`findings[].finding_id`
+|Yes: the run-local key.
+|The reducer looks it up and rejects an unknown key.
+|Necessary identity/reference selection, not semantic prose.
+|Keep it.  The agent needs to identify the Finding it is addressing; this is
+not an exact value comparison of a regenerated semantic field.
+
+|`findings[].invariant` for an existing ID
+|Yes: immutable `Finding.invariant`.
+|Unconditional byte-for-byte equality before any same-state or transition
+logic; a mismatch fails the whole atomic delta set.
+|Immutable Coordinator state that must not be regenerated.
+|Material generative-echo defect.  This is the observed H004 failure and the
+primary correction target.  For `finding_id = null`, in contrast, it is
+genuinely agent-authored semantic output and must remain required.
+
+|`findings[].blocking` for an existing ID
+|Yes: authoritative current blocking state.
+|For a same-state citation it must equal exactly.  For a transition it must
+remain equal except for the authorized `open -> residual` downgrade, where
+`false` is determined by the proposed residual state.
+|Coordinator state/reducer-derived transition consequence, not independent
+agent meaning for an existing Finding.
+|A related, conditional generative echo.  It shares the existing-Finding
+shape and belongs in the same bounded correction, although it was not the
+observed failure.  It remains agent-authored for a new Finding.
+
+|`findings[].successor_ref`
+|Only when an existing Finding is already superseded.
+|A same-state citation must restate it exactly.  A proposed supersession must
+instead provide a nonempty successor, and other proposed states must provide
+none.
+|Mixed: immutable reference echo only for a same-state citation; agent-owned
+semantic relation when proposing supersession.
+|Remove the same-state restatement requirement with the other existing-state
+echoes, but retain agent generation and validation for an active supersession.
+
+|`findings[].proposed_state`
+|No single Coordinator-owned answer exists.
+|The reducer checks the requested transition against the finite graph and the
+phase's disposition authority.
+|Agent-owned proposed disposition.
+|Not an echo bug.  An enum may limit the vocabulary, but it cannot choose the
+semantic disposition on the agent's behalf.
+
+|`findings[].evidence_refs`
+|The old references are known, but the submitted references are new evidence
+claims.
+|For a same-state citation, only references not already present are appended;
+for a transition they are unioned and deduplicated.  No old list is required
+to be reproduced exactly.
+|Agent-owned semantic/evidentiary output.
+|No generative-echo case found.
+|===
+
+The relevant fail-closed checks are correct.  In particular, the invariant
+check prevents an agent from changing a Finding's semantic identity by naming
+its ID.  The defect is asking it to reproduce that identity as text, not
+rejecting divergent text.
+
+== Falsification of likely false positives
+
+[cols="1,2,3",options="header"]
+|===
+|Candidate |Mechanical treatment |Assessment
+
+|`requested_route`
+|Looked up in the current phase's permitted routes; an unknown key is
+preempted.
+|The Coordinator owns the *set* of legal exits, but the agent owns the choice
+of exit that expresses its result.  This is semantic selection, not an echo.
+
+|`escalation`
+|`kind` is constrained to a finite vocabulary; any escalation/requires-human
+request preempts to a human question.
+|The need to escalate and the question are agent-owned conclusions.  No
+Coordinator-held exact value is being reproduced.
+
+|Result-level `evidence_refs`
+|Recorded on the accepted Hop; trusted evidence is separately prepared and
+run by the Coordinator.
+|Agent-attributed references are not a copy of the Coordinator's trusted
+observation.  No echo case found.
+
+|`CommitIntent`
+|Paths and subject are validated against authority, repository facts, and
+commit-subject postconditions; a trusted Coordinator commit then uses the
+intent and checks the observed result.
+|This is an agent's bounded semantic request.  The subject must contain known
+WorkItem/Hop tokens, but it also contains agent-authored conventional-commit
+meaning and is not compared to a pre-existing Coordinator string.  No echo
+case found.
+
+|`claimed_commits`
+|When no intent is processed, observed Git facts detect whether the claim
+matches actual commits.
+|It is an agent assertion about externally observable post-invocation state
+(normally empty under the no-agent-Git rule), not a Coordinator value known
+before output.  Not a generative echo; its diagnostic usefulness is outside
+this assessment.
+
+|`summary`
+|Recorded as agent-attributed Hop prose; no equality comparison occurs.
+|Genuinely agent-owned semantic output, not an echo.
+|===
+
+`outcome`, `scope_changed`, and `requires_human` likewise express the
+agent's conclusion and are guarded for safe routing, rather than echoing a
+pre-existing Coordinator value.  Result `schema_version` is Coordinator
+known, but is already restricted to its sole accepted value by the schema and
+validated by the parser; it presents no open generative freedom.
+
+== Family boundary and smallest justified correction
+
+The closed correlation issue and the open invariant issue are a small,
+coherent *design family*: Coordinator-owned identity/state was requested as
+free generation and then exact comparison failed closed.  They are not one
+implementation defect.  Correlation has a single dispatch value per
+invocation and is fully addressed in the Codex schema projection.  Existing
+Finding data is selected per array item, mixed with new-Finding creation and
+with real disposition proposals; simply applying a global enum or copying
+the correlation patch would be incorrect.
+
+The smallest justified correction boundary is therefore the canonical
+existing-Finding delta form (and its parser/reducer/Codex projection/tests),
+not result routing or a broad protocol redesign:
+
+* Retain `finding_id` as the reference and retain agent-generated
+  `proposed_state`, evidence, and any active supersession target.
+* For a delta that names an existing Finding, obtain `invariant` from the
+  Coordinator ledger rather than accepting model-provided text.  Preserve the
+  invariant more strongly: an existing-Finding wire form must not be able to
+  supply a replacement at all, and unknown/replacement-shaped input must fail
+  closed.
+* In that same existing-Finding form, derive carried-forward `blocking` from
+  Coordinator state (or derive `false` from an admitted residual transition),
+  and do not demand an existing superseded `successor_ref` again for an
+  evidence-only same-state citation.  Continue to require and validate a
+  successor for an actual supersede proposal.
+* Keep the new-Finding form unchanged in principle: its invariant, blocking
+  state, evidence, and any successor are agent semantic output and remain
+  validated.  Keep existing atomic delta application, exact correlation
+  validation, authority checks, and all fail-closed behavior.
+
+This is deliberately not a proposal to salvage H004's second candidate
+Finding or to redesign atomic reduction/partial-result diagnostics.  That
+observation remains adjacent UX evidence only.  No other material
+generative-echo case was found among the specified result fields.
+
+== Inspection evidence
+
+* `src/workflow_coordinator/model.py` and
+  `src/workflow_coordinator/serialization.py`: canonical required/optional
+  result and Finding-delta fields.
+* `src/workflow_coordinator/codex_adapter.py` and
+  `src/workflow_coordinator/adapter.py`: strict provider schema and independent
+  correlation validation.
+* `src/workflow_coordinator/operator.py`, `prompt.py`, and the operating
+  contract: fresh Coordinator reconstruction and provider instructions.
+* `src/workflow_coordinator/reducer.py` and `vertical.py`: exact Finding
+  protections, routing, evidence, and trusted-commit handling.
+* `tests/unit/test_reducer.py`, `test_serialization.py`,
+  `test_codex_adapter_conformance.py`, `test_slice3_vertical.py`, and
+  `test_slice5b.py`, plus `tests/architecture/test_replays.py` and
+  `test_self_development_governance.py`: focused coverage of the assertions
+  above.
+* Local exploratory command (exit 0):
+  `.venv/bin/python -m pytest -q tests/unit/test_reducer.py
+  tests/unit/test_serialization.py tests/unit/test_codex_adapter_conformance.py
+  tests/unit/test_slice3_vertical.py tests/unit/test_slice5b.py
+  tests/architecture/test_replays.py
+  tests/architecture/test_self_development_governance.py`.
+
+== Review disposition
+
+No current-Run Finding is recorded.  The durable artifact contains the
+ordinary architecture conclusion; a Finding is unnecessary because no
+workflow blocker was encountered while producing it.  Request `rereview` for
+the configured final acceptance/correction disposition.
