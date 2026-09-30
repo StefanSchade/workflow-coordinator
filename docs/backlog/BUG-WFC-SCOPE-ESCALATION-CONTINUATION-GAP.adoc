@@ -1,0 +1,227 @@
+= BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP -- Scope-Escalation Continuation Gap After Useful Uncommitted Work
+
+Type:: bug -- operator/continuation-workflow gap (not a Coordinator
+authority-enforcement defect)
+Status:: open (documentation only; no correction authorized by this record)
+Date:: 2026-09-30
+Classification:: operator continuation-path gap, adjacent to but distinct
+from the atomic-Hop recovery/wiring gap already tracked by
+`FTR-WFC-ATOMIC-HOP-RECOVERY.adoc` and Project Memory concern
+`CONC-WFC-ATOMIC-HOP-RECOVERY-WIRING`
+Discovery:: WFC self-development correction attempt
+`wfc-immutable-finding-echo-fix-20260930-01`, work item
+`WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-001`, Run
+`RUN-76e153b40ef1459db4587446b18e02d5`, target repository
+`workflow-coordinator`, target baseline
+`bb545768055b8cd8569d9e5833dc4c2e2fb238bb`
+
+== Observed behavior
+
+The Run implemented the bounded existing-Finding delta correction authorized
+by `docs/backlog/BUG-WFC-IMMUTABLE-FINDING-ECHO.adoc` across `model.py`,
+`serialization.py`, `reducer.py`, `codex_adapter.py`, and their authorized
+unit tests. One Hop, H001, ran; `hop_used=1` of `hop_limit=4`; `run_status`
+ended `awaiting_human`; no trusted commit was made and the target HEAD
+remained at the baseline throughout
+(`baseline_head == current_head == final_head ==
+bb545768055b8cd8569d9e5833dc4c2e2fb238bb`).
+
+Within that single Hop:
+
+* H001 performed useful mutations strictly inside its authorized scope.
+* H001 correctly identified `tests/unit/test_slice4.py` as outside its
+  authorized scope -- that file's strict one-object assertion is obsolete
+  under the mandated separate new/existing Finding wire forms, but
+  `WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-001` does not name it. H001 did not
+  mutate it, and instead returned a structured result with
+  `scope_changed=true`, `requires_human=true`, `requested_route=review`, and
+  an explicit `escalation: {kind: scope, question: ...}` asking whether that
+  file's assertion may be corrected.
+* Trusted full-suite evidence (`pytest`) failed (`exit_code: 1`) inside the
+  Run.
+* A later operator-side reproduction of the full suite against the same
+  candidate identified exactly four failures: two stale Slice-4 schema
+  assertions outside H001's authorized scope (consistent with H001's own
+  diagnosis), and two stale Slice-5b fixtures *inside* H001's authorized
+  scope that H001's own summary did not mention. The scope escalation itself
+  was therefore legitimate, but the worker's diagnosis that only the
+  out-of-scope Slice-4 file remained stale was incomplete.
+* No trusted commit was created; the target HEAD remained at the baseline.
+* The Run stopped `awaiting_human` with dirty tracked state. `stop_reason`
+  recorded two layered mechanical causes:
+  `mechanical_preemption:dirty tracked state; post-evidence worktree is not
+  clean with resolved submodules` and `trusted_commit:commit intent is not
+  permitted for this result disposition`.
+* The structured result
+  (`run/checkouts/*/result-message.json` in the archived evidence) retained
+  H001's useful scope-escalation question. The published Run/operator-facing
+  state (`run/operator-summary.json`) recorded `human_question: null` and
+  exposed only the later mechanical dirty-state/forbidden-`CommitIntent`
+  preemption; the semantic scope question that motivated the stop is not
+  visible there.
+* Operator-side salvage material for H001's unaccepted, uncommitted candidate
+  was preserved before the target checkout was restored to clean HEAD.
+
+Full mechanical detail is preserved in the archived Run evidence and is not
+duplicated here; see "Evidence pointers" below.
+
+== What this is not
+
+This record does not characterize the outcome as the agent failing to
+understand its scope. In this Run the worker respected its authorized scope
+correctly: it made no unauthorized change, and it asked rather than silently
+widening authority. Do not read this BUG as a repeat of the earlier
+Contract-projection or authority-misunderstanding defect classes recorded by
+`SIG-ACT-WFC-DOGFOOD-CONTRACT-DEFECTS`.
+
+Separately -- and this is a distinct, secondary observation, not the main
+mechanism finding -- H001's own diagnosis of what remained stale was
+incomplete: it correctly named the out-of-scope Slice-4 staleness but did not
+surface the two in-scope Slice-5b fixture failures that operator reproduction
+later found. This is a diagnostic-completeness gap in what the worker's
+evidence surfaced, not a scope or authority defect.
+
+This is also not:
+
+* a crash;
+* uncertain-dispatch recovery (the structured result correlated and applied
+  normally; nothing was reconciled as an uncertain acceptance);
+* a same-Hop retry;
+* an automatic replay; or
+* provider-session continuation.
+
+It is a legitimate mid-Hop authority/scope escalation, raised correctly by
+the worker, whose useful uncommitted work then had no defined continuation
+path once a later mechanical preemption (dirty tracked state, forbidden
+`CommitIntent`) took over the stop.
+
+== Mechanism finding (narrow)
+
+Fail-closed authority enforcement worked. The reducer correctly refused to
+accept a partial or unauthorized candidate once tracked state was dirty, and
+the worker correctly refused to widen its own scope into
+`tests/unit/test_slice4.py` rather than silently mutating it. Neither of
+those behaviors is the defect.
+
+The gap is narrower and purely operational: WFC has no first-class operator
+continuation path for the case where (a) useful, authorized-scope mutations
+already exist in an uncommitted candidate, and (b) the same Hop legitimately
+discovers that finishing the work requires authority the current WorkItem
+does not grant. Today, the only available path is manual: an operator must
+preserve the candidate outside of Run state, restore the target checkout to
+a clean known baseline, decide on and grant new authority (a revised or new
+WorkItem/Commission), and commission a fresh successor Run -- mirroring, at
+smaller scale, the bounded-scope-grant pattern already exercised for the
+Latin Story-2 chain (`latin-story02-c0-20260928-02` ->
+`latin-story02-c0-20260929-03`).
+
+A second, related gap: the semantic human question that motivated the stop
+can be obscured by a later mechanical preemption. In this Run, the worker's
+own scope-escalation question survived only in the structured result; the
+published Run/operator-facing summary exposed the mechanical dirty-state and
+forbidden-`CommitIntent` reasons instead, with `human_question: null`. An
+operator reading only the published operator-facing state would not see that
+a real, answerable scope question was ever raised.
+
+== Relationship to existing concerns and future-technical-records
+
+`FTR-WFC-ATOMIC-HOP-RECOVERY.adoc` and Project Memory concern
+`CONC-WFC-ATOMIC-HOP-RECOVERY-WIRING` already name an operator-wiring gap,
+but that gap is about *same-Run* technical interruption recovery: charged-Hop
+suspend/reconcile/resume semantics that are modeled and unit-tested in the
+reducer but not wired into the production operator for a real interrupted
+Run. That FTR explicitly scopes out a generic outer loop and explicitly
+treats persistent provider-session continuation and generalized
+process-loss recovery as deferred, out of its own scope.
+
+This BUG's continuation gap is a different mechanism and must not be
+conflated with it: it is not about resuming the *same* Run after an
+interruption, and it is not about provider-session continuation. It is about
+what happens *next*, semantically, when a Hop inside a Run correctly and
+deliberately stops because it needs authority it does not have, after
+already producing useful uncommitted work -- a *successor*-Run concern, not
+a same-Run recovery concern. The two are adjacent (both are "what does the
+operator do when a Hop does not cleanly complete" questions) but are
+distinct mechanisms and should remain tracked distinctly.
+
+== Future backlog requirements/questions (not authorized by this record)
+
+This record documents the gap only. It authorizes no implementation, no
+Runtime change, no governance change, and no Run. If and when this gap is
+addressed, any design must at minimum preserve the following properties,
+recorded here as open backlog requirements/questions rather than as accepted
+design:
+
+* Preserve the original semantic escalation (the worker's actual scope
+  question) in operator-visible published state, even when a later
+  mechanical preemption also applies to the same stop.
+* Never auto-widen a WorkItem's authorized scope in response to a worker's
+  escalation; a scope grant remains an explicit, separately authorized
+  maintainer act, exactly as already practiced for the Latin Story-2 chain.
+* Never auto-commit or auto-accept a blocked or dirty candidate.
+* Preserve candidate material, when preserved at all, only as explicitly
+  non-authoritative salvage -- never as trusted WFC evidence, a checkpoint,
+  or an implicit grant of authority.
+* Allow a separately authorized successor Run to consume such salvage only
+  as untrusted context (for example, as background for a fresh worker
+  invocation), never as a substitute for that Run's own evidence or trusted
+  commit.
+* Never mutate a predecessor Run's governing inputs (WorkItem, Profile,
+  Policy, Commission) to retrofit continuation; a scope change is a new,
+  explicit governing-input revision, as already practiced.
+* Never infer acceptance of a candidate from the mere existence of preserved
+  salvage material.
+* Keep this semantic successor-continuation concern distinct from same-Run
+  technical crash/reconcile recovery (`FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`) and
+  from provider-session continuation, in any future design or naming.
+
+None of the above is an implementation plan; it is the minimum set of
+invariants a future design must not violate.
+
+== Non-scope
+
+This BUG does not authorize:
+
+* any change to `src/workflow_coordinator/`, its tests, governance inputs,
+  profiles, policies, prompts, or the Agent Operating Contract;
+* any change to `workflow-coordinator-runtime`;
+* any change to Run state, or repair/resumption/continuation of the frozen
+  `RUN-76e153b40ef1459db4587446b18e02d5`;
+* any change to the `workflow-coordinator-run-evidence` repository, its
+  archived Run evidence, or its run ledger;
+* a Decision record -- no architecture decision has been accepted in
+  response to this observation; and
+* launching a WFC Run of any kind.
+
+== Evidence pointers
+
+* Archived Run evidence (evidence repository
+  `workflow-coordinator-run-evidence`, commit
+  `15b29999c5896884df23490207d82fe56ac839d2`):
+  `archive/unclassified/wfc-immutable-finding-echo-fix-20260930-01/manifest.json`
+  and sibling `run/operator-summary.json`,
+  `run/checkouts/fe2f93a8-566c-4671-866c-a817a4f08d95/result-message.json`,
+  `run/checkouts/fe2f93a8-566c-4671-866c-a817a4f08d95/run.json`.
+* Run-ledger entry for the same attempt:
+  `workflow-coordinator-run-evidence/project_memory/run_ledger.adoc`
+  ("Immutable-finding-echo fix, attempt 01 -- authorized-scope worker
+  escalation, then dirty-worktree mechanical preemption with no trusted
+  commit").
+* The correction this attempt was implementing (itself still open, not
+  fixed by this attempt): `docs/backlog/BUG-WFC-IMMUTABLE-FINDING-ECHO.adoc`.
+* The distinct, same-Run technical recovery gap this BUG must not be
+  conflated with: `docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`.
+* Project Memory: `project_memory/canonical/concern_events.json`
+  (`SIG-ACT-WFC-SCOPE-ESCALATION-CONTINUATION-GAP`), cross-referenced to
+  `CONC-WFC-LEVEL0-EMPIRICAL-CONFIDENCE` and
+  `CONC-WFC-ATOMIC-HOP-RECOVERY-WIRING` in
+  `project_memory/canonical/concern_event_xrefs.json`.
+
+== Lifecycle
+
+This BUG is *open* as a documentation-only record. No correction is
+authorized, no implementation has been made, and no Run has been launched by
+this record. The next permitted lifecycle activity, if any, is a maintainer
+decision on whether and how to design a successor-Run continuation path
+consistent with "Future backlog requirements/questions" above; that decision
+is explicitly out of scope for this record.
