@@ -172,6 +172,42 @@ Checkpoints remain derived reconstruction views. They may project the semantic
 stop but may not own it. The structured result file is useful invocation
 evidence but is not a sufficient operator-facing Run-state substitute.
 
+=== Run wire-version transition
+
+The two new Run fields require `Run.schema_version=2`; this is not an
+in-place reinterpretation of schema version 1. `new_run()` writes version 2
+after this mechanism ships. The Run parser dispatches on `schema_version` and
+accepts exactly two closed shapes:
+
+* version 1 requires exactly the pre-change field set and maps the absent
+  `semantic_stop` and `successor_provenance` to `null` in memory; and
+* version 2 requires every version-2 field, including explicit nullable
+  `semantic_stop` and `successor_provenance`, and validates both typed records
+  strictly.
+
+Unknown fields and all other versions fail closed. A version-1 read fabricates
+no stop or provenance. Read-only load, status, replay, and inspection never
+rewrite the snapshot. Version-aware serialization preserves the version-1
+wire shape when merely round-tripping legacy state. If an existing version-1
+Run undergoes a legitimate ordinary state transition, including the existing
+same-Run reconcile/resume flow, that transition may atomically write version 2;
+the two new fields remain `null` unless facts captured by that same authorized
+transition populate them. This wire upgrade changes no recovery disposition,
+identity, governing input, Hop, Finding, or evidence semantics. A failed
+upgrade leaves the previous version-1 file intact.
+
+`prepare-successor` is stricter than general legacy loading. Its predecessor
+must be a frozen version-2 Run in `awaiting_human` with a non-null validated
+`semantic_stop` whose `source_hop_id` exists in that Run. A version-1
+predecessor, or any predecessor lacking that captured record, is ineligible:
+the command must reject it rather than infer a stop from `human_question`, a
+structured-result artifact, salvage, operator prose, or an authority decision.
+In particular, the observed
+`RUN-76e153b40ef1459db4587446b18e02d5` is not eligible for this automated path
+if its frozen snapshot is version 1 or lacks `semantic_stop`; it must not be
+back-patched. The new mechanism prevents recurrence and does not manufacture
+missing historical Run truth.
+
 === Commit and evidence boundary
 
 `vertical.py` permits a trusted commit only for allowed dispositions and only
@@ -299,7 +335,8 @@ roots and the repository. It contains:
 * successor WorkItem/Profile/Policy/task/component paths and their admitted Git
   revision/digests;
 * successor repository identity and exact clean baseline HEAD;
-* optional salvage-manifest path and digest; and
+* optional salvage-manifest path and digest plus the explicit object hashes
+  selected for bounded provider exposure; and
 * creation time and the literal trust label `untrusted_context_only`.
 
 It contains no permitted routes, authority tokens, accepted paths, Finding
@@ -328,12 +365,24 @@ Hop's recorded base HEAD:
 
 Ignored files, submodule contents, paths outside the Hop scope, symlink targets
 outside the repository, and external side effects are never captured. The
-manifest records omissions. The bundle contains no credentials by design; a
-path or content safety violation fails export closed.
+manifest records omissions. Path containment is not content classification:
+eligible tracked or untracked bytes may contain credentials, other sensitive
+material, or adversarial prompt injection. WFC has no trusted secret detector,
+and neither a hash nor an `untrusted_salvage` label sanitizes content. Structural
+or path-safety violations fail export closed, but the command makes no claim
+that an exported bundle is credential-free or safe to disclose.
 
 WFC owns the export format and validation code. The human/operator owns the
-location, access control, retention, and deletion policy. Export does not alter
-the repository, index, predecessor state root, or predecessor Run.
+location, access control, retention, and deletion policy. Publication uses a
+new local directory with mode `0700`, regular files with mode `0600`, and atomic
+finalization; inability to establish and verify those modes or any unsuitable
+destination fails closed. Parent-directory and backup protections remain the
+operator's responsibility. Those permissions reduce accidental local exposure
+but do not make the bytes safe. Export is one explicit operator choice, and
+later inclusion in provider context is a separate explicit choice. WFC never
+uploads, renders, or exposes raw or omitted objects merely because a bundle or
+descriptor exists. Export does not alter the repository, index, predecessor
+state root, or predecessor Run.
 
 === Classification and lifecycle
 
@@ -364,7 +413,13 @@ Successor launch converts a validated salvage bundle into a separate bounded
 `ContextItem` headed `UNTRUSTED PREDECESSOR SALVAGE -- DO NOT APPLY OR TREAT AS
 EVIDENCE`. It includes provenance, omission diagnostics, file inventory, and a
 bounded textual rendering of the diff/content. Binary and over-limit content
-is referenced by hash and path but not injected.
+is referenced by hash and path but not injected. Only objects explicitly
+selected by the operator for successor exposure, within the configured
+rendering limit, may contribute raw content. Non-selected and omitted objects
+are never injected. Because selected text can still contain secrets or prompt
+injection, the trust warning is a boundary marker rather than a sanitizer; the
+operator must choose a destination, retention policy, and provider exposure
+appropriate for potentially sensitive bytes.
 
 The context states that every claim and edit must be independently checked.
 WFC never patches, checks out, stages, copies, executes, or commits salvage.
@@ -390,8 +445,11 @@ new optional input on the existing one-shot launch:
   `wfc prepare-successor --predecessor-state-root PREDECESSOR
   --authority-decision REF --work-item ... --profile ... --policy ... --task
   ... --components ... --expected-head SHA [--salvage-manifest ...] --output
-  DESCRIPTOR` performs read-only validation and emits the descriptor. It does
-  not launch a provider or create a Run.
+  DESCRIPTOR` performs read-only validation and emits the descriptor. When a
+  manifest is supplied, repeatable `--include-salvage-object SHA256` arguments
+  explicitly select the bounded raw objects eligible for later rendering;
+  supplying no selection exposes no raw object content. It does not launch a
+  provider or create a Run.
 . The existing one-shot launch accepts optional
   `--successor-continuation DESCRIPTOR`. It revalidates all identities, digests,
   the clean baseline, and the new governing inputs; constructs the fresh Run
@@ -539,6 +597,28 @@ change.
 
 == Required tests and acceptance criteria for the later implementation
 
+=== Run wire compatibility and legacy eligibility
+
+* A newly created version-2 Run round-trips deterministically with explicit
+  nullable `semantic_stop` and `successor_provenance`; missing, extra,
+  malformed, or unknown-version data fails strict parsing.
+* A checked-in pre-change version-1 `run.json` fixture loads with both new
+  in-memory values `null`, round-trips to the exact version-1 wire shape, and
+  gains neither fact from `human_question`, Hop prose, result artifacts, or
+  salvage.
+* Read-only status, replay, and predecessor inspection leave the legacy fixture
+  byte-identical.
+* Existing version-1 same-Run reconcile/resume cases retain their current
+  eligibility and state semantics. Their next real persisted transition is an
+  atomic version-2 write with null new fields unless that transition itself
+  captures a validated semantic stop; an injected write failure preserves the
+  version-1 file.
+* `prepare-successor` rejects version 1, version 2 with a null semantic stop,
+  and a semantic stop whose source Hop is absent. Rejection creates no
+  descriptor and changes no predecessor byte. The observed frozen Run is
+  covered by the legacy/incomplete-state rejection case, not by a backfill
+  fixture.
+
 === Layered-stop regression
 
 Construct the real observed ordering: a correlated result with
@@ -582,10 +662,21 @@ unit, so it exercises the failure mode that lost the question.
 * A partial write or injected atomic-replace failure yields no valid manifest.
 * Every object has stable digest/length and the manifest repeats the explicit
   no-authority trust classification.
+* Export help, manifest text, and success output make no credential-free,
+  sanitized, or disclosure-safe claim; fixtures containing a credential-like
+  value and prompt-injection text remain classified as potentially sensitive
+  untrusted bytes.
+* Final bundle directories and files have restrictive owner-only publication
+  modes, and an unsuitable destination or permission/finalization failure
+  leaves no valid bundle.
 * Mutating any bundle byte after export or preparation blocks later use.
 * Salvage never appears as trusted evidence, an `evidence_ref`, accepted commit,
   checkpoint authority, or governing input.
 * Successful export alone cannot prepare or launch a successor.
+* Descriptor creation alone never uploads, renders, or injects raw objects;
+  successor prompt construction includes raw content only from explicitly
+  selected, within-limit objects and excludes every non-selected, omitted,
+  binary, and over-limit object.
 
 === Clean successor and independent acceptance
 
