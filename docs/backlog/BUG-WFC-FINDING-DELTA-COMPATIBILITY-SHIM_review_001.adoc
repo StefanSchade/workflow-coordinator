@@ -1,0 +1,111 @@
+= BUG-WFC-FINDING-DELTA-COMPATIBILITY-SHIM -- Acceptance Review 001
+
+Independent adversarial review of
+`fc55bc1b95f958649d78564e0005d5185340589e`,
+`fix(workflow): remove FindingDelta compatibility shim
+[WI-WFC-FINDING-DELTA-COMPATIBILITY-SHIM-FIX-001 H001]`.
+
+== Identity and scope
+
+Baseline:: `bb76b53246546a897cbf599984871b950e98f1a8`
+Candidate:: `fc55bc1b95f958649d78564e0005d5185340589e`
+Reviewed implementation paths::
+* `src/workflow_coordinator/model.py`
+* `tests/support.py`
+* `tests/architecture/test_replays.py`
+* `tests/unit/test_slice5b.py`
+* `tests/unit/test_reducer.py`
+
+`git diff --name-only` for the baseline-to-candidate range returns exactly
+those five paths. In particular, the candidate does not change
+`serialization.py`, `reducer.py`, `codex_adapter.py`, any governance file, or
+`tests/architecture/test_self_development_governance.py`.
+
+== Verdict
+
+*ACCEPTED.*
+
+* Blocking findings: 0
+* Non-blocking findings: 0
+* Requested route: `accept`
+
+The bounded correction removes the permissive compatibility construction path,
+makes test fixtures choose the new- or existing-Finding model explicitly, and
+preserves the tests' intended assertions without redesigning any authority
+boundary.
+
+== Review conclusions
+
+=== Compatibility constructor removal
+
+The candidate deletes `FindingDelta(...)` from `model.py`. A repository search
+over Python sources finds no compatibility constructor, import, or call named
+`FindingDelta`, and no remaining fixture call named `delta(...)`. The explicit
+`ExistingFindingDelta`, `NewFindingDelta`, and `FindingDeltaValue` model forms
+remain unchanged.
+
+=== Replacement fixture API
+
+`tests/support.py` now exposes two separate helpers:
+
+* `new_delta(state, *, invariant=..., blocking=..., evidence=...,
+  successor_ref=..., new_material=...)` constructs only
+  `NewFindingDelta(finding_id=None, ...)`;
+* `existing_delta(finding_id, state, *, evidence=..., successor_ref=...,
+  new_material=...)` constructs only `ExistingFindingDelta`.
+
+The existing-Finding helper has no `invariant` or `blocking` parameter and no
+catch-all keyword parameter. It therefore cannot express or silently discard
+an attempted replacement of either ledger-owned value.
+
+Every former `delta(...)` call in the three authorized test files was migrated
+according to its semantic form: null IDs became `new_delta(...)`; non-null IDs
+became `existing_delta(...)`. Inspection found no mechanically inverted call
+or remaining assumption about the old dispatch shape.
+
+=== Two formerly discarded arguments
+
+The `blocking=False` value formerly attached to the same-state `F001` citation
+in `test_same_state_citations_are_noop_or_evidence_only_and_truthfully_attributed`
+was fixture noise. The compatibility constructor discarded it before the
+reducer received the delta. Removing it leaves the effective input unchanged;
+the test still proves that the existing Finding remains blocking according to
+ledger state while new evidence is appended. Wire-level rejection is already
+tested in unchanged `tests/unit/test_serialization.py`:
+`test_existing_finding_delta_has_a_ledger_derived_wire_form` independently
+injects both forbidden field names and requires `ValidationError` for unknown
+fields.
+
+Likewise, the `invariant="Historical review label."` value formerly attached
+to unknown ID `M-5` never reached `apply_finding_deltas`. Dropping it preserves
+the actual assertion: an unknown non-null Finding ID fails closed with
+`ReductionError`. The unchanged parser test above covers an attempted
+existing-Finding invariant rewrite at the real untrusted-input boundary, and
+`test_existing_finding_derives_immutable_and_carried_forward_ledger_values`
+continues to prove ledger derivation and that the explicit in-memory type
+rejects an `invariant` keyword.
+
+=== Preserved authority boundaries
+
+No production boundary other than removal of the compatibility function was
+edited. Existing tests continue to cover the distinct wire/schema forms,
+strict parser rejection, ledger-owned invariant and blocking values, lifecycle
+authority, successor validation, route authority, atomic proposal behavior,
+and correlated result validation. The migration changes how typed test values
+are constructed; it does not widen an admitted wire shape or alter reducer
+semantics.
+
+== Validation
+
+* Coordinator-owned trusted evidence: `pytest`, status `pass`, exit 0.
+* Independent agent check: `.venv/bin/python -m pytest -q`, exit 0.
+* Independent agent check: `.venv/bin/python -m ruff check .`, `All checks
+  passed!`.
+* Diff hygiene: `git diff --check` for the implementation range, clean.
+* The ambient `pytest` executable was not present; the repository's `.venv`
+  interpreter was used for the independent run. This does not affect the
+  Coordinator-owned trusted evidence result.
+
+== Findings
+
+None.
