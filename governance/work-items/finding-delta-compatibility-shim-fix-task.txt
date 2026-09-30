@@ -1,0 +1,148 @@
+Implement, independently review, and (if needed) correct the bounded
+residual correction authorized by
+docs/backlog/BUG-WFC-FINDING-DELTA-COMPATIBILITY-SHIM.adoc, "Desired future
+correction". This WorkItem is a new bounded residual correction on the
+internal `FindingDelta(...)` compatibility constructor only. It does not
+reopen, resume, or mutate completed predecessor
+`WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-002` (Run
+`RUN-f987897544f34b9aab9f1314fdee3674`); that predecessor's agent/WFC
+wire/parser/schema boundary (`src/workflow_coordinator/serialization.py`)
+and reducer-owned existing-Finding invariant/blocking authority
+(`src/workflow_coordinator/reducer.py`) are already correct and must remain
+exactly as that predecessor left them.
+
+IMPLEMENTATION (phase `implement`):
+- Remove the `FindingDelta(...)` compatibility constructor/helper from
+  `src/workflow_coordinator/model.py` (currently `:220-255`). It accepts a
+  non-`None` `finding_id` together with `invariant`/`blocking` arguments and
+  silently discards them while constructing an `ExistingFindingDelta`, whose
+  type deliberately has no such fields; that silent-discard construction
+  path must not remain. `ExistingFindingDelta` and `NewFindingDelta` remain
+  the two explicit semantic model forms (`model.py:193-217`) and are not
+  themselves changed by this correction.
+- Migrate `tests/support.py`'s `delta(...)` fixture helper
+  (currently `:178-196`, the sole remaining internal caller of
+  `FindingDelta(...)` with a non-`None` `finding_id`) so that the test
+  support API makes the new-Finding / existing-Finding distinction explicit
+  at the call site. Do not solve this by moving an equivalent permissive
+  dispatch (one helper that still accepts an existing `finding_id` together
+  with `invariant` or `blocking` and silently ignores them) into
+  `tests/support.py`; that would recreate the same defect one file over. A
+  likely shape is two explicit helpers, e.g. `new_delta(...)` and
+  `existing_delta(...)`, but an equally explicit and equally small
+  alternative is acceptable if it is a better fit for the actual call sites;
+  no helper may accept an existing `finding_id` together with a replacement
+  `invariant` or `blocking` value and discard it.
+- Migrate every `delta(...)` call site in the three authorized test files --
+  `tests/architecture/test_replays.py`, `tests/unit/test_slice5b.py`,
+  `tests/unit/test_reducer.py` -- to the explicit replacement helper(s),
+  choosing the call that matches what each test actually constructs: a
+  `finding_id=None` call is a new-Finding proposal; a non-`None` `finding_id`
+  call is an existing-Finding delta and must carry only fields valid for an
+  existing Finding.
+- Pay particular attention to the two call sites that pass `invariant` or
+  `blocking` together with a non-`None` `finding_id` -- these are the ones
+  the silent-discard behavior actually affects today:
+  * `tests/unit/test_slice5b.py:111`,
+    `delta("F001", "open", blocking=False, evidence="smuggled")` inside
+    `test_changes_required_artifact_does_not_grant_finding_disposition` (or
+    its current equivalent) -- the assertion that follows checks that
+    `blocking` stays derived from ledger state rather than the agent-
+    supplied `"smuggled"` value; and
+  * `tests/unit/test_reducer.py:98`,
+    `delta("M-5", "resolved", invariant="Historical review label.")` inside
+    a test asserting `ReductionError` for an unknown Finding ID.
+  For each, determine from the test body and its assertions whether the
+  discarded argument is (a) fixture noise that never reached the boundary
+  being tested (in which case drop it and migrate the call to the explicit
+  existing-Finding helper with only the fields that matter), or (b) actually
+  intended to exercise rejection of an attempted immutable-field rewrite on
+  an existing Finding (in which case that rejection must be exercised at the
+  real boundary where such untrusted input can still occur -- the
+  parser/wire validation in `serialization.py` -- not preserved as an
+  impossible in-memory model construction). Do not mechanically translate
+  either call in a way that changes what the test is actually proving; do
+  not weaken any existing fail-closed assertion.
+- Inspect the complete bounded scope for any other fixture or assertion that
+  still assumes the pre-correction `FindingDelta(...)` call shape; the two
+  sites above are known, not necessarily exhaustive.
+- Make one semantic implementation commit referencing this BUG.
+- Touch only the exact files this WorkItem's `implement`/`correct` phases
+  authorize: `src/workflow_coordinator/model.py`, `tests/support.py`,
+  `tests/architecture/test_replays.py`, `tests/unit/test_slice5b.py`,
+  `tests/unit/test_reducer.py`. No other source or test file, and in
+  particular not `src/workflow_coordinator/serialization.py` (already
+  correct and out of scope for this correction) and not
+  `tests/architecture/test_self_development_governance.py`.
+
+REVIEW (phase `review`):
+- Independently attempt to falsify the implementation: inspect the actual
+  diff, confirm `FindingDelta(...)` no longer exists as a compatibility
+  constructor, confirm the replacement test-support API cannot express an
+  existing `finding_id` together with a replacement `invariant` or
+  `blocking` value, and confirm every migrated call site preserves what its
+  test was actually proving (in particular the two call sites named above).
+- Verify the correction stays exactly within the five authorized paths and
+  does not touch `src/workflow_coordinator/serialization.py`,
+  `src/workflow_coordinator/reducer.py`,
+  `src/workflow_coordinator/codex_adapter.py`, any other file under
+  `src/` or `tests/` not named above, any file under `governance/`, or
+  `tests/architecture/test_self_development_governance.py`.
+- Verify the already-correct authority boundaries this correction must not
+  weaken or redesign remain intact: existing/new Finding wire/schema
+  separation, parser fail-closed behavior, reducer authority over
+  existing-Finding invariant semantics, authoritative derivation of
+  existing-Finding blocking semantics, Finding lifecycle/transition
+  authority, `successor_ref` validation, route authority, atomic Finding
+  proposal behavior, correlation/evidence behavior, and every other
+  fail-closed WFC authority boundary.
+- Record the review in the required durable artifact
+  `docs/backlog/BUG-WFC-FINDING-DELTA-COMPATIBILITY-SHIM_review_001.adoc`.
+- If the implementation is sound, request `route: accept`. If correction is
+  needed, record the concrete blocking problem in the durable review
+  artifact and request `route: correct` with `outcome: changes_required`
+  and an empty `findings` list -- do not create a WFC Current-Run Finding
+  merely to carry an ordinary implementation defect. This Run's
+  review/rereview loop uses the same bootstrap-safe gate configuration as
+  the predecessor correction: do not invent a shadow finding system and do
+  not silently fall back to manual prompting if this routing ever appears
+  unavailable -- stop and report instead.
+
+CORRECTION (phase `correct`, only if `review` or `rereview` requested it):
+- Address only the concrete problem(s) recorded in the durable review
+  artifact.
+- Remain within the exact same five-path implementation/test scope as
+  `implement`.
+- Do not disposition any WFC Finding merely because the correction
+  succeeded; this Run creates none.
+
+REREVIEW (phase `rereview`, only if `correct` ran):
+- Independently verify the corrected repository state with fresh context.
+- Accept only if current repository truth merits it; otherwise route back
+  to `correct` the same way `review` would, again with `outcome:
+  changes_required`, `route: correct`, and an empty `findings` list.
+- Do not rely on any existing-Finding lifecycle transition to carry this
+  loop. `rereview`'s durable-artifact authority is `none`: do not mutate
+  the review artifact or the implementation from `rereview`; only observe
+  and route.
+
+EVIDENCE (every phase that edits or corrects):
+- The complete repository pytest suite must be green, along with any
+  existing appropriate lint/static checks this repository uses, before
+  requesting any route out of `implement` or `correct`.
+
+Out of scope for every phase of this WorkItem: any change to
+`src/workflow_coordinator/serialization.py`,
+`src/workflow_coordinator/reducer.py`,
+`src/workflow_coordinator/codex_adapter.py`, `adapter.py`, `prompt.py`,
+`vertical.py`, the Agent Operating Contract
+(`resources/agent_operating_contract_v6.txt`),
+`tests/architecture/test_self_development_governance.py`, any file under
+`governance/`, `workflow-coordinator-runtime`, the Latin repository, the
+`workflow-coordinator-run-evidence` repository, or any frozen historical
+Run/Attempt state of predecessor `WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-002` or
+its predecessor. `ExistingFindingDelta`, `NewFindingDelta`, and
+`FindingDeltaValue` (`model.py:193-217`) are not themselves redesigned by
+this correction; only the compatibility constructor and its callers change.
+No phase of this WorkItem carries push or Runtime-promotion authority; both
+remain maintainer-owned.
