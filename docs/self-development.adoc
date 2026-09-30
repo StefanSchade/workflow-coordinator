@@ -32,160 +32,27 @@ HEAD to `--expected-head`, and a new external path to `--state-root`. The
 WorkItem's per-phase artifact mapping is authoritative; do not pass the legacy
 `--durable-artifact` option.
 
-== Deterministic Run preparation
+== Run preparation
 
-This anchors an existing operating practice against a recurring operator
-mistake: after a semantic WorkItem commission has been reviewed and committed,
-the next step -- preparing a Run for launch -- keeps getting reframed as
-another LLM/agent task. It is not. This section is not a new CLI design, a new
-orchestration feature, or a Project Memory entry; it documents an
-already-established procedure precisely enough that it stops being
-rediscovered or accidentally changed.
+Ordinary Run preparation -- pinning commits, materializing the OPS/state
+roots, exporting Runtime and target environments, writing
+`execution-bindings.yaml`, assembling `PATH`, running provider-free preflight,
+and writing `launch.sh` -- follows the generic deterministic contract in
+link:run-preparation.adoc[Run preparation]. That document defines the three
+boundaries (commission commit, `launch.sh` execution, first real provider
+invocation), the canonical preparation sequence, the OPS-root/state-root
+distinction, and the illustrative shell shape; none of it is restated here.
+In particular, ordinary preparation is deterministic operator mechanics, not
+another semantic LLM/agent Hop.
 
-=== Three boundaries
+Self-development specializes that generic contract:
 
-Run preparation crosses three distinct boundaries. Keep them separate:
-
-Commission commit::
-  Semantic authority is fixed. The WorkItem, profile, RepositoryPolicy, task,
-  and any commission-scoped governance are reviewed and committed. What the
-  Run is allowed to do is decided at this point, not later.
-
-`launch.sh` execution::
-  Only the maintainer's explicit execution of `launch.sh` enters the
-  provider-capable execution path and may cross the provider boundary. A
-  launched WFC process may perform preflight, materialize Run/state, and
-  register the checkout, and still fail on a mechanical condition before ever
-  reaching a provider.
-
-First real provider invocation::
-  The provider boundary itself is crossed only when WFC actually dispatches
-  the first real provider invocation. A Run may begin to materialize and
-  still fail before that boundary is reached.
-
-Executing `launch.sh` does not itself cross the provider boundary; do not
-conflate the second boundary with the third.
-
-=== Ordinary preparation is deterministic, not a Hop
-
-Once the repository-backed semantic commission has been committed, ordinary
-Run preparation is deterministic maintainer/operator mechanics: selecting
-already-known exact commits, creating fresh OPS directories, exporting pinned
-commits, creating virtual environments, installing frozen exports, writing
-already-selected execution bindings, assembling `PATH`, running provider-free
-preflight, and writing `launch.sh`.
-
-It is not another semantic agent Hop. It does not require an LLM to decide or
-author the next steps. An LLM may be used when the preparation procedure
-itself is being designed, changed, debugged, or reviewed -- that is not part
-of normal execution of the established procedure.
-
-=== OPS root versus state root
-
-Select a fresh, initially absent OPS root and a fresh state root.
-
-The OPS root is then created and populated by deterministic preparation: it
-comes to contain the Runtime export/environment, the Development/evidence
-export/environment, `execution-bindings.yaml`, preparation logs, and
-`launch.sh`.
-
-The state root must remain absent throughout preparation. Its freshness is a
-WFC launch precondition (see `--state-root` under Topology and preparation
-above), not a preparation side effect, and it is not the same requirement as
-the OPS root's initial absence.
-
-=== Canonical sequence
-
-After the repository-backed commission has been reviewed and committed,
-semantic preparation is complete. From this point until launch, Run
-preparation is deterministic maintainer/operator mechanics; it is not an
-agent Hop and does not require an LLM to decide or author the next steps.
-
-. Pin exact Development and Runtime commits.
-. Require clean Development and Runtime checkouts.
-. Require the Runtime checkout to satisfy the established detached /
-  push-disabled invariant.
-. Select a fresh, initially absent OPS root and a fresh state root; the state
-  root must remain absent throughout preparation.
-. Export the exact Runtime commit and install it into a fresh environment.
-. Export the exact Development baseline and build the separate evidence
-  environment.
-. Write `execution-bindings.yaml` from maintainer-selected role bindings.
-. Construct and inspect the controlled `PATH`.
-. Run provider-free readiness/preflight checks.
-. Materialize deterministic `launch.sh`.
-. Stop.
-
-Do not commission another LLM merely to perform steps 1-10. Only the
-maintainer's explicit execution of `launch.sh` enters the provider-capable
-execution path and may cross the provider boundary; the provider boundary
-itself is crossed only when WFC actually dispatches the first real provider
-invocation.
-
-=== Development export rule
-
-Current preparation practice strengthens the older separate-evidence-
-environment rule by deriving that environment from a `git archive`/export of
-the exact pinned Development baseline commit, not merely installing from an
-ambient checkout. Older self-development material that does not spell this
-out is not thereby wrong; it simply predates this stronger, now-preferred form
-of the same separate-evidence-environment rule.
-
-=== Illustrative shape
-
-The following is illustrative, not a second launcher implementation. It shows
-the shape of the reusable preparation pattern, not a specific commission's
-values.
-
-[source,shell]
-----
-DEVELOPMENT=...       # Development N+1 clone
-RUNTIME=...            # accepted Runtime N clone (detached)
-DEVELOPMENT_HEAD=...   # exact pinned Development commit
-RUNTIME_HEAD=...       # exact accepted Runtime commit
-OPS=...                # fresh, initially absent
-STATE_ROOT=...         # fresh; must remain absent throughout preparation
-
-test ! -e "$OPS"
-test ! -e "$STATE_ROOT"
-
-# exact HEAD / cleanliness checks against $DEVELOPMENT_HEAD and $RUNTIME_HEAD
-
-mkdir -p "$OPS"
-
-git -C "$RUNTIME" archive "$RUNTIME_HEAD" | tar -x -C "$OPS/runtime-src"
-python3 -m venv "$OPS/runtime-env"
-"$OPS/runtime-env/bin/pip" install "$OPS/runtime-src"
-
-git -C "$DEVELOPMENT" archive "$DEVELOPMENT_HEAD" | tar -x -C "$OPS/development-src"
-python3 -m venv "$OPS/development-env"
-"$OPS/development-env/bin/pip" install "$OPS/development-src[dev]"
-
-# write "$OPS/execution-bindings.yaml" from maintainer-selected role bindings
-
-# PATH="$OPS/development-env/bin:$OPS/runtime-env/bin:<remaining trusted base PATH>"
-# command -v checks against the controlled PATH
-
-# provider-free readiness/preflight: "$OPS/runtime-env/bin/wfc" --help, and
-# snapshot_environment() / prepare_evidence_commands() (see Topology and
-# preparation above)
-
-# materialize "$OPS/launch.sh", which invokes the absolute runtime wfc with
-# --repository, --expected-head, --state-root, --execution-bindings, etc.
-
-# stop here -- the maintainer executes launch.sh explicitly and separately
-----
-
-The concrete flags and checks remain those given under Topology and
-preparation above; this skeleton does not restate or replace them.
-
-=== Relation to future UX
-
-Today's documented Bash/operator procedure is the current implementation of
-this deterministic preparation contract. A future wrapper or CLI may collapse
-the mechanics into one command, but should preserve the same pinning,
-freshness, Runtime freeze, evidence-environment, preflight, and explicit
-provider-boundary semantics.
+* `TARGET` is the Development N+1 clone; `RUNTIME` is the separately promoted
+  Runtime N clone (see Topology and preparation above).
+* The Runtime checkout must additionally satisfy the established detached /
+  push-disabled invariant (see Runtime promotion runbook below).
+* Promotion of a Runtime commit remains maintainer-owned and never automatic
+  (see Ownership and promotion below and Runtime promotion runbook below).
 
 == Ownership and promotion
 
