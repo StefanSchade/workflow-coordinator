@@ -1,0 +1,646 @@
+= FTR-WFC-SCOPE-ESCALATION-CONTINUATION -- Successor-Run Semantic Continuation
+
+Type:: future technical record
+Status:: proposed / architecture-convergence draft / implementation not authorized
+Priority:: bounded Level-0 operator correction
+Date:: 2026-09-30
+Source BUG:: `docs/backlog/BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc`
+Recorded now:: Preserve a semantic escalation independently from later
+mechanical preemption, freeze the stopped predecessor, and allow a separately
+authorized fresh Run to receive optional candidate salvage only as explicitly
+untrusted context. No product, Runtime, governance, or launch authority follows
+from this record or its review.
+
+== Decision summary
+
+WFC should add a narrow successor-Run continuation input to its existing
+one-shot Level-0 operator. It should not add an outer planner, resume a provider
+session, or reuse same-Run technical recovery.
+
+A correlated worker escalation must be copied into an immutable semantic-stop
+record on the Run before the reducer selects the controlling mechanical stop.
+The record contains the escalation kind, exact human question, and source Hop.
+The existing `stop_reason` remains the controlling reduction reason and
+`anomalies` remains mechanical diagnostic state. Operator summaries publish
+both dimensions. This requires an additional state representation: changing
+only reduction order or reusing the single `human_question` field cannot
+truthfully retain both an answerable semantic question and an independently
+controlling mechanical preemption.
+
+A legitimate scope-escalation predecessor finishes this execution as
+`awaiting_human`. That status is terminal for autonomous dispatch: it is not
+`suspended`, not `reconcile_required`, and cannot be resumed after its
+governing authority changes. Its admitted WorkItem, Profile, Policy,
+Commission, identity, state, Hops, Findings, and trusted evidence remain frozen.
+The answer and any authority grant are new inputs to a new WorkItem and fresh
+successor Run.
+
+Candidate preservation is optional. An explicit operator command may export a
+content-addressed salvage bundle to an operator-selected location outside the
+predecessor Run root and repository. The bundle is labelled
+`untrusted_salvage`, is never applied, committed, admitted as evidence, or
+interpreted as authority by WFC, and is not a checkpoint. Failure to export it
+leaves the predecessor truth intact and blocks any continuation that claimed it
+would use that salvage.
+
+After a maintainer separately grants authority, a second explicit operator
+command validates the new governing bundle and a clean known Git baseline and
+creates a continuation descriptor. A successor launch may consume that
+descriptor. The new Run records predecessor and authority-decision provenance;
+the predecessor is never back-patched. If salvage is referenced, the successor
+worker sees a bounded, prominently untrusted context item. The successor still
+starts from the clean admitted baseline, runs its own evidence, and can obtain
+an accepted repository mutation only through its own trusted commit boundary.
+
+This is architecture-convergence input, not implementation authority. Review
+acceptance means only that a maintainer may consider a separate implementation
+Commission. It does not fix or close the source BUG, promote Runtime, launch a
+Run, or authorize any product or governance mutation.
+
+== Empirical problem statement
+
+Self-development attempt `wfc-immutable-finding-echo-fix-20260930-01`, Run
+`RUN-76e153b40ef1459db4587446b18e02d5`, WorkItem
+`WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-001`, started at Git baseline
+`bb545768055b8cd8569d9e5833dc4c2e2fb238bb`. H001 made useful in-scope edits
+and correctly asked whether the out-of-scope
+`tests/unit/test_slice4.py` assertion could be corrected. It returned
+`scope_changed=true`, `requires_human=true`, and an explicit scope escalation.
+Trusted `pytest` evidence failed. Operator reproduction later also found two
+in-scope stale Slice-5b fixtures that the worker had not diagnosed.
+
+No trusted commit was created. The repository remained at the baseline commit
+with dirty tracked content. Later mechanical checks correctly rejected the
+`CommitIntent` and reported dirty tracked state. Fail-closed authority and Git
+handling therefore worked. The operational failures were instead:
+
+* published `operator-summary.json` exposed the mechanical reasons but set
+  `human_question` to null, although the correlated structured result retained
+  a real scope question; and
+* WFC had no first-class, fail-closed path from that frozen predecessor through
+  a separate authority grant to a clean-baseline successor Run, with the useful
+  candidate available only as untrusted salvage.
+
+The worker's incomplete diagnosis matters to the trust model: even useful
+candidate material is not a reliable statement of what remains to be done.
+Salvage must never inherit the trust of Coordinator evidence.
+
+== Boundary: two different mechanisms
+
+=== Same-Run technical recovery (not this design)
+
+`FTR-WFC-ATOMIC-HOP-RECOVERY.adoc` covers interruption, uncertain dispatch,
+charged-Hop reconciliation, and explicit resume under the same Run identity
+and pinned governing truth. `reconcile_required`, `suspended`, dispatch markers,
+and `resume_after_reconcile()` belong to that mechanism. This design neither
+weakens nor extends it.
+
+=== Successor-Run semantic continuation (this design)
+
+Here a correlated Hop deliberately reports that current semantic authority is
+insufficient. Changing scope or another governing authority changes admitted
+truth, so continuation occurs only in a fresh Run admitted against new inputs.
+The predecessor is historical evidence. Optional salvage is merely an
+untrusted aid to rediscovery. No provider session, hidden reasoning state, Hop
+retry, or same-Run resume crosses the boundary.
+
+The word _continuation_ in this record always means the latter. Product names
+must use `successor` or `successor_run`; they must not call this `resume`,
+`reconcile`, `retry`, `checkpoint`, or `session continuation`.
+
+== Accepted invariants
+
+The later implementation must satisfy all of the following together:
+
+. The exact correlated semantic escalation kind and human question remain in
+  durable Run state and operator-visible publication even when a later
+  mechanical preemption controls the stop.
+. A worker escalation never changes WorkItem scope or any other authority.
+  Only a separately authorized maintainer act can supply the successor's new
+  governing inputs.
+. A blocked, failed, escalated, mechanically preempted, or dirty candidate is
+  never automatically committed or accepted.
+. Preserved candidate material is `untrusted_salvage`: never WFC trusted
+  evidence, a checkpoint, an accepted commit, governing input, or an implicit
+  authority grant.
+. A successor may receive salvage only as untrusted context. It must produce
+  its own evidence and accepted mutation under its own Run authority.
+. No predecessor WorkItem, Profile, Policy, Commission, Run snapshot, Hop,
+  Finding, evidence, operator summary, or governing digest is mutated to add a
+  successor or retrofit continuation.
+. Salvage existence, successful export, a matching hash, descriptor creation,
+  or successor launch never implies candidate acceptance.
+. Successor-Run semantic continuation remains distinct in model, persistence,
+  CLI names, and tests from same-Run recovery and provider-session continuation.
+. Git is authoritative for repository mutation; `run.json` and durable WFC
+  state are authoritative for Run facts. A descriptor, manifest, hash, or
+  derived checkpoint cannot become repository or semantic authority.
+. A predecessor's Run identity, status-at-stop, Hops, Findings, governing
+  inputs, evidence, and published stop facts remain frozen historical truth.
+
+== Current mechanism analysis
+
+=== Run and reducer state
+
+`Run` currently has a single `stop_reason`, a single `human_question`, and an
+`anomalies` tuple. `reduce_result()` checks profile, state, repository, policy,
+and evidence mechanical errors before it checks `requires_human` or
+`escalation`. `_stop_for_human()` replaces both singular stop fields. The last
+Hop is then annotated with the controlling `stop_reason`.
+
+That order is correct for control: mechanical safety must preempt semantic
+routing. It is insufficient for observation because the correlated semantic
+request is discarded when a mechanical fact exists. Reversing the order would
+make the semantic route control despite a mechanical anomaly. Putting the
+question only in the Hop summary would also be insufficient: operator summary
+currently projects only Run-level stop fields, and a Hop summary needs a typed
+distinction between worker escalation and Coordinator mechanics.
+
+The existing `human_question` remains useful for route-authored human prompts
+and recovery prompts. It cannot by itself represent two simultaneous facts:
+"the worker asks for scope" and "the Coordinator stopped on dirty state".
+
+=== Persistence and publication
+
+`serialization.py` strictly round-trips every `Run` field. `run.json` is the
+durable Run record. `checkpoint_projection()` and `operator._summary()` derive
+published views from it. Therefore a semantic-stop representation belongs in
+the Run model and serialization first; adding only an operator-summary field
+would create a lossy second source of truth.
+
+Checkpoints remain derived reconstruction views. They may project the semantic
+stop but may not own it. The structured result file is useful invocation
+evidence but is not a sufficient operator-facing Run-state substitute.
+
+=== Commit and evidence boundary
+
+`vertical.py` permits a trusted commit only for allowed dispositions and only
+when the current phase grants both edit and commit actions. It observes the
+post-invocation Git delta, executes trusted evidence, records a charged Hop,
+and then passes mechanical facts and the result to the reducer. An escalated
+result cannot authorize a commit; dirty candidate state consequently appears
+as a mechanical anomaly. This design preserves that behavior.
+
+=== Existing recovery and relation fields
+
+`child_run_id`, `suspension_head`, `reconcile_reason`, and `reconcile_anchor`
+serve prerequisite suspension and same-Run reconciliation. They are not a
+semantic-successor provenance model. In particular, `child_run_id` mutates the
+predecessor before a suspended prerequisite flow and would invert the required
+direction. A semantic successor must point backward without adding a forward
+pointer to the predecessor.
+
+The one-shot operator already admits pinned WorkItem/Profile/Policy/component/
+task inputs, validates a clean exact Git baseline, creates a fresh Run, and
+publishes a plan and summary. These are the right seams to extend. Its refusal
+to overwrite an existing state root remains unchanged.
+
+== Minimal state and data model
+
+=== Semantic stop on the predecessor
+
+Add an optional immutable value to `Run`:
+
+----
+SemanticStop {
+  kind: scope | semantic_authority | public_surface |
+        trust_boundary | prerequisite | operational
+  question: non-empty string
+  source_hop_id: Hop ID
+}
+
+Run.semantic_stop: SemanticStop | null
+----
+
+The vocabulary is the existing escalation vocabulary. The reducer captures
+this value only from a validated, correlated current-Hop result for which
+`requires_human` is true or `escalation` is non-null. If only
+`requires_human=true` is present, `kind=operational` and the current fallback
+question are recorded. A malformed or uncorrelated candidate supplies no
+semantic stop.
+
+Mechanical validation still determines `status`, `stop_reason`, and
+`anomalies`. If mechanics are clean, `human_question` may mirror
+`semantic_stop.question` for compatibility. If mechanics preempt, the
+semantic-stop record remains populated while `stop_reason` names the
+mechanical control fact. Operator and checkpoint projections render both as
+separate keys; neither is concatenated into prose.
+
+`record_hop()` clears a prior transient `human_question` as today but must not
+clear a semantic stop once captured. In normal operation no further Hop can be
+recorded after a semantic stop because the Run is `awaiting_human`. Load-time
+validation rejects a `source_hop_id` absent from `Run.hops`.
+
+This model intentionally does not add a list of arbitrary reasons. The one
+worker escalation record and existing structured mechanical fields cover the
+observed layered stop without introducing a general incident ledger.
+
+=== Predecessor disposition
+
+After a legitimate semantic scope escalation, the predecessor status is
+exactly `awaiting_human`, with:
+
+* `semantic_stop.kind=scope` and the original question;
+* the controlling `stop_reason`, which may be the semantic human-authority
+  stop or a later mechanical preemption;
+* all mechanical anomalies preserved; and
+* no permitted autonomous route.
+
+`awaiting_human` here is a terminal disposition for that admitted execution,
+not a promise that the Run can resume. No transition turns it into `ready`
+after authority changes. `suspended` is rejected because it means an admitted
+same-Run prerequisite relation. `reconcile_required` is rejected because the
+dispatch/result is not uncertain. `completed` is false because the WorkItem
+did not complete, and generic `stopped` would hide the live maintainer
+question.
+
+The frozen status continues to describe what the predecessor awaited at its
+stop boundary even if a maintainer later answers elsewhere. Historical truth
+is not rewritten to make the old Run look completed or continued.
+
+=== Successor provenance
+
+Add an optional backward-only record to a newly created `Run`:
+
+----
+SuccessorProvenance {
+  predecessor_run_id: string
+  predecessor_work_item_id: string
+  predecessor_final_head: full commit ID
+  authority_decision_ref: operator-supplied reference
+  authority_decision_sha256: digest
+  continuation_descriptor_sha256: digest
+  salvage_manifest_sha256: digest | null
+}
+
+Run.successor_provenance: SuccessorProvenance | null
+----
+
+The authority decision reference identifies the separately maintainer-accepted
+Commission or equivalent immutable decision input used to authorize the new
+WorkItem. The normal successor admission still derives actual scope and
+authority only from the new WorkItem/Profile/Policy/Commission. The provenance
+record is linkage, not authority, and cannot override an admission failure.
+
+The record is written only when the successor Run is initially created. There
+is no `successor_run_id` field on the predecessor. Findings are Run-local and
+are not copied. If a new WorkItem wants to address a historical Finding or
+defect, its own governing prose may cite it; no Finding state crosses Runs.
+
+=== Continuation descriptor
+
+The preparation command produces an immutable JSON descriptor outside both Run
+roots and the repository. It contains:
+
+* schema version and descriptor ID;
+* predecessor Run and WorkItem IDs, frozen status, final/current HEAD, semantic
+  stop, and digest of the predecessor `run.json`;
+* authority-decision reference and digest;
+* successor WorkItem/Profile/Policy/task/component paths and their admitted Git
+  revision/digests;
+* successor repository identity and exact clean baseline HEAD;
+* optional salvage-manifest path and digest; and
+* creation time and the literal trust label `untrusted_context_only`.
+
+It contains no permitted routes, authority tokens, accepted paths, Finding
+state, or instruction to apply salvage. A digest proves byte identity only; it
+does not prove truth, safety, acceptance, or authority.
+
+== Salvage trust model
+
+=== Ownership and creation
+
+Salvage is opt-in and operator-owned. WFC supplies `export-salvage` so the
+capture is bounded and auditable; it does not silently preserve every dirty
+worktree. The command accepts one frozen predecessor state root, its registered
+checkout, and a new empty operator-selected output directory outside the Git
+repository and all WFC Run roots. It refuses overwrite.
+
+The command may capture only the candidate delta relative to the predecessor
+Hop's recorded base HEAD:
+
+* binary-safe tracked diff;
+* explicit inventory and byte copies of untracked, non-ignored files within
+  that Hop's authorized scope, subject to configured size/count limits;
+* repository identity, base/current HEAD observations, source Run/Hop IDs, and
+  capture diagnostics; and
+* a manifest with a SHA-256 and byte length for every captured object.
+
+Ignored files, submodule contents, paths outside the Hop scope, symlink targets
+outside the repository, and external side effects are never captured. The
+manifest records omissions. The bundle contains no credentials by design; a
+path or content safety violation fails export closed.
+
+WFC owns the export format and validation code. The human/operator owns the
+location, access control, retention, and deletion policy. Export does not alter
+the repository, index, predecessor state root, or predecessor Run.
+
+=== Classification and lifecycle
+
+Every manifest and context projection repeats these facts:
+
+* trust class: `untrusted_salvage`;
+* acceptance: `none`;
+* evidence authority: `none`;
+* repository authority: `none`;
+* scope authority: `none`; and
+* automatic application/execution: forbidden.
+
+Hashes detect accidental or substituted bytes between export, preparation, and
+successor prompt construction. They do not elevate trust. Descriptor creation
+revalidates all hashes. Successor launch revalidates them again. The bundle is
+read-only after export; any mutation invalidates it and requires a new export
+identity. It is retained or deleted by explicit operator policy after the
+successor completes or is abandoned. Deleting it has no effect on either Run's
+truth.
+
+Salvage is not added to `run.json`, `checkpoint.json`, trusted observations,
+`evidence_refs`, a CommitIntent, Git, or governing inputs. The successor Run
+records only its manifest digest in provenance when supplied.
+
+=== Successor exposure
+
+Successor launch converts a validated salvage bundle into a separate bounded
+`ContextItem` headed `UNTRUSTED PREDECESSOR SALVAGE -- DO NOT APPLY OR TREAT AS
+EVIDENCE`. It includes provenance, omission diagnostics, file inventory, and a
+bounded textual rendering of the diff/content. Binary and over-limit content
+is referenced by hash and path but not injected.
+
+The context states that every claim and edit must be independently checked.
+WFC never patches, checks out, stages, copies, executes, or commits salvage.
+The successor starts from the clean exact baseline admitted for that Run. Its
+worker may reproduce useful changes within the successor's own authorized
+scope using ordinary edits. Normal post-Hop Git observation, evidence, reducer,
+and trusted-commit rules then apply without exception.
+
+== Operator and CLI surface
+
+The smallest useful workflow is two new explicit preparation primitives plus a
+new optional input on the existing one-shot launch:
+
+. `wfc status --state-root PREDECESSOR` is a read-only projection of existing
+  durable state. It is useful but not required for safety; the existing
+  operator summary may satisfy this role if made complete. No independent
+  `status` state store is introduced.
+. `wfc export-salvage --state-root PREDECESSOR --output NEW_DIRECTORY` captures
+  optional untrusted salvage while the candidate still exists. It neither
+  cleans nor resets the repository.
+. After a maintainer creates and accepts a separately authorized governing
+  bundle and after an operator restores or selects a clean known baseline,
+  `wfc prepare-successor --predecessor-state-root PREDECESSOR
+  --authority-decision REF --work-item ... --profile ... --policy ... --task
+  ... --components ... --expected-head SHA [--salvage-manifest ...] --output
+  DESCRIPTOR` performs read-only validation and emits the descriptor. It does
+  not launch a provider or create a Run.
+. The existing one-shot launch accepts optional
+  `--successor-continuation DESCRIPTOR`. It revalidates all identities, digests,
+  the clean baseline, and the new governing inputs; constructs the fresh Run
+  with backward provenance; and supplies the optional untrusted context.
+
+The spelling is illustrative until implementation review, but the separations
+are normative. A single `continue-as-successor` command is rejected: combining
+preservation, authority validation, repository restoration, and launch would
+make partial failure and human authority boundaries obscure. A bare
+`prepare-successor` without an explicit authority decision is also rejected.
+
+WFC must not restore the dirty predecessor checkout automatically. Git remains
+authoritative, and choosing whether to discard, archive, or manually inspect a
+candidate is a maintainer/operator act. The successor may use a different
+checkout of the same repository; it need not reuse the predecessor checkout.
+
+== Atomicity and failure semantics
+
+There is deliberately no transaction spanning Git, two Run roots, governing
+inputs, and salvage. Each artifact publication is atomic at the individual-file
+or new-directory boundary, and every later step revalidates its inputs.
+
+Salvage export fails:: Publish no valid manifest. Leave the dirty checkout and
+predecessor state untouched. Report the export error. A successor may still be
+prepared without salvage only after the operator explicitly omits it; no
+partial bundle is consumed.
+
+Repository cannot be restored or selected cleanly:: Do not prepare or launch a
+successor. Never auto-reset, auto-clean, auto-stash, or auto-commit. The
+predecessor remains `awaiting_human` and any salvage remains untrusted.
+
+Authority is not granted:: Do not prepare a descriptor or launch a successor.
+Salvage may be retained or deleted under operator policy, but it grants
+nothing. The predecessor is not changed.
+
+Successor preparation fails:: Publish no valid descriptor. Do not modify the
+predecessor, repository, governing inputs, or salvage. A temporary output is
+not consumable and retry uses a new empty destination.
+
+Descriptor or salvage changes after preparation:: Digest validation fails.
+Do not create the successor Run or invoke a provider.
+
+Successor launch admission fails:: Create no provider-capable attempt. Follow
+the existing preflight failure boundary. The predecessor and descriptor remain
+unchanged.
+
+Failure after successor Run creation:: Apply ordinary one-shot Run semantics to
+the successor. Do not fall back to the predecessor, apply salvage, or weaken
+evidence/commit checks.
+
+Semantic escalation plus mechanical anomaly:: Persist both dimensions before
+publication. Mechanical facts continue to control route and commit behavior;
+the semantic question remains visible and answerable.
+
+Any ambiguous case fails closed. There is no inference that an authority
+decision, clean worktree, matching hash, or available salvage implies permission
+to mutate or accept candidate content.
+
+== Rejected alternatives and deliberate non-scope
+
+Reuse `reconcile_required` or `suspended`:: Rejected. Those states preserve
+same-Run admitted truth; a scope grant requires new truth and a new Run.
+
+Reverse reducer preemption order:: Rejected. It would risk routing past
+mechanical safety failures. Observation must be orthogonal to control.
+
+Keep only `human_question`:: Rejected. It cannot encode source, escalation kind,
+and simultaneous controlling mechanics without ambiguity.
+
+Forward-link the predecessor after launch:: Rejected. It mutates historical
+Run state. Backward provenance on the successor is sufficient.
+
+Automatically widen or revise the WorkItem:: Rejected. WFC does not author its
+own authority.
+
+Automatically stash, patch, commit, branch, or reset:: Rejected. Those actions
+would turn salvage into repository state or risk accepting/discarding candidate
+content by implication.
+
+Treat salvage hashes as trust:: Rejected. Integrity and authority are distinct.
+
+Import predecessor Findings or evidence:: Rejected. Findings and trusted
+evidence are Run-local. The successor may cite frozen history as provenance,
+not inherit its authority.
+
+Resume the provider session or persist hidden reasoning:: Rejected. The
+successor gets a fresh invocation with explicit bounded context.
+
+Add a generic outer loop, watchdog, Level-1 planner, or automatic successor
+policy:: Rejected. A human chooses whether to grant authority and launch. WFC
+only validates and executes one bounded Level-0 Run.
+
+Fix the worker's diagnostic completeness here:: Rejected. The two missed
+Slice-5b failures motivate distrust of salvage but are not solved by the
+continuation mechanism.
+
+Change same-Run recovery, Runtime, canonical Project Memory, archived evidence,
+the source BUG, or any frozen predecessor input/state:: Out of scope.
+
+== Exact proposed later implementation scope
+
+A later separately commissioned implementation WorkItem should authorize
+exactly these production paths:
+
+* `src/workflow_coordinator/model.py` -- `SemanticStop`,
+  `SuccessorProvenance`, and optional Run fields;
+* `src/workflow_coordinator/serialization.py` -- strict wire parsing and
+  round-trip validation for those records plus salvage/descriptor manifests;
+* `src/workflow_coordinator/reducer.py` -- capture correlated semantic stop
+  independently of controlling mechanical preemption;
+* `src/workflow_coordinator/persistence.py` -- atomic manifest/descriptor
+  publication and complete checkpoint projection;
+* `src/workflow_coordinator/operator.py` -- complete summary publication,
+  read-only status projection, `export-salvage`, `prepare-successor`, successor
+  launch admission, and untrusted context construction; and
+* `src/workflow_coordinator/git_facts.py` -- bounded binary-safe candidate
+  inventory/export facts without repository mutation.
+
+It should authorize exactly these ordinary test paths:
+
+* `tests/unit/test_reducer.py`;
+* `tests/unit/test_serialization.py`;
+* `tests/unit/test_persistence.py`;
+* `tests/unit/test_operator.py`;
+* `tests/unit/test_git_facts.py`; and
+* `tests/architecture/test_replays.py`.
+
+It should also authorize one implementation review artifact:
+
+* `docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_implementation_review_001.adoc`.
+
+No other product, test, documentation, governance, Runtime, evidence-repository,
+consumer-repository, or Project Memory path is required by this design. The
+later WorkItem's own new governance bundle is maintainer-owned commissioning
+input and must be created and accepted separately; it is not part of the
+product implementation scope above. If implementation discovers a necessary
+path outside this closed list, it must stop and seek a separately reviewed
+scope amendment rather than widening itself.
+
+`vertical.py`, `prompt.py`, adapter code, and provider-session code are
+deliberately absent. The reducer already receives the correlated result and
+mechanical facts, while the operator can add an ordinary labelled
+`ContextItem`; neither commit execution nor provider protocol needs a semantic
+change.
+
+== Required tests and acceptance criteria for the later implementation
+
+=== Layered-stop regression
+
+Construct the real observed ordering: a correlated result with
+`scope_changed=true`, `requires_human=true`, `escalation.kind=scope`, the exact
+question, dirty tracked state, and a forbidden CommitIntent. Assert:
+
+* status is `awaiting_human`;
+* no route, Finding mutation, or commit is applied;
+* the mechanical stop/anomalies include dirty state and CommitIntent rejection;
+* `semantic_stop` retains kind, exact question, and H001 source;
+* `run.json`, checkpoint, and operator summary all publish both dimensions;
+* a serialization/replay round trip is identical; and
+* the predecessor cannot accept another Hop or enter reconcile/resume.
+
+This test must use the operator/vertical boundary, not only a synthetic reducer
+unit, so it exercises the failure mode that lost the question.
+
+=== Authority and predecessor immutability
+
+* Preparing without a separately supplied authority-decision reference fails.
+* A descriptor cannot expand the successor scope beyond the newly admitted
+  WorkItem/Profile/Policy.
+* Successor launch with a descriptor but stale or mismatched governing digests
+  fails before provider execution.
+* Byte-for-byte hashes of predecessor `run.json`, operator summary, governing
+  inputs, and evidence are unchanged across salvage export, preparation, and
+  successor launch.
+* The predecessor has no forward successor pointer and retains
+  `awaiting_human`.
+* The successor has a backward provenance record with matching identities and
+  digests and a different Run ID.
+* No predecessor Finding or trusted evidence row is copied into the successor.
+
+=== Salvage containment and trust
+
+* Export refuses overwrite, an output inside the repository/Run roots,
+  out-of-scope paths, escaping symlinks, unsafe special files, and configured
+  size/count overflow.
+* Export captures tracked binary changes and eligible untracked bytes without
+  changing HEAD, index, worktree bytes, or predecessor state.
+* A partial write or injected atomic-replace failure yields no valid manifest.
+* Every object has stable digest/length and the manifest repeats the explicit
+  no-authority trust classification.
+* Mutating any bundle byte after export or preparation blocks later use.
+* Salvage never appears as trusted evidence, an `evidence_ref`, accepted commit,
+  checkpoint authority, or governing input.
+* Successful export alone cannot prepare or launch a successor.
+
+=== Clean successor and independent acceptance
+
+* Preparation and launch both reject dirty/unresolved repositories and wrong
+  repository identity or HEAD.
+* No command automatically resets, cleans, stashes, applies, stages, or commits.
+* With valid authority and clean baseline, the successor's first prompt contains
+  a separately delimited untrusted context with provenance and omission labels.
+* The repository remains byte-identical to the clean baseline before provider
+  execution; salvage is not applied.
+* A successor that reproduces an authorized change must pass its own evidence
+  and trusted-commit rules before completion.
+* A successor evidence failure or invalid CommitIntent fails closed exactly as
+  an ordinary Run; salvage does not change the disposition.
+* Launch without salvage works and records a null salvage digest.
+
+=== Mechanism separation and ergonomics
+
+* Same-Run interruption/reconcile/resume tests remain unchanged and green.
+* A semantically stopped predecessor is rejected by same-Run recovery APIs.
+* CLI help and outputs use successor/salvage terms and never describe this as
+  resume, retry, checkpoint, or provider-session continuation.
+* `status` or the completed existing summary shows the semantic question next
+  to, but separately from, mechanical facts.
+* Each command reports the next explicit operator action and never performs it
+  implicitly.
+* The full repository `pytest` suite passes.
+
+Acceptance requires independent review to falsify auto-widening, hidden salvage
+trust, predecessor mutation, inherited successor trust, loss of semantic
+visibility, recovery conflation, generic orchestration, insufficient scope,
+and permissive failure behavior. Passing tests alone does not authorize Runtime
+promotion or close the BUG.
+
+== Unresolved questions
+
+The architectural decisions above are closed enough for implementation review.
+Only bounded implementation constants remain:
+
+* maximum salvage object count, per-object size, and total injected context
+  size;
+* whether `wfc status` is a distinct subcommand or the existing complete
+  `operator-summary.json` plus a read-only renderer; and
+* the exact immutable authority-decision reference syntax used by the future
+  maintainer-created Commission bundle.
+
+Those choices may be made in the later WorkItem only if they preserve the
+closed trust and authority semantics here. They do not justify an outer
+orchestrator, automatic authority grant, automatic repository restoration, or
+additional implementation paths.
+
+== Lifecycle
+
+This record is proposed design awaiting independent review. Acceptance of that
+review means implementation-ready architecture only. The source BUG remains
+open, no current or frozen Run changes state, and no implementation, Runtime
+promotion, governance mutation, provider invocation, or successor launch is
+authorized until a maintainer separately commissions it.
