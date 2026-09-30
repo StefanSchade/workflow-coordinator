@@ -9,11 +9,13 @@ from workflow_coordinator.model import (
     DurableArtifact,
     EvidenceCommand,
     Escalation,
-    FindingDelta,
+    ExistingFindingDelta,
+    FindingDeltaValue,
     FindingState,
     Hop,
     Observation,
     Outcome,
+    NewFindingDelta,
     Phase,
     RepositoryPolicy,
     ReviewAuthority,
@@ -155,7 +157,7 @@ def result(
     route_key: str,
     *,
     outcome: str = "completed",
-    findings: tuple[FindingDelta, ...] = (),
+    findings: tuple[FindingDeltaValue, ...] = (),
     requires_human: bool = False,
     escalation: Escalation | None = None,
     scope_changed: bool = False,
@@ -175,8 +177,7 @@ def result(
     )
 
 
-def delta(
-    finding_id: str | None,
+def new_delta(
     state: str,
     *,
     invariant: str = "The accepted invariant must hold.",
@@ -184,11 +185,28 @@ def delta(
     evidence: str = "evidence-1",
     successor_ref: str | None = None,
     new_material: bool = False,
-) -> FindingDelta:
-    return FindingDelta(
-        finding_id=finding_id,
+) -> NewFindingDelta:
+    return NewFindingDelta(
+        finding_id=None,
         invariant=invariant,
         blocking=blocking,
+        proposed_state=FindingState(state),
+        evidence_refs=(evidence,),
+        successor_ref=successor_ref,
+        new_material_evidence=new_material,
+    )
+
+
+def existing_delta(
+    finding_id: str,
+    state: str,
+    *,
+    evidence: str = "evidence-1",
+    successor_ref: str | None = None,
+    new_material: bool = False,
+) -> ExistingFindingDelta:
+    return ExistingFindingDelta(
+        finding_id=finding_id,
         proposed_state=FindingState(state),
         evidence_refs=(evidence,),
         successor_ref=successor_ref,

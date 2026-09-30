@@ -25,7 +25,8 @@ from workflow_coordinator.reducer import (
 )
 from tests.support import (
     charge_hop,
-    delta,
+    existing_delta,
+    new_delta,
     phase,
     profile,
     result,
@@ -58,21 +59,21 @@ def test_finding_lifecycle_requires_gate_or_human_authority():
     run, _ = charge_hop(run_for(workflow))
     run = apply_finding_deltas(
         run,
-        (delta(None, "open"),),
+        (new_delta("open"),),
         hop_id="H001",
         authority=FindingAuthority.AGENT,
     )
     with pytest.raises(ReductionError, match="agent cannot perform"):
         apply_finding_deltas(
             run,
-            (delta("F001", "resolved"),),
+            (existing_delta("F001", "resolved"),),
             hop_id="H001",
             authority=FindingAuthority.AGENT,
         )
 
     resolved = apply_finding_deltas(
         run,
-        (delta("F001", "resolved"),),
+        (existing_delta("F001", "resolved"),),
         hop_id="H001",
         authority=FindingAuthority.GATE,
         permitted_gate_operations=("resolve",),
@@ -86,7 +87,7 @@ def test_finding_ids_are_allocated_for_null_and_unknown_non_null_ids_fail_closed
 
     created = apply_finding_deltas(
         run,
-        (delta(None, "open", invariant="A genuinely new current-Run Finding."),),
+        (new_delta("open", invariant="A genuinely new current-Run Finding."),),
         hop_id="H001",
         authority=FindingAuthority.AGENT,
     )
@@ -95,7 +96,7 @@ def test_finding_ids_are_allocated_for_null_and_unknown_non_null_ids_fail_closed
     with pytest.raises(ReductionError, match="unknown Finding ID: M-5"):
         apply_finding_deltas(
             run,
-            (delta("M-5", "resolved", invariant="Historical review label."),),
+            (existing_delta("M-5", "resolved"),),
             hop_id="H001",
             authority=FindingAuthority.GATE,
             permitted_gate_operations=("resolve",),
@@ -106,24 +107,24 @@ def test_reopen_requires_authority_and_new_material_evidence():
     workflow = gate_profile()
     run, _ = charge_hop(run_for(workflow))
     opened = apply_finding_deltas(
-        run, (delta(None, "open"),), hop_id="H001", authority=FindingAuthority.AGENT
+        run, (new_delta("open"),), hop_id="H001", authority=FindingAuthority.AGENT
     )
     resolved = apply_finding_deltas(
         opened,
-        (delta("F001", "resolved"),),
+        (existing_delta("F001", "resolved"),),
         hop_id="H001",
         authority=FindingAuthority.HUMAN,
     )
     with pytest.raises(ReductionError, match="new material evidence"):
         apply_finding_deltas(
             resolved,
-            (delta("F001", "open"),),
+            (existing_delta("F001", "open"),),
             hop_id="H001",
             authority=FindingAuthority.HUMAN,
         )
     reopened = apply_finding_deltas(
         resolved,
-        (delta("F001", "open", evidence="new", new_material=True),),
+        (existing_delta("F001", "open", evidence="new", new_material=True),),
         hop_id="H001",
         authority=FindingAuthority.HUMAN,
     )
@@ -137,14 +138,14 @@ def test_residual_and_superseded_states_have_required_invariants():
     with pytest.raises(ReductionError, match="non-blocking"):
         apply_finding_deltas(
             run,
-            (delta(None, "residual", blocking=True),),
+            (new_delta("residual", blocking=True),),
             hop_id="H001",
             authority=FindingAuthority.HUMAN,
         )
     with pytest.raises(ReductionError, match="successor_ref"):
         apply_finding_deltas(
             run,
-            (delta(None, "superseded"),),
+            (new_delta("superseded"),),
             hop_id="H001",
             authority=FindingAuthority.HUMAN,
         )
@@ -154,7 +155,7 @@ def test_existing_finding_derives_immutable_and_carried_forward_ledger_values():
     workflow = gate_profile()
     run, _ = charge_hop(run_for(workflow))
     opened = apply_finding_deltas(
-        run, (delta(None, "open", invariant="Ledger-owned invariant."),),
+        run, (new_delta("open", invariant="Ledger-owned invariant."),),
         hop_id="H001", authority=FindingAuthority.AGENT,
     )
     resolved = apply_finding_deltas(
@@ -189,8 +190,7 @@ def test_new_finding_creation_uses_explicit_authority_operation(
 ):
     workflow = gate_profile()
     run, _ = charge_hop(run_for(workflow))
-    proposal = delta(
-        None,
+    proposal = new_delta(
         state,
         blocking=blocking,
         successor_ref=successor_ref,
@@ -219,7 +219,7 @@ def test_supervisor_has_no_finding_disposition_surface():
     with pytest.raises(ReductionError, match="supervisor"):
         apply_finding_deltas(
             run,
-            (delta(None, "open"),),
+            (new_delta("open"),),
             hop_id="H001",
             authority=FindingAuthority.SUPERVISOR,
         )

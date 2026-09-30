@@ -28,7 +28,8 @@ from workflow_coordinator.serialization import (
 )
 from tests.support import (
     charge_hop,
-    delta,
+    existing_delta,
+    new_delta,
     phase,
     profile,
     result,
@@ -66,13 +67,13 @@ def test_replay_a_productive_correction_can_continue_beyond_three_loops():
     run = run_for(workflow, budget=13)
     run = apply_finding_deltas(
         run,
-        (delta(None, "open", invariant="F1 remains unresolved."),),
+        (new_delta("open", invariant="F1 remains unresolved."),),
         hop_id="fixture",
         authority=FindingAuthority.AGENT,
     )
     run = apply_finding_deltas(
         run,
-        (delta(None, "resolved", invariant="F2 stays closed."),),
+        (new_delta("resolved", invariant="F2 stays closed."),),
         hop_id="fixture",
         authority=FindingAuthority.HUMAN,
     )
@@ -84,7 +85,7 @@ def test_replay_a_productive_correction_can_continue_beyond_three_loops():
             result(
                 "productive",
                 findings=(
-                    delta(
+                    existing_delta(
                         "F001",
                         "open",
                         evidence=f"mechanism-{loop}",
@@ -182,7 +183,7 @@ def test_replay_c_broad_fresh_advisory_review_cannot_accept():
     returned = process(
         run,
         workflow,
-        result("return", findings=(delta(None, "open", invariant="Probe finding."),)),
+        result("return", findings=(new_delta("open", invariant="Probe finding."),)),
         role="independent reviewer",
     )
     assert returned.run.phase == "formal_gate"
@@ -213,7 +214,7 @@ def test_replay_d_empty_known_findings_does_not_skip_closure_search():
     discovered = process(
         run,
         workflow,
-        result("correct", findings=(delta(None, "open", invariant="A shadow path remains."),)),
+        result("correct", findings=(new_delta("open", invariant="A shadow path remains."),)),
         role="closure reviewer",
     ).run
     assert discovered.phase == "correction"
@@ -269,7 +270,7 @@ def test_replay_g_declared_gate_accepts_residual_without_correction():
         workflow,
         result(
             "accept",
-            findings=(delta(None, "residual", invariant="Minor remains.", blocking=False),),
+            findings=(new_delta("residual", invariant="Minor remains.", blocking=False),),
         ),
         role="gate reviewer",
     ).run
@@ -286,7 +287,7 @@ def test_replay_h_one_hop_still_processes_state_then_stops_before_second():
     stopped = process(
         run_for(workflow, budget=1),
         workflow,
-        result("again", findings=(delta(None, "open"),)),
+        result("again", findings=(new_delta("open"),)),
     ).run
     assert stopped.hop_used == 1
     assert stopped.findings[0].finding_id == "F001"
@@ -345,7 +346,7 @@ def test_replay_j_non_domain_specific_complex_profile_converges_generically():
     run = process(
         run,
         workflow,
-        result("fix", findings=(delta(None, "open", invariant="Bug reproduces."),)),
+        result("fix", findings=(new_delta("open", invariant="Bug reproduces."),)),
         role="investigator",
     ).run
     run = process(run, workflow, result("review"), role="implementer").run
@@ -355,7 +356,7 @@ def test_replay_j_non_domain_specific_complex_profile_converges_generically():
         result(
             "correct",
             outcome="changes_required",
-            findings=(delta("F001", "open", evidence="review"),),
+            findings=(existing_delta("F001", "open", evidence="review"),),
         ),
         role="independent reviewer",
     ).run
@@ -373,7 +374,7 @@ def test_replay_j_non_domain_specific_complex_profile_converges_generically():
         workflow,
         result(
             "accept",
-            findings=(delta("F001", "resolved", evidence="rereview"),),
+            findings=(existing_delta("F001", "resolved", evidence="rereview"),),
         ),
         role="independent reviewer",
     ).run

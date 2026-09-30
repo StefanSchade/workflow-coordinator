@@ -42,7 +42,8 @@ from workflow_coordinator.slice4 import register_checkout
 from workflow_coordinator.vertical import run_one_hop
 from tests.support import (
     charge_hop,
-    delta,
+    existing_delta,
+    new_delta,
     phase,
     prepared_evidence,
     profile,
@@ -77,7 +78,7 @@ def test_same_state_citations_are_noop_or_evidence_only_and_truthfully_attribute
     workflow = profile({"work": phase({"again": route("goto", "work")})})
     run, first_hop = charge_hop(run_for(workflow, budget=4))
     run = apply_finding_deltas(
-        run, (delta(None, "open", evidence="initial"),),
+        run, (new_delta("open", evidence="initial"),),
         hop_id=first_hop, authority=FindingAuthority.AGENT,
     )
     run = replace(run, status=RunStatus.READY)
@@ -85,7 +86,7 @@ def test_same_state_citations_are_noop_or_evidence_only_and_truthfully_attribute
     charged, hop_id = charge_hop(run)
     cited = reduce_result(
         charged,
-        result("again", findings=(delta("F001", "open", evidence="initial"),)),
+        result("again", findings=(existing_delta("F001", "open", evidence="initial"),)),
         workflow,
         hop_id=hop_id,
     ).run
@@ -95,7 +96,7 @@ def test_same_state_citations_are_noop_or_evidence_only_and_truthfully_attribute
     charged, hop_id = charge_hop(cited)
     enriched = reduce_result(
         charged,
-        result("again", findings=(delta("F001", "open", evidence="correction"),)),
+        result("again", findings=(existing_delta("F001", "open", evidence="correction"),)),
         workflow,
         hop_id=hop_id,
     ).run
@@ -108,7 +109,7 @@ def test_same_state_citations_are_noop_or_evidence_only_and_truthfully_attribute
         charged,
         result(
             "again",
-            findings=(delta("F001", "open", blocking=False, evidence="smuggled"),),
+            findings=(existing_delta("F001", "open", evidence="smuggled"),),
         ),
         workflow,
         hop_id=hop_id,
@@ -124,14 +125,14 @@ def test_superseded_same_state_citation_derives_successor_from_ledger():
     run, hop_id = charge_hop(run_for(workflow))
     superseded = apply_finding_deltas(
         run,
-        (delta(None, "superseded", successor_ref="F-next"),),
+        (new_delta("superseded", successor_ref="F-next"),),
         hop_id=hop_id,
         authority=FindingAuthority.GATE,
         permitted_gate_operations=("supersede",),
     )
     cited = apply_finding_deltas(
         superseded,
-        (delta("F001", "superseded", successor_ref=None),),
+        (existing_delta("F001", "superseded", successor_ref=None),),
         hop_id=hop_id,
         authority=FindingAuthority.GATE,
         permitted_gate_operations=("supersede",),
@@ -148,7 +149,7 @@ def test_outcome_and_preemption_semantics_are_distinct_and_atomic():
         failed_run,
         result(
             "invented", outcome="failed", scope_changed=True,
-            findings=(delta(None, "open"),),
+            findings=(new_delta("open"),),
         ),
         workflow,
         hop_id=failed_hop,
@@ -168,7 +169,7 @@ def test_outcome_and_preemption_semantics_are_distinct_and_atomic():
     blocked_run, blocked_hop = charge_hop(run_for(workflow, budget=3))
     blocked = reduce_result(
         blocked_run,
-        result("again", outcome="blocked", findings=(delta(None, "open"),)),
+        result("again", outcome="blocked", findings=(new_delta("open"),)),
         workflow,
         hop_id=blocked_hop,
     ).run
@@ -181,7 +182,7 @@ def test_outcome_and_preemption_semantics_are_distinct_and_atomic():
         invalid_run,
         result(
             "again", outcome="blocked",
-            findings=(delta(None, "open"), delta("F404", "open")),
+            findings=(new_delta("open"), existing_delta("F404", "open")),
         ),
         workflow,
         hop_id=invalid_hop,
@@ -201,7 +202,7 @@ def test_changes_required_and_run_wide_open_blocker_completion_guards():
     charged, hop_id = charge_hop(run_for(ordinary))
     blocked = reduce_result(
         charged,
-        result("done", findings=(delta(None, "open"),)),
+        result("done", findings=(new_delta("open"),)),
         ordinary,
         hop_id=hop_id,
     ).run
@@ -214,7 +215,7 @@ def test_changes_required_and_run_wide_open_blocker_completion_guards():
         charged,
         result(
             "done",
-            findings=(delta(None, "residual", blocking=False),),
+            findings=(new_delta("residual", blocking=False),),
         ),
         gate,
         hop_id=hop_id,
@@ -1276,7 +1277,7 @@ def test_changes_required_artifact_does_not_grant_finding_disposition(tmp_path):
     )
     run = apply_finding_deltas(
         replace(run_for(workflow), current_head=baseline),
-        (delta(None, "open", evidence="initial"),),
+        (new_delta("open", evidence="initial"),),
         hop_id="fixture",
         authority=FindingAuthority.AGENT,
     )
@@ -1382,7 +1383,7 @@ def test_changes_required_outside_review_refuses_before_finding_application():
         result(
             "continue",
             outcome="changes_required",
-            findings=(delta(None, "open"),),
+            findings=(new_delta("open"),),
         ),
         workflow,
         hop_id=hop_id,
@@ -1398,13 +1399,13 @@ def test_same_state_new_material_flag_is_inert_and_evidence_is_deduplicated():
     workflow = profile({"work": phase({"again": route("goto", "work")})})
     run = apply_finding_deltas(
         run_for(workflow, budget=3),
-        (delta(None, "open", evidence="e1"),),
+        (new_delta("open", evidence="e1"),),
         hop_id="fixture",
         authority=FindingAuthority.AGENT,
     )
     charged, hop_id = charge_hop(run)
     evidence_only = replace(
-        delta("F001", "open", evidence="e2", new_material=True),
+        existing_delta("F001", "open", evidence="e2", new_material=True),
         evidence_refs=("e2", "e2", "e3", "e2"),
     )
     enriched = reduce_result(
@@ -1423,7 +1424,7 @@ def test_same_state_new_material_flag_is_inert_and_evidence_is_deduplicated():
         charged,
         result(
             "again",
-            findings=(delta("F001", "open", evidence="e2", new_material=True),),
+            findings=(existing_delta("F001", "open", evidence="e2", new_material=True),),
         ),
         workflow,
         hop_id=no_op_hop,
@@ -1436,26 +1437,26 @@ def test_actual_reopen_still_requires_authority_and_new_material():
     workflow = profile({"work": phase({"done": route("complete")})})
     run = apply_finding_deltas(
         run_for(workflow),
-        (delta(None, "open"),),
+        (new_delta("open"),),
         hop_id="fixture",
         authority=FindingAuthority.AGENT,
     )
     resolved = apply_finding_deltas(
         run,
-        (delta("F001", "resolved"),),
+        (existing_delta("F001", "resolved"),),
         hop_id="human-resolve",
         authority=FindingAuthority.HUMAN,
     )
     with pytest.raises(ReductionError, match="new material evidence"):
         apply_finding_deltas(
             resolved,
-            (delta("F001", "open", evidence="new", new_material=False),),
+            (existing_delta("F001", "open", evidence="new", new_material=False),),
             hop_id="human-reopen",
             authority=FindingAuthority.HUMAN,
         )
     reopened = apply_finding_deltas(
         resolved,
-        (delta("F001", "open", evidence="new", new_material=True),),
+        (existing_delta("F001", "open", evidence="new", new_material=True),),
         hop_id="human-reopen",
         authority=FindingAuthority.HUMAN,
     )
