@@ -417,7 +417,7 @@ def test_existing_finding_delta_has_a_ledger_derived_wire_form():
     }]))
     delta = parsed.findings[0]
     assert delta.finding_id == "F001"
-    assert delta.invariant is None and delta.blocking is None
+    assert not hasattr(delta, "invariant") and not hasattr(delta, "blocking")
     for forbidden in ("invariant", "blocking"):
         with pytest.raises(ValidationError, match="unknown fields"):
             routing_result_from_data(valid_result_data(findings=[{

@@ -199,7 +199,8 @@ def test_result_validation_uses_distinct_existing_finding_wire_form():
     existing = {
         "finding_id": "F001", "proposed_state": "resolved", "evidence_refs": ["review"],
     }
-    assert validated_result(envelope(findings=[existing]), expected).findings[0].invariant is None
+    parsed = validated_result(envelope(findings=[existing]), expected).findings[0]
+    assert not hasattr(parsed, "invariant") and not hasattr(parsed, "blocking")
     with pytest.raises(ResultValidationError):
         validated_result(envelope(findings=[{**existing, "invariant": "replacement"}]), expected)
 

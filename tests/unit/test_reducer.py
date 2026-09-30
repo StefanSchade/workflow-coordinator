@@ -5,6 +5,7 @@ import pytest
 
 from workflow_coordinator.model import (
     Escalation,
+    ExistingFindingDelta,
     FindingAuthority,
     FindingState,
     MechanicalFacts,
@@ -157,18 +158,22 @@ def test_existing_finding_derives_immutable_and_carried_forward_ledger_values():
         hop_id="H001", authority=FindingAuthority.AGENT,
     )
     resolved = apply_finding_deltas(
-        opened, (delta("F001", "resolved", invariant="attempted rewrite", blocking=False),),
+        opened, (ExistingFindingDelta("F001", FindingState.RESOLVED, ("evidence-1",)),),
         hop_id="H001", authority=FindingAuthority.GATE,
         permitted_gate_operations=("resolve",),
     )
     assert resolved.findings[0].invariant == "Ledger-owned invariant."
     assert resolved.findings[0].blocking is True
     residual = apply_finding_deltas(
-        opened, (delta("F001", "residual", blocking=True),),
+        opened, (ExistingFindingDelta("F001", FindingState.RESIDUAL, ("evidence-1",)),),
         hop_id="H001", authority=FindingAuthority.GATE,
         permitted_gate_operations=("residual",),
     )
     assert residual.findings[0].blocking is False
+    with pytest.raises(TypeError, match="invariant"):
+        ExistingFindingDelta(
+            "F001", FindingState.RESOLVED, ("evidence-1",), invariant="attempted rewrite"
+        )
 
 
 @pytest.mark.parametrize(

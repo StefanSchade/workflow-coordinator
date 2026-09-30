@@ -191,17 +191,68 @@ class Escalation:
 
 
 @dataclass(frozen=True)
-class FindingDelta:
-    finding_id: str | None
+class ExistingFindingDelta:
+    """A proposal about a Finding already owned by the Coordinator ledger."""
+
+    finding_id: str
     proposed_state: FindingState
     evidence_refs: tuple[str, ...]
-    # These fields are agent-authored only for new Findings.  The strict
-    # wire/parser form for an existing Finding omits both, and the reducer
-    # obtains their carried-forward values from the Coordinator ledger.
-    invariant: str | None = None
-    blocking: bool | None = None
     successor_ref: str | None = None
     new_material_evidence: bool = False
+
+
+@dataclass(frozen=True)
+class NewFindingDelta:
+    """An agent-authored proposal for a new Finding."""
+
+    finding_id: None
+    invariant: str
+    blocking: bool
+    proposed_state: FindingState
+    evidence_refs: tuple[str, ...]
+    successor_ref: str | None = None
+    new_material_evidence: bool = False
+
+
+FindingDeltaValue = ExistingFindingDelta | NewFindingDelta
+
+
+def FindingDelta(
+    finding_id: str | None,
+    proposed_state: FindingState,
+    evidence_refs: tuple[str, ...],
+    invariant: str | None = None,
+    blocking: bool | None = None,
+    successor_ref: str | None = None,
+    new_material_evidence: bool = False,
+) -> FindingDeltaValue:
+    """Compatibility constructor which returns one of the two delta forms.
+
+    The persisted and parsed existing-Finding form is ``ExistingFindingDelta``;
+    its type deliberately has no invariant or blocking slots.  This helper
+    preserves in-process fixture construction while discarding those legacy
+    arguments for existing Findings, because only the ledger owns them.
+    """
+
+    if finding_id is not None:
+        return ExistingFindingDelta(
+            finding_id=finding_id,
+            proposed_state=proposed_state,
+            evidence_refs=evidence_refs,
+            successor_ref=successor_ref,
+            new_material_evidence=new_material_evidence,
+        )
+    if invariant is None or blocking is None:
+        raise ValueError("new Finding requires invariant and blocking")
+    return NewFindingDelta(
+        finding_id=None,
+        invariant=invariant,
+        blocking=blocking,
+        proposed_state=proposed_state,
+        evidence_refs=evidence_refs,
+        successor_ref=successor_ref,
+        new_material_evidence=new_material_evidence,
+    )
 
 
 @dataclass(frozen=True)
@@ -224,7 +275,7 @@ class RoutingResult:
     scope_changed: bool
     requires_human: bool
     escalation: Escalation | None
-    findings: tuple[FindingDelta, ...]
+    findings: tuple[FindingDeltaValue, ...]
     claimed_commits: tuple[str, ...]
     commit_intent: CommitIntent | None
     evidence_refs: tuple[str, ...]

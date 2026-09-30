@@ -7,7 +7,8 @@ from dataclasses import replace
 from .model import (
     Finding,
     FindingAuthority,
-    FindingDelta,
+    ExistingFindingDelta,
+    FindingDeltaValue,
     FindingState,
     MechanicalFacts,
     Outcome,
@@ -110,7 +111,7 @@ def _may_dispose(
 
 def apply_finding_deltas(
     run: Run,
-    deltas: tuple[FindingDelta, ...],
+    deltas: tuple[FindingDeltaValue, ...],
     *,
     hop_id: str,
     authority: FindingAuthority,
@@ -130,7 +131,7 @@ def apply_finding_deltas(
 
 def _apply_finding_deltas(
     run: Run,
-    deltas: tuple[FindingDelta, ...],
+    deltas: tuple[FindingDeltaValue, ...],
     *,
     hop_id: str,
     authority: FindingAuthority,
@@ -151,8 +152,6 @@ def _apply_finding_deltas(
 
     for delta in deltas:
         if delta.finding_id is None:
-            if delta.invariant is None or delta.blocking is None:
-                raise ReductionError("new Finding requires invariant and blocking")
             finding_id = _next_finding_id(tuple(findings))
             operation = _finding_operation(None, delta.proposed_state)
             if operation is not None and not _may_dispose(
@@ -184,6 +183,8 @@ def _apply_finding_deltas(
             changed(finding_id)
             continue
 
+        if not isinstance(delta, ExistingFindingDelta):
+            raise ReductionError("existing Finding must use the existing-Finding delta form")
         index = by_id.get(delta.finding_id)
         if index is None:
             raise ReductionError(f"unknown Finding ID: {delta.finding_id}")

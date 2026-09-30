@@ -25,9 +25,11 @@ from .model import (
     EvidenceCommand,
     ExecutionBinding,
     Escalation,
+    ExistingFindingDelta,
     Finding,
-    FindingDelta,
+    FindingDeltaValue,
     FindingState,
+    NewFindingDelta,
     HopSummary,
     Outcome,
     Phase,
@@ -745,7 +747,7 @@ def run_execution_configuration_from_yaml(text: str) -> RunExecutionConfiguratio
     )
 
 
-def _finding_delta(value: Any, *, context: str) -> FindingDelta:
+def _finding_delta(value: Any, *, context: str) -> FindingDeltaValue:
     raw = _mapping(value, context=context)
     finding_id = _optional_string(raw.get("finding_id"), context=f"{context}.finding_id")
     if finding_id is not None:
@@ -755,7 +757,7 @@ def _finding_delta(value: Any, *, context: str) -> FindingDelta:
             required=set(EXISTING_FINDING_DELTA_REQUIRED_KEYS),
             optional=set(EXISTING_FINDING_DELTA_OPTIONAL_KEYS),
         )
-        return FindingDelta(
+        return ExistingFindingDelta(
             finding_id=finding_id,
             proposed_state=_enum(
                 FindingState, data["proposed_state"], context=f"{context}.proposed_state"
@@ -775,7 +777,7 @@ def _finding_delta(value: Any, *, context: str) -> FindingDelta:
         required=set(NEW_FINDING_DELTA_REQUIRED_KEYS),
         optional=set(NEW_FINDING_DELTA_OPTIONAL_KEYS),
     )
-    return FindingDelta(
+    return NewFindingDelta(
         finding_id=finding_id,
         proposed_state=_enum(
             FindingState, data["proposed_state"], context=f"{context}.proposed_state"
