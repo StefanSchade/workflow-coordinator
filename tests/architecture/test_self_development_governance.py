@@ -18,7 +18,9 @@ from workflow_coordinator.operator import (
     _selected_ids,
     _within_scope,
 )
-from workflow_coordinator.model import COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS
+from workflow_coordinator.model import COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS, RunStatus
+from workflow_coordinator.reducer import reduce_result
+from tests.support import charge_hop, phase, profile, result, route, run_for
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GOVERNING_PATHS = (
@@ -84,6 +86,15 @@ GENERATIVE_ECHO_AUDIT_GOVERNING_PATHS = (
     "governance/self-development/prompts/worker.txt",
     "governance/self-development/prompts/reviewer.txt",
 )
+IMMUTABLE_FINDING_ECHO_FIX_GOVERNING_PATHS = (
+    "governance/work-items/immutable-finding-echo-fix.yaml",
+    "governance/self-development/immutable-finding-echo-profile.yaml",
+    "governance/self-development/immutable-finding-echo-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/immutable-finding-echo-fix-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
 IMPLEMENTATION_PATHS = (
     "Makefile",
     "README.md",
@@ -95,6 +106,21 @@ IMPLEMENTATION_PATHS = (
 REVIEW_NAMESPACE = "docs/backlog/wfc_reviews"
 REVIEW_ARTIFACT = f"{REVIEW_NAMESPACE}/developer_ergonomics_review.adoc"
 HISTORICAL_REVIEW_ARTIFACT = "docs/backlog/first_wfc_on_wfc_dogfood_review.adoc"
+IMMUTABLE_FINDING_ECHO_FIX_CORRECTION_SCOPE = (
+    "src/workflow_coordinator/model.py",
+    "src/workflow_coordinator/serialization.py",
+    "src/workflow_coordinator/reducer.py",
+    "src/workflow_coordinator/codex_adapter.py",
+    "tests/unit/test_reducer.py",
+    "tests/unit/test_serialization.py",
+    "tests/unit/test_codex_adapter_conformance.py",
+    "tests/unit/test_slice3_vertical.py",
+    "tests/unit/test_slice5b.py",
+    "tests/architecture/test_replays.py",
+)
+IMMUTABLE_FINDING_ECHO_FIX_REVIEW_ARTIFACT = (
+    "docs/backlog/BUG-WFC-IMMUTABLE-FINDING-ECHO_review_001.adoc"
+)
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -557,6 +583,124 @@ def test_generative_echo_audit_bundle_passes_production_preflight(
     assert not state_root.exists()
 
 
+def test_immutable_finding_echo_fix_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Bounded self-development correction commission: preflight-only proof.
+
+    This governing bundle commissions the correction implementation
+    authorized by ``docs/backlog/BUG-WFC-IMMUTABLE-FINDING-ECHO.adoc``,
+    "Authorized correction scope". Unlike every other WorkItem exercised
+    above, it deliberately uses its *own* dedicated profile and repository
+    policy (not the shared ``standalone-development-profile.yaml`` /
+    ``repository-policy.yaml``), because the shared policy's
+    ``work_item_scope_ceiling`` is fixed to developer-ergonomics files plus
+    the review namespace and structurally excludes ``src`` -- see that BUG
+    record's "Why this is not a WFC self-development WorkItem" for why a
+    WorkItem naming the correction's source files could never admit under
+    the shared ceiling. The dedicated policy narrows admission to exactly
+    the bounded correction scope instead of widening the shared one.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=IMMUTABLE_FINDING_ECHO_FIX_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "immutable-finding-echo-fix"
+
+    assert not state_root.exists()
+    result = _preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=IMMUTABLE_FINDING_ECHO_FIX_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    implement = profile.phases["implement"]
+    review = profile.phases["review"]
+    correct = profile.phases["correct"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = (*IMMUTABLE_FINDING_ECHO_FIX_CORRECTION_SCOPE, IMMUTABLE_FINDING_ECHO_FIX_REVIEW_ARTIFACT)
+
+    assert work_item.work_item_id == "WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-001"
+    assert work_item.initial_phase == "implement"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 4
+    assert profile.profile_id == "immutable-finding-echo-fix"
+    assert policy.policy_id == "workflow-coordinator-immutable-finding-echo-fix"
+    assert tuple(profile.phases) == ("implement", "review", "correct", "rereview")
+
+    # WorkItem.scope is exactly the bounded correction scope plus the single
+    # durable review artifact -- the smallest ceiling this commission needs,
+    # not the shared developer-ergonomics ceiling.
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    assert not _within_scope("Makefile", work_item.scope)
+    assert not _within_scope("src", work_item.scope)
+    assert not _within_scope("governance", work_item.scope)
+    assert not _within_scope("workflow-coordinator-runtime", work_item.scope)
+    for path in IMMUTABLE_FINDING_ECHO_FIX_CORRECTION_SCOPE:
+        assert _within_scope(path, work_item.scope)
+
+    # Non-scope: files the accepted BUG record explicitly withholds from any
+    # correction commission remain outside this WorkItem's authority.
+    for withheld in (
+        "src/workflow_coordinator/adapter.py",
+        "src/workflow_coordinator/prompt.py",
+        "src/workflow_coordinator/vertical.py",
+        "src/workflow_coordinator/resources/agent_operating_contract_v6.txt",
+        "tests/architecture/test_self_development_governance.py",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+
+    # implement/correct share the exact bounded correction scope; review and
+    # rereview are independently scoped by the profile to the single durable
+    # review artifact alone -- no phase's authorized_scope grants both.
+    assert implement.authorized_scope == correct.authorized_scope == IMMUTABLE_FINDING_ECHO_FIX_CORRECTION_SCOPE
+    assert review.authorized_scope == rereview.authorized_scope == (IMMUTABLE_FINDING_ECHO_FIX_REVIEW_ARTIFACT,)
+    assert set(IMMUTABLE_FINDING_ECHO_FIX_CORRECTION_SCOPE).isdisjoint(review.authorized_scope)
+    assert IMMUTABLE_FINDING_ECHO_FIX_REVIEW_ARTIFACT not in implement.authorized_scope
+    assert IMMUTABLE_FINDING_ECHO_FIX_REVIEW_ARTIFACT not in correct.authorized_scope
+
+    assert durable_artifacts == {"review": (IMMUTABLE_FINDING_ECHO_FIX_REVIEW_ARTIFACT,)}
+    assert _within_scope(IMMUTABLE_FINDING_ECHO_FIX_REVIEW_ARTIFACT, review.authorized_scope)
+    assert review.durable_artifact.value == "required"
+    assert rereview.durable_artifact.value == "none"
+    assert implement.durable_artifact.value == correct.durable_artifact.value == "none"
+
+    # Topology: implement -> review -> {accept: complete, correct} ->
+    # correct -> rereview -> {accept: complete, correct}. No
+    # investigate/planning/supervisor phase was added.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "implement": (("review", "goto", "review"),),
+        "review": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+        "correct": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+    }
+    assert review.role == rereview.role == "independent_reviewer"
+    assert implement.role == correct.role == "worker"
+    assert review.review.finding_authority == ()
+    assert rereview.review.finding_authority == ()
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    assert not state_root.exists()
+
+
 def test_production_preflight_rejects_consumed_isolated_state_root(
     tmp_path: Path,
     preflight_python_path: None,
@@ -599,3 +743,109 @@ def test_work_item_mapping_cannot_enlarge_review_phase_authority(
         _preflight(_preflight_args(repository, expected_head, state_root))
 
     assert not state_root.exists()
+
+
+def _immutable_finding_echo_fix_bootstrap_profile():
+    """Reproduce the commissioned profile's review/rereview shape exactly.
+
+    ``review``/``rereview`` are ``gate``-authority phases with
+    ``finding_authority: ()`` (no Finding disposition authority granted at
+    all) and routes ``{accept: complete, correct: goto correct}`` -- the
+    exact shape recorded in
+    ``governance/self-development/immutable-finding-echo-profile.yaml``.
+    """
+
+    return profile(
+        {
+            "review": phase(
+                {
+                    "accept": route("complete"),
+                    "correct": route("goto", "correct"),
+                },
+                role="independent_reviewer",
+                review="gate",
+                finding_authority=(),
+            ),
+            "correct": phase({"rereview": route("goto", "review")}),
+        }
+    )
+
+
+def test_bootstrap_changes_required_correct_route_is_legal_with_empty_finding_set():
+    """Provider-free proof: this commission's bootstrap choreography does not
+    depend on repairing the very defect it exists to repair.
+
+    The Runtime that will execute the commissioned Run is intentionally the
+    currently promoted PRE-FIX Runtime, which still carries
+    BUG-WFC-IMMUTABLE-FINDING-ECHO (an existing Finding's Coordinator-owned
+    ``invariant`` is projected as generative result content and later
+    requires exact restatement, so any attempt to create/dispose a
+    current-Run Finding to carry an ordinary review-vs-correction cycle
+    would risk exercising the broken path). This test exercises the actual,
+    unmodified production reducer directly -- no provider, no mocking of
+    ``reduce_result`` -- to prove that a gate-authority review Hop may
+    legally request ``outcome: changes_required`` / ``route: correct`` with
+    an entirely empty ``findings`` tuple, and that the Coordinator accepts
+    it and transitions cleanly to ``correct`` without creating, requiring,
+    or touching any Finding at all. If this property ever stops holding,
+    the commissioned profile's review/rereview loop is unsound and the
+    bundle must not be launched.
+    """
+
+    workflow = _immutable_finding_echo_fix_bootstrap_profile()
+    run, hop_id = charge_hop(
+        run_for(workflow, initial_phase="review"), role="independent_reviewer"
+    )
+    assert run.findings == ()
+
+    reduction = reduce_result(
+        run,
+        result("correct", outcome="changes_required", findings=()),
+        workflow,
+        hop_id=hop_id,
+    )
+
+    assert reduction.run.phase == "correct"
+    assert reduction.run.status is RunStatus.READY
+    assert reduction.route_key == "correct"
+    assert reduction.autonomous_route is True
+    assert reduction.run.findings == ()
+    assert reduction.run.stop_reason is None
+
+
+def test_bootstrap_rereview_changes_required_correct_route_is_also_legal_with_empty_finding_set():
+    """The same empty-Finding ``changes_required -> correct`` property holds
+    for a ``rereview`` Hop reached after one correction round, not only for
+    the initial ``review`` Hop -- the commissioned profile relies on both.
+    """
+
+    workflow = profile(
+        {
+            "correct": phase({"rereview": route("goto", "rereview")}),
+            "rereview": phase(
+                {
+                    "accept": route("complete"),
+                    "correct": route("goto", "correct"),
+                },
+                role="independent_reviewer",
+                review="gate",
+                finding_authority=(),
+            ),
+        }
+    )
+    run, hop_id = charge_hop(
+        run_for(workflow, initial_phase="rereview"), role="independent_reviewer"
+    )
+    assert run.findings == ()
+
+    reduction = reduce_result(
+        run,
+        result("correct", outcome="changes_required", findings=()),
+        workflow,
+        hop_id=hop_id,
+    )
+
+    assert reduction.run.phase == "correct"
+    assert reduction.run.status is RunStatus.READY
+    assert reduction.route_key == "correct"
+    assert reduction.run.findings == ()
