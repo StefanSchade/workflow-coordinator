@@ -18,7 +18,11 @@ from workflow_coordinator.operator import (
     _selected_ids,
     _within_scope,
 )
-from workflow_coordinator.model import COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS, RunStatus
+from workflow_coordinator.model import (
+    COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
+    RunStatus,
+    WorkflowRole,
+)
 from workflow_coordinator.reducer import reduce_result
 from tests.support import charge_hop, phase, profile, result, route, run_for
 
@@ -103,6 +107,21 @@ IMMUTABLE_FINDING_ECHO_FIX_002_GOVERNING_PATHS = (
     "governance/work-items/immutable-finding-echo-fix-002-task.txt",
     "governance/self-development/prompts/worker.txt",
     "governance/self-development/prompts/reviewer.txt",
+)
+SCOPE_ESCALATION_CONTINUATION_DESIGN_GOVERNING_PATHS = (
+    "governance/work-items/scope-escalation-continuation-design.yaml",
+    "governance/self-development/scope-escalation-continuation-design-profile.yaml",
+    "governance/self-development/scope-escalation-continuation-design-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/scope-escalation-continuation-design-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+SCOPE_ESCALATION_CONTINUATION_DESIGN_SCOPE = (
+    "docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc",
+)
+SCOPE_ESCALATION_CONTINUATION_DESIGN_REVIEW_ARTIFACT = (
+    "docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_review_001.adoc"
 )
 IMPLEMENTATION_PATHS = (
     "Makefile",
@@ -866,6 +885,148 @@ def test_immutable_finding_echo_fix_002_bundle_passes_production_preflight(
     # directly against the unmodified production reducer.
     assert review.review.finding_authority == ()
     assert rereview.review.finding_authority == ()
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    assert not state_root.exists()
+
+
+def test_scope_escalation_continuation_design_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Bounded design/review-only commission: preflight-only proof.
+
+    This governing bundle commissions an independently reviewed,
+    implementation-ready design for a successor-Run semantic continuation
+    mechanism (docs/backlog/BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc).
+    It must parse, stay within policy/profile authority, use the bounded
+    four-phase bootstrap-safe topology (design -> review ->
+    {accept, correct} -> correct -> rereview -> {accept, correct}) with
+    max_autonomous_hops == 6, and hold no mutation authority over
+    src/workflow_coordinator/**, governance/, workflow-coordinator-runtime,
+    or any other file: its only authorized scope is the design artifact and
+    its single durable review artifact.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=SCOPE_ESCALATION_CONTINUATION_DESIGN_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "scope-escalation-continuation-design"
+
+    assert not state_root.exists()
+    result = _preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=SCOPE_ESCALATION_CONTINUATION_DESIGN_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    design = profile.phases["design"]
+    review = profile.phases["review"]
+    correct = profile.phases["correct"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = (
+        *SCOPE_ESCALATION_CONTINUATION_DESIGN_SCOPE,
+        SCOPE_ESCALATION_CONTINUATION_DESIGN_REVIEW_ARTIFACT,
+    )
+
+    assert work_item.work_item_id == "WI-WFC-SCOPE-ESCALATION-CONTINUATION-DESIGN-001"
+    assert work_item.initial_phase == "design"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 6
+    assert profile.profile_id == "scope-escalation-continuation-design"
+    assert policy.policy_id == "workflow-coordinator-scope-escalation-continuation-design"
+    assert tuple(profile.phases) == ("design", "review", "correct", "rereview")
+
+    # WorkItem.scope is exactly the design artifact plus its single durable
+    # review artifact -- the smallest ceiling this commission needs.
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    assert not _within_scope("src", work_item.scope)
+    assert not _within_scope("src/workflow_coordinator", work_item.scope)
+    assert not _within_scope("governance", work_item.scope)
+    assert not _within_scope("workflow-coordinator-runtime", work_item.scope)
+    assert not _within_scope(
+        "docs/backlog/BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc", work_item.scope
+    )
+    for path in SCOPE_ESCALATION_CONTINUATION_DESIGN_SCOPE:
+        assert _within_scope(path, work_item.scope)
+
+    # No mutation authority over production source, ordinary product tests,
+    # or any other governance bundle.
+    for withheld in (
+        "src/workflow_coordinator/model.py",
+        "src/workflow_coordinator/reducer.py",
+        "src/workflow_coordinator/operator.py",
+        "src/workflow_coordinator/serialization.py",
+        "src/workflow_coordinator/persistence.py",
+        "tests/architecture/test_self_development_governance.py",
+        "tests/unit/test_reducer.py",
+        "workflow-coordinator-runtime",
+        "governance/work-items/immutable-finding-echo-fix-002.yaml",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+
+    # design/correct share the exact single-path design scope; review and
+    # rereview are independently scoped by the profile to the single durable
+    # review artifact alone -- no phase's authorized_scope grants both, and
+    # neither ever grants the BUG record itself.
+    assert (
+        design.authorized_scope
+        == correct.authorized_scope
+        == SCOPE_ESCALATION_CONTINUATION_DESIGN_SCOPE
+    )
+    assert review.authorized_scope == rereview.authorized_scope == (
+        SCOPE_ESCALATION_CONTINUATION_DESIGN_REVIEW_ARTIFACT,
+    )
+    assert set(SCOPE_ESCALATION_CONTINUATION_DESIGN_SCOPE).isdisjoint(review.authorized_scope)
+    assert SCOPE_ESCALATION_CONTINUATION_DESIGN_REVIEW_ARTIFACT not in design.authorized_scope
+    assert SCOPE_ESCALATION_CONTINUATION_DESIGN_REVIEW_ARTIFACT not in correct.authorized_scope
+
+    assert durable_artifacts == {"review": (SCOPE_ESCALATION_CONTINUATION_DESIGN_REVIEW_ARTIFACT,)}
+    assert _within_scope(SCOPE_ESCALATION_CONTINUATION_DESIGN_REVIEW_ARTIFACT, review.authorized_scope)
+    assert review.durable_artifact.value == "required"
+    assert rereview.durable_artifact.value == "none"
+    assert design.durable_artifact.value == correct.durable_artifact.value == "none"
+
+    # Topology: design -> review -> {accept: complete, correct} -> correct ->
+    # rereview -> {accept: complete, correct}. No investigate/planning/
+    # supervisor phase was added, and no phase carries implementation
+    # authority over product source.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "design": (("review", "goto", "review"),),
+        "review": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+        "correct": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+    }
+    assert review.role == rereview.role == "independent_reviewer"
+    assert design.role == correct.role == "worker"
+    assert review.review.finding_authority == ()
+    assert rereview.review.finding_authority == ()
+
+    # Role/persona separation: distinct fresh independent-review persona,
+    # never the design/correct persona.
+    assert work_item.personas[WorkflowRole.WORKER] == "senior software architect"
+    assert (
+        work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+        == "independent adversarial architecture reviewer"
+    )
+    assert work_item.personas[WorkflowRole.WORKER] != work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
 
     assert policy.governance_paths == ("governance",)
     assert not _within_scope("src", policy.work_item_scope_ceiling)
