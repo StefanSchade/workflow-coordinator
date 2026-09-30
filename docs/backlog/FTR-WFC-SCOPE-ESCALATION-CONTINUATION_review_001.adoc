@@ -1,0 +1,225 @@
+= FTR-WFC-SCOPE-ESCALATION-CONTINUATION -- Architecture Review 001
+
+Independent adversarial architecture review of commit
+`8a0d32bf9b272cad397e2eaef76b739f89f7fb16`
+(`docs(wfc): WI-WFC-SCOPE-ESCALATION-CONTINUATION-DESIGN-001 H001 design BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP`)
+against parent `c383673e9e6a241a104fbf4d498f74ea4113aa98`.
+
+Review only. This review changes no product source, ordinary test, governance,
+Runtime, canonical Project Memory, frozen predecessor Run, or source BUG. It
+does not authorize implementation, close the BUG, accept candidate salvage,
+promote Runtime, or launch a successor Run.
+
+== Verdict
+
+*CHANGES_REQUIRED; route `correct`.*
+
+The design gets the central architecture right: semantic observation is kept
+orthogonal to mechanical control; `awaiting_human` is a terminal disposition
+for this admitted execution rather than same-Run suspension; predecessor truth
+is backward-linked rather than back-patched; salvage is optional, operator-owned,
+and non-authoritative; and a successor must start from a clean admitted Git
+baseline and earn its own evidence and commit.
+
+It is not yet implementation-ready. The design does not define the Run wire
+transition needed by its two new Run fields, even though current parsing is
+strict schema v1 and successor preparation consumes a predecessor `run.json`.
+It also makes an unenforceable claim that a raw candidate bundle contains no
+credentials. Both gaps sit on the mechanism's load-bearing persistence/trust
+boundary and need bounded correction before acceptance.
+
+These are ordinary design-review defects. This review creates no WFC
+Current-Run Finding and requests no Finding disposition.
+
+== Review entry and evidence
+
+At entry, `HEAD` was exactly
+`8a0d32bf9b272cad397e2eaef76b739f89f7fb16` and the worktree was clean. The
+committed H001 delta contains only
+`docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc`.
+
+The review read the source BUG and atomic-Hop-recovery FTR in full, checked the
+named Project Memory concern/event/xref records, inspected the current Run,
+reducer, persistence, operator, serialization, prompt/context, vertical, and
+Git-fact seams, and checked the relevant unit/architecture tests and current
+self-development governing bundles. In particular:
+
+* `Run` is schema version 1 and currently has only `stop_reason`,
+  `human_question`, and `anomalies` for the stop dimensions
+  (`src/workflow_coordinator/model.py:318-341`).
+* `run_from_json()` requires exactly every current `Run` dataclass field and
+  accepts only schema version 1 (`src/workflow_coordinator/serialization.py:908-958`).
+* `reduce_result()` evaluates mechanical errors before the correlated semantic
+  human request, explaining the observed lost publication
+  (`src/workflow_coordinator/reducer.py:286-324`).
+* the existing operator already passes bounded `ContextItem` values through the
+  accepted one-shot path, so a new provider-session mechanism is unnecessary
+  (`src/workflow_coordinator/operator.py:410-494,560-692` and
+  `src/workflow_coordinator/prompt.py:132-200`).
+* current same-Run recovery is a separate `reconcile_required` /
+  `resume_after_reconcile` mechanism and is not a semantic-scope continuation.
+
+== Blocking design defects
+
+=== B1 -- The Run wire-version and legacy predecessor transition is undefined
+
+The proposed model adds `Run.semantic_stop` and `Run.successor_provenance`, and
+the preparation command is defined to read and digest a frozen predecessor
+`run.json`. The record never says whether this changes `Run.schema_version`, how
+schema-v1 snapshots are parsed after implementation, or what successor
+eligibility means when an immutable legacy predecessor has no `semantic_stop`.
+
+This is not a cosmetic serialization detail. Current `run_from_json()` uses
+`required={field.name for field in fields(Run)}`. Adding the fields naively makes
+every existing schema-v1 snapshot fail because the keys are absent. Treating
+the keys as optional without a version change silently changes schema v1.
+Bumping the version and rejecting v1 can strand existing state and weaken the
+separately tracked same-Run recovery path. Backfilling the observed frozen Run
+would violate this design's own predecessor-immutability invariant, while
+inventing a semantic stop from salvage or operator prose would create false Run
+truth.
+
+The proposed tests cover a new-state round trip and say existing recovery tests
+remain green, but they contain no legacy `run.json` fixture, migration/load
+rule, or preparation rejection for a predecessor that legitimately lacks the
+new field.
+
+Required correction:
+
+. Choose and state an exact Run wire-version transition.
+. Define strict parsing/validation for both newly written state and pre-change
+  schema-v1 state, including whether old state is loadable for same-Run
+  recovery and how absent new fields are represented without fabricating facts.
+. Define fail-closed `prepare-successor` eligibility for a frozen predecessor
+  that lacks a captured semantic stop. If the historical observed Run is not
+  eligible for the new automated path, say so explicitly; do not back-patch it.
+. Add exact serialization and operator tests for legacy load/rejection,
+  no fabricated semantic stop or provenance, and preservation of existing
+  same-Run recovery semantics.
+
+This correction fits the already proposed production/test path set; it does not
+require widening the later implementation scope.
+
+=== B2 -- The exporter cannot guarantee that raw salvage contains no credentials
+
+The salvage section says, “The bundle contains no credentials by design; a path
+or content safety violation fails export closed.” The stated capture rules do
+not and cannot establish that fact. A tracked authorized-scope file or an
+eligible untracked in-scope file may contain a credential, another secret, or
+adversarial prompt text. Excluding ignored files, out-of-scope paths, unsafe
+symlinks, and special files is valuable containment, but it is not content
+classification. Current WFC has no trusted secret detector, and hashes prove
+only byte identity.
+
+The rest of the design correctly calls the bytes untrusted and makes export and
+successor inclusion explicit, but the impossible credential-free assertion
+would let an implementation or operator overestimate both storage safety and
+the safety of sending rendered salvage to a fresh provider invocation.
+
+Required correction:
+
+. Remove the credential-free guarantee and name sensitive content and prompt
+  injection as residual properties of untrusted salvage.
+. State the bounded fail-closed handling: export and later provider exposure
+  remain separate explicit operator choices; destination permissions/retention
+  must be appropriate for potentially sensitive bytes; WFC must not upload or
+  expose omitted/raw objects implicitly; hashes and labels do not sanitize
+  content.
+. Add acceptance checks that the command makes no credential-free or sanitized
+  claim, uses restrictive local publication semantics, and never injects
+  non-selected or over-limit raw content into the successor prompt.
+
+No generic containment system, secret scanner, provider-session feature, or
+outer planner is required by this correction.
+
+== Adversarial invariant assessment
+
+[cols="2,1,5",options="header"]
+|===
+|Invariant / challenge |Result |Assessment
+
+|No automatic authority widening
+|*Pass*
+|The descriptor is linkage only. New scope and actions come from separately
+admitted successor governing inputs; worker escalation and salvage grant none.
+
+|No automatic commit or acceptance of a blocked/dirty candidate
+|*Pass*
+|Mechanical preemption remains controlling, and export performs no Git
+mutation. A successor uses the ordinary independent commit boundary.
+
+|Salvage never becomes evidence, checkpoint, commit, or authority
+|*Pass with B2 correction required*
+|The trust classification, absence from `run.json` evidence/checkpoint
+authority, non-application rule, and hash caveat are sound. The false
+credential-free claim concerns confidentiality/exposure, not authority, but is
+still blocking on the same trust boundary.
+
+|Successor cannot inherit trusted evidence or Findings
+|*Pass*
+|Only backward provenance and an optional salvage-manifest digest cross the
+Run boundary; Findings and evidence are expressly not copied.
+
+|Predecessor inputs, state, identity, and evidence remain frozen
+|*Pass subject to B1*
+|Backward-only provenance and byte-identity tests prevent back-patching. B1 must
+make legacy handling explicit so implementation does not “solve” missing fields
+by rewriting frozen state.
+
+|Semantic escalation remains visible under mechanical preemption
+|*Pass for newly written state*
+|A typed `SemanticStop` captured from the validated correlated result is the
+smallest adequate representation. Mechanical `stop_reason` still controls;
+summary/checkpoint projection publishes both. B1 governs pre-change snapshots.
+
+|Same-Run recovery and successor-Run continuation remain distinct
+|*Pass*
+|The record rejects `suspended`, `reconcile_required`, retry/resume names, and
+provider-session continuation. It does not alter charged-Hop recovery semantics.
+
+|No generic orchestration or Level-1 planner
+|*Pass*
+|The operator exposes explicit validation/preparation primitives and an optional
+input to the existing one-shot launch; it does not choose authority or launch
+automatically.
+
+|Git and durable Run state retain their authority
+|*Pass*
+|The successor begins at a clean exact Git baseline; descriptor and salvage
+hashes establish identity only and cannot apply repository state or confer
+semantic authority.
+
+|Fail-closed operator ergonomics
+|*Pass*
+|Separate export, preparation, and launch boundaries make partial failures
+visible; no reset, clean, stash, patch, stage, commit, or inferred next action
+occurs automatically.
+|===
+
+== Required-question disposition
+
+Questions A through G are substantively answered: an explicit semantic-stop
+record is justified; the predecessor remains terminal `awaiting_human`; WFC
+exports optional operator-owned salvage without treating it as state; successor
+provenance points backward through an explicit authority decision; salvage is a
+separately delimited untrusted context item; the split CLI is smaller and safer
+than a combined continuation command; and each named failure fails closed.
+
+Question H is also nearly sufficient. The closed production set
+(`model.py`, `serialization.py`, `reducer.py`, `persistence.py`, `operator.py`,
+and `git_facts.py`) matches the existing seams. The ordinary test set covers the
+right modules, and the real observed layered-stop regression is correctly
+required at the operator/vertical boundary rather than only as a reducer unit.
+B1 and B2 need more exact cases inside those already listed test paths; no new
+implementation path is presently justified.
+
+== Route and lifecycle effect
+
+Request `route: correct` with `outcome: changes_required` and an empty Findings
+delta. Correction should be limited to the two blocking issues above in
+`docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc`.
+
+This review does not mean the product BUG is fixed, the BUG lifecycle is closed,
+Runtime is promoted, or implementation authority exists. Even after a future
+accepted rereview, a separate maintainer decision and separately commissioned
+implementation WorkItem/Run remain mandatory.
