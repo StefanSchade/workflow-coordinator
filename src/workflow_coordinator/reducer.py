@@ -151,6 +151,8 @@ def _apply_finding_deltas(
 
     for delta in deltas:
         if delta.finding_id is None:
+            if delta.invariant is None or delta.blocking is None:
+                raise ReductionError("new Finding requires invariant and blocking")
             finding_id = _next_finding_id(tuple(findings))
             operation = _finding_operation(None, delta.proposed_state)
             if operation is not None and not _may_dispose(
@@ -186,19 +188,9 @@ def _apply_finding_deltas(
         if index is None:
             raise ReductionError(f"unknown Finding ID: {delta.finding_id}")
         previous = findings[index]
-        if delta.invariant != previous.invariant:
-            raise ReductionError(f"Finding {previous.finding_id} invariant cannot be rewritten")
 
         same_state = delta.proposed_state is previous.state
         if same_state:
-            if delta.blocking != previous.blocking:
-                raise ReductionError(
-                    f"Finding {previous.finding_id} same-state citation cannot change blocking"
-                )
-            if delta.successor_ref != previous.successor_ref:
-                raise ReductionError(
-                    f"Finding {previous.finding_id} same-state citation must restate successor_ref exactly"
-                )
             appended = tuple(
                 dict.fromkeys(
                     reference
@@ -215,18 +207,6 @@ def _apply_finding_deltas(
                 changed(previous.finding_id)
             continue
 
-        if delta.blocking != previous.blocking:
-            allowed_downgrade = (
-                previous.blocking
-                and not delta.blocking
-                and delta.proposed_state is FindingState.RESIDUAL
-                and _may_dispose(authority, "residual", permitted_gate_operations)
-            )
-            if not allowed_downgrade:
-                raise ReductionError(
-                    f"Finding {previous.finding_id} blocking flag change is unauthorized"
-                )
-
         operation = _finding_operation(previous.state, delta.proposed_state)
         if operation is None and delta.proposed_state is not previous.state:
             raise ReductionError(
@@ -238,8 +218,6 @@ def _apply_finding_deltas(
             raise ReductionError(f"{authority.value} cannot perform Finding operation {operation}")
         if operation == "reopen" and not delta.new_material_evidence:
             raise ReductionError("resolved Finding reopening requires new material evidence")
-        if delta.proposed_state is FindingState.RESIDUAL and delta.blocking:
-            raise ReductionError("residual Finding must be non-blocking")
         if delta.proposed_state is FindingState.SUPERSEDED and not delta.successor_ref:
             raise ReductionError("superseded Finding requires successor_ref")
         if delta.proposed_state is not FindingState.SUPERSEDED and delta.successor_ref is not None:
@@ -247,7 +225,7 @@ def _apply_finding_deltas(
 
         findings[index] = replace(
             previous,
-            blocking=delta.blocking,
+            blocking=False if delta.proposed_state is FindingState.RESIDUAL else previous.blocking,
             state=delta.proposed_state,
             changed_by_hop=hop_id,
             evidence_refs=tuple(dict.fromkeys((*previous.evidence_refs, *delta.evidence_refs))),

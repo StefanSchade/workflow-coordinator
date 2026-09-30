@@ -14,7 +14,8 @@ import pytest
 from workflow_coordinator.adapter import Invocation, validated_result
 from workflow_coordinator.codex_adapter import CodexCliAdapter, structured_result_envelope_openai_schema
 from workflow_coordinator.serialization import (
-    FINDING_DELTA_KEYS,
+    EXISTING_FINDING_DELTA_KEYS,
+    NEW_FINDING_DELTA_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
 )
 from workflow_coordinator.slice4 import (
@@ -139,8 +140,9 @@ def test_codex_projection_makes_every_object_strict_and_complete():
     result = schema["properties"]["result"]
     escalation = result["properties"]["escalation"]["anyOf"][1]
     finding = result["properties"]["findings"]["items"]
+    new_finding, existing_finding = finding["anyOf"]
     object_schemas = list(_walk_object_schemas(schema))
-    assert all(candidate in object_schemas for candidate in (schema, result, escalation, finding))
+    assert all(candidate in object_schemas for candidate in (schema, result, escalation, new_finding, existing_finding))
     for object_schema in object_schemas:
         assert object_schema["additionalProperties"] is False
         assert set(object_schema["required"]) == set(object_schema["properties"])
@@ -152,12 +154,28 @@ def test_codex_projection_tracks_routing_result_validator_contract():
 
 
 def test_codex_projection_tracks_complete_finding_delta_contract():
-    finding = structured_result_envelope_openai_schema(_expected())["properties"]["result"]["properties"]["findings"]["items"]
-    properties = finding["properties"]
-    assert set(finding["required"]) == set(FINDING_DELTA_KEYS)
-    assert properties["finding_id"]["type"] == ["string", "null"]
-    assert properties["successor_ref"]["type"] == ["string", "null"]
-    assert properties["new_material_evidence"] == {"type": "boolean"}
+    schema = structured_result_envelope_openai_schema(_expected())
+    finding = schema["properties"]["result"]["properties"]["findings"]["items"]
+    new_finding, existing_finding = finding["anyOf"]
+    assert set(new_finding["required"]) == set(NEW_FINDING_DELTA_KEYS)
+    assert new_finding["properties"]["finding_id"] == {"type": "null"}
+    assert set(existing_finding["required"]) == set(EXISTING_FINDING_DELTA_KEYS)
+    assert existing_finding["properties"]["finding_id"] == {"type": "string"}
+    assert "invariant" not in existing_finding["properties"]
+    assert "blocking" not in existing_finding["properties"]
+    new_envelope = _known_good_envelope()
+    new_envelope["result"]["findings"] = [{
+        "finding_id": None, "invariant": "new invariant", "blocking": True,
+        "proposed_state": "open", "evidence_refs": [], "successor_ref": None,
+        "new_material_evidence": False,
+    }]
+    existing_envelope = _known_good_envelope()
+    existing_envelope["result"]["findings"] = [{
+        "finding_id": "F001", "proposed_state": "resolved", "evidence_refs": [],
+        "successor_ref": None, "new_material_evidence": False,
+    }]
+    assert _matches_schema(new_envelope, schema)
+    assert _matches_schema(existing_envelope, schema)
 
 
 def test_invoke_codex_writes_the_canonical_structured_result_schema(repository, tmp_path):

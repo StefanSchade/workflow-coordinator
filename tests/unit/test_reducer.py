@@ -149,6 +149,28 @@ def test_residual_and_superseded_states_have_required_invariants():
         )
 
 
+def test_existing_finding_derives_immutable_and_carried_forward_ledger_values():
+    workflow = gate_profile()
+    run, _ = charge_hop(run_for(workflow))
+    opened = apply_finding_deltas(
+        run, (delta(None, "open", invariant="Ledger-owned invariant."),),
+        hop_id="H001", authority=FindingAuthority.AGENT,
+    )
+    resolved = apply_finding_deltas(
+        opened, (delta("F001", "resolved", invariant="attempted rewrite", blocking=False),),
+        hop_id="H001", authority=FindingAuthority.GATE,
+        permitted_gate_operations=("resolve",),
+    )
+    assert resolved.findings[0].invariant == "Ledger-owned invariant."
+    assert resolved.findings[0].blocking is True
+    residual = apply_finding_deltas(
+        opened, (delta("F001", "residual", blocking=True),),
+        hop_id="H001", authority=FindingAuthority.GATE,
+        permitted_gate_operations=("residual",),
+    )
+    assert residual.findings[0].blocking is False
+
+
 @pytest.mark.parametrize(
     "state, operation, blocking, successor_ref",
     [

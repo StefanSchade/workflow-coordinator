@@ -20,7 +20,9 @@ from workflow_coordinator.codex_adapter import (
     assert_openai_strict_schema,
     structured_result_envelope_openai_schema,
 )
-from workflow_coordinator.serialization import FINDING_DELTA_KEYS, ROUTING_RESULT_REQUIRED_KEYS
+from workflow_coordinator.serialization import (
+    EXISTING_FINDING_DELTA_KEYS, NEW_FINDING_DELTA_KEYS, ROUTING_RESULT_REQUIRED_KEYS,
+)
 
 
 def _invocation(run_id: str = "RUN-A", hop_id: str = "H003", invocation_id: str = "INV-X") -> Invocation:
@@ -56,7 +58,7 @@ def test_conformance_rejects_both_historical_live_defects():
 def test_conformance_walks_nested_properties_arrays_and_nullable_anyof_branches():
     schema = _envelope_schema()
     nested = schema["properties"]["result"]["properties"]
-    del nested["findings"]["items"]["properties"]["invariant"]["type"]
+    del nested["findings"]["items"]["anyOf"][0]["properties"]["invariant"]["type"]
     with pytest.raises(OpenAIStrictSchemaError, match="invariant: explicit type"):
         assert_openai_strict_schema(schema)
     schema = _envelope_schema()
@@ -68,8 +70,11 @@ def test_conformance_walks_nested_properties_arrays_and_nullable_anyof_branches(
 def test_projection_derives_from_canonical_semantic_contract_facts():
     result = _envelope_schema()["properties"]["result"]
     assert set(result["required"]) == set(ROUTING_RESULT_REQUIRED_KEYS)
-    finding = result["properties"]["findings"]["items"]
-    assert set(finding["required"]) == set(FINDING_DELTA_KEYS)
+    new_finding, existing_finding = result["properties"]["findings"]["items"]["anyOf"]
+    assert set(new_finding["required"]) == set(NEW_FINDING_DELTA_KEYS)
+    assert set(existing_finding["required"]) == set(EXISTING_FINDING_DELTA_KEYS)
+    assert "invariant" not in existing_finding["properties"]
+    assert "blocking" not in existing_finding["properties"]
 
 
 def test_codex_argv_is_adapter_owned_and_request_is_provider_neutral(tmp_path: Path):

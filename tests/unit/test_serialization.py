@@ -411,6 +411,21 @@ def test_result_validation_rejects_unknown_missing_and_malformed_fields():
         )
 
 
+def test_existing_finding_delta_has_a_ledger_derived_wire_form():
+    parsed = routing_result_from_data(valid_result_data(findings=[{
+        "finding_id": "F001", "proposed_state": "resolved", "evidence_refs": ["review"],
+    }]))
+    delta = parsed.findings[0]
+    assert delta.finding_id == "F001"
+    assert delta.invariant is None and delta.blocking is None
+    for forbidden in ("invariant", "blocking"):
+        with pytest.raises(ValidationError, match="unknown fields"):
+            routing_result_from_data(valid_result_data(findings=[{
+                "finding_id": "F001", "proposed_state": "resolved",
+                "evidence_refs": ["review"], forbidden: "replacement",
+            }]))
+
+
 def test_result_validation_preserves_completed_escalation_shape():
     parsed = routing_result_from_data(
         valid_result_data(

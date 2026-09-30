@@ -73,15 +73,27 @@ ROUTING_RESULT_REQUIRED_KEYS = (
     "evidence_refs",
     "summary",
 )
-FINDING_DELTA_REQUIRED_KEYS = (
+NEW_FINDING_DELTA_REQUIRED_KEYS = (
     "finding_id",
     "invariant",
     "blocking",
     "proposed_state",
     "evidence_refs",
 )
-FINDING_DELTA_OPTIONAL_KEYS = ("successor_ref", "new_material_evidence")
-FINDING_DELTA_KEYS = (*FINDING_DELTA_REQUIRED_KEYS, *FINDING_DELTA_OPTIONAL_KEYS)
+NEW_FINDING_DELTA_OPTIONAL_KEYS = ("successor_ref", "new_material_evidence")
+NEW_FINDING_DELTA_KEYS = (*NEW_FINDING_DELTA_REQUIRED_KEYS, *NEW_FINDING_DELTA_OPTIONAL_KEYS)
+EXISTING_FINDING_DELTA_REQUIRED_KEYS = (
+    "finding_id",
+    "proposed_state",
+    "evidence_refs",
+)
+EXISTING_FINDING_DELTA_OPTIONAL_KEYS = ("successor_ref", "new_material_evidence")
+EXISTING_FINDING_DELTA_KEYS = (
+    *EXISTING_FINDING_DELTA_REQUIRED_KEYS,
+    *EXISTING_FINDING_DELTA_OPTIONAL_KEYS,
+)
+# Compatibility name for consumers describing the new-Finding branch.
+FINDING_DELTA_KEYS = NEW_FINDING_DELTA_KEYS
 COMMIT_INTENT_REQUIRED_KEYS = ("paths", "subject")
 ESCALATION_REQUIRED_KEYS = ("kind", "question")
 ESCALATION_KINDS = (
@@ -734,19 +746,42 @@ def run_execution_configuration_from_yaml(text: str) -> RunExecutionConfiguratio
 
 
 def _finding_delta(value: Any, *, context: str) -> FindingDelta:
+    raw = _mapping(value, context=context)
+    finding_id = _optional_string(raw.get("finding_id"), context=f"{context}.finding_id")
+    if finding_id is not None:
+        data = _fields(
+            raw,
+            context=context,
+            required=set(EXISTING_FINDING_DELTA_REQUIRED_KEYS),
+            optional=set(EXISTING_FINDING_DELTA_OPTIONAL_KEYS),
+        )
+        return FindingDelta(
+            finding_id=finding_id,
+            proposed_state=_enum(
+                FindingState, data["proposed_state"], context=f"{context}.proposed_state"
+            ),
+            evidence_refs=_strings(data["evidence_refs"], context=f"{context}.evidence_refs"),
+            successor_ref=_optional_string(
+                data.get("successor_ref"), context=f"{context}.successor_ref"
+            ),
+            new_material_evidence=_boolean(
+                data.get("new_material_evidence", False),
+                context=f"{context}.new_material_evidence",
+            ),
+        )
     data = _fields(
-        value,
+        raw,
         context=context,
-        required=set(FINDING_DELTA_REQUIRED_KEYS),
-        optional=set(FINDING_DELTA_OPTIONAL_KEYS),
+        required=set(NEW_FINDING_DELTA_REQUIRED_KEYS),
+        optional=set(NEW_FINDING_DELTA_OPTIONAL_KEYS),
     )
     return FindingDelta(
-        finding_id=_optional_string(data["finding_id"], context=f"{context}.finding_id"),
-        invariant=_string(data["invariant"], context=f"{context}.invariant"),
-        blocking=_boolean(data["blocking"], context=f"{context}.blocking"),
+        finding_id=finding_id,
         proposed_state=_enum(
             FindingState, data["proposed_state"], context=f"{context}.proposed_state"
         ),
+        invariant=_string(data["invariant"], context=f"{context}.invariant"),
+        blocking=_boolean(data["blocking"], context=f"{context}.blocking"),
         evidence_refs=_strings(data["evidence_refs"], context=f"{context}.evidence_refs"),
         successor_ref=_optional_string(
             data.get("successor_ref"), context=f"{context}.successor_ref"

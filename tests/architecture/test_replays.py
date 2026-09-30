@@ -87,7 +87,6 @@ def test_replay_a_productive_correction_can_continue_beyond_three_loops():
                     delta(
                         "F001",
                         "open",
-                        invariant="F1 remains unresolved.",
                         evidence=f"mechanism-{loop}",
                     ),
                 ),
@@ -356,7 +355,7 @@ def test_replay_j_non_domain_specific_complex_profile_converges_generically():
         result(
             "correct",
             outcome="changes_required",
-            findings=(delta("F001", "open", invariant="Bug reproduces.", evidence="review"),),
+            findings=(delta("F001", "open", evidence="review"),),
         ),
         role="independent reviewer",
     ).run
@@ -374,7 +373,7 @@ def test_replay_j_non_domain_specific_complex_profile_converges_generically():
         workflow,
         result(
             "accept",
-            findings=(delta("F001", "resolved", invariant="Bug reproduces.", evidence="rereview"),),
+            findings=(delta("F001", "resolved", evidence="rereview"),),
         ),
         role="independent reviewer",
     ).run

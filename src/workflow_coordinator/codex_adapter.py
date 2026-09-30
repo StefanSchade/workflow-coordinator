@@ -26,7 +26,8 @@ from .serialization import (
     ESCALATION_KINDS,
     ESCALATION_REQUIRED_KEYS,
     COMMIT_INTENT_REQUIRED_KEYS,
-    FINDING_DELTA_KEYS,
+    EXISTING_FINDING_DELTA_KEYS,
+    NEW_FINDING_DELTA_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
     STRUCTURED_RESULT_ENVELOPE_KEYS,
 )
@@ -89,16 +90,26 @@ def _bounded(value: str, limit: int = 16_384) -> str:
 def routing_result_openai_schema() -> dict[str, Any]:
     """Project canonical RoutingResult facts into the Codex strict dialect."""
     string_array = {"type": "array", "items": {"type": "string"}}
-    finding = {
-        "type": "object", "additionalProperties": False, "required": list(FINDING_DELTA_KEYS),
+    new_finding = {
+        "type": "object", "additionalProperties": False, "required": list(NEW_FINDING_DELTA_KEYS),
         "properties": {
-            "finding_id": {"type": ["string", "null"]}, "invariant": {"type": "string"},
+            "finding_id": {"type": "null"}, "invariant": {"type": "string"},
             "blocking": {"type": "boolean"},
             "proposed_state": {"type": "string", "enum": [state.value for state in FindingState]},
             "evidence_refs": string_array, "successor_ref": {"type": ["string", "null"]},
             "new_material_evidence": {"type": "boolean"},
         },
     }
+    existing_finding = {
+        "type": "object", "additionalProperties": False, "required": list(EXISTING_FINDING_DELTA_KEYS),
+        "properties": {
+            "finding_id": {"type": "string"},
+            "proposed_state": {"type": "string", "enum": [state.value for state in FindingState]},
+            "evidence_refs": string_array, "successor_ref": {"type": ["string", "null"]},
+            "new_material_evidence": {"type": "boolean"},
+        },
+    }
+    finding = {"anyOf": [new_finding, existing_finding]}
     escalation = {
         "type": "object", "additionalProperties": False, "required": list(ESCALATION_REQUIRED_KEYS),
         "properties": {"kind": {"type": "string", "enum": list(ESCALATION_KINDS)}, "question": {"type": "string"}},

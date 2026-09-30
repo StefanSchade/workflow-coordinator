@@ -104,7 +104,7 @@ def test_same_state_citations_are_noop_or_evidence_only_and_truthfully_attribute
     assert enriched.findings[0].changed_by_hop == hop_id
 
     charged, hop_id = charge_hop(enriched)
-    rejected = reduce_result(
+    carried_forward = reduce_result(
         charged,
         result(
             "again",
@@ -113,12 +113,12 @@ def test_same_state_citations_are_noop_or_evidence_only_and_truthfully_attribute
         workflow,
         hop_id=hop_id,
     ).run
-    assert "same-state citation cannot change blocking" in (rejected.stop_reason or "")
-    assert rejected.hops[-1].finding_delta_ids == ()
-    assert rejected.findings == enriched.findings
+    assert carried_forward.hops[-1].finding_delta_ids == ("F001",)
+    assert carried_forward.findings[0].blocking is True
+    assert carried_forward.findings[0].evidence_refs == ("initial", "correction", "smuggled")
 
 
-def test_superseded_same_state_citation_must_restate_successor_exactly():
+def test_superseded_same_state_citation_derives_successor_from_ledger():
     workflow = profile({"gate": phase({"done": route("complete")}, review="gate",
                                       finding_authority=("supersede",))})
     run, hop_id = charge_hop(run_for(workflow))
@@ -129,14 +129,14 @@ def test_superseded_same_state_citation_must_restate_successor_exactly():
         authority=FindingAuthority.GATE,
         permitted_gate_operations=("supersede",),
     )
-    with pytest.raises(ReductionError, match="restate successor_ref exactly"):
-        apply_finding_deltas(
-            superseded,
-            (delta("F001", "superseded", successor_ref=None),),
-            hop_id=hop_id,
-            authority=FindingAuthority.GATE,
-            permitted_gate_operations=("supersede",),
-        )
+    cited = apply_finding_deltas(
+        superseded,
+        (delta("F001", "superseded", successor_ref=None),),
+        hop_id=hop_id,
+        authority=FindingAuthority.GATE,
+        permitted_gate_operations=("supersede",),
+    )
+    assert cited.findings[0].successor_ref == "F-next"
 
 
 def test_outcome_and_preemption_semantics_are_distinct_and_atomic():
@@ -435,8 +435,7 @@ class ScriptedConvergenceAdapter:
             assert "finding_authority=resolve" in request.prompt
             result_value = {
                 **common, "outcome": "completed", "requested_route": "accept",
-                "findings": [{"finding_id": "F001", "invariant": "Payload must satisfy the generic invariant.",
-                              "blocking": True, "proposed_state": "resolved",
+                "findings": [{"finding_id": "F001", "proposed_state": "resolved",
                               "evidence_refs": ["fresh-rereview"]}],
                 "commit_intent": None,
                 "summary": "fresh gate re-review resolved the blocker",
@@ -1292,8 +1291,6 @@ def test_changes_required_artifact_does_not_grant_finding_disposition(tmp_path):
                 findings=(
                     {
                         "finding_id": "F001",
-                        "invariant": "The accepted invariant must hold.",
-                        "blocking": True,
                         "proposed_state": "resolved",
                         "evidence_refs": ["review"],
                     },

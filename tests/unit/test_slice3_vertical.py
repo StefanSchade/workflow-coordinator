@@ -194,6 +194,16 @@ def test_result_validation_accepts_only_complete_correlated_structured_envelope(
             validated_result(raw, expected)
 
 
+def test_result_validation_uses_distinct_existing_finding_wire_form():
+    expected = type("Expected", (), {"run_id": "RUN-1", "hop_id": "H001", "invocation_id": "INV-1"})()
+    existing = {
+        "finding_id": "F001", "proposed_state": "resolved", "evidence_refs": ["review"],
+    }
+    assert validated_result(envelope(findings=[existing]), expected).findings[0].invariant is None
+    with pytest.raises(ResultValidationError):
+        validated_result(envelope(findings=[{**existing, "invariant": "replacement"}]), expected)
+
+
 @pytest.fixture
 def repository(tmp_path: Path) -> Path:
     subprocess.run(("git", "init", str(tmp_path / "repo")), check=True, capture_output=True)

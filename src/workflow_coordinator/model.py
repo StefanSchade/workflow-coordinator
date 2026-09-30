@@ -193,10 +193,13 @@ class Escalation:
 @dataclass(frozen=True)
 class FindingDelta:
     finding_id: str | None
-    invariant: str
-    blocking: bool
     proposed_state: FindingState
     evidence_refs: tuple[str, ...]
+    # These fields are agent-authored only for new Findings.  The strict
+    # wire/parser form for an existing Finding omits both, and the reducer
+    # obtains their carried-forward values from the Coordinator ledger.
+    invariant: str | None = None
+    blocking: bool | None = None
     successor_ref: str | None = None
     new_material_evidence: bool = False
 
