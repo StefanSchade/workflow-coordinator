@@ -1,0 +1,212 @@
+= BUG-WFC-FINDING-DELTA-COMPATIBILITY-SHIM -- Internal `FindingDelta` Compatibility Constructor Silently Discards Obsolete Existing-Finding Arguments
+
+Type:: bug -- internal model/API fail-closed hygiene defect
+Status:: open (documentation only; no correction authorized by this record)
+Date:: 2026-09-30
+Classification:: post-Run maintainer observation on completed correction
+`WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-002`; not a Finding raised by that
+WorkItem's H002 or H004, and not a reopening of that WorkItem
+Discovery:: maintainer inspection of `src/workflow_coordinator/model.py` and
+its callers/tests after `WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-002` completed
+
+== What this is not
+
+This record does *not* characterize `WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-002` as
+incomplete or its Run as invalid. That correction is accepted and stands:
+
+* `docs/backlog/BUG-WFC-IMMUTABLE-FINDING-ECHO.adoc` (the authorizing BUG);
+* H001 implementation `ddd93a213a21638a83a7944077ebffcab902ef63`;
+* H002 blocking review `3edadd76effe4a2573d6157c23b5fe58c4d4e9cb` (see
+  `docs/backlog/BUG-WFC-IMMUTABLE-FINDING-ECHO_review_002.adoc`);
+* H003 correction `6745daaf7285b7df3ad042b120375a0e158d0b8c`, the current
+  `workflow-coordinator` `HEAD` at the time of this record; and
+* H004, a fresh rereview that accepted H003 with no additional repository
+  commit.
+
+That correction genuinely fixed the agent/WFC communication boundary it was
+authorized to fix:
+
+* existing- and new-Finding deltas now have distinct model and wire forms
+  (`ExistingFindingDelta` / `NewFindingDelta`, `FindingDeltaValue =
+  ExistingFindingDelta | NewFindingDelta`, `src/workflow_coordinator/model.py:193-217`);
+* the existing-Finding wire/parser/schema form no longer gives the agent
+  invariant/blocking replacement slots (`src/workflow_coordinator/serialization.py:749-792`,
+  `_finding_delta`, branches on `finding_id` and reads only
+  `EXISTING_FINDING_DELTA_REQUIRED_KEYS` / `..._OPTIONAL_KEYS` for the
+  existing-Finding branch); and
+* the reducer derives Coordinator-owned existing-Finding invariant/blocking
+  semantics from authoritative ledger state rather than trusting echoed agent
+  values (exercised by
+  `test_existing_finding_derives_immutable_and_carried_forward_ledger_values`,
+  `tests/unit/test_reducer.py:153-176`, which also asserts that
+  `ExistingFindingDelta(..., invariant=...)` now fails closed with
+  `TypeError`).
+
+This record does *not* claim that corrected agent/WFC wire boundary remains
+vulnerable, and it does *not* invent an external backwards-compatibility
+requirement. The agent/WFC communication boundary is entirely under
+maintainer control; there is no old deployed agent, old external client, or
+old wire protocol that this record is preserving compatibility with.
+
+== Observed current behavior
+
+`src/workflow_coordinator/model.py:220-255` retains an internal
+`FindingDelta(...)` compatibility constructor/helper alongside the two
+explicit model forms it was meant to be superseded by:
+
+[source,python]
+----
+def FindingDelta(
+    finding_id: str | None,
+    proposed_state: FindingState,
+    evidence_refs: tuple[str, ...],
+    invariant: str | None = None,
+    blocking: bool | None = None,
+    successor_ref: str | None = None,
+    new_material_evidence: bool = False,
+) -> FindingDeltaValue:
+    ...
+    if finding_id is not None:
+        return ExistingFindingDelta(
+            finding_id=finding_id,
+            proposed_state=proposed_state,
+            evidence_refs=evidence_refs,
+            successor_ref=successor_ref,
+            new_material_evidence=new_material_evidence,
+        )
+    ...
+----
+
+For a non-`None` `finding_id` (an existing Finding), the function accepts
+`invariant` and `blocking` arguments and silently drops them while
+constructing an `ExistingFindingDelta`, whose type deliberately has no such
+fields. No exception, warning, or assertion is raised; the caller's
+`invariant`/`blocking` values are accepted syntactically and discarded
+semantically.
+
+This is exercised today by at least one internal caller. The test fixture
+helper `delta(...)` in `tests/support.py:178-196` unconditionally passes
+`invariant` and `blocking` (with defaults `"The accepted invariant must
+hold."` / `True`) to `FindingDelta(...)` regardless of whether `finding_id`
+is `None`:
+
+[source,python]
+----
+def delta(
+    finding_id: str | None,
+    state: str,
+    *,
+    invariant: str = "The accepted invariant must hold.",
+    blocking: bool = True,
+    ...
+) -> FindingDelta:
+    return FindingDelta(
+        finding_id=finding_id,
+        invariant=invariant,
+        blocking=blocking,
+        proposed_state=FindingState(state),
+        evidence_refs=(evidence,),
+        successor_ref=successor_ref,
+        new_material_evidence=new_material,
+    )
+----
+
+`grep -rn "FindingDelta(" tests/` shows this fixture is the only remaining
+internal caller of the compatibility constructor with an existing
+`finding_id` in the test suite (44 call sites across the unit and
+architecture tests route through it); production code
+(`src/workflow_coordinator/serialization.py:749-792`) already constructs
+`ExistingFindingDelta` / `NewFindingDelta` directly and does not call
+`FindingDelta(...)`.
+
+== Why it is undesirable
+
+`ExistingFindingDelta` was deliberately given no `invariant` or `blocking`
+fields so that only the Coordinator ledger can own those values for an
+existing Finding -- that is the exact invariant
+`WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-002` H003 restored at the model level.
+`FindingDelta(...)` re-opens a narrower version of the same shape of problem
+one layer down: it lets an internal caller *express* a semantically
+impossible combination -- "this is an existing Finding, and also here are new
+invariant/blocking values for it" -- and then normalizes that expression away
+rather than rejecting it. A caller (today, a test fixture; potentially a
+future internal helper) can write code that looks like it is proposing new
+invariant/blocking content for an existing Finding, and the compatibility
+constructor will accept that call and quietly produce a value that carries
+none of it. This is a silent-discard / fail-open construction path, which is
+the same class of property the completed correction eliminated at the
+reducer and wire boundary, just not yet at this internal construction
+boundary.
+
+== Desired future correction (not authorized here)
+
+Internal callers should use the explicit semantic form they mean --
+`ExistingFindingDelta` for an existing Finding, `NewFindingDelta` for a new
+one -- rather than routing through a compatibility constructor whose API
+admits a semantically impossible combination and silently discards the
+inapplicable arguments. A future bounded correction will likely:
+
+* remove the `FindingDelta(...)` compatibility constructor/helper from
+  `src/workflow_coordinator/model.py`; and
+* migrate its remaining internal callers and tests (at minimum
+  `tests/support.py`'s `delta(...)` fixture and its call sites) to construct
+  `ExistingFindingDelta` or `NewFindingDelta` directly, rather than retaining
+  the shim merely to avoid updating them.
+
+Any such correction must preserve the already-correct wire/parser/schema
+boundary (`src/workflow_coordinator/serialization.py`) and reducer-owned
+existing-Finding invariant/blocking authority semantics
+(`src/workflow_coordinator/reducer.py`) exactly as
+`WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-002` left them; this record does not
+propose changing either.
+
+== Non-scope
+
+This record does not authorize:
+
+* any change to `src/`, `tests/`, `governance/`, or any other production or
+  test path;
+* removal or modification of `FindingDelta`, `ExistingFindingDelta`, or
+  `NewFindingDelta`;
+* migration of `tests/support.py` or any other caller;
+* reopening, reclassifying, or closing `docs/backlog/BUG-WFC-IMMUTABLE-FINDING-ECHO.adoc`;
+* any claim that the wire/parser/schema boundary or reducer authority
+  semantics fixed by `WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-002` are defective;
+* a WorkItem, profile, policy, or WFC Run of any kind; or
+* a push.
+
+== Evidence / provenance
+
+* Current repository truth: `src/workflow_coordinator/model.py:220-255`
+  (`FindingDelta` compatibility constructor), `:193-217` (`ExistingFindingDelta`,
+  `NewFindingDelta`, `FindingDeltaValue`); `tests/support.py:178-196` (`delta`
+  fixture helper, the identified internal caller); `src/workflow_coordinator/serialization.py:749-792`
+  (`_finding_delta`, the already-correct wire boundary, unaffected by this
+  record); `tests/unit/test_reducer.py:153-176` (the already-correct
+  fail-closed reducer/model regression from H003).
+* Authorizing correction and its Run: `docs/backlog/BUG-WFC-IMMUTABLE-FINDING-ECHO.adoc`;
+  commits `ddd93a213a21638a83a7944077ebffcab902ef63` (H001),
+  `3edadd76effe4a2573d6157c23b5fe58c4d4e9cb` (H002 blocking review, recorded in
+  `docs/backlog/BUG-WFC-IMMUTABLE-FINDING-ECHO_review_002.adoc`),
+  `6745daaf7285b7df3ad042b120375a0e158d0b8c` (H003 correction, current HEAD).
+* Attempt identity: `wfc-immutable-finding-echo-fix-20260930-02`, Run
+  `RUN-f987897544f34b9aab9f1314fdee3674`, WorkItem
+  `WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-002`.
+* Mechanical evidence archive (separate `workflow-coordinator-run-evidence`
+  repository, commit `b677d34b2e7534a87e76bd1cd18a6bc46a4ebbd9`):
+  `archive/unclassified/wfc-immutable-finding-echo-fix-20260930-02/`.
+* Semantic evidence-repository run-ledger entry: commit
+  `cb531775aa9347dc02f8fcf15d27884b47e84dc8`.
+* Project Memory: `project_memory/canonical/concern_events.json`
+  (`SIG-ACT-WFC-FINDING-DELTA-COMPATIBILITY-SHIM`), cross-referenced to
+  `CONC-WFC-LEVEL0-EMPIRICAL-CONFIDENCE` in
+  `project_memory/canonical/concern_event_xrefs.json`.
+
+== Lifecycle
+
+This BUG is *open* as a documentation-only record. No implementation has been
+made, no caller has been migrated, and no Run has been launched or
+commissioned by this record. It is the stable identity a later bounded
+WorkItem/correction can reference to remove the `FindingDelta` compatibility
+constructor and migrate its remaining internal callers/tests; that decision
+and its implementation are explicitly out of scope here.
