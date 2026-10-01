@@ -86,6 +86,24 @@ def test_salvage_observation_does_not_refresh_or_mutate_git_index(repository: Pa
     assert after == before
 
 
+def test_salvage_refuses_a_changed_tracked_symlink_that_escapes_checkout(repository: Path):
+    base = observe_repository(repository).head
+    target = repository / "src" / "base.txt"
+    target.unlink()
+    target.symlink_to("/etc/passwd")
+    with pytest.raises(GitPreflightError, match="tracked path is unsafe|tracked path is not a regular"):
+        salvage_inventory(repository, base_head=base, allowed_paths=("src",))
+
+
+def test_salvage_marks_binary_tracked_diff_as_non_renderable_binary(repository: Path):
+    base = observe_repository(repository).head
+    (repository / "src" / "base.txt").write_bytes(b"\x00binary candidate\xff")
+    objects = salvage_inventory(repository, base_head=base, allowed_paths=("src",))
+    assert len(objects) == 1
+    assert objects[0].kind == "tracked_diff"
+    assert objects[0].content_kind == "binary"
+
+
 def test_state_root_requires_tracked_ignore_not_local_exclude(repository: Path):
     (repository / ".gitignore").write_text(".workflow-state/\n", encoding="utf-8")
     git(repository, "add", ".gitignore")

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -32,6 +34,7 @@ from workflow_coordinator.serialization import (
     ValidationError,
     component_manifest_from_yaml,
     run_execution_configuration_from_yaml,
+    load_run,
 )
 
 
@@ -184,6 +187,90 @@ def test_head_mismatch_and_existing_root_fail_before_fake_execution(repository: 
     state = tmp_path / "existing"
     state.mkdir()
     assert main(args(repository, state, str(executable))) == 2 and not counter.exists()
+
+
+def test_operator_vertical_layered_scope_stop_preserves_semantic_and_mechanical_publication(
+    repository: Path, tmp_path: Path, monkeypatch
+):
+    """The historical loss occurred only after the real operator/vertical ordering."""
+    baseline = git(repository, "rev-parse", "HEAD")
+    executable = fake(tmp_path, '''import json, pathlib, sys
+args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read()
+def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
+repo.joinpath("PROOF.md").write_text("dirty candidate\\n")
+result={"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":True,"requires_human":True,"escalation":{"kind":"scope","question":"May PROOF.md scope include the missing companion test?"},"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 forbidden"},"evidence_refs":[],"summary":"needs authority"}
+output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
+''')
+    state = tmp_path / "layered-state"
+    assert main(args(repository, state, str(executable))) == 1
+    run_root = next((state / "checkouts").iterdir())
+    run = load_run(run_root / "run.json")
+    checkpoint = json.loads((run_root / "checkpoint.json").read_text())
+    summary = json.loads((state / "operator-summary.json").read_text())
+    assert run.status.value == "awaiting_human" and run.hops[0].applied_route is None
+    assert run.findings == () and run.semantic_stop is not None
+    assert run.semantic_stop.kind == "scope"
+    assert run.semantic_stop.question == "May PROOF.md scope include the missing companion test?"
+    assert run.semantic_stop.source_hop_id == "H001"
+    assert any("dirty tracked state" in anomaly for anomaly in run.anomalies)
+    assert any("commit intent is not permitted" in anomaly for anomaly in run.anomalies)
+    assert summary["semantic_stop"] == checkpoint["state"]["semantic_stop"] == {
+        "kind": "scope", "question": run.semantic_stop.question, "source_hop_id": "H001",
+    }
+    assert summary["anomalies"] == checkpoint["state"]["anomalies"] == list(run.anomalies)
+    assert git(repository, "rev-parse", "HEAD") == baseline
+    predecessor_bytes = (run_root / "run.json").read_bytes()
+    checks = iter((True, False))
+    monkeypatch.setattr(operator, "_salvage_publication_modes", lambda *_args: next(checks))
+    output = tmp_path / "failed-salvage"
+    assert main(["export-salvage", "--state-root", str(state), "--output", str(output)]) == 2
+    assert not output.exists()
+    assert (run_root / "run.json").read_bytes() == predecessor_bytes
+    git(repository, "checkout", "--", "PROOF.md")
+    authority = tmp_path / "accepted-authority.txt"
+    authority.write_text("separately accepted authority\n")
+    for label, alter in (
+        ("legacy", lambda value: (value.update({"schema_version": 1}), value.pop("semantic_stop"), value.pop("successor_provenance"))),
+        ("no-stop", lambda value: value.update({"semantic_stop": None})),
+        ("absent-hop", lambda value: value["semantic_stop"].update({"source_hop_id": "H999"})),
+    ):
+        invalid_state = tmp_path / f"{label}-predecessor"
+        shutil.copytree(state, invalid_state)
+        invalid_run = next((invalid_state / "checkouts").iterdir()) / "run.json"
+        value = json.loads(invalid_run.read_text())
+        alter(value)
+        invalid_run.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+        frozen_bytes = invalid_run.read_bytes()
+        rejected_descriptor = tmp_path / f"{label}.json"
+        assert main([
+            "prepare-successor", "--predecessor-state-root", str(invalid_state),
+            "--authority-decision", str(authority), "--work-item", "work.yml",
+            "--profile", "profile.yml", "--policy", "policy.yml", "--task", "task.txt",
+            "--components", "components.yml", "--expected-head", baseline,
+            "--output", str(rejected_descriptor),
+        ]) == 2
+        assert not rejected_descriptor.exists() and invalid_run.read_bytes() == frozen_bytes
+    descriptor = tmp_path / "successor.json"
+    prepare = [
+        "prepare-successor", "--predecessor-state-root", str(state),
+        "--authority-decision", str(authority), "--work-item", "work.yml",
+        "--profile", "profile.yml", "--policy", "policy.yml", "--task", "task.txt",
+        "--components", "components.yml", "--expected-head", baseline,
+        "--output", str(descriptor),
+    ]
+    assert main(prepare) == 0
+    prepared_digest = hashlib.sha256(descriptor.read_bytes()).hexdigest()
+    altered = json.loads(descriptor.read_text())
+    altered["creation_time"] = "2099-01-01T00:00:00Z"
+    altered["integrity_sha256"] = operator._descriptor_integrity(altered)
+    descriptor.write_text(json.dumps(altered, sort_keys=True, separators=(",", ":")) + "\n")
+    successor_state = tmp_path / "mutated-descriptor-successor"
+    assert main([
+        *args(repository, successor_state, str(executable)),
+        "--successor-continuation", str(descriptor),
+        "--successor-continuation-sha256", prepared_digest,
+    ]) == 2
+    assert not successor_state.exists()
 
 
 def test_a1_rejection_has_no_run_state_checkout_adapter_or_provider_effects(

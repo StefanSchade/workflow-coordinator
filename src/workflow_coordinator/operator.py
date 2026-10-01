@@ -12,11 +12,16 @@ import re
 import subprocess
 import tempfile
 import uuid
+import shutil
+from datetime import datetime, timezone
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Sequence
 
-from .git_facts import GitPreflightError, observe_repository, preflight_hop, repository_identity, salvage_inventory
+from .git_facts import (
+    GitPreflightError, observe_repository, preflight_hop, repository_identity,
+    salvage_inventory, salvage_omissions,
+)
 from .evidence import (
     EvidenceRunner,
     FAIL_CLOSED_EVIDENCE_RUNNER,
@@ -228,6 +233,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("--executable", default="codex")
     parser.add_argument("--successor-continuation", help="validated successor descriptor; it grants no authority")
+    parser.add_argument("--successor-continuation-sha256", help="exact descriptor digest printed by explicit preparation")
     return parser.parse_args(supplied)
 
 
@@ -850,15 +856,18 @@ def _validate_manifest_bytes(path: Path, *, expected_source: dict[str, str] | No
     manifest = _load_manifest(path)
     bundle = path.parent
     source = manifest["source"]
-    required_source = {"run_id", "hop_id", "repository", "base_head", "current_head", "run_json_sha256"}
+    required_source = {"run_id", "hop_id", "repository", "base_head", "current_head", "run_json_sha256", "capture_diagnostics"}
     if not isinstance(source, dict) or set(source) != required_source:
         raise OperatorPreflightError("salvage manifest source has an unsupported shape")
-    for key in required_source:
+    for key in required_source - {"capture_diagnostics"}:
         if not isinstance(source[key], str) or not source[key]:
             raise OperatorPreflightError("salvage manifest source metadata is invalid")
+    if (not isinstance(source["capture_diagnostics"], list)
+            or not all(isinstance(item, str) and item for item in source["capture_diagnostics"])):
+        raise OperatorPreflightError("salvage manifest capture diagnostics are invalid")
     if re.fullmatch(r"[0-9a-f]{40}", source["base_head"]) is None or re.fullmatch(r"[0-9a-f]{40}", source["current_head"]) is None or re.fullmatch(r"[0-9a-f]{64}", source["run_json_sha256"]) is None:
         raise OperatorPreflightError("salvage manifest source digests are invalid")
-    if expected_source is not None and source != expected_source:
+    if expected_source is not None and any(source.get(key) != value for key, value in expected_source.items()):
         raise OperatorPreflightError("salvage manifest is not bound to this frozen predecessor")
     for raw in manifest["objects"]:
         if not isinstance(raw, dict) or set(raw) != {"object_id", "path", "kind", "sha256", "length", "file", "content_kind"}:
@@ -901,9 +910,26 @@ def _descriptor_integrity(descriptor: dict[str, object]) -> str:
     return hashlib.sha256(_canonical_json_bytes(core)).hexdigest()
 
 
-def _descriptor_receipt_path(descriptor_path: Path) -> Path:
-    """Local immutable-preparation receipt; a descriptor without it is unusable."""
-    return descriptor_path.with_name(descriptor_path.name + ".sha256.json")
+def _discard_export_bundle(path: Path) -> None:
+    """Remove an exact failed publication target before its failure is exposed."""
+    if path.exists() or path.is_symlink():
+        shutil.rmtree(path)
+
+
+def _salvage_publication_modes(bundle: Path, rows: list[dict[str, object]]) -> bool:
+    """Verify every published salvage path remains owner-only."""
+    try:
+        return (
+            (bundle.stat().st_mode & 0o777) == 0o700
+            and ((bundle / "objects").stat().st_mode & 0o777) == 0o700
+            and ((bundle / "manifest.json").stat().st_mode & 0o777) == 0o600
+            and all(
+                ((bundle / str(row["file"])).stat().st_mode & 0o777) == 0o600
+                for row in rows
+            )
+        )
+    except OSError:
+        return False
 
 
 def _export_salvage(args: argparse.Namespace) -> int:
@@ -921,8 +947,9 @@ def _export_salvage(args: argparse.Namespace) -> int:
     _outside_protected(output, repository=repository, run_roots=(state_root,))
     if output.exists() or not output.parent.is_dir():
         raise OperatorPreflightError("salvage output must be a new directory below an existing parent")
-    objects = salvage_inventory(repository, base_head=run.hops[-1].base_head,
-                                allowed_paths=profile.phases[run.phase].authorized_scope)
+    scope = profile.phases[run.phase].authorized_scope
+    objects = salvage_inventory(repository, base_head=run.hops[-1].base_head, allowed_paths=scope)
+    omissions = salvage_omissions(repository, allowed_paths=scope)
     temporary = Path(tempfile.mkdtemp(prefix=".wfc-salvage-", dir=output.parent))
     try:
         os.chmod(temporary, 0o700)
@@ -937,42 +964,29 @@ def _export_salvage(args: argparse.Namespace) -> int:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.chmod(target, 0o600)
-            try:
-                content_kind = "text" if "\x00" not in item.content.decode("utf-8") else "binary"
-            except UnicodeDecodeError:
-                content_kind = "binary"
             rows.append({"object_id": item.object_id, "path": item.path, "kind": item.kind,
                          "sha256": item.sha256, "length": len(item.content), "file": filename,
-                         "content_kind": content_kind})
+                         "content_kind": item.content_kind})
         manifest = {"schema_version": 1,
                     "source": {"run_id": run.run_id, "hop_id": run.hops[-1].hop_id,
                                "repository": str(repository), "base_head": run.hops[-1].base_head,
                                "current_head": observe_repository(repository).head,
-                               "run_json_sha256": hashlib.sha256(run_bytes).hexdigest()},
-                    "objects": rows, "omissions": [], "trust": _SALVAGE_TRUST}
+                               "run_json_sha256": hashlib.sha256(run_bytes).hexdigest(),
+                               "capture_diagnostics": list(omissions)},
+                    "objects": rows, "omissions": list(omissions), "trust": _SALVAGE_TRUST}
         atomic_write_json(temporary / "manifest.json", manifest)
         os.chmod(temporary / "manifest.json", 0o600)
-        published = [temporary, object_dir, temporary / "manifest.json", *(temporary / row["file"] for row in rows)]
-        if ((temporary.stat().st_mode & 0o777) != 0o700
-                or (object_dir.stat().st_mode & 0o777) != 0o700
-                or any((path.stat().st_mode & 0o777) != 0o600 for path in published[2:])):
+        if not _salvage_publication_modes(temporary, rows):
             raise OperatorPreflightError("salvage publication modes could not be verified")
         os.replace(temporary, output)
-        if ((output.stat().st_mode & 0o777) != 0o700
-                or (output / "objects").stat().st_mode & 0o777 != 0o700
-                or any((output / row["file"]).stat().st_mode & 0o777 != 0o600 for row in rows)
-                or (output / "manifest.json").stat().st_mode & 0o777 != 0o600):
+        if not _salvage_publication_modes(output, rows):
             raise OperatorPreflightError("salvage final publication modes could not be verified")
     except BaseException:
-        for root, dirs, files in os.walk(temporary, topdown=False):
-            for name in files:
-                try: os.unlink(Path(root) / name)
-                except FileNotFoundError: pass
-            for name in dirs:
-                try: os.rmdir(Path(root) / name)
-                except FileNotFoundError: pass
-        try: os.rmdir(temporary)
-        except FileNotFoundError: pass
+        # Verification after rename is part of publication, not a best-effort
+        # warning.  A failed final check must not leave a parser-consumable
+        # manifest at either the temporary or requested final location.
+        _discard_export_bundle(temporary)
+        _discard_export_bundle(output)
         raise
     print(f"UNTRUSTED SALVAGE EXPORTED: {output / 'manifest.json'}\nNEXT EXPLICIT ACTION: inspect or omit this potentially sensitive bundle before preparing a successor.")
     return 0
@@ -1045,9 +1059,10 @@ def _prepare_successor(args: argparse.Namespace) -> int:
         raise OperatorPreflightError("raw salvage selection requires a supplied manifest")
     output = Path(args.output)
     _outside_protected(output, repository=predecessor_repository, run_roots=(root,))
-    if output.exists() or _descriptor_receipt_path(output).exists() or not output.parent.is_dir():
+    if output.exists() or not output.parent.is_dir():
         raise OperatorPreflightError("descriptor output must be a new file below an existing parent")
-    descriptor: dict[str, object] = {"schema_version": 1, "descriptor_id": f"SCD-{uuid.uuid4().hex}", "trust_label": "untrusted_context_only",
+    descriptor: dict[str, object] = {"schema_version": 1, "descriptor_id": f"SCD-{uuid.uuid4().hex}",
+                  "creation_time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "trust_label": "untrusted_context_only",
                   "predecessor": {"run_id": predecessor.run_id, "work_item_id": predecessor.work_item_id,
                                   "status": predecessor.status.value, "final_head": predecessor.current_head,
                                   "semantic_stop": {"kind": predecessor.semantic_stop.kind, "question": predecessor.semantic_stop.question, "source_hop_id": predecessor.semantic_stop.source_hop_id},
@@ -1058,40 +1073,33 @@ def _prepare_successor(args: argparse.Namespace) -> int:
                                 "inputs": inputs, "governing": governing}, "salvage": salvage}
     descriptor["integrity_sha256"] = _descriptor_integrity(descriptor)
     atomic_write_json(output, descriptor)
-    # A self-integrity field validates the closed shape; this separate receipt
-    # also detects a descriptor replacement after explicit preparation.
-    atomic_write_json(_descriptor_receipt_path(output), {
-        "schema_version": 1,
-        "descriptor_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
-    })
-    print(f"SUCCESSOR DESCRIPTOR: {output}\nNEXT EXPLICIT ACTION: launch a fresh successor with --successor-continuation after revalidating the clean baseline.")
+    descriptor_digest = hashlib.sha256(output.read_bytes()).hexdigest()
+    print(f"SUCCESSOR DESCRIPTOR: {output}\nDESCRIPTOR SHA-256: {descriptor_digest}\nNEXT EXPLICIT ACTION: launch a fresh successor with --successor-continuation and --successor-continuation-sha256 after revalidating the clean baseline.")
     return 0
 
 
 def _validated_successor_descriptor(descriptor_path: Path, repository: Path, expected_head: str,
-                                    paths: dict[str, str], governing: dict[str, str]) -> dict[str, object]:
+                                    paths: dict[str, str], governing: dict[str, str],
+                                    expected_descriptor_sha256: str | None = None) -> dict[str, object]:
     try:
         descriptor_bytes = descriptor_path.read_bytes()
         descriptor = json.loads(descriptor_bytes.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise OperatorPreflightError("successor descriptor is unavailable or malformed") from error
-    receipt_path = _descriptor_receipt_path(descriptor_path)
-    try:
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise OperatorPreflightError("successor descriptor preparation receipt is unavailable") from error
-    if (not isinstance(receipt, dict) or set(receipt) != {"schema_version", "descriptor_sha256"}
-            or receipt.get("schema_version") != 1
-            or receipt.get("descriptor_sha256") != hashlib.sha256(descriptor_bytes).hexdigest()):
-        raise OperatorPreflightError("successor descriptor changed after preparation")
-    required = {"schema_version", "descriptor_id", "trust_label", "predecessor", "authority_decision", "successor", "salvage", "integrity_sha256"}
+    required = {"schema_version", "descriptor_id", "creation_time", "trust_label", "predecessor", "authority_decision", "successor", "salvage", "integrity_sha256"}
     if not isinstance(descriptor, dict) or set(descriptor) != required or descriptor.get("schema_version") != 1 or descriptor.get("trust_label") != "untrusted_context_only":
         raise OperatorPreflightError("successor descriptor has unsupported shape")
     if (not isinstance(descriptor["descriptor_id"], str)
             or re.fullmatch(r"SCD-[0-9a-f]{32}", descriptor["descriptor_id"]) is None
+            or not isinstance(descriptor["creation_time"], str)
+            or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z", descriptor["creation_time"]) is None
             or not isinstance(descriptor["integrity_sha256"], str)
             or descriptor["integrity_sha256"] != _descriptor_integrity(descriptor)):
         raise OperatorPreflightError("successor descriptor integrity validation failed")
+    if (expected_descriptor_sha256 is None
+            or re.fullmatch(r"[0-9a-f]{64}", expected_descriptor_sha256) is None
+            or hashlib.sha256(descriptor_bytes).hexdigest() != expected_descriptor_sha256):
+        raise OperatorPreflightError("successor descriptor does not match the explicitly prepared digest")
     successor = descriptor.get("successor")
     if (not isinstance(successor, dict) or set(successor) != {"repository", "expected_head", "inputs", "governing"}
             or successor.get("repository") != str(repository) or successor.get("expected_head") != expected_head
@@ -1130,8 +1138,8 @@ def _validated_successor_descriptor(descriptor_path: Path, repository: Path, exp
     return descriptor
 
 
-def _successor_context(descriptor_path: Path, repository: Path, expected_head: str, paths: dict[str, str], governing: dict[str, str]):
-    descriptor = _validated_successor_descriptor(descriptor_path, repository, expected_head, paths, governing)
+def _successor_context(descriptor_path: Path, repository: Path, expected_head: str, paths: dict[str, str], governing: dict[str, str], *, expected_descriptor_sha256: str | None = None):
+    descriptor = _validated_successor_descriptor(descriptor_path, repository, expected_head, paths, governing, expected_descriptor_sha256)
     predecessor = descriptor["predecessor"]
     authority = descriptor["authority_decision"]
     salvage = descriptor["salvage"]
@@ -1216,7 +1224,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         successor_provenance = None
         if args.successor_continuation:
             successor_context, successor_provenance = _successor_context(
-                Path(args.successor_continuation), repository, args.expected_head, paths, governing
+                Path(args.successor_continuation), repository, args.expected_head, paths, governing,
+                expected_descriptor_sha256=args.successor_continuation_sha256,
             )
         run = new_run(item, profile, policy, run_id=run_id, baseline_head=args.expected_head)
         if successor_provenance is not None:

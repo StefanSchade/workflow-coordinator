@@ -73,6 +73,7 @@ class SalvageObject:
     path: str | None
     kind: str
     content: bytes
+    content_kind: str
 
     @property
     def sha256(self) -> str:
@@ -137,12 +138,38 @@ def _salvage_inventory_with_index(
     ]
     if outside:
         raise GitPreflightError("salvage tracked path is outside authorized scope: " + ", ".join(outside))
+    binary_tracked = any(
+        line.startswith("-\t") or line.split("\t", 1)[0] == "-"
+        for line in capture_git("diff", "--numstat", "--no-ext-diff", base_head).splitlines()
+    )
+    for path in changed:
+        # A tracked change is not implicitly safe merely because Git can encode
+        # it in a diff.  Existing worktree objects must remain ordinary files
+        # below the checkout; deletions have no object to dereference.
+        candidate = identity / path
+        if not candidate.exists() and not candidate.is_symlink():
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(identity)
+            metadata = candidate.lstat()
+        except (OSError, ValueError) as error:
+            raise GitPreflightError(f"salvage tracked path is unsafe: {path}") from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise GitPreflightError(f"salvage tracked path is not a regular in-repository file: {path}")
+        if metadata.st_size > max_object_bytes:
+            raise GitPreflightError(f"salvage tracked object exceeds size limit: {path}")
     diff = _run_git(identity, "diff", "--binary", "--no-ext-diff", base_head, env=env).stdout.encode("utf-8")
     objects: list[SalvageObject] = []
     if diff:
         if len(diff) > max_object_bytes:
             raise GitPreflightError("salvage tracked diff exceeds object size limit")
-        objects.append(SalvageObject("tracked-diff", None, "tracked_diff", diff))
+        objects.append(SalvageObject(
+            "tracked-diff", None, "tracked_diff", diff,
+            "binary" if binary_tracked else "text",
+        ))
+        if len(objects) > max_objects:
+            raise GitPreflightError("salvage object count exceeds limit")
     names = tuple(filter(None, capture_git("ls-files", "--others", "--exclude-standard").splitlines()))
     for path in names:
         if not any(path == root or path.startswith(f"{root.rstrip('/')}/") for root in allowed_paths):
@@ -164,10 +191,48 @@ def _salvage_inventory_with_index(
             raise GitPreflightError(f"salvage path cannot be read: {path}") from error
         if len(content) != metadata.st_size or len(content) > max_object_bytes:
             raise GitPreflightError(f"salvage path changed during capture: {path}")
-        objects.append(SalvageObject(f"untracked:{path}", path, "untracked_file", content))
+        try:
+            content_kind = "text" if "\x00" not in content.decode("utf-8") else "binary"
+        except UnicodeDecodeError:
+            content_kind = "binary"
+        objects.append(SalvageObject(
+            f"untracked:{path}", path, "untracked_file", content, content_kind,
+        ))
         if len(objects) > max_objects:
             raise GitPreflightError("salvage object count exceeds limit")
     return tuple(objects)
+
+
+def salvage_omissions(repository: Path, *, allowed_paths: tuple[str, ...]) -> tuple[str, ...]:
+    """Return auditable non-captured ignored paths without reading their bytes."""
+    identity = repository_identity(repository)
+    if not allowed_paths:
+        raise GitPreflightError("salvage requires an explicit authorized scope")
+    index_location = Path(_readonly_git(identity, "rev-parse", "--git-path", "index"))
+    if not index_location.is_absolute():
+        index_location = identity / index_location
+    descriptor, copied_index = tempfile.mkstemp(prefix="wfc-salvage-omissions-index-")
+    os.close(descriptor)
+    try:
+        if index_location.exists():
+            shutil.copyfile(index_location, copied_index)
+        completed = _run_git(
+            identity, "ls-files", "--others", "--ignored", "--exclude-standard",
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": copied_index},
+        )
+        if completed.returncode:
+            raise GitPreflightError(completed.stderr.strip() or "Git command failed")
+        ignored = tuple(filter(None, completed.stdout.splitlines()))
+    finally:
+        try:
+            os.unlink(copied_index)
+        except FileNotFoundError:
+            pass
+    return tuple(
+        f"ignored path omitted: {path}"
+        for path in ignored
+        if any(path == root or path.startswith(f"{root.rstrip('/')}/") for root in allowed_paths)
+    )
 
 
 _CONVENTIONAL_SUBJECT = re.compile(r"^[a-z][a-z0-9-]*(?:\([^)]+\))?!?: ")
