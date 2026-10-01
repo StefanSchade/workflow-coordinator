@@ -1,0 +1,247 @@
+= FTR-WFC-SCOPE-ESCALATION-CONTINUATION -- Implementation Review 002
+
+Fresh independent adversarial rereview of corrected candidate
+`c99af8fa96f88296b5d405f18b2d7ed7990511b5`
+(`fix(workflow): WI-WFC-SCOPE-ESCALATION-CONTINUATION-IMPLEMENTATION-002 H001 harden successor continuation`)
+against correction base `1fb9484cfc81637384eb6b3fac0c3ba93ed19a99`,
+the accepted
+`docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc`, its accepted design
+review history, the source BUG, and the complete H002/H004/H006 history in
+`docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_implementation_review_001.adoc`.
+
+Rereview Hop identity:: Run `RUN-7cac69cf29eb42439f86c2576083f798`, Hop
+`H002`, invocation `INV-d72807ed3d81458ebd826eee4beffe96`
+Reviewer/gate identity:: independent reviewer, gate authority, blocking-only
+Corrected candidate received at entry::
+`c99af8fa96f88296b5d405f18b2d7ed7990511b5`
+Correction range::
+`1fb9484cfc81637384eb6b3fac0c3ba93ed19a99..c99af8fa96f88296b5d405f18b2d7ed7990511b5`
+
+This section is the first durable rereview record for this successor Run. It
+changes no implementation source, ordinary test, accepted design, source BUG,
+governing input, Runtime, frozen predecessor Run, evidence repository, or
+remote. Its sole mutation is this required durable rereview artifact.
+
+== H002 rereview verdict
+
+*CHANGES REQUIRED; route `correct`.*
+
+The H001 correction materially resolves important H006 counterexamples. A
+Git-derived tracked-binary classification now survives manifest validation and
+remains non-renderable; final publication uses an atomic no-replace operation
+that rejects a destination race and dangling symlink; and preparation admits a
+separate clean Git worktree at the exact baseline. The new binary lifecycle
+test proves a successful different-worktree launch without raw binary prompt
+content. The full repository test suite is green.
+
+The corrected implementation is nevertheless not acceptable. Direct probes
+show that reported cleanup/finalization failures can still leave a consumable
+salvage manifest or descriptor. Launch also does not revalidate that the
+separately selected successor is still a checkout of the predecessor repository
+after preparation. Finally, the new tests cover only a small happy-path and
+helper-level subset of the mandatory acceptance matrix; many explicit H006-R4
+cases remain absent. These are ordinary implementation defects. This rereview
+creates no WFC Current-Run Finding and requests no Finding disposition.
+
+== H002 rereview method and evidence
+
+The rereview read the accepted FTR, accepted design review, source BUG,
+complete predecessor implementation-review history, distinct same-Run
+atomic-Hop-recovery FTR, all six production paths and six ordinary test paths,
+and the read-only `vertical.py`, `prompt.py`, and adapter seams. It inspected
+the complete current implementation, not only the H001 diff.
+
+Independent exploratory validation produced:
+
+* `.venv/bin/python -m pytest -q` -- exit 0;
+* the focused six-path unit/architecture test set -- exit 0;
+* `git diff --check 638d2c60a90831f2291b94fac8b25c76cd3fd929..c99af8fa96f88296b5d405f18b2d7ed7990511b5`
+  -- exit 0;
+* an injected salvage-manifest removal failure --
+  `_discard_export_bundle()` raised `OperatorPreflightError` while the manifest
+  remained present and byte-readable at the published bundle path; and
+* an injected descriptor temporary-cleanup failure after the no-replace rename
+  -- `_write_descriptor_no_clobber()` raised `PermissionError` while the final
+  descriptor remained present and byte-readable.
+
+The Coordinator-projected trusted `pytest` evidence for H001 is also green.
+Passing tests do not negate the direct fail-open probes or satisfy acceptance
+criteria that the test suite never exercises.
+
+== H002-R1 -- Publication failure can still leave a consumable artifact
+
+`_discard_export_bundle()` correctly attempts to unlink `manifest.json` before
+fallible tree cleanup. If that unlink itself fails, however, it raises while
+leaving the already published, parser-consumable manifest in place. The direct
+injected-permission probe reproduced exactly that state. This is the explicit
+manifest-removal failure that H006-R2 required the correction to cover, and it
+still violates the rule that a reported export failure publishes no valid
+manifest.
+
+Descriptor publication has the analogous failure shape. After
+`_rename_no_replace()` succeeds, `_write_descriptor_no_clobber()` executes a
+fallible temporary-path cleanup in `finally`; an injected cleanup error makes
+the operation report failure while the final descriptor remains consumable.
+`_prepare_successor()` also computes the printed digest by rereading the
+already published output without any invalidation path if that readback fails.
+Thus preparation can report failure after publication without removing or
+invalidating the descriptor.
+
+The new tests cover successful manifest removal followed by failed tree cleanup
+and a descriptor rename failure before publication. They do not inject the
+manifest-removal failure, descriptor post-publication cleanup/readback failure,
+or the required write/permission/verification/finalization combinations at
+both public command boundaries.
+
+Required correction: structure each artifact publication so every fallible
+verification and cleanup step either occurs before the atomic no-clobber
+publication or can atomically invalidate the published artifact without first
+depending on the operation being injected to fail. A reported failure must
+leave no parser-consumable manifest or descriptor. Add public-boundary tests
+for existing entries, races, and injected write, rename, permission,
+verification, invalidation/removal, and cleanup failures for both artifact
+types, asserting exact filesystem effects.
+
+== H002-R2 -- Launch does not revalidate the predecessor/successor repository relationship
+
+Preparation now correctly compares the selected successor checkout's Git
+common-store identity with the predecessor checkout. Launch revalidates the
+selected successor path, HEAD, cleanliness, governing digests, descriptor
+digest, and predecessor `run.json`, but it no longer compares the launch
+checkout's repository-store identity with the repository reread from the
+predecessor checkout association. The equality check removed to allow separate
+worktrees was not replaced with the common-store check used during preparation.
+
+Consequently a changed predecessor checkout association after preparation can
+point at another or unavailable repository while leaving the digested
+`run.json` unchanged; a no-salvage launch can still pass
+`_validated_successor_descriptor()` and reach the provider-capable boundary.
+The descriptor does not carry a predecessor repository identity that closes
+this gap. This fails the H006-R3 requirement that preparation and launch both
+revalidate a separately selected checkout of the same repository.
+
+The added wrong-repository and wrong-HEAD assertions exercise preparation only.
+They do not exercise launch-time repository/HEAD/source-association changes or
+assert absence of provider-capable effects for those launch rejections.
+
+Required correction: persist an integrity-bound predecessor repository identity
+in the descriptor and, at launch, compare the independently reread predecessor
+repository identity with the selected successor checkout using the same
+worktree-aware identity rule. Reject changed/unavailable predecessor
+association, wrong successor repository, and wrong successor HEAD before state
+root creation, checkout registration, adapter construction, or provider
+execution. Add positive different-worktree and negative launch-time cases.
+
+== H002-R3 -- The mandatory acceptance matrix remains materially incomplete
+
+The H001 correction adds one successful tracked-binary/different-worktree
+lifecycle test, dangling-symlink checks, two helper-level no-clobber tests, one
+best-effort cleanup test, and one descriptor pre-publication rename-failure
+test. That does not complete H006-R4 or the accepted FTR's mandatory matrix.
+Still absent are, among other explicit requirements:
+
+* strict malformed/missing non-null version-2 `SemanticStop` and
+  `SuccessorProvenance` cases;
+* byte-identical read-only legacy status, replay, and predecessor inspection;
+  a version-1 reconcile/resume transition; and an injected failed version-1 to
+  version-2 persistence upgrade preserving the exact legacy bytes;
+* complete layered-stop serialization/replay plus rejection of another Hop and
+  both same-Run recovery APIs;
+* the named historical version-1/no-back-patch case;
+* one successful full public export/prepare/launch lifecycle proving
+  predecessor `run.json`, summary, governing inputs, and evidence remain
+  byte-identical; backward-only provenance and distinct Run identity; and no
+  inherited scope, authority, Finding, evidence, or accepted commit;
+* public export containment for out-of-scope paths, untracked binary/text,
+  special files, object-count/per-object/aggregate limits, all tree modes,
+  stable identities, tampering between every boundary, sensitive-content
+  wording, and selected/unselected/over-limit rendering;
+* public preparation and launch mutation cases for predecessor, authority,
+  governing input, descriptor, manifest, and selected object content;
+* a no-salvage successor launch; and
+* a successor that independently earns an authorized mutation through its own
+  evidence and trusted commit, plus ordinary evidence-failure and invalid
+  `CommitIntent` rejection under successor provenance.
+
+Several present assertions are helper-only even though H006-R4 expressly
+requires public/operator boundaries for lifecycle and failure-effect claims.
+The green suite therefore proves the newly added narrow paths, not the complete
+commissioned acceptance basis.
+
+Required correction: implement the remaining accepted FTR matrix within the
+already authorized six ordinary test paths. Use public/operator boundaries for
+lifecycle, pre-provider, immutability, and publication-effect claims; helper
+tests may supplement but not replace those assertions.
+
+== H002 invariant assessment
+
+[cols="2,1,5",options="header"]
+|===
+|Invariant / challenge |Result |H002 assessment
+
+|No automatic authority widening
+|*Pass in inspected admission paths; lifecycle proof incomplete*
+|Normal successor governing admission remains authoritative and descriptor
+routes grant nothing. The complete successful/failed successor lifecycle
+matrix remains absent under H002-R3.
+
+|No predecessor mutation or fabricated history
+|*Implementation appears backward-only; proof incomplete*
+|The candidate does not add a forward pointer or mutate the predecessor, but
+full byte-identity and named historical rejection coverage remain absent.
+
+|Semantic visibility under mechanical preemption
+|*Pass for the observed operator boundary; replay matrix incomplete*
+|The real operator test preserves the semantic stop and mechanical anomalies.
+Complete serialization/replay and both recovery prohibitions remain unproved.
+
+|Stable binary salvage classification and bounded rendering
+|*Pass for the corrected tracked-binary lifecycle*
+|The Git-derived binary label survives validation, remains visible in inventory,
+and is excluded from raw successor context.
+
+|No-clobber publication
+|*Pass for ordinary existing entries and destination race*
+|`renameat2(RENAME_NOREPLACE)` and `lexists` close the earlier overwrite paths.
+Post-publication failure invalidation remains unsound under H002-R1.
+
+|Failure atomicity for published artifacts
+|*Fail*
+|Injected manifest-removal and descriptor cleanup/readback failures can report
+failure while leaving a consumable published artifact (H002-R1).
+
+|Independent clean successor checkout
+|*Partial pass*
+|Preparation and one successful launch accept a separate clean worktree.
+Launch does not revalidate the predecessor/successor repository relationship
+after preparation (H002-R2).
+
+|No inherited Findings, evidence, authority, or acceptance
+|*Mechanism appears bounded; mandated proof missing*
+|Fresh Run construction starts empty, but no complete public lifecycle proves
+all non-inheritance and independent acceptance cases.
+
+|Same-Run recovery remains distinct
+|*Pass in inspected model and naming; complete legacy matrix absent*
+|Successor states and commands remain separate from `reconcile_required`,
+`suspended`, and same-Run recovery APIs.
+
+|Complete accepted evidence basis
+|*Fail*
+|The mandatory acceptance matrix remains materially incomplete (H002-R3).
+|===
+
+== H002 route and lifecycle effect
+
+Request `route: correct` with `outcome: changes_required` and an empty WFC
+Findings delta. Correction should address H002-R1 through H002-R3 within the
+exact six production and six ordinary test paths already authorized by this
+WorkItem. No scope expansion is presently required.
+
+At H002, corrected candidate
+`c99af8fa96f88296b5d405f18b2d7ed7990511b5` exists but is *not independently
+accepted*. This rereview does not close the source BUG, push, promote
+`workflow-coordinator-runtime`, mutate the
+`workflow-coordinator-run-evidence` repository, accept or apply salvage, or
+authorize or launch another Run. Those remain separate, later,
+maintainer-owned acts.
