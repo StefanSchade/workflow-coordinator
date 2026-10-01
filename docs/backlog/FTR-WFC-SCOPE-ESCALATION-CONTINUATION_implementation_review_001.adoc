@@ -501,3 +501,241 @@ accepted*. This rereview does not close the source BUG, promote
 `workflow-coordinator-runtime`, authorize a push, mutate the evidence
 repository, accept or apply salvage, or launch any Run. Those remain separate,
 later, maintainer-owned acts.
+
+== Rereview H006 -- corrected candidate eba929c
+
+Fresh independent adversarial rereview of corrected candidate
+`eba929c35210428845e82866b759e116a52d8d9a`
+(`fix(workflow): WI-WFC-SCOPE-ESCALATION-CONTINUATION-IMPLEMENTATION-001 H005 harden salvage continuation`)
+against correction base `ab3bd501a56da073a16043e3e2c65ae04d6885e1`,
+the accepted FTR, its accepted design review, the source BUG, the preserved
+H002/H004 implementation-review history above, and the distinct same-Run
+atomic-Hop-recovery design.
+
+Rereview Hop identity:: Run `RUN-692338c488044e8e9393a1585d118eb8`, Hop
+`H006`, invocation `INV-c6f5c43bea7f4e41b525798d2d5f015d`
+Corrected candidate received at entry::
+`eba929c35210428845e82866b759e116a52d8d9a`
+Correction range::
+`ab3bd501a56da073a16043e3e2c65ae04d6885e1..eba929c35210428845e82866b759e116a52d8d9a`
+
+This section preserves the H002 and H004 review history. This rereview changes
+no implementation source, ordinary test, accepted design, source BUG,
+governing input, Runtime, frozen Run state, evidence repository, or remote. Its
+sole mutation is this required durable rereview artifact.
+
+=== H006 rereview verdict
+
+*CHANGES REQUIRED; route `correct`.*
+
+The H005 correction resolves several H004 counterexamples: it rejects changed
+tracked symlinks, prevents a tracked binary diff from being selected as raw
+text, reports ignored-path omissions, removes the final bundle after an
+ordinary post-rename verification failure, adds descriptor creation time and
+an explicit prepared digest, and exercises the real operator/vertical layered
+stop. The full repository test suite passes.
+
+The corrected implementation is nevertheless not acceptable. The exported
+binary classification is incompatible with the manifest validator, output
+publication still overwrites an existing filesystem entry, the successor is
+still coupled to the predecessor's exact checkout, and the complete mandatory
+acceptance matrix requested at H004 remains unimplemented. These are ordinary
+implementation defects. This rereview creates no WFC Current-Run Finding and
+requests no Finding disposition.
+
+=== H006 rereview method and evidence
+
+The rereview read the governing documents and the complete prior review
+artifact before examining the H005 correction and the resulting production
+paths. The correction changes only four authorized implementation/test paths;
+it does not touch the named historical Run, any governing document, Runtime,
+or the evidence repository. Independent exploratory validation produced:
+
+* `.venv/bin/python -m pytest -q` -- exit 0;
+* `git diff --check` over the correction range -- exit 0;
+* a real-Git binary lifecycle probe -- `salvage_inventory()` correctly emitted
+  a tracked-diff object with `content_kind=binary`, but
+  `_validate_manifest_bytes()` rejected the resulting byte-identical object as
+  `salvage object classification changed`;
+* an overwrite probe -- a requested output path that was an existing dangling
+  symlink had `Path.exists() == false`, passed the publication precheck, and was
+  replaced by `atomic_write_json()`; and
+* a coverage inventory -- H005 adds two Git helper tests and one combined
+  operator test, but no successful export/prepare/launch successor lifecycle,
+  no different-checkout case, and no completion of the serialization,
+  persistence, salvage, provenance, and independent-acceptance matrix required
+  by the accepted FTR and H004.
+
+The Coordinator-projected trusted `pytest` evidence for H005 is also green.
+Passing tests do not negate the direct counterexamples or substitute for the
+accepted mandatory evidence matrix.
+
+=== H006-R1 -- A correctly classified tracked-binary export rejects itself during preparation
+
+H005 changes `salvage_inventory()` to classify the aggregate tracked diff as
+`binary` whenever `git diff --numstat` reports a binary tracked path. That is a
+safe rendering decision because the corresponding `git diff --binary` object
+is printable ASCII despite containing a binary patch.
+
+`_validate_manifest_bytes()`, however, ignores the Git-derived classification
+and recomputes `content_kind` solely by decoding the aggregate object as UTF-8
+and searching for NUL. The printable Git binary patch is therefore recomputed
+as `text`, and the validator rejects the export's honest `binary` label as a
+classification change. A bundle containing a tracked binary change cannot be
+prepared or launched even as non-rendered hash/inventory context. This
+contradicts the accepted boundary in which binary content remains referenced
+by hash and path but is never injected raw.
+
+Required correction: make export, preparation, and launch use one stable,
+fail-closed classification contract that preserves the Git-derived binary
+fact without making binary bytes renderable. Add an end-to-end tracked-binary
+export/prepare/launch test proving inventory visibility, raw-content exclusion,
+tamper rejection, and successful use of the unchanged bundle.
+
+=== H006-R2 -- Publication does not strictly refuse overwrite and cleanup failure can retain a valid manifest
+
+Both `_export_salvage()` and `_prepare_successor()` reject an output only with
+`output.exists()`. A dangling symlink is an existing directory entry for the
+accepted no-overwrite boundary but returns false from that predicate. The
+export `os.replace()` and descriptor `atomic_write_json()` paths can replace
+that symlink. The direct probe demonstrated the descriptor publication
+primitive replacing it with a valid JSON file. This violates the explicit
+overwrite refusal and makes the destination check permissive for exactly the
+escaping-symlink class the containment model treats as hostile.
+
+The H005 failure-atomicity test also covers only successful cleanup after a
+simulated post-rename mode failure. `_discard_export_bundle()` calls
+`shutil.rmtree()` directly; if cleanup itself fails, it can raise before the
+published `manifest.json` is invalidated and leave a parser-consumable bundle.
+H004 explicitly required injected cleanup-failure coverage and no valid bundle
+on every reported finalization failure.
+
+Required correction: use no-clobber publication semantics for every existing
+directory entry, including dangling symlinks and race-created targets, and
+invalidate or remove the consumable manifest before fallible best-effort tree
+cleanup. Cover existing files/directories/symlinks, destination races, and
+injected write, rename, permission, verification, manifest-removal, and cleanup
+failures for both artifact types.
+
+=== H006-R3 -- The successor is incorrectly forced to reuse the predecessor checkout
+
+The accepted FTR states that a successor may use a different checkout of the
+same repository and need not reuse the dirty predecessor checkout.
+`_prepare_successor()` instead obtains all successor Git facts from the
+predecessor's registered checkout and records that exact filesystem path as
+`successor.repository`. Launch then requires both that descriptor value and
+the reread predecessor repository path to equal the new operator
+`--repository` path exactly. A clean different checkout of the same repository
+is therefore rejected before the successor can be created.
+
+This is not merely an ergonomic omission: it can force the operator to alter
+the stopped predecessor checkout before descriptor preparation, despite the
+accepted separation between frozen predecessor truth, optional salvage, and a
+separately selected clean successor baseline.
+
+Required correction: admit and revalidate a separately selected successor
+checkout while proving that it identifies the same repository and exact clean
+baseline. Keep the predecessor checkout and state read-only. Add both positive
+different-checkout coverage and wrong-repository/HEAD rejection before any
+provider-capable effect.
+
+=== H006-R4 -- The mandatory acceptance matrix remains substantially incomplete
+
+The H005 combined operator test is valuable, but it does not complete H004 R4
+or the accepted FTR's six-part matrix. Among the remaining omissions are:
+
+* strict malformed/missing non-null v2 semantic-stop and successor-provenance
+  records, legacy read-only status/replay/predecessor byte preservation, a v1
+  reconcile/resume transition, and an injected failed v1-to-v2 upgrade that
+  preserves the exact pre-change fixture;
+* a complete layered-stop replay/serialization assertion and proof that the
+  stopped predecessor rejects another Hop and both same-Run recovery APIs;
+* a successful export/prepare/launch lifecycle with byte-identical predecessor
+  state, governing inputs, summary, and evidence; backward-only provenance;
+  distinct Run identity; and no inherited authority, Finding, or evidence;
+* export overwrite, containment, object/total count and size, stable identity,
+  permissions, tamper, sensitive-content wording, selected/unselected/binary/
+  over-limit rendering, and partial/finalization failure cases at public
+  command boundaries; and
+* no-salvage launch, independent successor evidence/commit acceptance, and
+  ordinary fail-closed successor evidence or CommitIntent rejection.
+
+The new test that mutates copied predecessor JSON does cover the three basic
+preparation rejections, but it does not cover the named historical no-backpatch
+case or unchanged predecessor summary/governing/evidence bytes across the full
+lifecycle. The green suite therefore still cannot establish the commissioned
+acceptance criteria.
+
+Required correction: implement the complete accepted test matrix within the
+already authorized six ordinary test paths, using public/operator boundaries
+for lifecycle and failure-effect claims. Do not reduce the matrix to helper
+tests or combine unrelated criteria so narrowly that successful successor
+behavior remains untested.
+
+=== H006 rereview invariant assessment
+
+[cols="2,1,5",options="header"]
+|===
+|Invariant / challenge |Result |H006 assessment
+
+|No automatic authority widening
+|*Pass in inspected control paths; lifecycle proof missing*
+|Ordinary governing admission remains in front of launch, and the explicit
+descriptor digest prevents the H004 selection-mutation probe. Successful
+end-to-end admission and mismatch cases remain absent under H006-R4.
+
+|No predecessor mutation or fabricated history
+|*Pass in the H005 diff; mandated lifecycle proof missing*
+|The correction adds no forward pointer and does not touch
+`RUN-76e153b40ef1459db4587446b18e02d5`. Full predecessor byte-identity and named
+historical rejection coverage remain absent.
+
+|Semantic visibility under mechanical preemption
+|*Pass for the observed boundary*
+|The new operator/vertical regression retains the semantic stop and separate
+mechanical anomalies in Run, checkpoint, and summary without a commit or route.
+Replay and all recovery prohibitions still need the H006-R4 coverage.
+
+|Salvage remains untrusted and bounded
+|*Fail for tracked-binary lifecycle*
+|Binary raw exposure is now conservatively blocked, but the honest exported
+bundle cannot pass its own later validator (H006-R1).
+
+|Failure atomicity and restrictive publication
+|*Fail*
+|Existing dangling-symlink targets can be overwritten, and cleanup failure can
+leave a valid manifest (H006-R2).
+
+|Clean successor baseline independent of predecessor checkout
+|*Fail*
+|Exact path equality rejects the accepted different-checkout successor case
+(H006-R3).
+
+|No inherited Findings, evidence, or accepted commit
+|*Mechanism appears bounded; proof missing*
+|Fresh Run construction remains empty, but no successful successor lifecycle
+or independent evidence/commit test proves the boundary.
+
+|Same-Run recovery remains distinct
+|*Pass in inspected model and CLI names*
+|The mechanisms remain separately named and `awaiting_human` is not a recovery
+state. The full legacy transition matrix remains absent.
+
+|Complete accepted evidence basis
+|*Fail*
+|The mandatory acceptance matrix remains substantially incomplete (H006-R4).
+|===
+
+=== H006 rereview route and lifecycle effect
+
+Request `route: correct` with `outcome: changes_required` and an empty WFC
+Findings delta. Correction should address H006-R1 through H006-R4 within the
+exact six production and six ordinary test paths already authorized by this
+WorkItem. No scope expansion is presently required.
+
+At H006, corrected candidate
+`eba929c35210428845e82866b759e116a52d8d9a` exists but is *not independently
+accepted*. This rereview does not close the source BUG, promote
+`workflow-coordinator-runtime`, authorize a push, mutate the evidence
+repository, accept or apply salvage, or launch any Run. Those remain separate,
+later, maintainer-owned acts.
