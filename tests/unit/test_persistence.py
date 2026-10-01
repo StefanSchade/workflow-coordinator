@@ -61,6 +61,20 @@ def test_persisting_legacy_run_upgrades_atomically_without_inventing_facts(tmp_p
     assert upgraded.semantic_stop is None and upgraded.successor_provenance is None
 
 
+def test_failed_legacy_upgrade_preserves_the_exact_v1_snapshot(tmp_path):
+    legacy = replace(run_for(profile({"work": phase({"done": route("complete")})})), schema_version=1)
+    path = tmp_path / "run.json"
+    path.write_text(run_to_json(legacy), encoding="utf-8")
+    original = path.read_bytes()
+
+    def fail_replace(_source, _target):
+        raise OSError("injected replacement failure")
+
+    with pytest.raises(OSError, match="injected replacement failure"):
+        write_run_snapshot(path, legacy, replace_file=fail_replace)
+    assert path.read_bytes() == original
+
+
 def test_interrupted_atomic_replacement_preserves_old_file(tmp_path):
     path = tmp_path / "run.json"
     path.write_text("old\n", encoding="utf-8")

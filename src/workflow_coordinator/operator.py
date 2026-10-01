@@ -884,7 +884,7 @@ def _load_manifest(path: Path) -> dict[str, object]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise OperatorPreflightError("salvage manifest is unavailable or malformed") from error
-    if not isinstance(value, dict) or set(value) != {"schema_version", "source", "objects", "omissions", "trust"}:
+    if not isinstance(value, dict) or set(value) != {"schema_version", "source", "objects", "omissions", "trust", "publication"}:
         raise OperatorPreflightError("salvage manifest has an unsupported shape")
     if (value["schema_version"] != 1 or value["trust"] != _SALVAGE_TRUST
             or not isinstance(value["objects"], list) or not isinstance(value["omissions"], list)
@@ -896,6 +896,14 @@ def _load_manifest(path: Path) -> dict[str, object]:
 def _validate_manifest_bytes(path: Path, *, expected_source: dict[str, str] | None = None) -> dict[str, object]:
     manifest = _load_manifest(path)
     bundle = path.parent
+    publication = manifest["publication"]
+    if (not isinstance(publication, dict) or set(publication) != {"bundle_path"}
+            or publication["bundle_path"] != str(bundle.resolve())):
+        # A completed manifest is bound to the operator-selected directory
+        # into which it was atomically published.  This makes a complete
+        # temporary tree left behind after a failed export ineligible for the
+        # production preparation path even if best-effort cleanup also fails.
+        raise OperatorPreflightError("salvage manifest was not published at its selected destination")
     source = manifest["source"]
     required_source = {"run_id", "hop_id", "repository", "base_head", "current_head", "run_json_sha256", "capture_diagnostics"}
     if not isinstance(source, dict) or set(source) != required_source:
@@ -1067,7 +1075,12 @@ def _export_salvage(args: argparse.Namespace) -> int:
                                "current_head": observe_repository(repository).head,
                                "run_json_sha256": hashlib.sha256(run_bytes).hexdigest(),
                                "capture_diagnostics": list(omissions)},
-                    "objects": rows, "omissions": list(omissions), "trust": _SALVAGE_TRUST}
+                    "objects": rows, "omissions": list(omissions), "trust": _SALVAGE_TRUST,
+                    # This is deliberately the final path, not the temporary
+                    # directory used to assemble the bundle.  Validators only
+                    # accept the artifact after the no-clobber rename lands it
+                    # at this exact destination.
+                    "publication": {"bundle_path": str(output.resolve())}}
         atomic_write_json(temporary / "manifest.json", manifest)
         os.chmod(temporary / "manifest.json", 0o600)
         if not _salvage_publication_modes(temporary, rows):
@@ -1156,6 +1169,11 @@ def _prepare_successor(args: argparse.Namespace) -> int:
         raise OperatorPreflightError("descriptor output must be a new file below an existing parent")
     descriptor: dict[str, object] = {"schema_version": 1, "descriptor_id": f"SCD-{uuid.uuid4().hex}",
                   "creation_time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "trust_label": "untrusted_context_only",
+                  # The descriptor is consumable only at the output path named
+                  # by the explicit preparation action.  A complete temporary
+                  # file stranded when finalization/cleanup fails is not a
+                  # successor-continuation input.
+                  "published_path": str(output.resolve()),
                   "predecessor": {"run_id": predecessor.run_id, "work_item_id": predecessor.work_item_id,
                                   "status": predecessor.status.value, "final_head": predecessor.current_head,
                                   "semantic_stop": {"kind": predecessor.semantic_stop.kind, "question": predecessor.semantic_stop.question, "source_hop_id": predecessor.semantic_stop.source_hop_id},
@@ -1179,13 +1197,14 @@ def _validated_successor_descriptor(descriptor_path: Path, repository: Path, exp
         descriptor = json.loads(descriptor_bytes.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise OperatorPreflightError("successor descriptor is unavailable or malformed") from error
-    required = {"schema_version", "descriptor_id", "creation_time", "trust_label", "predecessor", "authority_decision", "successor", "salvage", "integrity_sha256"}
+    required = {"schema_version", "descriptor_id", "creation_time", "trust_label", "published_path", "predecessor", "authority_decision", "successor", "salvage", "integrity_sha256"}
     if not isinstance(descriptor, dict) or set(descriptor) != required or descriptor.get("schema_version") != 1 or descriptor.get("trust_label") != "untrusted_context_only":
         raise OperatorPreflightError("successor descriptor has unsupported shape")
     if (not isinstance(descriptor["descriptor_id"], str)
             or re.fullmatch(r"SCD-[0-9a-f]{32}", descriptor["descriptor_id"]) is None
             or not isinstance(descriptor["creation_time"], str)
             or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z", descriptor["creation_time"]) is None
+            or descriptor["published_path"] != str(descriptor_path.resolve())
             or not isinstance(descriptor["integrity_sha256"], str)
             or descriptor["integrity_sha256"] != _descriptor_integrity(descriptor)):
         raise OperatorPreflightError("successor descriptor integrity validation failed")

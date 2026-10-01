@@ -1,9 +1,18 @@
 import json
+from dataclasses import replace
 
 import pytest
 import yaml
 
-from workflow_coordinator.model import DurableArtifact, Hop, RouteEffect, WorkflowRole, new_run
+from workflow_coordinator.model import (
+    DurableArtifact,
+    Hop,
+    RouteEffect,
+    SemanticStop,
+    SuccessorProvenance,
+    WorkflowRole,
+    new_run,
+)
 from workflow_coordinator.serialization import (
     ValidationError,
     repository_policy_from_yaml,
@@ -14,6 +23,7 @@ from workflow_coordinator.serialization import (
     work_item_from_yaml,
     workflow_profile_from_yaml,
 )
+from tests.support import charge_hop, phase, profile, route, run_for
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
@@ -479,6 +489,35 @@ def test_prechange_v1_fixture_loads_without_fabricated_successor_facts():
     malformed = json.loads(PRECHANGE_RUN_JSON)
     malformed["semantic_stop"] = None
     with pytest.raises(ValidationError, match="unknown fields"):
+        run_from_json(json.dumps(malformed))
+
+
+def test_v2_non_null_successor_records_are_closed_and_strict():
+    """Malformed provenance cannot be smuggled into a version-2 Run."""
+    workflow = profile({"work": phase({"done": route("complete")})})
+    run, hop_id = charge_hop(run_for(workflow))
+    populated = replace(
+        run,
+        semantic_stop=SemanticStop("scope", "Grant a new scope.", hop_id),
+        successor_provenance=SuccessorProvenance(
+            "RUN-predecessor", "WI-predecessor", "a" * 40, "decision", "b" * 64,
+            "c" * 64, None,
+        ),
+    )
+    data = json.loads(run_to_json(populated))
+    assert run_from_json(json.dumps(data)) == populated
+    for field in ("semantic_stop", "successor_provenance"):
+        incomplete = json.loads(json.dumps(data))
+        incomplete[field] = {}
+        with pytest.raises(ValidationError):
+            run_from_json(json.dumps(incomplete))
+    missing = json.loads(json.dumps(data))
+    missing["semantic_stop"].pop("question")
+    with pytest.raises(ValidationError):
+        run_from_json(json.dumps(missing))
+    malformed = json.loads(json.dumps(data))
+    malformed["successor_provenance"]["continuation_descriptor_sha256"] = "not-a-digest"
+    with pytest.raises(ValidationError):
         run_from_json(json.dumps(malformed))
 
 

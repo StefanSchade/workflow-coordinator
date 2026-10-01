@@ -286,7 +286,7 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
 
 
 def test_tracked_binary_salvage_uses_a_different_clean_successor_checkout_without_raw_rendering(
-    repository: Path, tmp_path: Path
+    repository: Path, tmp_path: Path, monkeypatch
 ):
     """The Git-derived binary label survives export, preparation, and launch."""
     baseline = git(repository, "rev-parse", "HEAD")
@@ -299,11 +299,40 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
 ''')
     predecessor_state = tmp_path / "predecessor-state"
     assert main(args(repository, predecessor_state, str(predecessor))) == 1
+    # Exercise the real public failure path with both finalization and cleanup
+    # faults.  The temporary tree is deliberately left behind, but it must not
+    # become usable as a manifest merely because cleanup was best effort.
+    original_rename = operator._rename_no_replace
+    original_rmtree = operator.shutil.rmtree
+    original_unlink = Path.unlink
+    monkeypatch.setattr(
+        operator,
+        "_rename_no_replace",
+        lambda _source, _destination: (_ for _ in ()).throw(OperatorPreflightError("injected export finalization failure")),
+    )
+    monkeypatch.setattr(operator.shutil, "rmtree", lambda _path: (_ for _ in ()).throw(OSError("injected export cleanup failure")))
+
+    def retain_temporary_manifest(path: Path, *args, **kwargs):
+        if path.name == "manifest.json" and path.parent.name.startswith(".wfc-salvage-"):
+            raise PermissionError("injected manifest invalidation failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", retain_temporary_manifest)
+    failed_bundle_output = tmp_path / "failed-binary-salvage"
+    assert main(["export-salvage", "--state-root", str(predecessor_state), "--output", str(failed_bundle_output)]) == 2
+    stranded_bundle = next(tmp_path.glob(".wfc-salvage-*"))
+    assert (stranded_bundle / "manifest.json").is_file() and not failed_bundle_output.exists()
+    monkeypatch.setattr(operator, "_rename_no_replace", original_rename)
+    monkeypatch.setattr(operator.shutil, "rmtree", original_rmtree)
+    monkeypatch.setattr(Path, "unlink", original_unlink)
     bundle = tmp_path / "binary-salvage"
     assert main(["export-salvage", "--state-root", str(predecessor_state), "--output", str(bundle)]) == 0
     manifest = json.loads((bundle / "manifest.json").read_text())
     binary = next(row for row in manifest["objects"] if row["kind"] == "tracked_diff")
     assert binary["content_kind"] == "binary"
+    # A complete tree stranded by real finalization/cleanup failures is
+    # not a valid bundle: production preparation accepts only the directory
+    # selected by the successful no-clobber publication.
 
     successor_repository = tmp_path / "successor-checkout"
     git(repository, "worktree", "add", "--detach", str(successor_repository), baseline)
@@ -318,6 +347,11 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
         "--salvage-manifest", str(bundle / "manifest.json"), "--include-salvage-object", binary["sha256"],
         "--output", str(descriptor),
     ]
+    stranded_prepare = list(prepare)
+    stranded_prepare[stranded_prepare.index("--salvage-manifest") + 1] = str(stranded_bundle / "manifest.json")
+    stranded_prepare[-1] = str(tmp_path / "stranded.json")
+    assert main(stranded_prepare) == 2
+    assert not (tmp_path / "stranded.json").exists()
     wrong_repository = tmp_path / "wrong-repository"
     subprocess.run(("git", "init", str(wrong_repository)), check=True, capture_output=True)
     assert main([*prepare[:3], "--repository", str(wrong_repository), *prepare[5:-2], "--output", str(tmp_path / "wrong-repository.json")]) == 2
@@ -329,6 +363,30 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
     assert not (tmp_path / "wrong-head.json").exists()
     assert main(prepare) == 0
     prepared_digest = hashlib.sha256(descriptor.read_bytes()).hexdigest()
+    # Repeat the combined failure probe at the public descriptor boundary.
+    monkeypatch.setattr(
+        operator,
+        "_rename_no_replace",
+        lambda _source, _destination: (_ for _ in ()).throw(OperatorPreflightError("injected descriptor finalization failure")),
+    )
+
+    def retain_temporary_descriptor(path: Path, *args, **kwargs):
+        if path.name.startswith(".failed-successor.json."):
+            raise PermissionError("injected descriptor cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", retain_temporary_descriptor)
+    failed_descriptor_output = tmp_path / "failed-successor.json"
+    failed_prepare = list(prepare)
+    failed_prepare[-1] = str(failed_descriptor_output)
+    assert main(failed_prepare) == 2
+    stranded_descriptor = next(tmp_path.glob(".failed-successor.json.*.tmp"))
+    assert stranded_descriptor.is_file() and not failed_descriptor_output.exists()
+    monkeypatch.setattr(operator, "_rename_no_replace", original_rename)
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    # The same invariant applies to descriptor finalization.  A failed
+    # no-clobber rename may leave canonical JSON in a temporary sibling, but
+    # launch must reject it before it creates state or reaches the provider.
     prompt_path = tmp_path / "successor-prompt.txt"
     successor = fake(tmp_path, f'''import json, pathlib, sys
 args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read(); pathlib.Path({str(prompt_path)!r}).write_text(prompt)
@@ -341,6 +399,13 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     # the provider, even though descriptor and run.json bytes still match.
     association_path = predecessor_state / "checkout-association.json"
     original_association = association_path.read_bytes()
+    stranded_state = tmp_path / "stranded-descriptor-successor"
+    assert main([
+        *args(successor_repository, stranded_state, str(successor)),
+        "--successor-continuation", str(stranded_descriptor),
+        "--successor-continuation-sha256", hashlib.sha256(stranded_descriptor.read_bytes()).hexdigest(),
+    ]) == 2
+    assert not stranded_state.exists() and not prompt_path.exists()
     association = json.loads(original_association)
     association["canonical_path"] = str(wrong_repository)
     association_path.write_text(json.dumps(association, sort_keys=True, separators=(",", ":")) + "\n")
@@ -352,6 +417,9 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     ]) == 2
     assert not rejected_state.exists() and not prompt_path.exists()
     association_path.write_bytes(original_association)
+    predecessor_run_path = next((predecessor_state / "checkouts").iterdir()) / "run.json"
+    predecessor_run_bytes = predecessor_run_path.read_bytes()
+    predecessor_summary_bytes = (predecessor_state / "operator-summary.json").read_bytes()
     successor_state = tmp_path / "successor-state"
     descriptor_digest = hashlib.sha256(descriptor.read_bytes()).hexdigest()
     assert main([
@@ -363,6 +431,33 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     assert "classification=binary selected=True" in prompt
     assert "GIT binary patch" not in prompt
     assert "selected object not rendered" in prompt
+    successor_run = load_run(next((successor_state / "checkouts").iterdir()) / "run.json")
+    assert successor_run.run_id != load_run(predecessor_run_path).run_id
+    assert successor_run.successor_provenance is not None
+    assert successor_run.successor_provenance.predecessor_run_id == load_run(predecessor_run_path).run_id
+    assert successor_run.successor_provenance.salvage_manifest_sha256 == hashlib.sha256((bundle / "manifest.json").read_bytes()).hexdigest()
+    assert successor_run.findings == () and successor_run.hops[0].actual_commits == ()
+    assert predecessor_run_path.read_bytes() == predecessor_run_bytes
+    assert (predecessor_state / "operator-summary.json").read_bytes() == predecessor_summary_bytes
+
+    # Salvage is optional.  A fresh successor with no bundle receives no
+    # salvage digest and still runs under fresh evidence/commit boundaries.
+    no_salvage_descriptor = tmp_path / "no-salvage-successor.json"
+    no_salvage_prepare = list(prepare)
+    salvage_option = no_salvage_prepare.index("--salvage-manifest")
+    del no_salvage_prepare[salvage_option:salvage_option + 4]
+    no_salvage_prepare[-1] = str(no_salvage_descriptor)
+    assert main(no_salvage_prepare) == 0
+    no_salvage_state = tmp_path / "no-salvage-successor-state"
+    assert main([
+        *args(successor_repository, no_salvage_state, str(successor)),
+        "--successor-continuation", str(no_salvage_descriptor),
+        "--successor-continuation-sha256", hashlib.sha256(no_salvage_descriptor.read_bytes()).hexdigest(),
+    ]) == 0
+    no_salvage_run = load_run(next((no_salvage_state / "checkouts").iterdir()) / "run.json")
+    assert no_salvage_run.successor_provenance is not None
+    assert no_salvage_run.successor_provenance.salvage_manifest_sha256 is None
+    assert predecessor_run_path.read_bytes() == predecessor_run_bytes
 
 
 @pytest.mark.parametrize("entry_kind", ["file", "directory", "symlink"])
