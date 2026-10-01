@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import hashlib
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -59,6 +61,77 @@ class TrustedCommit:
 
     commit: str
     delta: GitDelta
+
+
+@dataclass(frozen=True)
+class SalvageObject:
+    """One untrusted, byte-addressed candidate object; never Git authority."""
+
+    object_id: str
+    path: str | None
+    kind: str
+    content: bytes
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.content).hexdigest()
+
+
+def salvage_inventory(
+    repository: Path,
+    *,
+    base_head: str,
+    allowed_paths: tuple[str, ...],
+    max_objects: int = 128,
+    max_object_bytes: int = 1_048_576,
+) -> tuple[SalvageObject, ...]:
+    """Read a bounded candidate delta without touching Git or the worktree.
+
+    The caller owns publication; this function deliberately has no write path.
+    """
+    identity = repository_identity(repository)
+    if not _git_succeeds(identity, "cat-file", "-e", f"{base_head}^{{commit}}"):
+        raise GitPreflightError("salvage base HEAD is not a commit")
+    if not allowed_paths:
+        raise GitPreflightError("salvage requires an explicit authorized scope")
+    changed = tuple(filter(None, _git(identity, "diff", "--no-ext-diff", "--name-only", base_head).splitlines()))
+    outside = [
+        path for path in changed
+        if not any(path == root or path.startswith(f"{root.rstrip('/')}/") for root in allowed_paths)
+    ]
+    if outside:
+        raise GitPreflightError("salvage tracked path is outside authorized scope: " + ", ".join(outside))
+    diff = _run_git(identity, "diff", "--binary", "--no-ext-diff", base_head).stdout.encode("utf-8")
+    objects: list[SalvageObject] = []
+    if diff:
+        if len(diff) > max_object_bytes:
+            raise GitPreflightError("salvage tracked diff exceeds object size limit")
+        objects.append(SalvageObject("tracked-diff", None, "tracked_diff", diff))
+    names = tuple(filter(None, _git(identity, "ls-files", "--others", "--exclude-standard").splitlines()))
+    for path in names:
+        if not any(path == root or path.startswith(f"{root.rstrip('/')}/") for root in allowed_paths):
+            raise GitPreflightError(f"salvage untracked path is outside authorized scope: {path}")
+        candidate = identity / path
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(identity)
+            metadata = candidate.lstat()
+        except (OSError, ValueError) as error:
+            raise GitPreflightError(f"salvage path is unsafe: {path}") from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise GitPreflightError(f"salvage path is not a regular in-repository file: {path}")
+        if metadata.st_size > max_object_bytes:
+            raise GitPreflightError(f"salvage object exceeds size limit: {path}")
+        try:
+            content = resolved.read_bytes()
+        except OSError as error:
+            raise GitPreflightError(f"salvage path cannot be read: {path}") from error
+        if len(content) != metadata.st_size or len(content) > max_object_bytes:
+            raise GitPreflightError(f"salvage path changed during capture: {path}")
+        objects.append(SalvageObject(f"untracked:{path}", path, "untracked_file", content))
+        if len(objects) > max_objects:
+            raise GitPreflightError("salvage object count exceeds limit")
+    return tuple(objects)
 
 
 _CONVENTIONAL_SUBJECT = re.compile(r"^[a-z][a-z0-9-]*(?:\([^)]+\))?!?: ")

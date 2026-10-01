@@ -377,6 +377,24 @@ def test_scope_change_and_escalation_preempt_valid_completion():
     assert semantic_stop.autonomous_route is False
 
 
+def test_correlated_semantic_stop_survives_later_mechanical_preemption():
+    workflow = profile({"work": phase({"done": route("complete")})})
+    run, hop_id = charge_hop(run_for(workflow))
+    reduced = reduce_result(
+        run,
+        result("done", scope_changed=True, requires_human=True,
+               escalation=Escalation("scope", "May the WorkItem include the missing test?")),
+        workflow,
+        hop_id=hop_id,
+        facts=MechanicalFacts(repository_anomaly="dirty tracked state; forbidden CommitIntent"),
+    )
+    assert reduced.run.status is RunStatus.AWAITING_HUMAN
+    assert "dirty tracked state" in (reduced.run.stop_reason or "")
+    assert reduced.run.semantic_stop and reduced.run.semantic_stop.kind == "scope"
+    assert reduced.run.semantic_stop.question == "May the WorkItem include the missing test?"
+    assert reduced.run.semantic_stop.source_hop_id == hop_id
+
+
 def test_stopped_run_cannot_accept_another_invocation_even_with_budget_remaining():
     workflow = profile({"work": phase({"ask": route("complete")})})
     run, hop_id = charge_hop(run_for(workflow, budget=3))

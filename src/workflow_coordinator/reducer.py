@@ -19,6 +19,7 @@ from .model import (
     RoutingResult,
     Run,
     RunStatus,
+    SemanticStop,
     WorkflowProfile,
 )
 
@@ -60,7 +61,7 @@ def _with_hop_decision(reduction: Reduction, hop_id: str) -> Reduction:
 
 
 def _profile_phase(run: Run, profile: WorkflowProfile):
-    if run.schema_version != 1 or profile.schema_version != 2:
+    if run.schema_version not in {1, 2} or profile.schema_version != 2:
         return None, "unsupported state/profile schema version"
     if run.profile_id != profile.profile_id or run.profile_revision != profile.revision:
         return None, "pinned profile identity changed"
@@ -303,6 +304,17 @@ def reduce_result(
         result_state_error = "unsupported result schema version"
     elif run.status is not RunStatus.RUNNING or not correlated_hop:
         result_state_error = "result is not correlated to the current accepted Hop"
+    # Capture the correlated semantic observation *before* selecting the
+    # controlling mechanical stop.  It is observation only: no route, Finding,
+    # commit, or scope authority flows from it.
+    observed_run = run
+    if result_state_error is None and (result.requires_human or result.escalation is not None):
+        question = result.escalation.question if result.escalation else "Agent requested human authority."
+        kind = result.escalation.kind if result.escalation else "operational"
+        observed_run = replace(
+            run,
+            semantic_stop=SemanticStop(kind=kind, question=question, source_hop_id=hop_id),
+        )
     mechanical_errors = (
         profile_error,
         result_state_error,
@@ -313,14 +325,14 @@ def reduce_result(
     )
     for error in mechanical_errors:
         if error:
-            return finish(_stop_for_human(run, f"mechanical_preemption:{error}"))
+            return finish(_stop_for_human(observed_run, f"mechanical_preemption:{error}"))
     if result.requires_human or result.escalation is not None:
         question = (
             result.escalation.question if result.escalation else "Agent requested human authority."
         )
         suffix = f":{result.escalation.kind}" if result.escalation else ""
         return finish(
-            _stop_for_human(run, f"mechanical_preemption:human_authority{suffix}", question)
+            _stop_for_human(observed_run, f"mechanical_preemption:human_authority{suffix}", question)
         )
 
     # A correlated semantic failure is terminal and discards every proposal.

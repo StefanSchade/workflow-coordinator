@@ -191,6 +191,28 @@ class Escalation:
 
 
 @dataclass(frozen=True)
+class SemanticStop:
+    """Immutable observation of a correlated request for human authority."""
+
+    kind: str
+    question: str
+    source_hop_id: str
+
+
+@dataclass(frozen=True)
+class SuccessorProvenance:
+    """Backward-only linkage written when a fresh successor Run is created."""
+
+    predecessor_run_id: str
+    predecessor_work_item_id: str
+    predecessor_final_head: str
+    authority_decision_ref: str
+    authority_decision_sha256: str
+    continuation_descriptor_sha256: str
+    salvage_manifest_sha256: str | None
+
+
+@dataclass(frozen=True)
 class ExistingFindingDelta:
     """A proposal about a Finding already owned by the Coordinator ledger."""
 
@@ -339,6 +361,8 @@ class Run:
     stop_reason: str | None = None
     human_question: str | None = None
     anomalies: tuple[str, ...] = ()
+    semantic_stop: SemanticStop | None = None
+    successor_provenance: SuccessorProvenance | None = None
 
     @property
     def hop_remaining(self) -> int:
@@ -426,7 +450,7 @@ def new_run(
     if work_item.repository not in policy.scope:
         raise ValueError("work item repository is outside repository policy scope")
     return Run(
-        schema_version=1,
+        schema_version=2,
         run_id=run_id,
         work_item_id=work_item.work_item_id,
         profile_id=profile.profile_id,

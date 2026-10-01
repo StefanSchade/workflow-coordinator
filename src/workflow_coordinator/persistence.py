@@ -93,7 +93,11 @@ def atomic_write_json(
 
 
 def write_run_snapshot(path: Path, run: Run, *, replace_file: Replace = os.replace) -> None:
-    atomic_write_text(path, run_to_json(run), replace_file=replace_file)
+    # A persistence-causing transition is the sole permitted legacy upgrade.
+    # Read-only loads/projections retain v1 exactly; a failed replacement leaves
+    # its previous bytes intact through atomic_write_text.
+    persisted = replace(run, schema_version=2) if run.schema_version == 1 else run
+    atomic_write_text(path, run_to_json(persisted), replace_file=replace_file)
 
 
 def write_dispatch_marker(
@@ -184,6 +188,20 @@ def checkpoint_projection(
             "reconcile_anchor": run.reconcile_anchor,
             "stop_reason": run.stop_reason,
             "human_question": run.human_question,
+            "semantic_stop": None if run.semantic_stop is None else {
+                "kind": run.semantic_stop.kind,
+                "question": run.semantic_stop.question,
+                "source_hop_id": run.semantic_stop.source_hop_id,
+            },
+            "successor_provenance": None if run.successor_provenance is None else {
+                "predecessor_run_id": run.successor_provenance.predecessor_run_id,
+                "predecessor_work_item_id": run.successor_provenance.predecessor_work_item_id,
+                "predecessor_final_head": run.successor_provenance.predecessor_final_head,
+                "authority_decision_ref": run.successor_provenance.authority_decision_ref,
+                "authority_decision_sha256": run.successor_provenance.authority_decision_sha256,
+                "continuation_descriptor_sha256": run.successor_provenance.continuation_descriptor_sha256,
+                "salvage_manifest_sha256": run.successor_provenance.salvage_manifest_sha256,
+            },
             "anomalies": list(run.anomalies),
             "child_run_id": run.child_run_id,
             "suspension_head": run.suspension_head,

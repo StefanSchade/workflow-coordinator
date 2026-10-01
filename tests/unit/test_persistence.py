@@ -52,6 +52,15 @@ def test_atomic_run_snapshot_round_trip(tmp_path):
     assert path.read_text(encoding="utf-8") == run_to_json(run)
 
 
+def test_persisting_legacy_run_upgrades_atomically_without_inventing_facts(tmp_path):
+    run = replace(run_for(profile({"work": phase({"done": route("complete")})})), schema_version=1)
+    path = tmp_path / "run.json"
+    write_run_snapshot(path, run)
+    upgraded = load_run(path)
+    assert upgraded.schema_version == 2
+    assert upgraded.semantic_stop is None and upgraded.successor_provenance is None
+
+
 def test_interrupted_atomic_replacement_preserves_old_file(tmp_path):
     path = tmp_path / "run.json"
     path.write_text("old\n", encoding="utf-8")

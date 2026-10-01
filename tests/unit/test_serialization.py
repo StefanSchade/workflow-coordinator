@@ -17,6 +17,9 @@ from workflow_coordinator.serialization import (
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
+# Stable pre-change schema-v1 wire fixture: do not infer its absent facts.
+PRECHANGE_RUN_JSON = '{"anomalies":[],"baseline_head":"abc","child_run_id":null,"current_head":"abc","findings":[],"hop_limit":1,"hop_used":0,"hops":[],"human_question":"old question","phase":"implement","policy_id":"core-policy","policy_revision":"policy-r1","profile_id":"core","profile_revision":"profile-r1","reconcile_anchor":null,"reconcile_reason":null,"repository":"repo","run_id":"RUN-legacy","schema_version":1,"status":"ready","stop_reason":null,"suspension_head":null,"work_item_id":"WI-1"}\n'
+
 
 WORK_ITEM_YAML = """
 schema_version: 2
@@ -466,6 +469,17 @@ def test_run_json_round_trip_is_deterministic_and_strict():
     data["next_route_keys"] = ["finish"]
     with pytest.raises(ValidationError, match="unknown fields"):
         run_from_json(json.dumps(data))
+
+
+def test_prechange_v1_fixture_loads_without_fabricated_successor_facts():
+    legacy = run_from_json(PRECHANGE_RUN_JSON)
+    assert legacy.schema_version == 1
+    assert legacy.semantic_stop is None and legacy.successor_provenance is None
+    assert run_to_json(legacy) == PRECHANGE_RUN_JSON
+    malformed = json.loads(PRECHANGE_RUN_JSON)
+    malformed["semantic_stop"] = None
+    with pytest.raises(ValidationError, match="unknown fields"):
+        run_from_json(json.dumps(malformed))
 
 
 def test_hop_role_remains_open_trace_data_outside_phase_workflow_roles():

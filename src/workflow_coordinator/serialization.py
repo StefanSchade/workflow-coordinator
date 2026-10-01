@@ -42,6 +42,8 @@ from .model import (
     Run,
     RunExecutionConfiguration,
     RunStatus,
+    SemanticStop,
+    SuccessorProvenance,
     WorkItem,
     WorkflowProfile,
     WorkflowRole,
@@ -861,7 +863,13 @@ def _json_value(value: Any) -> Any:
 
 
 def run_to_json(run: Run) -> str:
-    return json.dumps(_json_value(run), sort_keys=True, separators=(",", ":")) + "\n"
+    data = _json_value(run)
+    # A read-only inspection must be able to serialize an historical v1 Run
+    # without silently manufacturing the two v2 fields.
+    if run.schema_version == 1:
+        data.pop("semantic_stop", None)
+        data.pop("successor_provenance", None)
+    return json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n"
 
 
 def _hop_summary(value: Any, *, context: str) -> HopSummary:
@@ -905,18 +913,75 @@ def _finding(value: Any, *, context: str) -> Finding:
     )
 
 
+def _semantic_stop(value: Any, *, context: str) -> SemanticStop | None:
+    if value is None:
+        return None
+    data = _fields(value, context=context, required={"kind", "question", "source_hop_id"})
+    kind = _string(data["kind"], context=f"{context}.kind")
+    if kind not in ESCALATION_KINDS:
+        raise ValidationError(f"{context}.kind is unknown: {kind}")
+    return SemanticStop(
+        kind=kind,
+        question=_string(data["question"], context=f"{context}.question"),
+        source_hop_id=_string(data["source_hop_id"], context=f"{context}.source_hop_id"),
+    )
+
+
+def _sha256(value: Any, *, context: str) -> str:
+    text = _string(value, context=context)
+    if re.fullmatch(r"[0-9a-f]{64}", text) is None:
+        raise ValidationError(f"{context} must be a lowercase SHA-256 digest")
+    return text
+
+
+def _successor_provenance(value: Any, *, context: str) -> SuccessorProvenance | None:
+    if value is None:
+        return None
+    data = _fields(
+        value,
+        context=context,
+        required={
+            "predecessor_run_id", "predecessor_work_item_id", "predecessor_final_head",
+            "authority_decision_ref", "authority_decision_sha256",
+            "continuation_descriptor_sha256", "salvage_manifest_sha256",
+        },
+    )
+    final_head = _string(data["predecessor_final_head"], context=f"{context}.predecessor_final_head")
+    if re.fullmatch(r"[0-9a-f]{40}", final_head) is None:
+        raise ValidationError(f"{context}.predecessor_final_head must be a full commit SHA")
+    raw_salvage = data["salvage_manifest_sha256"]
+    return SuccessorProvenance(
+        predecessor_run_id=_string(data["predecessor_run_id"], context=f"{context}.predecessor_run_id"),
+        predecessor_work_item_id=_string(data["predecessor_work_item_id"], context=f"{context}.predecessor_work_item_id"),
+        predecessor_final_head=final_head,
+        authority_decision_ref=_string(data["authority_decision_ref"], context=f"{context}.authority_decision_ref"),
+        authority_decision_sha256=_sha256(data["authority_decision_sha256"], context=f"{context}.authority_decision_sha256"),
+        continuation_descriptor_sha256=_sha256(data["continuation_descriptor_sha256"], context=f"{context}.continuation_descriptor_sha256"),
+        salvage_manifest_sha256=None if raw_salvage is None else _sha256(raw_salvage, context=f"{context}.salvage_manifest_sha256"),
+    )
+
+
 def run_from_json(text: str) -> Run:
     try:
         value = json.loads(text)
     except json.JSONDecodeError as error:
         raise ValidationError(f"invalid Run JSON: {error}") from error
-    data = _fields(value, context="Run", required={field.name for field in fields(Run)})
+    raw = _mapping(value, context="Run")
+    version = _integer(raw.get("schema_version"), context="Run.schema_version")
+    v2_fields = {field.name for field in fields(Run)}
+    v1_fields = v2_fields - {"semantic_stop", "successor_provenance"}
+    if version == 1:
+        data = _fields(raw, context="Run", required=v1_fields)
+    elif version == 2:
+        data = _fields(raw, context="Run", required=v2_fields)
+    else:
+        raise ValidationError(f"Run.schema_version has unsupported version: {version}")
     raw_hops = data["hops"]
     raw_findings = data["findings"]
     if not isinstance(raw_hops, list) or not isinstance(raw_findings, list):
         raise ValidationError("Run.hops and Run.findings must be lists")
     run = Run(
-        schema_version=_version(data["schema_version"], context="Run.schema_version"),
+        schema_version=version,
         run_id=_string(data["run_id"], context="Run.run_id"),
         work_item_id=_string(data["work_item_id"], context="Run.work_item_id"),
         profile_id=_string(data["profile_id"], context="Run.profile_id"),
@@ -944,6 +1009,14 @@ def run_from_json(text: str) -> Run:
         stop_reason=_optional_string(data["stop_reason"], context="Run.stop_reason"),
         human_question=_optional_string(data["human_question"], context="Run.human_question"),
         anomalies=_strings(data["anomalies"], context="Run.anomalies"),
+        semantic_stop=(
+            None if version == 1 else _semantic_stop(data["semantic_stop"], context="Run.semantic_stop")
+        ),
+        successor_provenance=(
+            None if version == 1 else _successor_provenance(
+                data["successor_provenance"], context="Run.successor_provenance"
+            )
+        ),
     )
     if run.hop_used != len(run.hops):
         raise ValidationError("Run.hop_used must equal the number of Hop summaries")
@@ -955,6 +1028,10 @@ def run_from_json(text: str) -> Run:
         raise ValidationError("Run contains duplicate Hop IDs")
     if len({finding.finding_id for finding in run.findings}) != len(run.findings):
         raise ValidationError("Run contains duplicate Finding IDs")
+    if run.semantic_stop is not None and run.semantic_stop.source_hop_id not in {
+        hop.hop_id for hop in run.hops
+    }:
+        raise ValidationError("Run.semantic_stop.source_hop_id is absent from Run.hops")
     return run
 
 
