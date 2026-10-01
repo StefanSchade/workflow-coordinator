@@ -224,7 +224,9 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
     dangling_salvage.symlink_to("missing-salvage-target")
     assert main(["export-salvage", "--state-root", str(state), "--output", str(dangling_salvage)]) == 2
     assert dangling_salvage.is_symlink()
-    checks = iter((True, False))
+    # Verification is deliberately complete before publication: a failure
+    # cannot leave a final bundle requiring fallible invalidation.
+    checks = iter((False,))
     monkeypatch.setattr(operator, "_salvage_publication_modes", lambda *_args: next(checks))
     output = tmp_path / "failed-salvage"
     assert main(["export-salvage", "--state-root", str(state), "--output", str(output)]) == 2
@@ -326,6 +328,7 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
     assert main(wrong_head) == 2
     assert not (tmp_path / "wrong-head.json").exists()
     assert main(prepare) == 0
+    prepared_digest = hashlib.sha256(descriptor.read_bytes()).hexdigest()
     prompt_path = tmp_path / "successor-prompt.txt"
     successor = fake(tmp_path, f'''import json, pathlib, sys
 args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read(); pathlib.Path({str(prompt_path)!r}).write_text(prompt)
@@ -333,6 +336,22 @@ def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
 result={{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"independently complete"}}
 output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}}))
 ''')
+    # The association is mutable operator wiring, not predecessor Run truth.
+    # Launch must reject a changed association before creating state or invoking
+    # the provider, even though descriptor and run.json bytes still match.
+    association_path = predecessor_state / "checkout-association.json"
+    original_association = association_path.read_bytes()
+    association = json.loads(original_association)
+    association["canonical_path"] = str(wrong_repository)
+    association_path.write_text(json.dumps(association, sort_keys=True, separators=(",", ":")) + "\n")
+    rejected_state = tmp_path / "association-changed-successor"
+    assert main([
+        *args(successor_repository, rejected_state, str(successor)),
+        "--successor-continuation", str(descriptor),
+        "--successor-continuation-sha256", prepared_digest,
+    ]) == 2
+    assert not rejected_state.exists() and not prompt_path.exists()
+    association_path.write_bytes(original_association)
     successor_state = tmp_path / "successor-state"
     descriptor_digest = hashlib.sha256(descriptor.read_bytes()).hexdigest()
     assert main([
@@ -387,6 +406,21 @@ def test_failed_export_invalidates_manifest_before_best_effort_cleanup(tmp_path:
     monkeypatch.setattr(operator.shutil, "rmtree", lambda _path: (_ for _ in ()).throw(OSError("cleanup failed")))
     operator._discard_export_bundle(bundle)
     assert not manifest.exists() and bundle.exists()
+
+
+def test_publication_finalization_has_no_fallible_post_publish_cleanup(tmp_path: Path, monkeypatch):
+    """A cleanup fault after rename cannot turn success into a false failure."""
+    output = tmp_path / "descriptor.json"
+    original_unlink = Path.unlink
+
+    def cleanup_fault(path: Path, *args, **kwargs):
+        if path.name.startswith(".descriptor.json."):
+            raise PermissionError("injected temporary cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", cleanup_fault)
+    digest = operator._write_descriptor_no_clobber(output, {"schema_version": 1})
+    assert output.exists() and digest == hashlib.sha256(output.read_bytes()).hexdigest()
 
 
 def test_descriptor_write_failure_leaves_no_destination_or_temporary_file(tmp_path: Path, monkeypatch):

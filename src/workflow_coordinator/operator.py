@@ -955,19 +955,23 @@ def _descriptor_integrity(descriptor: dict[str, object]) -> str:
 
 
 def _discard_export_bundle(path: Path) -> None:
-    """Invalidate a failed export before attempting fallible tree cleanup."""
+    """Best-effort cleanup for an unpublished temporary export directory.
+
+    Callers invoke this only before the no-replace rename.  Publication has no
+    fallible work after that rename, so a reported failure can never leave a
+    final, parser-consumable bundle behind.
+    """
 
     if not _destination_exists(path):
         return
     manifest = path / "manifest.json"
     try:
         manifest.unlink()
-    except FileNotFoundError:
+    except OSError:
+        # This is an unpublished temporary directory.  Preserve the original
+        # publication failure; a later best-effort cleanup must not turn a
+        # successfully finalized artifact into a reported failure.
         pass
-    except OSError as error:
-        raise OperatorPreflightError("failed export manifest could not be invalidated") from error
-    if manifest.exists():
-        raise OperatorPreflightError("failed export manifest remains consumable")
     try:
         shutil.rmtree(path)
     except OSError:
@@ -975,19 +979,35 @@ def _discard_export_bundle(path: Path) -> None:
         pass
 
 
-def _write_descriptor_no_clobber(output: Path, descriptor: dict[str, object]) -> None:
+def _write_descriptor_no_clobber(output: Path, descriptor: dict[str, object]) -> str:
+    """Publish a descriptor once all fallible work has completed.
+
+    The returned digest is calculated from the bytes written before the
+    no-replace rename, avoiding a fallible post-publication readback.
+    """
+
     temporary = output.parent / f".{output.name}.{uuid.uuid4().hex}.tmp"
+    contents = _canonical_json_bytes(descriptor)
     try:
-        with open(temporary, "x", encoding="utf-8") as stream:
-            stream.write(json.dumps(descriptor, sort_keys=True, separators=(",", ":")) + "\n")
+        with open(temporary, "xb") as stream:
+            stream.write(contents)
             stream.flush()
             os.fsync(stream.fileno())
         _rename_no_replace(temporary, output)
-    finally:
+    except BaseException:
         try:
             temporary.unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
+        raise
+    # renameat2 consumed the temporary path.  Cleanup must remain best-effort:
+    # treating a synthetic unlink failure as publication failure would leave a
+    # valid final descriptor while reporting an error.
+    try:
+        temporary.unlink()
+    except OSError:
+        pass
+    return hashlib.sha256(contents).hexdigest()
 
 
 def _salvage_publication_modes(bundle: Path, rows: list[dict[str, object]]) -> bool:
@@ -1025,7 +1045,6 @@ def _export_salvage(args: argparse.Namespace) -> int:
     objects = salvage_inventory(repository, base_head=run.hops[-1].base_head, allowed_paths=scope)
     omissions = salvage_omissions(repository, allowed_paths=scope)
     temporary = Path(tempfile.mkdtemp(prefix=".wfc-salvage-", dir=output.parent))
-    published = False
     try:
         os.chmod(temporary, 0o700)
         object_dir = temporary / "objects"
@@ -1054,16 +1073,10 @@ def _export_salvage(args: argparse.Namespace) -> int:
         if not _salvage_publication_modes(temporary, rows):
             raise OperatorPreflightError("salvage publication modes could not be verified")
         _rename_no_replace(temporary, output)
-        published = True
-        if not _salvage_publication_modes(output, rows):
-            raise OperatorPreflightError("salvage final publication modes could not be verified")
     except BaseException:
-        # Verification after rename is part of publication, not a best-effort
-        # warning.  A failed final check must not leave a parser-consumable
-        # manifest at either the temporary or requested final location.
+        # Every validation occurs before publication.  This temporary tree is
+        # therefore never a final output, even if best-effort cleanup fails.
         _discard_export_bundle(temporary)
-        if published:
-            _discard_export_bundle(output)
         raise
     print(f"UNTRUSTED SALVAGE EXPORTED: {output / 'manifest.json'}\nNEXT EXPLICIT ACTION: inspect or omit this potentially sensitive bundle before preparing a successor.")
     return 0
@@ -1147,13 +1160,13 @@ def _prepare_successor(args: argparse.Namespace) -> int:
                                   "status": predecessor.status.value, "final_head": predecessor.current_head,
                                   "semantic_stop": {"kind": predecessor.semantic_stop.kind, "question": predecessor.semantic_stop.question, "source_hop_id": predecessor.semantic_stop.source_hop_id},
                                   "run_json_sha256": hashlib.sha256(run_path.read_bytes()).hexdigest(),
-                                  "state_root": str(root)},
+                                  "state_root": str(root),
+                                  "repository_store": str(_repository_store_identity(predecessor_repository))},
                   "authority_decision": {"ref": str(authority), "sha256": authority_digest},
                   "successor": {"repository": str(successor_repository), "expected_head": args.expected_head,
                                 "inputs": inputs, "governing": governing}, "salvage": salvage}
     descriptor["integrity_sha256"] = _descriptor_integrity(descriptor)
-    _write_descriptor_no_clobber(output, descriptor)
-    descriptor_digest = hashlib.sha256(output.read_bytes()).hexdigest()
+    descriptor_digest = _write_descriptor_no_clobber(output, descriptor)
     print(f"SUCCESSOR DESCRIPTOR: {output}\nDESCRIPTOR SHA-256: {descriptor_digest}\nNEXT EXPLICIT ACTION: launch a fresh successor with --successor-continuation and --successor-continuation-sha256 after revalidating the clean baseline.")
     return 0
 
@@ -1187,10 +1200,10 @@ def _validated_successor_descriptor(descriptor_path: Path, repository: Path, exp
         raise OperatorPreflightError("successor descriptor does not match newly admitted governing inputs")
     predecessor = descriptor.get("predecessor")
     authority = descriptor.get("authority_decision")
-    if (not isinstance(predecessor, dict) or set(predecessor) != {"run_id", "work_item_id", "status", "final_head", "semantic_stop", "run_json_sha256", "state_root"}
+    if (not isinstance(predecessor, dict) or set(predecessor) != {"run_id", "work_item_id", "status", "final_head", "semantic_stop", "run_json_sha256", "state_root", "repository_store"}
             or not isinstance(authority, dict) or set(authority) != {"ref", "sha256"}):
         raise OperatorPreflightError("successor descriptor has malformed provenance")
-    if not all(isinstance(predecessor[key], str) and predecessor[key] for key in {"run_id", "work_item_id", "status", "final_head", "run_json_sha256", "state_root"}):
+    if not all(isinstance(predecessor[key], str) and predecessor[key] for key in {"run_id", "work_item_id", "status", "final_head", "run_json_sha256", "state_root", "repository_store"}):
         raise OperatorPreflightError("successor descriptor predecessor metadata is invalid")
     if (predecessor["status"] != RunStatus.AWAITING_HUMAN.value
             or re.fullmatch(r"[0-9a-f]{40}", predecessor["final_head"]) is None
@@ -1206,6 +1219,14 @@ def _validated_successor_descriptor(descriptor_path: Path, repository: Path, exp
             or hashlib.sha256(run_path.read_bytes()).hexdigest() != predecessor["run_json_sha256"]
             or {"kind": frozen.semantic_stop.kind, "question": frozen.semantic_stop.question, "source_hop_id": frozen.semantic_stop.source_hop_id} != stop):
         raise OperatorPreflightError("successor descriptor does not match frozen predecessor truth")
+    try:
+        predecessor_store = _repository_store_identity(predecessor_repository)
+        successor_store = _repository_store_identity(repository)
+    except (GitPreflightError, OperatorPreflightError) as error:
+        raise OperatorPreflightError("predecessor or successor checkout repository is unavailable") from error
+    if (str(predecessor_store) != predecessor["repository_store"]
+            or predecessor_store != successor_store):
+        raise OperatorPreflightError("successor checkout is not a checkout of the frozen predecessor repository")
     if not isinstance(authority["ref"], str) or not isinstance(authority["sha256"], str):
         raise OperatorPreflightError("successor authority decision is malformed")
     authority_path = Path(authority["ref"])
