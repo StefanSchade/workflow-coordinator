@@ -459,6 +459,56 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     assert successor.hops[0].actual_commits == ()
 
 
+def test_successor_lifecycle_keeps_every_predecessor_publication_and_governing_input_byte_identical(
+    repository: Path, tmp_path: Path
+):
+    """Export-free preparation and launch have no predecessor or governing write effect."""
+    state, descriptor, authority, baseline, run_path = stopped_predecessor_and_descriptor(
+        repository, tmp_path, prepare=False
+    )
+    run_root = run_path.parent
+    frozen = {
+        "run": run_path.read_bytes(),
+        "checkpoint": (run_root / "checkpoint.json").read_bytes(),
+        "evidence": (run_root / "execution-evidence.json").read_bytes(),
+        "summary": (state / "operator-summary.json").read_bytes(),
+        "plan": (state / "operator-plan.json").read_bytes(),
+        **{name: (repository / name).read_bytes() for name in (
+            "work.yml", "profile.yml", "policy.yml", "task.txt", "components.yml", "worker.txt",
+        )},
+    }
+    git(repository, "checkout", "--", "PROOF.md")
+    assert main([
+        "prepare-successor", "--predecessor-state-root", str(state), "--repository", str(repository),
+        "--authority-decision", str(authority), "--work-item", "work.yml", "--profile", "profile.yml",
+        "--policy", "policy.yml", "--task", "task.txt", "--components", "components.yml",
+        "--expected-head", baseline, "--output", str(descriptor),
+    ]) == 0
+    successor = fake(tmp_path, '''import json, pathlib, sys
+args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read()
+def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
+result={"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"fresh no-salvage successor"}
+output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
+''')
+    successor_state = tmp_path / "byte-identical-successor"
+    assert main([
+        *args(repository, successor_state, str(successor)),
+        "--successor-continuation", str(descriptor),
+        "--successor-continuation-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+    ]) == 0
+    observed = {
+        "run": run_path.read_bytes(),
+        "checkpoint": (run_root / "checkpoint.json").read_bytes(),
+        "evidence": (run_root / "execution-evidence.json").read_bytes(),
+        "summary": (state / "operator-summary.json").read_bytes(),
+        "plan": (state / "operator-plan.json").read_bytes(),
+        **{name: (repository / name).read_bytes() for name in (
+            "work.yml", "profile.yml", "policy.yml", "task.txt", "components.yml", "worker.txt",
+        )},
+    }
+    assert observed == frozen
+
+
 def test_public_salvage_containment_modes_and_prompt_projection_are_bounded(
     repository: Path, tmp_path: Path
 ):
@@ -505,6 +555,7 @@ def test_public_salvage_containment_modes_and_prompt_projection_are_bounded(
     bundle = tmp_path / "bounded-salvage"
     assert main(["export-salvage", "--state-root", str(state), "--output", str(bundle)]) == 0
     manifest = json.loads((bundle / "manifest.json").read_text())
+    manifest_digest = hashlib.sha256((bundle / "manifest.json").read_bytes()).hexdigest()
     assert "untrusted_salvage" in json.dumps(manifest)
     manifest_text = (bundle / "manifest.json").read_text()
     assert "potentially sensitive" in manifest_text
@@ -527,6 +578,7 @@ def test_public_salvage_containment_modes_and_prompt_projection_are_bounded(
         "--authority-decision", str(authority), "--work-item", "work.yml", "--profile", "profile.yml",
         "--policy", "policy.yml", "--task", "task.txt", "--components", "components.yml",
         "--expected-head", baseline, "--salvage-manifest", str(bundle / "manifest.json"),
+        "--salvage-manifest-sha256", manifest_digest,
         *selected_args, "--output", str(descriptor),
     ]) == 2  # The predecessor dirty checkout is deliberately not a clean successor baseline.
 
@@ -538,6 +590,7 @@ def test_public_salvage_containment_modes_and_prompt_projection_are_bounded(
         "--authority-decision", str(authority), "--work-item", "work.yml", "--profile", "profile.yml",
         "--policy", "policy.yml", "--task", "task.txt", "--components", "components.yml",
         "--expected-head", baseline, "--salvage-manifest", str(bundle / "manifest.json"),
+        "--salvage-manifest-sha256", manifest_digest,
         *selected_args, "--output", str(descriptor),
     ]
     # Manifest bytes are an independently mutable preparation input.  A
@@ -545,6 +598,16 @@ def test_public_salvage_containment_modes_and_prompt_projection_are_bounded(
     # provider-capable launch is considered.
     manifest_path = bundle / "manifest.json"
     manifest_bytes = manifest_path.read_bytes()
+    # A parseable, canonical rewrite is still a byte mutation.  Preparation
+    # must bind the explicit export identity before it accepts manifest facts
+    # or reaches any descriptor publication boundary.
+    rewritten_manifest = json.loads(manifest_bytes)
+    rewritten_manifest["objects"] = list(reversed(rewritten_manifest["objects"]))
+    manifest_path.write_bytes(operator._canonical_json_bytes(rewritten_manifest))
+    canonical_rewrite = tmp_path / "canonically-rewritten-manifest.json"
+    rejected_prepare = [*prepare[:-1], str(canonical_rewrite)]
+    assert main(rejected_prepare) == 2 and not canonical_rewrite.exists()
+    manifest_path.write_bytes(manifest_bytes)
     manifest_path.write_bytes(manifest_bytes + b" ")
     rejected_descriptor = tmp_path / "mutated-manifest-descriptor.json"
     rejected_prepare = [*prepare[:-1], str(rejected_descriptor)]
@@ -597,10 +660,12 @@ def test_successor_cli_uses_explicit_salvage_actions_without_recovery_framing(ca
     export_help = capsys.readouterr().out.lower()
     assert "untrusted salvage" in export_help
     assert "prompt-injection" in export_help and "not sanitized" in export_help
+    assert "next explicit action" in export_help
     assert not any(word in export_help for word in ("resume", "reconcile", "retry", "checkpoint", "provider-session"))
     assert main(["prepare-successor", "--help"]) == 0
     prepare_help = capsys.readouterr().out.lower()
     assert "successor" in prepare_help and "authority-decision" in prepare_help
+    assert "salvage-manifest-sha256" in prepare_help and "next explicit action" in prepare_help
     assert not any(word in prepare_help for word in ("resume", "reconcile", "retry", "checkpoint", "provider-session"))
 
 
@@ -647,6 +712,7 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
     bundle = tmp_path / "binary-salvage"
     assert main(["export-salvage", "--state-root", str(predecessor_state), "--output", str(bundle)]) == 0
     manifest = json.loads((bundle / "manifest.json").read_text())
+    manifest_digest = hashlib.sha256((bundle / "manifest.json").read_bytes()).hexdigest()
     binary = next(row for row in manifest["objects"] if row["kind"] == "tracked_diff")
     assert binary["content_kind"] == "binary"
     # A complete tree stranded by real finalization/cleanup failures is
@@ -663,7 +729,8 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
         "--repository", str(successor_repository), "--authority-decision", str(authority),
         "--work-item", "work.yml", "--profile", "profile.yml", "--policy", "policy.yml",
         "--task", "task.txt", "--components", "components.yml", "--expected-head", baseline,
-        "--salvage-manifest", str(bundle / "manifest.json"), "--include-salvage-object", binary["sha256"],
+        "--salvage-manifest", str(bundle / "manifest.json"), "--salvage-manifest-sha256", manifest_digest,
+        "--include-salvage-object", binary["sha256"],
         "--output", str(descriptor),
     ]
     stranded_prepare = list(prepare)
@@ -764,7 +831,7 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     no_salvage_descriptor = tmp_path / "no-salvage-successor.json"
     no_salvage_prepare = list(prepare)
     salvage_option = no_salvage_prepare.index("--salvage-manifest")
-    del no_salvage_prepare[salvage_option:salvage_option + 4]
+    del no_salvage_prepare[salvage_option:salvage_option + 6]
     no_salvage_prepare[-1] = str(no_salvage_descriptor)
     assert main(no_salvage_prepare) == 0
     no_salvage_state = tmp_path / "no-salvage-successor-state"
@@ -809,6 +876,7 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
     bundle = tmp_path / "same-content-salvage"
     assert main(["export-salvage", "--state-root", str(predecessor_state), "--output", str(bundle)]) == 0
     manifest = json.loads((bundle / "manifest.json").read_text())
+    manifest_digest = hashlib.sha256((bundle / "manifest.json").read_bytes()).hexdigest()
     rows = [row for row in manifest["objects"] if row["kind"] == "untracked_file"]
     assert [row["path"] for row in rows] == ["src/a.txt", "src/b.txt"]
     assert len({row["sha256"] for row in rows}) == len({row["file"] for row in rows}) == 1
@@ -824,7 +892,8 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
         "--repository", str(successor_repository), "--authority-decision", str(authority),
         "--work-item", "work.yml", "--profile", "profile.yml", "--policy", "policy.yml",
         "--task", "task.txt", "--components", "components.yml", "--expected-head", baseline,
-        "--salvage-manifest", str(bundle / "manifest.json"), "--include-salvage-object", rows[0]["sha256"],
+        "--salvage-manifest", str(bundle / "manifest.json"), "--salvage-manifest-sha256", manifest_digest,
+        "--include-salvage-object", rows[0]["sha256"],
         "--output", str(descriptor),
     ]) == 0
     prompt_path = tmp_path / "same-content-prompt.txt"
@@ -990,6 +1059,72 @@ def test_descriptor_write_failure_leaves_no_destination_or_temporary_file(tmp_pa
     with pytest.raises(OperatorPreflightError, match="injected rename failure"):
         operator._write_descriptor_no_clobber(output, {"schema_version": 1})
     assert not output.exists() and not list(tmp_path.glob(".descriptor.json.*.tmp"))
+
+
+@pytest.mark.parametrize("artifact", ("salvage", "descriptor"))
+@pytest.mark.parametrize("fault", ("write", "rename", "permission", "verification", "existing-entry", "destination-race"))
+def test_public_artifact_publication_fault_matrix_is_fail_closed(
+    repository: Path, tmp_path: Path, monkeypatch, artifact: str, fault: str
+):
+    """Both public publishers refuse every injected partial-publication path."""
+    state, _descriptor, authority, baseline, _run_path = stopped_predecessor_and_descriptor(
+        repository, tmp_path, prepare=False
+    )
+    output = tmp_path / f"{artifact}-{fault}"
+    if artifact == "salvage":
+        command = ["export-salvage", "--state-root", str(state), "--output", str(output)]
+    else:
+        git(repository, "checkout", "--", "PROOF.md")
+        command = [
+            "prepare-successor", "--predecessor-state-root", str(state),
+            "--repository", str(repository), "--authority-decision", str(authority),
+            "--work-item", "work.yml", "--profile", "profile.yml", "--policy", "policy.yml",
+            "--task", "task.txt", "--components", "components.yml", "--expected-head", baseline,
+            "--output", str(output),
+        ]
+    if fault == "write":
+        if artifact == "salvage":
+            monkeypatch.setattr(
+                operator, "atomic_write_json",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected write failure")),
+            )
+        else:
+            monkeypatch.setattr(
+                operator.os, "fsync",
+                lambda _fd: (_ for _ in ()).throw(OSError("injected write failure")),
+            )
+    elif fault == "rename":
+        monkeypatch.setattr(
+            operator, "_rename_no_replace",
+            lambda *_args: (_ for _ in ()).throw(OperatorPreflightError("injected rename failure")),
+        )
+    elif fault == "permission":
+        monkeypatch.setattr(
+            operator.os, "chmod",
+            lambda *_args: (_ for _ in ()).throw(PermissionError("injected permission failure")),
+        )
+    elif fault == "verification":
+        if artifact == "salvage":
+            monkeypatch.setattr(operator, "_salvage_publication_modes", lambda *_args: False)
+        else:
+            monkeypatch.setattr(operator.os, "chmod", lambda *_args: None)
+    elif fault == "existing-entry":
+        output.write_text("preserve existing entry\n")
+    else:
+        original_rename = operator._rename_no_replace
+
+        def race(source: Path, destination: Path) -> None:
+            destination.write_text("racer\n")
+            original_rename(source, destination)
+
+        monkeypatch.setattr(operator, "_rename_no_replace", race)
+
+    assert main(command) == 2
+    if fault in {"existing-entry", "destination-race"}:
+        assert output.read_text() == ("preserve existing entry\n" if fault == "existing-entry" else "racer\n")
+    else:
+        assert not output.exists()
+    assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
 
 
 def test_a1_rejection_has_no_run_state_checkout_adapter_or_provider_effects(

@@ -230,6 +230,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             prepare.add_argument(f"--{name}", required=True)
         prepare.add_argument("--expected-head", required=True)
         prepare.add_argument("--salvage-manifest")
+        prepare.add_argument(
+            "--salvage-manifest-sha256",
+            help="exact manifest SHA-256 printed by export-salvage; required when salvage is supplied",
+        )
         prepare.add_argument("--include-salvage-object", action="append", default=[])
         prepare.add_argument("--output", required=True)
         status = sub.add_parser("status", help="read and publish the separate semantic and mechanical stop dimensions")
@@ -1139,6 +1143,7 @@ def _export_salvage(args: argparse.Namespace) -> int:
         raise
     print(
         f"UNTRUSTED SALVAGE EXPORTED: {output / 'manifest.json'}\n"
+        f"MANIFEST SHA-256: {hashlib.sha256((output / 'manifest.json').read_bytes()).hexdigest()}\n"
         "WARNING: potentially sensitive untrusted bytes may contain prompt-injection and are not sanitized.\n"
         "NEXT EXPLICIT ACTION: inspect or omit this bundle before preparing a successor."
     )
@@ -1198,6 +1203,16 @@ def _prepare_successor(args: argparse.Namespace) -> int:
     if args.salvage_manifest:
         manifest_path = Path(args.salvage_manifest).resolve()
         _outside_protected(manifest_path, repository=predecessor_repository, run_roots=(root,))
+        supplied_manifest_digest = args.salvage_manifest_sha256
+        manifest_bytes = manifest_path.read_bytes()
+        if (
+            not isinstance(supplied_manifest_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", supplied_manifest_digest) is None
+            or hashlib.sha256(manifest_bytes).hexdigest() != supplied_manifest_digest
+        ):
+            raise OperatorPreflightError(
+                "salvage manifest does not match the explicit export SHA-256"
+            )
         expected_source = {
             "run_id": predecessor.run_id,
             "hop_id": predecessor.hops[-1].hop_id,
@@ -1210,9 +1225,9 @@ def _prepare_successor(args: argparse.Namespace) -> int:
         available = {row["sha256"] for row in parsed["objects"]}
         if not set(selected_objects).issubset(available):
             raise OperatorPreflightError("selected salvage object is absent from manifest")
-        salvage = {"path": str(manifest_path), "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(), "selected_objects": selected_objects}
-    elif selected_objects:
-        raise OperatorPreflightError("raw salvage selection requires a supplied manifest")
+        salvage = {"path": str(manifest_path), "sha256": supplied_manifest_digest, "selected_objects": selected_objects}
+    elif selected_objects or args.salvage_manifest_sha256:
+        raise OperatorPreflightError("raw salvage selection or digest requires a supplied manifest")
     output = Path(args.output)
     _outside_protected(output, repository=predecessor_repository, run_roots=(root,))
     if _destination_exists(output) or not output.parent.is_dir():
