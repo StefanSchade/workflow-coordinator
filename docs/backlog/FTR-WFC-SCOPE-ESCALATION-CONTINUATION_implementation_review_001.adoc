@@ -1,0 +1,290 @@
+= FTR-WFC-SCOPE-ESCALATION-CONTINUATION -- Implementation Review 001
+
+Independent adversarial implementation review of candidate
+`ab919464b15ecce4533f487b15d76e0a4b8cc091`
+(`feat(workflow): WI-WFC-SCOPE-ESCALATION-CONTINUATION-IMPLEMENTATION-001 H001 successor continuation`)
+against parent `af2f9226db8d4f51c0b7e38b199f7698ec6faf94`, the accepted
+`docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc`, its accepted design
+review history, and
+`docs/backlog/BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc`.
+
+Review Hop identity:: Run `RUN-692338c488044e8e9393a1585d118eb8`, Hop
+`H002`, invocation `INV-056d0a23c4e44ec6ac76d90b83f36548`
+Candidate received at entry:: `ab919464b15ecce4533f487b15d76e0a4b8cc091`
+Candidate range::
+`af2f9226db8d4f51c0b7e38b199f7698ec6faf94..ab919464b15ecce4533f487b15d76e0a4b8cc091`
+
+This is an implementation review only. It changes no implementation source,
+ordinary test, accepted design, source BUG, governance input, Runtime, frozen
+Run state, evidence repository, or remote. The only path changed by this Hop is
+this required durable review artifact.
+
+== Verdict
+
+*CHANGES REQUIRED; route `correct`.*
+
+The candidate establishes useful foundations: new Runs use schema version 2;
+the version-1 and version-2 Run wire shapes are separated; a correlated
+semantic request is captured before mechanical reduction; summaries and
+checkpoints project the new records; and no candidate path falls outside the
+commissioned implementation/test set. The full repository test suite passes.
+
+The implementation is nevertheless not acceptable. Five blocking groups
+remain on the accepted mechanism's load-bearing boundaries: the real layered
+stop does not publish mechanical anomalies and has no required
+operator/vertical regression; successor launch trusts a forgeable descriptor
+instead of revalidating predecessor and authority truth; salvage is not bound
+to its claimed predecessor and its prompt projection omits required trust
+metadata; export can mutate the Git index despite its read-only contract; and
+most of the mandatory acceptance suite was not implemented.
+
+These are ordinary implementation-review defects. This review creates no WFC
+Current-Run Finding and requests no Finding disposition.
+
+== Review method and evidence
+
+The review read the accepted FTR, its review history, the source BUG, and the
+distinct atomic-Hop-recovery FTR before examining the H001 diff. It inspected
+the six authorized production seams, the unchanged `vertical.py` and
+`prompt.py` boundaries, and the relevant unit and architecture tests. The
+candidate changed only the six authorized production paths and three of the
+six authorized ordinary test paths; it did not change the frozen historical
+Run, the source BUG, Runtime, the evidence repository, or any out-of-scope
+path.
+
+Independent exploratory validation at the candidate SHA produced:
+
+* `.venv/bin/python -m pytest -q` -- exit 0;
+* the focused reducer/serialization/persistence tests -- exit 0;
+* `git diff --check` over the candidate range -- exit 0;
+* a forged-descriptor probe -- `_successor_context()` accepted an invented
+  predecessor, a nonexistent authority-decision reference and digest, and an
+  extra `permitted_routes` field;
+* a layered-stop probe -- status was `awaiting_human`, the semantic stop was
+  retained, and the mechanical text was in `stop_reason`, but `Run.anomalies`
+  was the empty tuple; and
+* a Git non-mutation probe -- after a stat-only worktree timestamp change,
+  calling the same `observe_repository()` used by export changed the SHA-256
+  of `.git/index`.
+
+The Coordinator-projected trusted `pytest` evidence for H001 is also green.
+Passing tests do not waive unimplemented acceptance criteria or the direct
+fail-open probes below.
+
+== Blocking implementation defects
+
+=== B1 -- The layered stop loses the required mechanical-anomaly publication and is tested only synthetically
+
+`reduce_result()` captures `SemanticStop` before it selects a mechanical stop,
+which is the correct ordering. However, mechanical facts are passed only into
+`_stop_for_human()` as `stop_reason`; they are never appended to
+`Run.anomalies`. A direct reduction with a scope escalation and
+`repository_anomaly="dirty tracked state; trusted_commit:commit intent is not
+permitted"` yielded:
+
+[source,text]
+----
+status=awaiting_human
+stop_reason=mechanical_preemption:dirty tracked state; trusted_commit:commit intent is not permitted
+anomalies=()
+semantic_stop=SemanticStop(kind='scope', question='May scope widen?', source_hop_id='H001')
+----
+
+Consequently `run.json`, checkpoint, status, and operator summary publish an
+empty mechanical-anomaly list for the observed failure class, contrary to the
+task's explicit requirement that mechanical anomalies be present alongside the
+semantic stop.
+
+The added reducer test does not exercise the required boundary. It manually
+places both dirty-state and forbidden-CommitIntent prose in one synthetic
+`MechanicalFacts.repository_anomaly`; it supplies no `CommitIntent`, creates no
+dirty tracked candidate, does not pass through `vertical.run_one_hop()` or the
+operator, and checks neither `Run.anomalies` nor durable publication, replay,
+route/Finding non-application, or commit absence. `tests/unit/test_operator.py`
+and `tests/architecture/test_replays.py` are unchanged.
+
+Required correction: retain the controlling mechanical stop while durably
+recording its structured diagnostic facts, and add the exact operator/vertical
+regression required by the FTR: `scope_changed=true`, `requires_human=true`, a
+scope escalation with its exact question, real dirty tracked state, and a
+forbidden CommitIntent. Assert the complete `run.json`, checkpoint, operator
+summary, serialization/replay, no-route, no-Finding, no-commit, and
+same-Run-recovery behavior.
+
+=== B2 -- Successor launch accepts forged or changed descriptors and fabricates provenance
+
+`_successor_context()` checks only that four descriptor-supplied successor
+values equal the newly admitted repository, HEAD, path map, and governing
+digest map. It does not strictly parse the descriptor, reject unknown fields,
+locate and digest the predecessor `run.json`, validate the predecessor status
+or semantic stop, or re-read and digest the authority decision. It also has no
+expected descriptor digest against which to detect descriptor mutation after
+preparation. Instead it hashes whatever bytes exist at launch and records that
+new digest as provenance.
+
+A direct probe added an otherwise forbidden `permitted_routes` field and used
+`RUN-invented`, `WI-invented`, a `completed` predecessor, a null semantic stop,
+a false predecessor-state digest, and a nonexistent authority-decision
+reference with an invented digest. `_successor_context()` accepted the
+descriptor and returned `SuccessorProvenance` carrying the invented identities.
+The launch path then installs this record on a fresh Run. `run_to_json()` does
+not validate a constructed dataclass before the provider-capable path writes
+it, so this is not repaired by the strict JSON loader.
+
+This violates the backward-provenance truth boundary, the requirement that
+descriptor changes after preparation fail digest validation, and the rule that
+a descriptor cannot become semantic authority or fabricate historical truth.
+
+Required correction: give the descriptor a closed, strictly validated shape
+including all accepted content, revalidate predecessor identity/status/semantic
+stop/state digest and the authority-decision bytes/reference at launch, reject
+any post-preparation descriptor mutation, and construct provenance only from
+those revalidated facts. Add pre-provider rejection tests for every mismatch,
+unknown field, source mutation, and forged provenance case.
+
+=== B3 -- Salvage is not bound to its predecessor and the successor context is incomplete
+
+`prepare-successor` validates object hashes in a supplied manifest but never
+compares the manifest's `source.run_id`, `source.hop_id`, repository, base/current
+HEAD, or `run_json_sha256` with the predecessor being prepared. A structurally
+valid bundle from another Run or repository can therefore be attached to the
+descriptor and exposed as though it were this predecessor's salvage.
+
+At launch, the context contains only a warning, five authority labels, and the
+selected decodable object text. It omits the required predecessor provenance,
+manifest omission diagnostics, complete file/object inventory, and the
+`automatic application/execution: forbidden` classification that every context
+projection must repeat. There is no stable manifest-level binary
+classification; any selected bytes that happen to decode as UTF-8 and contain
+no NUL are treated as textual content. The accepted boundary requires omitted,
+unselected, binary, and over-limit bytes to remain out of the prompt while the
+inventory and omission facts remain visible.
+
+Required correction: bind a manifest and every selected hash to the exact
+validated predecessor and repository facts during both preparation and launch;
+strictly validate the complete manifest; render the mandatory provenance,
+inventory, omissions, and full trust classification; and prove that only
+explicitly selected, classified-text, within-limit objects contribute raw
+bytes.
+
+=== B4 -- `export-salvage` violates the no-index-mutation and publication-verification contract
+
+`_export_salvage()` calls `observe_repository()` while building its manifest.
+That helper runs ordinary `git status` without disabling optional locks. Git may
+refresh and rewrite the index even when repository content is unchanged. A
+disposable-repository probe changed only a tracked file's timestamp and then
+called `observe_repository()`; the `.git/index` SHA-256 changed. The accepted
+export contract explicitly forbids HEAD, index, worktree, and predecessor-state
+mutation.
+
+Publication checks are also incomplete: export sets modes on object paths but
+verifies only the top-level temporary directory and `manifest.json`, not the
+objects directory and every published object. The manifest always records an
+empty omissions list, including when ignored content is deliberately excluded.
+No test covers index identity, HEAD/worktree/predecessor byte identity,
+directory and object modes, partial/finalization failure, unsafe destinations,
+symlink/special-file refusal, limits, stable object identities, or tamper
+detection.
+
+Required correction: make every export Git observation genuinely non-mutating,
+capture and assert pre/post HEAD/index/worktree/predecessor identity, verify
+owner-only modes for the final directory tree and every regular file, publish
+accurate omission diagnostics, and implement the accepted containment,
+atomic-finalization, limit, and tamper tests in the authorized operator and
+Git-fact test paths.
+
+=== B5 -- The mandatory acceptance suite is largely absent
+
+The implementation changes only `test_serialization.py`,
+`test_persistence.py`, and `test_reducer.py`; the authorized and required
+`test_operator.py`, `test_git_facts.py`, and `architecture/test_replays.py`
+remain unchanged. The added tests cover one v1 load, a happy persistence
+upgrade, and a synthetic reducer case. They do not cover, among other mandatory
+criteria:
+
+* strict malformed/missing v2 records and strict provenance validation;
+* byte-preserving read-only legacy status/replay/predecessor inspection;
+* version-1 reconcile/resume followed by atomic v2 persistence and an injected
+  failed upgrade preserving the exact v1 bytes;
+* `prepare-successor` rejection of v1, null-stop, and absent-source-Hop state
+  with no output and no predecessor-byte change;
+* explicit no-back-patch coverage for
+  `RUN-76e153b40ef1459db4587446b18e02d5`;
+* backward-only provenance, different Run identity, and absence of inherited
+  Findings/evidence/authority;
+* preparation and launch clean-baseline, repository, HEAD, governing-digest,
+  authority-decision, descriptor, and salvage revalidation;
+* the salvage containment, permissions, atomicity, sensitivity-language,
+  object-selection, binary/limit, and tamper cases; or
+* successor independent evidence/commit behavior and full mechanism-separation
+  ergonomics.
+
+The green full suite therefore establishes only that the sparse new tests and
+pre-existing suite pass; it does not meet the accepted FTR's implementation
+acceptance criteria.
+
+Required correction: add the complete accepted test matrix within the six
+already authorized ordinary test paths. Do not weaken those criteria to mirror
+the current implementation.
+
+== Adversarial invariant assessment
+
+[cols="2,1,5",options="header"]
+|===
+|Invariant / challenge |Result |Assessment
+
+|No authority widening through ordinary successor admission
+|*Partial pass*
+|The normal launch preflight still admits WorkItem/Profile/Policy inputs and a
+descriptor cannot directly change their path/digest map. B2 still permits
+unverified authority and predecessor provenance to be recorded as Run truth.
+
+|No predecessor mutation or historical back-patch
+|*Pass in the candidate diff; coverage missing*
+|The H001 commit touches no historical evidence or predecessor state and adds
+no forward pointer. The mandated rejection/no-byte-change tests, including the
+named historical Run, are absent under B5.
+
+|Semantic visibility under mechanical preemption
+|*Fail*
+|The semantic record survives, but the required anomaly publication and real
+operator/vertical regression are absent (B1).
+
+|Salvage remains untrusted and source-bound
+|*Fail*
+|Trust labels prevent direct application, but unrelated salvage can be attached
+to a predecessor and required context metadata is missing (B3).
+
+|No Git or state mutation during export
+|*Fail*
+|The export observation path can rewrite `.git/index` (B4).
+
+|No inherited Findings, evidence, or accepted commit
+|*Mechanism appears bounded; proof missing*
+|`new_run()` starts empty and salvage is not copied into Run findings/evidence,
+but the required end-to-end successor tests are absent (B5).
+
+|Same-Run recovery remains distinct
+|*Partial pass*
+|The new CLI names use successor/salvage terms and the reducer still rejects
+reconcile from `awaiting_human`; architecture-level separation and legacy
+transition coverage are incomplete (B1/B5).
+
+|Fail-closed artifact and digest handling
+|*Fail*
+|Descriptor/predecessor/authority mutation is not revalidated and salvage
+publication verification is incomplete (B2-B4).
+|===
+
+== Route and lifecycle effect
+
+Request `route: correct` with `outcome: changes_required` and an empty WFC
+Findings delta. Correction should address only B1 through B5 within the exact
+six production and six ordinary test paths already authorized by this
+WorkItem. No scope expansion is presently required.
+
+At this Hop, the implementation candidate exists but is *not independently
+accepted*. This review does not close the source BUG, promote
+`workflow-coordinator-runtime`, authorize a push, mutate the evidence
+repository, accept any salvage, or launch any Run. Those remain separate,
+later, maintainer-owned acts.
