@@ -1,0 +1,349 @@
+Implement, and have independently reviewed, the accepted successor-Run
+semantic-continuation mechanism designed by
+docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc and accepted by fresh
+independent rereview (design attempt
+wfc-scope-escalation-continuation-design-20260930-01, Run
+RUN-98ade643f57042a0a46888e1dca30657, H004, zero remaining findings) against
+docs/backlog/BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc. This Run
+implements and reviews only. It does not promote workflow-coordinator-runtime,
+push, mutate the workflow-coordinator-run-evidence repository, launch any
+other Run, or close the source BUG -- those remain separate, later,
+maintainer-owned acts.
+
+BACKGROUND (read before writing anything):
+
+Read docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc in full; it is
+the accepted architecture authority for this Run. Also read
+docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_review_001.adoc (the
+accepted design's own review history) and
+docs/backlog/BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc. Do not reopen a
+settled architecture question merely because another design is possible. If
+you discover a genuine contradiction, a missing authority requirement, or an
+implementation-blocking ambiguity in the accepted FTR, stop and report it via
+a scope/semantic escalation rather than silently changing the architecture.
+
+Also read, read-only, docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc (the
+distinct same-Run technical-recovery mechanism you must not conflate with or
+weaken) and the current production
+src/workflow_coordinator/{model,serialization,reducer,persistence,operator,
+git_facts,vertical,prompt}.py and their existing unit/architecture tests, so
+your implementation extends current seams rather than inventing parallel
+ones. You hold no mutation authority over vertical.py, prompt.py, the
+adapter, or any file outside this WorkItem's scope below.
+
+HARD SEMANTIC DISTINCTION -- preserve this throughout the implementation,
+naming, CLI help text, and tests:
+
+(A) Same-Run technical recovery -- reconcile_required/suspended/
+resume_after_reconcile, same Run identity -- is FTR-WFC-ATOMIC-HOP-RECOVERY's
+mechanism. Do not touch it, extend it, or let successor continuation reuse
+its states or verbs.
+
+(B) Successor-Run semantic continuation -- this Run's actual target: a Hop
+deliberately reports that current semantic authority is insufficient; the
+predecessor Run freezes as historical evidence; a maintainer separately
+grants authority; a fresh successor Run is admitted against new governing
+inputs; preserved candidate material, if any, is untrusted salvage only.
+
+(C) Provider-session continuation -- resuming a provider's own session or
+hidden reasoning state -- is out of scope and must not be introduced.
+
+Never name or design this feature using "resume", "reconcile", "retry",
+"checkpoint", or "session continuation"; use "successor" / "successor_run".
+
+NON-NEGOTIABLE INVARIANTS (from the accepted FTR's "Accepted invariants"
+section -- preserve all of them together):
+
+- The exact correlated semantic-escalation kind and human question remain in
+  durable Run state and operator-visible publication even when a later
+  mechanical preemption controls the stop.
+- A worker escalation never changes WorkItem scope or any other authority;
+  only a separately authorized maintainer act supplies a successor's new
+  governing inputs.
+- A blocked, failed, escalated, mechanically preempted, or dirty candidate is
+  never automatically committed or accepted.
+- Preserved candidate material is `untrusted_salvage`: never trusted
+  evidence, a checkpoint, an accepted commit, governing input, or an implicit
+  authority grant.
+- A successor may receive salvage only as untrusted context; it must produce
+  its own evidence and accepted mutation under its own Run authority.
+- No predecessor WorkItem, Profile, Policy, Commission, Run snapshot, Hop,
+  Finding, evidence, operator summary, or governing digest is ever mutated to
+  add a successor or retrofit continuation. In particular, the historical
+  predecessor RUN-76e153b40ef1459db4587446b18e02d5 must NOT be rewritten,
+  back-patched, or made eligible for the new automated `prepare-successor`
+  path by inference from `human_question`, Hop prose, result artifacts, or
+  salvage.
+- Salvage existence, successful export, a matching hash, descriptor creation,
+  or successor launch never implies candidate acceptance.
+- Successor-Run semantic continuation remains distinct in model, persistence,
+  CLI names, and tests from same-Run recovery and provider-session
+  continuation.
+- Git is authoritative for repository mutation; `run.json` and durable WFC
+  state are authoritative for Run facts. A descriptor, manifest, hash, or
+  derived checkpoint cannot become repository or semantic authority.
+- A predecessor's Run identity, status-at-stop, Hops, Findings, governing
+  inputs, evidence, and published stop facts remain frozen historical truth.
+
+REQUIRED BEHAVIOR -- use the accepted FTR's "Minimal state and data model",
+"Salvage trust model", "Operator and CLI surface", and "Atomicity and failure
+semantics" sections as the exact authority for field names, CLI argument
+names, descriptor content, trust labels, digests, and failure semantics. In
+summary, the implementation must:
+
+1. Add an optional immutable `SemanticStop` (kind, question, source_hop_id)
+   captured onto `Run` from a validated correlated current-Hop result,
+   independent of whichever mechanical fact ultimately controls
+   `stop_reason`/`status`/`anomalies`. Mechanical control stays authoritative
+   for the Run's actual disposition; the semantic observation is additional
+   durable truth, not an alternative control channel. Do not weaken existing
+   mechanical fail-closed behavior to add this.
+2. Give newly written Run state `schema_version=2`. Define two distinct
+   closed wire shapes: v1 (exactly the current pre-change field set, with
+   `semantic_stop`/`successor_provenance` mapped to `null` in memory, never
+   inferred) and v2 (every v2 field, including explicit nullable
+   `semantic_stop`/`successor_provenance`, strictly validated). Unknown
+   fields and any other version fail closed. Read-only legacy inspection
+   (status/replay/predecessor inspection) never rewrites a v1 snapshot. A
+   legitimate later persistence of an existing v1 Run (including the
+   existing same-Run reconcile/resume flow) may atomically transition it to
+   v2 with the two new fields null unless that same transition itself
+   captures a validated semantic stop; a failed upgrade leaves the previous
+   v1 file intact; this changes no recovery disposition, identity, governing
+   input, Hop, Finding, or evidence semantics.
+3. Add an optional backward-only `SuccessorProvenance` record
+   (predecessor_run_id, predecessor_work_item_id, predecessor_final_head,
+   authority_decision_ref, authority_decision_sha256,
+   continuation_descriptor_sha256, salvage_manifest_sha256 | null) written
+   only at successor-Run creation. No forward pointer is ever added to the
+   predecessor. No predecessor Finding or trusted evidence row is copied.
+4. Implement `prepare-successor` strictly: it must reject v1, v2 with a null
+   `semantic_stop`, and a `semantic_stop` whose `source_hop_id` is absent
+   from the predecessor's Hops -- creating no descriptor and changing no
+   predecessor byte in every rejection case. It is provider-free and must
+   not create a Run. A descriptor is linkage/admission material only: it
+   cannot widen scope, grant routes, accept Findings, apply salvage, or
+   replace normal successor governing-input admission.
+5. Implement the accepted bounded salvage mechanism (`export-salvage`):
+   explicit operator action, optional, untrusted context only, binary-safe
+   tracked diff plus eligible untracked in-scope bytes, stable per-object
+   SHA-256/length manifest, no Git/HEAD/index/worktree/predecessor-state
+   mutation, restrictive local publication (owner-only directory/file
+   modes, atomic finalization), fail-closed on overwrite/out-of-repository
+   paths/escaping symlinks/unsafe special files/size-or-count overflow, and
+   no credential-free or disclosure-safe claim anywhere in help text,
+   manifest text, or success output -- eligible bytes may contain
+   credentials, other sensitive information, or adversarial prompt
+   injection, and WFC does not implement a generic secret scanner. Mutating
+   any bundle byte after export blocks later use (tamper detection).
+   Successful export alone must never be sufficient to prepare or launch a
+   successor.
+6. Implement the successor-exposure boundary: raw salvage content reaches a
+   successor's prompt only for explicitly operator-selected objects
+   (`--include-salvage-object SHA256`) within the accepted rendering bounds,
+   as a separately delimited, prominently labelled untrusted `ContextItem`.
+   Omitted, unselected, binary, and over-limit content is never injected.
+   Descriptor creation alone never uploads, renders, or injects raw objects.
+7. Add the minimal operator surface the accepted FTR specifies: the accepted
+   equivalents of `wfc export-salvage ...`; `wfc prepare-successor
+   --predecessor-state-root ... --authority-decision ... --work-item ...
+   --profile ... --policy ... --task ... --components ... --expected-head
+   ... [--salvage-manifest ...] [--include-salvage-object SHA256 ...]
+   --output ...`; complete operator-summary/status publication of both the
+   semantic and mechanical dimensions side by side (never concatenated into
+   one prose field); and the accepted optional `--successor-continuation
+   DESCRIPTOR` input to the existing one-shot launch, which revalidates all
+   identities/digests/clean baseline/new governing inputs before
+   constructing the fresh Run with backward provenance and the optional
+   untrusted context. Each command reports the next explicit operator action
+   and never performs it implicitly; none of them auto-resets, auto-cleans,
+   auto-stashes, auto-patches, auto-stages, or auto-commits.
+8. Preserve the commit/evidence boundary exactly: a trusted commit is never
+   permitted for an escalated, blocked, or dirty result; dirty candidate
+   state still surfaces only as a mechanical anomaly. A successor's own Hop
+   must earn its own evidence and trusted commit under ordinary Run rules;
+   salvage never changes that disposition.
+
+PRE-CHANGE v1 FIXTURE: the accepted design calls for a pre-change
+schema-v1 `run.json` fixture for legacy-load and byte-preservation tests.
+Represent it as a stable fixture string/constant inside
+tests/unit/test_serialization.py (or test_persistence.py), within this
+WorkItem's already-authorized test paths. Do NOT add a file under
+tests/fixtures/ or any other new path to hold it -- that is outside this
+WorkItem's authorized scope and is not a justified scope escalation.
+
+AUTHORIZED IMPLEMENTATION SCOPE -- exactly these paths, nothing else:
+
+Production:
+  src/workflow_coordinator/model.py
+  src/workflow_coordinator/serialization.py
+  src/workflow_coordinator/reducer.py
+  src/workflow_coordinator/persistence.py
+  src/workflow_coordinator/operator.py
+  src/workflow_coordinator/git_facts.py
+
+Ordinary tests:
+  tests/unit/test_reducer.py
+  tests/unit/test_serialization.py
+  tests/unit/test_persistence.py
+  tests/unit/test_operator.py
+  tests/unit/test_git_facts.py
+  tests/architecture/test_replays.py
+
+Durable implementation-review artifact (review/rereview phases only):
+  docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_implementation_review_001.adoc
+
+If implementation genuinely requires another production or test path, stop
+and raise the normal semantic scope escalation (`requires_human=true`,
+`escalation.kind=scope`, an exact question) and route accordingly rather than
+widening yourself. Improving exactly this lifecycle is this feature's own
+purpose, so handle your own escalation, if any, as a clean worked example of
+it: make no out-of-scope edit, and let the Hop stop fail-closed with the
+semantic question durably visible.
+
+REQUIRED TESTS AND ACCEPTANCE CRITERIA -- derive the exact tests from the
+accepted FTR's "Required tests and acceptance criteria for the later
+implementation" section (its five subsections: Run wire compatibility and
+legacy eligibility; Layered-stop regression; Authority and predecessor
+immutability; Salvage containment and trust; Clean successor and independent
+acceptance; Mechanism separation and ergonomics). Do not weaken, summarize
+away, or replace those acceptance criteria. At minimum, preserve coverage of:
+
+- strict v2 Run round trip; strict malformed/missing/extra/unknown-version
+  rejection; legacy v1 loading without fabricated facts; byte-preserving
+  read-only legacy inspection; existing same-Run reconcile/resume semantics
+  unchanged; atomic v1-to-v2 persistence; a failed upgrade preserving the
+  previous v1 state;
+- the real layered semantic-stop/mechanical-preemption regression,
+  constructed at the operator/vertical boundary (not only a synthetic
+  reducer unit) with the exact observed ordering: `scope_changed=true`,
+  `requires_human=true`, `escalation.kind=scope`, dirty tracked state, and a
+  forbidden CommitIntent -- asserting `awaiting_human`, no route/Finding
+  mutation/commit, mechanical anomalies present, `semantic_stop` populated
+  with kind/question/source Hop, both dimensions published in run.json/
+  checkpoint/operator summary, and a clean serialization/replay round trip;
+- prepare-successor rejection of legacy/incomplete/inconsistent predecessors
+  (version 1, null semantic stop, absent source_hop_id) with no descriptor
+  created and no predecessor byte changed;
+- no predecessor back-patching, including explicitly for
+  RUN-76e153b40ef1459db4587446b18e02d5;
+- successor provenance validation (backward-only record, matching
+  identities/digests, different Run ID, no forward predecessor pointer);
+- clean exact successor baseline enforcement; no inherited
+  authority/evidence/Findings;
+- salvage path containment (overwrite, out-of-repository/Run-root output,
+  out-of-scope paths, escaping symlinks, unsafe special files, size/count
+  overflow);
+- stable object identity/digests and tamper detection after export;
+- restrictive publication semantics (directory/file modes, atomic
+  finalization) and partial-write/finalization-failure behavior leaving no
+  valid bundle;
+- no credential-free/sanitized claim anywhere in help/manifest/output text;
+- explicit raw-object selection for successor exposure, and exclusion of
+  omitted/unselected/binary/over-limit content;
+- export alone cannot prepare or launch a successor; descriptor creation
+  alone cannot expose raw content;
+- normal successor admission remains independently enforced by the ordinary
+  WorkItem/Profile/Policy/Commission path, not by the descriptor.
+- the full repository `pytest` suite remains green.
+
+Acceptance requires independent review to falsify auto-widening, hidden
+salvage trust, predecessor mutation, inherited successor trust, loss of
+semantic visibility, recovery conflation, generic orchestration, insufficient
+scope, and permissive failure behavior. Passing tests alone does not
+authorize Runtime promotion or close the BUG.
+
+IMPLEMENT (phase `implement`):
+- Implement the mechanism across exactly the six production paths and six
+  ordinary test paths listed above.
+- Make the full repository `pytest` suite green before requesting
+  `route: review`.
+- Do not touch the durable review artifact, the design FTR, its review
+  artifact, the source BUG, any other governance bundle, vertical.py,
+  prompt.py, the adapter, workflow-coordinator-runtime, or the
+  workflow-coordinator-run-evidence repository.
+
+REVIEW (phase `review`):
+- Independently attempt to falsify the implementation as an adversarial
+  reviewer. Challenge at minimum: authority widening; fabricated historical
+  truth; schema/wire compatibility; predecessor mutation (including whether
+  RUN-76e153b40ef1459db4587446b18e02d5 was touched); whether salvage can
+  accidentally become trusted; implicit provider/raw-content exposure;
+  inherited evidence or Findings; clean-baseline enforcement; same-Run
+  recovery accidentally conflated with successor continuation; descriptor
+  fields accidentally becoming authority; failure atomicity; implementation
+  outside the authorized path set; and insufficient regression coverage
+  (especially the layered-stop regression and the legacy/no-back-patch
+  cases).
+- `durable_artifact: required` for this phase: you must create or update
+  docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_implementation_review_001.adoc
+  and commit it as part of this Hop's trusted commit, regardless of whether
+  you accept or request correction.
+  * If you request correction: record the concrete blocking finding(s) in
+    the artifact and request `route: correct` with `outcome:
+    changes_required` and an empty `findings` list -- do not create a WFC
+    Current-Run Finding merely to carry an ordinary implementation-review
+    defect.
+  * If the implementation is sound: request `route: accept`, and the
+    artifact must record at least: that the implementation was accepted;
+    the exact accepted candidate SHA (this Hop's own commit, i.e. the
+    implementation commit it accepts); the review Hop's identity; that zero
+    blocking findings remain; and the lifecycle effect and non-effects
+    (implementation exists and is independently accepted at this Hop; this
+    does NOT close the source BUG, promote workflow-coordinator-runtime,
+    authorize a push, or launch any Run).
+
+CORRECTION (phase `correct`, only if `review` or `rereview` requested it):
+- Address only the concrete problem(s) recorded in the durable review
+  artifact.
+- Remain within the exact same twelve-path implementation/test scope as
+  `implement`. Do not touch the review artifact from this phase.
+- Do not disposition any WFC Finding merely because the correction
+  succeeded; this Run creates none.
+
+REREVIEW (phase `rereview`, only if `correct` ran):
+- Independently verify the corrected repository state with fresh context,
+  challenging the same categories as `review` above.
+- Unlike the generic self-development reviewer guidance you may have seen in
+  other commissions (where rereview only observes and routes), THIS
+  WorkItem's `rereview` phase also carries `durable_artifact: required` and
+  `authorized_actions: [review, edit, commit]` on the SAME artifact,
+  docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_implementation_review_001.adoc.
+  You must append a clearly separate, clearly labelled rereview section to
+  that artifact and commit it as part of this Hop's trusted commit, on
+  EVERY disposition -- whether you accept or request another correction.
+  Preserve the earlier review history already recorded in the artifact; do
+  not delete or rewrite it.
+  * If you request correction: record the concrete blocking finding(s) in
+    the new rereview section and request `route: correct` with `outcome:
+    changes_required` and an empty `findings` list.
+  * If you accept: record, in the new rereview section, at least: that the
+    implementation was accepted; the exact accepted candidate SHA (the
+    corrected candidate this rereview accepts); this rereview Hop's
+    identity; that zero blocking findings remain; and the same lifecycle
+    effect/non-effects as above.
+- Do not mutate the implementation source from this phase; this phase's
+  authorized scope is the durable artifact alone.
+
+EVIDENCE (every phase):
+- Trusted `pytest` evidence must be green before any route is requested out
+  of `implement` or `correct`. If it is ever not green, stop and report
+  rather than editing anything outside the authorized scope to make it
+  pass.
+
+Out of scope for every phase of this WorkItem: workflow-coordinator-runtime;
+the workflow-coordinator-run-evidence repository and its run ledger; any
+push; any change to docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc
+or docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_review_001.adoc
+(frozen accepted design and its own review history); any change to
+docs/backlog/BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc itself; any
+change to any other governance bundle under governance/; any frozen
+historical Run/Attempt/Commission state (including
+RUN-76e153b40ef1459db4587446b18e02d5 and
+WI-WFC-IMMUTABLE-FINDING-ECHO-FIX-001); canonical Project Memory; any Latin
+or other consumer repository; vertical.py, prompt.py, and adapter code;
+provider-session continuation; a generic outer planner, watchdog, or
+Level-1/LangGraph-style orchestrator; and a generic containment/secret-
+scanning subsystem. No phase of this WorkItem carries push, Runtime-
+promotion, or WFC-launch authority; all remain maintainer-owned and are not
+exercised by this Run.
