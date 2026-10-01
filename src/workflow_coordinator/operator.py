@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import sys
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -209,6 +211,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         export.add_argument("--output", required=True)
         prepare = sub.add_parser("prepare-successor", help="validate a frozen predecessor and emit linkage material; launch remains explicit")
         prepare.add_argument("--predecessor-state-root", required=True)
+        prepare.add_argument("--repository", required=True,
+                             help="clean separately selected successor checkout")
         prepare.add_argument("--authority-decision", required=True)
         for name in ("work-item", "profile", "policy", "task", "components"):
             prepare.add_argument(f"--{name}", required=True)
@@ -838,6 +842,43 @@ def _outside_protected(path: Path, *, repository: Path, run_roots: tuple[Path, .
         raise OperatorPreflightError("output must be outside the repository and every WFC Run root")
 
 
+def _destination_exists(path: Path) -> bool:
+    """Treat every directory entry, including a dangling symlink, as occupied."""
+
+    return os.path.lexists(path)
+
+
+def _rename_no_replace(source: Path, destination: Path) -> None:
+    """Atomically publish a completed artifact only when its name is still unused.
+
+    ``os.replace`` intentionally clobbers its destination and is therefore not
+    an acceptable publication primitive for operator-selected artifact names.
+    Linux's renameat2 supplies the needed no-replace race guarantee.  Refuse
+    publication on platforms where that guarantee is unavailable.
+    """
+
+    renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    if renameat2 is None:
+        raise OperatorPreflightError("atomic no-clobber publication is unavailable")
+    renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    renameat2.restype = ctypes.c_int
+    if renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1):
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            raise OperatorPreflightError("publication destination already exists")
+        raise OperatorPreflightError(f"atomic no-clobber publication failed: {os.strerror(error)}")
+
+
+def _repository_store_identity(repository: Path) -> Path:
+    """Identify one Git repository across its separately selected worktrees."""
+
+    checkout = repository_identity(repository)
+    common = Path(_git(checkout, "rev-parse", "--git-common-dir").strip())
+    if not common.is_absolute():
+        common = checkout / common
+    return common.resolve()
+
+
 def _load_manifest(path: Path) -> dict[str, object]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -890,13 +931,16 @@ def _validate_manifest_bytes(path: Path, *, expected_source: dict[str, str] | No
         content = source.read_bytes()
         if hashlib.sha256(content).hexdigest() != digest:
             raise OperatorPreflightError("salvage object digest mismatch")
-        classified_text = False
-        try:
-            classified_text = "\x00" not in content.decode("utf-8")
-        except UnicodeDecodeError:
-            pass
-        if ("text" if classified_text else "binary") != raw["content_kind"]:
-            raise OperatorPreflightError("salvage object classification changed")
+        # ``binary`` is a stable fail-closed rendering classification.  In
+        # particular, Git's printable --binary patch records must retain the
+        # Git-derived binary fact rather than being reclassified as text here.
+        # Conversely a text label must remain demonstrably safe to render.
+        if raw["content_kind"] == "text":
+            try:
+                if "\x00" in content.decode("utf-8"):
+                    raise UnicodeDecodeError("utf-8", content, 0, 1, "NUL")
+            except UnicodeDecodeError as error:
+                raise OperatorPreflightError("salvage object classification changed") from error
     return manifest
 
 
@@ -911,9 +955,39 @@ def _descriptor_integrity(descriptor: dict[str, object]) -> str:
 
 
 def _discard_export_bundle(path: Path) -> None:
-    """Remove an exact failed publication target before its failure is exposed."""
-    if path.exists() or path.is_symlink():
+    """Invalidate a failed export before attempting fallible tree cleanup."""
+
+    if not _destination_exists(path):
+        return
+    manifest = path / "manifest.json"
+    try:
+        manifest.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise OperatorPreflightError("failed export manifest could not be invalidated") from error
+    if manifest.exists():
+        raise OperatorPreflightError("failed export manifest remains consumable")
+    try:
         shutil.rmtree(path)
+    except OSError:
+        # A manifest-less partial tree is not a consumable salvage bundle.
+        pass
+
+
+def _write_descriptor_no_clobber(output: Path, descriptor: dict[str, object]) -> None:
+    temporary = output.parent / f".{output.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(temporary, "x", encoding="utf-8") as stream:
+            stream.write(json.dumps(descriptor, sort_keys=True, separators=(",", ":")) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        _rename_no_replace(temporary, output)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _salvage_publication_modes(bundle: Path, rows: list[dict[str, object]]) -> bool:
@@ -945,12 +1019,13 @@ def _export_salvage(args: argparse.Namespace) -> int:
         raise OperatorPreflightError("predecessor has no eligible stopped Hop scope")
     output = Path(args.output)
     _outside_protected(output, repository=repository, run_roots=(state_root,))
-    if output.exists() or not output.parent.is_dir():
+    if _destination_exists(output) or not output.parent.is_dir():
         raise OperatorPreflightError("salvage output must be a new directory below an existing parent")
     scope = profile.phases[run.phase].authorized_scope
     objects = salvage_inventory(repository, base_head=run.hops[-1].base_head, allowed_paths=scope)
     omissions = salvage_omissions(repository, allowed_paths=scope)
     temporary = Path(tempfile.mkdtemp(prefix=".wfc-salvage-", dir=output.parent))
+    published = False
     try:
         os.chmod(temporary, 0o700)
         object_dir = temporary / "objects"
@@ -978,7 +1053,8 @@ def _export_salvage(args: argparse.Namespace) -> int:
         os.chmod(temporary / "manifest.json", 0o600)
         if not _salvage_publication_modes(temporary, rows):
             raise OperatorPreflightError("salvage publication modes could not be verified")
-        os.replace(temporary, output)
+        _rename_no_replace(temporary, output)
+        published = True
         if not _salvage_publication_modes(output, rows):
             raise OperatorPreflightError("salvage final publication modes could not be verified")
     except BaseException:
@@ -986,7 +1062,8 @@ def _export_salvage(args: argparse.Namespace) -> int:
         # warning.  A failed final check must not leave a parser-consumable
         # manifest at either the temporary or requested final location.
         _discard_export_bundle(temporary)
-        _discard_export_bundle(output)
+        if published:
+            _discard_export_bundle(output)
         raise
     print(f"UNTRUSTED SALVAGE EXPORTED: {output / 'manifest.json'}\nNEXT EXPLICIT ACTION: inspect or omit this potentially sensitive bundle before preparing a successor.")
     return 0
@@ -1008,12 +1085,15 @@ def _prepare_successor(args: argparse.Namespace) -> int:
     root, predecessor_repository, run_path, predecessor = _predecessor_for_successor(Path(args.predecessor_state_root))
     if not re.fullmatch(r"[0-9a-f]{40}", args.expected_head):
         raise OperatorPreflightError("expected HEAD must be a full 40-character lowercase commit SHA")
-    facts = observe_repository(predecessor_repository)
+    successor_repository = repository_identity(Path(args.repository))
+    if _repository_store_identity(successor_repository) != _repository_store_identity(predecessor_repository):
+        raise OperatorPreflightError("successor checkout is not a checkout of the predecessor repository")
+    facts = observe_repository(successor_repository)
     if facts.head != args.expected_head or not facts.clean or facts.unresolved_submodules:
         raise OperatorPreflightError("successor preparation requires a clean exact baseline")
     inputs = {name.replace("-", "_"): _relative_path(getattr(args, name.replace("-", "_")), context=name)
               for name in ("work-item", "profile", "policy", "task", "components")}
-    texts = {name: _pinned_text(predecessor_repository, args.expected_head, path, context=name)
+    texts = {name: _pinned_text(successor_repository, args.expected_head, path, context=name)
              for name, path in inputs.items()}
     try:
         item, profile, policy = work_item_from_yaml(texts["work_item"]), workflow_profile_from_yaml(texts["profile"]), repository_policy_from_yaml(texts["policy"])
@@ -1028,7 +1108,7 @@ def _prepare_successor(args: argparse.Namespace) -> int:
         if reference is None:
             raise OperatorPreflightError(f"selected component ID is absent from manifest: {component_id}")
         component_paths.append(_relative_path(reference.path, context=f"component {component_id}"))
-        governing[component_paths[-1]] = _governing_digest(_pinned_text(predecessor_repository, args.expected_head, component_paths[-1], context="component"))
+        governing[component_paths[-1]] = _governing_digest(_pinned_text(successor_repository, args.expected_head, component_paths[-1], context="component"))
     _admit_a1(item, profile, policy, (*inputs.values(), *component_paths))
     authority = Path(args.authority_decision).resolve()
     if not authority.is_file() or authority.is_symlink():
@@ -1059,7 +1139,7 @@ def _prepare_successor(args: argparse.Namespace) -> int:
         raise OperatorPreflightError("raw salvage selection requires a supplied manifest")
     output = Path(args.output)
     _outside_protected(output, repository=predecessor_repository, run_roots=(root,))
-    if output.exists() or not output.parent.is_dir():
+    if _destination_exists(output) or not output.parent.is_dir():
         raise OperatorPreflightError("descriptor output must be a new file below an existing parent")
     descriptor: dict[str, object] = {"schema_version": 1, "descriptor_id": f"SCD-{uuid.uuid4().hex}",
                   "creation_time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "trust_label": "untrusted_context_only",
@@ -1069,10 +1149,10 @@ def _prepare_successor(args: argparse.Namespace) -> int:
                                   "run_json_sha256": hashlib.sha256(run_path.read_bytes()).hexdigest(),
                                   "state_root": str(root)},
                   "authority_decision": {"ref": str(authority), "sha256": authority_digest},
-                  "successor": {"repository": str(predecessor_repository), "expected_head": args.expected_head,
+                  "successor": {"repository": str(successor_repository), "expected_head": args.expected_head,
                                 "inputs": inputs, "governing": governing}, "salvage": salvage}
     descriptor["integrity_sha256"] = _descriptor_integrity(descriptor)
-    atomic_write_json(output, descriptor)
+    _write_descriptor_no_clobber(output, descriptor)
     descriptor_digest = hashlib.sha256(output.read_bytes()).hexdigest()
     print(f"SUCCESSOR DESCRIPTOR: {output}\nDESCRIPTOR SHA-256: {descriptor_digest}\nNEXT EXPLICIT ACTION: launch a fresh successor with --successor-continuation and --successor-continuation-sha256 after revalidating the clean baseline.")
     return 0
@@ -1121,7 +1201,7 @@ def _validated_successor_descriptor(descriptor_path: Path, repository: Path, exp
         raise OperatorPreflightError("successor descriptor semantic stop is malformed")
     # Re-read frozen predecessor truth; descriptor text cannot manufacture it.
     root, predecessor_repository, run_path, frozen = _predecessor_for_successor(Path(predecessor["state_root"]))
-    if (str(predecessor_repository) != str(repository) or frozen.run_id != predecessor["run_id"]
+    if (frozen.run_id != predecessor["run_id"]
             or frozen.work_item_id != predecessor["work_item_id"] or frozen.current_head != predecessor["final_head"]
             or hashlib.sha256(run_path.read_bytes()).hexdigest() != predecessor["run_json_sha256"]
             or {"kind": frozen.semantic_stop.kind, "question": frozen.semantic_stop.question, "source_hop_id": frozen.semantic_stop.source_hop_id} != stop):

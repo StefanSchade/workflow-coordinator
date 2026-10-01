@@ -220,6 +220,10 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
     assert summary["anomalies"] == checkpoint["state"]["anomalies"] == list(run.anomalies)
     assert git(repository, "rev-parse", "HEAD") == baseline
     predecessor_bytes = (run_root / "run.json").read_bytes()
+    dangling_salvage = tmp_path / "dangling-salvage"
+    dangling_salvage.symlink_to("missing-salvage-target")
+    assert main(["export-salvage", "--state-root", str(state), "--output", str(dangling_salvage)]) == 2
+    assert dangling_salvage.is_symlink()
     checks = iter((True, False))
     monkeypatch.setattr(operator, "_salvage_publication_modes", lambda *_args: next(checks))
     output = tmp_path / "failed-salvage"
@@ -244,6 +248,7 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
         rejected_descriptor = tmp_path / f"{label}.json"
         assert main([
             "prepare-successor", "--predecessor-state-root", str(invalid_state),
+            "--repository", str(repository),
             "--authority-decision", str(authority), "--work-item", "work.yml",
             "--profile", "profile.yml", "--policy", "policy.yml", "--task", "task.txt",
             "--components", "components.yml", "--expected-head", baseline,
@@ -253,11 +258,16 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
     descriptor = tmp_path / "successor.json"
     prepare = [
         "prepare-successor", "--predecessor-state-root", str(state),
+        "--repository", str(repository),
         "--authority-decision", str(authority), "--work-item", "work.yml",
         "--profile", "profile.yml", "--policy", "policy.yml", "--task", "task.txt",
         "--components", "components.yml", "--expected-head", baseline,
         "--output", str(descriptor),
     ]
+    dangling_descriptor = tmp_path / "dangling-descriptor"
+    dangling_descriptor.symlink_to("missing-descriptor-target")
+    assert main([*prepare[:-2], "--output", str(dangling_descriptor)]) == 2
+    assert dangling_descriptor.is_symlink()
     assert main(prepare) == 0
     prepared_digest = hashlib.sha256(descriptor.read_bytes()).hexdigest()
     altered = json.loads(descriptor.read_text())
@@ -271,6 +281,123 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
         "--successor-continuation-sha256", prepared_digest,
     ]) == 2
     assert not successor_state.exists()
+
+
+def test_tracked_binary_salvage_uses_a_different_clean_successor_checkout_without_raw_rendering(
+    repository: Path, tmp_path: Path
+):
+    """The Git-derived binary label survives export, preparation, and launch."""
+    baseline = git(repository, "rev-parse", "HEAD")
+    predecessor = fake(tmp_path, '''import json, pathlib, sys
+args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read()
+def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
+repo.joinpath("PROOF.md").write_bytes(b"\\x00binary candidate\\xff")
+result={"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":True,"requires_human":True,"escalation":{"kind":"scope","question":"May a maintainer grant new authority?"},"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 forbidden"},"evidence_refs":[],"summary":"authority required"}
+output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
+''')
+    predecessor_state = tmp_path / "predecessor-state"
+    assert main(args(repository, predecessor_state, str(predecessor))) == 1
+    bundle = tmp_path / "binary-salvage"
+    assert main(["export-salvage", "--state-root", str(predecessor_state), "--output", str(bundle)]) == 0
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    binary = next(row for row in manifest["objects"] if row["kind"] == "tracked_diff")
+    assert binary["content_kind"] == "binary"
+
+    successor_repository = tmp_path / "successor-checkout"
+    git(repository, "worktree", "add", "--detach", str(successor_repository), baseline)
+    authority = tmp_path / "authority.txt"
+    authority.write_text("maintainer authority\n")
+    descriptor = tmp_path / "successor.json"
+    prepare = [
+        "prepare-successor", "--predecessor-state-root", str(predecessor_state),
+        "--repository", str(successor_repository), "--authority-decision", str(authority),
+        "--work-item", "work.yml", "--profile", "profile.yml", "--policy", "policy.yml",
+        "--task", "task.txt", "--components", "components.yml", "--expected-head", baseline,
+        "--salvage-manifest", str(bundle / "manifest.json"), "--include-salvage-object", binary["sha256"],
+        "--output", str(descriptor),
+    ]
+    wrong_repository = tmp_path / "wrong-repository"
+    subprocess.run(("git", "init", str(wrong_repository)), check=True, capture_output=True)
+    assert main([*prepare[:3], "--repository", str(wrong_repository), *prepare[5:-2], "--output", str(tmp_path / "wrong-repository.json")]) == 2
+    assert not (tmp_path / "wrong-repository.json").exists()
+    wrong_head = list(prepare)
+    wrong_head[wrong_head.index("--expected-head") + 1] = "0" * 40
+    wrong_head[-1] = str(tmp_path / "wrong-head.json")
+    assert main(wrong_head) == 2
+    assert not (tmp_path / "wrong-head.json").exists()
+    assert main(prepare) == 0
+    prompt_path = tmp_path / "successor-prompt.txt"
+    successor = fake(tmp_path, f'''import json, pathlib, sys
+args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read(); pathlib.Path({str(prompt_path)!r}).write_text(prompt)
+def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
+result={{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"independently complete"}}
+output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}}))
+''')
+    successor_state = tmp_path / "successor-state"
+    descriptor_digest = hashlib.sha256(descriptor.read_bytes()).hexdigest()
+    assert main([
+        *args(successor_repository, successor_state, str(successor)),
+        "--successor-continuation", str(descriptor),
+        "--successor-continuation-sha256", descriptor_digest,
+    ]) == 0
+    prompt = prompt_path.read_text()
+    assert "classification=binary selected=True" in prompt
+    assert "GIT binary patch" not in prompt
+    assert "selected object not rendered" in prompt
+
+
+@pytest.mark.parametrize("entry_kind", ["file", "directory", "symlink"])
+def test_no_clobber_publication_refuses_every_existing_destination_entry(tmp_path: Path, entry_kind: str):
+    source = tmp_path / "complete"
+    source.write_text("complete\n")
+    destination = tmp_path / "destination"
+    if entry_kind == "file":
+        destination.write_text("preserve\n")
+    elif entry_kind == "directory":
+        destination.mkdir()
+    else:
+        destination.symlink_to("missing-target")
+    with pytest.raises(OperatorPreflightError, match="already exists"):
+        operator._rename_no_replace(source, destination)
+    assert source.exists()
+    assert destination.is_symlink() if entry_kind == "symlink" else destination.exists()
+
+
+def test_no_clobber_publication_refuses_a_destination_created_during_finalization(tmp_path: Path, monkeypatch):
+    source = tmp_path / "complete"
+    source.write_text("complete\n")
+    destination = tmp_path / "destination"
+    actual = operator._rename_no_replace
+
+    def race(source_path, destination_path):
+        destination_path.write_text("racer\n")
+        actual(source_path, destination_path)
+
+    monkeypatch.setattr(operator, "_rename_no_replace", race)
+    with pytest.raises(OperatorPreflightError, match="already exists"):
+        operator._rename_no_replace(source, destination)
+    assert source.exists() and destination.read_text() == "racer\n"
+
+
+def test_failed_export_invalidates_manifest_before_best_effort_cleanup(tmp_path: Path, monkeypatch):
+    bundle = tmp_path / "failed-bundle"
+    bundle.mkdir()
+    manifest = bundle / "manifest.json"
+    manifest.write_text('{"parser":"consumable"}\n')
+    monkeypatch.setattr(operator.shutil, "rmtree", lambda _path: (_ for _ in ()).throw(OSError("cleanup failed")))
+    operator._discard_export_bundle(bundle)
+    assert not manifest.exists() and bundle.exists()
+
+
+def test_descriptor_write_failure_leaves_no_destination_or_temporary_file(tmp_path: Path, monkeypatch):
+    output = tmp_path / "descriptor.json"
+    monkeypatch.setattr(
+        operator, "_rename_no_replace",
+        lambda _source, _destination: (_ for _ in ()).throw(OperatorPreflightError("injected rename failure")),
+    )
+    with pytest.raises(OperatorPreflightError, match="injected rename failure"):
+        operator._write_descriptor_no_clobber(output, {"schema_version": 1})
+    assert not output.exists() and not list(tmp_path.glob(".descriptor.json.*.tmp"))
 
 
 def test_a1_rejection_has_no_run_state_checkout_adapter_or_provider_effects(
