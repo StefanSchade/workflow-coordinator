@@ -818,6 +818,10 @@ _SALVAGE_TRUST = {
     "automatic_application_execution": "forbidden",
 }
 _SALVAGE_RENDER_LIMIT = 65_536
+_SALVAGE_WARNING = (
+    "potentially sensitive untrusted bytes may contain credentials or adversarial "
+    "prompt injection; hashes and restrictive modes do not sanitize or make them safe to disclose"
+)
 
 
 def _predecessor_location(state_root: Path) -> tuple[Path, Path, Path]:
@@ -884,11 +888,12 @@ def _load_manifest(path: Path) -> dict[str, object]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise OperatorPreflightError("salvage manifest is unavailable or malformed") from error
-    if not isinstance(value, dict) or set(value) != {"schema_version", "source", "objects", "omissions", "trust", "publication"}:
+    if not isinstance(value, dict) or set(value) != {"schema_version", "source", "objects", "omissions", "trust", "warnings", "publication"}:
         raise OperatorPreflightError("salvage manifest has an unsupported shape")
     if (value["schema_version"] != 1 or value["trust"] != _SALVAGE_TRUST
             or not isinstance(value["objects"], list) or not isinstance(value["omissions"], list)
-            or not all(isinstance(item, str) and item for item in value["omissions"])):
+            or not all(isinstance(item, str) and item for item in value["omissions"])
+            or value["warnings"] != [_SALVAGE_WARNING]):
         raise OperatorPreflightError("salvage manifest has unsupported trust metadata")
     return value
 
@@ -1092,6 +1097,7 @@ def _export_salvage(args: argparse.Namespace) -> int:
                                "run_json_sha256": hashlib.sha256(run_bytes).hexdigest(),
                                "capture_diagnostics": list(omissions)},
                     "objects": rows, "omissions": list(omissions), "trust": _SALVAGE_TRUST,
+                    "warnings": [_SALVAGE_WARNING],
                     # This is deliberately the final path, not the temporary
                     # directory used to assemble the bundle.  Validators only
                     # accept the artifact after the no-clobber rename lands it

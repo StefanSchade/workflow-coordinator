@@ -94,6 +94,7 @@ def salvage_inventory(
     The caller owns publication; this function deliberately has no write path.
     """
     identity = repository_identity(repository)
+    _reject_unsafe_scope_special_files(identity, allowed_paths)
     # Git may refresh an index while comparing it with the worktree, even for
     # `diff`/`ls-files`.  Give the whole capture an isolated index copy so a
     # platform-specific refresh can never touch the registered checkout.
@@ -212,6 +213,35 @@ def _salvage_inventory_with_index(
         if len(objects) > max_objects:
             raise GitPreflightError("salvage object count exceeds limit")
     return tuple(objects)
+
+
+def _reject_unsafe_scope_special_files(repository: Path, allowed_paths: tuple[str, ...]) -> None:
+    """Fail closed for special filesystem objects Git does not report as untracked.
+
+    ``git ls-files --others`` omits objects such as FIFOs on some platforms.
+    They are still candidate material below the authorized path and must not be
+    silently ignored as though export had established a safe complete view.
+    """
+    def inspect(path: Path, *, display: str) -> None:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise GitPreflightError(f"salvage path cannot be inspected: {display}") from error
+        if stat.S_ISDIR(metadata.st_mode):
+            try:
+                with os.scandir(path) as entries:
+                    for entry in entries:
+                        inspect(Path(entry.path), display=f"{display.rstrip('/')}/{entry.name}")
+            except OSError as error:
+                raise GitPreflightError(f"salvage path cannot be inspected: {display}") from error
+            return
+        if not stat.S_ISREG(metadata.st_mode):
+            raise GitPreflightError(f"salvage path is not a regular in-repository file: {display}")
+
+    for allowed in allowed_paths:
+        inspect(repository / allowed, display=allowed)
 
 
 def salvage_omissions(repository: Path, *, allowed_paths: tuple[str, ...]) -> tuple[str, ...]:

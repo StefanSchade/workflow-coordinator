@@ -4,6 +4,7 @@ from dataclasses import replace
 import pytest
 
 from workflow_coordinator.model import DispatchMarker, RunStatus
+from workflow_coordinator.reducer import require_reconcile, resume_after_reconcile
 from workflow_coordinator.persistence import (
     atomic_write_text,
     checkpoint_projection,
@@ -73,6 +74,27 @@ def test_failed_legacy_upgrade_preserves_the_exact_v1_snapshot(tmp_path):
     with pytest.raises(OSError, match="injected replacement failure"):
         write_run_snapshot(path, legacy, replace_file=fail_replace)
     assert path.read_bytes() == original
+
+
+def test_legacy_reconcile_resume_transition_writes_v2_only_at_the_persistence_boundary(tmp_path):
+    """Loading/replaying v1 is read-only; its next real transition upgrades it."""
+    workflow = profile({"work": phase({"done": route("complete")})})
+    legacy = replace(run_for(workflow), schema_version=1)
+    path = tmp_path / "run.json"
+    path.write_text(run_to_json(legacy), encoding="utf-8")
+    original = path.read_bytes()
+
+    loaded = load_run(path)
+    assert loaded.schema_version == 1 and path.read_bytes() == original
+    reconciled = require_reconcile(loaded, reason="interruption", current_head=loaded.current_head)
+    resumed = resume_after_reconcile(reconciled, workflow, current_head=loaded.current_head)
+    assert resumed.status is RunStatus.READY and resumed.schema_version == 1
+    assert path.read_bytes() == original
+
+    write_run_snapshot(path, resumed)
+    persisted = load_run(path)
+    assert persisted.schema_version == 2
+    assert persisted.semantic_stop is None and persisted.successor_provenance is None
 
 
 def test_interrupted_atomic_replacement_preserves_old_file(tmp_path):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -91,7 +92,16 @@ def test_salvage_refuses_a_changed_tracked_symlink_that_escapes_checkout(reposit
     target = repository / "src" / "base.txt"
     target.unlink()
     target.symlink_to("/etc/passwd")
-    with pytest.raises(GitPreflightError, match="tracked path is unsafe|tracked path is not a regular"):
+    with pytest.raises(GitPreflightError, match="path is unsafe|path is not a regular"):
+        salvage_inventory(repository, base_head=base, allowed_paths=("src",))
+
+
+def test_salvage_refuses_a_fifo_that_git_omits_from_untracked_inventory(repository: Path):
+    source = repository / "src"
+    base = observe_repository(repository).head
+    fifo = source / "candidate.fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(GitPreflightError, match="not a regular"):
         salvage_inventory(repository, base_head=base, allowed_paths=("src",))
 
 

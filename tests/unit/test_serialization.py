@@ -23,6 +23,7 @@ from workflow_coordinator.serialization import (
     work_item_from_yaml,
     workflow_profile_from_yaml,
 )
+from workflow_coordinator.persistence import checkpoint_projection
 from tests.support import charge_hop, phase, profile, route, run_for
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -490,6 +491,17 @@ def test_prechange_v1_fixture_loads_without_fabricated_successor_facts():
     malformed["semantic_stop"] = None
     with pytest.raises(ValidationError, match="unknown fields"):
         run_from_json(json.dumps(malformed))
+
+
+def test_legacy_v1_read_only_replay_and_inspection_preserve_the_exact_wire_bytes():
+    """No read-only projection may back-patch a historical predecessor."""
+    original = PRECHANGE_RUN_JSON.encode("utf-8")
+    legacy = run_from_json(PRECHANGE_RUN_JSON)
+    workflow = profile({"implement": phase({"done": route("complete")})})
+    first = checkpoint_projection(legacy, workflow)
+    second = checkpoint_projection(run_from_json(PRECHANGE_RUN_JSON), workflow)
+    assert first == second
+    assert run_to_json(legacy).encode("utf-8") == original
 
 
 def test_v2_non_null_successor_records_are_closed_and_strict():
