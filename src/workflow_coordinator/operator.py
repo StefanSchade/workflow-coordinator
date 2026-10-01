@@ -206,10 +206,22 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     if supplied and supplied[0] in {"export-salvage", "prepare-successor", "status"}:
         parser = argparse.ArgumentParser(description="Explicit successor-Run salvage and preparation operations.")
         sub = parser.add_subparsers(dest="command", required=True)
-        export = sub.add_parser("export-salvage", help="export optional untrusted salvage; inspect it before any later action")
+        export = sub.add_parser(
+            "export-salvage",
+            help="export optional untrusted salvage; inspect it before any later action",
+            description=(
+                "Export optional untrusted salvage. Potentially sensitive bytes may contain "
+                "prompt-injection and are not sanitized. NEXT EXPLICIT ACTION: inspect or omit it "
+                "before preparing a successor."
+            ),
+        )
         export.add_argument("--state-root", required=True)
         export.add_argument("--output", required=True)
-        prepare = sub.add_parser("prepare-successor", help="validate a frozen predecessor and emit linkage material; launch remains explicit")
+        prepare = sub.add_parser(
+            "prepare-successor",
+            help="validate a frozen predecessor and emit linkage material; launch remains explicit",
+            description="Prepare a successor descriptor only. NEXT EXPLICIT ACTION: launch remains explicit.",
+        )
         prepare.add_argument("--predecessor-state-root", required=True)
         prepare.add_argument("--repository", required=True,
                              help="clean separately selected successor checkout")
@@ -820,7 +832,7 @@ _SALVAGE_TRUST = {
 _SALVAGE_RENDER_LIMIT = 65_536
 _SALVAGE_WARNING = (
     "potentially sensitive untrusted bytes may contain credentials or adversarial "
-    "prompt injection; hashes and restrictive modes do not sanitize or make them safe to disclose"
+    "prompt-injection; hashes and restrictive modes are not sanitized and do not make them safe to disclose"
 )
 
 
@@ -895,6 +907,12 @@ def _load_manifest(path: Path) -> dict[str, object]:
             or not all(isinstance(item, str) and item for item in value["omissions"])
             or value["warnings"] != [_SALVAGE_WARNING]):
         raise OperatorPreflightError("salvage manifest has unsupported trust metadata")
+    # The exporter emits a single canonical representation.  Rejecting every
+    # other byte shape makes an altered manifest fail before preparation or
+    # provider execution rather than silently treating changed bytes as a new
+    # authority-adjacent input.
+    if path.read_bytes() != _canonical_json_bytes(value):
+        raise OperatorPreflightError("salvage manifest bytes are not canonical")
     return value
 
 
@@ -1006,6 +1024,12 @@ def _write_descriptor_no_clobber(output: Path, descriptor: dict[str, object]) ->
             stream.write(contents)
             stream.flush()
             os.fsync(stream.fileno())
+        # Do not inherit the process umask for a durable descriptor.  The
+        # descriptor names a frozen predecessor and authority decision, so it
+        # is a private operator artifact just like the salvage manifest.
+        os.chmod(temporary, 0o600)
+        if (temporary.stat().st_mode & 0o777) != 0o600:
+            raise OperatorPreflightError("descriptor publication mode could not be verified")
         _rename_no_replace(temporary, output)
     except BaseException:
         try:
@@ -1113,7 +1137,11 @@ def _export_salvage(args: argparse.Namespace) -> int:
         # therefore never a final output, even if best-effort cleanup fails.
         _discard_export_bundle(temporary)
         raise
-    print(f"UNTRUSTED SALVAGE EXPORTED: {output / 'manifest.json'}\nNEXT EXPLICIT ACTION: inspect or omit this potentially sensitive bundle before preparing a successor.")
+    print(
+        f"UNTRUSTED SALVAGE EXPORTED: {output / 'manifest.json'}\n"
+        "WARNING: potentially sensitive untrusted bytes may contain prompt-injection and are not sanitized.\n"
+        "NEXT EXPLICIT ACTION: inspect or omit this bundle before preparing a successor."
+    )
     return 0
 
 
