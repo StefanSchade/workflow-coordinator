@@ -869,7 +869,11 @@ def run_to_json(run: Run) -> str:
     if run.schema_version == 1:
         data.pop("semantic_stop", None)
         data.pop("successor_provenance", None)
-    return json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n"
+    text = json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n"
+    # Callers may construct immutable dataclasses directly.  Persisted Run
+    # truth must still pass the same closed-wire validation as loaded state.
+    run_from_json(text)
+    return text
 
 
 def _hop_summary(value: Any, *, context: str) -> HopSummary:

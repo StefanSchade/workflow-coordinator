@@ -11,6 +11,8 @@ import re
 import subprocess
 import hashlib
 import stat
+import tempfile
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -90,24 +92,58 @@ def salvage_inventory(
     The caller owns publication; this function deliberately has no write path.
     """
     identity = repository_identity(repository)
-    if not _git_succeeds(identity, "cat-file", "-e", f"{base_head}^{{commit}}"):
-        raise GitPreflightError("salvage base HEAD is not a commit")
+    # Git may refresh an index while comparing it with the worktree, even for
+    # `diff`/`ls-files`.  Give the whole capture an isolated index copy so a
+    # platform-specific refresh can never touch the registered checkout.
+    index_location = Path(_readonly_git(identity, "rev-parse", "--git-path", "index"))
+    if not index_location.is_absolute():
+        index_location = identity / index_location
+    descriptor, copied_index = tempfile.mkstemp(prefix="wfc-salvage-index-")
+    os.close(descriptor)
+    try:
+        if index_location.exists():
+            shutil.copyfile(index_location, copied_index)
+        capture_env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": copied_index}
+        if _run_git(identity, "cat-file", "-e", f"{base_head}^{{commit}}", env=capture_env).returncode:
+            raise GitPreflightError("salvage base HEAD is not a commit")
+        return _salvage_inventory_with_index(
+            identity, base_head=base_head, allowed_paths=allowed_paths,
+            max_objects=max_objects, max_object_bytes=max_object_bytes, env=capture_env,
+        )
+    finally:
+        try:
+            os.unlink(copied_index)
+        except FileNotFoundError:
+            pass
+
+
+def _salvage_inventory_with_index(
+    identity: Path, *, base_head: str, allowed_paths: tuple[str, ...], max_objects: int,
+    max_object_bytes: int, env: dict[str, str],
+) -> tuple[SalvageObject, ...]:
+    """Capture helper using an isolated caller-owned Git index copy."""
     if not allowed_paths:
         raise GitPreflightError("salvage requires an explicit authorized scope")
-    changed = tuple(filter(None, _git(identity, "diff", "--no-ext-diff", "--name-only", base_head).splitlines()))
+    def capture_git(*args: str, check: bool = True) -> str:
+        completed = _run_git(identity, *args, env=env)
+        if check and completed.returncode:
+            raise GitPreflightError(completed.stderr.strip() or "Git command failed")
+        return completed.stdout.strip()
+
+    changed = tuple(filter(None, capture_git("diff", "--no-ext-diff", "--name-only", base_head).splitlines()))
     outside = [
         path for path in changed
         if not any(path == root or path.startswith(f"{root.rstrip('/')}/") for root in allowed_paths)
     ]
     if outside:
         raise GitPreflightError("salvage tracked path is outside authorized scope: " + ", ".join(outside))
-    diff = _run_git(identity, "diff", "--binary", "--no-ext-diff", base_head).stdout.encode("utf-8")
+    diff = _run_git(identity, "diff", "--binary", "--no-ext-diff", base_head, env=env).stdout.encode("utf-8")
     objects: list[SalvageObject] = []
     if diff:
         if len(diff) > max_object_bytes:
             raise GitPreflightError("salvage tracked diff exceeds object size limit")
         objects.append(SalvageObject("tracked-diff", None, "tracked_diff", diff))
-    names = tuple(filter(None, _git(identity, "ls-files", "--others", "--exclude-standard").splitlines()))
+    names = tuple(filter(None, capture_git("ls-files", "--others", "--exclude-standard").splitlines()))
     for path in names:
         if not any(path == root or path.startswith(f"{root.rstrip('/')}/") for root in allowed_paths):
             raise GitPreflightError(f"salvage untracked path is outside authorized scope: {path}")
@@ -172,6 +208,21 @@ def _git(repository: Path, *args: str, check: bool = True) -> str:
     return completed.stdout.strip()
 
 
+def _readonly_git(repository: Path, *args: str, check: bool = True) -> str:
+    """Observe Git with optional index locks disabled.
+
+    Git's otherwise read-only porcelain may refresh the index.  Salvage and
+    ordinary observation promise not to alter the checkout, so keep those
+    calls on this lock-free read path rather than the trusted-commit path.
+    """
+    environment = dict(os.environ)
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
+    completed = _run_git(repository, *args, env=environment)
+    if check and completed.returncode:
+        raise GitPreflightError(completed.stderr.strip() or "Git command failed")
+    return completed.stdout.strip()
+
+
 def _trusted_git_environment() -> dict[str, str]:
     """Keep ordinary process settings but remove every inherited Git control."""
 
@@ -219,7 +270,7 @@ def _repository_identity(repository: Path, *, git_command: GitCommand) -> Path:
 
 
 def repository_identity(repository: Path) -> Path:
-    return _repository_identity(repository, git_command=_git)
+    return _repository_identity(repository, git_command=_readonly_git)
 
 
 def _contains_identity_token(subject: str, identity: str) -> bool:
@@ -313,7 +364,29 @@ def _observe_repository(repository: Path, *, git_command: GitCommand) -> GitFact
 
 
 def observe_repository(repository: Path) -> GitFacts:
-    return _observe_repository(repository, git_command=_git)
+    identity = _repository_identity(repository, git_command=_readonly_git)
+    index_location = Path(_readonly_git(identity, "rev-parse", "--git-path", "index"))
+    if not index_location.is_absolute():
+        index_location = identity / index_location
+    descriptor, copied_index = tempfile.mkstemp(prefix="wfc-observe-index-")
+    os.close(descriptor)
+    try:
+        if index_location.exists():
+            shutil.copyfile(index_location, copied_index)
+        environment = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": copied_index}
+
+        def observation_git(repo: Path, *args: str, check: bool = True) -> str:
+            completed = _run_git(repo, *args, env=environment)
+            if check and completed.returncode:
+                raise GitPreflightError(completed.stderr.strip() or "Git command failed")
+            return completed.stdout.strip()
+
+        return _observe_repository(identity, git_command=observation_git)
+    finally:
+        try:
+            os.unlink(copied_index)
+        except FileNotFoundError:
+            pass
 
 
 def preflight_hop(

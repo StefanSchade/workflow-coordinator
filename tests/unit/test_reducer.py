@@ -390,6 +390,7 @@ def test_correlated_semantic_stop_survives_later_mechanical_preemption():
     )
     assert reduced.run.status is RunStatus.AWAITING_HUMAN
     assert "dirty tracked state" in (reduced.run.stop_reason or "")
+    assert reduced.run.anomalies == ("dirty tracked state; forbidden CommitIntent",)
     assert reduced.run.semantic_stop and reduced.run.semantic_stop.kind == "scope"
     assert reduced.run.semantic_stop.question == "May the WorkItem include the missing test?"
     assert reduced.run.semantic_stop.source_hop_id == hop_id

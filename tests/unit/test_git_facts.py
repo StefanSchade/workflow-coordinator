@@ -18,6 +18,7 @@ from workflow_coordinator.git_facts import (
     observe_repository,
     preflight_hop,
     preflight_state_root,
+    salvage_inventory,
 )
 from workflow_coordinator.model import DispatchMarker, EvidenceCommand, RunStatus
 from workflow_coordinator.persistence import recover_uncertain_dispatch
@@ -70,6 +71,19 @@ def test_preflight_rejects_nonignored_untracked_without_cleaning(repository: Pat
     with pytest.raises(GitPreflightError, match="non-ignored untracked state"):
         preflight_hop(repository, expected_repository=repository, expected_head=head)
     assert (repository / "loose.txt").exists()
+
+
+def test_salvage_observation_does_not_refresh_or_mutate_git_index(repository: Path):
+    import hashlib
+    import os
+
+    base = observe_repository(repository).head
+    target = repository / "src" / "base.txt"
+    os.utime(target, None)
+    before = hashlib.sha256((repository / ".git" / "index").read_bytes()).hexdigest()
+    assert salvage_inventory(repository, base_head=base, allowed_paths=("src",)) == ()
+    after = hashlib.sha256((repository / ".git" / "index").read_bytes()).hexdigest()
+    assert after == before
 
 
 def test_state_root_requires_tracked_ignore_not_local_exclude(repository: Path):

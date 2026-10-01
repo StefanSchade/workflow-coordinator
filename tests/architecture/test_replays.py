@@ -154,6 +154,20 @@ def test_replay_b_semantic_prerequisite_suspends_then_reconciles():
     assert "next_route" not in {field.name for field in fields(Run)}
 
 
+def test_semantic_successor_stop_is_not_eligible_for_same_run_recovery():
+    workflow = profile({"work": phase({"done": route("complete")})})
+    run, hop_id = charge_hop(run_for(workflow, budget=2))
+    stopped = reduce_result(
+        run,
+        result("done", requires_human=True, escalation=Escalation("scope", "Grant a new scope?")),
+        workflow,
+        hop_id=hop_id,
+    ).run
+    assert stopped.status is RunStatus.AWAITING_HUMAN
+    with pytest.raises(Exception, match="awaiting_human"):
+        require_reconcile(stopped, reason="interruption", current_head=stopped.current_head)
+
+
 def test_replay_c_broad_fresh_advisory_review_cannot_accept():
     """C: WFC-REVIEW-01..04, WFC-AUTH-03..05."""
 

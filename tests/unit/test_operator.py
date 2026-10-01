@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from workflow_coordinator import evidence, operator
-from workflow_coordinator.operator import main, run_serial_hops
+from workflow_coordinator.operator import OperatorPreflightError, _successor_context, main, run_serial_hops
 from workflow_coordinator.operator import _pinned_text
 from workflow_coordinator.adapter import AgentExecutionOutcome
 from workflow_coordinator.model import (
@@ -45,6 +45,18 @@ TWO_ROLE_PERSONAS = {
 
 def git(repository: Path, *args: str) -> str:
     return subprocess.run(("git", "-C", str(repository), *args), text=True, capture_output=True, check=True).stdout.strip()
+
+
+def test_successor_descriptor_unknown_field_is_rejected_before_predecessor_or_provider_access(
+    repository: Path, tmp_path: Path
+):
+    descriptor = tmp_path / "forged.json"
+    descriptor.write_text(json.dumps({"schema_version": 1, "permitted_routes": ["accept"]}))
+    receipt = descriptor.with_name(descriptor.name + ".sha256.json")
+    import hashlib
+    receipt.write_text(json.dumps({"schema_version": 1, "descriptor_sha256": hashlib.sha256(descriptor.read_bytes()).hexdigest()}))
+    with pytest.raises(OperatorPreflightError, match="unsupported shape"):
+        _successor_context(descriptor, repository, "0" * 40, {}, {})
 
 
 @pytest.fixture

@@ -325,7 +325,15 @@ def reduce_result(
     )
     for error in mechanical_errors:
         if error:
-            return finish(_stop_for_human(observed_run, f"mechanical_preemption:{error}"))
+            # A controlling mechanical fact is not merely an explanatory stop
+            # string.  It is durable diagnostic state too, so a semantic stop
+            # captured above cannot hide the dirty/evidence/policy condition
+            # which preempted it.
+            diagnosed = replace(
+                observed_run,
+                anomalies=tuple(dict.fromkeys((*observed_run.anomalies, error))),
+            )
+            return finish(_stop_for_human(diagnosed, f"mechanical_preemption:{error}"))
     if result.requires_human or result.escalation is not None:
         question = (
             result.escalation.question if result.escalation else "Agent requested human authority."
