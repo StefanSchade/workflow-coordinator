@@ -460,6 +460,98 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     assert predecessor_run_path.read_bytes() == predecessor_run_bytes
 
 
+def test_same_content_untracked_salvage_rows_share_one_byte_object_through_successor_launch(
+    repository: Path, tmp_path: Path
+):
+    """A content-addressed object may represent more than one safe path row."""
+    (repository / "src").mkdir()
+    (repository / "work.yml").write_text(
+        (repository / "work.yml").read_text().replace("scope: [PROOF.md]", "scope: [src]")
+    )
+    (repository / "policy.yml").write_text(
+        (repository / "policy.yml").read_text().replace(
+            "work_item_scope_ceiling: [PROOF.md]", "work_item_scope_ceiling: [src]"
+        )
+    )
+    (repository / "profile.yml").write_text(
+        (repository / "profile.yml").read_text().replace("authorized_scope: [PROOF.md]", "authorized_scope: [src]")
+    )
+    baseline = commit(repository, "test: permit source salvage")
+    predecessor = fake(tmp_path, '''import json, pathlib, sys
+args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read()
+def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
+repo.joinpath("src/a.txt").write_text("same bytes\\n")
+repo.joinpath("src/b.txt").write_text("same bytes\\n")
+result={"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":True,"requires_human":True,"escalation":{"kind":"scope","question":"May a maintainer grant new authority?"},"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"authority required"}
+output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
+''')
+    predecessor_state = tmp_path / "same-content-predecessor"
+    assert main(args(repository, predecessor_state, str(predecessor))) == 1
+    bundle = tmp_path / "same-content-salvage"
+    assert main(["export-salvage", "--state-root", str(predecessor_state), "--output", str(bundle)]) == 0
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    rows = [row for row in manifest["objects"] if row["kind"] == "untracked_file"]
+    assert [row["path"] for row in rows] == ["src/a.txt", "src/b.txt"]
+    assert len({row["sha256"] for row in rows}) == len({row["file"] for row in rows}) == 1
+    assert (bundle / rows[0]["file"]).read_bytes() == b"same bytes\n"
+
+    successor_repository = tmp_path / "same-content-successor-checkout"
+    git(repository, "worktree", "add", "--detach", str(successor_repository), baseline)
+    authority = tmp_path / "same-content-authority.txt"
+    authority.write_text("maintainer authority\n")
+    descriptor = tmp_path / "same-content-successor.json"
+    assert main([
+        "prepare-successor", "--predecessor-state-root", str(predecessor_state),
+        "--repository", str(successor_repository), "--authority-decision", str(authority),
+        "--work-item", "work.yml", "--profile", "profile.yml", "--policy", "policy.yml",
+        "--task", "task.txt", "--components", "components.yml", "--expected-head", baseline,
+        "--salvage-manifest", str(bundle / "manifest.json"), "--include-salvage-object", rows[0]["sha256"],
+        "--output", str(descriptor),
+    ]) == 0
+    prompt_path = tmp_path / "same-content-prompt.txt"
+    authority_bytes = authority.read_bytes()
+    authority.write_text("altered authority\n")
+    rejected_state = tmp_path / "same-content-authority-rejected"
+    assert main([
+        *args(successor_repository, rejected_state, str(predecessor)),
+        "--successor-continuation", str(descriptor),
+        "--successor-continuation-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+    ]) == 2
+    assert not rejected_state.exists()
+    authority.write_bytes(authority_bytes)
+    object_path = bundle / rows[0]["file"]
+    object_bytes = object_path.read_bytes()
+    object_path.write_bytes(b"altered bytes\n")
+    rejected_state = tmp_path / "same-content-salvage-rejected"
+    assert main([
+        *args(successor_repository, rejected_state, str(predecessor)),
+        "--successor-continuation", str(descriptor),
+        "--successor-continuation-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+    ]) == 2
+    assert not rejected_state.exists()
+    object_path.write_bytes(object_bytes)
+    successor = fake(tmp_path, f'''import json, pathlib, sys
+args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read(); pathlib.Path({str(prompt_path)!r}).write_text(prompt)
+def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
+repo.joinpath("src").mkdir(exist_ok=True)
+repo.joinpath("src/reproduced.txt").write_text("independently reproduced\\n")
+result={{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{{"paths":["src/reproduced.txt"],"subject":"fix(workflow): WI-OP H001 independently reproduce"}},"evidence_refs":[],"summary":"fresh successor"}}
+output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}}))
+''')
+    successor_state = tmp_path / "same-content-successor-state"
+    assert main([
+        *args(successor_repository, successor_state, str(successor)),
+        "--successor-continuation", str(descriptor),
+        "--successor-continuation-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
+    ]) == 0
+    prompt = prompt_path.read_text()
+    assert "path=src/a.txt" in prompt and "path=src/b.txt" in prompt
+    assert prompt.count("same bytes") == 2
+    successor_run = load_run(next((successor_state / "checkouts").iterdir()) / "run.json")
+    assert len(successor_run.hops[0].actual_commits) == 1
+    assert git(successor_repository, "show", "--format=%s", "-s", "HEAD").startswith("fix(workflow): WI-OP H001")
+
+
 @pytest.mark.parametrize("entry_kind", ["file", "directory", "symlink"])
 def test_no_clobber_publication_refuses_every_existing_destination_entry(tmp_path: Path, entry_kind: str):
     source = tmp_path / "complete"

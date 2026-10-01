@@ -104,6 +104,20 @@ def test_salvage_marks_binary_tracked_diff_as_non_renderable_binary(repository: 
     assert objects[0].content_kind == "binary"
 
 
+def test_salvage_enforces_positive_object_and_aggregate_byte_limits(repository: Path):
+    base = observe_repository(repository).head
+    (repository / "src" / "one.txt").write_text("one\n", encoding="utf-8")
+    (repository / "src" / "two.txt").write_text("two\n", encoding="utf-8")
+    with pytest.raises(GitPreflightError, match="object count"):
+        salvage_inventory(repository, base_head=base, allowed_paths=("src",), max_objects=1)
+    with pytest.raises(GitPreflightError, match="total bytes"):
+        salvage_inventory(
+            repository, base_head=base, allowed_paths=("src",), max_total_bytes=7,
+        )
+    with pytest.raises(GitPreflightError, match="limits must be positive"):
+        salvage_inventory(repository, base_head=base, allowed_paths=("src",), max_total_bytes=0)
+
+
 def test_state_root_requires_tracked_ignore_not_local_exclude(repository: Path):
     (repository / ".gitignore").write_text(".workflow-state/\n", encoding="utf-8")
     git(repository, "add", ".gitignore")

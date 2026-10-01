@@ -87,6 +87,7 @@ def salvage_inventory(
     allowed_paths: tuple[str, ...],
     max_objects: int = 128,
     max_object_bytes: int = 1_048_576,
+    max_total_bytes: int = 8_388_608,
 ) -> tuple[SalvageObject, ...]:
     """Read a bounded candidate delta without touching Git or the worktree.
 
@@ -109,7 +110,8 @@ def salvage_inventory(
             raise GitPreflightError("salvage base HEAD is not a commit")
         return _salvage_inventory_with_index(
             identity, base_head=base_head, allowed_paths=allowed_paths,
-            max_objects=max_objects, max_object_bytes=max_object_bytes, env=capture_env,
+            max_objects=max_objects, max_object_bytes=max_object_bytes,
+            max_total_bytes=max_total_bytes, env=capture_env,
         )
     finally:
         try:
@@ -120,11 +122,13 @@ def salvage_inventory(
 
 def _salvage_inventory_with_index(
     identity: Path, *, base_head: str, allowed_paths: tuple[str, ...], max_objects: int,
-    max_object_bytes: int, env: dict[str, str],
+    max_object_bytes: int, max_total_bytes: int, env: dict[str, str],
 ) -> tuple[SalvageObject, ...]:
     """Capture helper using an isolated caller-owned Git index copy."""
     if not allowed_paths:
         raise GitPreflightError("salvage requires an explicit authorized scope")
+    if max_objects < 1 or max_object_bytes < 1 or max_total_bytes < 1:
+        raise GitPreflightError("salvage limits must be positive")
     def capture_git(*args: str, check: bool = True) -> str:
         completed = _run_git(identity, *args, env=env)
         if check and completed.returncode:
@@ -161,13 +165,17 @@ def _salvage_inventory_with_index(
             raise GitPreflightError(f"salvage tracked object exceeds size limit: {path}")
     diff = _run_git(identity, "diff", "--binary", "--no-ext-diff", base_head, env=env).stdout.encode("utf-8")
     objects: list[SalvageObject] = []
+    total_bytes = 0
     if diff:
         if len(diff) > max_object_bytes:
             raise GitPreflightError("salvage tracked diff exceeds object size limit")
+        if len(diff) > max_total_bytes:
+            raise GitPreflightError("salvage total bytes exceeds limit")
         objects.append(SalvageObject(
             "tracked-diff", None, "tracked_diff", diff,
             "binary" if binary_tracked else "text",
         ))
+        total_bytes += len(diff)
         if len(objects) > max_objects:
             raise GitPreflightError("salvage object count exceeds limit")
     names = tuple(filter(None, capture_git("ls-files", "--others", "--exclude-standard").splitlines()))
@@ -191,6 +199,8 @@ def _salvage_inventory_with_index(
             raise GitPreflightError(f"salvage path cannot be read: {path}") from error
         if len(content) != metadata.st_size or len(content) > max_object_bytes:
             raise GitPreflightError(f"salvage path changed during capture: {path}")
+        if total_bytes + len(content) > max_total_bytes:
+            raise GitPreflightError("salvage total bytes exceeds limit")
         try:
             content_kind = "text" if "\x00" not in content.decode("utf-8") else "binary"
         except UnicodeDecodeError:
@@ -198,6 +208,7 @@ def _salvage_inventory_with_index(
         objects.append(SalvageObject(
             f"untracked:{path}", path, "untracked_file", content, content_kind,
         ))
+        total_bytes += len(content)
         if len(objects) > max_objects:
             raise GitPreflightError("salvage object count exceeds limit")
     return tuple(objects)

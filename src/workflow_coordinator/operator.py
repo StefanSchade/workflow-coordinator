@@ -1061,11 +1061,27 @@ def _export_salvage(args: argparse.Namespace) -> int:
         for item in objects:
             filename = f"objects/{item.sha256}"
             target = temporary / filename
-            with open(target, "xb") as stream:
-                stream.write(item.content)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.chmod(target, 0o600)
+            # Object storage is content addressed while the manifest inventory
+            # is path addressed.  Several eligible files may therefore share
+            # one byte object; publish that object once and retain every
+            # logical inventory row below.  The temporary directory is private
+            # to this export, so an existing target can only be an earlier
+            # object with the same digest.  Still verify its bytes and mode
+            # before reusing it rather than treating the filename as trust.
+            if _destination_exists(target):
+                try:
+                    if (target.is_symlink() or not target.is_file()
+                            or target.read_bytes() != item.content
+                            or (target.stat().st_mode & 0o777) != 0o600):
+                        raise OperatorPreflightError("salvage content-addressed object is unsuitable")
+                except OSError as error:
+                    raise OperatorPreflightError("salvage content-addressed object cannot be verified") from error
+            else:
+                with open(target, "xb") as stream:
+                    stream.write(item.content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.chmod(target, 0o600)
             rows.append({"object_id": item.object_id, "path": item.path, "kind": item.kind,
                          "sha256": item.sha256, "length": len(item.content), "file": filename,
                          "content_kind": item.content_kind})
