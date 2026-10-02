@@ -1,0 +1,293 @@
+= FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE -- Architecture Review 001
+
+Independent adversarial architecture review of commit
+`bef62116cb27e7e2203b502e4f710943477a37f7`
+(`docs(wfc): WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-DESIGN-001 H001 design BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER`)
+against parent `ef8a4d0d20f4cf36c77a8c13e9633cde59400c95`.
+
+Review only. This review changes no product source, ordinary test, proposed
+design, source BUG, governance input, Runtime, frozen historical Run, evidence
+repository, or remote. It does not implement the mechanism, establish R1A's
+root cause, fix or close R1A, close the source BUG, promote Runtime, or grant
+implementation or dogfood authority.
+
+== Verdict
+
+*CHANGES_REQUIRED; route `correct`.*
+
+The proposal gets the main architecture right. It keeps one authoritative
+Finding ledger, separates worker coverage from gate disposition, derives a
+semantically qualified per-Finding goalpost instead of treating a failure count
+as correctness, reserves escape selection to Core while profiles declare only
+finite routes, keeps diagnosis read-only and agent-attributed, preserves all
+existing authority boundaries, leaves simple profiles unchanged, and gives
+legacy wire versions an explicit no-backfill rule. It remains domain-neutral
+and neither assumes nor attempts to solve R1A.
+
+Two state-machine gaps prevent implementation as written. First, the proposed
+correction-obligation wire is not closed over the Finding lifecycle it extends:
+an ordinary agent can still create an untracked open blocker, an authorized
+`residual` disposition has no matching assessment value, and the result cannot
+name a Coordinator-allocated successor that is created atomically in that same
+result. Second, strategy-generation advancement is not bound exactly and
+causally to the set that triggered escape. A diagnosis can select only part of
+that set, and a later revision can name an unrelated open Finding, allowing an
+old-strategy goalpost to be carried back into correction or a below-limit count
+to be reset without its own escape.
+
+These are ordinary design-review defects. This review creates no WFC
+Current-Run Finding and requests no Finding disposition.
+
+== Review entry, method, and evidence
+
+At entry, `HEAD` was exactly
+`bef62116cb27e7e2203b502e4f710943477a37f7`; the committed H001 range changes
+only `docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc`.
+
+The review read the source BUG's Run 001-004 and identity-versus-convergence
+history, the execution-trust-boundary record, the accepted successor-Run design
+and its design/implementation review histories, the current self-development
+profile/policy/task conventions, and the run-preparation/self-development
+guides. It inspected the current model, reducer, strict profile/result/Run
+serialization, persistence, prompt/operator projection, and the focused
+reducer, serialization, replay, and governance tests.
+
+Load-bearing current facts include:
+
+* `Finding` has one Coordinator-allocated ID and immutable invariant, while
+  `_apply_finding_deltas()` permits any agent to create a new open Finding;
+  disposition authority is required only for lifecycle transitions such as
+  resolve, residualize, supersede, and reopen.
+* a new-Finding delta necessarily carries `finding_id: null`; the Coordinator
+  allocates `Fxxx` only while reducing the result. `successor_ref`, however, is
+  an already concrete string. There is no transaction-local alias with which
+  the same result can safely refer to its newly allocated successor.
+* the existing gate grammar can authorize `residual`, and current tests
+  exercise that lifecycle independently from `resolved`.
+* current profile, result, and Run parsers are closed by schema version, so the
+  proposed v3/v2 additions are feasible without weakening old shapes.
+* current Hop summaries do not yet retain the new event facts; the proposed
+  versioned Hop additions are therefore the correct persistence seam.
+
+Independent exploratory validation used:
+
+* `.venv/bin/python -m pytest -q` -- exit 0;
+* `git diff --check
+  ef8a4d0d20f4cf36c77a8c13e9633cde59400c95..bef62116cb27e7e2203b502e4f710943477a37f7`
+  -- exit 0; and
+* direct inspection of the strict result schema and reducer allocation order
+  described above.
+
+The Coordinator-projected trusted `pytest` evidence for H001 is also green.
+Green tests establish repository stability; they cannot fill an incomplete
+future protocol.
+
+== Open blocking design requirements
+
+=== D001 -- The tracked-Finding lifecycle must be total and wire-enforceable
+
+Underlying invariant:: Every blocker that participates in a convergence-aware
+profile must have one unambiguous authoritative lifecycle, and every lifecycle
+transition the profile permits must have an exact representable assessment and
+enforceable identity relation.
+
+The proposal says only an evaluator gate or human operation may introduce a
+_tracked_ obligation, but it leaves ordinary result-v2 Finding creation
+otherwise untouched. In the current reducer an agent without disposition
+authority may create an open blocking Finding. Such a Finding would have null
+`correction_obligation` metadata, would block completion, and would be excluded
+from mandatory coverage and convergence facts. The next evaluator is not
+defined to adopt it, so a convergence-aware Run can acquire a permanently
+untracked blocker through an admitted result.
+
+The assessment enum is also incomplete relative to the retained Finding state
+machine. It offers `closed`, the two carried results, and `superseded`, while
+the design expressly preserves authorized `residualize` behavior. `closed` is
+defined only as a matching `resolved` delta. An evaluator that validly changes
+an entered open obligation to `residual` therefore cannot satisfy the rule that
+every such obligation receive one matching assessment.
+
+Finally, the design requires a superseded tracked obligation to reference an
+existing _or atomically created_ tracked successor. Existing successors are
+representable. Atomic new successors are not: a new-Finding delta has a null ID
+until the reducer allocates it, but the superseding delta must already contain a
+string `successor_ref`. Predicting the allocator's next `Fxxx` value would turn
+an implementation detail into agent-authored identity and is not a valid
+correlation mechanism.
+
+Required correction:
+
+. Define the result-v2 rule for every new open blocking Finding in every
+  convergence role. Either reject creation outside evaluator/human authority,
+  define an explicit gate-adoption transition, or provide another closed rule
+  that cannot leave an admitted open blocker outside mandatory coverage. Do
+  not silently track a worker assertion as a gate-owned blocker.
+. Make convergence assessments total over every Finding disposition an
+  evaluator may advertise. Either add and define a `residualized` assessment
+  matched to an authorized residual delta, or statically prohibit residual
+  authority for tracked obligations and explain the compatibility choice.
+. Make successor correlation implementable. Either require a successor to
+  exist before supersession, or add a bounded transaction-local reference that
+  the reducer resolves atomically to the newly allocated ID. Specify ordering,
+  duplicate/unknown-reference rejection, cycle checks, persistence, and replay.
+. Add deterministic tests for non-evaluator blocker creation/adoption or
+  rejection, residual handling, existing and same-result successor linkage,
+  allocation without prediction, and self/cycle/unknown reference failures.
+
+This correction fits the proposed model/serialization/reducer and focused test
+scope; no product-scope widening is presently demonstrated.
+
+=== D002 -- Escape, diagnosis, revision, and generation advancement need one exact causal ID set
+
+Underlying invariant:: A strategy generation may advance only for the
+goalpost Finding identities whose escape was diagnosed and whose replacement
+strategy was independently accepted; no triggering identity may disappear and
+no unrelated identity may have its count reset.
+
+The evaluator records a sorted set of triggering Finding IDs in
+`route_reason`, but `DiagnosisReport.finding_ids` is required only to be a
+non-empty subset of those IDs. `StrategyRevision` has no diagnosis-hop
+correlation and is constrained only to open Findings. `StrategyAssessment`
+correlates to a revision Hop and advances generation for its named IDs.
+Together these rules admit two invalid histories:
+
+* when two Findings reach the goalpost together, diagnosis/reframe can name
+  only one, return to correction, and make the other undergo another local
+  correction under the already exhausted strategy generation; and
+* a reframe can name an open below-limit Finding that did not trigger escape,
+  allowing an accepted strategy assessment to reset its derived count without
+  a corresponding goalpost or diagnosis.
+
+The test statement that records correlate to “the same open IDs” does not
+define which originating event owns that set, whether equality or subset is
+required, or what happens to omitted triggering IDs. Finding IDs alone are not
+enough to reject a stale or unrelated diagnosis/revision chain.
+
+Required correction:
+
+. Define a persisted correlation from the escape-producing evaluator Hop (or
+  an equivalent immutable escape event) through diagnosis, strategy revision,
+  and strategy assessment.
+. Define exact set semantics. The smallest rule is equality with the complete
+  sorted triggering set throughout the chain. If partial diagnosis/reframe is
+  intentionally supported, persist the remaining set and prohibit return to a
+  corrector until every triggering ID has an accepted strategy disposition.
+. Require generation advancement to apply exactly once, only after an accepted
+  assessment of the correlated current revision, and only to that correlated
+  set. Reject stale, duplicate, omitted, added, closed, superseded, or
+  non-triggering IDs without resetting any count.
+. Add multi-trigger tests for subset omission, unrelated-ID injection, stale
+  revision/assessment correlation, duplicate acceptance, and successful exact-
+  set generation advancement. Preserve the already required case in which one
+  non-converging Finding escapes while other below-limit Findings retain their
+  histories.
+
+This is a Core correlation/validation correction within the already proposed
+model, reducer, serialization, persistence, and test seams. It adds no
+executable profile condition and grants no new authority.
+
+== Adversarial question and invariant assessment
+
+[cols="2,1,5",options="header"]
+|===
+|Question / challenge |Result |Assessment
+
+|A -- domain-neutral boundary
+|*Pass*
+|Core, profile strategy, domain semantics, project policy/evidence, task
+payload, and future Level 1 are separated explicitly. Core enums and the
+curriculum fixture contain no software-only correction semantics.
+
+|B -- structured correction obligations
+|*Fail: D001*
+|Reusing Finding avoids a shadow status model and preserves reviewer-owned
+closure, but the proposed lifecycle/wire is not total for untracked creation,
+residualization, and atomic successor linkage.
+
+|C -- convergence facts and goalpost
+|*Pass subject to D002 correlation*
+|The qualified addressed/new-counterexample cycle is semantic evidence, not a
+correctness score. Hop budget, acceptance, Finding lifecycle, and strategy
+goalpost are kept distinct. D002 is required so generation reset cannot bypass
+that per-Finding fact.
+
+|D -- deterministic escape routing
+|*Pass*
+|Core owns one closed protocol and route substitution after existing
+preemptions; YAML contains only bounded constants, roles, and finite named
+edges. The escape route is reserved from agent choice.
+
+|E -- diagnosis
+|*Pass*
+|Diagnosis is typed plus prose, agent-attributed, normally read-only, and
+incapable of disposition, acceptance, profile change, or authority grant.
+
+|F -- strategy revision/reframe
+|*Fail: D002*
+|Independent strategy evaluation is correctly distinct from requirement
+acceptance, but the triggering, diagnosed, revised, and generation-advanced ID
+sets are not yet causally closed.
+
+|G -- authority and scope
+|*Pass*
+|The mechanism adds no scope, action, trust, public-surface decision, evidence
+command, capability, or profile mutation. Existing escalation/human stops
+remain controlling.
+
+|H -- coexistence and pinned profiles
+|*Pass*
+|Schema-v2 simple loops remain valid and behaviorally unchanged. Profile
+selection is pre-Run commissioning/future-Level-1 policy; Level 0 does not
+discover or mutate profiles.
+
+|I -- persistence, wire, replay, and compatibility
+|*Pass subject to D001/D002 record corrections*
+|The separate result/profile/Run versions, exact legacy round-trip rules,
+no-backfill rule, event-derived projections, interruption behavior, and
+requested/applied route record are concrete. The corrected lifecycle and
+correlation facts must be included in the v3 event wire and replay checks.
+
+|J -- evidence and acceptance
+|*Fail only for the missing D001/D002 cases*
+|The matrix exercises stable identity, worker non-closure, route threshold,
+closure-before-escape, new versus carried blockers, multiple independent
+requirements, authority, pinned topology, replay, simple profiles, curriculum
+neutrality, and later R1A dogfood. Add the exact lifecycle and multi-trigger
+correlation cases required above.
+
+|K -- implementation slicing and exact scope
+|*Pass*
+|The four mechanism slices, separately commissioned R1A dogfood, optional later
+foreign-domain falsification, production/test path union, and stop-on-scope-
+discovery rule are bounded and consistent with current seams. Neither Level 1
+nor R1A implementation is smuggled into the product slices.
+
+|R1A root-cause/solution hard constraint
+|*Pass*
+|The record uses Run 004 only as empirical evidence and future dogfood. It does
+not predeclare a diagnosis, mutate frozen history, or propose an R1A fix.
+|===
+
+== Open identifier set and correction contract
+
+Open blocking design-review identifiers after H002:: `D001`, `D002`
+
+The correction Hop must report explicit `addressed`, `blocked`, or
+`escalation` coverage for both `D001` and `D002`, name the changed design
+sections, and give concrete artifact references. A worker `addressed` claim
+does not close either identifier. The next independent rereview must preserve
+this history and disposition both identifiers under these same names; any
+genuinely new blocker receives the next unused `Dxxx` identifier.
+
+== Route and lifecycle effect
+
+Request `route: correct` with `outcome: changes_required` and an empty WFC
+Findings delta. Correction is limited to `D001` and `D002` in
+`docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc`; no scope expansion
+is presently required.
+
+The H001 candidate is not accepted architecture. This review does not implement
+the mechanism, establish or fix R1A, close the source BUG, mutate Runs 001-004,
+change governance or Runtime, promote or push anything, or authorize a later
+implementation/dogfood Run. Those remain separate maintainer-owned acts after
+an eventual independent design acceptance.
