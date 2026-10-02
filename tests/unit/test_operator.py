@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import shutil
 import subprocess
 from dataclasses import replace
@@ -330,10 +331,11 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
 
 
 def test_read_only_legacy_status_and_predecessor_inspection_never_back_patch_bytes(
-    repository: Path, tmp_path: Path
+    repository: Path, tmp_path: Path, capsys
 ):
     """The historical v1 shape is inspectable but categorically ineligible."""
     state, _descriptor, authority, baseline, run_path = stopped_predecessor_and_descriptor(repository, tmp_path)
+    capsys.readouterr()
     legacy_state = tmp_path / "legacy-state"
     shutil.copytree(state, legacy_state)
     legacy_run = next((legacy_state / "checkouts").iterdir()) / "run.json"
@@ -348,6 +350,8 @@ def test_read_only_legacy_status_and_predecessor_inspection_never_back_patch_byt
     original = legacy_run.read_bytes()
 
     assert main(["status", "--state-root", str(legacy_state)]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert "next_explicit_action" in status and "separately authorized maintainer decision" in status["next_explicit_action"]
     assert legacy_run.read_bytes() == original
     rejected = tmp_path / "legacy-rejected.json"
     assert main([
@@ -358,6 +362,28 @@ def test_read_only_legacy_status_and_predecessor_inspection_never_back_patch_byt
     ]) == 2
     assert legacy_run.read_bytes() == original and not rejected.exists()
     assert run_path.read_bytes() != original  # This is a new v2 predecessor, never a rewritten legacy one.
+
+
+def test_prepare_successor_rejects_a_canonical_mutation_of_frozen_predecessor(
+    repository: Path, tmp_path: Path
+):
+    """Preparation uses the published predecessor identity, not new snapshot bytes."""
+    state, _descriptor, authority, baseline, run_path = stopped_predecessor_and_descriptor(
+        repository, tmp_path, prepare=False
+    )
+    git(repository, "checkout", "--", "PROOF.md")
+    original = run_path.read_bytes()
+    mutated = json.loads(original)
+    mutated["human_question"] = "canonical but forged predecessor fact"
+    run_path.write_text(json.dumps(mutated, sort_keys=True, separators=(",", ":")) + "\n")
+    output = tmp_path / "forged-predecessor-descriptor.json"
+    assert main([
+        "prepare-successor", "--predecessor-state-root", str(state), "--repository", str(repository),
+        "--authority-decision", str(authority), "--work-item", "work.yml", "--profile", "profile.yml",
+        "--policy", "policy.yml", "--task", "task.txt", "--components", "components.yml",
+        "--expected-head", baseline, "--output", str(output),
+    ]) == 2
+    assert not output.exists() and run_path.read_bytes() != original
 
 
 def test_successor_launch_revalidates_every_mutable_preprovider_input(
@@ -667,6 +693,29 @@ def test_successor_cli_uses_explicit_salvage_actions_without_recovery_framing(ca
     assert "successor" in prepare_help and "authority-decision" in prepare_help
     assert "salvage-manifest-sha256" in prepare_help and "next explicit action" in prepare_help
     assert not any(word in prepare_help for word in ("resume", "reconcile", "retry", "checkpoint", "provider-session"))
+
+
+def test_export_success_does_not_read_back_the_published_manifest(
+    repository: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """A final salvage bundle cannot be reported as failed by a readback fault."""
+    state, _descriptor, _authority, _baseline, _run_path = stopped_predecessor_and_descriptor(
+        repository, tmp_path, prepare=False
+    )
+    output = tmp_path / "published-salvage"
+    original_read_bytes = Path.read_bytes
+
+    def fail_final_manifest_read(path: Path):
+        if path == output / "manifest.json":
+            raise OSError("injected post-publication readback fault")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_final_manifest_read)
+    assert main(["export-salvage", "--state-root", str(state), "--output", str(output)]) == 0
+    assert "MANIFEST SHA-256:" in capsys.readouterr().out
+    # Restore ordinary consumer I/O and prove the published artifact is valid.
+    monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
+    assert operator._load_manifest(output / "manifest.json")["trust"] == operator._SALVAGE_TRUST
 
 
 def test_tracked_binary_salvage_uses_a_different_clean_successor_checkout_without_raw_rendering(
@@ -1125,6 +1174,94 @@ def test_public_artifact_publication_fault_matrix_is_fail_closed(
     else:
         assert not output.exists()
     assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
+
+
+@pytest.mark.parametrize("artifact", ("salvage", "descriptor"))
+@pytest.mark.parametrize("entry_kind", ("file", "directory", "symlink"))
+def test_public_publishers_preserve_every_existing_destination_kind(
+    repository: Path, tmp_path: Path, artifact: str, entry_kind: str
+):
+    """Existing file, directory, and symlink destinations are public no-clobber cases."""
+    state, _descriptor, authority, baseline, _run_path = stopped_predecessor_and_descriptor(
+        repository, tmp_path, prepare=False
+    )
+    if artifact == "descriptor":
+        git(repository, "checkout", "--", "PROOF.md")
+    output = tmp_path / f"{artifact}-{entry_kind}"
+    if entry_kind == "file":
+        output.write_text("existing entry\n")
+    elif entry_kind == "directory":
+        output.mkdir()
+    else:
+        output.symlink_to("missing-existing-target")
+    command = (["export-salvage", "--state-root", str(state), "--output", str(output)] if artifact == "salvage" else [
+        "prepare-successor", "--predecessor-state-root", str(state), "--repository", str(repository),
+        "--authority-decision", str(authority), "--work-item", "work.yml", "--profile", "profile.yml",
+        "--policy", "policy.yml", "--task", "task.txt", "--components", "components.yml",
+        "--expected-head", baseline, "--output", str(output),
+    ])
+    assert main(command) == 2
+    assert os.path.lexists(output)
+    assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
+
+
+def test_public_export_invalidation_precedes_best_effort_cleanup(
+    repository: Path, tmp_path: Path, monkeypatch
+):
+    """A public export failure leaves even a stranded temporary tree unusable."""
+    state, _descriptor, _authority, _baseline, _run_path = stopped_predecessor_and_descriptor(
+        repository, tmp_path, prepare=False
+    )
+    output = tmp_path / "failed-public-salvage"
+    monkeypatch.setattr(
+        operator, "_rename_no_replace",
+        lambda *_args: (_ for _ in ()).throw(OperatorPreflightError("injected finalization failure")),
+    )
+    monkeypatch.setattr(
+        operator.shutil, "rmtree",
+        lambda *_args: (_ for _ in ()).throw(OSError("injected cleanup failure")),
+    )
+    assert main(["export-salvage", "--state-root", str(state), "--output", str(output)]) == 2
+    temporary = next(tmp_path.glob(".wfc-salvage-*"))
+    assert not output.exists() and not (temporary / "manifest.json").exists()
+    with pytest.raises(OperatorPreflightError):
+        operator._load_manifest(temporary / "manifest.json")
+
+
+def test_public_descriptor_cleanup_failure_leaves_a_stranded_temporary_unusable(
+    repository: Path, tmp_path: Path, monkeypatch
+):
+    """Descriptor finalization failure never makes a retained temporary a descriptor input."""
+    state, _descriptor, authority, baseline, _run_path = stopped_predecessor_and_descriptor(
+        repository, tmp_path, prepare=False
+    )
+    git(repository, "checkout", "--", "PROOF.md")
+    output = tmp_path / "failed-public-descriptor.json"
+    monkeypatch.setattr(
+        operator, "_rename_no_replace",
+        lambda *_args: (_ for _ in ()).throw(OperatorPreflightError("injected finalization failure")),
+    )
+    original_unlink = Path.unlink
+
+    def retain_temporary(path: Path, *args, **kwargs):
+        if path.name.startswith(f".{output.name}."):
+            raise OSError("injected cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", retain_temporary)
+    assert main([
+        "prepare-successor", "--predecessor-state-root", str(state), "--repository", str(repository),
+        "--authority-decision", str(authority), "--work-item", "work.yml", "--profile", "profile.yml",
+        "--policy", "policy.yml", "--task", "task.txt", "--components", "components.yml",
+        "--expected-head", baseline, "--output", str(output),
+    ]) == 2
+    temporary = next(tmp_path.glob(f".{output.name}.*.tmp"))
+    assert not output.exists()
+    with pytest.raises(OperatorPreflightError, match="integrity validation failed"):
+        operator._validated_successor_descriptor(
+            temporary, repository, baseline, {}, {},
+            expected_descriptor_sha256=hashlib.sha256(temporary.read_bytes()).hexdigest(),
+        )
 
 
 def test_a1_rejection_has_no_run_state_checkout_adapter_or_provider_effects(
@@ -2000,7 +2137,10 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
         "model": "fixture-reviewer",
         "reasoning": "high",
     }
-    assert "LAST RUN COMMIT: " + summary["commits"][0]["hash"] in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "LAST RUN COMMIT: " + summary["commits"][0]["hash"] in output
+    assert summary["next_explicit_action"] == "No automatic follow-up action occurs."
+    assert "NEXT EXPLICIT ACTION: No automatic follow-up action occurs." in output
 
 
 def test_main_observation_only_run_reports_no_run_commits(repository: Path, tmp_path: Path):

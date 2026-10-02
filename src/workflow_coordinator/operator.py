@@ -771,7 +771,8 @@ def _summary(repository: Path, run, outcome, error: str | None = None, *, execut
             "hop_limit": run.hop_limit, "stop_reason": run.stop_reason, "human_question": run.human_question,
             "semantic_stop": None if run.semantic_stop is None else {"kind": run.semantic_stop.kind, "question": run.semantic_stop.question, "source_hop_id": run.semantic_stop.source_hop_id},
             "successor_provenance": None if run.successor_provenance is None else {"predecessor_run_id": run.successor_provenance.predecessor_run_id, "predecessor_work_item_id": run.successor_provenance.predecessor_work_item_id, "predecessor_final_head": run.successor_provenance.predecessor_final_head, "authority_decision_ref": run.successor_provenance.authority_decision_ref, "authority_decision_sha256": run.successor_provenance.authority_decision_sha256, "continuation_descriptor_sha256": run.successor_provenance.continuation_descriptor_sha256, "salvage_manifest_sha256": run.successor_provenance.salvage_manifest_sha256},
-            "anomalies": list(run.anomalies), "provider": provider, "commits": commits,
+            "anomalies": list(run.anomalies), "next_explicit_action": _next_explicit_action(run),
+            "provider": provider, "commits": commits,
             "changed_paths": _git(repository, "diff", "--name-only", f"{run.baseline_head}..{facts.head}").splitlines(),
             "worktree_clean": facts.clean and not facts.unresolved_submodules, "operator_error": error,
             "hops": hops, "execution_evidence": hop_evidence}
@@ -794,7 +795,7 @@ def _best_effort_failure_summary(
         "hop_limit": run.hop_limit, "stop_reason": run.stop_reason,
         "human_question": run.human_question,
         "semantic_stop": None if run.semantic_stop is None else {"kind": run.semantic_stop.kind, "question": run.semantic_stop.question, "source_hop_id": run.semantic_stop.source_hop_id},
-        "anomalies": list(run.anomalies),
+        "anomalies": list(run.anomalies), "next_explicit_action": _next_explicit_action(run),
         "provider": provider, "commits": [], "changed_paths": [],
         "operator_status": "failed", "operator_error": str(error),
     }
@@ -1141,9 +1142,14 @@ def _export_salvage(args: argparse.Namespace) -> int:
         # therefore never a final output, even if best-effort cleanup fails.
         _discard_export_bundle(temporary)
         raise
+    # All potentially fallible finalization work was completed before the
+    # no-replace rename.  Keep this output derived solely from pre-publication
+    # facts: a post-publication manifest readback could otherwise report a
+    # failure after publishing a consumable bundle.
+    manifest_digest = hashlib.sha256(_canonical_json_bytes(manifest)).hexdigest()
     print(
         f"UNTRUSTED SALVAGE EXPORTED: {output / 'manifest.json'}\n"
-        f"MANIFEST SHA-256: {hashlib.sha256((output / 'manifest.json').read_bytes()).hexdigest()}\n"
+        f"MANIFEST SHA-256: {manifest_digest}\n"
         "WARNING: potentially sensitive untrusted bytes may contain prompt-injection and are not sanitized.\n"
         "NEXT EXPLICIT ACTION: inspect or omit this bundle before preparing a successor."
     )
@@ -1159,7 +1165,32 @@ def _predecessor_for_successor(state_root: Path):
         raise OperatorPreflightError("predecessor lacks a frozen semantic stop")
     if run.semantic_stop.source_hop_id not in {hop.hop_id for hop in run.hops}:
         raise OperatorPreflightError("predecessor semantic stop source Hop is absent")
+    # ``checkpoint.json`` is the already-published reconstruction projection
+    # for this stopped Run.  Its digest anchor is emitted when the snapshot is
+    # persisted; preparation must not establish a new identity by hashing
+    # whichever otherwise-valid bytes happen to be at run.json now.
+    try:
+        checkpoint = json.loads((run_path.parent / "checkpoint.json").read_text(encoding="utf-8"))
+        anchored_digest = checkpoint["identity"]["run_json_sha256"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise OperatorPreflightError("predecessor lacks a published frozen Run identity") from error
+    current_digest = hashlib.sha256(run_path.read_bytes()).hexdigest()
+    if not isinstance(anchored_digest, str) or anchored_digest != current_digest:
+        raise OperatorPreflightError("predecessor Run snapshot differs from its published frozen identity")
     return root, repository, run_path, run
+
+
+def _next_explicit_action(run) -> str:
+    """Describe an operator choice without executing or authorizing it."""
+
+    if run.status is RunStatus.COMPLETED:
+        return "No automatic follow-up action occurs."
+    if run.status is RunStatus.AWAITING_HUMAN:
+        return (
+            "Review the recorded semantic and mechanical stop facts; any successor "
+            "preparation requires a separately authorized maintainer decision."
+        )
+    return "Inspect the published Run facts before taking any separate operator action."
 
 
 def _prepare_successor(args: argparse.Namespace) -> int:
@@ -1488,7 +1519,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         last_run_commit = next((commit for hop in reversed(final_run.hops) for commit in reversed(hop.actual_commits)), "none")
         print(f"RUN STATUS: {final_run.status.value}\nHOP USED: {final_run.hop_used}\nLAST RUN COMMIT: {last_run_commit}")
         facts = observe_repository(repository)
-        print(f"CURRENT HEAD: {facts.head}\nWORKTREE CLEAN: {facts.clean and not facts.unresolved_submodules}")
+        print(
+            f"CURRENT HEAD: {facts.head}\nWORKTREE CLEAN: {facts.clean and not facts.unresolved_submodules}\n"
+            f"NEXT EXPLICIT ACTION: {_next_explicit_action(final_run)}"
+        )
         return 0 if final_run.status.value == "completed" and facts.clean and not facts.unresolved_submodules else 1
     except Exception as error:
         _write_failure_summary(

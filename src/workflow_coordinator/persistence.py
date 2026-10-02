@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -179,6 +180,11 @@ def checkpoint_projection(
             "run_id": run.run_id,
             "profile": f"{run.profile_id}@{run.profile_revision}",
             "policy": f"{run.policy_id}@{run.policy_revision}",
+            # This projection is published alongside the immutable Run
+            # snapshot.  It records the exact snapshot bytes it projects so a
+            # later preparation action cannot silently turn a changed
+            # ``run.json`` into new predecessor truth.
+            "run_json_sha256": hashlib.sha256(run_to_json(run).encode("utf-8")).hexdigest(),
         },
         "heads": {"baseline": run.baseline_head, "current": run.current_head},
         "state": {
