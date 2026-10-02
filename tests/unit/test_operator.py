@@ -695,26 +695,42 @@ def test_successor_cli_uses_explicit_salvage_actions_without_recovery_framing(ca
     assert not any(word in prepare_help for word in ("resume", "reconcile", "retry", "checkpoint", "provider-session"))
 
 
-def test_export_success_does_not_read_back_the_published_manifest(
+def test_export_success_has_no_fallible_manifest_processing_after_publication(
     repository: Path, tmp_path: Path, monkeypatch, capsys
 ):
-    """A final salvage bundle cannot be reported as failed by a readback fault."""
+    """A final salvage bundle cannot be reported as failed after its rename."""
     state, _descriptor, _authority, _baseline, _run_path = stopped_predecessor_and_descriptor(
         repository, tmp_path, prepare=False
     )
     output = tmp_path / "published-salvage"
     original_read_bytes = Path.read_bytes
+    original_rename = operator._rename_no_replace
+    original_canonical_json_bytes = operator._canonical_json_bytes
+    published = False
 
     def fail_final_manifest_read(path: Path):
         if path == output / "manifest.json":
             raise OSError("injected post-publication readback fault")
         return original_read_bytes(path)
 
+    def mark_publication(source: Path, destination: Path):
+        nonlocal published
+        original_rename(source, destination)
+        published = True
+
+    def fail_post_publication_canonicalization(value: dict[str, object]) -> bytes:
+        if published:
+            raise OSError("injected post-publication serialization fault")
+        return original_canonical_json_bytes(value)
+
     monkeypatch.setattr(Path, "read_bytes", fail_final_manifest_read)
+    monkeypatch.setattr(operator, "_rename_no_replace", mark_publication)
+    monkeypatch.setattr(operator, "_canonical_json_bytes", fail_post_publication_canonicalization)
     assert main(["export-salvage", "--state-root", str(state), "--output", str(output)]) == 0
     assert "MANIFEST SHA-256:" in capsys.readouterr().out
     # Restore ordinary consumer I/O and prove the published artifact is valid.
     monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
+    monkeypatch.setattr(operator, "_canonical_json_bytes", original_canonical_json_bytes)
     assert operator._load_manifest(output / "manifest.json")["trust"] == operator._SALVAGE_TRUST
 
 

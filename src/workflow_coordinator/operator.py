@@ -1132,6 +1132,11 @@ def _export_salvage(args: argparse.Namespace) -> int:
                     # accept the artifact after the no-clobber rename lands it
                     # at this exact destination.
                     "publication": {"bundle_path": str(output.resolve())}}
+        # Retain the exact pre-publication representation used for the success
+        # output.  The final directory becomes consumable at the no-replace
+        # rename below, so no serialization, digesting, reading, or other
+        # fallible work may occur afterwards.
+        manifest_digest = hashlib.sha256(_canonical_json_bytes(manifest)).hexdigest()
         atomic_write_json(temporary / "manifest.json", manifest)
         os.chmod(temporary / "manifest.json", 0o600)
         if not _salvage_publication_modes(temporary, rows):
@@ -1143,10 +1148,9 @@ def _export_salvage(args: argparse.Namespace) -> int:
         _discard_export_bundle(temporary)
         raise
     # All potentially fallible finalization work was completed before the
-    # no-replace rename.  Keep this output derived solely from pre-publication
-    # facts: a post-publication manifest readback could otherwise report a
-    # failure after publishing a consumable bundle.
-    manifest_digest = hashlib.sha256(_canonical_json_bytes(manifest)).hexdigest()
+    # no-replace rename.  The success output uses the digest retained above,
+    # so no final-path readback or serialization can report a false failure
+    # after publishing a consumable bundle.
     print(
         f"UNTRUSTED SALVAGE EXPORTED: {output / 'manifest.json'}\n"
         f"MANIFEST SHA-256: {manifest_digest}\n"
