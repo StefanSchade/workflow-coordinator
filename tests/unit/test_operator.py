@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import hashlib
 import os
@@ -732,6 +733,56 @@ def test_export_success_has_no_fallible_manifest_processing_after_publication(
     monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
     monkeypatch.setattr(operator, "_canonical_json_bytes", original_canonical_json_bytes)
     assert operator._load_manifest(output / "manifest.json")["trust"] == operator._SALVAGE_TRUST
+
+
+def test_publication_output_faults_do_not_report_failure_after_final_export(
+    repository: Path, tmp_path: Path, monkeypatch
+):
+    """A closed output stream cannot change a completed export into failure."""
+    state, _descriptor, _authority, _baseline, _run_path = stopped_predecessor_and_descriptor(
+        repository, tmp_path, prepare=False
+    )
+    output = tmp_path / "output-fault-salvage"
+    original_print = builtins.print
+
+    def fail_export_success_output(*values, **kwargs):
+        if values and "UNTRUSTED SALVAGE EXPORTED:" in str(values[0]):
+            raise OSError("injected completed-export output failure")
+        return original_print(*values, **kwargs)
+
+    monkeypatch.setattr(builtins, "print", fail_export_success_output)
+    assert main(["export-salvage", "--state-root", str(state), "--output", str(output)]) == 0
+    assert operator._load_manifest(output / "manifest.json")["trust"] == operator._SALVAGE_TRUST
+
+
+def test_publication_output_faults_do_not_report_failure_after_final_descriptor(
+    repository: Path, tmp_path: Path, monkeypatch
+):
+    """Descriptor completion has the same no-false-failure public boundary."""
+    state, _descriptor, authority, baseline, _run_path = stopped_predecessor_and_descriptor(
+        repository, tmp_path, prepare=False
+    )
+    git(repository, "checkout", "--", "PROOF.md")
+    output = tmp_path / "output-fault-descriptor.json"
+    original_print = builtins.print
+
+    def fail_descriptor_success_output(*values, **kwargs):
+        if values and "SUCCESSOR DESCRIPTOR:" in str(values[0]):
+            raise OSError("injected completed-descriptor output failure")
+        return original_print(*values, **kwargs)
+
+    monkeypatch.setattr(builtins, "print", fail_descriptor_success_output)
+    assert main([
+        "prepare-successor", "--predecessor-state-root", str(state), "--repository", str(repository),
+        "--authority-decision", str(authority), "--work-item", "work.yml", "--profile", "profile.yml",
+        "--policy", "policy.yml", "--task", "task.txt", "--components", "components.yml",
+        "--expected-head", baseline, "--output", str(output),
+    ]) == 0
+    descriptor = json.loads(output.read_text())
+    assert operator._validated_successor_descriptor(
+        output, repository, baseline, descriptor["successor"]["inputs"], descriptor["successor"]["governing"],
+        expected_descriptor_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
+    ) == descriptor
 
 
 def test_tracked_binary_salvage_uses_a_different_clean_successor_checkout_without_raw_rendering(

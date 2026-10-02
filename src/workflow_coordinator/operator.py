@@ -990,6 +990,21 @@ def _descriptor_integrity(descriptor: dict[str, object]) -> str:
     return hashlib.sha256(_canonical_json_bytes(core)).hexdigest()
 
 
+def _report_completed_publication(message: str) -> None:
+    """Best-effort operator output after an artifact is already final.
+
+    A completed no-clobber publication is authoritative even when an operator's
+    output stream has gone away (for example, a closed pipe).  Reporting that
+    success must therefore never turn the public command into a false failure
+    after its production consumer can already load the final artifact.
+    """
+
+    try:
+        print(message)
+    except Exception:
+        pass
+
+
 def _discard_export_bundle(path: Path) -> None:
     """Best-effort cleanup for an unpublished temporary export directory.
 
@@ -1024,6 +1039,7 @@ def _write_descriptor_no_clobber(output: Path, descriptor: dict[str, object]) ->
 
     temporary = output.parent / f".{output.name}.{uuid.uuid4().hex}.tmp"
     contents = _canonical_json_bytes(descriptor)
+    digest = hashlib.sha256(contents).hexdigest()
     try:
         with open(temporary, "xb") as stream:
             stream.write(contents)
@@ -1049,7 +1065,7 @@ def _write_descriptor_no_clobber(output: Path, descriptor: dict[str, object]) ->
         temporary.unlink()
     except OSError:
         pass
-    return hashlib.sha256(contents).hexdigest()
+    return digest
 
 
 def _salvage_publication_modes(bundle: Path, rows: list[dict[str, object]]) -> bool:
@@ -1151,7 +1167,7 @@ def _export_salvage(args: argparse.Namespace) -> int:
     # no-replace rename.  The success output uses the digest retained above,
     # so no final-path readback or serialization can report a false failure
     # after publishing a consumable bundle.
-    print(
+    _report_completed_publication(
         f"UNTRUSTED SALVAGE EXPORTED: {output / 'manifest.json'}\n"
         f"MANIFEST SHA-256: {manifest_digest}\n"
         "WARNING: potentially sensitive untrusted bytes may contain prompt-injection and are not sanitized.\n"
@@ -1285,7 +1301,12 @@ def _prepare_successor(args: argparse.Namespace) -> int:
                                 "inputs": inputs, "governing": governing}, "salvage": salvage}
     descriptor["integrity_sha256"] = _descriptor_integrity(descriptor)
     descriptor_digest = _write_descriptor_no_clobber(output, descriptor)
-    print(f"SUCCESSOR DESCRIPTOR: {output}\nDESCRIPTOR SHA-256: {descriptor_digest}\nNEXT EXPLICIT ACTION: launch a fresh successor with --successor-continuation and --successor-continuation-sha256 after revalidating the clean baseline.")
+    _report_completed_publication(
+        f"SUCCESSOR DESCRIPTOR: {output}\nDESCRIPTOR SHA-256: {descriptor_digest}\n"
+        "NEXT EXPLICIT ACTION: launch a fresh successor with "
+        "--successor-continuation and --successor-continuation-sha256 after "
+        "revalidating the clean baseline."
+    )
     return 0
 
 
