@@ -123,6 +123,21 @@ SCOPE_ESCALATION_CONTINUATION_DESIGN_SCOPE = (
 SCOPE_ESCALATION_CONTINUATION_DESIGN_REVIEW_ARTIFACT = (
     "docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_review_001.adoc"
 )
+CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_GOVERNING_PATHS = (
+    "governance/work-items/correction-convergence-escape-design-001.yaml",
+    "governance/self-development/correction-convergence-escape-design-001-profile.yaml",
+    "governance/self-development/correction-convergence-escape-design-001-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/correction-convergence-escape-design-001-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_SCOPE = (
+    "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc",
+)
+CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_REVIEW_ARTIFACT = (
+    "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_review_001.adoc"
+)
 SCOPE_ESCALATION_CONTINUATION_IMPLEMENTATION_GOVERNING_PATHS = (
     "governance/work-items/scope-escalation-continuation-implementation.yaml",
     "governance/self-development/scope-escalation-continuation-implementation-profile.yaml",
@@ -1096,6 +1111,198 @@ def test_scope_escalation_continuation_design_bundle_passes_production_preflight
     assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
     assert tuple(result[13]) == ("pytest",)
 
+    assert not state_root.exists()
+
+
+def test_correction_convergence_escape_design_001_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Bounded design/review-only commission: preflight-only proof.
+
+    This governing bundle commissions an independently reviewed,
+    implementation-ready design for a generic, domain-neutral
+    correction-loop convergence-escape mechanism
+    (docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc). It must
+    parse, stay within policy/profile authority, use the bounded four-phase
+    bootstrap-safe topology (design -> review -> {accept, correct} ->
+    correct -> rereview -> {accept, correct}) with max_autonomous_hops == 6,
+    and hold no mutation authority over src/workflow_coordinator/**,
+    governance/, workflow-coordinator-runtime, the
+    workflow-coordinator-run-evidence repository, canonical Project Memory,
+    the source BUG itself, any historical FTR-WFC-SCOPE-ESCALATION-
+    CONTINUATION review artifact, or any other governance bundle: its only
+    authorized scope is the new design artifact and its single dedicated
+    durable review artifact.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "correction-convergence-escape-design-001"
+
+    assert not state_root.exists()
+    result = _preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    design = profile.phases["design"]
+    review = profile.phases["review"]
+    correct = profile.phases["correct"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = (
+        *CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_SCOPE,
+        CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_REVIEW_ARTIFACT,
+    )
+
+    assert work_item.work_item_id == "WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-DESIGN-001"
+    assert work_item.initial_phase == "design"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 6
+    assert profile.profile_id == "correction-convergence-escape-design-001"
+    assert policy.policy_id == "workflow-coordinator-correction-convergence-escape-design-001"
+    assert tuple(profile.phases) == ("design", "review", "correct", "rereview")
+
+    # WorkItem.scope is exactly the new design artifact plus its single
+    # dedicated durable review artifact -- the smallest ceiling this
+    # commission needs.
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    assert not _within_scope("src", work_item.scope)
+    assert not _within_scope("src/workflow_coordinator", work_item.scope)
+    assert not _within_scope("governance", work_item.scope)
+    assert not _within_scope("workflow-coordinator-runtime", work_item.scope)
+    assert not _within_scope("workflow-coordinator-run-evidence", work_item.scope)
+    assert not _within_scope("project_memory/canonical", work_item.scope)
+    assert not _within_scope(
+        "docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc", work_item.scope
+    )
+    assert not _within_scope(
+        "docs/backlog/BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc", work_item.scope
+    )
+    assert not _within_scope(
+        "docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc", work_item.scope
+    )
+    for historical_review_artifact in (
+        SCOPE_ESCALATION_CONTINUATION_DESIGN_REVIEW_ARTIFACT,
+        SCOPE_ESCALATION_CONTINUATION_IMPLEMENTATION_REVIEW_ARTIFACT,
+        SCOPE_ESCALATION_CONTINUATION_IMPLEMENTATION_002_REVIEW_ARTIFACT,
+        SCOPE_ESCALATION_CONTINUATION_IMPLEMENTATION_003_REVIEW_ARTIFACT,
+        SCOPE_ESCALATION_CONTINUATION_IMPLEMENTATION_004_REVIEW_ARTIFACT,
+    ):
+        assert not _within_scope(historical_review_artifact, work_item.scope)
+    for path in CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_SCOPE:
+        assert _within_scope(path, work_item.scope)
+
+    # No mutation authority over production source, ordinary product tests,
+    # or any other governance bundle (including this BUG's own motivating
+    # predecessor commission).
+    for withheld in (
+        "src/workflow_coordinator/model.py",
+        "src/workflow_coordinator/reducer.py",
+        "src/workflow_coordinator/operator.py",
+        "src/workflow_coordinator/serialization.py",
+        "src/workflow_coordinator/persistence.py",
+        "tests/architecture/test_self_development_governance.py",
+        "tests/unit/test_reducer.py",
+        "workflow-coordinator-runtime",
+        "workflow-coordinator-run-evidence",
+        "governance/work-items/scope-escalation-continuation-design.yaml",
+        "governance/self-development/scope-escalation-continuation-design-profile.yaml",
+        "governance/work-items/scope-escalation-continuation-implementation-004.yaml",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+
+    # design/correct share the exact single-path design scope; review and
+    # rereview are independently scoped by the profile to the single
+    # dedicated durable review artifact alone -- no phase's authorized_scope
+    # grants both, and neither ever grants the source BUG itself.
+    assert (
+        design.authorized_scope
+        == correct.authorized_scope
+        == CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_SCOPE
+    )
+    assert review.authorized_scope == rereview.authorized_scope == (
+        CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_REVIEW_ARTIFACT,
+    )
+    assert set(CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_SCOPE).isdisjoint(review.authorized_scope)
+    assert CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_REVIEW_ARTIFACT not in design.authorized_scope
+    assert CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_REVIEW_ARTIFACT not in correct.authorized_scope
+
+    assert durable_artifacts == {
+        "review": (CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_REVIEW_ARTIFACT,),
+        "rereview": (CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_REVIEW_ARTIFACT,),
+    }
+    assert _within_scope(
+        CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_REVIEW_ARTIFACT, review.authorized_scope
+    )
+    assert _within_scope(
+        CORRECTION_CONVERGENCE_ESCAPE_DESIGN_001_REVIEW_ARTIFACT, rereview.authorized_scope
+    )
+    # Both reviewer phases durably mutate exactly the dedicated review
+    # artifact -- `rereview` preserves and appends to the same durable
+    # history `review` started, rather than being unable to record its own
+    # fresh disposition.
+    assert review.durable_artifact.value == rereview.durable_artifact.value == "required"
+    assert design.durable_artifact.value == correct.durable_artifact.value == "none"
+    assert review.authorized_actions == rereview.authorized_actions == ("review", "edit", "commit")
+    assert design.authorized_actions == correct.authorized_actions == ("edit", "commit")
+    # Neither reviewer phase may edit the FTR design artifact itself.
+    assert "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc" not in review.authorized_scope
+    assert "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc" not in rereview.authorized_scope
+
+    # Topology: design -> review -> {accept: complete, correct} -> correct ->
+    # rereview -> {accept: complete, correct}. No investigate/planning/
+    # supervisor/diagnosis phase was added, and no phase carries
+    # implementation authority over product source.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "design": (("review", "goto", "review"),),
+        "review": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+        "correct": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+    }
+    assert review.role == rereview.role == "independent_reviewer"
+    assert design.role == correct.role == "worker"
+    assert review.review.finding_authority == ()
+    assert rereview.review.finding_authority == ()
+
+    # Role/persona separation: distinct fresh independent-review persona,
+    # never the design/correct persona. The worker persona is
+    # domain-neutral wording -- the mechanism being designed must plausibly
+    # apply outside software development, so the commissioned role avoids
+    # "software architect" in favor of "workflow-systems architect".
+    assert work_item.personas[WorkflowRole.WORKER] == "senior workflow-systems architect"
+    assert (
+        work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+        == "independent adversarial architecture reviewer"
+    )
+    assert work_item.personas[WorkflowRole.WORKER] != work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-run-evidence", policy.work_item_scope_ceiling)
+    assert not _within_scope("project_memory/canonical", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    # Admission happened entirely through provider-free preflight: no
+    # provider/executable was ever invoked (the placeholder `executable`
+    # value is never resolved or run by `_preflight`), and the state root
+    # the launch would eventually use was never created by this process.
     assert not state_root.exists()
 
 

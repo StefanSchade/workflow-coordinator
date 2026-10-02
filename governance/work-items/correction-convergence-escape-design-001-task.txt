@@ -1,0 +1,396 @@
+Produce, and have independently reviewed, a bounded, implementation-ready
+architectural design for a generic correction-loop convergence-escape
+mechanism, addressing the pattern documented by
+docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc. This Run designs
+and reviews only. It authorizes no product implementation, no Runtime
+change, no governance change beyond this WorkItem's own dedicated bundle,
+and no other Run. The independent reviewer in this Run is the sole authority
+that may accept or continue blocking the design: an `accept` disposition, if
+and when reached, makes docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc
+the accepted architectural/design authority for this mechanism, with no
+further separate maintainer design-acceptance act required -- exactly the
+relationship independent review acceptance already established for the
+accepted docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc. Accepted
+architecture is nonetheless not implementation authority: do not treat
+review acceptance as implementation authority or as closure of the source
+BUG. A later implementation WorkItem/Run that builds the accepted mechanism
+still requires its own separate, explicit maintainer Commission.
+
+BACKGROUND (read before writing anything):
+
+Read docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc in full,
+including its "Requirement identity versus requirement-closure convergence
+(Runs 003-004)" section and its "Commission:
+WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-DESIGN-001" section -- the latter is
+this WorkItem's own authorizing record and is not itself a template to
+redesign. Also read, in full where present:
+
+1. docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc (above).
+2. docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc.
+3. docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc.
+4. docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_review_001.adoc.
+5. docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_implementation_review_001.adoc.
+6. docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_implementation_review_002.adoc.
+7. docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_implementation_review_003.adoc.
+8. docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION_implementation_review_004.adoc,
+   with particular attention to the H002-R1A, H004-R1A, and H006-R1A
+   sections and the R1B/R2/R3 disposition subsections at each of those Hops.
+9. governance/self-development/standalone-development-profile.yaml.
+10. governance/self-development/components.yaml.
+11. Current self-development WorkItem/profile/policy/task examples under
+    governance/work-items/ and governance/self-development/, in particular
+    governance/work-items/scope-escalation-continuation-design.yaml,
+    governance/self-development/scope-escalation-continuation-design-profile.yaml,
+    governance/self-development/scope-escalation-continuation-design-policy.yaml,
+    and governance/work-items/scope-escalation-continuation-design-task.txt
+    (this WorkItem's own bundle already follows their conventions and is not
+    itself a template to redesign).
+12. docs/self-development.adoc.
+13. docs/run-preparation.adoc.
+14. The relevant current model/reducer/serialization/profile-validation
+    production code and focused tests needed to judge bootstrap legality and
+    implementation feasibility -- at minimum src/workflow_coordinator/model.py,
+    reducer.py, serialization.py, operator.py, persistence.py, and
+    tests/architecture/test_self_development_governance.py,
+    tests/unit/test_reducer.py, tests/unit/test_serialization.py. You hold
+    no mutation authority over any of that production source; your only
+    authorized scope in this WorkItem is the two paths named below.
+
+Do repository archaeology as needed, but do not modify production source,
+any file outside this WorkItem's own authorized scope, or any other
+governance bundle.
+
+WHY THIS DESIGN RUN IS BEING COMMISSIONED:
+
+The existing bounded correction topology has exposed two distinct
+convergence problems, detailed in the BUG above:
+
+(1) Requirement carryover/identity loss -- Runs 001-003 show broad known
+blocking obligations remaining open across repeated correction/review
+cycles while narrower concrete findings got fixed, with the open obligation
+frequently renamed/renumbered at each reviewing Hop.
+
+(2) Failure of repeated local correction to close a broader invariant --
+Run 004 deliberately introduced stable correction-requirement identifiers
+`R1A`, `R1B`, `R2`, and `R3` plus explicit per-identifier completion/
+carry-forward discipline. `R1B`, `R2`, and `R3` remained explicitly addressed
+under their stable identities through H002, H004, and H006 and did not
+silently disappear and later re-emerge under new names -- positive evidence
+on problem (1). `R1A` remained explicitly the SAME open carried requirement
+throughout: successive worker corrections closed the concrete R1A
+counterexample raised by the immediately preceding reviewer, and successive
+fresh reviewers nevertheless found progressively deeper counterexamples to
+the same broad R1A invariant. Run 004 exhausted its 6/6 autonomous Hop
+budget at H006 with R1A still open.
+
+Problem (2) is this design's actual target. It is a generic convergence
+problem about the correction/review strategy itself, not a defect in R1A's
+specific content.
+
+HARD CONSTRAINT -- preserve this throughout:
+
+The design must NOT assume that the root cause of R1A is already known, and
+must NOT solve R1A itself. R1A is evidence and a future dogfood case for the
+designed mechanism, not the design target. Do not write an implementation
+plan for R1A, and do not propose any change to
+docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc, its review
+artifacts, or Run RUN-4aa0857fa9d44ea6afc61ec0d02fa752's frozen state -- all
+of that is historical, read-only evidence for this design, never a mutation
+target.
+
+REQUIRED RUN TOPOLOGY (already encoded by this WorkItem's profile; restated
+here for the worker/reviewer's own understanding, not as something either
+phase chooses or redesigns):
+
+    design
+      -> review
+          -> accept: complete
+          -> correct
+               -> rereview
+                    -> accept: complete
+                    -> correct
+
+`max_autonomous_hops: 6`, permitting H001 design, H002 independent review,
+H003 correction, H004 fresh rereview, H005 second correction, H006 fresh
+rereview. This finite topology is declarative WFC profile data and is not
+itself part of what this design evaluates or changes; question H below asks
+only whether the *designed convergence-escape mechanism* should route into
+a profile-declared escape path, not whether this commissioning Run's own
+topology should change.
+
+FTR DESIGN QUESTIONS -- the design artifact must produce a concrete,
+implementation-ready answer to each of the following, not merely acknowledge
+it:
+
+A. Domain-neutral boundary: define clearly what belongs to generic WFC Core;
+   workflow profile/workflow strategy; domain-specific work semantics;
+   project-specific policy/evidence/conventions; task-specific payload/
+   acceptance requirements; and future Level-1 orchestration. The design
+   must preserve WFC as domain-neutral -- software-development vocabulary
+   such as "refactor", cyclomatic complexity, Python, or tests must not
+   become generic Coordinator semantics. The mechanism must plausibly apply
+   to other domains such as curriculum construction or business-analysis
+   artifacts without changing generic Coordinator mechanics.
+B. Structured correction obligations: design a machine-visible
+   representation for stable blocking correction obligations. Explicitly
+   evaluate whether this should be an extension of existing WFC Finding
+   state, a distinct BlockingRequirement/CorrectionCoverage-style model, or
+   another bounded representation -- and do not create a shadow semantic
+   status model accidentally. Resolve ownership explicitly: who may
+   introduce, claim coverage, carry forward, close, or supersede an
+   obligation; what evidence is attached; how identity survives correction/
+   review cycles. Worker completion claims must not themselves close
+   reviewer-owned blockers.
+C. Convergence facts and goalpost: define what mechanically observable
+   state means that the normal correction/review strategy has reached its
+   bounded convergence goalpost. Do not merely hard-code "three failures
+   means root cause analysis". A bounded numeric threshold may be part of
+   the design if justified, but it must not substitute for semantic
+   acceptance or become a fake correctness metric. Separate clearly:
+   autonomous Hop budget; semantic acceptance; correction-obligation
+   lifecycle; and convergence-strategy goalpost.
+D. Deterministic escape routing: define how the Coordinator can move from
+   normal correction/review into a profile-declared convergence-escape
+   path, preserving existing routing precedence and fail-closed authority.
+   Profiles must remain finite declarative data. Do NOT put arbitrary
+   executable conditions, code, computed graphs, or user-defined program
+   logic into YAML. The Core may expose trusted convergence facts; the
+   profile may declare finite routes/topology. Make the Core/profile split
+   explicit.
+E. Diagnosis phase: define the semantics and authority of a convergence-
+   diagnosis phase. It should normally be read-only with respect to the
+   subject artifact unless the design demonstrates why otherwise. It may
+   analyze WHY normal correction is not converging. Potential generic
+   classes may include concepts such as requirement ambiguity, problem/
+   solution-model mismatch, decomposition mismatch, evidence gap,
+   capability gap, authority/scope gap, regression chain, or unknown --
+   these examples are not mandatory schema, and software-specific generic
+   categories such as "bad refactor" must be avoided. State whether
+   diagnosis classification is structured, prose, or both, and which parts
+   are trusted versus agent-attributed.
+F. Strategy revision/reframe: define what follows diagnosis. The mechanism
+   should support a path conceptually like: normal revision -> evaluation ->
+   convergence goalpost reached -> diagnosis -> strategy revision/reframe ->
+   independent evaluation -> return to the original still-open requirement.
+   The original requirement must not disappear merely because diagnosis/
+   reframing occurs. A diagnosis or worker claim must not grant semantic
+   acceptance.
+G. Authority and scope: no convergence mechanism may autonomously widen
+   authority. If diagnosis concludes that solving the problem requires
+   broader mutation scope, new trust authority, a public/API decision, a
+   project governance decision, profile redesign not already authorized, or
+   other undelegated semantic authority, the existing appropriate stop/
+   escalation boundary (see FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc) must
+   remain authoritative. Do not turn "root-cause mode" into an authority
+   bypass.
+H. Relationship to existing simple profiles: do NOT require replacing the
+   existing simple bounded review loop. Design for coexistence: the simple
+   iterative profile remains useful; a later convergence-aware profile may
+   be added separately. Make clear whether profile choice is external
+   commissioning/Level-1 semantics rather than runtime profile mutation --
+   a profile remains pinned for a Run.
+I. Persistence/wire/replay/compatibility: specify any required changes to
+   Run, Hop, structured result schema, checkpoint projection, JSON
+   persistence, prompt/context projection, replay semantics, and migration/
+   backward compatibility. If no change is needed for one of these, say so
+   explicitly. Historical Runs must remain truthfully readable and must not
+   gain fabricated convergence state.
+J. Evidence and acceptance: define focused deterministic tests sufficient
+   to prove the mechanism. At minimum consider tests for: stable requirement
+   identity across correction/rereview; worker coverage claims not closing
+   reviewer-owned blockers; normal correction route before goalpost;
+   deterministic convergence escape when goalpost is reached; no escape
+   when the relevant requirement was actually closed; multiple simultaneous
+   requirements with only one non-converging; newly discovered blockers
+   versus carried blockers; no authority widening; profile-pinned finite
+   topology; interruption/replay/persistence where applicable; ordinary
+   simple profiles remaining behaviorally unchanged; and a domain-neutral
+   fixture with no software vocabulary. Include a later real dogfood
+   acceptance step using the still-open R1A case, but do NOT fix R1A in
+   this design Run.
+K. Implementation slicing: produce small implementation slices. Prefer
+   something resembling: (1) structured correction-obligation state; (2)
+   convergence facts/goalpost; (3) profile/routing support; (4) diagnosis/
+   reframe support; (5) R1A dogfood; (6) later non-software-domain
+   falsification if still useful. This is guidance, not a mandatory
+   predetermined solution -- change the slicing if the architecture
+   warrants it. Do not build Level 1 as part of this FTR.
+
+LONG-TERM ARCHITECTURE CONTEXT, NOT IMMEDIATE IMPLEMENTATION SCOPE:
+
+The design should preserve the direction that a future Level 1 may
+eventually choose things such as WorkItem/slice, the appropriate workflow
+profile, model/provider/reasoning, and scope/other authorized run inputs,
+with Level 0 then executing the pinned commissioned Run under its governed
+authority. This design Run does NOT implement Level 1, automatic profile
+discovery, a profile registry, dynamic profile mutation, or workflow
+invention -- do not expand scope to build any of those.
+
+STABLE BLOCKING-REQUIREMENT IDENTITY DISCIPLINE FOR THIS RUN (task-level
+only -- this is NOT implementation of the future structured
+BlockingRequirement mechanism design question B asks for; it is a bounded,
+local prompt/task discipline for this Run's own ordinary review/correct/
+rereview cycle, analogous to the stable-ID experiment Run 004 used for
+R1A/R1B/R2/R3):
+
+- If the initial `review` requests correction, it must assign every blocking
+  design-review requirement a stable identifier `D001`, `D002`, `D003`, ...,
+  each identifying the underlying design requirement/invariant the reviewer
+  is blocking on, not merely the single concrete example that most recently
+  demonstrated it. The review artifact must explicitly list every open
+  blocking `Dxxx` identifier. Do not create a WFC Current-Run Finding merely
+  to carry one of these ordinary design-review blockers; the existing rule
+  of an empty `findings` delta on a `correct` route still applies.
+- Before `correct` requests `rereview`, it must provide explicit coverage,
+  in its own structured Hop summary and/or the design artifact, for every
+  `Dxxx` identifier that was still open in the latest review history. For
+  each such ID record at minimum: the identifier; a disposition of
+  `addressed`, `blocked`, or `escalation`; what design change was made (or
+  why none could be made); and a concrete artifact section/evidence
+  reference. A worker's own `addressed` claim does NOT close the
+  requirement -- only the independent reviewer disposes it.
+- Each fresh `rereview` must explicitly disposition every `Dxxx` identifier
+  that was open going into that Hop, under the SAME identifier: closed/
+  addressed by the corrected design, still open, or (only where genuinely
+  necessary) superseded by a clearly identified successor requirement. A
+  newly discovered blocker gets a new `Dxxx` identifier; an existing
+  identifier must never be silently renamed or dropped. Only the
+  independent reviewer may authoritatively close a `Dxxx` requirement.
+- This identifier scheme creates no numeric acceptance rule: an artifact
+  that merely mentions every `Dxxx` identifier is not thereby accepted. The
+  independent reviewer's substantive judgment of sufficiency remains the
+  sole acceptance authority, exactly as in every other WFC review. This
+  discipline is local to this commissioned Run's own task prose; it must
+  not be described, in the design artifact or anywhere else, as
+  already-implemented generic WFC functionality.
+
+DESIGN (phase `design`):
+- Author docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc, a durable
+  design/architecture record following this repository's existing FTR
+  conventions (see FTR-WFC-ATOMIC-HOP-RECOVERY.adoc and
+  FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc for tone, structure, and
+  authority posture: architecture-convergence input, not implementation
+  authority).
+- The artifact must contain, at minimum: a problem statement grounded in
+  the BUG's Run 001-004 evidence and the identity-versus-convergence
+  distinction; concrete, implementation-ready answers to design questions
+  A through K above; rejected alternatives/deliberate non-scope; the exact
+  proposed later implementation scope (question K); exact required tests/
+  acceptance criteria for that later implementation (question J); and any
+  unresolved questions.
+- Do not write an implementation plan for src/workflow_coordinator/** itself
+  beyond the exact scope a later, separately authorized implementation
+  WorkItem would need. Do not implement the convergence-escape mechanism
+  here. Do not solve, close, or fix R1A. Do not invent a generic outer loop,
+  Level-1 planner, automatic profile discovery/registry, or dynamic profile
+  mutation as part of this design's immediate scope.
+- Touch only docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc. Do not
+  edit docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc,
+  docs/backlog/BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc,
+  docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc, any of its review
+  artifacts, or any other file.
+- Make one commit referencing the source BUG.
+
+REVIEW (phase `review`):
+- Independently and adversarially attempt to falsify the design against:
+  current WFC architecture and authority boundaries; existing Finding
+  semantics; the current profile model; Run 001-004 empirical evidence;
+  domain neutrality; deterministic routing constraints; backward
+  compatibility; and implementation feasibility.
+- Verify every design question A through K is answered concretely, not
+  merely mentioned, and verify the design neither assumes R1A's root cause
+  nor solves R1A.
+- Challenge at least: whether the design accidentally widens authority;
+  whether it introduces executable logic into profile YAML rather than
+  finite declarative routes; whether it conflates Hop budget, semantic
+  acceptance, correction-obligation lifecycle, and convergence goalpost;
+  whether software-development vocabulary has leaked into generic
+  Coordinator semantics; whether the diagnosis phase's authority is
+  correctly bounded (normally read-only, no implicit acceptance); whether
+  the proposed implementation scope (question K) is exact and sufficient;
+  whether the proposed tests (question J) actually exercise the real
+  observed failure mode; and whether historical Runs remain truthfully
+  readable without fabricated convergence state.
+- Record the review in the required durable artifact
+  docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_review_001.adoc. If
+  requesting correction, assign every blocking requirement a stable `Dxxx`
+  identifier per "STABLE BLOCKING-REQUIREMENT IDENTITY DISCIPLINE FOR THIS
+  RUN" above, and list every open identifier explicitly in the artifact.
+- An `accept` disposition makes
+  docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc the accepted
+  architectural/design authority for this mechanism, with no further
+  separate maintainer design-acceptance act required. It does not mean the
+  source BUG is fixed, R1A's root cause is established, the BUG lifecycle is
+  closed, Runtime is promoted, or implementation authority has been granted
+  -- accepted architecture is not implementation authority, and a later
+  implementation Run still requires its own separate, explicit maintainer
+  Commission; do not word the accepted review artifact as if accepting the
+  design itself implemented or authorized any of those.
+- If the design is sound, request `route: accept`. If correction is needed,
+  record the concrete blocking problem(s) -- each under its stable `Dxxx`
+  identifier -- in the durable review artifact and request `route: correct`
+  with `outcome: changes_required` and an empty `findings` list -- do not
+  create a WFC Current-Run Finding merely to carry an ordinary design
+  defect. Do not invent a shadow finding system and do not silently fall
+  back to manual prompting if this routing ever appears unavailable -- stop
+  and report instead.
+
+CORRECTION (phase `correct`, only if `review` or `rereview` requested it):
+- Address the concrete problem(s) recorded in the durable review artifact.
+  Before requesting `rereview`, provide explicit per-identifier coverage for
+  every `Dxxx` requirement still open from the latest review history, per
+  "STABLE BLOCKING-REQUIREMENT IDENTITY DISCIPLINE FOR THIS RUN" above. Your
+  own `addressed` claim does not close a requirement; only the independent
+  reviewer's next disposition does.
+- Remain within the exact same single-path design scope as `design`:
+  docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc only.
+- Do not disposition any WFC Finding merely because the correction
+  succeeded; this Run creates none.
+
+REREVIEW (phase `rereview`, only if `correct` ran):
+- Independently verify the corrected design artifact with fresh context.
+  `rereview` has durable-artifact authority over exactly the dedicated
+  review artifact, docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_review_001.adoc:
+  preserve the earlier review history there and durably append this Hop's
+  fresh disposition, including an explicit disposition (closed/addressed,
+  still open, or superseded by a clearly identified successor requirement)
+  for every `Dxxx` identifier carried from the prior review, under the same
+  identifier. Do not mutate docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc
+  itself from `rereview` -- only the review artifact.
+- Accept only if the current design artifact merits it; otherwise route
+  back to `correct` the same way `review` would, again with `outcome:
+  changes_required`, `route: correct`, an empty `findings` list, and every
+  still-open `Dxxx` identifier explicitly listed. The independent reviewer
+  remains the sole semantic acceptance authority throughout; an `accept`
+  here carries the same accepted-architecture effect described under REVIEW
+  above.
+
+EVIDENCE (every phase that edits or corrects):
+- The complete repository pytest suite must remain green before requesting
+  any route out of `design` or `correct`. This WorkItem does not authorize
+  any production/test source change, so a green suite before and after each
+  Hop is the expected, not a surprising, outcome; if it is ever not green,
+  stop and report rather than editing anything outside the authorized scope
+  to make it pass.
+
+Out of scope for every phase of this WorkItem: any change to
+src/workflow_coordinator/**, any ordinary product unit/architecture test,
+any file under governance/ other than this WorkItem's own dedicated bundle,
+workflow-coordinator-runtime, the workflow-coordinator-run-evidence
+repository or its run ledger, any Latin or other consumer repository, any
+frozen historical Run/Attempt/Commission state (including
+RUN-692338c488044e8e9393a1585d118eb8, RUN-7cac69cf29eb42439f86c2576083f798,
+RUN-c30fec4573134508975b5342ec5b2c28, and
+RUN-4aa0857fa9d44ea6afc61ec0d02fa752), docs/backlog/
+BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc itself, docs/backlog/
+BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc,
+docs/backlog/FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc and all of its
+review artifacts, and canonical Project Memory. This WorkItem does not
+authorize product implementation of the convergence-escape mechanism, does
+not solve or close R1A, and does not implement or close
+BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc; a later correction/
+implementation is a separate WorkItem/Run after independent review
+acceptance of this design and requires its own separate explicit maintainer
+Commission. No phase
+of this WorkItem carries push, Runtime-promotion, or WFC-launch authority;
+all remain maintainer-owned and are not exercised by this Run.
