@@ -25,7 +25,9 @@ obligation. Correctors make structured coverage claims against that same ID;
 independent evaluators record structured assessments against it. Coverage and
 assessment records are attributed observations, not another semantic status.
 A worker's `addressed` claim cannot resolve, supersede, or otherwise dispose the
-Finding.
+Finding. Result-v2 reduction rejects a new open blocking Finding from every
+agent role except an evaluator, so an admitted convergence-aware Run cannot
+contain an untracked blocker.
 
 The Core derives a convergence fact only from a semantically qualified cycle:
 the corrector claimed the same open obligation `addressed`, and the next gate
@@ -42,9 +44,12 @@ Diagnosis is normally read-only with respect to the subject artifact. It emits
 a typed, agent-attributed classification plus prose and evidence references.
 A later reframe phase proposes a structured correction-strategy revision, and
 an independent strategy gate may accept only that strategy revision. Acceptance
-of a strategy returns to correction with the original Finding still open and a
-new strategy generation. Only a later independent evaluation with ordinary
-Finding disposition authority may close or supersede the original obligation.
+of a strategy returns to correction with the original Findings still open and
+a new strategy generation. One persisted escape event binds the complete
+triggering ID/generation set through diagnosis, revision, assessment, and
+exactly-once generation advancement. Only a later independent evaluation with
+ordinary Finding disposition authority may close or supersede an original
+obligation.
 
 Existing schema-version-2 profiles retain their current bounded iterative
 behavior. Convergence-aware profiles use a new closed schema-version-3 grammar
@@ -175,11 +180,50 @@ Finding or every Finding in an older Run has `null` metadata and does not
 silently become convergence-tracked. A future explicit human ledger operation
 may create a human-owned obligation; no agent result may claim human ownership.
 
+For a result-v2 convergence Hop, the reducer rejects every new open blocking
+Finding unless the source role is `evaluator`. An admitted evaluator-created
+open blocker is always tagged; the evaluator cannot opt out. Corrector,
+diagnosis, reframe, and strategy-gate results therefore cannot create an
+untracked blocker, even though ordinary result-v1/profile-v2 Finding creation
+remains unchanged. New non-blocking informational Findings retain existing
+semantics and do not become correction obligations. The v3 Run validator also
+requires every open blocking Finding to carry valid correction-obligation
+metadata. Because old Runs never upgrade to v3, this invariant neither adopts
+nor fabricates ownership for a legacy blocker. An explicit human creation path
+must assign `owner: human` atomically; there is no later agent-driven adoption
+transition.
+
 The existing Finding `state` remains the only lifecycle state. The metadata has
 no open/closed field. The invariant remains immutable. Existing `successor_ref`
-continues to record supersession; for tracked obligations the reducer also
-requires that the successor name an existing or atomically created tracked
-obligation and rejects a self-reference or lineage cycle.
+continues to record supersession. For tracked obligations the successor must be
+an existing tracked obligation or an open blocking Finding created by the same
+evaluator result and atomically tagged as one. A bounded transaction-local
+reference makes the latter case representable without predicting the next
+Coordinator ID.
+
+Result v2 extends each new-Finding delta with nullable `local_ref`. A non-null
+value must match `N[1-9][0-9]*`, be unique within that result, and have meaning
+only during that reduction. An existing-Finding supersession delta may use
+either a concrete `Fxxx` ID or `local:Nxxx` as `successor_ref`; no other field
+may contain a local reference. Reduction is atomic and ordered:
+
+. validate all new deltas, local-reference syntax/uniqueness, authority, and
+  convergence-role rules without changing Run state;
+. allocate concrete Finding IDs to valid new deltas in their result order and
+  build the local-to-concrete map;
+. resolve every local successor reference, rejecting missing references or a
+  target that is not a same-result open blocking tracked obligation;
+. validate every resulting supersession edge against the complete prospective
+  Finding graph, rejecting self-reference and direct or transitive cycles; and
+. apply the concrete new and existing deltas as one transaction.
+
+Duplicate or unknown local references, references to a non-blocking/untracked
+new Finding, concrete unknown IDs, ID prediction in `local_ref`, and every
+self/cycle case reject the whole result without consuming IDs or changing
+state. Persisted Findings and Hop summaries contain only the resolved concrete
+IDs; `local_ref` remains result evidence, not durable identity. Replay performs
+the same validation against the persisted concrete graph and never reallocates
+or reinterprets a local token.
 
 === Result records
 
@@ -200,7 +244,7 @@ convergence_assessments: [
     finding_id: string,
     correction_hop_id: Hop ID,
     result: closed | carried_new_counterexample |
-            carried_unmet | superseded,
+            carried_unmet | residualized | superseded,
     evidence_refs: [string]
   }
 ]
@@ -234,6 +278,8 @@ authoritative gate disposition.
 Carry-forward and evaluation:: The next `evaluator` must assess every open
 tracked obligation that entered the correction Hop under the same ID. `closed`
 is valid only with an authorized Finding delta resolving that ID;
+`residualized` only with an authorized residual delta leaving that ID residual
+and non-blocking;
 `superseded` only with an authorized superseding delta and valid successor;
 both carried values require the post-reduction Finding to remain open and
 blocking. `carried_new_counterexample` additionally requires a non-empty new
@@ -241,14 +287,21 @@ evidence reference not already present before the evaluator Hop.
 `carried_unmet` means the same obligation is still unmet without asserting a
 new counterexample. Every assessment is cross-checked against a corresponding
 existing-Finding delta: a carried assessment uses the same open state, while
-closure and supersession use their matching lifecycle state. The gate may also
-create new IDs in the same Hop.
+closure, residualization, and supersession use their matching lifecycle state.
+The gate may also create new IDs in the same Hop.
 
-Closure and supersession:: Only existing Finding disposition authority may
-resolve, residualize, supersede, or reopen. In particular, a corrector's
+Closure, residualization, and supersession:: Only existing Finding disposition
+authority may resolve, residualize, supersede, or reopen. A residualized
+obligation remains durably represented under its original ID but is no longer
+open or blocking and is not an escape candidate. In particular, a corrector's
 `addressed` record is never translated into `resolved`. A diagnosis,
 strategy-revision author, strategy gate, counter, or route substitution also
-has no Finding disposition authority.
+has no Finding disposition authority. The initial `repeated_counterexample_v1`
+protocol does not admit agent-driven reopening of a tracked obligation: profile
+validation rejects `reopen` authority on its evaluator phases. A later protocol
+would need explicit generation semantics before allowing it. Existing simple
+profiles retain current reopen behavior, and an authorized human may introduce
+a new human-owned obligation instead of silently resetting an old generation.
 
 Evidence and provenance:: Finding evidence remains in the Finding ledger.
 Coverage and evaluation records retain their own references, source Hop, and
@@ -359,9 +412,11 @@ strategy-gate edges must form declared finite routes; the validator does not
 compute or generate phases. Evaluator phases must be gate reviews with the
 Finding operations needed by their advertised lifecycle choices. Profile
 validation requires diagnosis and reframe to be non-review phases and requires
-a strategy gate to have an empty Finding-disposition authority list. It rejects
-missing roles, invalid route targets, incoherent authority, unbounded limits,
-or mixed v2/v3 shapes.
+a strategy gate to have an empty Finding-disposition authority list. The
+initial protocol rejects `reopen` authority on evaluator phases because it has
+no reopen assessment or implicit generation-reset rule. It rejects missing
+roles, invalid route targets, incoherent authority, unbounded limits, or mixed
+v2/v3 shapes.
 
 This is finite declarative data. There is no YAML predicate such as “if count
 greater than N,” embedded source, template, expression, plugin callback, or
@@ -387,12 +442,31 @@ The new decision point preserves current fail-closed ordering:
 
 The Hop records both `requested_route` and `applied_route`, plus
 `route_reason=convergence_escape:<sorted Finding IDs>` when substitution
-occurs. Sorting IDs makes multiple-requirement behavior deterministic. If the
-relevant Finding was resolved or superseded in the evaluator Hop, it is not a
-goalpost candidate and escape does not occur. If several obligations are open
-but only one reached the goalpost, the escape payload names only that ID while
-all others remain in the ledger. A newly discovered blocker begins with zero
-qualified cycles under its own ID.
+occurs. It also persists the immutable structured event that later phases must
+correlate:
+
+----
+ConvergenceEscape {
+  evaluator_hop_id: Hop ID
+  triggers: non-empty [
+    {
+      finding_id: Finding ID
+      strategy_generation: non-negative integer
+    }
+  ]
+}
+----
+
+The evaluator Hop ID is the escape-event identity. `triggers` is sorted by
+Finding ID, contains exactly once every still-open Finding whose derived
+goalpost caused this substitution, and records the generation in which each
+goalpost was reached. The reducer, not the agent, creates this event; the agent
+cannot submit or edit it. Sorting IDs makes multiple-requirement behavior
+deterministic. If the relevant Finding was resolved, residualized, or
+superseded in the evaluator Hop, it is not a goalpost candidate and escape does
+not occur. If several obligations are open but only one reached the goalpost,
+the escape event names only that ID while all others remain in the ledger. A
+newly discovered blocker begins with zero qualified cycles under its own ID.
 
 Escape happens before the ordinary route's budget check but does not override
 that check. If no Hop remains to enter diagnosis, the existing
@@ -413,6 +487,7 @@ Result v2 permits exactly one report:
 
 ----
 DiagnosisReport {
+  escape_hop_id: Hop ID
   finding_ids: non-empty [Finding ID]
   classification: requirement_ambiguity |
                   problem_solution_model_mismatch |
@@ -427,12 +502,14 @@ DiagnosisReport {
 }
 ----
 
-Every ID must be open, tracked, and named by the triggering goalpost. The
-closed taxonomy is deliberately domain-neutral. Prose supplies nuance; the
-enum permits bounded comparison and routing context. The Coordinator trusts
-the report's correlation, schema, phase provenance, and stored bytes. It does
-not trust the diagnosis as established fact and grants no authority from its
-classification.
+`escape_hop_id` must identify the current unconsumed `ConvergenceEscape` event,
+and `finding_ids` must equal its complete sorted trigger-ID set: no subset,
+addition, duplicate, or reordering is valid. Every ID must still be open and
+tracked at its recorded generation. The closed taxonomy is deliberately
+domain-neutral. Prose supplies nuance; the enum permits bounded comparison and
+routing context. The Coordinator trusts the report's correlation, schema,
+phase provenance, and stored bytes. It does not trust the diagnosis as
+established fact and grants no authority from its classification.
 
 Diagnosis does not resolve Findings, accept the subject, reset a count, or
 select a new profile. If the report identifies missing authority, scope,
@@ -448,6 +525,8 @@ truth of the requirement. Its v2 result may contain:
 
 ----
 StrategyRevision {
+  escape_hop_id: Hop ID
+  diagnosis_hop_id: Hop ID
   finding_ids: non-empty [Finding ID]
   kind: clarify_requirement_interpretation |
         change_problem_solution_model |
@@ -461,7 +540,10 @@ StrategyRevision {
 }
 ----
 
-All referenced Findings remain open. `use_authorized_capability` means only a
+The revision must reference the current escape event and a successfully reduced
+diagnosis Hop correlated to that event. Its IDs must exactly equal the diagnosis
+and escape trigger set, and all referenced Findings must remain open at the
+escape event's recorded generations. `use_authorized_capability` means only a
 capability already present in the pinned envelope; it cannot request or imply a
 grant. A plan that needs more authority must escalate instead.
 
@@ -469,6 +551,8 @@ The next `strategy_gate` independently evaluates the proposed revision:
 
 ----
 StrategyAssessment {
+  escape_hop_id: Hop ID
+  diagnosis_hop_id: Hop ID
   revision_hop_id: Hop ID
   finding_ids: non-empty [Finding ID]
   result: accepted | changes_required
@@ -476,12 +560,27 @@ StrategyAssessment {
 }
 ----
 
-This gate accepts or rejects only the strategy proposal. It carries no Finding
-disposition authority by implication and cannot complete the Run. On
-`accepted`, its declared finite route returns to a corrector; Core derives the
-next strategy generation for the named Findings. The prior count and all prior
-events remain historical, while the qualified count for the new generation
-starts at zero. On `changes_required`, the profile routes to reframe again.
+The assessment must reference the current escape, its successfully reduced
+diagnosis, and the current revision Hop. Its IDs must exactly equal the
+immutable escape set;
+the revision must be the latest revision on that diagnosis path and must not
+already have a terminal accepted assessment. This gate accepts or rejects only
+the strategy proposal. It carries no Finding disposition authority by
+implication and cannot complete the Run. On `accepted`, its declared finite
+route returns to a corrector; Core consumes that escape event and derives
+generation `g + 1` exactly once for every `(Finding ID, g)` trigger pair. The
+prior counts and all events remain historical, while each qualified count in
+the new generation starts at zero. Findings that did not trigger the event
+retain their existing generations and histories. On `changes_required`, the
+profile routes to reframe again without consuming the event or advancing any
+generation.
+
+Core rejects the complete result atomically if any chain reference is stale,
+unknown, duplicated, omitted, added, already consumed, or points to a Finding
+that is now closed, residualized, superseded, or no longer at the event's
+recorded generation. A rejected result changes no generation. There is at most
+one unconsumed escape event on the active finite diagnosis/reframe path, so an
+old event cannot be reused to reset a below-limit or unrelated Finding.
 
 The intended finite sequence is therefore:
 
@@ -547,10 +646,10 @@ Unknown protocol names, keys, roles, or route combinations fail parsing.
 The structured-result envelope gains version 2 alongside version 1. Version 1
 retains its exact existing result shape and remains the contract for ordinary
 v2 profiles. A v3 convergence profile dispatches only result v2, whose exact
-shape adds the five fields above. The prompt and adapter project the selected
-contract explicitly; adapters strictly validate both the envelope version and
-the phase-appropriate result version. No optional/unknown-field weakening of
-v1 is permitted.
+shape adds the five fields above and the bounded `local_ref` extension to new-
+Finding deltas. The prompt and adapter project the selected contract explicitly;
+adapters strictly validate both the envelope version and the phase-appropriate
+result version. No optional/unknown-field weakening of v1 is permitted.
 
 === Run and Hop wire
 
@@ -559,12 +658,19 @@ New convergence-aware Runs use Run schema version 3. Its closed shape adds:
 * nullable `Finding.correction_obligation` metadata;
 * Hop-summary `phase`, `requested_route`, `route_reason`, coverage claims,
   convergence assessments, diagnosis, strategy revision, and strategy
-  assessment; and
+  assessment;
+* the Core-created `ConvergenceEscape` event, including its evaluator-Hop
+  identity and exact sorted `(Finding ID, strategy generation)` trigger set;
+  and
 * no persisted `goalpost_reached` boolean or mutable strategy counter.
 
 Goalposts, generations, and counts are pure derived projections from the
 ordered Hop/Finding history plus the pinned profile. Avoiding a persisted
 mutable counter prevents replay drift and makes the event source inspectable.
+The escape event is not a mutable counter: it is an immutable routing decision
+and correlation anchor derived and recorded at the evaluator boundary. An
+accepted, exactly correlated strategy assessment is the sole event from which
+the next generation is derived.
 `run.json` remains authoritative; result files remain invocation evidence.
 
 The Run parser accepts three closed versions:
@@ -595,17 +701,21 @@ Checkpoint and operator summary project, but do not own:
 * the complete open tracked-obligation set;
 * the latest coverage and evaluation per ID;
 * derived per-generation convergence facts and source Hop IDs;
-* the IDs that caused an escape and the requested/applied routes; and
+* each immutable escape-Hop identity, its exact trigger ID/generation set,
+  whether it is unconsumed or consumed by an accepted assessment, and the
+  requested/applied routes; and
 * any current diagnosis, proposed strategy, and independently accepted
   strategy generation with explicit attribution.
 
 Fresh prompt reconstruction supplies the same complete bounded set, not only
-the latest counterexample. Core-derived identities/counts/routes are labelled
-Coordinator-derived. Invariants, coverage prose, classifications, plans, and
-semantic evidence references are labelled agent-attributed. If bounded prompt
-limits cannot include the complete structured obligation set, dispatch fails
-closed or includes a complete retrievable Coordinator reference; it must not
-silently omit an open obligation.
+the latest counterexample. Diagnosis, reframe, and strategy-gate prompts also
+project the current immutable escape correlation and require exact-set output.
+Core-derived identities/counts/routes/correlation are labelled Coordinator-
+derived. Invariants, coverage prose, classifications, plans, and semantic
+evidence references are labelled agent-attributed. If bounded prompt limits
+cannot include the complete structured obligation or escape set, dispatch
+fails closed or includes a complete retrievable Coordinator reference; it must
+not silently omit an open obligation or trigger ID.
 
 `persistence.py` needs only the new checkpoint projection and atomic v3 write;
 no second state file is introduced. `operator.py` needs projection/context
@@ -626,13 +736,24 @@ promotion or close the source BUG.
 
 * A gate creates one open blocking obligation; two corrector/evaluator cycles
   carry the same Coordinator ID into every prompt, Hop, checkpoint, and replay.
+* An evaluator-created open blocker is atomically tracked. New open blockers
+  from corrector, diagnosis, reframe, or strategy-gate roles are rejected, as
+  is a v3 Run containing an open blocker without obligation metadata; ordinary
+  v1-result/v2-profile creation remains unchanged.
 * A corrector must cover every open tracked ID before requesting evaluation;
   unknown, missing, duplicate, closed, or superseded coverage fails closed.
 * `addressed` with evidence does not close a gate-owned blocker and cannot take
   a complete route. Only configured gate/human Finding authority can resolve,
   residualize, supersede, or reopen it.
-* Supersession preserves the original record and validates a real successor
-  without self-reference or lineage cycles.
+* A `residualized` assessment requires an authorized residual delta, preserves
+  the original record as residual/non-blocking, and removes it from escape
+  candidacy; missing, mismatched, or unauthorized residual assessments fail.
+* Supersession to an existing tracked successor preserves both records. Same-
+  result supersession resolves a unique `local:Nxxx` reference to the newly
+  allocated tracked successor without predicting an `Fxxx` ID and persists
+  only concrete IDs. Duplicate/unknown local refs, illegal targets, concrete-ID
+  prediction, self-reference, and direct/transitive cycles reject atomically
+  without consuming an ID; replay never reallocates the successor.
 * A new blocker receives a new ID and zero cycles; it is not counted as a new
   counterexample for an older Finding.
 
@@ -656,32 +777,41 @@ promotion or close the source BUG.
 === Diagnosis, reframe, and authority
 
 * Diagnosis accepts only triggering open IDs and a closed generic
-  classification. It is persisted as agent-attributed, cannot mutate the
-  subject under a read-only phase, and cannot disposition Findings.
+  classification. A two-ID escape rejects a diagnosis that omits either ID,
+  adds an unrelated ID, duplicates or reorders IDs, or names a stale escape.
+  The valid report is persisted as agent-attributed, cannot mutate the subject
+  under a read-only phase, and cannot disposition Findings.
 * An `authority_scope_gap` diagnosis with an unauthorized proposed action
   stops through the existing escalation boundary; no route, profile field, or
   strategy record widens authority.
-* Reframe and strategy-gate records correlate to the same open IDs. A rejected
-  strategy does not reset counts. An accepted strategy advances the derived
-  generation, returns through a finite route, retains all history, and leaves
-  the original Finding open for independent evaluation.
+* Revision and assessment reject an omitted triggering ID, unrelated below-
+  limit ID, stale diagnosis/revision Hop, duplicate acceptance, consumed escape,
+  or a trigger that became closed/residual/superseded. A rejected strategy
+  resets no count. An exactly correlated accepted assessment advances every and
+  only triggering generation exactly once, returns through a finite route,
+  retains all history, leaves each original Finding open, and leaves every
+  non-triggering Finding's generation and history unchanged.
 * Profile validation rejects executable/unknown YAML, invalid roles, a limit
   outside bounds, agent-selectable escape, non-goto targets, incomplete
-  diagnosis/reframe topology, and insufficient evaluator Finding authority.
+  diagnosis/reframe topology, insufficient evaluator Finding authority, and
+  `reopen` authority under the initial protocol.
 
 === Wire, persistence, replay, and simple profiles
 
 * Result v1 and profile v2 retain their exact current closed schemas and
   behavior. Result v2/profile v3 accept only the new closed shapes.
-* Run v3 strictly validates every new record and cross-reference. Checked-in
-  v1 and v2 fixtures load and round-trip without new wire fields or fabricated
-  convergence facts. Read-only status/replay is byte preserving.
+* Run v3 strictly validates every new record and cross-reference, including the
+  immutable escape event, local-to-concrete successor resolution, and complete
+  diagnosis/revision/assessment chain. Checked-in v1 and v2 fixtures load and
+  round-trip without new wire fields or fabricated convergence facts. Read-only
+  status/replay is byte preserving.
 * Existing legitimate v1 persistence transitions still atomically write v2,
   with injected failure preserving exact v1 bytes. V2 never upgrades in place,
   and only a fresh v3-profile Run can acquire v3 convergence state.
-* Checkpoint, summary, prompt, and replay derive identical counts, generation,
-  goalpost IDs, requested/applied routes, and attribution. Interruption before
-  accepted correlation adds no convergence event.
+* Checkpoint, summary, prompt, and replay derive identical counts, generations,
+  goalpost IDs, escape correlations/consumption, requested/applied routes, and
+  attribution. Interruption before accepted correlation adds no convergence
+  event or generation advancement.
 * Existing simple bounded review-loop fixtures and all current self-development
   profiles remain behaviorally unchanged.
 
@@ -748,15 +878,17 @@ The implementation should land as small independently reviewable slices:
 
 . *Structured obligations and wire.* Add v3 Finding/Hop records, result v2,
   exact v1/v2 compatibility, gate-owned obligation introduction, coverage and
-  assessment cross-validation, with no routing change.
+  total assessment cross-validation, role-closed blocker creation, and atomic
+  local-to-concrete successor references, with no routing change.
 . *Derived convergence facts.* Implement pure per-ID/per-generation derivation,
   checkpoint/replay projection, and threshold tests, still with no escape.
 . *Profile and routing support.* Add the closed profile-v3 grammar, reserved
   finite escape route, reducer precedence, complete prompt/operator projection,
   and unchanged simple-profile proof.
 . *Diagnosis and reframe support.* Add typed reports, strategy-gate correlation,
-  generation advancement, read-only/authority enforcement, and the
-  curriculum-domain falsification fixture.
+  immutable escape-event and exact-set chain validation, exactly-once
+  generation advancement, read-only/authority enforcement, and the curriculum-
+  domain falsification fixture.
 . *R1A dogfood.* Only after slices 1-4 are implemented and independently
   accepted, use a separately commissioned Run/profile to exercise the still-
   open R1A history. Do not fold the R1A fix into mechanism implementation.
