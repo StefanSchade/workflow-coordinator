@@ -41,7 +41,7 @@ from workflow_coordinator.persistence import (
     trusted_qualification_index_for_run,
     write_dispatch_marker,
 )
-from workflow_coordinator.reducer import derive_convergence_facts, reduce_result
+from workflow_coordinator.reducer import ReductionError, derive_convergence_facts, reduce_result
 
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -608,9 +608,11 @@ def test_failed_evidence_publication_charges_uncertain_without_partial_row(
         current_head=head,
         baseline_head=head,
     )
+    calls: list[str] = []
 
     class Adapter:
         def execute(self, request):
+            calls.append(request.invocation.invocation_id)
             return AgentExecutionOutcome(
                 json.dumps(_known_good_envelope()), 0, False, "", ""
             )
@@ -641,6 +643,31 @@ def test_failed_evidence_publication_charges_uncertain_without_partial_row(
     assert recovered.run.hops[-1].pre_route_anchor_sha256
     assert not (run_root / "execution-evidence.json").exists()
     assert (run_root / "dispatch.json").exists()
+    checkpoint = recovered.checkpoint
+    marker_text = (run_root / "dispatch.json").read_text(encoding="utf-8")
+
+    recovered_again = run_real_one_hop(
+        recovered.run,
+        workflow,
+        repository,
+        _components(),
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona",
+        task_payload="fixture",
+        invocation_id="INV-unused",
+        timeout_seconds=2,
+        adapter=Adapter(),
+    )
+    assert recovered_again.vertical is None
+    assert recovered_again.run == recovered.run
+    assert recovered_again.run.hop_used == 1
+    assert recovered_again.checkpoint == checkpoint
+    assert not (run_root / "execution-evidence.json").exists()
+    assert (run_root / "dispatch.json").exists()
+    assert (run_root / "dispatch.json").read_text(encoding="utf-8") == marker_text
+    assert calls == ["INV-1"]
 
 
 def test_staged_unpaired_row_is_abandoned_on_recovery_after_run_write_failure(
@@ -724,6 +751,57 @@ def test_staged_unpaired_row_is_abandoned_on_recovery_after_run_write_failure(
     assert recovered.run.hops[-1].pre_route_anchor_sha256
     assert recovered.run.status.value == "reconcile_required"
     assert calls == ["INV-1"]
+    checkpoint = recovered.checkpoint
+    marker_text = (run_root / "dispatch.json").read_text(encoding="utf-8")
+
+    recovered_again = run_real_one_hop(
+        recovered.run,
+        workflow,
+        repository,
+        _components(),
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona",
+        task_payload="fixture",
+        invocation_id="INV-unused-again",
+        timeout_seconds=2,
+        adapter=Adapter(),
+    )
+    assert recovered_again.vertical is None
+    assert recovered_again.run == recovered.run
+    assert recovered_again.run.hop_used == 1
+    assert recovered_again.checkpoint == checkpoint
+    assert len(execution_evidence_from_json(
+        (run_root / "execution-evidence.json").read_text(encoding="utf-8")
+    ).attempts) == 1
+    assert (run_root / "dispatch.json").exists()
+    assert (run_root / "dispatch.json").read_text(encoding="utf-8") == marker_text
+    assert calls == ["INV-1"]
+
+    conflicting_marker = json.loads(marker_text)
+    conflicting_marker["invocation_id"] = "INV-conflicting"
+    (run_root / "dispatch.json").write_text(
+        json.dumps(conflicting_marker), encoding="utf-8"
+    )
+    with pytest.raises(
+        ReductionError, match="abandoned staged evidence lacks exact marker correlation"
+    ):
+        run_real_one_hop(
+            recovered_again.run,
+            workflow,
+            repository,
+            _components(),
+            state_root=state,
+            association=association,
+            agent_operating_contract=load_agent_operating_contract(),
+            persona="fixture persona",
+            task_payload="fixture",
+            invocation_id="INV-unused-conflict",
+            timeout_seconds=2,
+            adapter=Adapter(),
+        )
+    assert calls == ["INV-1"]
 
 
 def test_timeout_kills_process_group_descendant(repository, tmp_path):
@@ -751,7 +829,11 @@ def test_real_driver_recovers_post_spawn_uncertainty_with_external_anchors(repos
     executable = _fake(tmp_path, f"import pathlib,sys\np=pathlib.Path({str(executions)!r})\np.write_text(str(int(p.read_text())+1) if p.exists() else '1')\nsys.exit(7)\n")
     workflow = profile({"work": phase({"done": route("complete")})})
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
-    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+    run = replace(
+        run_for(workflow, budget=1, run_schema_version=3),
+        current_head=head,
+        baseline_head=head,
+    )
     outcome = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
     run_root = state / "checkouts" / association.checkout_id
     assert outcome.vertical is None and outcome.run.hop_used == 1
@@ -762,6 +844,33 @@ def test_real_driver_recovers_post_spawn_uncertainty_with_external_anchors(repos
     assert subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip() == head
     assert (run_root / "dispatch.json").exists() and (run_root / "run.json").exists()
     assert (run_root / "checkpoint.json").exists()
+    checkpoint = outcome.checkpoint
+    marker_text = (run_root / "dispatch.json").read_text(encoding="utf-8")
+
+    recovered_again = run_real_one_hop(
+        outcome.run,
+        workflow,
+        repository,
+        _components(),
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona",
+        task_payload="fixture",
+        invocation_id="INV-unused",
+        timeout_seconds=2,
+        model="explicit-test-model",
+        reasoning_effort="high",
+        executable=str(executable),
+    )
+    assert recovered_again.vertical is None
+    assert recovered_again.run == outcome.run
+    assert recovered_again.run.hop_used == 1
+    assert recovered_again.run.hops[-1].pre_route_anchor_sha256 is None
+    assert recovered_again.checkpoint == checkpoint
+    assert executions.read_text() == "1"
+    assert (run_root / "dispatch.json").exists()
+    assert (run_root / "dispatch.json").read_text(encoding="utf-8") == marker_text
 
 
 def test_real_driver_retains_dispatch_after_post_execution_mutating_failure(repository, tmp_path, monkeypatch):

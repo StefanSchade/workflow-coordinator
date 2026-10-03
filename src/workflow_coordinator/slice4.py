@@ -191,6 +191,44 @@ def run_real_one_hop(
                 or existing.base_head != pending.base_head
             ):
                 raise Slice4Error("dispatch marker conflicts with completed Hop pair")
+            if run.schema_version == 3 and existing.role == "uncertain_dispatch":
+                if (
+                    existing.outcome != "uncertain"
+                    or existing.applied_route is not None
+                    or existing.pre_route_anchor_sha256
+                    != pending.pre_route_anchor_sha256
+                ):
+                    raise Slice4Error("dispatch marker conflicts with charged uncertain Hop")
+                delta = observe_hop(
+                    repository,
+                    base_head=run.current_head,
+                    allowed_paths=profile.phases[run.phase].authorized_scope,
+                )
+                recovered = recover_uncertain_dispatch(
+                    run,
+                    pending,
+                    current_head=delta.end_head,
+                    actual_commits=delta.actual_commits,
+                )
+                new_anomalies = tuple(
+                    anomaly
+                    for anomaly in delta.anomalies
+                    if anomaly not in recovered.anomalies
+                )
+                if new_anomalies:
+                    recovered = replace(
+                        recovered,
+                        anomalies=(*recovered.anomalies, *new_anomalies),
+                    )
+                checkpoint = checkpoint_projection(
+                    recovered,
+                    profile,
+                    execution_evidence_json=evidence_text(),
+                    dispatch_marker=pending,
+                )
+                write_run_snapshot(run_root / "run.json", recovered)
+                atomic_write_json(run_root / "checkpoint.json", checkpoint)
+                return RealHopRun(None, recovered, checkpoint, None)
             raw_evidence = evidence_text()
             if run.schema_version != 3:
                 checkpoint = checkpoint_projection(
