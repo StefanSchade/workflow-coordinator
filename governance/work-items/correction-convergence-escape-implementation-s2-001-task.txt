@@ -1,0 +1,379 @@
+Implement, and have independently reviewed, exactly Slice 2 ("Derived
+convergence facts") of the accepted correction-loop convergence-escape
+architecture designed by docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc
+and accepted by fresh independent rereview with zero remaining findings
+(design attempt wfc-correction-convergence-escape-design-20261002-01, Run
+RUN-b417ccd5ccbe47879a0df95d4771d329, H004, commit
+4edcea0e341e9c8669378fa299104d66aed2851f) against docs/backlog/BUG-WFC-
+CORRECTION-BLOCKING-SET-CARRYOVER.adoc. Slice 1 ("Structured obligations and
+wire") is an accepted prerequisite -- independently accepted at WorkItem
+WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S1-003, Run
+RUN-786b30f27aef437da5c605b71ee7d0fe, Hop H002, accepted implementation
+candidate 33d6c0092be988f759bb8dcc8d0e8ee56bcef372, durable acceptance record
+at commit 83cccb98bb800479645d87051fb1cd66b3a4ac7f, with zero blocking
+implementation-review findings remaining (S1-IR-001 and S1-IR-002 both
+closed). Treat Slice 1 as accepted authority: do not reopen it merely because
+another implementation is possible. If Slice-2 work exposes a concrete
+regression or contradiction in the accepted Slice-1 contract, preserve that
+fact and stop/escalate rather than silently redesigning Slice 1. This Run
+implements and reviews only Slice 2. It does not promote
+workflow-coordinator-runtime, push, mutate the workflow-coordinator-run-evidence
+repository, launch any other Run, close the source BUG, or implement any later
+slice.
+
+BACKGROUND (read before writing anything):
+
+Read docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc in full; it is
+the accepted architecture authority for this Run, in particular its
+"Convergence facts and bounded goalpost" section. Read, in full,
+docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_review_001.adoc (the
+accepted design's own complete review history) and docs/backlog/BUG-WFC-
+CORRECTION-BLOCKING-SET-CARRYOVER.adoc. Read the complete existing
+docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc
+in full -- it already contains the complete Slice-1 review history (H002,
+H004, H006 of the first implementation Run, and the S1-003 H002 final
+acceptance); you will append to this same artifact, never replace or rewrite
+its existing sections. Do not reopen a settled architecture or Slice-1
+question merely because another design is possible. If you discover a genuine
+contradiction, a missing authority requirement, or an implementation-blocking
+ambiguity, stop and report it via a scope/semantic escalation rather than
+silently changing the architecture or silently widening scope.
+
+Also read, read-only, the current production
+src/workflow_coordinator/{model,serialization,adapter,codex_adapter,reducer,
+persistence,vertical,prompt,operator}.py and tests/support.py, and their
+existing unit/architecture tests, so your implementation extends current
+seams rather than inventing parallel ones. You hold no mutation authority over
+serialization.py, adapter.py, codex_adapter.py, vertical.py, prompt.py, or
+operator.py; this slice's semantics must not require changing them (see "WHY
+THOSE FILES ARE NOT IN SCOPE" below).
+
+HARD SLICE BOUNDARY -- this WorkItem implements Slice 2 ONLY. Do not implement
+any of the following, even though the accepted FTR's closed path union would
+otherwise permit code in some of the same files:
+
+* Slice 3 (schema-version-3 profile YAML grammar/parsing, the `convergence:`
+  top-level declaration, a YAML-reachable `qualified_cycle_limit`, a
+  YAML-reachable `convergence_role`, normal-correction-versus-escape-route
+  declarations, deterministic escape-route substitution, prompt/operator
+  projection, or any change to simple-profile behavior);
+* Slice 4 (non-null `DiagnosisReport`/`StrategyRevision`/`StrategyAssessment`,
+  accepted-strategy generation advancement, diagnosis/reframe/strategy-gate
+  authority, `ConvergenceEscape`, or the curriculum-domain falsification
+  fixture); and
+* Slice 5 / R1A dogfood (do not fix, diagnose, or touch R1A; do not run R1A
+  dogfood; do not change scope-escalation-continuation implementation code
+  merely to improve it).
+
+No reserved escape route, no route substitution, and no profile in this
+repository gaining a `schema_version: 3` shape occurs as a result of this Run.
+Slice 2 derives facts; it never acts on them through routing.
+
+WHAT SLICE 2 ACTUALLY IS -- from the accepted FTR's "Exact later implementation
+scope and slicing" section: "Implement pure per-ID/per-generation derivation,
+checkpoint/replay projection, and threshold tests, still with no escape."
+Concretely, drawing on the accepted FTR's "Convergence facts and bounded
+goalpost" section:
+
+1. THE QUALIFIED-CYCLE RULE. For one tracked Finding and one strategy
+   generation, a cycle is qualified only when all of the following are
+   mechanically observable in accepted Slice-1 state:
+   a) a corrector Hop made an `addressed` coverage claim for that open
+      Finding;
+   b) the next applicable evaluator correlated its assessment to that
+      correction Hop and the same Finding ID;
+   c) the evaluator recorded `carried_new_counterexample` with evidence
+      genuinely absent before that evaluator Hop (per the already-enforced
+      Slice-1 freshness invariant -- S1-IR-002); and
+   d) after the evaluator's authorized Finding delta, that Finding remains
+      `open` and `blocking`.
+   The following must NOT increment the qualified-cycle count: allocation of
+   a new blocker; a renamed prose label; a worker `blocked` result; a worker
+   escalation claim; failed evidence; uncertain/unaccepted execution; an
+   uncorrelated assessment; `carried_unmet`; stale/duplicate evidence; or a
+   cycle belonging to a different strategy generation. History remains
+   retained even when it does not qualify. The already-accepted Slice-1
+   reducer validation (`_validate_convergence_records_before_apply()` and
+   `_validate_assessments_after_apply()` in reducer.py) already enforces the
+   freshness, correlation, and totality invariants this rule depends on; you
+   are deriving a read-side fact from already-validated, already-persisted
+   Slice-1 history, not re-implementing its admission rules.
+
+2. THE DERIVED FACT. Implement a pure function (reducer.py is the natural
+   seam, consistent with Slice 1's existing validation helpers there) that
+   derives, from a Run's complete ordered `hops`/`findings` history plus a
+   finite qualified-cycle limit, a `ConvergenceFact` per tracked Finding ID
+   and strategy generation it has participated in:
+   `ConvergenceFact { finding_id, strategy_generation, qualified_cycle_count,
+   qualified_cycle_limit, goalpost_reached, source_evaluator_hops }`.
+   `source_evaluator_hops` identifies, in deterministic order, the exact
+   accepted evaluator Hop IDs whose assessment qualified under rule 1 above.
+   `goalpost_reached` means only that the configured limit has been consumed
+   for that still-open obligation; it MUST NOT mean accepted, resolved,
+   false, impossible, correct, or diagnosed, and no count/threshold/goalpost
+   may synthesize Finding disposition or semantic acceptance. Add
+   `ConvergenceFact` to model.py alongside the existing Slice-1 records.
+
+3. NO MUTABLE SHADOW STATE -- this is load-bearing. Do not add a mutable
+   cycle counter to `Finding`, a mutable `goalpost_reached` flag to `Run`, a
+   second convergence ledger, another authoritative state file, or any cache
+   state whose correctness is required for replay. `run.json` remains
+   authoritative for persisted Run/Hop/Finding facts exactly as Slice 1 left
+   it; do not add any new persisted field to the Run/Hop/Finding wire for this
+   slice (serialization.py is out of scope precisely because nothing new is
+   persisted). `ConvergenceFact` values must be fully reconstructable, byte-
+   for-byte, by re-deriving from the same ordered history and the same finite
+   limit input -- never read from a stored value.
+
+4. CHECKPOINT/REPLAY PROJECTION. Extend `checkpoint_projection()` in
+   persistence.py to expose the derived per-generation `ConvergenceFact` set
+   and each fact's source evaluator Hop IDs as a derived view, clearly
+   distinct from the authoritative `run.json` contents it already projects.
+   Do not implement the complete prompt/operator convergence projection
+   described by the accepted FTR's "Checkpoint, summary, and prompt
+   projection" section -- that integrated projection requires Slice 3's real
+   profile selection and is explicitly out of scope here; exposing the derived
+   facts through `checkpoint_projection()` alone satisfies this slice.
+
+5. DETERMINISM. Replaying the same accepted ordered history with the same
+   finite derivation inputs must produce byte-identical `ConvergenceFact`
+   values, including a stable, deterministic ordering of
+   `source_evaluator_hops`. Interruption, uncertain, rejected, or unaccepted
+   Hop history must fabricate no convergence event. A legacy (v1/v2) or
+   simple (non-convergence) Run must acquire no fabricated convergence facts
+   -- the derivation over such a Run's history must yield an empty fact set.
+
+HOW TO EXERCISE THIS WITHOUT PROFILE-V3 GRAMMAR OR GENERATION ADVANCEMENT
+(read carefully -- this is the bootstrap judgment call this Commission is
+making for you; follow it rather than re-deriving a different boundary):
+
+Because profile schema-version-3 parsing and the YAML-reachable
+`qualified_cycle_limit` are Slice 3 (not this slice), the derivation function
+you write must accept its finite qualified-cycle limit as an explicit
+in-memory parameter supplied directly by the caller (production
+`checkpoint_projection()` callers and your tests alike) -- never by adding a
+`convergence:` key or any new accepted vocabulary to
+`workflow_profile_from_yaml()`. Do NOT invent a second configuration grammar
+or a temporary public API for the limit.
+
+Because exactly-once generation advancement, `StrategyAssessment`, and
+`ConvergenceEscape` are Slice 4 (not this slice), there is currently no
+accepted mechanism in this repository that ever produces a Finding at
+strategy generation greater than zero. This is expected, not a contradiction
+to escalate: your derivation function must treat every Finding as being at
+strategy generation 0 for this slice (the generation parameter/field exists
+in `ConvergenceFact` per the accepted shape, and your derivation logic may be
+written generically over a generation value, but no test, fixture, or
+production code path in this slice may construct or claim a non-zero
+generation). Do NOT invent a non-null `StrategyRevision`/`StrategyAssessment`
+record, a fake generation-advancement helper, or any other manufactured
+Slice-4 shape merely to exercise generation separation; the "different
+Finding identity starts its own independent count" case already proves count
+separation without needing a second generation. If, having read the current
+model/reducer, you find that the accepted `ConvergenceFact` shape cannot be
+usefully exercised at generation 0 alone, stop and report the exact
+contradiction rather than fabricating generation-advancing state yourself.
+
+Exercise every Slice-2 derivation/checkpoint/replay behavior through
+`tests/support.py`-constructed fixtures and direct unit tests in the
+authorized test paths below, extending `tests/support.py` with whatever
+narrow fixture helpers you need (for example, a convenience for asserting on a
+derived `ConvergenceFact`), exactly as Slice 1 already extends `phase()`/
+`profile()` there for its own in-memory-only `convergence_role` signal. Do not
+add a real governance profile file or a live end-to-end Hop dispatch to prove
+this slice.
+
+WHY serialization.py/adapter.py/codex_adapter.py/vertical.py/prompt.py/
+operator.py ARE NOT IN SCOPE: Slice 2 adds a pure derivation over already-
+persisted Slice-1 wire and a read-only checkpoint projection; it adds no new
+persisted field (so serialization.py's wire shapes are unchanged), no new
+result/request contract (so adapter.py/codex_adapter.py are unchanged), and no
+live routing or prompt/operator integration (so vertical.py/prompt.py/
+operator.py are unchanged -- integrated prompt/operator projection of
+convergence state is explicitly Slice 3's job per the accepted FTR). If,
+having read the current persistence.py/operator.py, you find a concrete case
+where Slice-2 derivation or its checkpoint projection alone (not routing, not
+profile grammar) cannot be expressed without touching one of these files, stop
+and report the exact contradiction rather than widening scope yourself.
+
+AUTHORIZED IMPLEMENTATION SCOPE -- exactly these paths, nothing else:
+
+Production:
+  src/workflow_coordinator/model.py
+  src/workflow_coordinator/reducer.py
+  src/workflow_coordinator/persistence.py
+
+Ordinary tests and fixtures:
+  tests/support.py
+  tests/unit/test_reducer.py
+  tests/unit/test_persistence.py
+  tests/architecture/test_replays.py
+
+Durable implementation-review artifact (review/rereview phases only):
+  docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc
+
+If implementation genuinely requires another production or test path (for
+example `serialization.py`, `adapter.py`, `codex_adapter.py`, `vertical.py`,
+`prompt.py`, `operator.py`, a profile-v3 grammar path, or a new fixture file
+under `tests/fixtures/`), stop and raise the normal semantic scope escalation
+(`requires_human=true`, `escalation.kind=scope`, an exact question) and route
+accordingly rather than widening yourself.
+
+REQUIRED TESTS AND ACCEPTANCE CRITERIA -- derive the exact tests from the
+accepted FTR's "Required deterministic tests and acceptance" section,
+subsection "Goalpost and routing" (the derivation/threshold parts only -- not
+the routing-substitution parts, which are Slice 3) and the Slice-2-relevant
+parts of "Wire, persistence, replay, and simple profiles". At minimum,
+preserve deterministic coverage of:
+
+* positive qualified cycle: a corrector `addressed` claim followed by a
+  correlated evaluator `carried_new_counterexample` with genuinely new
+  evidence, leaving the Finding open/blocking, increments the count by
+  exactly one and records the evaluator Hop as the sole source;
+* below-threshold / at-threshold: using a finite deterministic test limit
+  (prefer 2 unless inspection of current seams establishes a better bounded
+  setup), one qualified cycle yields count 1 and `goalpost_reached: false`; a
+  second qualified cycle for the same Finding/generation yields count 2 and
+  `goalpost_reached: true`; no routing or escape occurs as a result;
+* carried-unmet exclusion: `addressed` followed by `carried_unmet` does not
+  increment the count;
+* stale-evidence exclusion: evidence already present in the prior same-
+  Finding ledger/coverage/assessment history does not qualify as new (this
+  must reuse and preserve the accepted S1-IR-002 freshness invariant rather
+  than reimplementing a weaker check);
+* different Finding identity: a new blocker / new Coordinator Finding ID
+  starts its own independent count and does not increment an older Finding's
+  count;
+* closed/superseded result: if the evaluator authoritatively resolves or
+  validly supersedes the Finding in the relevant evaluator Hop, that Finding
+  produces no still-open qualified-cycle fact;
+* unaccepted/uncertain history: malformed, uncorrelated, rejected, failed-
+  before-acceptance, or uncertain Hop history fabricates no qualified cycle;
+* replay determinism: the same accepted ordered history derives the same
+  `finding_id`, `strategy_generation`, `qualified_cycle_count`,
+  `goalpost_reached`, and ordered `source_evaluator_hops` on every replay;
+* legacy/simple non-regression: existing current profiles and historical Run
+  versions (v1/v2, and Slice-1 v3 Runs with no convergence-tracked Finding)
+  remain behaviorally unchanged and derive an empty convergence-fact set;
+* the full repository `pytest` suite remains green.
+
+Acceptance requires independent review to falsify: an incorrect qualified-
+cycle predicate; incorrect same-ID or correlation logic; a count that
+increments on stale or uncorrelated evidence; off-by-one count/goalpost
+behavior; any mutable or shadow counter; any Finding-disposition or
+routing/escape effect derived from the count; non-deterministic or non-
+replayable source-Hop ordering; and any Slice-3/4/5 scope creep (look
+specifically for a profile-v3 grammar path, a reserved escape route, route
+substitution, a non-null diagnosis/strategy shape, or a non-zero strategy
+generation anywhere in production code or tests -- none of those belong in
+this slice). Passing tests alone does not authorize Runtime promotion, close
+the source BUG, or authorize any later slice.
+
+IMPLEMENT (phase `implement`):
+- Implement the mechanism across exactly the three production paths and four
+  ordinary test/fixture paths listed above.
+- Make the full repository `pytest` suite green before requesting
+  `route: review`.
+- Do not touch the durable review artifact, the accepted design FTR, its
+  review artifact, the source BUG, any other governance bundle,
+  serialization.py, adapter.py, codex_adapter.py, vertical.py, prompt.py,
+  operator.py, workflow-coordinator-runtime, or the
+  workflow-coordinator-run-evidence repository.
+
+REVIEW (phase `review`):
+- Independently attempt to falsify the implementation as an adversarial
+  reviewer, assessing the complete Slice-2 product delta from the accepted
+  Slice-1 baseline commit 83cccb98bb800479645d87051fb1cd66b3a4ac7f through the
+  candidate received at this Hop's entry -- not merely the latest commit.
+  Challenge at minimum: the exact qualified-cycle predicate; same-ID
+  requirement; correct corrector/evaluator correlation; genuinely-new-evidence
+  requirement; still-open/blocking post-evaluation requirement; per-generation
+  separation; deterministic source-evaluator-Hop ordering; count/goalpost
+  off-by-one behavior; absence of any mutable/shadow counter; absence of
+  Finding-disposition or routing/escape authority derived from the count;
+  replay equivalence; checkpoint projection; uncertain/rejected-history
+  exclusion; legacy/simple-profile non-regression; S1-IR-001/S1-IR-002
+  non-regression; domain-neutral naming; implementation outside the
+  authorized path set; and any Slice-3/4/5 scope creep.
+- Use stable implementation-review identifiers `S2-IR-001`, `S2-IR-002`, ...
+  distinct from the already-closed `S1-IR-001`/`S1-IR-002`. Once introduced,
+  give each identifier an explicit disposition at every later rereview: remains
+  open, closed/addressed, or superseded only with explicit justification. Do
+  not silently drop a blocker or rename a deeper counterexample to the same
+  invariant merely because its reproduction changed.
+- `durable_artifact: required` for this phase: append to (never rewrite)
+  docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc,
+  clearly labelled as Slice 2, preserving every existing Slice-1 review
+  section unchanged, and commit it as part of this Hop's trusted commit,
+  regardless of disposition.
+  * If you request correction: record the concrete blocking finding(s) under
+    their stable `S2-IRxxx` identifiers in the artifact and request
+    `route: correct` with `outcome: changes_required` and an empty `findings`
+    list -- do not create a WFC Current-Run Finding merely to carry an
+    ordinary implementation-review defect.
+  * If the implementation is sound: request `route: accept`, and the artifact
+    must record at least: that the implementation was accepted as Slice 2
+    only; the exact implementation-candidate SHA being accepted (the commit
+    HEAD this review Hop received at entry -- the H001 `implement` commit, NOT
+    this Hop's own trusted commit); the review Hop's identity; that zero
+    Slice-2 blocking findings remain; explicit confirmation that S1-IR-001 and
+    S1-IR-002 remain closed; and the lifecycle effect and non-effects (Slice 2
+    is implemented and independently accepted at this Hop; this does NOT close
+    the source BUG, promote workflow-coordinator-runtime, authorize a push,
+    authorize Slice 3/4/5, or authorize any Run).
+
+CORRECTION (phase `correct`, only if `review` or `rereview` requested it):
+- Address only the concrete problem(s) recorded under their stable `S2-IRxxx`
+  identifiers in the durable review artifact.
+- Remain within the exact same seven-path implementation/test scope as
+  `implement`. Do not touch the review artifact from this phase.
+- Do not disposition any WFC Finding merely because the correction succeeded;
+  this Run creates none.
+
+REREVIEW (phase `rereview`, only if `correct` ran):
+- Independently verify the corrected repository state with fresh context,
+  assessing the complete Slice-2 delta from the accepted Slice-1 baseline
+  commit through the corrected candidate -- not merely the latest correction
+  commit -- and challenging the same categories as `review` above.
+- `durable_artifact: required` and `authorized_actions: [review, edit,
+  commit]` on the SAME artifact,
+  docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc.
+  Append a clearly separate, clearly labelled Slice-2 rereview section and
+  commit it as part of this Hop's trusted commit, on EVERY disposition.
+  Preserve every earlier review section (Slice-1 and Slice-2 alike); do not
+  delete or rewrite any of it. Carry every stable `S2-IRxxx` identifier
+  forward with an explicit disposition.
+  * If you request correction: record the concrete blocking finding(s) in the
+    new rereview section and request `route: correct` with `outcome:
+    changes_required` and an empty `findings` list.
+  * If you accept: record, in the new rereview section, at least: that the
+    implementation was accepted as Slice 2 only; the exact corrected-candidate
+    SHA being accepted (the commit HEAD this rereview Hop received at entry --
+    the `correct` phase's commit, NOT this Hop's own trusted commit); this
+    rereview Hop's identity; that zero Slice-2 blocking findings remain;
+    explicit confirmation that S1-IR-001 and S1-IR-002 remain closed; and the
+    same lifecycle effect/non-effects as above.
+- Do not mutate the implementation source from this phase; this phase's
+  authorized scope is the durable artifact alone.
+
+EVIDENCE (every phase):
+- Trusted `pytest` evidence must be green before any route is requested out
+  of `implement` or `correct`. If it is ever not green, stop and report rather
+  than editing anything outside the authorized scope to make it pass.
+
+Out of scope for every phase of this WorkItem: workflow-coordinator-runtime;
+the workflow-coordinator-run-evidence repository and its run ledger; any
+push; any change to docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc or
+docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_review_001.adoc (frozen
+accepted design and its own review history); any change to docs/backlog/BUG-
+WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc itself; any change to any other
+governance bundle under governance/; any frozen historical Run/Attempt/
+Commission state; canonical Project Memory; any consumer repository;
+serialization.py, adapter.py, codex_adapter.py, vertical.py, prompt.py, and
+operator.py; Slice 1 re-implementation or reopening (treat it as accepted
+prerequisite authority); Slice 3 (profile-v3 grammar and escape routing),
+Slice 4 (diagnosis/reframe and generation advancement), and Slice 5 (R1A
+dogfood); module decomposition of operator.py or any other file; and a
+generic outer planner, watchdog, or Level-1/LangGraph-style orchestrator. No
+phase of this WorkItem carries push, Runtime-promotion, or WFC-launch
+authority; all remain maintainer-owned and are not exercised by this Run.
