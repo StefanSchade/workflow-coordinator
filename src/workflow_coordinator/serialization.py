@@ -19,6 +19,12 @@ from .model import (
     COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
     COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS,
     CommitIntent,
+    ConvergenceAssessment,
+    ConvergenceAssessmentResult,
+    CorrectionObligation,
+    CorrectionObligationOwner,
+    CoverageClaim,
+    CoverageDisposition,
     DispatchMarker,
     DurableArtifact,
     EDIT_ACTION,
@@ -77,6 +83,17 @@ ROUTING_RESULT_REQUIRED_KEYS = (
     "evidence_refs",
     "summary",
 )
+ROUTING_RESULT_V2_ADDITIONAL_KEYS = (
+    "coverage_claims",
+    "convergence_assessments",
+    "diagnosis",
+    "strategy_revision",
+    "strategy_assessment",
+)
+ROUTING_RESULT_V2_REQUIRED_KEYS = (
+    *ROUTING_RESULT_REQUIRED_KEYS,
+    *ROUTING_RESULT_V2_ADDITIONAL_KEYS,
+)
 NEW_FINDING_DELTA_REQUIRED_KEYS = (
     "finding_id",
     "invariant",
@@ -86,6 +103,7 @@ NEW_FINDING_DELTA_REQUIRED_KEYS = (
 )
 NEW_FINDING_DELTA_OPTIONAL_KEYS = ("successor_ref", "new_material_evidence")
 NEW_FINDING_DELTA_KEYS = (*NEW_FINDING_DELTA_REQUIRED_KEYS, *NEW_FINDING_DELTA_OPTIONAL_KEYS)
+NEW_FINDING_DELTA_V2_KEYS = (*NEW_FINDING_DELTA_KEYS, "local_ref")
 EXISTING_FINDING_DELTA_REQUIRED_KEYS = (
     "finding_id",
     "proposed_state",
@@ -750,6 +768,12 @@ def run_execution_configuration_from_yaml(text: str) -> RunExecutionConfiguratio
 
 
 def _finding_delta(value: Any, *, context: str) -> FindingDeltaValue:
+    return _finding_delta_for_version(value, context=context, result_version=1)
+
+
+def _finding_delta_for_version(
+    value: Any, *, context: str, result_version: int
+) -> FindingDeltaValue:
     raw = _mapping(value, context=context)
     finding_id = _optional_string(raw.get("finding_id"), context=f"{context}.finding_id")
     if finding_id is not None:
@@ -777,7 +801,7 @@ def _finding_delta(value: Any, *, context: str) -> FindingDeltaValue:
         raw,
         context=context,
         required=set(NEW_FINDING_DELTA_REQUIRED_KEYS),
-        optional=set(NEW_FINDING_DELTA_OPTIONAL_KEYS),
+        optional=set(NEW_FINDING_DELTA_OPTIONAL_KEYS) | ({"local_ref"} if result_version == 2 else set()),
     )
     return NewFindingDelta(
         finding_id=finding_id,
@@ -794,6 +818,7 @@ def _finding_delta(value: Any, *, context: str) -> FindingDeltaValue:
             data.get("new_material_evidence", False),
             context=f"{context}.new_material_evidence",
         ),
+        local_ref=_optional_string(data.get("local_ref"), context=f"{context}.local_ref"),
     )
 
 
@@ -807,11 +832,56 @@ def _commit_intent(value: Any, *, context: str) -> CommitIntent | None:
     return CommitIntent(paths=paths, subject=_string(data["subject"], context=f"{context}.subject"))
 
 
-def routing_result_from_data(value: Any) -> RoutingResult:
+def _coverage_claim(value: Any, *, context: str) -> CoverageClaim:
     data = _fields(
         value,
+        context=context,
+        required={"finding_id", "disposition", "evidence_refs"},
+    )
+    return CoverageClaim(
+        finding_id=_string(data["finding_id"], context=f"{context}.finding_id"),
+        disposition=_enum(
+            CoverageDisposition,
+            data["disposition"],
+            context=f"{context}.disposition",
+        ),
+        evidence_refs=_strings(data["evidence_refs"], context=f"{context}.evidence_refs"),
+    )
+
+
+def _convergence_assessment(value: Any, *, context: str) -> ConvergenceAssessment:
+    data = _fields(
+        value,
+        context=context,
+        required={"finding_id", "correction_hop_id", "result", "evidence_refs"},
+    )
+    return ConvergenceAssessment(
+        finding_id=_string(data["finding_id"], context=f"{context}.finding_id"),
+        correction_hop_id=_string(
+            data["correction_hop_id"], context=f"{context}.correction_hop_id"
+        ),
+        result=_enum(
+            ConvergenceAssessmentResult,
+            data["result"],
+            context=f"{context}.result",
+        ),
+        evidence_refs=_strings(data["evidence_refs"], context=f"{context}.evidence_refs"),
+    )
+
+
+def routing_result_from_data(value: Any) -> RoutingResult:
+    raw = _mapping(value, context="routing result")
+    version = _integer(raw.get("schema_version"), context="routing result.schema_version")
+    if version not in {1, 2}:
+        raise ValidationError(f"routing result.schema_version has unsupported version: {version}")
+    data = _fields(
+        raw,
         context="routing result",
-        required=set(ROUTING_RESULT_REQUIRED_KEYS),
+        required=set(
+            ROUTING_RESULT_REQUIRED_KEYS
+            if version == 1
+            else ROUTING_RESULT_V2_REQUIRED_KEYS
+        ),
     )
     escalation = None
     if data["escalation"] is not None:
@@ -832,21 +902,49 @@ def routing_result_from_data(value: Any) -> RoutingResult:
     raw_findings = data["findings"]
     if not isinstance(raw_findings, list):
         raise ValidationError("routing result.findings must be a list")
+    raw_coverage = data.get("coverage_claims", [])
+    raw_assessments = data.get("convergence_assessments", [])
+    if not isinstance(raw_coverage, list):
+        raise ValidationError("routing result.coverage_claims must be a list")
+    if not isinstance(raw_assessments, list):
+        raise ValidationError("routing result.convergence_assessments must be a list")
+    coverage_claims = tuple(
+        _coverage_claim(item, context=f"routing result.coverage_claims[{index}]")
+        for index, item in enumerate(raw_coverage)
+    )
+    assessments = tuple(
+        _convergence_assessment(
+            item, context=f"routing result.convergence_assessments[{index}]"
+        )
+        for index, item in enumerate(raw_assessments)
+    )
+    if version == 2:
+        for placeholder in ("diagnosis", "strategy_revision", "strategy_assessment"):
+            if data[placeholder] is not None:
+                raise ValidationError(
+                    f"routing result.{placeholder} must be null in result schema_version 2"
+                )
     return RoutingResult(
-        schema_version=_version(data["schema_version"], context="routing result.schema_version"),
+        schema_version=version,
         outcome=_enum(Outcome, data["outcome"], context="routing result.outcome"),
         requested_route=_string(data["requested_route"], context="routing result.requested_route"),
         scope_changed=_boolean(data["scope_changed"], context="routing result.scope_changed"),
         requires_human=_boolean(data["requires_human"], context="routing result.requires_human"),
         escalation=escalation,
         findings=tuple(
-            _finding_delta(item, context=f"routing result.findings[{index}]")
+            _finding_delta_for_version(
+                item,
+                context=f"routing result.findings[{index}]",
+                result_version=version,
+            )
             for index, item in enumerate(raw_findings)
         ),
         claimed_commits=_strings(data["claimed_commits"], context="routing result.claimed_commits"),
         commit_intent=_commit_intent(data["commit_intent"], context="routing result.commit_intent"),
         evidence_refs=_strings(data["evidence_refs"], context="routing result.evidence_refs"),
         summary=_string(data["summary"], context="routing result.summary"),
+        coverage_claims=coverage_claims,
+        convergence_assessments=assessments,
     )
 
 
@@ -869,6 +967,12 @@ def run_to_json(run: Run) -> str:
     if run.schema_version == 1:
         data.pop("semantic_stop", None)
         data.pop("successor_provenance", None)
+    if run.schema_version in {1, 2}:
+        for hop in data["hops"]:
+            hop.pop("coverage_claims", None)
+            hop.pop("convergence_assessments", None)
+        for finding in data["findings"]:
+            finding.pop("correction_obligation", None)
     text = json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n"
     # Callers may construct immutable dataclasses directly.  Persisted Run
     # truth must still pass the same closed-wire validation as loaded state.
@@ -876,8 +980,18 @@ def run_to_json(run: Run) -> str:
     return text
 
 
-def _hop_summary(value: Any, *, context: str) -> HopSummary:
-    data = _fields(value, context=context, required={field.name for field in fields(HopSummary)})
+def _hop_summary(value: Any, *, context: str, run_version: int) -> HopSummary:
+    all_fields = {field.name for field in fields(HopSummary)}
+    convergence_fields = {"coverage_claims", "convergence_assessments"}
+    data = _fields(
+        value,
+        context=context,
+        required=all_fields if run_version == 3 else all_fields - convergence_fields,
+    )
+    raw_coverage = data.get("coverage_claims", [])
+    raw_assessments = data.get("convergence_assessments", [])
+    if not isinstance(raw_coverage, list) or not isinstance(raw_assessments, list):
+        raise ValidationError(f"{context} convergence records must be lists")
     return HopSummary(
         hop_id=_string(data["hop_id"], context=f"{context}.hop_id"),
         sequence=_integer(data["sequence"], context=f"{context}.sequence", positive=True),
@@ -894,11 +1008,44 @@ def _hop_summary(value: Any, *, context: str) -> HopSummary:
         stop_reason=_optional_string(data["stop_reason"], context=f"{context}.stop_reason"),
         summary=_string(data["summary"], context=f"{context}.summary"),
         attribution=_string(data["attribution"], context=f"{context}.attribution"),
+        coverage_claims=tuple(
+            _coverage_claim(item, context=f"{context}.coverage_claims[{index}]")
+            for index, item in enumerate(raw_coverage)
+        ),
+        convergence_assessments=tuple(
+            _convergence_assessment(
+                item, context=f"{context}.convergence_assessments[{index}]"
+            )
+            for index, item in enumerate(raw_assessments)
+        ),
     )
 
 
-def _finding(value: Any, *, context: str) -> Finding:
-    data = _fields(value, context=context, required={field.name for field in fields(Finding)})
+def _finding(value: Any, *, context: str, run_version: int) -> Finding:
+    all_fields = {field.name for field in fields(Finding)}
+    data = _fields(
+        value,
+        context=context,
+        required=(all_fields if run_version == 3 else all_fields - {"correction_obligation"}),
+    )
+    obligation = None
+    if run_version == 3 and data["correction_obligation"] is not None:
+        raw_obligation = _fields(
+            data["correction_obligation"],
+            context=f"{context}.correction_obligation",
+            required={"owner", "introduced_by_hop"},
+        )
+        obligation = CorrectionObligation(
+            owner=_enum(
+                CorrectionObligationOwner,
+                raw_obligation["owner"],
+                context=f"{context}.correction_obligation.owner",
+            ),
+            introduced_by_hop=_string(
+                raw_obligation["introduced_by_hop"],
+                context=f"{context}.correction_obligation.introduced_by_hop",
+            ),
+        )
     return Finding(
         finding_id=_string(data["finding_id"], context=f"{context}.finding_id"),
         invariant=_string(data["invariant"], context=f"{context}.invariant"),
@@ -914,6 +1061,7 @@ def _finding(value: Any, *, context: str) -> Finding:
         external_work_item_ref=_optional_string(
             data["external_work_item_ref"], context=f"{context}.external_work_item_ref"
         ),
+        correction_obligation=obligation,
     )
 
 
@@ -965,6 +1113,110 @@ def _successor_provenance(value: Any, *, context: str) -> SuccessorProvenance | 
     )
 
 
+def _validate_v3_run(run: Run) -> None:
+    """Validate the closed durable Slice-1 graph without reconstructing history."""
+
+    hops_by_id = {hop.hop_id: hop for hop in run.hops}
+    hop_order = {hop.hop_id: index for index, hop in enumerate(run.hops)}
+    findings_by_id = {finding.finding_id: finding for finding in run.findings}
+    for finding in run.findings:
+        if re.fullmatch(r"F[0-9]{3,}", finding.finding_id) is None:
+            raise ValidationError(f"Run v3 has invalid concrete Finding ID: {finding.finding_id}")
+        if finding.introduced_by_hop not in hops_by_id or finding.changed_by_hop not in hops_by_id:
+            raise ValidationError(
+                f"Run v3 Finding {finding.finding_id} references an absent Hop"
+            )
+        obligation = finding.correction_obligation
+        if finding.state is FindingState.OPEN and finding.blocking and obligation is None:
+            raise ValidationError(
+                f"Run v3 open blocking Finding {finding.finding_id} lacks correction_obligation"
+            )
+        if obligation is not None:
+            if obligation.introduced_by_hop not in hops_by_id:
+                raise ValidationError(
+                    f"Run v3 Finding {finding.finding_id} obligation references an absent Hop"
+                )
+            if obligation.introduced_by_hop != finding.introduced_by_hop:
+                raise ValidationError(
+                    f"Run v3 Finding {finding.finding_id} obligation introduction is inconsistent"
+                )
+        if finding.successor_ref is not None:
+            if finding.state is not FindingState.SUPERSEDED:
+                raise ValidationError(
+                    f"Run v3 Finding {finding.finding_id} has successor_ref without supersession"
+                )
+            if finding.successor_ref.startswith("local:"):
+                raise ValidationError("Run v3 successor_ref must contain only a concrete Finding ID")
+            successor = findings_by_id.get(finding.successor_ref)
+            if successor is None:
+                raise ValidationError(
+                    f"Run v3 Finding {finding.finding_id} has unknown successor_ref"
+                )
+            if obligation is not None and successor.correction_obligation is None:
+                raise ValidationError(
+                    f"Run v3 tracked Finding {finding.finding_id} has an untracked successor"
+                )
+
+    for hop in run.hops:
+        unknown_delta_ids = sorted(set(hop.finding_delta_ids) - set(findings_by_id))
+        if unknown_delta_ids:
+            raise ValidationError(
+                f"Run v3 Hop {hop.hop_id} references unknown Finding delta IDs"
+            )
+        claim_ids = [claim.finding_id for claim in hop.coverage_claims]
+        if len(set(claim_ids)) != len(claim_ids):
+            raise ValidationError(f"Run v3 Hop {hop.hop_id} has duplicate coverage claims")
+        for claim in hop.coverage_claims:
+            finding = findings_by_id.get(claim.finding_id)
+            if finding is None or finding.correction_obligation is None:
+                raise ValidationError(
+                    f"Run v3 Hop {hop.hop_id} coverage references unknown or untracked Finding"
+                )
+        assessment_ids = [item.finding_id for item in hop.convergence_assessments]
+        if len(set(assessment_ids)) != len(assessment_ids):
+            raise ValidationError(
+                f"Run v3 Hop {hop.hop_id} has duplicate convergence assessments"
+            )
+        correction_ids = {item.correction_hop_id for item in hop.convergence_assessments}
+        if len(correction_ids) > 1:
+            raise ValidationError(
+                f"Run v3 Hop {hop.hop_id} assessments name multiple correction Hops"
+            )
+        if correction_ids:
+            correction_hop_id = next(iter(correction_ids))
+            correction_hop = hops_by_id.get(correction_hop_id)
+            if (
+                correction_hop is None
+                or hop_order[correction_hop_id] >= hop_order[hop.hop_id]
+            ):
+                raise ValidationError(
+                    f"Run v3 Hop {hop.hop_id} references an absent or non-prior correction Hop"
+                )
+            expected_ids = {claim.finding_id for claim in correction_hop.coverage_claims}
+            if set(assessment_ids) != expected_ids:
+                raise ValidationError(
+                    f"Run v3 Hop {hop.hop_id} assessments are not total for correction Hop"
+                )
+        for assessment in hop.convergence_assessments:
+            finding = findings_by_id.get(assessment.finding_id)
+            if finding is None or finding.correction_obligation is None:
+                raise ValidationError(
+                    f"Run v3 Hop {hop.hop_id} assessment references unknown or untracked Finding"
+                )
+
+    edges = {
+        finding.finding_id: finding.successor_ref
+        for finding in run.findings
+        if finding.successor_ref is not None
+    }
+    for start in edges:
+        seen: set[str] = set()
+        cursor: str | None = start
+        while cursor in edges:
+            if cursor in seen:
+                raise ValidationError("Run v3 Finding supersession graph contains a cycle")
+            seen.add(cursor)
+            cursor = edges[cursor]
 def run_from_json(text: str) -> Run:
     try:
         value = json.loads(text)
@@ -976,7 +1228,7 @@ def run_from_json(text: str) -> Run:
     v1_fields = v2_fields - {"semantic_stop", "successor_provenance"}
     if version == 1:
         data = _fields(raw, context="Run", required=v1_fields)
-    elif version == 2:
+    elif version in {2, 3}:
         data = _fields(raw, context="Run", required=v2_fields)
     else:
         raise ValidationError(f"Run.schema_version has unsupported version: {version}")
@@ -1000,10 +1252,11 @@ def run_from_json(text: str) -> Run:
         hop_limit=_integer(data["hop_limit"], context="Run.hop_limit", positive=True),
         hop_used=_integer(data["hop_used"], context="Run.hop_used"),
         hops=tuple(
-            _hop_summary(item, context=f"Run.hops[{index}]") for index, item in enumerate(raw_hops)
+            _hop_summary(item, context=f"Run.hops[{index}]", run_version=version)
+            for index, item in enumerate(raw_hops)
         ),
         findings=tuple(
-            _finding(item, context=f"Run.findings[{index}]")
+            _finding(item, context=f"Run.findings[{index}]", run_version=version)
             for index, item in enumerate(raw_findings)
         ),
         child_run_id=_optional_string(data["child_run_id"], context="Run.child_run_id"),
@@ -1036,6 +1289,8 @@ def run_from_json(text: str) -> Run:
         hop.hop_id for hop in run.hops
     }:
         raise ValidationError("Run.semantic_stop.source_hop_id is absent from Run.hops")
+    if version == 3:
+        _validate_v3_run(run)
     return run
 
 

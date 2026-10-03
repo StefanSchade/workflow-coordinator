@@ -28,10 +28,17 @@ from .serialization import (
     COMMIT_INTENT_REQUIRED_KEYS,
     EXISTING_FINDING_DELTA_KEYS,
     NEW_FINDING_DELTA_KEYS,
+    NEW_FINDING_DELTA_V2_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
+    ROUTING_RESULT_V2_REQUIRED_KEYS,
     STRUCTURED_RESULT_ENVELOPE_KEYS,
 )
-from .model import FindingState, Outcome
+from .model import (
+    ConvergenceAssessmentResult,
+    CoverageDisposition,
+    FindingState,
+    Outcome,
+)
 
 
 class CodexCliError(ExecutionNotStartedError, RuntimeError):
@@ -87,11 +94,18 @@ def _bounded(value: str, limit: int = 16_384) -> str:
     return value[-limit:]
 
 
-def routing_result_openai_schema() -> dict[str, Any]:
+def routing_result_openai_schema(contract_version: int = 1) -> dict[str, Any]:
     """Project canonical RoutingResult facts into the Codex strict dialect."""
+    if contract_version not in {1, 2}:
+        raise OpenAIStrictSchemaError("unsupported RoutingResult contract version")
     string_array = {"type": "array", "items": {"type": "string"}}
     new_finding = {
-        "type": "object", "additionalProperties": False, "required": list(NEW_FINDING_DELTA_KEYS),
+        "type": "object", "additionalProperties": False,
+        "required": list(
+            NEW_FINDING_DELTA_KEYS
+            if contract_version == 1
+            else NEW_FINDING_DELTA_V2_KEYS
+        ),
         "properties": {
             "finding_id": {"type": "null"}, "invariant": {"type": "string"},
             "blocking": {"type": "boolean"},
@@ -100,6 +114,8 @@ def routing_result_openai_schema() -> dict[str, Any]:
             "new_material_evidence": {"type": "boolean"},
         },
     }
+    if contract_version == 2:
+        new_finding["properties"]["local_ref"] = {"type": ["string", "null"]}
     existing_finding = {
         "type": "object", "additionalProperties": False, "required": list(EXISTING_FINDING_DELTA_KEYS),
         "properties": {
@@ -119,21 +135,62 @@ def routing_result_openai_schema() -> dict[str, Any]:
         "required": list(COMMIT_INTENT_REQUIRED_KEYS),
         "properties": {"paths": string_array, "subject": {"type": "string"}},
     }
-    return {
-        "type": "object", "additionalProperties": False, "required": list(ROUTING_RESULT_REQUIRED_KEYS),
-        "properties": {
-            "schema_version": {"type": "integer", "enum": [1]},
+    properties = {
+            "schema_version": {"type": "integer", "enum": [contract_version]},
             "outcome": {"type": "string", "enum": [outcome.value for outcome in Outcome]},
             "requested_route": {"type": "string"}, "scope_changed": {"type": "boolean"},
             "requires_human": {"type": "boolean"}, "escalation": {"anyOf": [{"type": "null"}, escalation]},
             "findings": {"type": "array", "items": finding}, "claimed_commits": string_array,
             "commit_intent": {"anyOf": [{"type": "null"}, commit_intent]},
             "evidence_refs": string_array, "summary": {"type": "string"},
-        },
+        }
+    if contract_version == 2:
+        coverage_claim = {
+            "type": "object", "additionalProperties": False,
+            "required": ["finding_id", "disposition", "evidence_refs"],
+            "properties": {
+                "finding_id": {"type": "string"},
+                "disposition": {
+                    "type": "string",
+                    "enum": [item.value for item in CoverageDisposition],
+                },
+                "evidence_refs": string_array,
+            },
+        }
+        assessment = {
+            "type": "object", "additionalProperties": False,
+            "required": ["finding_id", "correction_hop_id", "result", "evidence_refs"],
+            "properties": {
+                "finding_id": {"type": "string"},
+                "correction_hop_id": {"type": "string"},
+                "result": {
+                    "type": "string",
+                    "enum": [item.value for item in ConvergenceAssessmentResult],
+                },
+                "evidence_refs": string_array,
+            },
+        }
+        properties.update({
+            "coverage_claims": {"type": "array", "items": coverage_claim},
+            "convergence_assessments": {"type": "array", "items": assessment},
+            "diagnosis": {"type": "null"},
+            "strategy_revision": {"type": "null"},
+            "strategy_assessment": {"type": "null"},
+        })
+    return {
+        "type": "object", "additionalProperties": False,
+        "required": list(
+            ROUTING_RESULT_REQUIRED_KEYS
+            if contract_version == 1
+            else ROUTING_RESULT_V2_REQUIRED_KEYS
+        ),
+        "properties": properties,
     }
 
 
-def structured_result_envelope_openai_schema(invocation: Invocation) -> dict[str, Any]:
+def structured_result_envelope_openai_schema(
+    invocation: Invocation, contract_version: int = 1
+) -> dict[str, Any]:
     """Return the exact strict schema supplied by ``CodexCliAdapter``.
 
     Correlation identity is Coordinator-owned dispatch data known exactly before
@@ -149,10 +206,10 @@ def structured_result_envelope_openai_schema(invocation: Invocation) -> dict[str
         "type": "object", "additionalProperties": False,
         "required": list(STRUCTURED_RESULT_ENVELOPE_KEYS),
         "properties": {
-            "schema_version": {"type": "integer", "enum": [1]},
+            "schema_version": {"type": "integer", "enum": [contract_version]},
             "run_id": dispatched(invocation.run_id), "hop_id": dispatched(invocation.hop_id),
             "invocation_id": dispatched(invocation.invocation_id),
-            "result": routing_result_openai_schema(),
+            "result": routing_result_openai_schema(contract_version),
         },
     }
 
@@ -189,10 +246,17 @@ class CodexCliAdapter:
             raise CodexCliError(f"unsupported result contract: {request.result_contract}")
         if request.timeout_seconds <= 0:
             raise CodexCliError("timeout must be positive")
+        if request.contract_version not in {1, 2}:
+            raise CodexCliError("unsupported result contract version")
         try:
             schema = self.result_directory / "structured-result.schema.json"
             result = self.result_directory / "result-message.json"
-            atomic_write_json(schema, structured_result_envelope_openai_schema(request.invocation))
+            atomic_write_json(
+                schema,
+                structured_result_envelope_openai_schema(
+                    request.invocation, request.contract_version
+                ),
+            )
             atomic_write_text(result, "")
             child = subprocess.Popen(
                 self.argv(request, schema, result), stdin=subprocess.PIPE, stdout=subprocess.PIPE,

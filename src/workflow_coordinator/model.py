@@ -55,6 +55,33 @@ class FindingAuthority(CoordinatorValue):
     HUMAN = "human"
 
 
+class ConvergenceRole(CoordinatorValue):
+    """Slice-1-only in-memory role signal; profile YAML cannot set it yet."""
+
+    NONE = "none"
+    CORRECTOR = "corrector"
+    EVALUATOR = "evaluator"
+
+
+class CorrectionObligationOwner(CoordinatorValue):
+    GATE = "gate"
+    HUMAN = "human"
+
+
+class CoverageDisposition(CoordinatorValue):
+    ADDRESSED = "addressed"
+    BLOCKED = "blocked"
+    ESCALATION = "escalation"
+
+
+class ConvergenceAssessmentResult(CoordinatorValue):
+    CLOSED = "closed"
+    CARRIED_NEW_COUNTEREXAMPLE = "carried_new_counterexample"
+    CARRIED_UNMET = "carried_unmet"
+    RESIDUALIZED = "residualized"
+    SUPERSEDED = "superseded"
+
+
 class RouteEffect(CoordinatorValue):
     GOTO = "goto"
     COMPLETE = "complete"
@@ -174,6 +201,7 @@ class Phase:
     evidence: tuple[str, ...]
     review: ReviewDescriptor | None
     routes: Mapping[str, Route]
+    convergence_role: ConvergenceRole = ConvergenceRole.NONE
 
 
 @dataclass(frozen=True)
@@ -234,6 +262,7 @@ class NewFindingDelta:
     evidence_refs: tuple[str, ...]
     successor_ref: str | None = None
     new_material_evidence: bool = False
+    local_ref: str | None = None
 
 
 FindingDeltaValue = ExistingFindingDelta | NewFindingDelta
@@ -252,6 +281,27 @@ class CommitIntent:
 
 
 @dataclass(frozen=True)
+class CorrectionObligation:
+    owner: CorrectionObligationOwner
+    introduced_by_hop: str
+
+
+@dataclass(frozen=True)
+class CoverageClaim:
+    finding_id: str
+    disposition: CoverageDisposition
+    evidence_refs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ConvergenceAssessment:
+    finding_id: str
+    correction_hop_id: str
+    result: ConvergenceAssessmentResult
+    evidence_refs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class RoutingResult:
     schema_version: int
     outcome: Outcome
@@ -264,6 +314,11 @@ class RoutingResult:
     commit_intent: CommitIntent | None
     evidence_refs: tuple[str, ...]
     summary: str
+    coverage_claims: tuple[CoverageClaim, ...] = ()
+    convergence_assessments: tuple[ConvergenceAssessment, ...] = ()
+    diagnosis: None = None
+    strategy_revision: None = None
+    strategy_assessment: None = None
 
 
 @dataclass(frozen=True)
@@ -278,6 +333,7 @@ class Finding:
     disposition: str
     successor_ref: str | None = None
     external_work_item_ref: str | None = None
+    correction_obligation: CorrectionObligation | None = None
 
 
 @dataclass(frozen=True)
@@ -334,6 +390,8 @@ class HopSummary:
     stop_reason: str | None
     summary: str
     attribution: str
+    coverage_claims: tuple[CoverageClaim, ...] = ()
+    convergence_assessments: tuple[ConvergenceAssessment, ...] = ()
 
 
 @dataclass(frozen=True)

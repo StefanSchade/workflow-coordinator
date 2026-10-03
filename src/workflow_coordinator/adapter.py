@@ -48,6 +48,7 @@ class AgentExecutionRequest:
     repository: Path
     result_contract: str
     timeout_seconds: float
+    contract_version: int = 1
 
 
 @dataclass(frozen=True)
@@ -100,20 +101,29 @@ class SubprocessAdapter:
         )
 
 
-def validated_result(raw: str, expected: Invocation) -> RoutingResult:
+def validated_result(
+    raw: str, expected: Invocation, contract_version: int = 1
+) -> RoutingResult:
+    if contract_version not in {1, 2}:
+        raise ResultValidationError("unsupported structured result contract version")
     try:
         envelope = json.loads(raw)
     except json.JSONDecodeError as error:
         raise ResultValidationError("truncated or invalid structured result") from error
     if not isinstance(envelope, dict) or set(envelope) != {"schema_version", "run_id", "hop_id", "invocation_id", "result"}:
         raise ResultValidationError("structured result has missing or unknown envelope fields")
-    if envelope["schema_version"] != 1:
+    if envelope["schema_version"] != contract_version:
         raise ResultValidationError("structured result has unsupported schema version")
     actual = (envelope["run_id"], envelope["hop_id"], envelope["invocation_id"])
     wanted = (expected.run_id, expected.hop_id, expected.invocation_id)
     if actual != wanted:
         raise ResultValidationError("structured result identity does not correlate to dispatch")
     try:
-        return routing_result_from_data(envelope["result"])
+        result = routing_result_from_data(envelope["result"])
+        if result.schema_version != contract_version:
+            raise ResultValidationError(
+                "structured result version does not match the selected contract"
+            )
+        return result
     except ValidationError as error:
         raise ResultValidationError(str(error)) from error

@@ -6,6 +6,11 @@ from dataclasses import replace
 import hashlib
 
 from workflow_coordinator.model import (
+    ConvergenceAssessment,
+    ConvergenceAssessmentResult,
+    ConvergenceRole,
+    CoverageClaim,
+    CoverageDisposition,
     DurableArtifact,
     EvidenceCommand,
     Escalation,
@@ -49,6 +54,7 @@ def phase(
     review: str | None = None,
     finding_authority: tuple[str, ...] = (),
     breadth: str = "focused",
+    convergence_role: str = "none",
 ) -> Phase:
     descriptor = None
     if review is not None:
@@ -74,6 +80,7 @@ def phase(
         evidence=(),
         review=descriptor,
         routes=routes,
+        convergence_role=ConvergenceRole(convergence_role),
     )
 
 
@@ -88,6 +95,7 @@ def run_for(
     *,
     initial_phase: str | None = None,
     budget: int = 5,
+    run_schema_version: int = 2,
 ) -> Run:
     selected_phase = initial_phase or next(iter(workflow.phases))
     item = WorkItem(
@@ -115,7 +123,8 @@ def run_for(
         actions=("edit", "commit"),
         evidence_commands={"tests": EvidenceCommand(("git", "--version"), 10)},
     )
-    return new_run(item, workflow, policy, run_id="RUN-1", baseline_head="head-0")
+    run = new_run(item, workflow, policy, run_id="RUN-1", baseline_head="head-0")
+    return replace(run, schema_version=run_schema_version)
 
 
 def charge_hop(
@@ -161,9 +170,12 @@ def result(
     requires_human: bool = False,
     escalation: Escalation | None = None,
     scope_changed: bool = False,
+    schema_version: int = 1,
+    coverage_claims: tuple[CoverageClaim, ...] = (),
+    convergence_assessments: tuple[ConvergenceAssessment, ...] = (),
 ) -> RoutingResult:
     return RoutingResult(
-        schema_version=1,
+        schema_version=schema_version,
         outcome=Outcome(outcome),
         requested_route=route_key,
         scope_changed=scope_changed,
@@ -174,6 +186,8 @@ def result(
         commit_intent=None,
         evidence_refs=("tests",),
         summary="fixture decision",
+        coverage_claims=coverage_claims,
+        convergence_assessments=convergence_assessments,
     )
 
 
@@ -185,6 +199,7 @@ def new_delta(
     evidence: str = "evidence-1",
     successor_ref: str | None = None,
     new_material: bool = False,
+    local_ref: str | None = None,
 ) -> NewFindingDelta:
     return NewFindingDelta(
         finding_id=None,
@@ -194,6 +209,33 @@ def new_delta(
         evidence_refs=(evidence,),
         successor_ref=successor_ref,
         new_material_evidence=new_material,
+        local_ref=local_ref,
+    )
+
+
+def coverage(
+    finding_id: str,
+    disposition: str = "addressed",
+    *evidence_refs: str,
+) -> CoverageClaim:
+    return CoverageClaim(
+        finding_id,
+        CoverageDisposition(disposition),
+        evidence_refs or ("coverage-evidence",),
+    )
+
+
+def assessment(
+    finding_id: str,
+    correction_hop_id: str,
+    assessment_result: str,
+    *evidence_refs: str,
+) -> ConvergenceAssessment:
+    return ConvergenceAssessment(
+        finding_id,
+        correction_hop_id,
+        ConvergenceAssessmentResult(assessment_result),
+        evidence_refs or ("assessment-evidence",),
     )
 
 
