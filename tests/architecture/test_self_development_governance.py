@@ -226,6 +226,21 @@ CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_001_SCOPE = (
 CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_001_REVIEW_ARTIFACT = (
     "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc"
 )
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_GOVERNING_PATHS = (
+    "governance/work-items/correction-convergence-escape-implementation-s1-002.yaml",
+    "governance/self-development/correction-convergence-escape-implementation-s1-002-profile.yaml",
+    "governance/self-development/correction-convergence-escape-implementation-s1-002-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/correction-convergence-escape-implementation-s1-002-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_SCOPE = (
+    CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_001_SCOPE
+)
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_REVIEW_ARTIFACT = (
+    CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_001_REVIEW_ARTIFACT
+)
 IMPLEMENTATION_PATHS = (
     "Makefile",
     "README.md",
@@ -2154,6 +2169,195 @@ def test_correction_convergence_escape_implementation_s1_001_bundle_passes_produ
         "untracked-blocker creation, successor-identity correctness, legacy wire/"
         "round-trip compatibility, and domain-neutral scope discipline"
     )
+    assert work_item.personas[WorkflowRole.WORKER] != work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    assert not state_root.exists()
+
+
+def test_correction_convergence_escape_implementation_s1_002_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Fresh follow-up Slice-1 commission continuing the interrupted S1-001 Run.
+
+    ``WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S1-002`` is a fresh
+    forward-continuation commission from current committed repository state
+    (HEAD ``55e4c0b4807b260ceb1cd060f635deefc1e46953``, the maintainer-preserved,
+    untrusted WIP candidate from predecessor Run
+    ``RUN-a28208a38013403d9b7e0a89ce1e3531`` H001, which reached its configured
+    900-second timeout with no trusted commit). It reuses the exact same
+    bounded four-phase bootstrap-safe topology, scope, and
+    ``max_autonomous_hops == 6`` as predecessor WI-WFC-CORRECTION-CONVERGENCE-
+    ESCAPE-IMPLEMENTATION-S1-001, and deliberately reuses that predecessor's
+    originally designated (but never written-to) durable review artifact path
+    ``docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc``
+    -- predecessor S1-001 never reached its review phase, so no stale review
+    content exists under that name to protect with a separately numbered
+    artifact. This is distinguishable from the scope-escalation-continuation
+    precedent (WI-...-IMPLEMENTATION-002), which created a fresh
+    ``_implementation_review_002.adoc`` specifically because its predecessor's
+    ``_implementation_review_001.adoc`` already held real H002/H004/H006
+    review history that had to remain frozen and separate.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "correction-convergence-escape-implementation-s1-002"
+
+    assert not state_root.exists()
+    result = _preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    implement = profile.phases["implement"]
+    review = profile.phases["review"]
+    correct = profile.phases["correct"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = (
+        *CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_SCOPE,
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_REVIEW_ARTIFACT,
+    )
+    assert len(CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_SCOPE) == 12
+
+    assert work_item.work_item_id == "WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S1-002"
+    assert work_item.initial_phase == "implement"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 6
+    assert profile.profile_id == "correction-convergence-escape-implementation-s1-002"
+    assert policy.policy_id == "workflow-coordinator-correction-convergence-escape-implementation-s1-002"
+    assert tuple(profile.phases) == ("implement", "review", "correct", "rereview")
+
+    # Explicit lineage: the authority source names the predecessor WorkItem,
+    # the predecessor's failed Run, the original semantic baseline, and the
+    # preserved WIP commit, and states the WIP commit confers no trust.
+    assert "WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S1-001" in work_item.authority_source
+    assert "RUN-a28208a38013403d9b7e0a89ce1e3531" in work_item.authority_source
+    assert "272e2b27f4c75f5fb12cf5287d1b1940caeba5dc" in work_item.authority_source
+    assert "55e4c0b4807b260ceb1cd060f635deefc1e46953" in work_item.authority_source
+    assert "untrusted" in work_item.authority_source
+
+    # WorkItem.scope is exactly the same Slice-1 twelve production/test paths
+    # as S1-001, plus the one reused durable implementation-review artifact --
+    # never the design FTR, operator.py, vertical.py, prompt.py, or any
+    # Slice-2/3/4-only path (e.g. a curriculum fixture).
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    assert not _within_scope("Makefile", work_item.scope)
+    assert not _within_scope("src", work_item.scope)
+    assert not _within_scope("governance", work_item.scope)
+    assert not _within_scope("workflow-coordinator-runtime", work_item.scope)
+    assert not _within_scope(
+        "docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc", work_item.scope
+    )
+    for path in CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_SCOPE:
+        assert _within_scope(path, work_item.scope)
+
+    # No mutation authority over the accepted design FTR, its own review
+    # history, the unrelated source BUG, any other governance bundle, the
+    # predecessor's own governing bundle, or the files reserved for later
+    # slices.
+    for withheld in (
+        "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc",
+        "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_review_001.adoc",
+        "docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc",
+        "src/workflow_coordinator/vertical.py",
+        "src/workflow_coordinator/prompt.py",
+        "src/workflow_coordinator/operator.py",
+        "tests/unit/test_operator.py",
+        "tests/unit/test_slice3_vertical.py",
+        "tests/unit/test_slice5b.py",
+        "tests/fixtures/convergence_curriculum.yaml",
+        "tests/architecture/test_self_development_governance.py",
+        "workflow-coordinator-runtime",
+        "governance/work-items/correction-convergence-escape-implementation-s1-001.yaml",
+        "governance/self-development/correction-convergence-escape-implementation-s1-001-profile.yaml",
+        "governance/self-development/correction-convergence-escape-implementation-s1-001-policy.yaml",
+        "governance/work-items/correction-convergence-escape-design-001.yaml",
+        "governance/self-development/correction-convergence-escape-design-001-profile.yaml",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+
+    # implement/correct share the exact twelve-path implementation scope;
+    # review and rereview are independently scoped by the profile to the
+    # single reused durable review artifact alone -- no phase's
+    # authorized_scope grants both.
+    assert (
+        implement.authorized_scope
+        == correct.authorized_scope
+        == CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_SCOPE
+    )
+    assert review.authorized_scope == rereview.authorized_scope == (
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_REVIEW_ARTIFACT,
+    )
+    assert set(CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_SCOPE).isdisjoint(review.authorized_scope)
+    assert CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_REVIEW_ARTIFACT not in implement.authorized_scope
+    assert CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_REVIEW_ARTIFACT not in correct.authorized_scope
+
+    # Load-bearing complete-review-baseline rule: both review and rereview
+    # purposes must name the original semantic baseline and explicitly state
+    # that the WIP commit confers no trust and is not a sufficient review
+    # boundary by itself.
+    assert "272e2b27f4c75f5fb12cf5287d1b1940caeba5dc" in review.review.purpose
+    assert "55e4c0b4807b260ceb1cd060f635deefc1e46953" in review.review.purpose
+    assert "no trust" in review.review.purpose
+    assert "272e2b27f4c75f5fb12cf5287d1b1940caeba5dc" in rereview.review.purpose
+    assert "55e4c0b4807b260ceb1cd060f635deefc1e46953" in rereview.review.purpose
+
+    # The Commission-specific acceptance-recording requirement: both review
+    # AND rereview require, and are mapped, the same reused durable artifact,
+    # and both carry edit+commit authority on it.
+    assert durable_artifacts == {
+        "review": (CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_REVIEW_ARTIFACT,),
+        "rereview": (CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_REVIEW_ARTIFACT,),
+    }
+    assert _within_scope(
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_REVIEW_ARTIFACT, review.authorized_scope
+    )
+    assert _within_scope(
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_REVIEW_ARTIFACT, rereview.authorized_scope
+    )
+    assert review.durable_artifact.value == "required"
+    assert rereview.durable_artifact.value == "required"
+    assert implement.durable_artifact.value == correct.durable_artifact.value == "none"
+    assert {"edit", "commit"}.issubset(set(review.authorized_actions))
+    assert {"edit", "commit"}.issubset(set(rereview.authorized_actions))
+
+    # Topology: implement -> review -> {accept: complete, correct} ->
+    # correct -> rereview -> {accept: complete, correct}. No
+    # diagnosis/reframe/strategy-gate phase was added -- those remain later
+    # slices -- and no phase carries implementation authority outside the
+    # twelve named production/test paths.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "implement": (("review", "goto", "review"),),
+        "review": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+        "correct": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+    }
+    assert review.role == rereview.role == "independent_reviewer"
+    assert implement.role == correct.role == "worker"
+    assert review.review.finding_authority == ()
+    assert rereview.review.finding_authority == ()
+
     assert work_item.personas[WorkflowRole.WORKER] != work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
 
     assert policy.governance_paths == ("governance",)
