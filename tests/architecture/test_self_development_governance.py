@@ -333,6 +333,21 @@ CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_002_SCOPE = (
 CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_002_REVIEW_ARTIFACT = (
     CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_001_REVIEW_ARTIFACT
 )
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_GOVERNING_PATHS = (
+    "governance/work-items/correction-convergence-escape-implementation-s2-003.yaml",
+    "governance/self-development/correction-convergence-escape-implementation-s2-003-profile.yaml",
+    "governance/self-development/correction-convergence-escape-implementation-s2-003-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/correction-convergence-escape-implementation-s2-003-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_SCOPE = (
+    CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_002_SCOPE
+)
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_REVIEW_ARTIFACT = (
+    CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_002_REVIEW_ARTIFACT
+)
 IMPLEMENTATION_PATHS = (
     "Makefile",
     "README.md",
@@ -3422,6 +3437,237 @@ def test_correction_convergence_escape_implementation_s2_002_bundle_passes_produ
     assert "WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S2-001" in task_text
     assert "f08c8cb61480ec5b9e2529eebc5ae44a0463bc9e" in task_text
     assert "DR1-IR-001" in task_text
+    assert "pre_route_anchor_sha256" in task_text
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-run-evidence", policy.work_item_scope_ceiling)
+    assert not _within_scope("project_memory/canonical", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    # Admission happened entirely through provider-free preflight: no
+    # provider/executable was ever invoked, no Runtime/evidence/state/
+    # Project-Memory mutation occurred, and the state root the launch would
+    # eventually use was never created by this process.
+    assert not state_root.exists()
+
+
+def test_correction_convergence_escape_implementation_s2_003_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Fresh forward-continuation Slice-2 commission atop the S2-002 salvage.
+
+    ``WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S2-003`` is a fresh
+    forward-continuation Commission succeeding predecessor
+    ``WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S2-002``, whose Run
+    ``RUN-51246b2c0cb64da5975c0ecc9c71f7ae`` used exactly one of ten
+    authorized Hops, stopped ``reconcile_required`` during an uncertain,
+    candidate-less Hop H001, and was subsequently archived mechanically and
+    preserved by the maintainer as the non-authoritative Git salvage commit
+    ``69e94191df8a390b061eec2ef50d0365d1a08b5e``. This is NOT same-Run
+    reconcile/resume, NOT same-Hop retry, NOT provider-session continuation,
+    and NOT retrospective acceptance of S2-002 H001. It reuses the identical
+    bounded four-phase bootstrap-safe topology (``implement -> review ->
+    {accept, correct} -> correct -> rereview -> {accept, correct}``) with
+    ``max_autonomous_hops: 10``, the identical fourteen-path Slice-2
+    production/test scope, and the SAME reused durable implementation-review
+    artifact as every prior Slice-1/Slice-2 commission. The admission
+    succeeds entirely through provider-free preflight: no provider is
+    invoked and no state root is created.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "correction-convergence-escape-implementation-s2-003"
+
+    assert not state_root.exists()
+    result = _preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_GOVERNING_PATHS,
+    ))
+    texts = result[4]
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    implement = profile.phases["implement"]
+    review = profile.phases["review"]
+    correct = profile.phases["correct"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = (
+        *CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_SCOPE,
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_REVIEW_ARTIFACT,
+    )
+    assert len(CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_SCOPE) == 14
+
+    assert work_item.work_item_id == "WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S2-003"
+    assert work_item.initial_phase == "implement"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 10
+    assert profile.profile_id == "correction-convergence-escape-implementation-s2-003"
+    assert policy.policy_id == "workflow-coordinator-correction-convergence-escape-implementation-s2-003"
+    assert tuple(profile.phases) == ("implement", "review", "correct", "rereview")
+
+    # Explicit frozen authority lineage: predecessor S2-002 Run/Commission,
+    # the salvage commit and its non-authoritative status, the accepted
+    # Design Revision's final acceptance commit and its closed stable
+    # blocker, and the still-open Slice-2 blocker are all pinned.
+    assert "WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S2-002" in work_item.authority_source
+    assert "RUN-51246b2c0cb64da5975c0ecc9c71f7ae" in work_item.authority_source
+    assert "97161b304188af2d3e44e01d2f226220c4d40f0a" in work_item.authority_source
+    assert "reconcile_required" in work_item.authority_source
+    assert "uncertain_dispatch" in work_item.authority_source
+    assert "69e94191df8a390b061eec2ef50d0365d1a08b5e" in work_item.authority_source
+    assert "salvage preserves work, not authority" in work_item.authority_source
+    assert "83cccb98bb800479645d87051fb1cd66b3a4ac7f" in work_item.authority_source
+    assert "4edcea0e341e9c8669378fa299104d66aed2851f" in work_item.authority_source
+    assert "f08c8cb61480ec5b9e2529eebc5ae44a0463bc9e" in work_item.authority_source
+    assert "S2-IR-001" in work_item.authority_source
+    assert "DR1-IR-001" in work_item.authority_source
+    assert "keep, alter, remove, or replace" in work_item.authority_source
+    assert "55e4c0b4807b260ceb1cd060f635deefc1e46953" in work_item.authority_source
+
+    # WorkItem.scope is exactly Slice 2's seven production paths, seven
+    # ordinary test/fixture paths, and the reused durable implementation-
+    # review artifact -- never the design FTR, the Design Revision or its
+    # own review artifact, the source BUG, S2-001's or S2-002's frozen
+    # governance bundles, evidence.py/adapter.py/codex_adapter.py/prompt.py,
+    # or any Slice-3/4-only path.
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    for withheld in (
+        "Makefile",
+        "src",
+        "governance",
+        "workflow-coordinator-runtime",
+        "workflow-coordinator-run-evidence",
+        "project_memory/canonical",
+        "src/workflow_coordinator/evidence.py",
+        "src/workflow_coordinator/adapter.py",
+        "src/workflow_coordinator/codex_adapter.py",
+        "src/workflow_coordinator/prompt.py",
+        "tests/unit/test_a2_evidence_commands.py",
+        "tests/unit/test_codex_adapter_conformance.py",
+        "tests/unit/test_slice3_vertical.py",
+        "tests/unit/test_slice5b.py",
+        "tests/fixtures/convergence_curriculum.yaml",
+        "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc",
+        "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_review_001.adoc",
+        "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_design_revision_001.adoc",
+        "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_design_revision_001_review_001.adoc",
+        "docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc",
+        "tests/architecture/test_self_development_governance.py",
+        "governance/work-items/correction-convergence-escape-implementation-s2-001.yaml",
+        "governance/self-development/correction-convergence-escape-implementation-s2-001-profile.yaml",
+        "governance/self-development/correction-convergence-escape-implementation-s2-001-policy.yaml",
+        "governance/work-items/correction-convergence-escape-implementation-s2-001-task.txt",
+        "governance/work-items/correction-convergence-escape-implementation-s2-002.yaml",
+        "governance/self-development/correction-convergence-escape-implementation-s2-002-profile.yaml",
+        "governance/self-development/correction-convergence-escape-implementation-s2-002-policy.yaml",
+        "governance/work-items/correction-convergence-escape-implementation-s2-002-task.txt",
+        "governance/work-items/correction-convergence-escape-design-001.yaml",
+        "governance/self-development/correction-convergence-escape-design-001-profile.yaml",
+        "governance/work-items/correction-convergence-escape-design-revision-001.yaml",
+        "governance/self-development/correction-convergence-escape-design-revision-001-profile.yaml",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+    for path in CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_SCOPE:
+        assert _within_scope(path, work_item.scope)
+
+    # implement/correct share the exact fourteen-path Slice-2 implementation
+    # scope; review and rereview are independently scoped by the profile to
+    # the single reused durable review artifact alone -- no phase's
+    # authorized_scope grants both.
+    assert (
+        implement.authorized_scope
+        == correct.authorized_scope
+        == CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_SCOPE
+    )
+    assert review.authorized_scope == rereview.authorized_scope == (
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_REVIEW_ARTIFACT,
+    )
+    assert set(CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_SCOPE).isdisjoint(review.authorized_scope)
+    assert CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_REVIEW_ARTIFACT not in implement.authorized_scope
+    assert CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_REVIEW_ARTIFACT not in correct.authorized_scope
+
+    # The reused artifact is the SAME path as every Slice-1/S2-001/S2-002
+    # commission's, not a fresh S2-003-suffixed review artifact; both review
+    # AND rereview require, and are mapped to, it, with edit+commit
+    # authority.
+    assert (
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_REVIEW_ARTIFACT
+        == "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc"
+    )
+    assert durable_artifacts == {
+        "review": (CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_REVIEW_ARTIFACT,),
+        "rereview": (CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_REVIEW_ARTIFACT,),
+    }
+    assert _within_scope(
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_REVIEW_ARTIFACT, review.authorized_scope
+    )
+    assert _within_scope(
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S2_003_REVIEW_ARTIFACT, rereview.authorized_scope
+    )
+    assert review.durable_artifact.value == "required"
+    assert rereview.durable_artifact.value == "required"
+    assert implement.durable_artifact.value == correct.durable_artifact.value == "none"
+    assert {"edit", "commit"}.issubset(set(review.authorized_actions))
+    assert {"edit", "commit"}.issubset(set(rereview.authorized_actions))
+
+    # No Finding authority is granted to either review phase, preserving the
+    # established S2 implementation-review convention.
+    assert review.review.finding_authority == ()
+    assert rereview.review.finding_authority == ()
+
+    # Topology: implement -> review -> {accept: complete, correct} ->
+    # correct -> rereview -> {accept: complete, correct}. No
+    # diagnosis/reframe/strategy-gate/escape-route phase was added -- those
+    # remain later slices -- and no phase carries implementation authority
+    # outside the fourteen named production/test paths. max_autonomous_hops
+    # is 10, deliberately permitting several correction/rereview cycles.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "implement": (("review", "goto", "review"),),
+        "review": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+        "correct": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+    }
+    assert review.role == rereview.role == "independent_reviewer"
+    assert implement.role == correct.role == "worker"
+    assert review.review.context == rereview.review.context == "fresh"
+
+    assert work_item.personas[WorkflowRole.WORKER] != work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+
+    # The task text pins the complete authority lineage this commission
+    # exists for: the predecessor Run/Commission, the salvage commit and its
+    # non-authoritative status, the accepted Design Revision's closed stable
+    # blocker, the still-open Slice-2 blocker, the explicit distinction
+    # between execution starting point and assurance baseline, the worker's
+    # keep/alter/remove/replace license over salvaged material, and the
+    # prohibition on same-Run reconcile/resume.
+    task_text = texts["task"]
+    assert "RUN-51246b2c0cb64da5975c0ecc9c71f7ae" in task_text
+    assert "97161b304188af2d3e44e01d2f226220c4d40f0a" in task_text
+    assert "69e94191df8a390b061eec2ef50d0365d1a08b5e" in task_text
+    assert "f08c8cb61480ec5b9e2529eebc5ae44a0463bc9e" in task_text
+    assert "S2-IR-001" in task_text
+    assert "SALVAGE PRESERVES WORK, NOT AUTHORITY" in task_text
+    assert "keep, alter, remove, or replace" in task_text
+    assert "Execution starting point" in task_text
+    assert "Assurance baseline" in task_text
+    assert "NO SAME-RUN RECONCILE/RESUME" in task_text
     assert "pre_route_anchor_sha256" in task_text
 
     assert policy.governance_paths == ("governance",)
