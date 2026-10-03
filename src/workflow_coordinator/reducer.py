@@ -724,6 +724,17 @@ def _validate_assessments_after_apply(
                 raise ReductionError("superseded assessment requires a valid successor")
         if assessment.result is ConvergenceAssessmentResult.CARRIED_NEW_COUNTEREXAMPLE:
             previous_refs = set(before_by_id[assessment.finding_id].evidence_refs)
+            correction_hop = next(
+                hop
+                for hop in before.hops
+                if hop.hop_id == assessment.correction_hop_id
+            )
+            previous_refs.update(
+                evidence_ref
+                for claim in correction_hop.coverage_claims
+                if claim.finding_id == assessment.finding_id
+                for evidence_ref in claim.evidence_refs
+            )
             new_refs = set(assessment.evidence_refs) - previous_refs
             if not new_refs or not new_refs.issubset(set(delta.evidence_refs)):
                 raise ReductionError(

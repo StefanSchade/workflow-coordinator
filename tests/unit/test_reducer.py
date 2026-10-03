@@ -816,6 +816,86 @@ def test_carried_new_counterexample_requires_previously_absent_ledger_evidence()
     assert "new Finding evidence" in (rejected.run.stop_reason or "")
 
 
+def test_carried_new_counterexample_rejects_correction_coverage_evidence_reuse():
+    workflow, run = introduce_obligation()
+    run, correction_hop = charge_hop(run)
+    run = reduce_result(
+        run,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(
+                coverage("F001", "addressed", "correction-evidence"),
+            ),
+        ),
+        workflow,
+        hop_id=correction_hop,
+    ).run
+    run, evaluator_hop = charge_hop(run, role="independent_reviewer")
+
+    rejected = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(
+                existing_delta("F001", "open", evidence="correction-evidence"),
+                new_delta(
+                    "open",
+                    invariant="A separately discovered obligation.",
+                    local_ref="N2",
+                ),
+            ),
+            convergence_assessments=(
+                assessment(
+                    "F001",
+                    correction_hop,
+                    "carried_new_counterexample",
+                    "correction-evidence",
+                ),
+            ),
+        ),
+        workflow,
+        hop_id=evaluator_hop,
+    )
+    assert rejected.run.findings == run.findings
+    assert rejected.run.phase == run.phase
+    assert rejected.run.current_head == run.current_head
+    assert rejected.run.hops[-1].convergence_assessments == ()
+    assert rejected.run.hops[-1].applied_route is None
+    assert "new Finding evidence" in (rejected.run.stop_reason or "")
+
+    accepted = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(
+                existing_delta("F001", "open", evidence="gate-counterexample"),
+            ),
+            convergence_assessments=(
+                assessment(
+                    "F001",
+                    correction_hop,
+                    "carried_new_counterexample",
+                    "gate-counterexample",
+                ),
+            ),
+        ),
+        workflow,
+        hop_id=evaluator_hop,
+    )
+    assert accepted.run.phase == "correct"
+    assert accepted.run.findings[0].evidence_refs[-1] == "gate-counterexample"
+    assert (
+        accepted.run.hops[-1].convergence_assessments[0].evidence_refs
+        == ("gate-counterexample",)
+    )
+    assert '"evidence_refs":["gate-counterexample"]' in run_to_json(accepted.run)
+
+
 def test_same_result_local_successor_is_resolved_without_prediction():
     workflow, run = introduce_obligation()
     run, correction_hop = charge_hop(run)
