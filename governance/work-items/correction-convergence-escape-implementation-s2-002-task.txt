@@ -1,0 +1,513 @@
+Implement, and have independently reviewed, the revised Slice 2 ("Derived
+convergence facts") of the accepted correction-loop convergence-escape
+architecture, docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc, as
+corrected and completed by the independently accepted Design Revision 001,
+docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_design_revision_001.adoc.
+This is a fresh successor Commission, S2-002. The original Slice-2 attempt,
+WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S2-001, produced the
+factual but NOT independently accepted candidate
+830bdf5536e28a52502bb6faf9172e57093150cb; fresh review at that Run's H002
+exposed stable implementation blocker S2-IR-001 and the Run stopped at
+semantic authority. S2-IR-001 remains open. Design Revision 001 was
+independently accepted by fresh rereview with zero remaining findings at
+WorkItem WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-DESIGN-REVISION-001-CONTINUATION-001,
+Hop H004, commit f08c8cb61480ec5b9e2529eebc5ae44a0463bc9e, with stable design
+blocker DR1-IR-001 explicitly closed. You implement and review only this
+revised Slice 2 against the composite Family-B contract that Design
+Revision adds. You do not promote workflow-coordinator-runtime, push, mutate
+the workflow-coordinator-run-evidence repository or its run ledger, launch
+any other Run, close the source BUG, or implement Slice 3, Slice 4, or
+Slice 5.
+
+BACKGROUND (read before writing anything):
+
+Read, in full, in this order:
+
+1. docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc -- the accepted
+   architecture, in particular its "Convergence facts and bounded goalpost"
+   section. This remains controlling except where Design Revision 001
+   narrowly supersedes it.
+2. docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_review_001.adoc -- the
+   accepted design's own complete review history.
+3. docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_design_revision_001.adoc
+   -- this is now your PRIMARY implementation authority for Slice 2. Every
+   section is binding: the composite contract
+   (`qualified_cycle(h) = semantic_cycle_predicate(Run, h) AND
+   trusted_evaluator_qualification(Evidence, h)`), the schema-version-4
+   execution-evidence shape, the exact durable and live correlation rule, the
+   current-evaluator-Hop live trusted input, the mechanical qualification
+   semantics (pass/fail/error/not_run/missing/partial/multiple/no-required-
+   commands), the authority/invariant-preservation list, the complete crash/
+   recovery/publication matrix, the legacy/compatibility semantics, the wire/
+   checkpoint consequences, the exact future implementation mutation scope,
+   and the required deterministic test list. Where this task text summarizes
+   that document, the document's own exact wording controls if the two ever
+   appear to differ; do not resolve an apparent conflict by inventing a
+   third reading -- stop and report it instead.
+4. docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_design_revision_001_review_001.adoc
+   -- the complete review/rereview history of Design Revision 001, including
+   the originally closed stable blocker DR1-IR-001 and its full correction
+   history (H001 correction, H002 rereview changes-required, H003 correction,
+   H004 final acceptance). This explains WHY the live/replay protocol must be
+   non-circular: the first proposed correlation depended on the final
+   route-bearing HopSummary digest, which cannot exist before the route it
+   would gate is selected. The corrected protocol (the immutable
+   `pre_route_anchor_sha256`, computed and staged BEFORE route selection) is
+   what you must implement; do not reintroduce the circular shape the review
+   rejected.
+5. docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc
+   -- the complete existing Slice-1 review history (H002, H004, H006 of the
+   first implementation Run, and the S1-003 H002 final acceptance). You will
+   append a fresh Slice-2 section to this SAME artifact; never replace,
+   rewrite, or renumber its existing Slice-1 sections. S1-IR-001 and
+   S1-IR-002 are closed and must remain closed and verbatim.
+6. docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc -- the source
+   BUG. It remains open regardless of this Run's outcome.
+7. The prior S2-001 governance bundle (read-only, do not mutate):
+   governance/work-items/correction-convergence-escape-implementation-s2-001.yaml
+   and
+   governance/work-items/correction-convergence-escape-implementation-s2-001-task.txt.
+   This shows the bootstrap judgment calls that attempt made (how it
+   exercised derivation without profile-v3 grammar, how it kept generation
+   at zero, how it extended tests/support.py) and the Run-only derivation
+   contract Design Revision 001 now supersedes. Do not copy its "no new
+   Run/Hop wire field" instruction forward -- Design Revision 001 explicitly
+   adds exactly one: the immutable `HopSummary.pre_route_anchor_sha256`.
+
+Also read, read-only, the complete current
+src/workflow_coordinator/{model,serialization,adapter,codex_adapter,reducer,
+persistence,vertical,slice4,prompt,operator,evidence}.py and tests/support.py
+and their existing unit/architecture tests, so your implementation extends
+current seams rather than inventing parallel ones. In particular, as of this
+Commission's starting HEAD:
+
+* `derive_convergence_facts(run, qualified_cycle_limit)` in reducer.py (around
+  line 39) is the Run-only derivation left by the unaccepted S2-001 attempt.
+  It must become the composite derivation described by Design Revision 001:
+  it needs a second parameter carrying the strictly parsed trusted
+  qualification input (e.g. a `TrustedQualificationIndex`), and a candidate
+  evaluator Hop contributes to `source_evaluator_hops` only when BOTH the
+  existing semantic predicate AND the mechanical qualification predicate
+  hold.
+* `MechanicalFacts.required_evidence_failed` (model.py, around line 486) is
+  computed transiently in vertical.py (around lines 294-300) and consumed by
+  reducer.reduce_result for the existing `failed_evidence_route` preemption,
+  then lost -- it is never retained in `Hop`/`HopSummary`. This is the exact
+  empirical gap Design Revision 001 names. Fixing it does NOT mean persisting
+  this boolean on Hop/HopSummary; the fix is the schema-4 execution-evidence
+  surface plus the one narrow `pre_route_anchor_sha256` wire addition.
+* `checkpoint_projection(run, profile, *, observations=(), qualified_cycle_limit=None)`
+  in persistence.py (around line 174) currently derives convergence facts
+  from `run` alone when `qualified_cycle_limit` is not None. It must gain the
+  dual-input binding Design Revision 001 requires (the paired
+  `execution_evidence_sha256` alongside the existing `run_json_sha256`, and
+  the qualification index as an authoritative input to the derived view), and
+  it must fail closed -- not silently zero out -- on an inconsistent or
+  unpaired trusted-evidence document.
+* `DispatchMarker` (model.py, around line 498) does not yet carry an
+  `invocation_id` and a pre-route-anchor digest; the accepted recovery
+  semantics require it to, so the live predicate and crash recovery can agree
+  about which staged attempt belongs to which in-flight Hop.
+* `operator.run_serial_hops` (operator.py, around line 610) currently
+  constructs its `evidence` list across the Hop loop and calls
+  `publish_execution_evidence()`, which atomically writes
+  `{"schema_version": 3, "attempts": evidence}" to `execution-evidence.json`
+  for ALL attempts accumulated so far, at points relative to Run publication
+  that do not yet implement the accepted evidence-before-Run ordering for the
+  CURRENT Hop. You must change this publication ordering per the accepted
+  design: construct and strictly validate the immutable staged schema-4
+  attempt and its `pre_route_anchor_sha256`, atomically publish it (preserving
+  every prior row) BEFORE calling the route-selecting reduction for that Hop,
+  then persist the reduced Run carrying the same anchor only after that
+  publication succeeds.
+* `slice4.run_real_one_hop` (slice4.py, around line 157) is the real-dispatch
+  seam that currently persists the dispatch marker, invokes the provider, and
+  calls into vertical/reduction; it is the natural seam for the marker
+  extensions, the ordering change, and the recovery reconciliation Design
+  Revision 001 requires (recognizing a completed pair idempotently,
+  classifying an unpaired staged row abandoned, and failing closed on an
+  inconsistent or missing pair).
+* `vertical.run_one_hop` (vertical.py, around line 145) already computes
+  Observations via `evidence_runner.observe(...)` over
+  `evidence_commands`/`PreparedEvidenceCommand` and calls `reduce_result`. It
+  is the natural seam to construct the frozen `StagedQualificationAttempt`
+  (Run/Hop/invocation identity, candidate/repository tuple, the prepared
+  required-command plan, and the trusted Observations) and compute the
+  pre-route anchor from exactly the tuple Design Revision 001 specifies,
+  using the SAME strict schema-4 attempt validator later used for durable
+  replay. `evidence.py` itself (argv-digest computation, environment
+  snapshot, command preparation) already supplies everything this needs and
+  is NOT in your authorized scope -- do not modify it; if you find it
+  genuinely insufficient, stop and escalate rather than widening scope.
+
+Line numbers above are approximate orientation, not literal contracts; read
+the actual current file content before editing.
+
+HARD SLICE BOUNDARY -- this WorkItem implements and completes revised Slice 2
+ONLY. Do not implement any of the following, even though the accepted FTR's
+or Design Revision's closed path unions would otherwise permit code in some
+of the same files:
+
+* Slice 3 (schema-version-3 profile YAML grammar/parsing, the `convergence:`
+  top-level declaration, a YAML-reachable `qualified_cycle_limit`, a
+  YAML-reachable `convergence_role`, normal-correction-versus-escape-route
+  declarations, deterministic escape-route substitution, prompt/operator
+  integration of convergence state into live dispatch, or any change to
+  simple-profile behavior);
+* Slice 4 (non-null `DiagnosisReport`/`StrategyRevision`/`StrategyAssessment`,
+  accepted-strategy generation advancement, diagnosis/reframe/strategy-gate
+  authority, `ConvergenceEscape`, or the curriculum-domain falsification
+  fixture); and
+* Slice 5 / R1A dogfood (do not fix, diagnose, or touch R1A; do not run R1A
+  dogfood; do not change scope-escalation-continuation implementation code
+  merely to improve it).
+
+No reserved escape route, no route substitution, and no profile in this
+repository gaining a `schema_version: 3` shape occurs as a result of this
+Run. Revised Slice 2 still derives facts and now also publishes/validates the
+trusted mechanical input to that derivation; it never routes or acts on the
+result through escape substitution. The sole new Run/Hop/Finding semantic-
+wire field this Run may introduce is the immutable
+`HopSummary.pre_route_anchor_sha256`; introduce no mechanical qualification
+boolean, Observation, invocation ID, mutable count, goalpost flag, route
+substitution, escape event, diagnosis/reframe record, or non-zero strategy
+generation.
+
+AUTHORIZED IMPLEMENTATION SCOPE -- exactly these paths, nothing else:
+
+Production (seven paths; wider than S2-001's three because Design Revision
+001 review established that live/replay equivalence and crash-safe pair
+publication cross these seams -- this is accepted design authority, not
+scope creep):
+  src/workflow_coordinator/model.py
+  src/workflow_coordinator/serialization.py
+  src/workflow_coordinator/reducer.py
+  src/workflow_coordinator/persistence.py
+  src/workflow_coordinator/vertical.py
+  src/workflow_coordinator/slice4.py
+  src/workflow_coordinator/operator.py
+
+Ordinary tests and fixtures (seven paths):
+  tests/support.py
+  tests/unit/test_reducer.py
+  tests/unit/test_persistence.py
+  tests/unit/test_serialization.py
+  tests/unit/test_slice4.py
+  tests/unit/test_operator.py
+  tests/architecture/test_replays.py
+
+`tests/unit/test_a2_evidence_commands.py` was inspected during commissioning
+and found NOT required: it exercises `evidence.py`'s own command-preparation,
+argv-digest, and environment-snapshot behavior, none of which this Commission
+authorizes changing, and the `PreparedEvidenceCommand`/`Observation` fields
+you need (`command_name`, `argv_digest`, `timeout_seconds`) already exist and
+are already exercised there unchanged. Do not add it to scope. If, having
+read the current evidence.py/vertical.py composition, you find a concrete
+case where the staged trusted-input/evidence-execution contract genuinely
+cannot be expressed without touching `evidence.py` or that test file, stop and
+raise the normal semantic scope escalation rather than widening yourself.
+
+Durable implementation-review artifact (review/rereview phases only):
+  docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc
+
+If implementation genuinely requires another production or test path, stop
+and raise the normal semantic scope escalation (`requires_human=true`,
+`escalation.kind=scope`, an exact question) and route accordingly rather than
+widening yourself.
+
+REQUIRED IMPLEMENTATION OUTCOMES -- implement the accepted Design Revision
+comprehensively. At minimum:
+
+Model/wire (model.py):
+* an immutable pre-route anchor representation and its exact HopSummary wire
+  addition (`pre_route_anchor_sha256`);
+* an immutable staged-qualification-attempt / schema-4-evidence-record shape
+  as required to parse and construct the attempt;
+* the dispatch-marker additions required by the accepted recovery semantics
+  (at minimum the invocation identity and the pre-route-anchor digest);
+* no mutable convergence counter, no mutable goalpost, and no qualification
+  boolean anywhere in semantic Run/Hop/Finding state.
+
+Serialization (serialization.py):
+* strict closed parsing/serialization for the revised Run/Hop wire addition;
+* strict schema-4 execution-evidence identity/plan/provenance field
+  parsing/serialization, to the extent this module owns that parser (per
+  Design Revision 001's "Unresolved questions", the strict schema-4 parser
+  may live in persistence.py or serialization.py -- pick one closed location
+  and say which in the review artifact; do not split it across both);
+* exact legacy compatibility: Run v1/v2 unaffected; execution-evidence
+  schemas 1-3 remain readable for audit but ineligible to prove the revised
+  predicate;
+* deterministic canonical anchor material (the exact tuple Design Revision
+  001 specifies, canonical JSON, SHA-256);
+* rejection of malformed/unknown/conflicting wire as the accepted document
+  requires.
+
+Reducer (reducer.py):
+* the revised pure composite convergence derivation
+  (`derive_convergence_facts` or an equivalent seam) taking the trusted
+  qualification index and the finite limit as explicit inputs;
+* the exact trusted qualification index / current-evaluator-Hop input
+  conjunction;
+* semantic AND mechanical conjunction -- a candidate only contributes to
+  `source_evaluator_hops` when both hold;
+* required-evidence-failed exclusion (closing the S2-IR-001 empirical
+  counterexample);
+* no semantic authority granted to evidence machinery: a mechanical pass can
+  never create an assessment, Finding disposition, acceptance, or route by
+  itself;
+* no later-slice escape/routing behavior.
+
+Persistence (persistence.py):
+* strict execution-evidence parsing and a read projection of it;
+* exact Run/evidence pair validation (the correlation rule in Design
+  Revision 001's "Exact durable and live correlation rule");
+* atomic evidence replacement that preserves every prior attempt row;
+* idempotent duplicate-publication semantics (byte-identical row is
+  idempotent; differing content is a deterministic conflict);
+* dual-input checkpoint identity (`run_json_sha256` plus
+  `execution_evidence_sha256`);
+* fail-closed inconsistent-pair handling;
+* the recovery semantics the accepted design assigns to this seam (or to
+  slice4.py -- see below; pick one closed division of labor and document it
+  in the review artifact).
+
+Vertical (vertical.py):
+* construct the trusted staged current-Hop input from the Coordinator-owned
+  required command plan and trusted Observations -- never from agent
+  `evidence_refs` or prose;
+* compute the exact pre-route anchor from the accepted tuple, before route
+  selection;
+* feed the identical validated qualification semantics used by durable
+  replay into live reduction for the current Hop;
+* do not use agent evidence references as trusted facts anywhere.
+
+Slice4 (slice4.py):
+* evidence-before-Run publication ordering;
+* dispatch-marker lifecycle and recovery integration (recognizing a
+  completed matching pair idempotently; classifying an unpaired staged row
+  abandoned; failing closed on an inconsistent, missing, or conflicting
+  pair);
+* exact pair-publication lifecycle completion (marker removal only after a
+  validated pair and a regenerated checkpoint);
+* the complete crash/write-failure behavior required by Design Revision
+  001's normative matrix, to the extent this module owns dispatch
+  orchestration (as opposed to the file-level atomic-write/validation
+  primitives in persistence.py).
+
+Operator (operator.py):
+* schema-4 attempt accumulation that preserves every prior row across a
+  continuation (never re-initializes an empty array);
+* idempotent exact-duplicate handling and deterministic conflict rejection
+  for a differing duplicate;
+* final checkpoint regeneration from the paired authoritative inputs;
+* serialization of the required identity / plan / provenance facts into the
+  published schema-4 document, sourced from the same prepared commands it
+  actually executes (never reconstructed from observation presence after the
+  fact).
+
+DETERMINISTIC ACCEPTANCE COVERAGE -- the implementation must satisfy the
+complete accepted Design Revision test matrix. Use its own "Deterministic
+tests required before Slice-2 acceptance" section as the authoritative,
+exhaustive list; do not silently weaken or drop any item there. At minimum,
+also prove, as focused tests in the authorized paths above:
+
+1. one correlated semantic cycle plus one exact all-pass evaluator attempt
+   increments the qualified-cycle count exactly once and records that
+   evaluator Hop as the sole source;
+2. the exact S2-IR-001 empirical case: the same semantic counterexample
+   history, with the evaluator's required evidence failing, yields a
+   qualified-cycle count of zero and no source Hop;
+3. `error` and `not_run` each yield a non-qualifying predicate;
+4. a missing evaluator attempt yields a non-qualifying predicate;
+5. partial multi-command evidence (some but not all required commands
+   observed) does not qualify, regardless of the observed subset's statuses;
+6. a required plan of two commands qualifies only when both exact
+   observations pass -- pass+fail, pass+error, and pass+not_run all remain
+   unqualified;
+7. an exactly correlated empty required plan plus empty observation list
+   qualifies; an absent attempt row does not (absence is never a vacuous
+   pass);
+8. extra, duplicate, command-name-mismatched, argv-digest-mismatched, and
+   timeout-mismatched observations fail closed as inconsistent input;
+9. malformed, cross-Run, wrong-WorkItem/profile-revision, wrong-Hop-ID/
+   sequence, duplicate-Hop-row, and duplicate-invocation-ID input fails
+   deterministically and cannot publish a convergence-dependent route or a
+   fresh checkpoint;
+10. mechanically passing evidence without the accepted semantic cycle
+    predicate creates no convergence cycle, Finding disposition, or
+    semantic acceptance;
+11. the pre-route anchor is deterministic, computed from exactly the
+    specified tuple, and excludes route-dependent material (applied route,
+    route reason, stop reason, Run status, checkpoint material,
+    Observations);
+12. the current evaluator's live all-pass staged qualification produces the
+    identical fact and route-authority outcome as replay over the same
+    published bytes;
+13. the staged evidence row is durably published before any qualifying
+    route-dependent Run publication (prove the ordering, not just the end
+    state);
+14. injected failure/crash at every publication boundary in Design Revision
+    001's normative matrix: before staged-evidence replacement completes;
+    after staged evidence, before Run publication; after the exact paired
+    Run/evidence publication, before checkpoint regeneration; after
+    checkpoint, before marker removal; partial/failed atomic replacement of
+    each file; a dispatch marker present after crash (idempotent recognition
+    of a completed pair; uncertain charging and abandonment of an unpaired
+    row; fail-closed stop on a stale/conflicting marker); duplicate
+    continuation/publication (idempotent for byte-identical content,
+    rejected for differing content);
+15. two qualified evaluator cycles for one Finding/generation reach a limit
+    of 2 with no off-by-one error; changing one observation to `fail`
+    removes only its source Hop and adjusts the count accordingly;
+16. `carried_unmet`, stale semantic evidence already present in prior
+    coverage/assessment history (reusing the S1-IR-002 freshness invariant,
+    never a weaker reimplementation), an uncorrelated assessment, a
+    different Finding ID, a resolved/superseded Finding, and
+    uncertain/rejected history all remain excluded;
+17. legacy execution-evidence schemas (1-3) are never backfilled or treated
+    as proof of a pass; a schema-3 Run with absent/legacy evidence derives
+    an explicit empty qualification index (zero-count facts for every open
+    tracked Finding, no historical evaluator Hop in `source_evaluator_hops`)
+    -- it must NOT reuse the old semantic-only count;
+18. existing simple/legacy workflow behavior and all current self-development
+    profiles remain behaviorally unchanged;
+19. replay from byte-identical Run and schema-4 evidence bytes produces
+    byte-identical facts and checkpoint bytes, including deterministic
+    `source_evaluator_hops` ordering;
+20. checkpoint digest mismatch for either input (Run or execution evidence)
+    is rejected, and reconstruction restores the same derived view without
+    repairing or authorizing an invalid pair;
+21. the sole new Run/Hop/Finding semantic-wire field is the immutable
+    `HopSummary.pre_route_anchor_sha256` -- assert this exactly, and assert
+    that no mechanical qualification boolean, Observation, invocation ID,
+    mutable count, goalpost flag, route substitution, escape event,
+    diagnosis/reframe record, or non-zero strategy generation exists
+    anywhere in production code or tests;
+22. the full repository `pytest` suite remains green throughout.
+
+Acceptance requires independent review to falsify: an incorrect composite
+predicate; a circular or route-dependent correlation key; incorrect Run/
+evidence pairing; a count that increments on stale, uncorrelated, or
+mechanically-unqualified evidence; off-by-one count/goalpost behavior; any
+mutable or shadow counter/qualification state; any Finding-disposition or
+routing/escape effect derived from execution evidence; non-deterministic or
+non-replayable source-Hop ordering; an unhandled or incorrectly handled
+crash/write-failure boundary from the normative matrix; checkpoint repairing
+or authorizing an invalid pair; any Slice-3/4/5 scope creep; and any
+implementation outside the authorized path set.
+
+IMPLEMENT (phase `implement`):
+- Implement the revised contract across exactly the seven production paths
+  and seven ordinary test/fixture paths listed above.
+- Make the full repository `pytest` suite green before requesting
+  `route: review`.
+- Do not touch the durable review artifact, the accepted design FTR or
+  Design Revision, either of their review artifacts, the source BUG, any
+  other governance bundle, `evidence.py`, `adapter.py`, `codex_adapter.py`,
+  `prompt.py`, `workflow-coordinator-runtime`, or the
+  `workflow-coordinator-run-evidence` repository.
+
+REVIEW (phase `review`):
+- Independently attempt to falsify the implementation as an adversarial
+  reviewer, assessing the COMPLETE revised Slice-2 delta from the accepted
+  Slice-1 baseline commit 83cccb98bb800479645d87051fb1cd66b3a4ac7f through the
+  candidate received at this Hop's entry -- not merely the latest commit, and
+  not merely the textual delta from the unaccepted
+  830bdf5536e28a52502bb6faf9172e57093150cb candidate.
+- Use stable implementation-review identifier `S2-IR-001` for the carried
+  empirical defect; it closes only when you verify that the exact empirical
+  failed-required-evidence evaluator case that defeated S2-001 cannot
+  contribute to `qualified_cycle_count` or `source_evaluator_hops`, while the
+  truthful semantic history remains preserved, under the implemented revised
+  live/replay contract. Introduce new identifiers `S2-IR-002`, `S2-IR-003`,
+  ... only for genuinely distinct implementation blockers; do not rename or
+  silently drop `S2-IR-001`.
+- Also verify, at minimum: live/current-Hop and replay qualification agree;
+  the pre-route correlation is non-circular (does not depend on the final
+  route-bearing HopSummary); evidence-before-Run publication is implemented;
+  exact Run/evidence pair authority is enforced; the crash/recovery matrix is
+  represented by deterministic tests; checkpoint remains derived; no shadow
+  counter/goalpost truth exists; no evidence machinery gained Finding/
+  acceptance semantic authority; no later-slice semantics were implemented;
+  the full repository test suite passes; and the exact commissioned scope is
+  respected.
+- `durable_artifact: required` for this phase: append to (never rewrite)
+  docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc,
+  clearly labelled as revised Slice 2 (S2-002), preserving every existing
+  Slice-1 section unchanged, and commit it as part of this Hop's trusted
+  commit, regardless of disposition.
+  * If you request correction: record the concrete blocking finding(s) under
+    their stable `S2-IRxxx` identifiers and request `route: correct` with
+    `outcome: changes_required` and an empty `findings` list -- do not create
+    a WFC Current-Run Finding merely to carry an ordinary implementation-
+    review defect.
+  * If the implementation is sound: request `route: accept`, and the artifact
+    must record at least: that the implementation was accepted as revised
+    Slice 2 only; the exact implementation-candidate SHA being accepted (the
+    H001 `implement` commit this Hop received at entry, NOT this Hop's own
+    trusted commit); this review Hop's identity; that zero Slice-2 blocking
+    findings remain; explicit confirmation that `S2-IR-001` is closed and
+    that `S1-IR-001`/`S1-IR-002` remain closed; and the lifecycle effect and
+    non-effects (revised Slice 2 is implemented and independently accepted at
+    this Hop; this does NOT close the source BUG, promote
+    workflow-coordinator-runtime, authorize a push, authorize Slice 3/4/5, or
+    authorize any Run).
+
+CORRECTION (phase `correct`, only if `review` or `rereview` requested it):
+- Address only the concrete problem(s) recorded under their stable `S2-IRxxx`
+  identifiers in the durable review artifact.
+- Remain within the exact same fourteen-path implementation/test scope as
+  `implement`. Do not touch the review artifact from this phase.
+- Do not disposition any WFC Finding merely because the correction succeeded;
+  this Run creates none.
+
+REREVIEW (phase `rereview`, only if `correct` ran):
+- Independently verify the corrected repository state with fresh context,
+  assessing the complete revised Slice-2 delta from the accepted Slice-1
+  baseline commit through the corrected candidate -- not merely the latest
+  correction commit -- and challenging the same categories as `review`.
+- `durable_artifact: required` and `authorized_actions: [review, edit,
+  commit]` on the SAME artifact,
+  docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc.
+  Append a clearly separate, clearly labelled S2-002 rereview section and
+  commit it as part of this Hop's trusted commit, on EVERY disposition.
+  Preserve every earlier review section (Slice-1 and Slice-2 alike); do not
+  delete or rewrite any of it. Carry every stable `S2-IRxxx` identifier
+  forward with an explicit disposition.
+  * If you request correction: record the concrete blocking finding(s) in the
+    new rereview section and request `route: correct` with `outcome:
+    changes_required` and an empty `findings` list.
+  * If you accept: record, in the new rereview section, at least: that the
+    implementation was accepted as revised Slice 2 only; the exact
+    corrected-candidate SHA being accepted (the `correct` phase's commit this
+    Hop received at entry, NOT this Hop's own trusted commit); this rereview
+    Hop's identity; that zero Slice-2 blocking findings remain; explicit
+    confirmation that `S2-IR-001` is closed and `S1-IR-001`/`S1-IR-002` remain
+    closed; and the same lifecycle effect/non-effects as above.
+- Do not mutate the implementation source from this phase; this phase's
+  authorized scope is the durable artifact alone.
+
+EVIDENCE (every phase):
+- Trusted `pytest` evidence must be green before any route is requested out
+  of `implement` or `correct`. If it is ever not green, stop and report
+  rather than editing anything outside the authorized scope to make it pass.
+
+Out of scope for every phase of this WorkItem: workflow-coordinator-runtime;
+the workflow-coordinator-run-evidence repository and its run ledger; any
+push; any change to docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc,
+its review artifact, docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_design_revision_001.adoc,
+or its review artifact (frozen accepted design/design-revision authority and
+their own review histories); any change to
+docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc itself; any
+change to any other governance bundle under governance/, including the
+frozen S2-001 bundle; any frozen historical Run/Attempt/Commission state;
+canonical Project Memory; any consumer repository; `evidence.py`,
+`adapter.py`, `codex_adapter.py`, and `prompt.py`; Slice 1 re-implementation
+or reopening (treat it as accepted prerequisite authority); Slice 3
+(profile-v3 grammar and escape routing), Slice 4 (diagnosis/reframe and
+generation advancement), and Slice 5 (R1A dogfood); module decomposition of
+operator.py or any other file; and a generic outer planner, watchdog, or
+Level-1/LangGraph-style orchestrator. No phase of this WorkItem carries push,
+Runtime-promotion, or WFC-launch authority; all remain maintainer-owned and
+are not exercised by this Run.
