@@ -1,0 +1,189 @@
+= FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE -- Slice-1 Implementation Review 001
+
+Independent adversarial implementation review of candidate
+`65b1c9ff55d4d6cb8e7de14a0ac622030461be06`
+(`feat(convergence): WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S1-002 H001 complete Slice 1`).
+
+Review Hop identity:: Run `RUN-36e0ca5ca7e245c8af90260ec8bd3ba9`, Hop
+`H002`, invocation `INV-d17160182fe0474798f202853b9ddadd`
+Reviewer/gate identity:: independent reviewer, gate authority, blocking-only
+Candidate received at entry::
+`65b1c9ff55d4d6cb8e7de14a0ac622030461be06`
+Original semantic baseline::
+`272e2b27f4c75f5fb12cf5287d1b1940caeba5dc`
+Preserved WIP commit included without trust::
+`55e4c0b4807b260ceb1cd060f635deefc1e46953`
+
+This review covers the complete Slice-1 implementation delta
+`272e2b27f4c75f5fb12cf5287d1b1940caeba5dc..65b1c9ff55d4d6cb8e7de14a0ac622030461be06`,
+not merely the post-WIP delta. Every implementation line originating in the
+previously unreviewed preserved WIP commit was treated as untrusted candidate
+material and reviewed together with the later H001 completion commit.
+
+== Verdict
+
+*CHANGES_REQUIRED; route `correct`.*
+
+The candidate implements the principal Slice-1 boundaries: result-v2 and
+Run-v3 closed fields, null-only later-slice placeholders, evaluator-owned
+obligation creation, exact corrector coverage, gate-authorized assessment
+matching, local-to-concrete successor resolution with graph-cycle rejection,
+legacy result-v1/profile-v2/Run-v1-v2 compatibility, and domain-neutral Core
+vocabulary. No Slice-2/3/4/5 routing, fact derivation, profile grammar,
+diagnosis/strategy semantics, escape event, curriculum fixture, Runtime
+promotion, or source-BUG mutation was found.
+
+One reducer/persistence inconsistency remains blocking. The reducer admits a
+second assessment of an already assessed correction Hop, applies its Finding
+delta, and takes its route. The Run-v3 serializer then rejects that newly
+admitted state. An accepted reduction must never produce state that the
+authoritative Run wire refuses to persist.
+
+This ordinary implementation-review defect is recorded only in this durable
+artifact. It is not a WFC Current-Run Finding and requests no Finding-ledger
+disposition.
+
+== Review method and evidence
+
+The review read the accepted architecture, its complete D001/D002 review and
+H004 acceptance history, and the source BUG in full. It inspected the complete
+candidate implementations and tests for the model, serializers, adapters,
+reducer, persistence, fixture helpers, legacy replay, and all authorized
+focused tests. It also inspected the current out-of-scope vertical, prompt,
+and operator seams read-only to confirm that their existing calls remain on
+the default result-v1 contract and that Slice 1 did not require their mutation.
+
+The complete semantic-baseline range also contains the maintainer-owned S1-002
+commissioning bundle. The preserved WIP and candidate implementation commits
+themselves change only authorized Slice-1 production/test paths; no
+implementation change outside the commissioned path set was found.
+
+Exploratory validation used:
+
+* `.venv/bin/python -m pytest -q` -- exit 0;
+* `git diff --check
+  272e2b27f4c75f5fb12cf5287d1b1940caeba5dc..65b1c9ff55d4d6cb8e7de14a0ac622030461be06`
+  -- exit 0; and
+* a direct reducer reproduction using only in-memory Slice-1 fixtures. After
+  one corrector Hop `H002` and a valid evaluator assessment at `H003`, a second
+  evaluator result at `H004` named `H002` again. `reduce_result()` returned
+  status `ready`, route `again`, no stop reason, and retained assessments
+  `[('H003', 'H002'), ('H004', 'H002')]`. Serializing that returned Run with
+  `run_to_json()` then failed with `Run v3 correction Hop H002 is assessed more
+  than once`.
+
+The Coordinator-projected trusted `pytest` evidence for implementation H001 is
+also green. Green tests do not repair the correlation invariant demonstrated
+by the targeted reproduction.
+
+== Open blocking implementation requirement
+
+=== S1-IR-001 -- Reduction must reject reassessment of an already assessed correction Hop atomically
+
+Underlying invariant:: Each corrector coverage record has exactly one next
+evaluator assessment. Result reduction must enforce the same single-use
+correlation accepted by the durable Run-v3 parser, before any Finding mutation
+or route application, so every admitted Run remains persistable and replayable.
+
+`_validate_convergence_records_before_apply()` currently builds
+`prior_correction_hops` from every prior Hop with coverage and unconditionally
+selects the latest one. It does not remove or reject correction Hop IDs already
+named by an earlier convergence assessment. A later evaluator can therefore
+reuse that correction Hop ID, pass totality and matching-delta validation,
+mutate the Finding, persist another assessment into the in-memory Hop summary,
+and take an autonomous route. In contrast, `_validate_v3_run()` explicitly
+tracks assessed correction Hop IDs and rejects the second use. This makes
+reducer acceptance and authoritative wire validation disagree.
+
+The defect is observable at:
+
+* `src/workflow_coordinator/reducer.py`, the prior-correction selection and
+  assessment correlation around lines 626-646; and
+* `src/workflow_coordinator/serialization.py`, the Run-v3 single-use check
+  around lines 1209-1215.
+
+Required correction:
+
+. Before applying any result-v2 delta, derive the correction Hop IDs already
+  assessed by prior accepted Hop summaries and reject reuse of any such ID.
+. Keep selection/correlation deterministic: an evaluator may assess only the
+  current unassessed correction Hop that its claims name; it may not fall back
+  to an older already consumed coverage record.
+. Preserve transactionality. Rejection must leave Findings, Hop convergence
+  records, IDs, and route state unchanged.
+. Add a focused reducer regression that performs one valid assessment, attempts
+  a second assessment of the same correction Hop, and proves fail-closed state
+  with no route application. Also prove that a later distinct corrector Hop can
+  still be assessed normally and persists through `run_to_json()`.
+
+This correction fits the already authorized `reducer.py` and
+`tests/unit/test_reducer.py` paths. No scope or semantic-authority expansion is
+required.
+
+Open blocking implementation-review identifiers after H002:: `S1-IR-001`
+
+== Adversarial category assessment
+
+[cols="2,1,5",options="header"]
+|===
+|Challenge |Result |Assessment
+
+|Untracked or accidental blocker creation
+|*Pass*
+|Result-v2 non-evaluators cannot create an open blocker; evaluator-created open
+blockers are atomically gate-owned; prospective v3 state rejects an untracked
+open blocker. Result-v1 creation remains on the legacy path.
+
+|Worker claim versus gate disposition
+|*Pass*
+|Correctors must cover every open tracked ID exactly once and cannot submit a
+tracked Finding delta. `addressed` neither mutates the ledger nor permits a
+complete route. Gate-authorized deltas remain required for lifecycle changes.
+
+|Residualization and supersession totality
+|*Pass subject to S1-IR-001 correlation correction*
+|Assessment-to-delta state matching, residual non-blocking behavior, successor
+tracking, local allocation, concrete persistence, and cycle rejection are
+implemented. S1-IR-001 is the remaining single-use correlation failure.
+
+|Successor identity and atomicity
+|*Pass*
+|Unknown, duplicate, predicted, illegal-target, self, direct-cycle, and
+transitive-cycle cases reject before publication; same-result successors are
+allocated in result order and only concrete IDs become durable.
+
+|Legacy wire and behavior
+|*Pass*
+|Result v1 and profile v2 remain closed; existing adapter call sites default to
+v1; Run v1/v2 omit all new nested fields and round-trip without fabricated
+facts; persistence retains the existing v1-to-v2-only transition.
+
+|Domain neutrality
+|*Pass*
+|The new Core record and enum vocabulary contains no software-only terms.
+
+|Authorized scope and slice boundary
+|*Pass*
+|Implementation changes are confined to authorized Slice-1 paths. No qualified
+cycle count, escape route, profile-v3 YAML grammar, `ConvergenceEscape`,
+non-null diagnosis/strategy shape, curriculum fixture, R1A work, push, or
+Runtime promotion is present.
+
+|Reducer/persistence agreement
+|*Fail: S1-IR-001*
+|A duplicate correction assessment is accepted and routed by reduction, then
+rejected by the authoritative Run-v3 serializer.
+|===
+
+== Route and lifecycle effect
+
+Request `route: correct` with `outcome: changes_required` and an empty WFC
+Findings delta. Correction is limited to `S1-IR-001` in the already authorized
+Slice-1 implementation/test scope. The candidate is not accepted at this Hop.
+
+This review does not close the source BUG, promote
+`workflow-coordinator-runtime`, authorize or perform a push, authorize Slice
+2/3/4/5, launch another Run, mutate frozen predecessor history, or grant any
+other lifecycle effect. A later fresh rereview must reassess the complete
+`272e2b27...corrected-candidate` delta, preserve this review history, and
+dispose `S1-IR-001` in a separate appended section.
