@@ -2050,6 +2050,49 @@ def test_h001_checkpoint_publication_fault_retains_marker_and_never_dispatches_h
     assert not (run_root / "checkpoint.json").exists()
 
 
+def test_schema4_evidence_is_published_before_the_route_bearing_run(
+    repository: Path, tmp_path: Path, monkeypatch
+):
+    import workflow_coordinator.slice4 as slice4
+
+    adapter = _TwoHopAdapter(repository)
+    workflow, run, state, association, components = _two_hop_serial_fixture(
+        repository, tmp_path, adapter
+    )
+    events: list[tuple[str, object]] = []
+    original_publish = slice4.publish_execution_evidence
+    original_run_write = slice4.write_run_snapshot
+
+    def observed_publish(path, identity, attempt, **kwargs):
+        events.append(("evidence", attempt.hop_id))
+        return original_publish(path, identity, attempt, **kwargs)
+
+    def observed_run_write(path, observed_run, **kwargs):
+        events.append(("run", observed_run.hop_used))
+        return original_run_write(path, observed_run, **kwargs)
+
+    monkeypatch.setattr(slice4, "publish_execution_evidence", observed_publish)
+    monkeypatch.setattr(slice4, "write_run_snapshot", observed_run_write)
+    run_serial_hops(
+        run,
+        workflow,
+        repository,
+        components,
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        task_payload="task",
+        governing={},
+        timeout_seconds=1,
+        personas=TWO_ROLE_PERSONAS,
+        executable="local",
+        adapter=adapter,
+    )
+    first_evidence = events.index(("evidence", "H001"))
+    first_route_bearing_run = events.index(("run", 1))
+    assert first_evidence < first_route_bearing_run
+
+
 def test_n2_serial_driver_uses_fresh_context_and_never_allocates_h003(repository: Path, tmp_path: Path):
     workflow = profile({
         "prepare": replace(phase({"verify": route("goto", "verify")}), authorized_scope=("PROOF.md",), evidence=()),
@@ -2085,7 +2128,24 @@ def test_n2_serial_driver_uses_fresh_context_and_never_allocates_h003(repository
     assert "prior_hop=H001" in adapter.requests[1].prompt
     run_root = state / "checkouts" / association.checkout_id
     assert not (run_root / "dispatch.json").exists()
-    assert len(json.loads((run_root / "execution-evidence.json").read_text())["attempts"]) == 2
+    evidence_document = json.loads(
+        (run_root / "execution-evidence.json").read_text()
+    )
+    assert evidence_document["schema_version"] == 4
+    assert evidence_document["run"] == {
+        "run_id": run.run_id,
+        "work_item_id": run.work_item_id,
+        "profile_id": run.profile_id,
+        "profile_revision": run.profile_revision,
+    }
+    assert len(evidence_document["attempts"]) == 2
+    assert all(
+        attempt["publication"] == "staged"
+        and attempt["candidate_result_sha256"]
+        and attempt["pre_route_anchor_sha256"]
+        and attempt["required_evidence"] == []
+        for attempt in evidence_document["attempts"]
+    )
 
 
 def test_governing_input_commit_after_h001_stops_before_h002(repository: Path, tmp_path: Path):

@@ -11,18 +11,21 @@ from pathlib import Path
 
 import pytest
 
-from workflow_coordinator.adapter import Invocation, validated_result
+from workflow_coordinator.adapter import AgentExecutionOutcome, Invocation, validated_result
 from workflow_coordinator.codex_adapter import CodexCliAdapter, structured_result_envelope_openai_schema
 from workflow_coordinator.serialization import (
     EXISTING_FINDING_DELTA_KEYS,
     NEW_FINDING_DELTA_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
+    load_run,
 )
 from workflow_coordinator.slice4 import (
     Slice4Error, invoke_codex, register_checkout, run_real_one_hop, validate_checkout,
 )
 from tests.support import phase, profile, route, run_for
 from workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
+from workflow_coordinator.model import DispatchMarker
+from workflow_coordinator.persistence import write_dispatch_marker
 
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -269,6 +272,246 @@ output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001
     for option in ("--output-schema", "--output-last-message"):
         assert Path(argv[argv.index(option) + 1]).is_relative_to(state.resolve())
     assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
+
+
+def test_completed_pair_marker_is_reconciled_idempotently_without_redispatch(
+    repository, tmp_path
+):
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    calls: list[str] = []
+
+    class Adapter:
+        def execute(self, request):
+            calls.append(request.invocation.invocation_id)
+            envelope = _known_good_envelope()
+            return workflow_coordinator.adapter.AgentExecutionOutcome(
+                json.dumps(envelope), 0, False, "", ""
+            )
+
+    import workflow_coordinator
+
+    workflow = profile({"work": phase({"done": route("complete")})})
+    workflow = replace(
+        workflow,
+        phases={
+            "work": replace(
+                workflow.phases["work"],
+                authorized_scope=("PROOF.md",),
+                evidence=(),
+            )
+        },
+    )
+    head = subprocess.run(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+    completed = run_real_one_hop(
+        run,
+        workflow,
+        repository,
+        _components(),
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona",
+        task_payload="fixture",
+        invocation_id="INV-1",
+        timeout_seconds=2,
+        adapter=Adapter(),
+    )
+    run_root = state / "checkouts" / association.checkout_id
+    hop = completed.run.hops[-1]
+    marker = DispatchMarker(
+        1,
+        completed.run.run_id,
+        hop.hop_id,
+        hop.sequence,
+        "INV-1",
+        hop.base_head,
+        1,
+        hop.pre_route_anchor_sha256,
+    )
+    stale = replace(marker, invocation_id="INV-stale")
+    write_dispatch_marker(run_root / "dispatch.json", stale)
+    with pytest.raises(Slice4Error, match="conflicts with completed Hop pair"):
+        run_real_one_hop(
+            completed.run,
+            workflow,
+            repository,
+            _components(),
+            state_root=state,
+            association=association,
+            agent_operating_contract=load_agent_operating_contract(),
+            persona="fixture persona",
+            task_payload="fixture",
+            invocation_id="INV-unused",
+            timeout_seconds=2,
+            adapter=Adapter(),
+        )
+    write_dispatch_marker(run_root / "dispatch.json", marker)
+    recovered = run_real_one_hop(
+        completed.run,
+        workflow,
+        repository,
+        _components(),
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona",
+        task_payload="fixture",
+        invocation_id="INV-unused",
+        timeout_seconds=2,
+        adapter=Adapter(),
+    )
+    assert recovered.vertical is None
+    assert recovered.run == completed.run
+    assert calls == ["INV-1"]
+    assert not (run_root / "dispatch.json").exists()
+
+
+def test_failed_evidence_publication_charges_uncertain_without_partial_row(
+    repository, tmp_path, monkeypatch
+):
+    import workflow_coordinator.slice4 as slice4
+
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    workflow = profile({"work": phase({"done": route("complete")})})
+    workflow = replace(
+        workflow,
+        phases={"work": replace(workflow.phases["work"], evidence=())},
+    )
+    head = subprocess.run(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    run = replace(
+        run_for(workflow, budget=1, run_schema_version=3),
+        current_head=head,
+        baseline_head=head,
+    )
+
+    class Adapter:
+        def execute(self, request):
+            return AgentExecutionOutcome(
+                json.dumps(_known_good_envelope()), 0, False, "", ""
+            )
+
+    monkeypatch.setattr(
+        slice4,
+        "publish_execution_evidence",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("injected evidence publication failure")
+        ),
+    )
+    recovered = run_real_one_hop(
+        run,
+        workflow,
+        repository,
+        _components(),
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona",
+        task_payload="fixture",
+        invocation_id="INV-1",
+        timeout_seconds=2,
+        adapter=Adapter(),
+    )
+    run_root = state / "checkouts" / association.checkout_id
+    assert recovered.run.hops[-1].outcome == "uncertain"
+    assert recovered.run.hops[-1].pre_route_anchor_sha256
+    assert not (run_root / "execution-evidence.json").exists()
+    assert (run_root / "dispatch.json").exists()
+
+
+def test_staged_unpaired_row_is_abandoned_on_recovery_after_run_write_failure(
+    repository, tmp_path, monkeypatch
+):
+    import workflow_coordinator.slice4 as slice4
+
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    workflow = profile({"work": phase({"done": route("complete")})})
+    workflow = replace(
+        workflow,
+        phases={"work": replace(workflow.phases["work"], evidence=())},
+    )
+    head = subprocess.run(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    run = replace(
+        run_for(workflow, budget=1, run_schema_version=3),
+        current_head=head,
+        baseline_head=head,
+    )
+    calls: list[str] = []
+
+    class Adapter:
+        def execute(self, request):
+            calls.append(request.invocation.invocation_id)
+            return AgentExecutionOutcome(
+                json.dumps(_known_good_envelope()), 0, False, "", ""
+            )
+
+    original_write = slice4.write_run_snapshot
+
+    def fail_reduced_run(path, observed_run, **kwargs):
+        if observed_run.hop_used == 1 and observed_run.hops[-1].role != "uncertain_dispatch":
+            raise OSError("injected Run publication failure")
+        return original_write(path, observed_run, **kwargs)
+
+    monkeypatch.setattr(slice4, "write_run_snapshot", fail_reduced_run)
+    with pytest.raises(OSError, match="injected Run publication failure"):
+        run_real_one_hop(
+            run,
+            workflow,
+            repository,
+            _components(),
+            state_root=state,
+            association=association,
+            agent_operating_contract=load_agent_operating_contract(),
+            persona="fixture persona",
+            task_payload="fixture",
+            invocation_id="INV-1",
+            timeout_seconds=2,
+            adapter=Adapter(),
+        )
+    run_root = state / "checkouts" / association.checkout_id
+    assert (run_root / "execution-evidence.json").exists()
+    assert (run_root / "dispatch.json").exists()
+    persisted_prior = load_run(run_root / "run.json")
+    assert persisted_prior.hop_used == 0
+
+    monkeypatch.setattr(slice4, "write_run_snapshot", original_write)
+    recovered = run_real_one_hop(
+        persisted_prior,
+        workflow,
+        repository,
+        _components(),
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona",
+        task_payload="fixture",
+        invocation_id="INV-unused",
+        timeout_seconds=2,
+        adapter=Adapter(),
+    )
+    assert recovered.vertical is None
+    assert recovered.run.hops[-1].role == "uncertain_dispatch"
+    assert recovered.run.hops[-1].pre_route_anchor_sha256
+    assert recovered.run.status.value == "reconcile_required"
+    assert calls == ["INV-1"]
 
 
 def test_timeout_kills_process_group_descendant(repository, tmp_path):

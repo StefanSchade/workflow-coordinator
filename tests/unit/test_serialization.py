@@ -1,5 +1,5 @@
 import json
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 import yaml
@@ -8,6 +8,9 @@ from workflow_coordinator.model import (
     FindingState,
     DurableArtifact,
     Hop,
+    HopSummary,
+    Run,
+    Finding,
     RouteEffect,
     SemanticStop,
     SuccessorProvenance,
@@ -17,6 +20,9 @@ from workflow_coordinator.model import (
 from workflow_coordinator.reducer import reduce_result
 from workflow_coordinator.serialization import (
     ValidationError,
+    execution_evidence_from_json,
+    execution_evidence_to_json,
+    pre_route_anchor_material,
     repository_policy_from_yaml,
     routing_result_from_data,
     run_execution_configuration_from_yaml,
@@ -34,9 +40,12 @@ from tests.support import (
     new_delta,
     phase,
     profile,
+    qualification_evidence,
     result,
     route,
     run_for,
+    tracked_convergence_run,
+    convergence_cycle,
 )
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -625,6 +634,102 @@ def test_run_v3_round_trip_persists_only_concrete_identity_and_new_hop_records()
     assert data["hops"][2]["convergence_assessments"][0]["correction_hop_id"] == "H002"
     assert "local_ref" not in encoded and "local:N1" not in encoded
     assert run_from_json(encoded) == run
+
+
+def test_schema4_execution_evidence_is_closed_and_anchor_is_route_independent():
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="schema4"
+    )
+    run, _, evidence_json = qualification_evidence(
+        run, {evaluator_hop: ("pass",)}
+    )
+    document = execution_evidence_from_json(evidence_json)
+    assert execution_evidence_to_json(document) == evidence_json
+    attempt = document.attempts[0]
+    material = pre_route_anchor_material(
+        document.run,
+        hop_id=attempt.hop_id,
+        hop_sequence=attempt.hop_sequence,
+        invocation_id=attempt.invocation_id,
+        phase=attempt.phase,
+        workflow_role=attempt.workflow_role,
+        outcome=attempt.outcome,
+        base_head=attempt.base_head,
+        end_head=attempt.end_head,
+        actual_commits=attempt.actual_commits,
+        candidate_result_sha256=attempt.candidate_result_sha256,
+        required_evidence=attempt.required_evidence,
+    )
+    forbidden = {
+        "applied_route",
+        "route_reason",
+        "stop_reason",
+        "run_status",
+        "checkpoint",
+        "trusted_observations",
+    }
+    assert forbidden.isdisjoint(material)
+
+    unknown = json.loads(evidence_json)
+    unknown["attempts"][0]["qualified"] = True
+    with pytest.raises(ValidationError, match="unknown fields"):
+        execution_evidence_from_json(json.dumps(unknown))
+
+    duplicate = json.loads(evidence_json)
+    duplicate["attempts"][0]["trusted_observations"].append(
+        duplicate["attempts"][0]["trusted_observations"][0]
+    )
+    with pytest.raises(ValidationError, match="duplicate trusted observations"):
+        execution_evidence_from_json(json.dumps(duplicate))
+
+    for field, value in (
+        ("command_name", "other"),
+        ("argv_digest", "0" * 64),
+        ("timeout_seconds", 11),
+    ):
+        mismatched = json.loads(evidence_json)
+        mismatched["attempts"][0]["trusted_observations"][0][field] = value
+        if field == "command_name":
+            mismatched["attempts"][0]["trusted_observations"][0]["provider"] = value
+        with pytest.raises(ValidationError, match="identity-mismatched"):
+            execution_evidence_from_json(json.dumps(mismatched))
+
+
+def test_v3_hop_anchor_is_the_only_new_semantic_wire_field():
+    run = v3_run_with_assessment()
+    run = replace(
+        run,
+        hops=tuple(
+            replace(hop, pre_route_anchor_sha256="a" * 64)
+            if hop.hop_id == "H003"
+            else hop
+            for hop in run.hops
+        ),
+    )
+    data = json.loads(run_to_json(run))
+    assert data["hops"][2]["pre_route_anchor_sha256"] == "a" * 64
+    semantic_fields = {
+        field.name
+        for record in (Run, HopSummary, Finding)
+        for field in fields(record)
+    }
+    forbidden = {
+        "qualified",
+        "required_evidence_passed",
+        "observation",
+        "observations",
+        "invocation_id",
+        "qualified_cycle_count",
+        "goalpost_reached",
+        "route_substitution",
+        "convergence_escape",
+        "diagnosis",
+        "strategy_revision",
+        "strategy_assessment",
+        "strategy_generation",
+    }
+    assert semantic_fields & forbidden == set()
 
 
 def test_run_v3_rejects_untracked_blockers_and_invalid_new_cross_references():

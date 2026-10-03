@@ -10,16 +10,29 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .model import DispatchMarker, Hop, Observation, Run
+from .model import (
+    DispatchMarker,
+    ExecutionEvidenceDocument,
+    ExecutionEvidenceRunIdentity,
+    Hop,
+    LegacyExecutionEvidenceDocument,
+    Observation,
+    Run,
+    StagedQualificationAttempt,
+    TrustedQualificationIndex,
+)
 from .reducer import (
     ReductionError,
     derive_convergence_facts,
     permitted_route_keys,
     require_reconcile,
+    trusted_evaluator_qualification,
 )
 from .serialization import (
     dispatch_marker_from_json,
     dispatch_marker_to_data,
+    execution_evidence_from_json,
+    execution_evidence_to_json,
     load_run,
     run_to_json,
 )
@@ -162,13 +175,125 @@ def recover_uncertain_dispatch(
                 stop_reason="interrupted_after_dispatch_marker",
                 summary="Invocation may have been accepted; charged without replay.",
                 attribution="coordinator",
+                pre_route_anchor_sha256=marker.pre_route_anchor_sha256,
             ),
         )
     else:
         if existing.sequence != marker.sequence:
             raise ReductionError("dispatch marker conflicts with charged Hop")
+        if existing.pre_route_anchor_sha256 != marker.pre_route_anchor_sha256:
+            raise ReductionError("dispatch marker anchor conflicts with charged Hop")
         charged = replace(run, current_head=current_head)
     return require_reconcile(charged, reason="interruption", current_head=current_head)
+
+
+def execution_evidence_run_identity(run: Run) -> ExecutionEvidenceRunIdentity:
+    return ExecutionEvidenceRunIdentity(
+        run_id=run.run_id,
+        work_item_id=run.work_item_id,
+        profile_id=run.profile_id,
+        profile_revision=run.profile_revision,
+    )
+
+
+def load_execution_evidence(
+    path: Path,
+) -> ExecutionEvidenceDocument | LegacyExecutionEvidenceDocument:
+    return execution_evidence_from_json(path.read_text(encoding="utf-8"))
+
+
+def publish_execution_evidence(
+    path: Path,
+    run_identity: ExecutionEvidenceRunIdentity,
+    attempt: StagedQualificationAttempt,
+    *,
+    replace_file: Replace = os.replace,
+) -> tuple[ExecutionEvidenceDocument, str]:
+    """Append one schema-4 row atomically, preserving all predecessor rows."""
+
+    if path.exists():
+        original = path.read_text(encoding="utf-8")
+        parsed = execution_evidence_from_json(original)
+        if not isinstance(parsed, ExecutionEvidenceDocument):
+            raise ReductionError("legacy execution evidence cannot be extended as schema 4")
+        if parsed.run != run_identity:
+            raise ReductionError("execution evidence Run identity conflict")
+        for existing in parsed.attempts:
+            same_hop = (
+                existing.hop_id == attempt.hop_id
+                or existing.hop_sequence == attempt.hop_sequence
+            )
+            same_invocation = existing.invocation_id == attempt.invocation_id
+            if existing == attempt:
+                return parsed, original
+            if same_hop or same_invocation:
+                raise ReductionError("conflicting duplicate execution evidence attempt")
+        document = replace(parsed, attempts=(*parsed.attempts, attempt))
+    else:
+        document = ExecutionEvidenceDocument(4, run_identity, (attempt,))
+    text = execution_evidence_to_json(document)
+    atomic_write_text(path, text, replace_file=replace_file)
+    return document, text
+
+
+def trusted_qualification_index_for_run(
+    run: Run,
+    document: ExecutionEvidenceDocument,
+    *,
+    marker: DispatchMarker | None = None,
+) -> TrustedQualificationIndex:
+    """Validate the exact Run/evidence pair and exclude abandoned staged rows."""
+
+    identity = execution_evidence_run_identity(run)
+    if document.run != identity:
+        raise ReductionError("execution evidence identity does not match Run")
+    if run.schema_version != 3:
+        return TrustedQualificationIndex.empty()
+
+    hops_by_id = {hop.hop_id: hop for hop in run.hops}
+    paired: list[StagedQualificationAttempt] = []
+    paired_hops: set[str] = set()
+    for attempt in document.attempts:
+        hop = hops_by_id.get(attempt.hop_id)
+        if hop is None or hop.sequence != attempt.hop_sequence:
+            raise ReductionError("execution evidence row references an unknown Hop")
+        if hop.role == "uncertain_dispatch":
+            if (
+                marker is None
+                or marker.run_id != run.run_id
+                or marker.hop_id != attempt.hop_id
+                or marker.sequence != attempt.hop_sequence
+                or marker.invocation_id != attempt.invocation_id
+                or marker.pre_route_anchor_sha256 != attempt.pre_route_anchor_sha256
+                or hop.pre_route_anchor_sha256 != attempt.pre_route_anchor_sha256
+            ):
+                raise ReductionError("abandoned staged evidence lacks exact marker correlation")
+            continue
+        if hop.pre_route_anchor_sha256 is None:
+            raise ReductionError("execution evidence row is unpaired")
+        if (
+            attempt.pre_route_anchor_sha256 != hop.pre_route_anchor_sha256
+            or attempt.workflow_role != hop.role
+            or attempt.outcome != hop.outcome
+            or attempt.base_head != hop.base_head
+            or attempt.end_head != hop.end_head
+            or attempt.actual_commits != hop.actual_commits
+        ):
+            raise ReductionError("execution evidence row conflicts with Hop provenance")
+        paired.append(attempt)
+        paired_hops.add(hop.hop_id)
+    missing = [
+        hop.hop_id
+        for hop in run.hops
+        if (
+            hop.pre_route_anchor_sha256 is not None
+            and hop.role != "uncertain_dispatch"
+            and hop.hop_id not in paired_hops
+        )
+    ]
+    if missing:
+        raise ReductionError("Run Hop anchor lacks paired execution evidence")
+    return TrustedQualificationIndex(identity, tuple(paired))
 
 
 def checkpoint_projection(
@@ -177,9 +302,23 @@ def checkpoint_projection(
     *,
     observations: tuple[Observation, ...] = (),
     qualified_cycle_limit: int | None = None,
+    execution_evidence_json: str | None = None,
+    dispatch_marker: DispatchMarker | None = None,
 ) -> dict[str, Any]:
     """Generate a compact view, optionally including replay-derived convergence facts."""
 
+    evidence_digest = (
+        None
+        if execution_evidence_json is None
+        else hashlib.sha256(execution_evidence_json.encode("utf-8")).hexdigest()
+    )
+    qualification_index = TrustedQualificationIndex.empty()
+    if execution_evidence_json is not None:
+        document = execution_evidence_from_json(execution_evidence_json)
+        if isinstance(document, ExecutionEvidenceDocument):
+            qualification_index = trusted_qualification_index_for_run(
+                run, document, marker=dispatch_marker
+            )
     projection = {
         "identity": {
             "work_item_id": run.work_item_id,
@@ -191,6 +330,7 @@ def checkpoint_projection(
             # later preparation action cannot silently turn a changed
             # ``run.json`` into new predecessor truth.
             "run_json_sha256": hashlib.sha256(run_to_json(run).encode("utf-8")).hexdigest(),
+            "execution_evidence_sha256": evidence_digest,
         },
         "heads": {"baseline": run.baseline_head, "current": run.current_head},
         "state": {
@@ -257,18 +397,51 @@ def checkpoint_projection(
                 "goalpost_reached": fact.goalpost_reached,
                 "source_evaluator_hops": list(fact.source_evaluator_hops),
             }
-            for fact in derive_convergence_facts(run, qualified_cycle_limit)
+            for fact in derive_convergence_facts(
+                run, qualification_index, qualified_cycle_limit
+            )
         ]
     return projection
+
+
+def validate_checkpoint_inputs(
+    checkpoint: Mapping[str, Any],
+    run: Run,
+    *,
+    execution_evidence_json: str | None,
+) -> None:
+    """Reject a checkpoint that is not bound to both authoritative inputs."""
+
+    try:
+        identity = checkpoint["identity"]
+        run_digest = identity["run_json_sha256"]
+        evidence_digest = identity["execution_evidence_sha256"]
+    except (KeyError, TypeError) as error:
+        raise ReductionError("checkpoint lacks dual-input identity") from error
+    expected_run = hashlib.sha256(run_to_json(run).encode("utf-8")).hexdigest()
+    expected_evidence = (
+        None
+        if execution_evidence_json is None
+        else hashlib.sha256(execution_evidence_json.encode("utf-8")).hexdigest()
+    )
+    if run_digest != expected_run:
+        raise ReductionError("checkpoint Run digest mismatch")
+    if evidence_digest != expected_evidence:
+        raise ReductionError("checkpoint execution-evidence digest mismatch")
 
 
 __all__ = [
     "atomic_write_json",
     "checkpoint_projection",
+    "execution_evidence_run_identity",
+    "load_execution_evidence",
     "load_dispatch_marker",
     "observation_to_data",
     "load_run",
     "recover_uncertain_dispatch",
+    "publish_execution_evidence",
+    "trusted_qualification_index_for_run",
+    "validate_checkpoint_inputs",
     "write_dispatch_marker",
     "write_run_snapshot",
 ]

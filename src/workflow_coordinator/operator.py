@@ -38,6 +38,7 @@ from .model import (
     ExecutionBinding,
     RunExecutionConfiguration,
     RunStatus,
+    ExecutionEvidenceDocument,
     SuccessorProvenance,
     WorkflowRole,
     new_run,
@@ -63,6 +64,8 @@ from .serialization import (
     work_item_from_yaml,
     workflow_profile_from_yaml,
     load_run,
+    execution_attempt_to_data,
+    execution_evidence_from_json,
 )
 from .slice4 import Slice4Error, checkout_state_root, register_checkout, run_real_one_hop, validate_checkout
 from .codex_adapter import CodexCliAdapter
@@ -586,25 +589,40 @@ def _prepared_evidence_plan(
     }
 
 
-def _execution_evidence(run, outcome, *, invocation_id: str, phase: str,
-                        workflow_role: WorkflowRole, persona: str,
-                        binding: dict[str, object], timeout_seconds: float,
-                        observations: tuple[object, ...] = ()) -> dict[str, object]:
+def _legacy_execution_evidence(
+    run,
+    outcome,
+    *,
+    invocation_id: str,
+    phase: str,
+    workflow_role: WorkflowRole,
+    persona: str,
+    binding: dict[str, object],
+    timeout_seconds: float,
+    observations: tuple[object, ...] = (),
+) -> dict[str, object]:
+    """Preserve schema-3 audit output for non-convergence Run versions."""
+
     hop = run.hops[-1]
-    return {"hop_id": hop.hop_id, "invocation_id": invocation_id,
-            "phase": phase, "workflow_role": workflow_role.value,
-            "persona": persona,
-            "persona_sha256": hashlib.sha256(persona.encode("utf-8")).hexdigest(),
-            **binding,
-            "context": "fresh", "timeout_seconds": timeout_seconds,
-            "returncode": outcome.returncode, "timed_out": outcome.timed_out,
-            "candidate_result_present": outcome.candidate_result is not None,
-            "outcome": hop.outcome, "base_head": hop.base_head, "end_head": hop.end_head,
-            "actual_commits": list(hop.actual_commits),
-            "trusted_observations": [
-                observation_to_data(item)
-                for item in observations
-            ]}
+    return {
+        "hop_id": hop.hop_id,
+        "invocation_id": invocation_id,
+        "phase": phase,
+        "workflow_role": workflow_role.value,
+        "persona": persona,
+        "persona_sha256": hashlib.sha256(persona.encode("utf-8")).hexdigest(),
+        **binding,
+        "context": "fresh",
+        "timeout_seconds": timeout_seconds,
+        "returncode": outcome.returncode,
+        "timed_out": outcome.timed_out,
+        "candidate_result_present": outcome.candidate_result is not None,
+        "outcome": hop.outcome,
+        "base_head": hop.base_head,
+        "end_head": hop.end_head,
+        "actual_commits": list(hop.actual_commits),
+        "trusted_observations": [observation_to_data(item) for item in observations],
+    }
 
 
 def run_serial_hops(
@@ -625,22 +643,38 @@ def run_serial_hops(
         raise OperatorPreflightError(
             f"Slice-5B serial driver refuses a Hop limit above {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS}"
         )
+    run_root = checkout_state_root(state_root, association)
+    execution_evidence_path = run_root / "execution-evidence.json"
     evidence: list[dict[str, object]] = []
+    if execution_evidence_path.exists():
+        existing_document = execution_evidence_from_json(
+            execution_evidence_path.read_text(encoding="utf-8")
+        )
+        if isinstance(existing_document, ExecutionEvidenceDocument):
+            evidence = [
+                execution_attempt_to_data(attempt)
+                for attempt in existing_document.attempts
+            ]
+        else:
+            evidence = [dict(attempt) for attempt in existing_document.attempts]
     artifact_map = dict(durable_artifacts_by_phase or {})
     prior_observations: tuple[object, ...] = ()
-
-    def publish_execution_evidence() -> None:
-        atomic_write_json(
-            checkout_state_root(state_root, association) / "execution-evidence.json",
-            {"schema_version": 3, "attempts": evidence},
-        )
 
     def stop_continuation(reason: str, question: str):
         stopped = replace(run, status=RunStatus.AWAITING_HUMAN,
                           stop_reason=reason, human_question=question)
-        run_root = checkout_state_root(state_root, association)
         write_run_snapshot(run_root / "run.json", stopped)
-        atomic_write_json(run_root / "checkpoint.json", checkpoint_projection(stopped, profile))
+        evidence_json = (
+            execution_evidence_path.read_text(encoding="utf-8")
+            if execution_evidence_path.exists()
+            else None
+        )
+        atomic_write_json(
+            run_root / "checkpoint.json",
+            checkpoint_projection(
+                stopped, profile, execution_evidence_json=evidence_json
+            ),
+        )
         return stopped, evidence
 
     while run.status is RunStatus.READY:
@@ -726,6 +760,7 @@ def run_serial_hops(
             ),
             evidence_runner=evidence_runner,
             evidence_commands=evidence_commands or {},
+            execution_binding=binding,
         )
         run = hop_run.run
         if progress is not None:
@@ -734,16 +769,37 @@ def run_serial_hops(
             observations = (
                 hop_run.vertical.observations if hop_run.vertical is not None else ()
             )
-            evidence.append(
-                _execution_evidence(
-                    run, hop_run.outcome, invocation_id=invocation_id,
-                    phase=phase_key, workflow_role=workflow_role, persona=persona,
-                    binding=binding, timeout_seconds=timeout_seconds,
-                    observations=observations,
-                )
-            )
             prior_observations = observations
-            publish_execution_evidence()
+            if run.schema_version == 3 and execution_evidence_path.exists():
+                document = execution_evidence_from_json(
+                    execution_evidence_path.read_text(encoding="utf-8")
+                )
+                if not isinstance(document, ExecutionEvidenceDocument):
+                    raise OperatorPreflightError(
+                        "serial execution evidence did not remain schema 4"
+                    )
+                evidence = [
+                    execution_attempt_to_data(attempt)
+                    for attempt in document.attempts
+                ]
+            elif run.schema_version != 3:
+                evidence.append(
+                    _legacy_execution_evidence(
+                        run,
+                        hop_run.outcome,
+                        invocation_id=invocation_id,
+                        phase=phase_key,
+                        workflow_role=workflow_role,
+                        persona=persona,
+                        binding=binding,
+                        timeout_seconds=timeout_seconds,
+                        observations=observations,
+                    )
+                )
+                atomic_write_json(
+                    execution_evidence_path,
+                    {"schema_version": 3, "attempts": evidence},
+                )
     return run, evidence
 
 

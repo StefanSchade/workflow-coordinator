@@ -20,6 +20,7 @@ from workflow_coordinator.model import (
     MechanicalFacts,
     Run,
     RunStatus,
+    TrustedQualificationIndex,
     WorkflowRole,
 )
 from workflow_coordinator.reducer import (
@@ -43,6 +44,7 @@ from tests.support import (
     new_delta,
     phase,
     profile,
+    qualification_evidence,
     result,
     route,
     run_for,
@@ -1117,7 +1119,10 @@ def test_derived_convergence_fact_counts_qualified_cycles_at_threshold_without_r
     run, _, first_evaluator_hop = convergence_cycle(
         run, workflow, evidence_prefix="first"
     )
-    assert derive_convergence_facts(run, 2) == (
+    run, qualification, _ = qualification_evidence(
+        run, {first_evaluator_hop: ("pass",)}
+    )
+    assert derive_convergence_facts(run, qualification, 2) == (
         ConvergenceFact(
             finding_id="F001",
             strategy_generation=0,
@@ -1132,7 +1137,14 @@ def test_derived_convergence_fact_counts_qualified_cycles_at_threshold_without_r
     run, _, second_evaluator_hop = convergence_cycle(
         run, workflow, evidence_prefix="second"
     )
-    assert derive_convergence_facts(run, 2) == (
+    run, qualification, _ = qualification_evidence(
+        run,
+        {
+            first_evaluator_hop: ("pass",),
+            second_evaluator_hop: ("pass",),
+        },
+    )
+    assert derive_convergence_facts(run, qualification, 2) == (
         ConvergenceFact(
             finding_id="F001",
             strategy_generation=0,
@@ -1154,7 +1166,9 @@ def test_derived_convergence_facts_exclude_carried_unmet_and_new_finding_allocat
         assessment_result="carried_unmet",
         evidence_prefix="unmet",
     )
-    assert derive_convergence_facts(run, 2)[0].qualified_cycle_count == 0
+    assert derive_convergence_facts(
+        run, TrustedQualificationIndex.empty(), 2
+    )[0].qualified_cycle_count == 0
 
     run, _, evaluator_hop = convergence_cycle(
         run,
@@ -1168,7 +1182,10 @@ def test_derived_convergence_facts_exclude_carried_unmet_and_new_finding_allocat
             ),
         ),
     )
-    assert derive_convergence_facts(run, 2) == (
+    run, qualification, _ = qualification_evidence(
+        run, {evaluator_hop: ("pass",)}
+    )
+    assert derive_convergence_facts(run, qualification, 2) == (
         ConvergenceFact("F001", 0, 1, 2, False, (evaluator_hop,)),
         ConvergenceFact("F002", 0, 0, 2, False, ()),
     )
@@ -1216,7 +1233,9 @@ def test_stale_evidence_rejection_cannot_fabricate_a_derived_cycle():
         hop_id=evaluator_hop,
     )
     assert "new Finding evidence" in (rejected.run.stop_reason or "")
-    assert derive_convergence_facts(rejected.run, 2)[0].qualified_cycle_count == 0
+    assert derive_convergence_facts(
+        rejected.run, TrustedQualificationIndex.empty(), 2
+    )[0].qualified_cycle_count == 0
 
 
 @pytest.mark.parametrize("failed_before_acceptance", [False, True])
@@ -1256,7 +1275,9 @@ def test_uncorrelated_or_failed_evaluator_result_cannot_fabricate_a_cycle(
         hop_id=evaluator_hop,
     )
     assert rejected.run.hops[-1].convergence_assessments == ()
-    assert derive_convergence_facts(rejected.run, 2)[0].qualified_cycle_count == 0
+    assert derive_convergence_facts(
+        rejected.run, TrustedQualificationIndex.empty(), 2
+    )[0].qualified_cycle_count == 0
 
 
 def test_closed_obligation_has_no_still_open_convergence_fact():
@@ -1268,17 +1289,113 @@ def test_closed_obligation_has_no_still_open_convergence_fact():
         assessment_result="closed",
         evidence_prefix="closed",
     )
-    assert derive_convergence_facts(run, 2) == ()
+    assert derive_convergence_facts(
+        run, TrustedQualificationIndex.empty(), 2
+    ) == ()
 
 
 @pytest.mark.parametrize("limit", [0, -1, True, 1.5, "2"])
 def test_derived_convergence_facts_require_a_positive_integer_limit(limit):
     _, run = tracked_convergence_run()
     with pytest.raises(ValueError, match="positive integer"):
-        derive_convergence_facts(run, limit)
+        derive_convergence_facts(run, TrustedQualificationIndex.empty(), limit)
 
 
 def test_convergence_fact_is_not_mutable_run_or_finding_shadow_state():
     forbidden = {"qualified_cycle_count", "qualified_cycle_limit", "goalpost_reached"}
     assert forbidden.isdisjoint(field.name for field in fields(Run))
     assert forbidden.isdisjoint(field.name for field in fields(Finding))
+
+
+@pytest.mark.parametrize("status", ["fail", "error", "not_run"])
+def test_semantic_cycle_requires_exact_passing_evaluator_evidence(status):
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix=f"mechanical-{status}"
+    )
+    run, qualification, _ = qualification_evidence(
+        run, {evaluator_hop: (status,)}
+    )
+    fact = derive_convergence_facts(run, qualification, 2)[0]
+    assert fact.qualified_cycle_count == 0
+    assert fact.source_evaluator_hops == ()
+
+
+def test_missing_partial_and_multi_command_evidence_do_not_vacuously_qualify():
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="multi-command"
+    )
+    assert derive_convergence_facts(
+        run, TrustedQualificationIndex.empty(), 2
+    )[0].qualified_cycle_count == 0
+
+    run, partial, _ = qualification_evidence(
+        run,
+        {evaluator_hop: ("pass",)},
+        command_names=("tests", "lint"),
+    )
+    assert derive_convergence_facts(run, partial, 2)[0].qualified_cycle_count == 0
+
+    for second_status in ("fail", "error", "not_run"):
+        run, mixed, _ = qualification_evidence(
+            run,
+            {evaluator_hop: ("pass", second_status)},
+            command_names=("tests", "lint"),
+        )
+        assert derive_convergence_facts(run, mixed, 2)[0].qualified_cycle_count == 0
+
+    run, passing, _ = qualification_evidence(
+        run,
+        {evaluator_hop: ("pass", "pass")},
+        command_names=("tests", "lint"),
+    )
+    assert derive_convergence_facts(run, passing, 2)[0].source_evaluator_hops == (
+        evaluator_hop,
+    )
+
+
+def test_exact_empty_required_plan_qualifies_but_absent_attempt_does_not():
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="empty-plan"
+    )
+    absent = derive_convergence_facts(run, TrustedQualificationIndex.empty(), 2)[0]
+    assert absent.qualified_cycle_count == 0
+    run, empty_plan, _ = qualification_evidence(
+        run, {evaluator_hop: ()}, command_names=()
+    )
+    assert derive_convergence_facts(run, empty_plan, 2)[0].source_evaluator_hops == (
+        evaluator_hop,
+    )
+
+
+def test_mechanical_pass_cannot_create_a_semantic_cycle_or_disposition():
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run,
+        workflow,
+        assessment_result="carried_unmet",
+        evidence_prefix="semantic-unmet",
+    )
+    before = run.findings
+    run, qualification, _ = qualification_evidence(
+        run, {evaluator_hop: ("pass",)}
+    )
+    fact = derive_convergence_facts(run, qualification, 2)[0]
+    assert fact.qualified_cycle_count == 0
+    assert run.findings == before
+    assert run.findings[0].state is FindingState.OPEN
+
+
+def test_one_failed_attempt_removes_only_its_source_hop_without_off_by_one():
+    workflow, run = tracked_convergence_run()
+    run, _, first = convergence_cycle(run, workflow, evidence_prefix="first-pair")
+    run, _, second = convergence_cycle(run, workflow, evidence_prefix="second-pair")
+    run, qualification, _ = qualification_evidence(
+        run, {first: ("pass",), second: ("fail",)}
+    )
+    fact = derive_convergence_facts(run, qualification, 2)[0]
+    assert fact.qualified_cycle_count == 1
+    assert fact.goalpost_reached is False
+    assert fact.source_evaluator_hops == (first,)

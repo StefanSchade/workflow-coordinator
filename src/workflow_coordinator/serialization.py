@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import dataclass, fields
 from enum import Enum
@@ -29,6 +30,8 @@ from .model import (
     DurableArtifact,
     EDIT_ACTION,
     EvidenceCommand,
+    ExecutionEvidenceDocument,
+    ExecutionEvidenceRunIdentity,
     ExecutionBinding,
     Escalation,
     ExistingFindingDelta,
@@ -37,9 +40,12 @@ from .model import (
     FindingState,
     NewFindingDelta,
     HopSummary,
+    LegacyExecutionEvidenceDocument,
+    Observation,
     Outcome,
     Phase,
     RepositoryPolicy,
+    RequiredEvidenceIdentity,
     ReviewAuthority,
     ReviewDescriptor,
     Route,
@@ -50,6 +56,8 @@ from .model import (
     RunStatus,
     SemanticStop,
     SuccessorProvenance,
+    StagedQualificationAttempt,
+    StatFingerprint,
     WorkItem,
     WorkflowProfile,
     WorkflowRole,
@@ -202,6 +210,14 @@ def _integer(value: Any, *, context: str, positive: bool = False) -> int:
     if positive and value <= 0:
         raise ValidationError(f"{context} must be a positive integer")
     return value
+
+
+def _number(value: Any, *, context: str, positive: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError(f"{context} must be a number")
+    if positive and value <= 0:
+        raise ValidationError(f"{context} must be positive")
+    return float(value)
 
 
 def _version(value: Any, *, context: str) -> int:
@@ -971,8 +987,13 @@ def run_to_json(run: Run) -> str:
         for hop in data["hops"]:
             hop.pop("coverage_claims", None)
             hop.pop("convergence_assessments", None)
+            hop.pop("pre_route_anchor_sha256", None)
         for finding in data["findings"]:
             finding.pop("correction_obligation", None)
+    elif run.schema_version == 3:
+        for hop in data["hops"]:
+            if hop.get("pre_route_anchor_sha256") is None:
+                hop.pop("pre_route_anchor_sha256", None)
     text = json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n"
     # Callers may construct immutable dataclasses directly.  Persisted Run
     # truth must still pass the same closed-wire validation as loaded state.
@@ -983,10 +1004,16 @@ def run_to_json(run: Run) -> str:
 def _hop_summary(value: Any, *, context: str, run_version: int) -> HopSummary:
     all_fields = {field.name for field in fields(HopSummary)}
     convergence_fields = {"coverage_claims", "convergence_assessments"}
+    anchor_field = {"pre_route_anchor_sha256"}
     data = _fields(
         value,
         context=context,
-        required=all_fields if run_version == 3 else all_fields - convergence_fields,
+        required=(
+            all_fields - anchor_field
+            if run_version == 3
+            else all_fields - convergence_fields - anchor_field
+        ),
+        optional=anchor_field if run_version == 3 else frozenset(),
     )
     raw_coverage = data.get("coverage_claims", [])
     raw_assessments = data.get("convergence_assessments", [])
@@ -1017,6 +1044,15 @@ def _hop_summary(value: Any, *, context: str, run_version: int) -> HopSummary:
                 item, context=f"{context}.convergence_assessments[{index}]"
             )
             for index, item in enumerate(raw_assessments)
+        ),
+        pre_route_anchor_sha256=(
+            None
+            if "pre_route_anchor_sha256" not in data
+            or data["pre_route_anchor_sha256"] is None
+            else _sha256(
+                data["pre_route_anchor_sha256"],
+                context=f"{context}.pre_route_anchor_sha256",
+            )
         ),
     )
 
@@ -1084,6 +1120,382 @@ def _sha256(value: Any, *, context: str) -> str:
     if re.fullmatch(r"[0-9a-f]{64}", text) is None:
         raise ValidationError(f"{context} must be a lowercase SHA-256 digest")
     return text
+
+
+def _optional_integer(value: Any, *, context: str) -> int | None:
+    if value is None:
+        return None
+    return _integer(value, context=context)
+
+
+def _optional_boolean(value: Any, *, context: str) -> bool | None:
+    if value is None:
+        return None
+    return _boolean(value, context=context)
+
+
+def canonical_candidate_result_sha256(text: str) -> str:
+    """Digest canonical JSON for an already validated candidate envelope."""
+
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ValidationError(f"invalid candidate result JSON: {error}") from error
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def pre_route_anchor_material(
+    run: ExecutionEvidenceRunIdentity,
+    *,
+    hop_id: str,
+    hop_sequence: int,
+    invocation_id: str,
+    phase: str,
+    workflow_role: str,
+    outcome: str,
+    base_head: str,
+    end_head: str,
+    actual_commits: tuple[str, ...],
+    candidate_result_sha256: str,
+    required_evidence: tuple[RequiredEvidenceIdentity, ...],
+) -> dict[str, Any]:
+    """Return the exact route-independent anchor tuple as closed JSON data."""
+
+    return {
+        "run": _json_value(run),
+        "hop_id": hop_id,
+        "hop_sequence": hop_sequence,
+        "invocation_id": invocation_id,
+        "phase": phase,
+        "workflow_role": workflow_role,
+        "outcome": outcome,
+        "base_head": base_head,
+        "end_head": end_head,
+        "actual_commits": list(actual_commits),
+        "candidate_result_sha256": candidate_result_sha256,
+        "required_evidence": [_json_value(item) for item in required_evidence],
+    }
+
+
+def pre_route_anchor_sha256(
+    run: ExecutionEvidenceRunIdentity,
+    **values: Any,
+) -> str:
+    material = pre_route_anchor_material(run, **values)
+    canonical = json.dumps(material, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _stat_fingerprint(value: Any, *, context: str) -> StatFingerprint | None:
+    if value is None:
+        return None
+    data = _fields(
+        value,
+        context=context,
+        required={"st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns"},
+    )
+    return StatFingerprint(
+        st_dev=_integer(data["st_dev"], context=f"{context}.st_dev"),
+        st_ino=_integer(data["st_ino"], context=f"{context}.st_ino"),
+        st_mode=_integer(data["st_mode"], context=f"{context}.st_mode"),
+        st_size=_integer(data["st_size"], context=f"{context}.st_size"),
+        st_mtime_ns=_integer(data["st_mtime_ns"], context=f"{context}.st_mtime_ns"),
+    )
+
+
+def _observation(value: Any, *, context: str) -> Observation:
+    data = _fields(
+        value,
+        context=context,
+        required={field.name for field in fields(Observation)},
+    )
+    status = _string(data["status"], context=f"{context}.status")
+    if status not in {"pass", "fail", "error", "not_run"}:
+        raise ValidationError(f"{context}.status is unsupported: {status}")
+    command = _strings(data["command"], context=f"{context}.command")
+    exit_code = _optional_integer(data["exit_code"], context=f"{context}.exit_code")
+    signal = _optional_integer(data["signal"], context=f"{context}.signal")
+    error_class = _optional_string(data["error_class"], context=f"{context}.error_class")
+    if status == "pass" and (exit_code != 0 or signal is not None):
+        raise ValidationError(f"{context} pass outcome is inconsistent")
+    if status == "fail" and (
+        exit_code is None or exit_code <= 0 or signal is not None
+    ):
+        raise ValidationError(f"{context} fail outcome is inconsistent")
+    if status == "error" and error_class is None:
+        raise ValidationError(f"{context} error outcome requires error_class")
+    stream_values: dict[str, tuple[int | None, str | None, bool | None]] = {}
+    for stream in ("stdout", "stderr"):
+        byte_count = _optional_integer(
+            data[f"{stream}_byte_count"], context=f"{context}.{stream}_byte_count"
+        )
+        digest = (
+            None
+            if data[f"{stream}_sha256"] is None
+            else _sha256(data[f"{stream}_sha256"], context=f"{context}.{stream}_sha256")
+        )
+        omitted = _optional_boolean(
+            data[f"{stream}_body_omitted"],
+            context=f"{context}.{stream}_body_omitted",
+        )
+        if (byte_count is None, digest is None, omitted is None) not in {
+            (True, True, True),
+            (False, False, False),
+        }:
+            raise ValidationError(f"{context} has incomplete {stream} facts")
+        if byte_count is not None and (
+            byte_count < 0 or omitted != (byte_count > 0)
+        ):
+            raise ValidationError(f"{context} has invalid {stream} facts")
+        if status in {"pass", "fail"} and byte_count is None:
+            raise ValidationError(f"{context} lacks required {stream} facts")
+        stream_values[stream] = (byte_count, digest, omitted)
+    provider = _string(data["provider"], context=f"{context}.provider")
+    command_name = _string(
+        data["command_name"], context=f"{context}.command_name"
+    )
+    if provider != command_name:
+        raise ValidationError(f"{context} provider/command_name identity mismatch")
+    return Observation(
+        provider=provider,
+        status=status,
+        command_name=command_name,
+        command=command,
+        summary=_string(data["summary"], context=f"{context}.summary"),
+        artifact_ref=_optional_string(data["artifact_ref"], context=f"{context}.artifact_ref"),
+        argv_digest=_sha256(data["argv_digest"], context=f"{context}.argv_digest"),
+        authored_argv0=_string(data["authored_argv0"], context=f"{context}.authored_argv0"),
+        timeout_seconds=_integer(
+            data["timeout_seconds"], context=f"{context}.timeout_seconds", positive=True
+        ),
+        cwd_policy=_string(data["cwd_policy"], context=f"{context}.cwd_policy"),
+        invocation_path=_optional_string(
+            data["invocation_path"], context=f"{context}.invocation_path"
+        ),
+        canonical_path=_optional_string(
+            data["canonical_path"], context=f"{context}.canonical_path"
+        ),
+        stat_fingerprint=_stat_fingerprint(
+            data["stat_fingerprint"], context=f"{context}.stat_fingerprint"
+        ),
+        environment_policy=_string(
+            data["environment_policy"], context=f"{context}.environment_policy"
+        ),
+        path_source=_string(data["path_source"], context=f"{context}.path_source"),
+        path_digest=_sha256(data["path_digest"], context=f"{context}.path_digest"),
+        exit_code=exit_code,
+        signal=signal,
+        error_class=error_class,
+        stdout_byte_count=stream_values["stdout"][0],
+        stdout_sha256=stream_values["stdout"][1],
+        stdout_body_omitted=stream_values["stdout"][2],
+        stderr_byte_count=stream_values["stderr"][0],
+        stderr_sha256=stream_values["stderr"][1],
+        stderr_body_omitted=stream_values["stderr"][2],
+    )
+
+
+def _required_evidence_identity(
+    value: Any, *, context: str
+) -> RequiredEvidenceIdentity:
+    data = _fields(
+        value,
+        context=context,
+        required={"command_name", "argv_digest", "timeout_seconds"},
+    )
+    return RequiredEvidenceIdentity(
+        command_name=_string(data["command_name"], context=f"{context}.command_name"),
+        argv_digest=_sha256(data["argv_digest"], context=f"{context}.argv_digest"),
+        timeout_seconds=_integer(
+            data["timeout_seconds"], context=f"{context}.timeout_seconds", positive=True
+        ),
+    )
+
+
+def execution_attempt_to_data(attempt: StagedQualificationAttempt) -> dict[str, Any]:
+    return _json_value(attempt)
+
+
+def _staged_qualification_attempt(
+    value: Any,
+    *,
+    context: str,
+    run: ExecutionEvidenceRunIdentity,
+) -> StagedQualificationAttempt:
+    data = _fields(
+        value,
+        context=context,
+        required={field.name for field in fields(StagedQualificationAttempt)},
+    )
+    raw_plan = data["required_evidence"]
+    raw_observations = data["trusted_observations"]
+    if not isinstance(raw_plan, list) or not isinstance(raw_observations, list):
+        raise ValidationError(f"{context} evidence plan and observations must be lists")
+    plan = tuple(
+        _required_evidence_identity(item, context=f"{context}.required_evidence[{index}]")
+        for index, item in enumerate(raw_plan)
+    )
+    if len({item.command_name for item in plan}) != len(plan):
+        raise ValidationError(f"{context}.required_evidence command names must be unique")
+    observations = tuple(
+        _observation(item, context=f"{context}.trusted_observations[{index}]")
+        for index, item in enumerate(raw_observations)
+    )
+    attempt = StagedQualificationAttempt(
+        hop_id=_string(data["hop_id"], context=f"{context}.hop_id"),
+        hop_sequence=_integer(
+            data["hop_sequence"], context=f"{context}.hop_sequence", positive=True
+        ),
+        invocation_id=_string(data["invocation_id"], context=f"{context}.invocation_id"),
+        pre_route_anchor_sha256=_sha256(
+            data["pre_route_anchor_sha256"],
+            context=f"{context}.pre_route_anchor_sha256",
+        ),
+        phase=_string(data["phase"], context=f"{context}.phase"),
+        workflow_role=_string(data["workflow_role"], context=f"{context}.workflow_role"),
+        persona=_string(data["persona"], context=f"{context}.persona"),
+        persona_sha256=_sha256(data["persona_sha256"], context=f"{context}.persona_sha256"),
+        adapter=_string(data["adapter"], context=f"{context}.adapter"),
+        executable=_string(data["executable"], context=f"{context}.executable"),
+        model=_optional_string(data["model"], context=f"{context}.model"),
+        reasoning=_optional_string(data["reasoning"], context=f"{context}.reasoning"),
+        context=_string(data["context"], context=f"{context}.context"),
+        timeout_seconds=_number(
+            data["timeout_seconds"], context=f"{context}.timeout_seconds", positive=True
+        ),
+        returncode=_optional_integer(data["returncode"], context=f"{context}.returncode"),
+        timed_out=_boolean(data["timed_out"], context=f"{context}.timed_out"),
+        candidate_result_present=_boolean(
+            data["candidate_result_present"],
+            context=f"{context}.candidate_result_present",
+        ),
+        candidate_result_sha256=_sha256(
+            data["candidate_result_sha256"],
+            context=f"{context}.candidate_result_sha256",
+        ),
+        publication=_string(data["publication"], context=f"{context}.publication"),
+        outcome=_string(data["outcome"], context=f"{context}.outcome"),
+        base_head=_string(data["base_head"], context=f"{context}.base_head"),
+        end_head=_string(data["end_head"], context=f"{context}.end_head"),
+        actual_commits=_strings(data["actual_commits"], context=f"{context}.actual_commits"),
+        required_evidence=plan,
+        trusted_observations=observations,
+    )
+    if not attempt.candidate_result_present:
+        raise ValidationError(f"{context} must record a validated candidate result")
+    if attempt.publication != "staged":
+        raise ValidationError(f"{context}.publication must be staged")
+    if hashlib.sha256(attempt.persona.encode("utf-8")).hexdigest() != attempt.persona_sha256:
+        raise ValidationError(f"{context}.persona_sha256 mismatch")
+    expected_anchor = pre_route_anchor_sha256(
+        run,
+        hop_id=attempt.hop_id,
+        hop_sequence=attempt.hop_sequence,
+        invocation_id=attempt.invocation_id,
+        phase=attempt.phase,
+        workflow_role=attempt.workflow_role,
+        outcome=attempt.outcome,
+        base_head=attempt.base_head,
+        end_head=attempt.end_head,
+        actual_commits=attempt.actual_commits,
+        candidate_result_sha256=attempt.candidate_result_sha256,
+        required_evidence=attempt.required_evidence,
+    )
+    if expected_anchor != attempt.pre_route_anchor_sha256:
+        raise ValidationError(f"{context}.pre_route_anchor_sha256 mismatch")
+    plan_identities = {
+        (item.command_name, item.argv_digest, item.timeout_seconds) for item in plan
+    }
+    observation_identities = [
+        (item.command_name, item.argv_digest, item.timeout_seconds)
+        for item in observations
+    ]
+    if len(set(observation_identities)) != len(observation_identities):
+        raise ValidationError(f"{context} has duplicate trusted observations")
+    extras = set(observation_identities) - plan_identities
+    if extras:
+        raise ValidationError(f"{context} has extra or identity-mismatched observations")
+    return attempt
+
+
+def execution_evidence_to_json(document: ExecutionEvidenceDocument) -> str:
+    text = json.dumps(_json_value(document), sort_keys=True, separators=(",", ":")) + "\n"
+    parsed = execution_evidence_from_json(text)
+    if parsed != document:
+        raise ValidationError("execution evidence does not round-trip through schema 4")
+    return text
+
+
+def execution_evidence_from_json(
+    text: str,
+) -> ExecutionEvidenceDocument | LegacyExecutionEvidenceDocument:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ValidationError(f"invalid execution evidence JSON: {error}") from error
+    raw = _mapping(value, context="execution evidence")
+    version = _integer(
+        raw.get("schema_version"), context="execution evidence.schema_version"
+    )
+    if version in {1, 2, 3}:
+        data = _fields(
+            raw,
+            context="execution evidence",
+            required={"schema_version", "attempts"},
+        )
+        if not isinstance(data["attempts"], list) or not all(
+            isinstance(item, dict) for item in data["attempts"]
+        ):
+            raise ValidationError("legacy execution evidence attempts must be a list of objects")
+        return LegacyExecutionEvidenceDocument(
+            schema_version=version,
+            attempts=tuple(MappingProxyType(dict(item)) for item in data["attempts"]),
+        )
+    if version != 4:
+        raise ValidationError(
+            f"execution evidence has unsupported version: {version}"
+        )
+    data = _fields(
+        raw,
+        context="execution evidence",
+        required={"schema_version", "run", "attempts"},
+    )
+    raw_run = _fields(
+        data["run"],
+        context="execution evidence.run",
+        required={"run_id", "work_item_id", "profile_id", "profile_revision"},
+    )
+    run = ExecutionEvidenceRunIdentity(
+        run_id=_string(raw_run["run_id"], context="execution evidence.run.run_id"),
+        work_item_id=_string(
+            raw_run["work_item_id"], context="execution evidence.run.work_item_id"
+        ),
+        profile_id=_string(
+            raw_run["profile_id"], context="execution evidence.run.profile_id"
+        ),
+        profile_revision=_string(
+            raw_run["profile_revision"],
+            context="execution evidence.run.profile_revision",
+        ),
+    )
+    if not isinstance(data["attempts"], list):
+        raise ValidationError("execution evidence.attempts must be a list")
+    attempts = tuple(
+        _staged_qualification_attempt(
+            item,
+            context=f"execution evidence.attempts[{index}]",
+            run=run,
+        )
+        for index, item in enumerate(data["attempts"])
+    )
+    hop_keys = [(item.hop_id, item.hop_sequence) for item in attempts]
+    invocation_ids = [item.invocation_id for item in attempts]
+    if len(set(hop_keys)) != len(hop_keys):
+        raise ValidationError("execution evidence has duplicate Hop rows")
+    if len(set(invocation_ids)) != len(invocation_ids):
+        raise ValidationError("execution evidence has duplicate invocation IDs")
+    return ExecutionEvidenceDocument(4, run, attempts)
 
 
 def _successor_provenance(value: Any, *, context: str) -> SuccessorProvenance | None:
@@ -1348,6 +1760,14 @@ def dispatch_marker_from_json(text: str) -> DispatchMarker:
         base_head=_string(data["base_head"], context="dispatch marker.base_head"),
         budget_reserved=_integer(
             data["budget_reserved"], context="dispatch marker.budget_reserved", positive=True
+        ),
+        pre_route_anchor_sha256=(
+            None
+            if data["pre_route_anchor_sha256"] is None
+            else _sha256(
+                data["pre_route_anchor_sha256"],
+                context="dispatch marker.pre_route_anchor_sha256",
+            )
         ),
     )
 

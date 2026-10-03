@@ -28,6 +28,8 @@ from .model import (
     Run,
     RunStatus,
     SemanticStop,
+    StagedQualificationAttempt,
+    TrustedQualificationIndex,
     WorkflowProfile,
 )
 
@@ -36,8 +38,34 @@ class ReductionError(ValueError):
     """State and profile cannot be reduced without guessing."""
 
 
+def trusted_evaluator_qualification(
+    index: TrustedQualificationIndex,
+    evaluator_hop_id: str,
+) -> bool:
+    """Return the mechanical conjunct for one exactly correlated evaluator Hop."""
+
+    matching = tuple(
+        attempt for attempt in index.attempts if attempt.hop_id == evaluator_hop_id
+    )
+    if len(matching) != 1:
+        return False
+    attempt = matching[0]
+    required = {
+        (item.command_name, item.argv_digest, item.timeout_seconds)
+        for item in attempt.required_evidence
+    }
+    observations = {
+        (item.command_name, item.argv_digest, item.timeout_seconds): item.status
+        for item in attempt.trusted_observations
+    }
+    return set(observations) == required and all(
+        observations[identity] == "pass" for identity in required
+    )
+
+
 def derive_convergence_facts(
     run: Run,
+    trusted_qualification_index: TrustedQualificationIndex,
     qualified_cycle_limit: int,
 ) -> tuple[ConvergenceFact, ...]:
     """Derive generation-zero convergence facts from accepted Slice-1 history.
@@ -57,6 +85,21 @@ def derive_convergence_facts(
         raise ValueError("qualified_cycle_limit must be a positive integer")
     if run.schema_version != 3:
         return ()
+    if trusted_qualification_index.run is not None:
+        expected_identity = (
+            run.run_id,
+            run.work_item_id,
+            run.profile_id,
+            run.profile_revision,
+        )
+        actual_identity = (
+            trusted_qualification_index.run.run_id,
+            trusted_qualification_index.run.work_item_id,
+            trusted_qualification_index.run.profile_id,
+            trusted_qualification_index.run.profile_revision,
+        )
+        if actual_identity != expected_identity:
+            raise ReductionError("trusted qualification index identity mismatch")
 
     eligible_findings = {
         finding.finding_id: finding
@@ -80,6 +123,9 @@ def derive_convergence_facts(
                 or assessment.result
                 is not ConvergenceAssessmentResult.CARRIED_NEW_COUNTEREXAMPLE
                 or assessment.finding_id not in evaluator_hop.finding_delta_ids
+                or not trusted_evaluator_qualification(
+                    trusted_qualification_index, evaluator_hop.hop_id
+                )
             ):
                 continue
             correction_hop = hops_by_id.get(assessment.correction_hop_id)
@@ -831,6 +877,7 @@ def reduce_result(
     *,
     hop_id: str,
     facts: MechanicalFacts = MechanicalFacts(),
+    trusted_qualification_index: TrustedQualificationIndex | None = None,
 ) -> Reduction:
     """Apply mandatory preemption before any Finding or route authority."""
 
@@ -849,6 +896,20 @@ def reduce_result(
         result_state_error = "unsupported result schema version"
     elif run.status is not RunStatus.RUNNING or not correlated_hop:
         result_state_error = "result is not correlated to the current accepted Hop"
+    elif trusted_qualification_index is not None and run.schema_version == 3:
+        current_hop = run.hops[-1]
+        matching = tuple(
+            attempt
+            for attempt in trusted_qualification_index.attempts
+            if attempt.hop_id == hop_id
+            and attempt.hop_sequence == current_hop.sequence
+            and attempt.pre_route_anchor_sha256
+            == current_hop.pre_route_anchor_sha256
+        )
+        if len(matching) != 1:
+            result_state_error = (
+                "current Hop lacks one exact staged qualification attempt"
+            )
     # Capture the correlated semantic observation *before* selecting the
     # controlling mechanical stop.  It is observation only: no route, Finding,
     # commit, or scope authority flows from it.

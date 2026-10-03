@@ -15,6 +15,7 @@ from workflow_coordinator.model import (
     FindingState,
     Run,
     RunStatus,
+    TrustedQualificationIndex,
 )
 from workflow_coordinator.reducer import (
     apply_finding_deltas,
@@ -42,6 +43,7 @@ from tests.support import (
     new_delta,
     phase,
     profile,
+    qualification_evidence,
     result,
     route,
     run_for,
@@ -72,7 +74,9 @@ def test_pre_slice1_v2_replay_is_byte_preserving_and_fabricates_no_v3_records():
         not hop.coverage_claims and not hop.convergence_assessments
         for hop in run.hops
     )
-    assert derive_convergence_facts(run, 2) == ()
+    assert derive_convergence_facts(
+        run, TrustedQualificationIndex.empty(), 2
+    ) == ()
     assert checkpoint_projection(
         run, workflow, qualified_cycle_limit=2
     )["convergence_facts"] == []
@@ -87,20 +91,37 @@ def test_slice2_convergence_projection_is_replay_deterministic_and_ignores_uncer
     run, _, second_evaluator_hop = convergence_cycle(
         run, workflow, evidence_prefix="second-replay"
     )
+    run, qualification, evidence_json = qualification_evidence(
+        run,
+        {
+            first_evaluator_hop: ("pass",),
+            second_evaluator_hop: ("pass",),
+        },
+    )
     replayed = run_from_json(run_to_json(run))
 
-    expected = derive_convergence_facts(run, 2)
-    assert derive_convergence_facts(replayed, 2) == expected
+    expected = derive_convergence_facts(run, qualification, 2)
+    assert derive_convergence_facts(replayed, qualification, 2) == expected
     assert expected[0].source_evaluator_hops == (
         first_evaluator_hop,
         second_evaluator_hop,
     )
     assert json.dumps(
-        checkpoint_projection(run, workflow, qualified_cycle_limit=2),
+        checkpoint_projection(
+            run,
+            workflow,
+            qualified_cycle_limit=2,
+            execution_evidence_json=evidence_json,
+        ),
         sort_keys=True,
         separators=(",", ":"),
     ) == json.dumps(
-        checkpoint_projection(replayed, workflow, qualified_cycle_limit=2),
+        checkpoint_projection(
+            replayed,
+            workflow,
+            qualified_cycle_limit=2,
+            execution_evidence_json=evidence_json,
+        ),
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -118,7 +139,7 @@ def test_slice2_convergence_projection_is_replay_deterministic_and_ignores_uncer
         run, marker, current_head=run.current_head
     )
     assert uncertain.hops[-1].outcome == "uncertain"
-    assert derive_convergence_facts(uncertain, 2) == expected
+    assert derive_convergence_facts(uncertain, qualification, 2) == expected
 
 
 def test_replay_a_productive_correction_can_continue_beyond_three_loops():

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import subprocess
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from .adapter import (
     ROUTING_RESULT_ENVELOPE_CONTRACT,
@@ -38,15 +39,24 @@ from .model import (
     COMMIT_ACTION,
     EDIT_ACTION,
     Hop,
+    ExecutionEvidenceDocument,
+    ExecutionEvidenceRunIdentity,
     MechanicalFacts,
     Observation,
     Phase,
     ReviewAuthority,
     Run,
+    RequiredEvidenceIdentity,
+    StagedQualificationAttempt,
+    TrustedQualificationIndex,
     WorkflowProfile,
     record_hop,
 )
-from .persistence import checkpoint_projection
+from .persistence import (
+    checkpoint_projection,
+    execution_evidence_run_identity,
+    trusted_qualification_index_for_run,
+)
 from .prompt import (
     AgentOperatingContract,
     ContextItem,
@@ -55,6 +65,12 @@ from .prompt import (
     assemble_prompt,
 )
 from .reducer import Reduction, reduce_result
+from .serialization import (
+    canonical_candidate_result_sha256,
+    execution_evidence_from_json,
+    execution_evidence_to_json,
+    pre_route_anchor_sha256,
+)
 
 
 class VerticalRunError(RuntimeError):
@@ -69,6 +85,9 @@ class VerticalRun:
     terminal: str
     execution_outcome: AgentExecutionOutcome
     observations: tuple[Observation, ...]
+    staged_attempt: StagedQualificationAttempt | None
+    qualification_index: TrustedQualificationIndex
+    execution_evidence_json: str | None
 
 
 def _subject_anomalies(
@@ -146,11 +165,15 @@ def run_one_hop(
     run: Run, profile: WorkflowProfile, repository: Path, adapter: AgentExecutionPort, components: dict[str, PromptComponent],
     *, agent_operating_contract: AgentOperatingContract, task_payload: str,
     invocation_id: str, persona: str, durable_artifacts: tuple[str, ...] = (),
-    execution_timeout_seconds: float = 0.0,
+    execution_timeout_seconds: float = 900.0,
     registered_checkout_validator: Callable[[], None] | None = None,
     context_items: tuple[ContextItem, ...] = (),
     evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
     evidence_commands: dict[str, PreparedEvidenceCommand] | None = None,
+    execution_binding: Mapping[str, object] | None = None,
+    publish_staged_attempt: Callable[
+        [StagedQualificationAttempt], tuple[ExecutionEvidenceDocument, str]
+    ] | None = None,
 ) -> VerticalRun:
     """Execute only the N=1 fake/subprocess boundary and reduce observed facts."""
 
@@ -283,9 +306,105 @@ def run_one_hop(
     if observation_errors:
         required_error = observation_errors[0]
     required_failed = any(item.status == "fail" for item in observations)
-    accepted = record_hop(run, Hop(hop_id, run.hop_used + 1, run.phase, phase.role.value, "fresh", "local", "local",
-                                   run.current_head, delta.end_head, delta.actual_commits, "accepted", result.outcome.value,
-                                   (), result.evidence_refs, None, None, result.summary, "agent"))
+    required_plan = tuple(
+        RequiredEvidenceIdentity(
+            command_name=authorized_evidence[name].command_name,
+            argv_digest=authorized_evidence[name].argv_digest,
+            timeout_seconds=authorized_evidence[name].timeout_seconds,
+        )
+        for name in phase.evidence
+    )
+    anchor = None
+    attempt = None
+    evidence_json = None
+    qualification_index = TrustedQualificationIndex.empty()
+    if run.schema_version == 3 and not observation_errors:
+        run_identity = execution_evidence_run_identity(run)
+        candidate_digest = canonical_candidate_result_sha256(outcome.candidate_result)
+        anchor = pre_route_anchor_sha256(
+            run_identity,
+            hop_id=hop_id,
+            hop_sequence=run.hop_used + 1,
+            invocation_id=invocation_id,
+            phase=run.phase,
+            workflow_role=phase.role.value,
+            outcome=result.outcome.value,
+            base_head=run.current_head,
+            end_head=delta.end_head,
+            actual_commits=delta.actual_commits,
+            candidate_result_sha256=candidate_digest,
+            required_evidence=required_plan,
+        )
+        binding = dict(execution_binding or {})
+        attempt = StagedQualificationAttempt(
+            hop_id=hop_id,
+            hop_sequence=run.hop_used + 1,
+            invocation_id=invocation_id,
+            pre_route_anchor_sha256=anchor,
+            phase=run.phase,
+            workflow_role=phase.role.value,
+            persona=persona,
+            persona_sha256=hashlib.sha256(persona.encode("utf-8")).hexdigest(),
+            adapter=str(binding.get("adapter") or "local"),
+            executable=str(binding.get("executable") or "local"),
+            model=(
+                binding.get("model")
+                if isinstance(binding.get("model"), str)
+                else None
+            ),
+            reasoning=(
+                binding.get("reasoning")
+                if isinstance(binding.get("reasoning"), str)
+                else None
+            ),
+            context="fresh",
+            timeout_seconds=execution_timeout_seconds,
+            returncode=outcome.returncode,
+            timed_out=outcome.timed_out,
+            candidate_result_present=True,
+            candidate_result_sha256=candidate_digest,
+            publication="staged",
+            outcome=result.outcome.value,
+            base_head=run.current_head,
+            end_head=delta.end_head,
+            actual_commits=delta.actual_commits,
+            required_evidence=required_plan,
+            trusted_observations=observations,
+        )
+        if publish_staged_attempt is None:
+            document = ExecutionEvidenceDocument(4, run_identity, (attempt,))
+            evidence_json = execution_evidence_to_json(document)
+            parsed = execution_evidence_from_json(evidence_json)
+            assert isinstance(parsed, ExecutionEvidenceDocument)
+            document = parsed
+        else:
+            document, evidence_json = publish_staged_attempt(attempt)
+    accepted = record_hop(
+        run,
+        Hop(
+            hop_id,
+            run.hop_used + 1,
+            run.phase,
+            phase.role.value,
+            "fresh",
+            "local",
+            "local",
+            run.current_head,
+            delta.end_head,
+            delta.actual_commits,
+            "accepted",
+            result.outcome.value,
+            (),
+            result.evidence_refs,
+            None,
+            None,
+            result.summary,
+            "agent",
+            anchor,
+        ),
+    )
+    if attempt is not None:
+        qualification_index = trusted_qualification_index_for_run(accepted, document)
     reduction = reduce_result(
         accepted,
         result,
@@ -299,7 +418,25 @@ def run_one_hop(
             required_evidence_error=required_error,
             required_evidence_failed=required_failed,
         ),
+        trusted_qualification_index=(
+            qualification_index if attempt is not None else None
+        ),
     )
-    checkpoint = checkpoint_projection(reduction.run, profile, observations=observations)
+    checkpoint = checkpoint_projection(
+        reduction.run,
+        profile,
+        observations=observations,
+        execution_evidence_json=evidence_json,
+    )
     terminal = f"{run.work_item_id}/{run.run_id} {reduction.run.status.value} {hop_id} {delta.base_head}..{delta.end_head}"
-    return VerticalRun(reduction, prompt, checkpoint, terminal, outcome, observations)
+    return VerticalRun(
+        reduction,
+        prompt,
+        checkpoint,
+        terminal,
+        outcome,
+        observations,
+        attempt,
+        qualification_index,
+        evidence_json,
+    )

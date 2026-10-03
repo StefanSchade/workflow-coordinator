@@ -11,6 +11,7 @@ import subprocess
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Mapping
 
 from .adapter import (
     AgentExecutionOutcome,
@@ -23,12 +24,14 @@ from .adapter import (
 from .codex_adapter import CodexCliAdapter, CodexCliError
 from .git_facts import GitPreflightError, observe_hop, preflight_hop
 from .evidence import EvidenceRunner, FAIL_CLOSED_EVIDENCE_RUNNER, PreparedEvidenceCommand
-from .model import DispatchMarker, Run, WorkflowProfile
+from .model import DispatchMarker, ExecutionEvidenceDocument, Run, WorkflowProfile
 from .persistence import (
     atomic_write_json, checkpoint_projection, recover_uncertain_dispatch,
-    write_dispatch_marker, write_run_snapshot,
+    execution_evidence_run_identity, load_dispatch_marker,
+    publish_execution_evidence, write_dispatch_marker, write_run_snapshot,
 )
 from .prompt import AgentOperatingContract, ContextItem, PromptComponent
+from .serialization import execution_evidence_from_json
 from .vertical import VerticalRun, run_one_hop
 
 
@@ -166,22 +169,106 @@ def run_real_one_hop(
     context_items: tuple[ContextItem, ...] = (),
     evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
     evidence_commands: dict[str, PreparedEvidenceCommand] | None = None,
+    execution_binding: Mapping[str, object] | None = None,
 ) -> RealHopRun:
     """Plug the concrete process boundary into the sole accepted vertical path."""
+    if validate_checkout(state_root, repository) != association:
+        raise Slice4Error("provided checkout association does not match trusted state")
+    run_root = checkout_state_root(state_root, association)
+    dispatch_path = run_root / "dispatch.json"
+    evidence_path = run_root / "execution-evidence.json"
+
+    def evidence_text() -> str | None:
+        return evidence_path.read_text(encoding="utf-8") if evidence_path.exists() else None
+
+    if dispatch_path.exists():
+        pending = load_dispatch_marker(dispatch_path)
+        existing = next((hop for hop in run.hops if hop.hop_id == pending.hop_id), None)
+        if existing is not None:
+            raw_evidence = evidence_text()
+            if (
+                pending.run_id != run.run_id
+                or existing.sequence != pending.sequence
+                or existing.base_head != pending.base_head
+                or (
+                    run.schema_version == 3
+                    and (
+                        existing.pre_route_anchor_sha256 is None
+                        or existing.pre_route_anchor_sha256
+                        != pending.pre_route_anchor_sha256
+                    )
+                )
+                or raw_evidence is None
+            ):
+                raise Slice4Error("dispatch marker conflicts with completed Hop pair")
+            parsed_evidence = execution_evidence_from_json(raw_evidence)
+            if not isinstance(parsed_evidence, ExecutionEvidenceDocument):
+                raise Slice4Error("completed dispatch pair lacks schema-4 evidence")
+            matching_rows = tuple(
+                attempt
+                for attempt in parsed_evidence.attempts
+                if attempt.hop_id == existing.hop_id
+            )
+            if (
+                len(matching_rows) != 1
+                or matching_rows[0].invocation_id != pending.invocation_id
+                or matching_rows[0].pre_route_anchor_sha256
+                != pending.pre_route_anchor_sha256
+            ):
+                raise Slice4Error("dispatch marker conflicts with completed Hop pair")
+            checkpoint = checkpoint_projection(
+                run,
+                profile,
+                execution_evidence_json=raw_evidence,
+                dispatch_marker=pending,
+            )
+            atomic_write_json(run_root / "checkpoint.json", checkpoint)
+            dispatch_path.unlink(missing_ok=True)
+            return RealHopRun(None, run, checkpoint, None)
+        delta = observe_hop(
+            repository,
+            base_head=run.current_head,
+            allowed_paths=profile.phases[run.phase].authorized_scope,
+        )
+        recovered = recover_uncertain_dispatch(
+            run,
+            pending,
+            current_head=delta.end_head,
+            actual_commits=delta.actual_commits,
+        )
+        checkpoint = checkpoint_projection(
+            recovered,
+            profile,
+            execution_evidence_json=evidence_text(),
+            dispatch_marker=pending,
+        )
+        write_run_snapshot(run_root / "run.json", recovered)
+        atomic_write_json(run_root / "checkpoint.json", checkpoint)
+        return RealHopRun(None, recovered, checkpoint, None)
+
     if not dispatch_eligible(run):
         raise Slice4Error("Run is not dispatch-eligible")
     if adapter is None and (model is None or reasoning_effort is None):
         raise Slice4Error("explicit model and reasoning are required for Codex execution")
-    hop_id = f"H{run.hop_used + 1:03d}"
     try:
-        preflight_hop(repository, expected_repository=repository, expected_head=run.current_head)
+        preflight_hop(
+            repository,
+            expected_repository=repository,
+            expected_head=run.current_head,
+        )
     except GitPreflightError as error:
         raise Slice4Error(str(error)) from error
-    if validate_checkout(state_root, repository) != association:
-        raise Slice4Error("provided checkout association does not match trusted state")
-    run_root = checkout_state_root(state_root, association)
-    marker = DispatchMarker(1, run.run_id, hop_id, run.hop_used + 1, invocation_id, run.current_head, 1)
-    dispatch_path = run_root / "dispatch.json"
+    hop_id = f"H{run.hop_used + 1:03d}"
+    marker = DispatchMarker(
+        1,
+        run.run_id,
+        hop_id,
+        run.hop_used + 1,
+        invocation_id,
+        run.current_head,
+        1,
+        None,
+    )
     write_run_snapshot(run_root / "run.json", run)
     write_dispatch_marker(dispatch_path, marker)
     execution_port = adapter or CodexCliAdapter(
@@ -206,10 +293,27 @@ def run_real_one_hop(
         )
         if delta.anomalies:
             recovered = replace(recovered, anomalies=(*recovered.anomalies, *delta.anomalies))
-        checkpoint = checkpoint_projection(recovered, profile)
+        checkpoint = checkpoint_projection(
+            recovered,
+            profile,
+            execution_evidence_json=evidence_text(),
+            dispatch_marker=marker,
+        )
         write_run_snapshot(run_root / "run.json", recovered)
         atomic_write_json(run_root / "checkpoint.json", checkpoint)
         return RealHopRun(None, recovered, checkpoint, outcome)
+
+    def publish_staged(attempt):
+        nonlocal marker
+        marker = replace(
+            marker, pre_route_anchor_sha256=attempt.pre_route_anchor_sha256
+        )
+        write_dispatch_marker(dispatch_path, marker)
+        return publish_execution_evidence(
+            evidence_path,
+            execution_evidence_run_identity(run),
+            attempt,
+        )
 
     try:
         vertical = run_one_hop(
@@ -222,6 +326,16 @@ def run_real_one_hop(
             context_items=context_items,
             evidence_runner=evidence_runner,
             evidence_commands=evidence_commands,
+            execution_binding=(
+                execution_binding
+                or {
+                    "adapter": "local" if adapter is not None else "codex_cli",
+                    "executable": executable,
+                    "model": model,
+                    "reasoning": reasoning_effort,
+                }
+            ),
+            publish_staged_attempt=publish_staged,
         )
     except ExecutionResultValidationError as error:
         return recover_uncertain(error.outcome)
@@ -234,6 +348,14 @@ def run_real_one_hop(
     except Exception:
         return recover_uncertain(None)
     write_run_snapshot(run_root / "run.json", vertical.reduction.run)
-    atomic_write_json(run_root / "checkpoint.json", vertical.checkpoint)
+    checkpoint = checkpoint_projection(
+        vertical.reduction.run,
+        profile,
+        observations=vertical.observations,
+        execution_evidence_json=evidence_text(),
+        dispatch_marker=marker,
+    )
+    atomic_write_json(run_root / "checkpoint.json", checkpoint)
     dispatch_path.unlink(missing_ok=True)
-    return RealHopRun(vertical, vertical.reduction.run, vertical.checkpoint, vertical.execution_outcome)
+    vertical = replace(vertical, checkpoint=checkpoint)
+    return RealHopRun(vertical, vertical.reduction.run, checkpoint, vertical.execution_outcome)

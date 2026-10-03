@@ -4,17 +4,21 @@ from dataclasses import replace
 import pytest
 
 from workflow_coordinator.model import DispatchMarker, RunStatus
-from workflow_coordinator.reducer import require_reconcile, resume_after_reconcile
+from workflow_coordinator.reducer import ReductionError, require_reconcile, resume_after_reconcile
 from workflow_coordinator.persistence import (
     atomic_write_text,
     checkpoint_projection,
     load_dispatch_marker,
+    publish_execution_evidence,
     recover_uncertain_dispatch,
     write_dispatch_marker,
     write_run_snapshot,
+    trusted_qualification_index_for_run,
+    validate_checkpoint_inputs,
 )
 from workflow_coordinator.serialization import (
     ValidationError,
+    execution_evidence_from_json,
     load_run,
     run_from_json,
     run_to_json,
@@ -25,6 +29,7 @@ from tests.support import (
     phase,
     prepared_evidence,
     profile,
+    qualification_evidence,
     route,
     run_for,
     simulated_observation,
@@ -178,8 +183,16 @@ def test_checkpoint_optionally_projects_derived_convergence_facts_and_sources():
     run, _, evaluator_hop = convergence_cycle(
         run, workflow, evidence_prefix="checkpoint"
     )
+    run, _, evidence_json = qualification_evidence(
+        run, {evaluator_hop: ("pass",)}
+    )
 
-    projected = checkpoint_projection(run, workflow, qualified_cycle_limit=2)
+    projected = checkpoint_projection(
+        run,
+        workflow,
+        qualified_cycle_limit=2,
+        execution_evidence_json=evidence_json,
+    )
     assert projected["convergence_facts"] == [
         {
             "finding_id": "F001",
@@ -194,6 +207,93 @@ def test_checkpoint_optionally_projects_derived_convergence_facts_and_sources():
     assert "convergence_facts" not in json.loads(run_to_json(run))
 
 
+def test_schema4_publication_preserves_rows_is_idempotent_and_rejects_conflicts(
+    tmp_path,
+):
+    workflow, run = tracked_convergence_run()
+    run, _, first = convergence_cycle(run, workflow, evidence_prefix="first")
+    run, _, second = convergence_cycle(run, workflow, evidence_prefix="second")
+    run, _, evidence_json = qualification_evidence(
+        run, {first: ("pass",), second: ("pass",)}
+    )
+    document = execution_evidence_from_json(evidence_json)
+    path = tmp_path / "execution-evidence.json"
+
+    first_document, first_text = publish_execution_evidence(
+        path, document.run, document.attempts[0]
+    )
+    assert len(first_document.attempts) == 1
+    duplicate_document, duplicate_text = publish_execution_evidence(
+        path, document.run, document.attempts[0]
+    )
+    assert duplicate_document == first_document
+    assert duplicate_text == first_text == path.read_text(encoding="utf-8")
+
+    before_second = path.read_bytes()
+
+    def fail_replace(_source, _target):
+        raise OSError("injected evidence replacement failure")
+
+    with pytest.raises(OSError, match="injected evidence replacement failure"):
+        publish_execution_evidence(
+            path,
+            document.run,
+            document.attempts[1],
+            replace_file=fail_replace,
+        )
+    assert path.read_bytes() == before_second
+
+    complete, _ = publish_execution_evidence(
+        path, document.run, document.attempts[1]
+    )
+    assert [attempt.hop_id for attempt in complete.attempts] == [first, second]
+    conflicting = replace(
+        document.attempts[1],
+        persona="different persona",
+        persona_sha256="a" * 64,
+    )
+    with pytest.raises(ReductionError, match="conflicting duplicate"):
+        publish_execution_evidence(path, document.run, conflicting)
+
+
+def test_exact_pair_and_dual_checkpoint_digests_fail_closed_on_mismatch():
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(run, workflow, evidence_prefix="pair")
+    run, index, evidence_json = qualification_evidence(
+        run, {evaluator_hop: ("pass",)}
+    )
+    document = execution_evidence_from_json(evidence_json)
+    assert trusted_qualification_index_for_run(run, document) == index
+    missing = replace(document, attempts=())
+    with pytest.raises(ReductionError, match="lacks paired"):
+        trusted_qualification_index_for_run(run, missing)
+    cross_run = replace(document, run=replace(document.run, run_id="RUN-other"))
+    with pytest.raises(ReductionError, match="identity"):
+        trusted_qualification_index_for_run(run, cross_run)
+
+    checkpoint = checkpoint_projection(
+        run,
+        workflow,
+        qualified_cycle_limit=2,
+        execution_evidence_json=evidence_json,
+    )
+    validate_checkpoint_inputs(
+        checkpoint, run, execution_evidence_json=evidence_json
+    )
+    stale_run = json.loads(json.dumps(checkpoint))
+    stale_run["identity"]["run_json_sha256"] = "0" * 64
+    with pytest.raises(ReductionError, match="Run digest mismatch"):
+        validate_checkpoint_inputs(
+            stale_run, run, execution_evidence_json=evidence_json
+        )
+    stale_evidence = json.loads(json.dumps(checkpoint))
+    stale_evidence["identity"]["execution_evidence_sha256"] = "0" * 64
+    with pytest.raises(ReductionError, match="execution-evidence digest mismatch"):
+        validate_checkpoint_inputs(
+            stale_evidence, run, execution_evidence_json=evidence_json
+        )
+
+
 def test_checkpoint_limit_does_not_fabricate_facts_for_simple_or_legacy_runs():
     workflow = profile({"work": phase({"done": route("complete")})})
     run = run_for(workflow)
@@ -202,6 +302,23 @@ def test_checkpoint_limit_does_not_fabricate_facts_for_simple_or_legacy_runs():
         assert checkpoint_projection(
             historical, workflow, qualified_cycle_limit=2
         )["convergence_facts"] == []
+
+
+@pytest.mark.parametrize("evidence_version", [1, 2, 3])
+def test_legacy_execution_evidence_is_audit_readable_but_never_proves_pass(
+    evidence_version,
+):
+    workflow, run = tracked_convergence_run()
+    run, _, _ = convergence_cycle(run, workflow, evidence_prefix="legacy-evidence")
+    legacy = json.dumps({"schema_version": evidence_version, "attempts": []})
+    facts = checkpoint_projection(
+        run,
+        workflow,
+        qualified_cycle_limit=2,
+        execution_evidence_json=legacy,
+    )["convergence_facts"]
+    assert facts[0]["qualified_cycle_count"] == 0
+    assert facts[0]["source_evaluator_hops"] == []
 
 
 @pytest.mark.parametrize(

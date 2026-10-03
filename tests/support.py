@@ -13,6 +13,8 @@ from workflow_coordinator.model import (
     CoverageDisposition,
     DurableArtifact,
     EvidenceCommand,
+    ExecutionEvidenceDocument,
+    ExecutionEvidenceRunIdentity,
     Escalation,
     ExistingFindingDelta,
     FindingDeltaValue,
@@ -23,12 +25,16 @@ from workflow_coordinator.model import (
     NewFindingDelta,
     Phase,
     RepositoryPolicy,
+    RequiredEvidenceIdentity,
     ReviewAuthority,
     ReviewDescriptor,
     Route,
     RouteEffect,
     RoutingResult,
     Run,
+    StagedQualificationAttempt,
+    StatFingerprint,
+    TrustedQualificationIndex,
     WorkItem,
     WorkflowProfile,
     WorkflowRole,
@@ -42,6 +48,12 @@ from workflow_coordinator.evidence import (
     prepare_evidence_commands,
 )
 from workflow_coordinator.reducer import reduce_result
+from workflow_coordinator.persistence import trusted_qualification_index_for_run
+from workflow_coordinator.serialization import (
+    execution_evidence_from_json,
+    execution_evidence_to_json,
+    pre_route_anchor_sha256,
+)
 
 
 def route(effect: str, target: str | None = None, *, supervisor: bool = False) -> Route:
@@ -441,3 +453,120 @@ def simulated_observation(
         stderr_sha256=empty_digest,
         stderr_body_omitted=False,
     )
+
+
+def qualification_evidence(
+    run: Run,
+    statuses_by_hop: dict[str, tuple[str, ...]],
+    *,
+    command_names: tuple[str, ...] = ("tests",),
+) -> tuple[Run, TrustedQualificationIndex, str]:
+    """Build one strictly parsed schema-4 document for focused Slice-2 tests."""
+
+    identity = ExecutionEvidenceRunIdentity(
+        run.run_id, run.work_item_id, run.profile_id, run.profile_revision
+    )
+    plans = tuple(
+        RequiredEvidenceIdentity(
+            name, hashlib.sha256(name.encode("utf-8")).hexdigest(), 10
+        )
+        for name in command_names
+    )
+    attempts: list[StagedQualificationAttempt] = []
+    anchors: dict[str, str] = {}
+    empty_digest = hashlib.sha256(b"").hexdigest()
+    for ordinal, (hop_id, statuses) in enumerate(statuses_by_hop.items(), start=1):
+        hop = next(item for item in run.hops if item.hop_id == hop_id)
+        observations = tuple(
+            Observation(
+                provider=plan.command_name,
+                status=status,
+                command_name=plan.command_name,
+                command=("/usr/bin/fixture",),
+                summary=status,
+                artifact_ref=None,
+                argv_digest=plan.argv_digest,
+                authored_argv0="fixture",
+                timeout_seconds=plan.timeout_seconds,
+                cwd_policy=CWD_POLICY,
+                invocation_path="/usr/bin/fixture",
+                canonical_path="/usr/bin/fixture",
+                stat_fingerprint=StatFingerprint(1, 2, 0o100755, 1, 1),
+                environment_policy=ENVIRONMENT_POLICY,
+                path_source="inherited",
+                path_digest=empty_digest,
+                exit_code=0 if status == "pass" else 1 if status == "fail" else None,
+                signal=None,
+                error_class=status if status == "error" else None,
+                stdout_byte_count=0,
+                stdout_sha256=empty_digest,
+                stdout_body_omitted=False,
+                stderr_byte_count=0,
+                stderr_sha256=empty_digest,
+                stderr_body_omitted=False,
+            )
+            for plan, status in zip(plans, statuses)
+        )
+        candidate_digest = hashlib.sha256(
+            f"candidate:{hop_id}".encode("utf-8")
+        ).hexdigest()
+        invocation_id = f"INV-fixture-{ordinal}"
+        anchor = pre_route_anchor_sha256(
+            identity,
+            hop_id=hop.hop_id,
+            hop_sequence=hop.sequence,
+            invocation_id=invocation_id,
+            phase="evaluate",
+            workflow_role=hop.role,
+            outcome=hop.outcome,
+            base_head=hop.base_head,
+            end_head=hop.end_head,
+            actual_commits=hop.actual_commits,
+            candidate_result_sha256=candidate_digest,
+            required_evidence=plans,
+        )
+        anchors[hop_id] = anchor
+        persona = "fixture evaluator"
+        attempts.append(
+            StagedQualificationAttempt(
+                hop_id=hop.hop_id,
+                hop_sequence=hop.sequence,
+                invocation_id=invocation_id,
+                pre_route_anchor_sha256=anchor,
+                phase="evaluate",
+                workflow_role=hop.role,
+                persona=persona,
+                persona_sha256=hashlib.sha256(persona.encode("utf-8")).hexdigest(),
+                adapter="fixture",
+                executable="fixture",
+                model=None,
+                reasoning=None,
+                context="fresh",
+                timeout_seconds=10.0,
+                returncode=0,
+                timed_out=False,
+                candidate_result_present=True,
+                candidate_result_sha256=candidate_digest,
+                publication="staged",
+                outcome=hop.outcome,
+                base_head=hop.base_head,
+                end_head=hop.end_head,
+                actual_commits=hop.actual_commits,
+                required_evidence=plans,
+                trusted_observations=observations,
+            )
+        )
+    anchored = replace(
+        run,
+        hops=tuple(
+            replace(hop, pre_route_anchor_sha256=anchors.get(hop.hop_id))
+            if hop.hop_id in anchors
+            else hop
+            for hop in run.hops
+        ),
+    )
+    document = ExecutionEvidenceDocument(4, identity, tuple(attempts))
+    text = execution_evidence_to_json(document)
+    parsed = execution_evidence_from_json(text)
+    assert isinstance(parsed, ExecutionEvidenceDocument)
+    return anchored, trusted_qualification_index_for_run(anchored, parsed), text

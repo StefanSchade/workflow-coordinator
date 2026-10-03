@@ -368,6 +368,7 @@ class Hop:
     stop_reason: str | None
     summary: str
     attribution: str
+    pre_route_anchor_sha256: str | None = None
 
     def compact(self) -> "HopSummary":
         return HopSummary(
@@ -384,6 +385,7 @@ class Hop:
             stop_reason=self.stop_reason,
             summary=self.summary,
             attribution=self.attribution,
+            pre_route_anchor_sha256=self.pre_route_anchor_sha256,
         )
 
 
@@ -404,6 +406,7 @@ class HopSummary:
     attribution: str
     coverage_claims: tuple[CoverageClaim, ...] = ()
     convergence_assessments: tuple[ConvergenceAssessment, ...] = ()
+    pre_route_anchor_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -503,6 +506,80 @@ class DispatchMarker:
     invocation_id: str
     base_head: str
     budget_reserved: int
+    pre_route_anchor_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionEvidenceRunIdentity:
+    run_id: str
+    work_item_id: str
+    profile_id: str
+    profile_revision: str
+
+
+@dataclass(frozen=True)
+class RequiredEvidenceIdentity:
+    command_name: str
+    argv_digest: str
+    timeout_seconds: int
+
+
+@dataclass(frozen=True)
+class StagedQualificationAttempt:
+    """One immutable schema-4 pre-route execution attempt."""
+
+    hop_id: str
+    hop_sequence: int
+    invocation_id: str
+    pre_route_anchor_sha256: str
+    phase: str
+    workflow_role: str
+    persona: str
+    persona_sha256: str
+    adapter: str
+    executable: str
+    model: str | None
+    reasoning: str | None
+    context: str
+    timeout_seconds: float
+    returncode: int | None
+    timed_out: bool
+    candidate_result_present: bool
+    candidate_result_sha256: str
+    publication: str
+    outcome: str
+    base_head: str
+    end_head: str
+    actual_commits: tuple[str, ...]
+    required_evidence: tuple[RequiredEvidenceIdentity, ...]
+    trusted_observations: tuple[Observation, ...]
+
+
+@dataclass(frozen=True)
+class ExecutionEvidenceDocument:
+    schema_version: int
+    run: ExecutionEvidenceRunIdentity
+    attempts: tuple[StagedQualificationAttempt, ...]
+
+
+@dataclass(frozen=True)
+class LegacyExecutionEvidenceDocument:
+    """Audit-readable but mechanically ineligible execution evidence."""
+
+    schema_version: int
+    attempts: tuple[Mapping[str, object], ...]
+
+
+@dataclass(frozen=True)
+class TrustedQualificationIndex:
+    """Lossless validated schema-4 input, never a persisted qualification cache."""
+
+    run: ExecutionEvidenceRunIdentity | None
+    attempts: tuple[StagedQualificationAttempt, ...]
+
+    @classmethod
+    def empty(cls) -> "TrustedQualificationIndex":
+        return cls(run=None, attempts=())
 
 
 def new_run(
