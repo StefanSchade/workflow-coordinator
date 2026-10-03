@@ -241,6 +241,22 @@ CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_SCOPE = (
 CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_REVIEW_ARTIFACT = (
     CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_001_REVIEW_ARTIFACT
 )
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_GOVERNING_PATHS = (
+    "governance/work-items/correction-convergence-escape-implementation-s1-003.yaml",
+    "governance/self-development/correction-convergence-escape-implementation-s1-003-profile.yaml",
+    "governance/self-development/correction-convergence-escape-implementation-s1-003-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/correction-convergence-escape-implementation-s1-003-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_SCOPE = (
+    "src/workflow_coordinator/reducer.py",
+    "tests/unit/test_reducer.py",
+)
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_REVIEW_ARTIFACT = (
+    CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_002_REVIEW_ARTIFACT
+)
 IMPLEMENTATION_PATHS = (
     "Makefile",
     "README.md",
@@ -2356,6 +2372,186 @@ def test_correction_convergence_escape_implementation_s1_002_bundle_passes_produ
     assert review.role == rereview.role == "independent_reviewer"
     assert implement.role == correct.role == "worker"
     assert review.review.finding_authority == ()
+    assert rereview.review.finding_authority == ()
+
+    assert work_item.personas[WorkflowRole.WORKER] != work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    assert not state_root.exists()
+
+
+def test_correction_convergence_escape_implementation_s1_003_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Fresh correct-only continuation closing S1-002's sole remaining blocker.
+
+    ``WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S1-003`` continues
+    predecessor ``WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S1-002``
+    (Run ``RUN-36e0ca5ca7e245c8af90260ec8bd3ba9``), which exhausted its 6/6
+    autonomous Hop budget at H006 ``changes_required`` with a clean committed
+    final HEAD, ``3aaedaa9a4eb9dd8ebd0f16b44360fc29ee19864``, and exactly one
+    remaining open blocking implementation-review identifier, ``S1-IR-002``
+    ("New-counterexample evidence must be absent from the correlated
+    correction history"); ``S1-IR-001`` is already closed. Unlike S1-002 (a
+    four-phase ``implement -> review -> correct -> rereview`` continuation of
+    an interrupted, never-reviewed implementation attempt), this commission's
+    implementation already exists and has already undergone independent
+    review -- it uses the bounded two-phase
+    ``correct -> rereview -> {accept: complete, correct: correct}`` topology,
+    starting directly at `correct`, bounded to ``max_autonomous_hops: 4`` (at
+    most two correction/rereview cycles, not six). Its correction scope
+    ceiling is exactly the two files named by S1-IR-002's required
+    correction -- ``reducer.py`` and ``test_reducer.py`` -- not the full
+    twelve-path Slice-1 implementation scope used by S1-001/S1-002. It reuses
+    (and appends to) the SAME durable review artifact as S1-002,
+    ``..._implementation_review_001.adoc``, rather than creating a ``_002``
+    artifact, because H006 explicitly requires the fresh rereview to dispose
+    S1-IR-002 in a separately appended section of the complete durable
+    Slice-1 implementation-review history, preserving every prior section.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "correction-convergence-escape-implementation-s1-003"
+
+    assert not state_root.exists()
+    result = _preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    correct = profile.phases["correct"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = (
+        *CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_SCOPE,
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_REVIEW_ARTIFACT,
+    )
+    assert len(CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_SCOPE) == 2
+
+    assert work_item.work_item_id == "WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S1-003"
+    assert work_item.initial_phase == "correct"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 4
+    assert profile.profile_id == "correction-convergence-escape-implementation-s1-003"
+    assert policy.policy_id == "workflow-coordinator-correction-convergence-escape-implementation-s1-003"
+    assert tuple(profile.phases) == ("correct", "rereview")
+
+    # Explicit frozen lineage: the predecessor WorkItem, its Run, and its
+    # final head are captured, S1-IR-002 is named as the complete remaining
+    # obligation, S1-IR-001 is recorded as already closed (not reopened), and
+    # the original semantic baseline is retained.
+    assert "WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S1-002" in work_item.authority_source
+    assert "RUN-36e0ca5ca7e245c8af90260ec8bd3ba9" in work_item.authority_source
+    assert "3aaedaa9a4eb9dd8ebd0f16b44360fc29ee19864" in work_item.authority_source
+    assert "272e2b27f4c75f5fb12cf5287d1b1940caeba5dc" in work_item.authority_source
+    assert "S1-IR-002" in work_item.authority_source
+    assert "S1-IR-001" in work_item.authority_source
+    assert "closed" in work_item.authority_source
+
+    # WorkItem.scope is exactly the two reducer/test paths S1-IR-002's
+    # correction is bounded to, plus the reused durable review artifact --
+    # never model.py, serialization.py, adapter.py, codex_adapter.py,
+    # persistence.py, tests/support.py, vertical.py, prompt.py, operator.py,
+    # the design FTR, the source BUG, or any governance path.
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    for withheld in (
+        "Makefile",
+        "src",
+        "governance",
+        "workflow-coordinator-runtime",
+        "src/workflow_coordinator/model.py",
+        "src/workflow_coordinator/serialization.py",
+        "src/workflow_coordinator/adapter.py",
+        "src/workflow_coordinator/codex_adapter.py",
+        "src/workflow_coordinator/persistence.py",
+        "tests/support.py",
+        "tests/unit/test_persistence.py",
+        "tests/unit/test_codex_adapter_conformance.py",
+        "tests/architecture/test_replays.py",
+        "src/workflow_coordinator/vertical.py",
+        "src/workflow_coordinator/prompt.py",
+        "src/workflow_coordinator/operator.py",
+        "tests/unit/test_operator.py",
+        "tests/unit/test_slice3_vertical.py",
+        "tests/unit/test_slice5b.py",
+        "tests/fixtures/convergence_curriculum.yaml",
+        "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc",
+        "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_review_001.adoc",
+        "docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc",
+        "tests/architecture/test_self_development_governance.py",
+        "governance/work-items/correction-convergence-escape-implementation-s1-002.yaml",
+        "governance/self-development/correction-convergence-escape-implementation-s1-002-profile.yaml",
+        "governance/self-development/correction-convergence-escape-implementation-s1-002-policy.yaml",
+        "governance/work-items/correction-convergence-escape-implementation-s1-001.yaml",
+        "governance/self-development/correction-convergence-escape-implementation-s1-001-profile.yaml",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+    for path in CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_SCOPE:
+        assert _within_scope(path, work_item.scope)
+
+    # `correct` is scoped to exactly reducer.py + test_reducer.py; `rereview`
+    # is independently scoped by the profile to the single reused durable
+    # review artifact alone -- no phase's authorized_scope grants both.
+    assert correct.authorized_scope == CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_SCOPE
+    assert rereview.authorized_scope == (
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_REVIEW_ARTIFACT,
+    )
+    assert set(CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_SCOPE).isdisjoint(rereview.authorized_scope)
+    assert CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_REVIEW_ARTIFACT not in correct.authorized_scope
+
+    # Only rereview carries the durable-artifact acceptance-recording
+    # requirement; the reused artifact is the SAME path as S1-002's, not a
+    # fresh `_002`/`_003`-suffixed review artifact.
+    assert durable_artifacts == {
+        "rereview": (CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_REVIEW_ARTIFACT,),
+    }
+    assert (
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_REVIEW_ARTIFACT
+        == "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc"
+    )
+    assert _within_scope(
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S1_003_REVIEW_ARTIFACT, rereview.authorized_scope
+    )
+    assert rereview.durable_artifact.value == "required"
+    assert correct.durable_artifact.value == "none"
+    assert {"edit", "commit"}.issubset(set(rereview.authorized_actions))
+    assert {"edit", "commit"}.issubset(set(correct.authorized_actions))
+
+    # Load-bearing complete-review-baseline rule: rereview's purpose names the
+    # original semantic baseline and explicitly excludes narrower deltas
+    # (the S1-003 correction delta, the S1-002-final-head-to-candidate delta,
+    # and the post-WIP delta) as insufficient review scope.
+    assert "272e2b27f4c75f5fb12cf5287d1b1940caeba5dc" in rereview.review.purpose
+    assert "S1-IR-002" in rereview.review.purpose
+    assert "S1-IR-001" in rereview.review.purpose
+
+    # Topology: correct -> rereview -> {accept: complete, correct}, bounded
+    # to four Hops (two correction/rereview cycles). No implement/review
+    # preamble, diagnosis/reframe/strategy-gate phase, or Slice-2/3/4/5
+    # implementation path is authorized.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "correct": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+    }
+    assert rereview.role == "independent_reviewer"
+    assert correct.role == "worker"
     assert rereview.review.finding_authority == ()
 
     assert work_item.personas[WorkflowRole.WORKER] != work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
