@@ -1,0 +1,674 @@
+= FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE -- Design Revision 001: Trusted Qualification Input
+
+Type:: additive future-technical-record design revision
+Status:: proposed / independent review pending / implementation not authorized
+Priority:: narrow correction to Slice-2 convergence-fact derivation
+Date:: 2026-10-03
+Revises:: `docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc`
+Source implementation blocker:: `S2-IR-001` (remains open)
+
+== Decision summary
+
+The accepted convergence-escape architecture correctly requires evidence
+failure not to increment a qualified-cycle count, but its Slice-2 read model
+cannot enforce that requirement. The persisted Run/Hop/Finding history contains
+the semantic assessment and Finding state; it does not contain the trusted
+required-evidence outcome that was available transiently during reduction.
+
+This revision selects solution family B. A qualified convergence cycle is a
+composite derived fact:
+
+----
+qualified_cycle(h) = semantic_cycle_predicate(Run, h)
+                     AND trusted_evaluator_qualification(Evidence, h)
+
+ConvergenceFact = f(
+  Run semantic history,
+  trusted execution-evidence qualification input,
+  qualified_cycle_limit
+)
+----
+
+`h` is the exact evaluator Hop whose `carried_new_counterexample` assessment
+would otherwise be counted. The semantic predicate remains owned by the
+accepted Run/Finding history. The mechanical predicate is supplied by the
+Coordinator-owned execution-evidence surface. Neither surface substitutes for
+the other, and evidence machinery receives no Finding disposition or semantic
+acceptance authority.
+
+The current `execution-evidence.json` schema version 3 is almost the required
+surface, but it is not sufficient as a replay input: it does not bind the
+document to a Run identity and it does not preserve the exact required-command
+set against which its observations must be judged. A later, separately
+commissioned implementation shall introduce the bounded schema-version-4
+extension specified below. It shall not add a qualification field to Run,
+Hop, HopSummary, or Finding and shall not add a mutable convergence counter.
+
+This revision is architecture-convergence input only. Independent acceptance
+makes it additional accepted design authority for the narrow superseded
+contract below. Acceptance does not implement the contract, accept Slice 2,
+close `S2-IR-001`, fix the source BUG, authorize S2-002, promote Runtime, or
+authorize another Run.
+
+== Narrow supersession boundary
+
+If independently accepted, this record supersedes only these portions of the
+accepted FTR:
+
+* the statement in _Convergence facts and bounded goalpost_ that all inputs
+  needed to qualify a cycle are mechanically observable in accepted Run state;
+* the Slice-2 contract that derives `ConvergenceFact` from ordered
+  Run/Hop/Finding history plus a finite limit alone;
+* the related persistence/checkpoint/test statements insofar as they assume
+  that `run.json` alone can prove the required-evidence qualification
+  predicate; and
+* the Slice-2 implementation boundary that excluded the existing operator
+  execution-evidence seam from the derivation input.
+
+All other accepted architecture remains in force, including stable Finding
+identity, correction-obligation lifecycle, evidence freshness, exact
+corrector/evaluator correlation, profile grammar, route precedence, escape
+events, diagnosis/reframe semantics, strategy generations, authority limits,
+legacy Run parsing, and the implementation slicing not expressly amended here.
+This is forward-moving semantic correction, not historical rollback:
+
+----
+Fachlich darf man zuruckgehen. Prozessual geht man immer vorwarts.
+Backtracking is semantic, never historical.
+----
+
+The original FTR and its acceptance history remain the truthful authority under
+which the stopped Slice-2 attempt was commissioned.
+
+== Falsified assumption and empirical counterexample
+
+=== Falsified prior assumption
+
+The falsified simplified contract was:
+
+----
+ConvergenceFact = f(
+  Run/Hop/Finding semantic history,
+  qualified_cycle_limit
+)
+----
+
+The accepted design named evidence failure as a non-qualifying case, but no
+durable field in `Hop` or `HopSummary` records
+`MechanicalFacts.required_evidence_failed`. `vertical.py` computes that value
+from Coordinator-executed `Observation` values for the current Hop and passes
+it to `reduce_result`; `reducer.py` may use it to select the configured
+`failed_evidence_route`. The value is then lost from Run history. A later pure
+`derive_convergence_facts(run, limit)` therefore cannot distinguish a
+mechanically qualified evaluator assessment from the same semantic assessment
+whose required evidence failed.
+
+Agent-authored `evidence_refs` cannot repair the gap. They are attributed
+semantic references, not trusted command observations.
+
+=== S2-001 H002 empirical counterexample
+
+The stopped Slice-2 implementation attempt produced a factual but unaccepted
+candidate at `830bdf5536e28a52502bb6faf9172e57093150cb`. Fresh independent
+review established the following counterexample, reproduced here as this
+revision's grounding rather than by resurrecting its unpublished review draft:
+
+* an evaluator Hop can carry a structurally valid correlated
+  `carried_new_counterexample`;
+* the corresponding Finding may remain open and blocking;
+* the Coordinator's required trusted evidence for that Hop may fail;
+* reduction knows this as
+  `MechanicalFacts.required_evidence_failed=True`;
+* persisted semantic Run/Hop/Finding history does not retain enough
+  information for later `derive_convergence_facts(run, limit)` to distinguish
+  that evidence-failed evaluator cycle from a qualified one; and
+* the reproduced history derived a qualified-cycle count of 1 even though
+  failed required evidence must not qualify.
+
+That is an input-sufficiency defect, not a defect in Slice-1 semantic
+admission. `S2-IR-001` remains open until a later implementation and its own
+independent implementation review close it.
+
+== Existing authority surfaces
+
+Semantic history owns Hop identity, attributed coverage and convergence
+assessments, Finding lifecycle, semantic outcome, and applied route. It answers
+whether the accepted semantic cycle predicate exists. It does not establish
+whether Coordinator-required commands passed.
+
+Trusted mechanical evidence owns the admitted required-command plan and the
+Coordinator-executed observations for one invocation: command identity,
+pass/fail/error/not_run, and Hop/invocation correlation. It answers only the
+mechanical qualification predicate.
+
+The current operator already writes `execution-evidence.json` outside `Run`,
+atomically replacing a document shaped as
+`{"schema_version": 3, "attempts": [...]}`. Each candidate-bearing row already
+contains `hop_id`, `invocation_id`, phase, workflow role, semantic/repository
+anchors, and `trusted_observations`. Reusing and narrowly completing that
+surface is smaller than either copying a boolean into semantic state or
+inventing another evidence ledger.
+
+== Alternatives considered
+
+=== A -- durable qualification inside Run/Hop semantics
+
+Rejected for this correction. Persisting `required_evidence_passed` or an
+equivalent summary on Hop would make Run-only derivation convenient, but would
+copy a fact whose detailed authority already lives in execution evidence. It
+would change Run/Hop wire, collapse a mechanical execution predicate into the
+semantic ledger, and create two durable representations that can disagree.
+Persisting only a boolean would also discard the exact required-command set
+needed to explain missing, partial, or multiple-command cases. Persisting all
+observations inside Hop would duplicate the existing evidence substrate and
+substantially widen the semantic wire.
+
+This family is not incoherent in principle, but it is larger and creates more
+authority ambiguity than the selected use of the existing surface.
+
+=== B -- semantic Run history plus trusted execution evidence
+
+Selected. The surfaces remain separately owned and are joined by strict
+Coordinator correlation. Execution evidence becomes an authoritative input
+only to the mechanical qualification predicate. It does not become semantic
+Finding, acceptance, route, or strategy authority. The resulting
+`ConvergenceFact` is a composite projection, not a new ledger.
+
+The current schema-3 document cannot simply be treated as sufficient. A narrow
+schema-4 addition must bind it to the exact Run and retain the exact required
+command identities for each attempt. Without those fields, empty, partial,
+stale, or cross-Run observations cannot be interpreted replay-deterministically.
+
+=== C -- prevent failed-evidence semantic records from becoming authoritative
+
+Rejected. The evaluator did make a semantic claim, and the Coordinator did
+accept and validate that correlated result before mechanically selecting the
+failed-evidence route. Suppressing or rolling back the assessment/Finding
+history would make the audit trail untruthful and would entangle Slice-1
+Finding transactions with evidence execution and publication ordering. It
+would also risk changing the meaning of accepted Slice-1 output merely to make
+a later read model simpler. The correct distinction is “semantic assessment
+recorded” versus “mechanically qualified for convergence counting.”
+
+=== Other -- infer failure from route or stop reason
+
+Rejected. `applied_route`, `failed_evidence_route`, and stop reasons are lossy
+routing effects, not a complete record of command identity or status. A phase
+may have no failed-evidence route; other preemptions can control; and route
+names are profile-specific. Inference from an absent failure route would fail
+open. No materially smaller coherent alternative to B was found.
+
+== Revised authoritative input contract
+
+=== Exact input set
+
+The authoritative inputs to revised convergence derivation are exactly:
+
+. the accepted, ordered schema-version-3 Run semantic history, including
+  tracked Findings, coverage claims, convergence assessments, Finding delta
+  correlations, and evaluator Hop order;
+. the presence or absence of one Coordinator-written `execution-evidence.json`
+  surface, represented for derivation by either a strictly validated
+  schema-version-4 document for that exact Run or an explicit empty
+  qualification index when the document is absent/legacy;
+  and
+. the finite `qualified_cycle_limit` supplied from the pinned profile by the
+  separately accepted integration layer.
+
+No agent prose, agent `evidence_refs`, checkpoint value, route name, stop
+reason, result file, mutable count, or inferred historical value is an input.
+The execution-evidence row itself durably snapshots the admitted required
+command set used for that attempt, so replay does not consult a later mutable
+policy/profile file to reconstruct it.
+
+The pure derivation API may express the second input as a strictly parsed
+immutable `TrustedQualificationIndex` rather than raw JSON. That index must be
+a lossless validation product of the schema-4 document, not a cache or an
+independent persistence surface. Conceptually:
+
+----
+derive_convergence_facts(
+  run,
+  trusted_qualification_index,
+  qualified_cycle_limit,
+) -> tuple[ConvergenceFact, ...]
+----
+
+For every semantic cycle candidate at evaluator Hop `h`, the current accepted
+semantic predicate remains unchanged. The candidate contributes `h` to
+`source_evaluator_hops` if and only if the qualification predicate below is
+also true. Counts, source-Hop ordering, and `goalpost_reached` are then derived
+exactly as before.
+
+This revision qualifies the source evaluator Hop only. It does not add the
+corrector Hop's command outcomes to the convergence predicate. The empirical
+defect and the convergence event both concern the evaluator assessment; any
+future decision to require a two-Hop mechanical conjunction would be a wider
+semantic change requiring separate authority.
+
+=== Execution-evidence schema version 4
+
+Schema version 4 retains the existing bounded schema-3 attempt fields and
+trusted Observation wire and adds only the identity and plan facts necessary
+for deterministic qualification:
+
+[source,json]
+----
+{
+  "schema_version": 4,
+  "run": {
+    "run_id": "RUN-...",
+    "work_item_id": "WI-...",
+    "profile_id": "...",
+    "profile_revision": "..."
+  },
+  "attempts": [
+    {
+      "hop_id": "H002",
+      "hop_sequence": 2,
+      "invocation_id": "INV-...",
+      "hop_summary_sha256": "...",
+      "phase": "review",
+      "workflow_role": "independent_reviewer",
+      "outcome": "changes_required",
+      "base_head": "...",
+      "end_head": "...",
+      "actual_commits": [],
+      "candidate_result_present": true,
+      "required_evidence": [
+        {
+          "command_name": "pytest",
+          "argv_digest": "...",
+          "timeout_seconds": 900
+        }
+      ],
+      "trusted_observations": [
+        {
+          "command_name": "pytest",
+          "argv_digest": "...",
+          "timeout_seconds": 900,
+          "status": "pass"
+        }
+      ]
+    }
+  ]
+}
+----
+
+The abbreviated Observation above does not remove existing schema-3 fields;
+schema 4 retains their strict validation. `required_evidence` is the ordered,
+Coordinator-prepared phase selection, not an agent field. Each command name is
+unique. Its identity is the tuple `(command_name, argv_digest,
+timeout_seconds)`. An empty list truthfully means that the admitted phase
+required no command. The writer obtains this list from the same prepared
+commands it actually executes; it must not reconstruct it from observation
+presence after execution.
+
+The document-level Run identity is mandatory. `hop_sequence` and
+`hop_summary_sha256` are mandatory. The latter is the SHA-256 of the canonical
+closed-wire JSON object for that exact persisted HopSummary, using the same
+field set and canonical JSON rules as Run serialization. It binds the row to
+the complete semantic Hop without adding invocation or evidence fields to Run
+wire. `invocation_id` remains mandatory and must be unique within the
+document. Unknown fields or malformed values fail strict parsing. Schema 4
+does not add a mutable `qualified` boolean; qualification remains derived from
+plan plus observations.
+
+=== Exact correlation rule
+
+An execution-evidence attempt correlates to semantic evaluator Hop `h` only
+when all of the following hold:
+
+. the document `run_id`, `work_item_id`, `profile_id`, and
+  `profile_revision` equal the Run's pinned identities;
+. exactly one attempt row names `h.hop_id` and `h.sequence`;
+. that row's non-empty `invocation_id` is unique in the document;
+. the row's `hop_summary_sha256` equals the digest recomputed from `h`'s
+  canonical persisted wire object;
+. the row's workflow role, semantic outcome, base HEAD, end HEAD, and ordered
+  `actual_commits` exactly equal the Hop summary;
+. the row records a validated candidate (`candidate_result_present=true`).
+
+The accepted convergence assessment in `h` already proves Slice-1 evaluator
+provenance; derivation does not re-admit that semantic record from the attempt
+row. The row's retained `phase` is audit context, while its workflow role and
+complete Hop-summary digest are checked as above. This avoids making a mutable
+live profile file an additional replay input.
+
+Every present attempt row must correlate to exactly one Hop in the identified
+Run. A row for an unknown Hop, a duplicate row for one Hop, duplicate
+invocation identity, reordered/mismatched commit anchors, cross-Run document,
+or conflicting provenance is inconsistent input. It must never be selected by
+best effort, first/last wins, route inference, or nearest-sequence matching.
+
+Missing and inconsistent input differ operationally but both fail closed. No
+row for an otherwise valid evaluator Hop means that candidate is simply
+unqualified. Structurally malformed, duplicate, cross-Run, or contradictory
+input raises one deterministic qualification-input error; a consumer must not
+publish a new convergence checkpoint or take a convergence route from it.
+The existing mechanical/human stop boundary handles such an integration error
+when live routing is later commissioned. It is not converted to count zero and
+silently ignored, because doing so would conceal corrupted trusted input.
+
+=== Mechanical qualification semantics
+
+After exact Hop correlation, the attempt's required plan and observations are
+matched by the exact command-identity tuple above:
+
+Pass:: Every required command has exactly one matching, strictly valid trusted
+Observation with `status=pass`, and there is no extra Observation. The
+mechanical predicate is true.
+
+Fail:: Any matching required Observation has `status=fail`. The predicate is
+false. The semantic assessment remains in history but its evaluator Hop is
+absent from `source_evaluator_hops`.
+
+Error:: Any matching required Observation has `status=error`. The predicate is
+false. Existing evidence-error preemption remains unchanged.
+
+Not run:: Any matching required Observation has `status=not_run`. The
+predicate is false.
+
+Missing evidence:: The evaluator has no exactly correlated schema-4 attempt,
+or one required command has no Observation. The predicate is false.
+
+Partial evidence:: Some but not all required commands have observations. The
+predicate is false regardless of the observed subset's statuses.
+
+Multiple required commands:: Qualification is the conjunction over the exact
+required plan. All must pass exactly once. One fail, error, not_run, missing,
+duplicate, or mismatched observation prevents qualification.
+
+No required commands:: The predicate is true only when an exactly correlated
+schema-4 attempt durably records both an empty required plan and an empty
+trusted-observation list. Absence of the attempt cannot be interpreted as a
+vacuous pass.
+
+Extra, duplicate, or identity-mismatched observations are inconsistent input,
+not optional successes. Unsupported status values and malformed Observation
+wire are likewise input errors. Agent references and prose are never used to
+fill a missing Observation.
+
+== Authority and invariant preservation
+
+No shadow ledger:: The revision adds no counter, goalpost flag, or mutable
+qualification state. The schema-4 attempt is an immutable execution record;
+`ConvergenceFact` remains recomputed.
+
+Replay determinism:: Identical Run bytes, identical validated schema-4
+execution-evidence bytes, and the same finite limit produce identical facts
+and ordered source Hop IDs.
+
+Fail closed:: Missing qualification is false; ambiguous or inconsistent
+trusted input blocks its consumer. None can cause qualification.
+
+No semantic authority from evidence machinery:: A pass can only satisfy the
+mechanical conjunct of an already valid semantic cycle. It cannot create an
+assessment, resolve/supersede/residualize a Finding, accept work, advance a
+strategy, or select a route by itself.
+
+No agent authority over trusted qualification:: Agents cannot write the
+external Coordinator state, declare the required plan, or self-certify with an
+`evidence_ref` or summary.
+
+Stable correlation:: Run identity, Hop ID/sequence, invocation uniqueness,
+role/outcome, repository anchors, and commit list must agree exactly.
+
+No historical rewrite:: No old Run or evidence document is migrated or
+backfilled. No failed-evidence route or prose is mined to synthesize status.
+
+Slice-1 acceptance remains intact:: Slice 1 continues to admit and preserve
+semantic coverage, assessments, Finding deltas, and freshness. This revision
+does not contradict or reopen `S1-IR-001` or `S1-IR-002`.
+
+Checkpoint remains derived:: It is a replaceable projection over both
+authoritative inputs, never a third source.
+
+No premature Slice-3/4 behavior:: This record adds no escape substitution,
+diagnosis/reframe behavior, generation advancement, or profile grammar.
+
+Truthful failed-evidence history:: The semantic claim remains visible while
+the mechanically unqualified evaluator Hop is excluded from the count.
+
+Minimal scope:: The existing execution-evidence surface is extended narrowly;
+there is no generalized event store, provenance framework, or persistence
+substrate.
+
+All twelve required invariants are therefore preserved without revision.
+
+== Crash, recovery, replay, and publication
+
+The semantic Run snapshot and execution-evidence document remain separately
+atomic files; this revision does not require a cross-file transaction.
+Qualification becomes durable only when the complete schema-4 document
+containing the exactly correlated attempt row has been atomically published.
+
+The safe publication sequence for a candidate-bearing Hop is:
+
+. atomically persist the reduced Run snapshot, retaining the semantic claim;
+. atomically append-by-replacement the schema-4 attempt and its complete
+  trusted observations; and
+. regenerate the checkpoint from those two durable inputs.
+
+A crash after step 1 but before step 2 leaves truthful semantic history and no
+durable mechanical qualification; the cycle does not qualify. A crash after
+step 2 but before step 3 leaves sufficient authoritative input for replay; the
+checkpoint is stale and must be regenerated. A partial execution-evidence
+write is not visible because publication remains atomic. Existing dispatch
+marker, uncertain-Hop charging, and reconcile rules are unchanged. An
+uncertain Hop has no semantic assessment admitted through reduction and cannot
+qualify; an accepted semantic Hop whose attempt row was lost in a crash also
+cannot qualify. Safety intentionally wins over recovering an uncommitted pass.
+
+The schema-4 writer must preserve already durable rows when continuing a Run;
+it must not initialize an empty array and erase predecessor attempts. Duplicate
+append of the same Hop/invocation is rejected rather than deduplicated by
+last-write-wins.
+
+Checkpoint identity shall bind both inputs, using the existing Run snapshot
+digest plus an `execution_evidence_sha256` of the exact schema-4 bytes. A
+checkpoint with either digest mismatch is stale and cannot supply routing or
+qualification truth. Rebuilding it is mechanical and changes no authority.
+
+Replay validates the complete execution-evidence document first, builds the
+immutable qualification index, and then derives facts in Run Hop order. It
+does not depend on filesystem enumeration, JSON member order, live policy
+files, or observation arrival order. `source_evaluator_hops` remains ordered by
+semantic Run Hop order.
+
+== Legacy and compatibility semantics
+
+Run wire versions 1 and 2 remain non-convergence Runs and derive no facts, as
+already accepted. Run wire version 3 remains readable without change.
+
+Execution-evidence schema versions 1 through 3 remain readable for audit but
+are ineligible to prove the revised mechanical predicate because they lack the
+complete Run/required-plan binding. They are never silently upgraded. For a
+schema-version-3 Run with absent or legacy execution evidence, derivation uses
+an explicit empty qualification index: every open tracked Finding projects a
+zero-count `ConvergenceFact`, and no historical evaluator Hop enters
+`source_evaluator_hops`. It must not reuse the old semantic-only count.
+
+No operator, migration, or human may backfill a pass from an applied route,
+test log, agent evidence reference, repository state, or remembered command
+result. If historical qualification is operationally needed, a separately
+authorized fresh Run must create new trusted records.
+
+== Wire and checkpoint consequences
+
+Run/Hop/Finding wire change:: None. `HopSummary` does not gain
+`required_evidence_failed`, invocation ID, Observation values, or a
+qualification boolean. The existing `ConvergenceFact` shape is unchanged.
+
+Execution-evidence wire change:: Yes. Schema version 4 adds the mandatory Run
+identity, `hop_sequence`, `hop_summary_sha256`, and exact per-attempt
+`required_evidence` plan while retaining strict existing attempt and
+Observation facts. Older versions remain audit-readable but mechanically
+ineligible for revised qualification.
+
+Checkpoint change:: The optional convergence projection consumes the
+qualification index and includes `execution_evidence_sha256` beside the Run
+digest. It continues to serialize only derived `ConvergenceFact` values and
+source evaluator Hop IDs. It does not persist a qualification decision as
+authority. Missing evidence produces no qualified source Hop; inconsistent
+evidence prevents publication of a fresh convergence projection.
+
+== Slice implications
+
+=== Slice 1
+
+No Slice-1 implementation change is required. Its records truthfully retain
+the evaluator's semantic claim and Finding lifecycle even when evidence fails.
+Its accepted correlation, totality, freshness, transactionality, and strict
+Run-v3 wire remain prerequisites to the semantic conjunct. The new required
+plan/Observation correlation belongs to revised Slice 2's mechanical read
+model and operator evidence publication, not to Slice-1 semantic admission.
+
+=== Exact amendment to Slice-2 implementation authority
+
+The stopped S2-001 candidate is factual but unaccepted. This design does not
+modify it and grants no authority to do so. A future S2-002 or equivalent
+Commission must explicitly replace the Run-only Slice-2 derivation contract
+with this composite contract. It must:
+
+* strictly model/parse schema-4 execution evidence and construct the immutable
+  qualification index;
+* make convergence derivation require that index and apply the exact
+  evaluator-Hop conjunction;
+* make the operator publish Run identity, Hop sequence, and the prepared
+  per-attempt required-command plan without losing prior rows;
+* bind checkpoint projection to both authoritative input digests;
+* preserve the absence of routing, escape, diagnosis, reframe, and generation
+  advancement in Slice 2; and
+* undergo a fresh independent implementation review that explicitly disposes
+  `S2-IR-001`.
+
+Acceptance of this design revision neither supplies that Commission nor closes
+the implementation blocker.
+
+=== Slice 3 integration
+
+Slice 3, when separately authorized, must supply the same validated
+qualification index and pinned finite limit to its convergence projection
+before considering escape substitution. An unavailable evaluator row makes
+that cycle non-qualifying; inconsistent trusted input mechanically preempts
+convergence routing. Slice 3 must not recreate the old Run-only overload,
+infer evidence state from the failed-evidence route, or treat checkpoint data
+as authority. No Slice-3 behavior is implemented or otherwise revised here.
+
+== Exact future implementation mutation scope
+
+No path below is authorized by this design Run. A separately commissioned
+implementation may authorize this closed production union:
+
+* `src/workflow_coordinator/model.py` -- immutable schema-4/qualification input
+  records if needed; no mutable fact state;
+* `src/workflow_coordinator/reducer.py` -- revised pure composite derivation;
+* `src/workflow_coordinator/persistence.py` -- strict execution-evidence
+  validation/read projection and dual-input checkpoint binding;
+* `src/workflow_coordinator/operator.py` -- schema-4 identity/plan emission,
+  append preservation, and final checkpoint regeneration; and
+* `src/workflow_coordinator/serialization.py` only if the Commission chooses
+  to place strict schema-4 parsing in the repository's central wire module
+  rather than `persistence.py`.
+
+The corresponding focused test scope may include existing unit tests for
+those modules, `tests/support.py`, `tests/architecture/test_replays.py`, and
+operator serial-loop tests. The later Commission must name exact paths. No
+adapter, prompt, evidence-command execution, Finding admission, Runtime,
+governance, consumer repository, evidence repository, or Project Memory path
+is implied. Discovery of another necessary production seam requires its own
+reviewed scope decision.
+
+== Deterministic tests required before Slice-2 acceptance
+
+A later implementation must keep the complete repository suite green and add
+deterministic coverage for at least:
+
+. one correlated semantic cycle plus one exact all-pass evaluator attempt
+  increments once and records that evaluator Hop;
+. the S2-IR-001 counterexample: the same semantic history with evaluator
+  `status=fail` yields count zero and no source Hop;
+. `error` and `not_run` each yield count zero;
+. a missing evaluator attempt yields count zero, including after a simulated
+  crash between Run and evidence publication;
+. a required plan of two commands qualifies only when both exact observations
+  pass;
+. one missing observation, one pass plus one fail, one pass plus one error,
+  and one pass plus one not_run do not qualify;
+. duplicate, extra, command-name-mismatched, argv-digest-mismatched, and
+  timeout-mismatched observations fail closed;
+. an exactly correlated empty required plan plus empty observation set
+  qualifies, while an absent row does not;
+. cross-Run evidence, wrong WorkItem/profile revision, wrong Hop ID/sequence,
+  duplicate Hop rows, duplicate invocation IDs, role/outcome/head/commit
+  mismatch, unknown Hop rows, and malformed schema fail deterministically and
+  cannot publish a convergence route or fresh checkpoint;
+. two qualified evaluator cycles retain Run order and reach a limit of 2 with
+  no off-by-one error; changing only one observation to fail removes only its
+  source Hop and adjusts the count deterministically;
+. `carried_unmet`, stale semantic evidence, uncorrelated assessment,
+  resolved/superseded Finding, different Finding ID, and uncertain/rejected
+  history remain excluded independently of mechanical pass;
+. a mechanically passing attempt without the accepted semantic predicate does
+  not create a cycle, Finding disposition, or semantic acceptance;
+. replay from byte-identical Run and schema-4 evidence produces identical
+  facts and checkpoint bytes;
+. checkpoint digest mismatch for either Run or execution evidence is rejected
+  and reconstruction restores the same derived view;
+. atomic evidence-publication failure leaves the previous complete document
+  and cannot expose a partially qualifying row;
+. continuation preserves existing attempts and rejects duplicate append;
+. schema versions 1 through 3 are not backfilled or treated as proof of pass;
+  legacy/simple Runs remain unchanged; and
+. no Run/Hop/Finding wire field, mutable count, goalpost flag, route
+  substitution, escape event, diagnosis/reframe record, or non-zero strategy
+  generation is introduced by revised Slice 2.
+
+These tests are necessary, not independent-review acceptance by themselves.
+
+== Explicitly unchanged architecture and non-scope
+
+The following remain unchanged:
+
+* Finding is the sole semantic blocker ledger and its configured gate/human
+  authority remains the sole disposition authority.
+* Coverage and convergence assessments remain agent-attributed semantic
+  records validated by Core.
+* The semantic cycle predicate, genuine-new-evidence rule, same-ID correlation,
+  still-open/blocking requirement, per-generation count, fact shape, and
+  finite goalpost meaning remain as accepted.
+* The qualified-cycle limit changes strategy only; it never asserts
+  correctness or acceptance.
+* Existing reducer preemption, failed-evidence routing, Hop budget, supervisor,
+  and human/escalation semantics remain unchanged.
+* Profile v2/simple-loop behavior and legacy Run wire behavior remain
+  unchanged.
+* Strategy escape, diagnosis, reframe, exact trigger sets, generation
+  advancement, and R1A dogfood remain later slices/activities.
+* Checkpoint remains a derived, replaceable projection.
+* No historical Run, stopped attempt, original FTR, review artifact, source
+  BUG, Runtime, governance state, evidence repository, or Project Memory is
+  mutated by this design.
+
+In particular, this record does not fix `derive_convergence_facts`, change a
+test, amend the S2-001 candidate, commission S2-002, close `S2-IR-001`, accept
+Slice 2, implement Slice 3/4/5, launch a Run, push, or promote Runtime.
+
+== Unresolved questions
+
+No semantic question blocks implementation of this narrow revision. The later
+Commission may choose whether the strict schema-4 parser is located in
+`persistence.py` or `serialization.py`, provided there is one closed parser and
+the exact contract above is unchanged. That code-location choice is not an
+architecture decision and grants no scope by itself.
+
+== Lifecycle
+
+This proposed revision awaits fresh independent adversarial review. An
+`accept` disposition in the commissioned design-revision Run makes this file
+additional accepted architecture/design authority for exactly the narrow
+supersession boundary above, without another maintainer design-acceptance act.
+An accepted revision remains non-implementation authority. `S2-IR-001` and the
+source BUG remain open until separately commissioned implementation and review
+provide their own closure authority.
