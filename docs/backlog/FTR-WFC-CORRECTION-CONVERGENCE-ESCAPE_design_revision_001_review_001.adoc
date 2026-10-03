@@ -1,0 +1,155 @@
+= FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE -- Design Revision 001 Review 001
+
+Independent adversarial review of commit
+`14830d3306056bb41f65111e941dc436a7bee5dd`
+(`docs(wfc): WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-DESIGN-REVISION-001 H001 revise convergence qualification`)
+against parent `cf6213b53fc698c18c1f68865e548f5e6dcbd642`.
+
+This review changes only this dedicated review artifact. It does not change the
+proposed revision, the accepted FTR or its history, product or test source,
+governance, Runtime, a Run ledger, the evidence repository, or Project Memory.
+It does not implement convergence qualification, close `S2-IR-001`, accept
+Slice 2, commission S2-002, or grant implementation authority.
+
+== Verdict
+
+*CHANGES REQUIRED; route `revise`.*
+
+The revision correctly identifies the lost mechanical predicate, keeps the
+semantic and trusted-mechanical surfaces separately owned, fails closed for
+missing and malformed evidence, snapshots the required-command plan, and
+defines deterministic multi-command, legacy, checkpoint, and no-backfill
+semantics. Family B is a coherent and appropriately narrow choice.
+
+One ordering gap prevents acceptance. The proposed correlation key depends on
+the final reduced HopSummary, while the later Slice-3 decision that consumes
+the current evaluator cycle must occur before that final HopSummary exists.
+The document neither defines a non-circular live qualification input nor
+preserves replay equivalence across the Run/evidence publication crash window.
+
+This is an ordinary design-revision defect within the commissioned question.
+It requires no stronger scope or semantic-authority escalation. This review
+creates no WFC Current-Run Finding; `DR1-IR-001` is a durable design-review
+requirement only.
+
+== Review entry and evidence
+
+At entry, `HEAD` was exactly
+`14830d3306056bb41f65111e941dc436a7bee5dd`, the worktree was clean, and the
+H001 range changed only
+`docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_design_revision_001.adoc`.
+`git show --check 14830d3306056bb41f65111e941dc436a7bee5dd`
+reported no whitespace error.
+
+The review inspected the accepted FTR and its review history, the proposed
+revision, and the current model, reducer, vertical, persistence, serialization,
+operator, evidence runner, replay tests, reducer tests, and serial-loop tests.
+The complete repository suite was also run through the repository environment:
+
+* `.venv/bin/python -m pytest -q` -- exit 0.
+
+The Coordinator-projected trusted `pytest` evidence is green as well. Green
+tests establish repository stability; they do not close the prospective
+publication-order protocol below.
+
+== Open blocking design requirement
+
+=== DR1-IR-001 -- Current-Hop qualification, final-Hop correlation, and publication are circular
+
+Underlying invariant:: A live convergence decision and replay from its durable
+authoritative inputs must agree about whether the current evaluator cycle
+qualified. No persisted escape decision may depend on a mechanical pass that
+the post-crash authoritative input set cannot reproduce.
+
+The proposed schema-4 attempt is not publishable until after reduction. Its
+mandatory `hop_summary_sha256` covers the complete persisted HopSummary, and
+the exact-correlation rule additionally compares semantic outcome, repository
+anchors, commits, and role. The complete HopSummary includes reduction-owned
+facts such as the applied route and stop reason. In the current execution
+order, `vertical.run_one_hop` executes and validates trusted observations and
+calls `reduce_result`; `slice4.run_real_one_hop` then persists the reduced Run
+and checkpoint; only after that returns does `operator.run_serial_hops` build
+and publish the execution-evidence attempt. The revision's own publication
+sequence preserves that Run-before-evidence order.
+
+That order is sufficient for a later Slice-2 read projection, but it is not
+closed over the accepted architecture's later evaluator-boundary escape
+decision. The revision says Slice 3 must supply the same validated
+qualification index before considering escape substitution. For the current
+evaluator Hop, no such schema-4 row can yet validate: the row needs the final
+HopSummary digest, while the final HopSummary route depends on the convergence
+decision that would consume the row.
+
+Both apparent interpretations violate the revised contract:
+
+* Treating the not-yet-published row as missing makes the current evaluator
+  cycle non-qualifying. There is no later reduction of that same Hop after the
+  operator publishes evidence, so goalpost routing is delayed or omitted.
+* Letting reduction use the transient observations as an implicit current-Hop
+  pass can select and persist an escape route. A crash after the Run snapshot
+  is published but before the schema-4 replacement then leaves that cycle
+  unqualified under replay, even though its persisted route was chosen because
+  it qualified live. The document explicitly says this crash loses mechanical
+  qualification, but it does not reconcile the already persisted semantic
+  routing decision.
+
+The checkpoint rule does not repair the mismatch. Rejecting or rebuilding a
+stale checkpoint can reproduce the zero-count fact after the crash, but it
+cannot undo or justify the route already recorded in authoritative Run
+history. This is therefore not merely a cache-publication detail.
+
+Required correction:
+
+. Define the exact trusted input used for the in-flight evaluator Hop and how
+  it composes with already durable qualification rows. State whether it is a
+  staged attempt, a bounded transient overlay, or another representation, and
+  prove that it uses the same plan/Observation conjunction as replay without
+  granting semantic authority to evidence machinery.
+. Remove the final-Hop-digest/route-decision cycle. Define a stable correlation
+  anchor available at the point the live predicate is consumed, or define an
+  ordering/commit protocol in which the evidence can become durable before the
+  semantic route that depends on it. Do not weaken exact Hop/invocation
+  correlation and do not introduce a mutable qualification counter.
+. Define the authoritative outcome of every crash and write-failure boundary:
+  before qualification publication, after qualification publication but
+  before Run publication, after Run publication but before evidence
+  publication if that ordering remains possible, and before checkpoint
+  regeneration. A recovered/replayed Run must not retain a convergence escape
+  that its authoritative qualification input excludes.
+. Amend the Slice-3 consequence and future implementation scope to name every
+  seam required by the chosen ordering. If `vertical.py` or `slice4.py` must
+  stage, correlate, or publish the current attempt, the claimed closed
+  production union cannot continue to omit it.
+. Require deterministic tests for a current evaluator cycle that reaches the
+  goalpost live and on replay, plus injected crashes/write failures at each
+  publication boundary. The tests must show identical qualification and route
+  justification, absence of partial qualification, and fail-closed recovery.
+
+This correction does not require choosing family A or merging semantic and
+mechanical authority. It requires family B to specify a complete live-to-durable
+protocol rather than only its post-publication read model.
+
+== Remaining adversarial assessment
+
+Subject to `DR1-IR-001`, the rest of the bounded revision is implementation
+ready:
+
+* the falsified assumption and S2-001 H002 counterexample are stated exactly;
+* A, B, C, and route inference are compared fairly, with B the smallest use of
+  the already durable trusted-evidence surface;
+* pass, fail, error, not-run, missing, partial, empty-plan, duplicate, extra,
+  mismatched, and multiple-command cases are deterministic and fail closed;
+* execution evidence supplies only the mechanical conjunct and cannot create
+  or dispose a Finding, accept work, or let an agent self-certify;
+* old Runs and schema-1-through-3 evidence are not migrated or backfilled;
+* Run/Hop/Finding wire remains unchanged, checkpoint remains derived, and no
+  mutable convergence counter or goalpost truth is added;
+* Slice-1 semantic acceptance remains intact, and the future Slice-2 amendment
+  neither modifies the stopped candidate nor closes `S2-IR-001`; and
+* the deterministic Slice-2 test matrix otherwise covers the empirical defect,
+  semantic/mechanical conjunction, strict correlation, replay, legacy input,
+  and append preservation.
+
+No second blocker is recorded. Acceptance requires a fresh independent
+rereview of the corrected live/publication protocol under the same stable
+`DR1-IR-001` identifier.
