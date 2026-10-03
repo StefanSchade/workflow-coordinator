@@ -302,6 +302,18 @@ class ConvergenceAssessment:
 
 
 @dataclass(frozen=True)
+class ConvergenceFact:
+    """A replay-derived count for one tracked obligation and strategy generation."""
+
+    finding_id: str
+    strategy_generation: int
+    qualified_cycle_count: int
+    qualified_cycle_limit: int
+    goalpost_reached: bool
+    source_evaluator_hops: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class RoutingResult:
     schema_version: int
     outcome: Outcome

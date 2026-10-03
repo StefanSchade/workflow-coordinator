@@ -1,6 +1,7 @@
 """Executable architecture acceptance replays A--J from the accepted FTR."""
 
 from dataclasses import fields
+import json
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import yaml
 
 import workflow_coordinator as workflow_coordinator
 from workflow_coordinator.model import (
+    DispatchMarker,
     Escalation,
     FindingAuthority,
     FindingState,
@@ -18,9 +20,14 @@ from workflow_coordinator.reducer import (
     apply_finding_deltas,
     authorize_prerequisite,
     confirm_supervisor_route,
+    derive_convergence_facts,
     reduce_result,
     require_reconcile,
     resume_after_reconcile,
+)
+from workflow_coordinator.persistence import (
+    checkpoint_projection,
+    recover_uncertain_dispatch,
 )
 from workflow_coordinator.serialization import (
     run_from_json,
@@ -30,6 +37,7 @@ from workflow_coordinator.serialization import (
 )
 from tests.support import (
     charge_hop,
+    convergence_cycle,
     existing_delta,
     new_delta,
     phase,
@@ -37,6 +45,7 @@ from tests.support import (
     result,
     route,
     run_for,
+    tracked_convergence_run,
 )
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -63,7 +72,53 @@ def test_pre_slice1_v2_replay_is_byte_preserving_and_fabricates_no_v3_records():
         not hop.coverage_claims and not hop.convergence_assessments
         for hop in run.hops
     )
+    assert derive_convergence_facts(run, 2) == ()
+    assert checkpoint_projection(
+        run, workflow, qualified_cycle_limit=2
+    )["convergence_facts"] == []
     assert process(run, workflow, result("done")).run.status is RunStatus.COMPLETED
+
+
+def test_slice2_convergence_projection_is_replay_deterministic_and_ignores_uncertain_hops():
+    workflow, run = tracked_convergence_run()
+    run, _, first_evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="first-replay"
+    )
+    run, _, second_evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="second-replay"
+    )
+    replayed = run_from_json(run_to_json(run))
+
+    expected = derive_convergence_facts(run, 2)
+    assert derive_convergence_facts(replayed, 2) == expected
+    assert expected[0].source_evaluator_hops == (
+        first_evaluator_hop,
+        second_evaluator_hop,
+    )
+    assert json.dumps(
+        checkpoint_projection(run, workflow, qualified_cycle_limit=2),
+        sort_keys=True,
+        separators=(",", ":"),
+    ) == json.dumps(
+        checkpoint_projection(replayed, workflow, qualified_cycle_limit=2),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    marker = DispatchMarker(
+        schema_version=1,
+        run_id=run.run_id,
+        hop_id="H006",
+        sequence=run.hop_used + 1,
+        invocation_id="INV-uncertain",
+        base_head=run.current_head,
+        budget_reserved=1,
+    )
+    uncertain = recover_uncertain_dispatch(
+        run, marker, current_head=run.current_head
+    )
+    assert uncertain.hops[-1].outcome == "uncertain"
+    assert derive_convergence_facts(uncertain, 2) == expected
 
 
 def test_replay_a_productive_correction_can_continue_beyond_three_loops():

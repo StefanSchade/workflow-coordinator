@@ -41,6 +41,7 @@ from workflow_coordinator.evidence import (
     PreparedEvidenceCommand,
     prepare_evidence_commands,
 )
+from workflow_coordinator.reducer import reduce_result
 
 
 def route(effect: str, target: str | None = None, *, supervisor: bool = False) -> Route:
@@ -254,6 +255,138 @@ def existing_delta(
         successor_ref=successor_ref,
         new_material_evidence=new_material,
     )
+
+
+def convergence_fixture_profile() -> WorkflowProfile:
+    """Return the in-memory-only Slice-1 topology used by Slice-2 tests."""
+
+    return profile(
+        {
+            "evaluate": phase(
+                {
+                    "accept": route("complete"),
+                    "correct": route("goto", "correct"),
+                },
+                role="independent_reviewer",
+                review="gate",
+                finding_authority=("resolve", "residual", "supersede"),
+                convergence_role="evaluator",
+            ),
+            "correct": phase(
+                {"evaluate": route("goto", "evaluate")},
+                convergence_role="corrector",
+            ),
+        }
+    )
+
+
+def tracked_convergence_run(
+    workflow: WorkflowProfile | None = None,
+    *,
+    budget: int = 8,
+) -> tuple[WorkflowProfile, Run]:
+    """Introduce one accepted gate-owned obligation without profile-v3 YAML."""
+
+    selected = workflow or convergence_fixture_profile()
+    run, hop_id = charge_hop(
+        run_for(
+            selected,
+            initial_phase="evaluate",
+            budget=budget,
+            run_schema_version=3,
+        ),
+        role="independent_reviewer",
+    )
+    introduced = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(new_delta("open"),),
+        ),
+        selected,
+        hop_id=hop_id,
+    )
+    return selected, introduced.run
+
+
+def convergence_cycle(
+    run: Run,
+    workflow: WorkflowProfile,
+    *,
+    assessment_result: str = "carried_new_counterexample",
+    evidence_prefix: str = "cycle",
+    new_findings: tuple[NewFindingDelta, ...] = (),
+) -> tuple[Run, str, str]:
+    """Reduce one accepted corrector/evaluator cycle for every open obligation."""
+
+    tracked_ids = tuple(
+        finding.finding_id
+        for finding in run.findings
+        if (
+            finding.correction_obligation is not None
+            and finding.state is FindingState.OPEN
+            and finding.blocking
+        )
+    )
+    corrected, correction_hop_id = charge_hop(run)
+    corrected = reduce_result(
+        corrected,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=tuple(
+                coverage(
+                    finding_id,
+                    "addressed",
+                    f"{evidence_prefix}-coverage-{finding_id}",
+                )
+                for finding_id in tracked_ids
+            ),
+        ),
+        workflow,
+        hop_id=correction_hop_id,
+    ).run
+    evaluated, evaluator_hop_id = charge_hop(
+        corrected, role="independent_reviewer"
+    )
+    proposed_state = "resolved" if assessment_result == "closed" else "open"
+    evidence_by_id = {
+        finding_id: f"{evidence_prefix}-evaluation-{finding_id}"
+        for finding_id in tracked_ids
+    }
+    evaluated = reduce_result(
+        evaluated,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(
+                *(
+                    existing_delta(
+                        finding_id,
+                        proposed_state,
+                        evidence=evidence_by_id[finding_id],
+                    )
+                    for finding_id in tracked_ids
+                ),
+                *new_findings,
+            ),
+            convergence_assessments=tuple(
+                assessment(
+                    finding_id,
+                    correction_hop_id,
+                    assessment_result,
+                    evidence_by_id[finding_id],
+                )
+                for finding_id in tracked_ids
+            ),
+        ),
+        workflow,
+        hop_id=evaluator_hop_id,
+    ).run
+    return evaluated, correction_hop_id, evaluator_hop_id
 
 
 def with_phase(run: Run, phase_key: str) -> Run:

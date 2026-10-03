@@ -6,6 +6,7 @@ import pytest
 from workflow_coordinator.model import (
     ConvergenceAssessment,
     ConvergenceAssessmentResult,
+    ConvergenceFact,
     ConvergenceRole,
     CorrectionObligation,
     CorrectionObligationOwner,
@@ -13,6 +14,7 @@ from workflow_coordinator.model import (
     CoverageDisposition,
     Escalation,
     ExistingFindingDelta,
+    Finding,
     FindingAuthority,
     FindingState,
     MechanicalFacts,
@@ -25,6 +27,7 @@ from workflow_coordinator.reducer import (
     apply_finding_deltas,
     authorize_prerequisite,
     confirm_supervisor_route,
+    derive_convergence_facts,
     permitted_route_keys,
     reduce_result,
     require_reconcile,
@@ -34,6 +37,7 @@ from workflow_coordinator.serialization import run_to_json
 from tests.support import (
     assessment,
     charge_hop,
+    convergence_cycle,
     coverage,
     existing_delta,
     new_delta,
@@ -42,6 +46,7 @@ from tests.support import (
     result,
     route,
     run_for,
+    tracked_convergence_run,
 )
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -1104,3 +1109,176 @@ def test_new_core_vocabulary_is_domain_neutral():
     text = " ".join(sorted(names | values)).lower()
     for forbidden in ("refactor", "python test", "cyclomatic complexity"):
         assert forbidden not in text
+
+
+def test_derived_convergence_fact_counts_qualified_cycles_at_threshold_without_routing():
+    workflow, run = tracked_convergence_run()
+
+    run, _, first_evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="first"
+    )
+    assert derive_convergence_facts(run, 2) == (
+        ConvergenceFact(
+            finding_id="F001",
+            strategy_generation=0,
+            qualified_cycle_count=1,
+            qualified_cycle_limit=2,
+            goalpost_reached=False,
+            source_evaluator_hops=(first_evaluator_hop,),
+        ),
+    )
+    assert run.phase == "correct"
+
+    run, _, second_evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="second"
+    )
+    assert derive_convergence_facts(run, 2) == (
+        ConvergenceFact(
+            finding_id="F001",
+            strategy_generation=0,
+            qualified_cycle_count=2,
+            qualified_cycle_limit=2,
+            goalpost_reached=True,
+            source_evaluator_hops=(first_evaluator_hop, second_evaluator_hop),
+        ),
+    )
+    assert run.phase == "correct"
+    assert {hop.applied_route for hop in run.hops} <= {None, "correct", "evaluate"}
+
+
+def test_derived_convergence_facts_exclude_carried_unmet_and_new_finding_allocation():
+    workflow, run = tracked_convergence_run()
+    run, _, _ = convergence_cycle(
+        run,
+        workflow,
+        assessment_result="carried_unmet",
+        evidence_prefix="unmet",
+    )
+    assert derive_convergence_facts(run, 2)[0].qualified_cycle_count == 0
+
+    run, _, evaluator_hop = convergence_cycle(
+        run,
+        workflow,
+        evidence_prefix="qualified",
+        new_findings=(
+            new_delta(
+                "open",
+                invariant="A newly discovered independent invariant remains open.",
+                evidence="new-finding-evidence",
+            ),
+        ),
+    )
+    assert derive_convergence_facts(run, 2) == (
+        ConvergenceFact("F001", 0, 1, 2, False, (evaluator_hop,)),
+        ConvergenceFact("F002", 0, 0, 2, False, ()),
+    )
+
+
+def test_stale_evidence_rejection_cannot_fabricate_a_derived_cycle():
+    workflow, run = tracked_convergence_run()
+    run, _, _ = convergence_cycle(
+        run,
+        workflow,
+        assessment_result="carried_unmet",
+        evidence_prefix="older",
+    )
+    run, correction_hop = charge_hop(run)
+    run = reduce_result(
+        run,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(coverage("F001", "addressed", "current-coverage"),),
+        ),
+        workflow,
+        hop_id=correction_hop,
+    ).run
+    run, evaluator_hop = charge_hop(run, role="independent_reviewer")
+    rejected = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(
+                existing_delta("F001", "open", evidence="older-evaluation-F001"),
+            ),
+            convergence_assessments=(
+                assessment(
+                    "F001",
+                    correction_hop,
+                    "carried_new_counterexample",
+                    "older-evaluation-F001",
+                ),
+            ),
+        ),
+        workflow,
+        hop_id=evaluator_hop,
+    )
+    assert "new Finding evidence" in (rejected.run.stop_reason or "")
+    assert derive_convergence_facts(rejected.run, 2)[0].qualified_cycle_count == 0
+
+
+@pytest.mark.parametrize("failed_before_acceptance", [False, True])
+def test_uncorrelated_or_failed_evaluator_result_cannot_fabricate_a_cycle(
+    failed_before_acceptance,
+):
+    workflow, run = tracked_convergence_run()
+    run, correction_hop = charge_hop(run)
+    run = reduce_result(
+        run,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(coverage("F001", "addressed", "coverage"),),
+        ),
+        workflow,
+        hop_id=correction_hop,
+    ).run
+    run, evaluator_hop = charge_hop(run, role="independent_reviewer")
+    rejected = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="failed" if failed_before_acceptance else "changes_required",
+            schema_version=2,
+            findings=(existing_delta("F001", "open", evidence="counterexample"),),
+            convergence_assessments=(
+                assessment(
+                    "F001",
+                    correction_hop if failed_before_acceptance else "H999",
+                    "carried_new_counterexample",
+                    "counterexample",
+                ),
+            ),
+        ),
+        workflow,
+        hop_id=evaluator_hop,
+    )
+    assert rejected.run.hops[-1].convergence_assessments == ()
+    assert derive_convergence_facts(rejected.run, 2)[0].qualified_cycle_count == 0
+
+
+def test_closed_obligation_has_no_still_open_convergence_fact():
+    workflow, run = tracked_convergence_run()
+    run, _, _ = convergence_cycle(run, workflow, evidence_prefix="qualified")
+    run, _, _ = convergence_cycle(
+        run,
+        workflow,
+        assessment_result="closed",
+        evidence_prefix="closed",
+    )
+    assert derive_convergence_facts(run, 2) == ()
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, "2"])
+def test_derived_convergence_facts_require_a_positive_integer_limit(limit):
+    _, run = tracked_convergence_run()
+    with pytest.raises(ValueError, match="positive integer"):
+        derive_convergence_facts(run, limit)
+
+
+def test_convergence_fact_is_not_mutable_run_or_finding_shadow_state():
+    forbidden = {"qualified_cycle_count", "qualified_cycle_limit", "goalpost_reached"}
+    assert forbidden.isdisjoint(field.name for field in fields(Run))
+    assert forbidden.isdisjoint(field.name for field in fields(Finding))

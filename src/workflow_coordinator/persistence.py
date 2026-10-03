@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .model import DispatchMarker, Hop, Observation, Run
-from .reducer import ReductionError, permitted_route_keys, require_reconcile
+from .reducer import (
+    ReductionError,
+    derive_convergence_facts,
+    permitted_route_keys,
+    require_reconcile,
+)
 from .serialization import (
     dispatch_marker_from_json,
     dispatch_marker_to_data,
@@ -171,10 +176,11 @@ def checkpoint_projection(
     profile: WorkflowProfile,
     *,
     observations: tuple[Observation, ...] = (),
+    qualified_cycle_limit: int | None = None,
 ) -> dict[str, Any]:
-    """Generate the compact reconstruction view without persisting route authority."""
+    """Generate a compact view, optionally including replay-derived convergence facts."""
 
-    return {
+    projection = {
         "identity": {
             "work_item_id": run.work_item_id,
             "run_id": run.run_id,
@@ -241,6 +247,19 @@ def checkpoint_projection(
         "evidence": [observation_to_data(observation) for observation in observations],
         "next_permitted_route_keys": list(permitted_route_keys(run, profile)),
     }
+    if qualified_cycle_limit is not None:
+        projection["convergence_facts"] = [
+            {
+                "finding_id": fact.finding_id,
+                "strategy_generation": fact.strategy_generation,
+                "qualified_cycle_count": fact.qualified_cycle_count,
+                "qualified_cycle_limit": fact.qualified_cycle_limit,
+                "goalpost_reached": fact.goalpost_reached,
+                "source_evaluator_hops": list(fact.source_evaluator_hops),
+            }
+            for fact in derive_convergence_facts(run, qualified_cycle_limit)
+        ]
+    return projection
 
 
 __all__ = [

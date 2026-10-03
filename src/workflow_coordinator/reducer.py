@@ -6,6 +6,7 @@ from dataclasses import replace
 import re
 
 from .model import (
+    ConvergenceFact,
     ConvergenceAssessmentResult,
     ConvergenceRole,
     CorrectionObligation,
@@ -33,6 +34,85 @@ from .model import (
 
 class ReductionError(ValueError):
     """State and profile cannot be reduced without guessing."""
+
+
+def derive_convergence_facts(
+    run: Run,
+    qualified_cycle_limit: int,
+) -> tuple[ConvergenceFact, ...]:
+    """Derive generation-zero convergence facts from accepted Slice-1 history.
+
+    Slice 1 admits and validates coverage, assessment correlation, evidence
+    freshness, and post-assessment Finding state.  This read-side projection
+    deliberately does not duplicate those admission rules or persist a shadow
+    counter.  Later slices may add generation advancement; Slice 2 has no
+    accepted event that can produce a generation other than zero.
+    """
+
+    if (
+        isinstance(qualified_cycle_limit, bool)
+        or not isinstance(qualified_cycle_limit, int)
+        or qualified_cycle_limit <= 0
+    ):
+        raise ValueError("qualified_cycle_limit must be a positive integer")
+    if run.schema_version != 3:
+        return ()
+
+    eligible_findings = {
+        finding.finding_id: finding
+        for finding in run.findings
+        if (
+            finding.correction_obligation is not None
+            and finding.state is FindingState.OPEN
+            and finding.blocking
+        )
+    }
+    source_hops: dict[str, list[str]] = {
+        finding_id: [] for finding_id in eligible_findings
+    }
+    hops_by_id = {hop.hop_id: hop for hop in run.hops}
+    hop_order = {hop.hop_id: index for index, hop in enumerate(run.hops)}
+
+    for evaluator_hop in run.hops:
+        for assessment in evaluator_hop.convergence_assessments:
+            if (
+                assessment.finding_id not in eligible_findings
+                or assessment.result
+                is not ConvergenceAssessmentResult.CARRIED_NEW_COUNTEREXAMPLE
+                or assessment.finding_id not in evaluator_hop.finding_delta_ids
+            ):
+                continue
+            correction_hop = hops_by_id.get(assessment.correction_hop_id)
+            if (
+                correction_hop is None
+                or hop_order[correction_hop.hop_id] >= hop_order[evaluator_hop.hop_id]
+            ):
+                continue
+            matching_claims = tuple(
+                claim
+                for claim in correction_hop.coverage_claims
+                if claim.finding_id == assessment.finding_id
+            )
+            if (
+                len(matching_claims) != 1
+                or matching_claims[0].disposition is not CoverageDisposition.ADDRESSED
+            ):
+                continue
+            source_hops[assessment.finding_id].append(evaluator_hop.hop_id)
+
+    return tuple(
+        ConvergenceFact(
+            finding_id=finding_id,
+            strategy_generation=0,
+            qualified_cycle_count=len(source_hops[finding_id]),
+            qualified_cycle_limit=qualified_cycle_limit,
+            goalpost_reached=(
+                len(source_hops[finding_id]) >= qualified_cycle_limit
+            ),
+            source_evaluator_hops=tuple(source_hops[finding_id]),
+        )
+        for finding_id in sorted(eligible_findings)
+    )
 
 
 def _stop_for_human(run: Run, reason: str, question: str | None = None) -> Reduction:

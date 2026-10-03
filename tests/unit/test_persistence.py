@@ -21,12 +21,14 @@ from workflow_coordinator.serialization import (
 )
 from tests.support import (
     charge_hop,
+    convergence_cycle,
     phase,
     prepared_evidence,
     profile,
     route,
     run_for,
     simulated_observation,
+    tracked_convergence_run,
 )
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -168,6 +170,38 @@ def test_checkpoint_is_deterministic_and_derives_routes_from_profile(tmp_path):
     assert first["budget"] == {"used": 0, "remaining": 2}
     assert first["evidence"][0]["status"] == "pass"
     assert "project_memory" not in first
+    assert "convergence_facts" not in first
+
+
+def test_checkpoint_optionally_projects_derived_convergence_facts_and_sources():
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="checkpoint"
+    )
+
+    projected = checkpoint_projection(run, workflow, qualified_cycle_limit=2)
+    assert projected["convergence_facts"] == [
+        {
+            "finding_id": "F001",
+            "strategy_generation": 0,
+            "qualified_cycle_count": 1,
+            "qualified_cycle_limit": 2,
+            "goalpost_reached": False,
+            "source_evaluator_hops": [evaluator_hop],
+        }
+    ]
+    assert "convergence_facts" not in checkpoint_projection(run, workflow)
+    assert "convergence_facts" not in json.loads(run_to_json(run))
+
+
+def test_checkpoint_limit_does_not_fabricate_facts_for_simple_or_legacy_runs():
+    workflow = profile({"work": phase({"done": route("complete")})})
+    run = run_for(workflow)
+    for schema_version in (1, 2, 3):
+        historical = replace(run, schema_version=schema_version)
+        assert checkpoint_projection(
+            historical, workflow, qualified_cycle_limit=2
+        )["convergence_facts"] == []
 
 
 @pytest.mark.parametrize(
