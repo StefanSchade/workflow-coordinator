@@ -623,10 +623,33 @@ def _validate_convergence_records_before_apply(
     assessment_ids = [item.finding_id for item in result.convergence_assessments]
     if len(set(assessment_ids)) != len(assessment_ids):
         raise ReductionError("duplicate convergence assessment")
-    prior_correction_hops = [
-        hop for hop in run.hops if hop.hop_id != run.hops[-1].hop_id and hop.coverage_claims
+    prior_hops = run.hops[:-1]
+    assessed_correction_hop_ids = {
+        assessment.correction_hop_id
+        for hop in prior_hops
+        for assessment in hop.convergence_assessments
+    }
+    requested_correction_hop_ids = {
+        assessment.correction_hop_id
+        for assessment in result.convergence_assessments
+    }
+    reused_correction_hop_ids = (
+        requested_correction_hop_ids & assessed_correction_hop_ids
+    )
+    if reused_correction_hop_ids:
+        reused = ", ".join(sorted(reused_correction_hop_ids))
+        raise ReductionError(f"correction Hop already assessed: {reused}")
+    unassessed_correction_hops = [
+        hop
+        for hop in prior_hops
+        if (
+            hop.coverage_claims
+            and hop.hop_id not in assessed_correction_hop_ids
+        )
     ]
-    expected_correction = prior_correction_hops[-1] if prior_correction_hops else None
+    expected_correction = (
+        unassessed_correction_hops[-1] if unassessed_correction_hops else None
+    )
     if expected_correction is not None:
         expected_ids = {claim.finding_id for claim in expected_correction.coverage_claims}
         if set(assessment_ids) != expected_ids:

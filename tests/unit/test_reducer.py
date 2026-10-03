@@ -30,6 +30,7 @@ from workflow_coordinator.reducer import (
     require_reconcile,
     resume_after_reconcile,
 )
+from workflow_coordinator.serialization import run_to_json
 from tests.support import (
     assessment,
     charge_hop,
@@ -627,6 +628,114 @@ def test_evaluator_assessment_is_total_and_residualization_is_nonblocking():
         hop_id=evaluator_hop,
     )
     assert missing.run.findings[0].state is FindingState.OPEN
+
+
+def test_evaluator_cannot_reassess_a_consumed_correction_hop():
+    workflow = convergence_profile()
+    workflow = replace(
+        workflow,
+        phases={
+            **workflow.phases,
+            "evaluate": replace(
+                workflow.phases["evaluate"],
+                routes={
+                    **workflow.phases["evaluate"].routes,
+                    "again": route("goto", "evaluate"),
+                },
+            ),
+        },
+    )
+    _, run = introduce_obligation(workflow)
+    run = replace(run, hop_limit=8)
+    run, first_correction_hop = charge_hop(run)
+    run = reduce_result(
+        run,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(coverage("F001"),),
+        ),
+        workflow,
+        hop_id=first_correction_hop,
+    ).run
+    run, first_evaluator_hop = charge_hop(run, role="independent_reviewer")
+    first_assessment = reduce_result(
+        run,
+        result(
+            "again",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(existing_delta("F001", "open", evidence="first-gate-evidence"),),
+            convergence_assessments=(
+                assessment("F001", first_correction_hop, "carried_unmet"),
+            ),
+        ),
+        workflow,
+        hop_id=first_evaluator_hop,
+    )
+    accepted = first_assessment.run
+
+    duplicate_input, duplicate_evaluator_hop = charge_hop(
+        accepted, role="independent_reviewer"
+    )
+    duplicate = reduce_result(
+        duplicate_input,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(
+                existing_delta("F001", "open", evidence="duplicate-gate-evidence"),
+            ),
+            convergence_assessments=(
+                assessment("F001", first_correction_hop, "carried_unmet"),
+            ),
+        ),
+        workflow,
+        hop_id=duplicate_evaluator_hop,
+    )
+    assert "correction Hop already assessed" in (duplicate.run.stop_reason or "")
+    assert duplicate.route_key is None
+    assert duplicate.run.phase == "evaluate"
+    assert duplicate.run.findings == duplicate_input.findings
+    assert duplicate.run.hops[-1].finding_delta_ids == ()
+    assert duplicate.run.hops[-1].convergence_assessments == ()
+
+    run, transition_hop = charge_hop(accepted, role="independent_reviewer")
+    run = reduce_result(
+        run,
+        result("correct", outcome="changes_required", schema_version=2),
+        workflow,
+        hop_id=transition_hop,
+    ).run
+    run, second_correction_hop = charge_hop(run)
+    run = reduce_result(
+        run,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(coverage("F001"),),
+        ),
+        workflow,
+        hop_id=second_correction_hop,
+    ).run
+    run, second_evaluator_hop = charge_hop(run, role="independent_reviewer")
+    second_assessment = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(existing_delta("F001", "open", evidence="second-gate-evidence"),),
+            convergence_assessments=(
+                assessment("F001", second_correction_hop, "carried_unmet"),
+            ),
+        ),
+        workflow,
+        hop_id=second_evaluator_hop,
+    )
+    assert second_assessment.route_key == "correct"
+    assert run_to_json(second_assessment.run)
 
 
 def test_residualized_assessment_rejects_mismatch_and_missing_authority_atomically():
