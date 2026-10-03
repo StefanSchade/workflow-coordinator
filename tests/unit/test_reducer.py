@@ -816,31 +816,65 @@ def test_carried_new_counterexample_requires_previously_absent_ledger_evidence()
     assert "new Finding evidence" in (rejected.run.stop_reason or "")
 
 
-def test_carried_new_counterexample_rejects_correction_coverage_evidence_reuse():
+def test_carried_new_counterexample_rejects_all_prior_same_finding_evidence_reuse():
     workflow, run = introduce_obligation()
-    run, correction_hop = charge_hop(run)
+    run = replace(run, hop_limit=8)
+    run, first_correction_hop = charge_hop(run)
     run = reduce_result(
         run,
         result(
             "evaluate",
             schema_version=2,
             coverage_claims=(
-                coverage("F001", "addressed", "correction-evidence"),
+                coverage("F001", "addressed", "older-coverage-evidence"),
             ),
         ),
         workflow,
-        hop_id=correction_hop,
+        hop_id=first_correction_hop,
     ).run
-    run, evaluator_hop = charge_hop(run, role="independent_reviewer")
+    run, first_evaluator_hop = charge_hop(run, role="independent_reviewer")
+    run = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(existing_delta("F001", "open", evidence="first-gate-evidence"),),
+            convergence_assessments=(
+                assessment(
+                    "F001",
+                    first_correction_hop,
+                    "carried_unmet",
+                    "older-unmet-assessment-evidence",
+                ),
+            ),
+        ),
+        workflow,
+        hop_id=first_evaluator_hop,
+    ).run
+    run, second_correction_hop = charge_hop(run)
+    run = reduce_result(
+        run,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(
+                coverage("F001", "addressed", "current-coverage-evidence"),
+            ),
+        ),
+        workflow,
+        hop_id=second_correction_hop,
+    ).run
+    run, second_evaluator_hop = charge_hop(run, role="independent_reviewer")
 
-    rejected = reduce_result(
+    reused_coverage = reduce_result(
         run,
         result(
             "correct",
             outcome="changes_required",
             schema_version=2,
             findings=(
-                existing_delta("F001", "open", evidence="correction-evidence"),
+                existing_delta("F001", "open", evidence="older-coverage-evidence"),
                 new_delta(
                     "open",
                     invariant="A separately discovered obligation.",
@@ -850,21 +884,51 @@ def test_carried_new_counterexample_rejects_correction_coverage_evidence_reuse()
             convergence_assessments=(
                 assessment(
                     "F001",
-                    correction_hop,
+                    second_correction_hop,
                     "carried_new_counterexample",
-                    "correction-evidence",
+                    "older-coverage-evidence",
                 ),
             ),
         ),
         workflow,
-        hop_id=evaluator_hop,
+        hop_id=second_evaluator_hop,
     )
-    assert rejected.run.findings == run.findings
-    assert rejected.run.phase == run.phase
-    assert rejected.run.current_head == run.current_head
-    assert rejected.run.hops[-1].convergence_assessments == ()
-    assert rejected.run.hops[-1].applied_route is None
-    assert "new Finding evidence" in (rejected.run.stop_reason or "")
+    assert reused_coverage.run.findings == run.findings
+    assert reused_coverage.run.phase == run.phase
+    assert reused_coverage.run.current_head == run.current_head
+    assert reused_coverage.run.hops[-1].convergence_assessments == ()
+    assert reused_coverage.run.hops[-1].applied_route is None
+    assert "new Finding evidence" in (reused_coverage.run.stop_reason or "")
+
+    reused_assessment = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(
+                existing_delta(
+                    "F001", "open", evidence="older-unmet-assessment-evidence"
+                ),
+            ),
+            convergence_assessments=(
+                assessment(
+                    "F001",
+                    second_correction_hop,
+                    "carried_new_counterexample",
+                    "older-unmet-assessment-evidence",
+                ),
+            ),
+        ),
+        workflow,
+        hop_id=second_evaluator_hop,
+    )
+    assert reused_assessment.run.findings == run.findings
+    assert reused_assessment.run.phase == run.phase
+    assert reused_assessment.run.current_head == run.current_head
+    assert reused_assessment.run.hops[-1].convergence_assessments == ()
+    assert reused_assessment.run.hops[-1].applied_route is None
+    assert "new Finding evidence" in (reused_assessment.run.stop_reason or "")
 
     accepted = reduce_result(
         run,
@@ -878,14 +942,14 @@ def test_carried_new_counterexample_rejects_correction_coverage_evidence_reuse()
             convergence_assessments=(
                 assessment(
                     "F001",
-                    correction_hop,
+                    second_correction_hop,
                     "carried_new_counterexample",
                     "gate-counterexample",
                 ),
             ),
         ),
         workflow,
-        hop_id=evaluator_hop,
+        hop_id=second_evaluator_hop,
     )
     assert accepted.run.phase == "correct"
     assert accepted.run.findings[0].evidence_refs[-1] == "gate-counterexample"
