@@ -1,0 +1,699 @@
+= WFC Operator Run-Interface Legibility -- Evidence Follow-Up
+:toc:
+:toclevels: 2
+
+Status:: *NON-NORMATIVE FOLLOW-UP NOTE. AUTHORIZES NOTHING. NOT IMPLEMENTATION
+AUTHORITY.*
+
+Date:: 2026-10-03.
+
+Scope:: A dated follow-up to
+`docs/wfc_operator_experience_and_prompt_composition_direction_2026-09-28.adoc`
+(the Predecessor), recording what additional real WFC-on-WFC operation and
+in-repository inspection have added to the operator-experience evidence base.
+The Predecessor deliberately left open: "What is the smallest first UX/CLI
+slice repeated real pain actually justifies?" (its §12). This note does not
+answer that question. It captures and classifies new evidence -- including one
+maintainer-reported self-development incident -- so that question can
+eventually be answered from evidence rather than guessed.
+
+Anchor:: Standalone WFC `HEAD` at the time of writing,
+`b981ba0149bca5cc8ab2f31c637290b33b5a9037`
+("docs(concept): capture semantic-vs-lifecycle backtracking distinction"),
+confirmed against current repository truth before drafting, not assumed from
+the commissioning text. Cites, and does not modify:
+`docs/wfc_operator_experience_and_prompt_composition_direction_2026-09-28.adoc`
+(the Predecessor, not rewritten in place),
+`docs/product_boundary_and_higher_order_orchestration_concept_2026-09-25.adoc`
+(the Concept) and its accepted reviews,
+`docs/semantic_backtracking_vs_lifecycle_forward_motion_concept_2026-10-02.adoc`,
+`docs/run-preparation.adoc`, `docs/self-development.adoc`, current
+`src/workflow_coordinator/operator.py` and `slice4.py`, and the
+`FTR-WFC-SCOPE-ESCALATION-CONTINUATION` implementation-review series.
+
+[IMPORTANT]
+====
+This note creates no FTR, WorkItem, profile, policy, task, implementation
+plan, schema commitment, or backlog requirement. It does not modify the
+Predecessor, the Concept, or the backtracking note; where this note overlaps
+any of them, those records remain authoritative. It does not implement a CLI
+command, does not freeze an input or report schema, and does not design
+Level 1.
+
+Every claim below is labelled *OBSERVED CURRENT FACT* (verified in this
+repository's current source or docs during drafting), *OPERATOR OBSERVATION*
+(testimony about real operator experience, including the commissioning text's
+own incident report, not independently re-derived from this repository's
+history), *HYPOTHESIS*, *PRODUCT GOAL*, or *OPEN QUESTION*. Where a claim rests
+on the commissioning text alone rather than on something this note's author
+independently verified in-repository, that is stated explicitly.
+====
+
+== 1. Why this follow-up exists
+
+*[OBSERVED CURRENT FACT]* The Predecessor classified operator friction into
+four classes (A-D, its §3) and proposed classifying real friction from actual
+Runs before designing any command. It recorded two empirical data points at
+the time (WFC-on-WFC self-development and the Latin foreign-domain attempt)
+and left the first-slice question open pending further evidence (its §10,
+§12).
+
+*[OPERATOR OBSERVATION]* Additional real WFC-on-WFC self-development operation
+has since occurred. The central new observation this note exists to record,
+stated in the commissioning text and adopted here as the organizing claim:
+
+____
+The current operator workflow can work successfully, but the human-visible
+interface into and out of a Run is still too opaque. Some of the gap may be
+missing implementation, some may be missing projection/documentation, and some
+may be unavoidable semantic authority.
+____
+
+This note's purpose is to test that claim against current source and docs,
+section by section, and to classify -- not to resolve -- the gap it names.
+
+== 2. The current human workflow
+
+*[OPERATOR OBSERVATION]* In current self-development practice, the reported
+rough lifecycle is:
+
+[source,text]
+----
+maintainer intent / discussion
+    -> LLM-assisted commissioning/preparation
+    -> generated deterministic PREPARE shell block
+    -> maintainer executes PREPARE
+    -> generated explicit LAUNCH block
+    -> maintainer executes LAUNCH
+    -> WFC Run
+    -> deterministic/mechanical evidence archive
+    -> LLM-assisted semantic run-ledger maintenance
+----
+
+*[OBSERVED CURRENT FACT]* This matches the documented contract in
+`docs/run-preparation.adoc`: after a commission is committed, preparation is
+"deterministic maintainer/operator mechanics... not another semantic agent
+Hop," ending in a materialized `launch.sh`, with the provider boundary crossed
+only at first real provider invocation -- three boundaries kept explicitly
+distinct (commission commit / `launch.sh` execution / first provider
+invocation).
+
+*[OPERATOR OBSERVATION]* What the maintainer sees today is the resulting shell
+blocks, not one concise, stable representation of the admitted Run contract.
+The goal recorded by the commissioning text, and adopted here, is not to
+remove the LLM from this lifecycle but to make the WFC/operator contract
+legible enough that a maintainer can answer, without LLM mediation, what
+entered a Run, what it produced, and what to do next.
+
+== 3. Human-visible Run input interface
+
+*[OBSERVED CURRENT FACT]* Current admission (`_preflight()` in
+`operator.py:260-446`) requires, as CLI arguments: `--repository`,
+`--state-root`, `--expected-head`, `--work-item`, `--profile`, `--policy`,
+`--components`, `--task`, `--execution-bindings`, repeatable
+`--durable-artifact`, `--timeout-seconds`, `--executable`, and optional
+`--successor-continuation` / `--successor-continuation-sha256`. Every pinned
+input (`work_item`, `profile`, `policy`, `components`, `task`, and each
+selected prompt component) is read at the exact `--expected-head` commit via
+`git show`/`git ls-tree`, never from the working tree, and its SHA-256 is
+recorded under `governing`.
+
+*[OBSERVED CURRENT FACT]* On success, `main()` writes exactly one deterministic
+input-side projection, `operator-plan.json` (`operator.py:1477-1503`), schema
+version 2, containing: `repository`, `expected_baseline`, `inputs` (the five
+pinned relative paths plus `pinned_revision`), `components` (id -> path +
+digest), `durable_artifacts` by phase, `legacy_durable_artifacts`,
+`state_root`, `run_id`, `executable`, `timeout_seconds`,
+`execution_bindings_source`, `role_personas`, `role_bindings` (adapter/model/
+reasoning per role), `max_autonomous_hops`, `agent_operating_contract`
+provenance, `governing_inputs` (path -> digest for every admitted input and
+component), and `evidence` (the prepared evidence-command plan plus the
+captured environment snapshot). This is written once, before any checkout is
+registered or any provider is invoked -- i.e. before the provider boundary.
+
+*[OBSERVED CURRENT FACT]* `operator-plan.json` already answers most of the
+commissioning text's candidate question list mechanically: which repository
+and baseline, which WorkItem/profile/policy/components/task (by path and
+digest), which execution bindings, which Hop budget, which evidence commands
+and environment, and the package-owned contract's provenance. It is already,
+in substance, a deterministic "what is about to run" projection -- not a
+hypothetical future artifact.
+
+*[OBSERVED CURRENT FACT]* What `operator-plan.json` does *not* currently
+record, and so does not answer today: which allowed *actions* and
+*authorized_scope* the admitted profile's phases actually grant (these live
+only in the pinned `profile`/`policy` source files, not projected into the
+plan), nor a human-readable rendering of review/evidence *obligations* beyond
+the raw evidence-command list. A maintainer wanting "what may it read/change/
+do" must currently open the pinned profile and policy text directly; the plan
+records their digests, not their admitted authorized-scope/action content.
+
+*[HYPOTHESIS]* The commissioning text's candidate projection --
+
+[source,text]
+----
+WHAT is about to run?
+AGAINST WHICH repository state?
+WITH WHICH authority?
+WITH WHICH context?
+WITH WHICH model/binding?
+WITH WHICH budget?
+WITH WHICH evidence/review obligations?
+WHAT may it read/change/do?
+WHICH facts were supplied, and which were deterministically derived?
+----
+
+-- is therefore less a request for a new mechanism than a request to make
+`operator-plan.json`'s existing content, plus the admitted
+scope/action/review facts it currently omits, legible in one place without
+requiring the reader to open five separately pinned files and reconcile them
+by hand. This note does not propose a name, schema, or format for that
+rendering.
+
+== 4. Classifying input provenance (extending the Predecessor's A-D)
+
+*[OBSERVED CURRENT FACT]* The Predecessor's A-D classes (its §3) still hold.
+Walking the actual `operator-plan.json` fields against those classes, plus
+what the commissioning text's candidate list adds, sharpens rather than
+replaces them:
+
+[cols="1,3,1",options="header"]
+|===
+| Sub-class | Concrete `operator-plan.json` example | Predecessor class
+
+| Explicit maintainer semantic/governance decision
+| which WorkItem/profile/policy to commit and pin; the `--successor-continuation`
+  decision; `authority_decision` at successor preparation
+| A
+
+| Project-specific reusable configuration/policy
+| the committed `RepositoryPolicy` and `WorkflowProfile` content itself
+  (governance_paths, scope ceilings, evidence commands) -- authored once,
+  reused across Runs
+| A (narrower: authored per-project, not per-Run)
+
+| WorkItem/Run-specific semantic content
+| the `task` payload text; `role_personas`
+| A
+
+| Deterministic facts WFC already derives
+| `governing_inputs` digests, `agent_operating_contract` provenance,
+  `evidence` plan, `expected_baseline`, `run_id`
+| C
+
+| Execution-binding/environment facts
+| `role_bindings` (adapter/model/reasoning), `executable`,
+  `execution_bindings_source`, the captured evidence environment snapshot
+| C (maintainer-selected values, deterministically projected once selected)
+
+| Externally selected context (Level-1-shaped, not yet a distinct input class)
+| `--successor-continuation` descriptor content when supplied; no other
+  current CLI input carries this shape
+| not in the Predecessor's A-D list; corresponds to its §4 item 2
+
+| Mechanical bootstrap/preparation facts expected to disappear from ordinary
+  product use
+| OPS-root/state-root selection, Runtime export, venv construction, `PATH`
+  assembly -- all per `run-preparation.adoc`, none of it a CLI input today
+| D
+|===
+
+*[OBSERVED CURRENT FACT]* The central open question the commissioning text
+poses -- *which values genuinely need LLM/semantic derivation, and which
+should never require an LLM because deterministic code already has enough
+information* -- has a partial current answer for the "deterministic facts"
+row: `operator.py` already derives those without any LLM, inside `_preflight`
+and `main`. The friction is not that WFC needs an LLM to compute them; it is
+that an LLM is currently used to *author the shell invocation that supplies
+the other rows' values* (paths, bindings, task text) before `_preflight` ever
+runs. That is preparation-of-preparation, addressed in §5, not a gap in what
+`_preflight` itself derives.
+
+*[OPEN QUESTION]* Whether "project-specific reusable configuration" deserves
+to be pulled out of class A as its own row, versus remaining a species of A,
+is left open; it is recorded here only because it recurs differently across
+self-development, Core, and Latin (each has its own committed policy/profile),
+which the single WFC-on-WFC evidence base so far under-samples.
+
+== 5. Preparation opacity
+
+*[OPERATOR OBSERVATION]* The commissioning text reports that an LLM presently
+performs substantial "preparation of the preparation": reading governance
+material, reasoning about exact WorkItem/profile/policy/task/bindings values,
+constructing or amending commission material, constructing the shell
+preparation logic, and constructing the explicit launch step. This is
+consistent with, and more detailed than, the Predecessor's §1 observation that
+"preparing a WFC invocation... was performed with substantial LLM assistance
+from the maintainer's own tooling, not from WFC itself."
+
+*[OBSERVED CURRENT FACT]* `docs/run-preparation.adoc` already names steps 1-9
+of the canonical sequence (pin commits, require clean checkouts, select
+OPS/state roots, export Runtime, export target/build evidence environment,
+write `execution-bindings.yaml`, construct `PATH`, run provider-free
+preflight, materialize `launch.sh`) as "deterministic maintainer/operator
+mechanics... not another semantic agent Hop," and explicitly states an LLM
+"may be used when the preparation procedure itself is being designed, changed,
+debugged, or reviewed -- that is not part of normal execution of the
+established procedure." The document exists specifically to stop this step
+being "reframed as another LLM/agent task."
+
+*[OPEN QUESTION, restated from the commissioning text and not resolved here]*
+Is the missing product surface a command, or is the first missing surface a
+deterministic, reviewable Run/admission projection? Could preparation become
+easier because one explicit input artifact/projection exists, rather than
+because a command hierarchy exists? This note's §3 evidence -- that
+`operator-plan.json` already exists and already carries most of the needed
+facts -- is relevant to this question but does not settle it, because
+`operator-plan.json` is written *after* `_preflight` succeeds, i.e. after the
+exact paths, profile, policy, components, and bindings have already been
+chosen and supplied on the command line. It is a record of an admitted plan,
+not a tool for composing one. Whichever LLM-assisted step chooses *which*
+WorkItem/profile/policy/task/bindings to supply remains semantic authoring
+(class A) and is not addressed by any deterministic projection existing today.
+
+== 6. Shell blocks as an operator-risk surface
+
+*[OPERATOR OBSERVATION, reported in the commissioning text and not
+independently re-derived from repository history by this note]* Recent
+self-development practice surfaced:
+
+* long generated shell blocks create another human/chat interaction surface;
+* shell quoting/path assumptions can be wrong;
+* a wrong repository root can target the non-Git parent rather than the
+  intended standalone WFC checkout;
+* bare `test` combined with `set -e` produced a silent-looking preparation
+  failure before useful logging appeared;
+* checkout cleanliness, ignored artifacts, source exports, virtual
+  environments, controlled `PATH`, bindings, and preflight are currently
+  manually composed into preparation scripts each time.
+
+*[OBSERVED CURRENT FACT]* The illustrative shell skeleton in
+`docs/run-preparation.adoc` (its "Illustrative shape" section) performs
+exactly this composition by hand -- `test ! -e "$OPS"`, `test ! -e
+"$STATE_ROOT"`, Runtime/target `git archive` exports, two separate `venv`
+constructions, hand-assembled `PATH`, and a comment-only placeholder for
+writing `execution-bindings.yaml` and `launch.sh`. The document itself already
+anticipates this: its closing "Relation to future UX" section states "a
+future wrapper or CLI may collapse the mechanics into one command, but should
+preserve the same pinning, freshness, Runtime freeze, evidence-environment,
+preflight, and explicit provider-boundary semantics" -- i.e. this risk surface
+was already named as a candidate for encapsulation before this note, without
+having been encapsulated.
+
+*[HYPOTHESIS]* The reported `test`/`set -e` failure mode is a generic shell
+hazard (a bare `test` returning nonzero on a condition that is not itself an
+error, interacting badly with `set -e`), not something specific to WFC's
+domain logic. That makes it a plausible candidate for "small deterministic
+wrapper" encapsulation (per the commissioning text's §4 comparison) rather
+than evidence that the whole preparation sequence needs a `wfc prepare`
+command. This note does not choose between a documentation fix, a small
+wrapper, or a WFC command for this specific hazard, per the hard constraints.
+
+== 7. Provider-boundary visibility
+
+*[OBSERVED CURRENT FACT]* `docs/run-preparation.adoc`'s three-boundary
+distinction -- commission commit, `launch.sh` execution, first real provider
+invocation -- remains current, is unmodified by this note, and is corroborated
+by `operator.py`'s own structure: `operator-plan.json` is written and the
+state root created (`main()`, `operator.py:1476-1503`) entirely inside the
+`_preflight`-bounded `try` block, *before* `register_checkout` is called
+(`operator.py:1524`) and before any Hop or provider dispatch occurs. The code
+comment at `operator.py:1510-1511` ("From checkout registration onward a
+provider-capable attempt exists. Do not reclassify failures by exception type
+after this boundary.") independently names the same boundary the documentation
+describes.
+
+*[OBSERVED CURRENT FACT]* This note takes no position that prepare and launch
+should be collapsed, and records no evidence from this round that collapsing
+them would be safe or desirable; the boundary is preserved exactly as the
+hard constraints require.
+
+== 8. Human-visible Run output interface
+
+*[OBSERVED CURRENT FACT]* Verified directly against current source, the state
+layout is:
+
+[source,text]
+----
+<state root>/
+  operator-plan.json          (written once, pre-provider; see §3)
+  operator-summary.json       (written once per attempt, post-attempt)
+  checkout-association.json   (written once, at first checkout registration)
+  checkouts/<checkout-id>/
+    run.json                  (the Run snapshot, rewritten per Hop)
+    checkpoint.json           (reconstruction projection, rewritten per Hop)
+    dispatch.json             (present only mid-dispatch; removed on completion)
+    execution-evidence.json   (per-Hop execution-evidence records)
+----
+
+*[OBSERVED CURRENT FACT]* `checkout-association.json` is written by
+`register_checkout()` (`slice4.py:91-100`) and records `checkout_id` (a fresh
+UUID), `canonical_path`, `git_dir`, and `common_dir` -- the exact Git facts of
+the repository checkout as observed at registration. `checkout_state_root()`
+(`slice4.py:134-135`) is simply `<state root>/checkouts/<checkout_id>`.
+
+*[OBSERVED CURRENT FACT, explaining the "why"]* The split exists to bind one
+external state root to one exact Git checkout, fail-closed. Every later
+mutating call revalidates via `validate_checkout()` (`slice4.py:103-124`),
+which re-observes the repository's current `(canonical_path, git_dir,
+common_dir)` and raises `Slice4Error("checkout/Git association mismatch;
+explicit maintainer re-registration required")` if they no longer match the
+recorded association. `_require_external_state_root()`
+(`slice4.py:84-89`) additionally rejects a state root nested inside, or
+containing, the checkout. The `checkouts/<id>/` nesting is therefore not
+primarily a provision for *multiple simultaneous checkouts under one
+attempt* in current observed use -- every inspected code path registers
+exactly one checkout per state root and reuses it -- it is the namespace that
+makes that one checkout's binding verifiable and makes "the checkout moved or
+was replaced" a detectable, fail-closed condition rather than silent
+corruption.
+
+*[OPERATOR OBSERVATION]* None of this rationale is stated in
+`docs/architecture.md` (which gives the operator one sentence: it "owns
+deterministic admission, serial workflow progression, Git observation and
+bounded mechanical commits, evidence execution, persistence, and stop
+routing"), in `docs/README.adoc`'s classification index, or in
+`docs/project_memory.adoc`. It exists only as code and code comments in
+`slice4.py`. A maintainer who has not read `slice4.py` has no documented way
+to learn why `STATE ROOT` and `RUN ROOT` differ, only the printed paths
+themselves (`operator.py:1543`: `STATE ROOT: ...` / `RUN ROOT: .../checkouts/
+<uuid>`).
+
+*[HYPOTHESIS, classification]* Per the commissioning text's §12 distinction:
+this is primarily a *missing documentation* gap, not a missing-implementation
+or unavoidable-semantics gap. The invariant itself (external, verifiable,
+fail-closed checkout binding) is load-bearing and should not be simplified
+away; what is missing is a human-facing explanation of why it exists,
+independent of whether any command surface ever changes.
+
+== 9. Deterministic Run report
+
+*[OBSERVED CURRENT FACT]* `_summary()` (`operator.py:750-778`) already
+assembles, deterministically and without any LLM, a single dict containing:
+`work_item_id`, `run_id`, `invocation_id`, `baseline_head`, `current_head`,
+`final_head` (freshly observed), `run_status`, `hop_used`, `hop_limit`,
+`stop_reason`, `human_question`, `semantic_stop` (kind/question/source hop),
+`successor_provenance`, `anomalies`, `next_explicit_action`, `provider`
+(returncode/timed_out/candidate_result_present), `commits` (hash + subject),
+`changed_paths`, `worktree_clean`, `operator_error`, per-Hop `hops` (base/end
+head, actual commits, changed paths, outcome), and `execution_evidence`. This
+is written to `operator-summary.json` on both the success path
+(`operator.py:1539-1542`) and, in a reduced best-effort form via
+`_best_effort_failure_summary()` (`operator.py:781-811`), on failure
+(`_write_failure_summary`, `operator.py:814-826`).
+
+*[OBSERVED CURRENT FACT]* The `status` subcommand (`operator.py:1452-1456`)
+re-derives and prints this exact same `_summary()` projection on demand,
+reading only `run.json` via `_predecessor_location()`
+(`operator.py:844-856`, which itself reads `checkout-association.json` to find
+the right `checkouts/<id>/run.json`) -- i.e. a maintainer can already obtain
+this deterministic report without re-running a Hop and without any LLM,
+against a previously materialized state root. This substantially matches the
+commissioning text's hypothesis that WFC "needs a deterministic human-oriented
+Run report" -- the report already exists in the code, and `status` is already
+the on-demand projection surface for it.
+
+*[OBSERVED CURRENT FACT]* The `FTR-WFC-SCOPE-ESCALATION-CONTINUATION`
+implementation-review series (reviews 001-004) independently raises exactly
+this surface three times under the heading "R3 -- explicit next-action output
+ergonomics," each time concluding the candidate is "addressed": `status`
+publishes `next_explicit_action` "alongside, not merged into, semantic-stop
+and mechanical-anomaly fields," and ordinary one-shot launch output prints the
+same guidance. This shows the project has already, repeatedly, treated
+operator-facing report ergonomics as a reviewable surface distinct from
+Run-authority correctness -- not a neglected area.
+
+*[OBSERVED CURRENT FACT, a real limit]* `_next_explicit_action()`
+(`operator.py:1203-1213`) is deliberately minimal: exactly three fixed
+strings, selected only by `run.status` (`COMPLETED` / `AWAITING_HUMAN` /
+anything else), carrying no Run-specific detail (no named next command, no
+named required input). Each of the three accepted implementation reviews
+treated this minimalism as sufficient for its own commissioned scope rather
+than as something to expand.
+
+*[OBSERVED CURRENT FACT, what the report omits]* `operator-summary.json` does
+not restate `profile`, `policy`, `role_bindings`, `durable_artifacts`, or the
+evidence/review obligations recorded in the sibling `operator-plan.json`. A
+maintainer reading only the summary cannot see which review/evidence
+obligations governed the Run that produced it; they must separately open
+`operator-plan.json`. The two files are already cleanly separated by
+authority (admitted-plan vs. observed-outcome) but are not yet cross-linked
+into one human-readable view.
+
+*[HYPOTHESIS]* The commissioning text's open question -- "could one report
+substantially reduce the need for an LLM to interpret the State directory
+after every ordinary Run?" -- is partially answered already: for the fields
+`_summary()` covers, yes, mechanically, via `status`. For profile/policy/
+review-obligation content, no: that still requires opening the pinned
+governing-input files directly, exactly as in §3. This note does not propose
+merging those into one schema; it records that today's gap, where it exists,
+is a presentation gap over already-authoritative, already-separated state,
+not evidence of a missing second authority.
+
+*[OPEN QUESTION]* Whether `_next_explicit_action`'s three-string vocabulary
+should ever grow richer (e.g. naming the specific blocked input or command),
+and whether doing so would encode product/UX decisions the three accepted
+implementation reviews deliberately left outside their own scope, is left
+open.
+
+== 10. State-root versus Run-root confusion
+
+*[OPERATOR OBSERVATION]* The commissioning text reports continuing maintainer
+uncertainty about which of `STATE ROOT` and `RUN ROOT` a later operation
+should be given.
+
+*[OBSERVED CURRENT FACT]* Inspecting the actual supported commands shows they
+already converge on one answer for every *currently defined* operator-facing
+command: `status`, `export-salvage`, and `prepare-successor` each accept only
+`--state-root` (or `--predecessor-state-root`) -- never a checkout/run root --
+and internally resolve the checkout-specific `run.json` via
+`_predecessor_location()` (`operator.py:844-856`). The ordinary one-shot launch
+path likewise takes only `--state-root` and registers/validates the checkout
+internally. No currently defined command asks the operator to supply the
+nested `checkouts/<id>` path directly.
+
+*[HYPOTHESIS, classification]* The uncertainty the commissioning text reports
+is therefore not evidence that the *defined command surface* requires the
+wrong root; every defined command already implements the commissioning text's
+own candidate answer ("tooling resolves the checkout-specific root
+internally"). The remaining uncertainty more plausibly arises from (a)
+manual, non-command inspection -- a maintainer opening files directly with a
+shell or editor rather than running `status` -- where no tooling resolves
+anything, and (b) the printed launch output naming both roots side by side
+(`operator.py:1543`) without an accompanying explanation of when each is
+needed, which is the same documentation gap recorded in §8. This note
+classifies the friction as primarily *documentation/terminology*, with a
+smaller residual *interface-completeness* question: whether every future
+operation (for example, an archival step; see §11) that currently might be
+tempted to accept a checkout root should instead be designed, like `status`,
+to accept only the top-level state root.
+
+*[OPEN QUESTION]* Whether a legitimate case with multiple checkouts under one
+state root exists or is intended; current code paths neither require nor
+appear to exercise that shape (one checkout is registered and reused per
+attempt in every inspected path), but this note does not rule it out as a
+future legitimate use of the existing `checkouts/<id>/` namespace.
+
+== 11. Archive and post-Run lifecycle
+
+*[OBSERVED CURRENT FACT]* No archival script, command, or module exists
+inside this repository's tracked source (`src/`) or `docs/`; a repository-wide
+search found no code implementing evidence archival. The commissioning text's
+description of "the archive job" as a maintainer-side tool with a comparatively
+good, narrow interface therefore describes tooling outside this repository's
+tracked history, which this note cannot inspect from here and does not assume
+the shape of.
+
+*[OBSERVED CURRENT FACT]* What this repository does supply, and what any such
+external archival tooling could in principle be layered on, is the `status`
+subcommand's existing contract: a single `--state-root` input, internal
+resolution of the correct checkout and `run.json`, and a deterministic,
+Runtime-stable JSON projection (§9) as output. This is already structurally
+the "stable narrow archival interface" shape the commissioning text asks
+about, for the subset of facts `_summary()` covers.
+
+*[OPEN QUESTION]* Whether an external archival tool's current input is the
+top-level state root (matching `status`) or something narrower/different is
+not knowable from inside this repository and is left open. This note does not
+make semantic `run_ledger.adoc`-style maintenance deterministic, and does not
+propose that the existing `status` projection replace it; it only notes, as
+the commissioning text invites, that a deterministic report is a bounded
+candidate *input* to that still-LLM-assisted maintenance, not a substitute for
+it.
+
+== 12. Runtime-N versus Development-N+1
+
+*[OPERATOR OBSERVATION, reported in the commissioning text and not
+independently verified from repository history by this note]* A completed
+self-development Run used a pinned older Runtime while the Development
+repository already had a newer `status` CLI surface; a convenience post-run
+command incorrectly assumed the frozen Runtime exposed the newer subcommand
+and printed an argparse error after an otherwise successful Run.
+
+*[OBSERVED CURRENT FACT]* This is consistent with, and a direct instance of,
+the documented topology in `docs/self-development.adoc`: "Select Runtime N
+independently of `PATH` by invoking the absolute `<runtime-env>/bin/wfc`;
+never use bare `wfc`," precisely because Runtime and Development commits are
+independent and Runtime "never mutates itself." The reported incident is a
+case of maintainer-side post-run tooling violating that already-documented
+separation, not a gap in the separation itself.
+
+*[HYPOTHESIS]* Because `status` (§9) only ever reads already-written JSON
+state (`run.json` / `checkpoint.json` via `_predecessor_location`) rather than
+depending on any Runtime-version-specific behavior beyond argument parsing, a
+deterministic report consumer that does not need to invoke a possibly-stale
+Runtime binary at all -- for example, reading `operator-summary.json` directly,
+or using a fixed, independently-versioned reader -- would not reproduce this
+specific incident. This note does not choose between capability/version
+discovery in the CLI, a stable report format read without invoking `wfc` at
+all, or documentation alone; it records the incident as evidence that *some*
+mechanism is needed for post-Run inspection to stay correct across Runtime
+versions, without selecting one.
+
+== 13. Understanding gap versus implementation gap
+
+Per item examined above, classified as requested; several are mixed and are
+recorded as such rather than forced into one bucket.
+
+[cols="3,2",options="header"]
+|===
+| Friction point | Primary classification
+
+| Why `STATE ROOT` and `RUN ROOT` differ (§8, §10)
+| Missing documentation/naming. The invariant it protects (verified checkout
+  binding) is sound and should not be simplified away.
+
+| Defined commands (`status`, `export-salvage`, `prepare-successor`) already
+  accept one canonical root (§10)
+| Already correct; not a friction point once `status` is used instead of
+  manual file inspection.
+
+| Manually locating nested `run.json` outside the defined commands (§10)
+| Interface-ergonomics / documentation. The deterministic command path already
+  avoids this; the gap is habit/awareness, and possibly future commands that
+  have not yet adopted the same one-root convention.
+
+| `operator-plan.json` exists but omits admitted scope/action/review content
+  (§3, §9)
+| Missing deterministic projection (an enrichment of an existing artifact),
+  not missing implementation of admission itself.
+
+| `operator-summary.json` and `operator-plan.json` are not cross-linked for a
+  human reader (§9)
+| Missing deterministic projection / presentation; both underlying facts
+  already exist and are already correctly separated by authority.
+
+| `_next_explicit_action`'s three-string vocabulary (§9)
+| Uncertain/mixed: possibly deliberate minimalism (three implementation
+  reviews left it as-is), possibly an under-scoped ergonomics surface; not
+  resolved here.
+
+| Long hand-composed preparation shell blocks; the `test`/`set -e` hazard
+  (§5, §6)
+| Mixed: `run-preparation.adoc` already names this as deterministic, non-LLM
+  mechanics and already anticipates future encapsulation; the specific
+  reported hazard is a generic shell pitfall, a candidate for a small
+  deterministic wrapper rather than evidence of missing WFC capability.
+
+| LLM choosing which WorkItem/profile/policy/task/bindings to supply (§4, §5)
+| Unavoidable semantic authoring (class A), not a product gap; this is exactly
+  the kind of decision the Concept assigns to a human or Level 1, not to
+  Level 0.
+
+| Post-Run convenience command assuming a newer Runtime CLI surface (§12)
+| Primarily an incident in maintainer-side post-run tooling violating an
+  already-documented Runtime/Development separation; secondarily evidence
+  that post-Run inspection lacks a Runtime-version-independent stable path.
+
+| No archival tooling found in-repository (§11)
+| Evidence gap from inside this repository, not a classified friction point;
+  this note cannot classify tooling it cannot inspect.
+|===
+
+== 14. Does the evidence support a likely first slice?
+
+*[HYPOTHESIS, offered as a bounded working position per the desired
+conclusion style, not a decision]* The new evidence leans toward the
+Predecessor's and the commissioning text's first two candidates over the
+third:
+
+. A legible pre-Run/admission view is the smaller lift, because its
+  substantially complete deterministic source, `operator-plan.json`, already
+  exists; the identified gap is narrower than "build a new artifact" -- it is
+  "project the admitted scope/action/review facts this artifact currently
+  omits, and render the whole thing for a human reader instead of requiring
+  five separately opened pinned files."
+. A deterministic post-Run report is, in substance, already built
+  (`_summary()`) and already has an on-demand surface (`status`); the
+  identified gap is completeness (profile/policy/obligation content is not
+  included) and cross-linking to `operator-plan.json`, not absence.
+. A small deterministic preparation wrapper remains the least evidenced of
+  the three here: `run-preparation.adoc` already documents the mechanics
+  precisely enough to anchor one, but this round's only new concrete evidence
+  for *encapsulating* it is one reported generic shell hazard
+  (`test`/`set -e`), which does not by itself establish that the full
+  preparation sequence needs a command rather than a documentation fix or a
+  narrow wrapper around just the hazardous step.
+
+This is not a decision to build anything, and it does not foreclose the
+possibility that documentation alone resolves a meaningful share of the
+reported opacity (§8, §10 in particular look more like naming/documentation
+gaps than capability gaps once the existing commands are used as designed).
+
+== 15. Relation to existing authority
+
+*[OBSERVED CURRENT FACT]* No current Coordinator behavior, governance, policy,
+profile, resource, test, Project Memory record, frozen Run state, or provider
+state was inspected for mutation, and none was changed in producing this note.
+This note is planning/review evidence in the sense of `docs/README.adoc`'s
+classification: it records disposition and reasoning and does not itself
+grant Run authority. It supersedes nothing in the Predecessor; where the two
+overlap, both stand, and this note's classifications in §13-§14 are read as
+additions to, not replacements of, the Predecessor's §3 A-D classes (refined
+in this note's §4).
+
+== 16. Explicit non-goals (consolidated)
+
+This note does not:
+
+* authorize any implementation, Run, provider invocation, CLI change, or
+  repository split;
+* propose a broad CLI redesign or freeze any command name, input schema,
+  report schema, or directory layout;
+* rewrite, correct, or restate as superseded the Predecessor, the Concept, or
+  the backtracking note;
+* redesign Level 1 or reopen the accepted Level-0/Level-1 boundary;
+* claim that LLM-assisted semantic authoring is undesirable; §4 and §5
+  explicitly identify genuine semantic-authoring work that this note does not
+  propose to make deterministic;
+* assume the shape of archival tooling this repository does not contain
+  (§11);
+* select capability/version discovery, a Runtime-independent report reader, or
+  any other mechanism for §12's versioning question;
+* create or modify any FTR, BUG, WorkItem, profile, policy, task, Project
+  Memory record, Runtime, source, test, archive repository, ledger, or
+  remote.
+
+== 17. Open questions (consolidated)
+
+* Should `operator-plan.json` be enriched with admitted authorized-scope/
+  action/review-obligation content, and if so, is that an enrichment of the
+  existing artifact or a separate human-oriented rendering of it (§3, §9)?
+* Should `operator-summary.json` cross-reference or embed the governing
+  `operator-plan.json` facts a human would need alongside it, and if so, how,
+  without the report becoming a second authority (§9)?
+* Should `_next_explicit_action`'s vocabulary ever grow beyond three fixed
+  strings, and would doing so exceed the scope the three accepted
+  implementation reviews deliberately gave it (§9)?
+* Is there a legitimate multi-checkout-per-state-root use case that justifies
+  the `checkouts/<id>/` namespace beyond the verified single-checkout binding
+  observed in every current code path (§8, §10)?
+* What is the actual current interface of the maintainer's external archival
+  tooling, and does it already take the top-level state root as `status`
+  does (§11)? -- unanswerable from inside this repository.
+* Which mechanism, if any, should make post-Run inspection stable across
+  Runtime-N / Development-N+1 version drift (§12)?
+* What is the smallest first UX/CLI slice repeated real pain actually
+  justifies, given §14's leaning but explicitly non-committed reading of the
+  evidence? -- deliberately left open here, exactly as the Predecessor left it
+  open at its own §12.
