@@ -695,6 +695,17 @@ def test_schema4_execution_evidence_is_closed_and_anchor_is_route_independent():
         with pytest.raises(ValidationError, match="identity-mismatched"):
             execution_evidence_from_json(json.dumps(mismatched))
 
+    duplicate_row = json.loads(evidence_json)
+    duplicate_row["attempts"].append(duplicate_row["attempts"][0])
+    with pytest.raises(ValidationError, match="duplicate Hop rows"):
+        execution_evidence_from_json(json.dumps(duplicate_row))
+
+    for field in ("workflow_role", "outcome"):
+        malformed = json.loads(evidence_json)
+        malformed["attempts"][0][field] = "unsupported-value"
+        with pytest.raises(ValidationError, match="must be one of"):
+            execution_evidence_from_json(json.dumps(malformed))
+
 
 def test_v3_hop_anchor_is_the_only_new_semantic_wire_field():
     run = v3_run_with_assessment()

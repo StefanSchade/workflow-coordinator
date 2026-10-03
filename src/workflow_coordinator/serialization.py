@@ -1353,7 +1353,11 @@ def _staged_qualification_attempt(
             context=f"{context}.pre_route_anchor_sha256",
         ),
         phase=_string(data["phase"], context=f"{context}.phase"),
-        workflow_role=_string(data["workflow_role"], context=f"{context}.workflow_role"),
+        workflow_role=_enum(
+            WorkflowRole,
+            data["workflow_role"],
+            context=f"{context}.workflow_role",
+        ).value,
         persona=_string(data["persona"], context=f"{context}.persona"),
         persona_sha256=_sha256(data["persona_sha256"], context=f"{context}.persona_sha256"),
         adapter=_string(data["adapter"], context=f"{context}.adapter"),
@@ -1375,7 +1379,9 @@ def _staged_qualification_attempt(
             context=f"{context}.candidate_result_sha256",
         ),
         publication=_string(data["publication"], context=f"{context}.publication"),
-        outcome=_string(data["outcome"], context=f"{context}.outcome"),
+        outcome=_enum(
+            Outcome, data["outcome"], context=f"{context}.outcome"
+        ).value,
         base_head=_string(data["base_head"], context=f"{context}.base_head"),
         end_head=_string(data["end_head"], context=f"{context}.end_head"),
         actual_commits=_strings(data["actual_commits"], context=f"{context}.actual_commits"),

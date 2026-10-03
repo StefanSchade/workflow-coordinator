@@ -17,15 +17,31 @@ from workflow_coordinator.serialization import (
     EXISTING_FINDING_DELTA_KEYS,
     NEW_FINDING_DELTA_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
+    execution_evidence_from_json,
     load_run,
 )
 from workflow_coordinator.slice4 import (
     Slice4Error, invoke_codex, register_checkout, run_real_one_hop, validate_checkout,
 )
-from tests.support import phase, profile, route, run_for
+from tests.support import (
+    charge_hop,
+    coverage,
+    phase,
+    prepared_evidence,
+    profile,
+    result,
+    route,
+    run_for,
+    simulated_observation,
+    tracked_convergence_run,
+)
 from workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
-from workflow_coordinator.model import DispatchMarker
-from workflow_coordinator.persistence import write_dispatch_marker
+from workflow_coordinator.model import DispatchMarker, ExecutionEvidenceDocument
+from workflow_coordinator.persistence import (
+    trusted_qualification_index_for_run,
+    write_dispatch_marker,
+)
+from workflow_coordinator.reducer import derive_convergence_facts, reduce_result
 
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -308,7 +324,11 @@ def test_completed_pair_marker_is_reconciled_idempotently_without_redispatch(
         capture_output=True,
         check=True,
     ).stdout.strip()
-    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+    run = replace(
+        run_for(workflow, budget=1, run_schema_version=3),
+        current_head=head,
+        baseline_head=head,
+    )
     completed = run_real_one_hop(
         run,
         workflow,
@@ -370,6 +390,198 @@ def test_completed_pair_marker_is_reconciled_idempotently_without_redispatch(
     assert recovered.vertical is None
     assert recovered.run == completed.run
     assert calls == ["INV-1"]
+    assert not (run_root / "dispatch.json").exists()
+
+
+def test_live_evaluator_uses_the_same_published_qualification_as_replay(
+    repository, tmp_path
+):
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    workflow, tracked = tracked_convergence_run()
+    workflow = replace(
+        workflow,
+        phases={
+            **workflow.phases,
+            "evaluate": replace(workflow.phases["evaluate"], evidence=("tests",)),
+        },
+    )
+    head = subprocess.run(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    tracked = replace(tracked, baseline_head=head, current_head=head)
+    corrected, correction_hop = charge_hop(tracked, end_head=head)
+    corrected = reduce_result(
+        corrected,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(coverage("F001", "addressed", "live-coverage"),),
+        ),
+        workflow,
+        hop_id=correction_hop,
+    ).run
+
+    class Adapter:
+        def execute(self, request):
+            assert request.contract_version == 2
+            payload = {
+                "schema_version": 2,
+                "run_id": request.invocation.run_id,
+                "hop_id": request.invocation.hop_id,
+                "invocation_id": request.invocation.invocation_id,
+                "result": {
+                    "schema_version": 2,
+                    "outcome": "changes_required",
+                    "requested_route": "correct",
+                    "scope_changed": False,
+                    "requires_human": False,
+                    "escalation": None,
+                    "findings": [
+                        {
+                            "finding_id": "F001",
+                            "proposed_state": "open",
+                            "evidence_refs": ["live-counterexample"],
+                            "successor_ref": None,
+                            "new_material_evidence": False,
+                        }
+                    ],
+                    "claimed_commits": [],
+                    "commit_intent": None,
+                    "evidence_refs": ["agent-reference-is-not-qualification"],
+                    "summary": "live evaluator",
+                    "coverage_claims": [],
+                    "convergence_assessments": [
+                        {
+                            "finding_id": "F001",
+                            "correction_hop_id": correction_hop,
+                            "result": "carried_new_counterexample",
+                            "evidence_refs": ["live-counterexample"],
+                        }
+                    ],
+                    "diagnosis": None,
+                    "strategy_revision": None,
+                    "strategy_assessment": None,
+                },
+            }
+            return AgentExecutionOutcome(json.dumps(payload), 0, False, "", "")
+
+    commands = prepared_evidence(repository)
+
+    class PassingRunner:
+        def observe(self, command):
+            return simulated_observation(command, status="pass")
+
+    completed = run_real_one_hop(
+        corrected,
+        workflow,
+        repository,
+        {
+            **_components(),
+            "independent_reviewer": PromptComponent(
+                "independent_reviewer", "reviewer.txt", "PIN", "reviewer"
+            ),
+        },
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture evaluator",
+        task_payload="fixture",
+        invocation_id="INV-live-evaluator",
+        timeout_seconds=2,
+        adapter=Adapter(),
+        evidence_runner=PassingRunner(),
+        evidence_commands=commands,
+    )
+    assert completed.vertical is not None
+    live_facts = derive_convergence_facts(
+        completed.run, completed.vertical.qualification_index, 1
+    )
+    assert live_facts[0].source_evaluator_hops == ("H003",)
+    assert live_facts[0].goalpost_reached is True
+
+    run_root = state / "checkouts" / association.checkout_id
+    replayed = load_run(run_root / "run.json")
+    evidence = execution_evidence_from_json(
+        (run_root / "execution-evidence.json").read_text(encoding="utf-8")
+    )
+    assert isinstance(evidence, ExecutionEvidenceDocument)
+    replay_index = trusted_qualification_index_for_run(replayed, evidence)
+    assert derive_convergence_facts(replayed, replay_index, 1) == live_facts
+
+
+def test_legacy_completed_marker_recovery_does_not_require_schema4_evidence(
+    repository, tmp_path
+):
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    calls: list[str] = []
+
+    class Adapter:
+        def execute(self, request):
+            calls.append(request.invocation.invocation_id)
+            return AgentExecutionOutcome(
+                json.dumps(_known_good_envelope()), 0, False, "", ""
+            )
+
+    workflow = profile({"work": phase({"done": route("complete")})})
+    head = subprocess.run(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+    completed = run_real_one_hop(
+        run,
+        workflow,
+        repository,
+        _components(),
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture worker",
+        task_payload="fixture",
+        invocation_id="INV-legacy",
+        timeout_seconds=2,
+        adapter=Adapter(),
+    )
+    run_root = state / "checkouts" / association.checkout_id
+    assert not (run_root / "execution-evidence.json").exists()
+    hop = completed.run.hops[-1]
+    write_dispatch_marker(
+        run_root / "dispatch.json",
+        DispatchMarker(
+            1,
+            completed.run.run_id,
+            hop.hop_id,
+            hop.sequence,
+            "INV-legacy",
+            hop.base_head,
+            1,
+            None,
+        ),
+    )
+    recovered = run_real_one_hop(
+        completed.run,
+        workflow,
+        repository,
+        _components(),
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture worker",
+        task_payload="fixture",
+        invocation_id="INV-unused",
+        timeout_seconds=2,
+        adapter=Adapter(),
+    )
+    assert recovered.run == completed.run
+    assert recovered.vertical is None
+    assert calls == ["INV-legacy"]
     assert not (run_root / "dispatch.json").exists()
 
 

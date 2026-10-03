@@ -185,19 +185,24 @@ def run_real_one_hop(
         pending = load_dispatch_marker(dispatch_path)
         existing = next((hop for hop in run.hops if hop.hop_id == pending.hop_id), None)
         if existing is not None:
-            raw_evidence = evidence_text()
             if (
                 pending.run_id != run.run_id
                 or existing.sequence != pending.sequence
                 or existing.base_head != pending.base_head
-                or (
-                    run.schema_version == 3
-                    and (
-                        existing.pre_route_anchor_sha256 is None
-                        or existing.pre_route_anchor_sha256
-                        != pending.pre_route_anchor_sha256
-                    )
+            ):
+                raise Slice4Error("dispatch marker conflicts with completed Hop pair")
+            raw_evidence = evidence_text()
+            if run.schema_version != 3:
+                checkpoint = checkpoint_projection(
+                    run, profile, execution_evidence_json=raw_evidence
                 )
+                atomic_write_json(run_root / "checkpoint.json", checkpoint)
+                dispatch_path.unlink(missing_ok=True)
+                return RealHopRun(None, run, checkpoint, None)
+            if (
+                existing.pre_route_anchor_sha256 is None
+                or existing.pre_route_anchor_sha256
+                != pending.pre_route_anchor_sha256
                 or raw_evidence is None
             ):
                 raise Slice4Error("dispatch marker conflicts with completed Hop pair")

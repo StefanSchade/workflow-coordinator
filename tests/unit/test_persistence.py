@@ -1,3 +1,4 @@
+import hashlib
 import json
 from dataclasses import replace
 
@@ -19,7 +20,9 @@ from workflow_coordinator.persistence import (
 from workflow_coordinator.serialization import (
     ValidationError,
     execution_evidence_from_json,
+    execution_evidence_to_json,
     load_run,
+    pre_route_anchor_sha256,
     run_from_json,
     run_to_json,
 )
@@ -203,7 +206,9 @@ def test_checkpoint_optionally_projects_derived_convergence_facts_and_sources():
             "source_evaluator_hops": [evaluator_hop],
         }
     ]
-    assert "convergence_facts" not in checkpoint_projection(run, workflow)
+    assert "convergence_facts" not in checkpoint_projection(
+        run, workflow, execution_evidence_json=evidence_json
+    )
     assert "convergence_facts" not in json.loads(run_to_json(run))
 
 
@@ -267,6 +272,16 @@ def test_exact_pair_and_dual_checkpoint_digests_fail_closed_on_mismatch():
     missing = replace(document, attempts=())
     with pytest.raises(ReductionError, match="lacks paired"):
         trusted_qualification_index_for_run(run, missing)
+    with pytest.raises(ReductionError, match="lacks paired"):
+        checkpoint_projection(run, workflow)
+    with pytest.raises(ReductionError, match="requires schema-4"):
+        checkpoint_projection(
+            run,
+            workflow,
+            execution_evidence_json=json.dumps(
+                {"schema_version": 3, "attempts": []}
+            ),
+        )
     cross_run = replace(document, run=replace(document.run, run_id="RUN-other"))
     with pytest.raises(ReductionError, match="identity"):
         trusted_qualification_index_for_run(run, cross_run)
@@ -280,6 +295,15 @@ def test_exact_pair_and_dual_checkpoint_digests_fail_closed_on_mismatch():
     validate_checkpoint_inputs(
         checkpoint, run, execution_evidence_json=evidence_json
     )
+    missing_text = execution_evidence_to_json(missing)
+    forged = json.loads(json.dumps(checkpoint))
+    forged["identity"]["execution_evidence_sha256"] = hashlib.sha256(
+        missing_text.encode("utf-8")
+    ).hexdigest()
+    with pytest.raises(ReductionError, match="lacks paired"):
+        validate_checkpoint_inputs(
+            forged, run, execution_evidence_json=missing_text
+        )
     stale_run = json.loads(json.dumps(checkpoint))
     stale_run["identity"]["run_json_sha256"] = "0" * 64
     with pytest.raises(ReductionError, match="Run digest mismatch"):
@@ -291,6 +315,83 @@ def test_exact_pair_and_dual_checkpoint_digests_fail_closed_on_mismatch():
     with pytest.raises(ReductionError, match="execution-evidence digest mismatch"):
         validate_checkpoint_inputs(
             stale_evidence, run, execution_evidence_json=evidence_json
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("hop_id", "H999"),
+        ("hop_sequence", 999),
+        ("workflow_role", "worker"),
+        ("outcome", "failed"),
+        ("base_head", "wrong-base"),
+        ("end_head", "wrong-end"),
+        ("actual_commits", ("wrong-commit",)),
+    ],
+)
+def test_pair_validation_rejects_wrong_hop_and_provenance_fields(field, value):
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(run, workflow, evidence_prefix="pair-fields")
+    run, _, evidence_json = qualification_evidence(run, {evaluator_hop: ("pass",)})
+    document = execution_evidence_from_json(evidence_json)
+    attempt = replace(document.attempts[0], **{field: value})
+    attempt = replace(
+        attempt,
+        pre_route_anchor_sha256=pre_route_anchor_sha256(
+            document.run,
+            hop_id=attempt.hop_id,
+            hop_sequence=attempt.hop_sequence,
+            invocation_id=attempt.invocation_id,
+            phase=attempt.phase,
+            workflow_role=attempt.workflow_role,
+            outcome=attempt.outcome,
+            base_head=attempt.base_head,
+            end_head=attempt.end_head,
+            actual_commits=attempt.actual_commits,
+            candidate_result_sha256=attempt.candidate_result_sha256,
+            required_evidence=attempt.required_evidence,
+        ),
+    )
+    mismatched = replace(document, attempts=(attempt,))
+    mismatched_text = execution_evidence_to_json(mismatched)
+    with pytest.raises(ReductionError):
+        checkpoint_projection(
+            run, workflow, execution_evidence_json=mismatched_text
+        )
+
+
+@pytest.mark.parametrize("identity_field", ["run_id", "work_item_id", "profile_revision"])
+def test_pair_validation_rejects_wrong_document_identity(identity_field):
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(run, workflow, evidence_prefix="pair-identity")
+    run, _, evidence_json = qualification_evidence(run, {evaluator_hop: ("pass",)})
+    document = execution_evidence_from_json(evidence_json)
+    identity = replace(document.run, **{identity_field: "wrong-identity"})
+    attempt = document.attempts[0]
+    attempt = replace(
+        attempt,
+        pre_route_anchor_sha256=pre_route_anchor_sha256(
+            identity,
+            hop_id=attempt.hop_id,
+            hop_sequence=attempt.hop_sequence,
+            invocation_id=attempt.invocation_id,
+            phase=attempt.phase,
+            workflow_role=attempt.workflow_role,
+            outcome=attempt.outcome,
+            base_head=attempt.base_head,
+            end_head=attempt.end_head,
+            actual_commits=attempt.actual_commits,
+            candidate_result_sha256=attempt.candidate_result_sha256,
+            required_evidence=attempt.required_evidence,
+        ),
+    )
+    mismatched_text = execution_evidence_to_json(
+        replace(document, run=identity, attempts=(attempt,))
+    )
+    with pytest.raises(ReductionError, match="identity"):
+        checkpoint_projection(
+            run, workflow, execution_evidence_json=mismatched_text
         )
 
 

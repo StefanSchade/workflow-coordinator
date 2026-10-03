@@ -2059,6 +2059,7 @@ def test_schema4_evidence_is_published_before_the_route_bearing_run(
     workflow, run, state, association, components = _two_hop_serial_fixture(
         repository, tmp_path, adapter
     )
+    run = replace(run, schema_version=3)
     events: list[tuple[str, object]] = []
     original_publish = slice4.publish_execution_evidence
     original_run_write = slice4.write_run_snapshot
@@ -2105,7 +2106,10 @@ def test_n2_serial_driver_uses_fresh_context_and_never_allocates_h003(repository
         3, "policy", "1", ("repo",), ("governance",), ("PROOF.md",), 2,
         ("edit", "commit"), {},
     )
-    run = new_run(item, workflow, policy, run_id="RUN-2", baseline_head=baseline)
+    run = replace(
+        new_run(item, workflow, policy, run_id="RUN-2", baseline_head=baseline),
+        schema_version=3,
+    )
     adapter = _TwoHopAdapter(repository)
     state = tmp_path / "external"
     association = register_checkout(state, repository)

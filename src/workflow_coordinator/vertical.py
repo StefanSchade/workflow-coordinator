@@ -37,6 +37,7 @@ from .git_facts import (
 )
 from .model import (
     COMMIT_ACTION,
+    ConvergenceRole,
     EDIT_ACTION,
     Hop,
     ExecutionEvidenceDocument,
@@ -195,11 +196,18 @@ def run_one_hop(
     outcome = adapter.execute(AgentExecutionRequest(
         invocation, prompt.text, repository,
         ROUTING_RESULT_ENVELOPE_CONTRACT, execution_timeout_seconds,
+        contract_version=(
+            2 if phase.convergence_role is not ConvergenceRole.NONE else 1
+        ),
     ))
     if outcome.candidate_result is None:
         raise ExecutionResultValidationError(outcome, "agent execution produced no candidate structured result")
     try:
-        result = validated_result(outcome.candidate_result, invocation)
+        result = validated_result(
+            outcome.candidate_result,
+            invocation,
+            2 if phase.convergence_role is not ConvergenceRole.NONE else 1,
+        )
     except ResultValidationError as error:
         raise ExecutionResultValidationError(outcome, str(error)) from error
     delta: GitDelta | None = None

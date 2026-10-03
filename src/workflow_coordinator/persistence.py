@@ -296,6 +296,32 @@ def trusted_qualification_index_for_run(
     return TrustedQualificationIndex(identity, tuple(paired))
 
 
+def _qualification_index_for_inputs(
+    run: Run,
+    execution_evidence_json: str | None,
+    *,
+    marker: DispatchMarker | None = None,
+) -> TrustedQualificationIndex:
+    """Validate pair authority while retaining historical no-anchor semantics."""
+
+    anchored_hops = tuple(
+        hop
+        for hop in run.hops
+        if hop.pre_route_anchor_sha256 is not None
+        and hop.role != "uncertain_dispatch"
+    )
+    if execution_evidence_json is None:
+        if run.schema_version == 3 and anchored_hops:
+            raise ReductionError("Run Hop anchor lacks paired execution evidence")
+        return TrustedQualificationIndex.empty()
+    document = execution_evidence_from_json(execution_evidence_json)
+    if isinstance(document, ExecutionEvidenceDocument):
+        return trusted_qualification_index_for_run(run, document, marker=marker)
+    if run.schema_version == 3 and anchored_hops:
+        raise ReductionError("anchored Run requires schema-4 execution evidence")
+    return TrustedQualificationIndex.empty()
+
+
 def checkpoint_projection(
     run: Run,
     profile: WorkflowProfile,
@@ -312,13 +338,9 @@ def checkpoint_projection(
         if execution_evidence_json is None
         else hashlib.sha256(execution_evidence_json.encode("utf-8")).hexdigest()
     )
-    qualification_index = TrustedQualificationIndex.empty()
-    if execution_evidence_json is not None:
-        document = execution_evidence_from_json(execution_evidence_json)
-        if isinstance(document, ExecutionEvidenceDocument):
-            qualification_index = trusted_qualification_index_for_run(
-                run, document, marker=dispatch_marker
-            )
+    qualification_index = _qualification_index_for_inputs(
+        run, execution_evidence_json, marker=dispatch_marker
+    )
     projection = {
         "identity": {
             "work_item_id": run.work_item_id,
@@ -409,8 +431,13 @@ def validate_checkpoint_inputs(
     run: Run,
     *,
     execution_evidence_json: str | None,
+    dispatch_marker: DispatchMarker | None = None,
 ) -> None:
-    """Reject a checkpoint that is not bound to both authoritative inputs."""
+    """Reject a checkpoint that is not bound to one valid authoritative pair."""
+
+    _qualification_index_for_inputs(
+        run, execution_evidence_json, marker=dispatch_marker
+    )
 
     try:
         identity = checkpoint["identity"]
