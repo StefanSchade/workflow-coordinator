@@ -23,6 +23,8 @@ from workflow_coordinator.reducer import (
     resume_after_reconcile,
 )
 from workflow_coordinator.serialization import (
+    run_from_json,
+    run_to_json,
     work_item_from_yaml,
     workflow_profile_from_yaml,
 )
@@ -41,11 +43,27 @@ pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
 TESTS_ROOT = Path(__file__).resolve().parents[1]
 NEUTRAL_FIXTURE = TESTS_ROOT / "fixtures" / "slice5b_non_dmc.yaml"
+PRE_SLICE1_V2_RUN_JSON = '{"anomalies":[],"baseline_head":"abc","child_run_id":null,"current_head":"abc","findings":[],"hop_limit":1,"hop_used":0,"hops":[],"human_question":null,"phase":"implement","policy_id":"core-policy","policy_revision":"policy-r1","profile_id":"core","profile_revision":"profile-r1","reconcile_anchor":null,"reconcile_reason":null,"repository":"repo","run_id":"RUN-v2","schema_version":2,"semantic_stop":null,"status":"ready","stop_reason":null,"successor_provenance":null,"suspension_head":null,"work_item_id":"WI-1"}\n'
 
 
 def process(run, workflow, routing_result, *, role="worker", attribution="agent"):
     charged, hop_id = charge_hop(run, role=role, attribution=attribution)
     return reduce_result(charged, routing_result, workflow, hop_id=hop_id)
+
+
+def test_pre_slice1_v2_replay_is_byte_preserving_and_fabricates_no_v3_records():
+    run = run_from_json(PRE_SLICE1_V2_RUN_JSON)
+    workflow = profile(
+        {"implement": phase({"done": route("complete")})}, profile_id="core"
+    )
+    assert run_to_json(run) == PRE_SLICE1_V2_RUN_JSON
+    assert run.schema_version == 2
+    assert all(finding.correction_obligation is None for finding in run.findings)
+    assert all(
+        not hop.coverage_claims and not hop.convergence_assessments
+        for hop in run.hops
+    )
+    assert process(run, workflow, result("done")).run.status is RunStatus.COMPLETED
 
 
 def test_replay_a_productive_correction_can_continue_beyond_three_loops():

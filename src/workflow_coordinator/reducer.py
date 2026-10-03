@@ -306,6 +306,10 @@ def _apply_v2_finding_deltas(
         if delta.finding_id is None:
             if not isinstance(delta, NewFindingDelta):
                 raise ReductionError("new Finding must use the new-Finding delta form")
+            if delta.successor_ref is not None and delta.successor_ref.startswith("local:"):
+                raise ReductionError(
+                    "local successor references are valid only on existing-Finding deltas"
+                )
             if delta.local_ref is not None:
                 if re.fullmatch(r"N[1-9][0-9]*", delta.local_ref) is None:
                     raise ReductionError("local_ref must match N[1-9][0-9]*")

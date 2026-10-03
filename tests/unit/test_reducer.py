@@ -4,10 +4,12 @@ import inspect
 import pytest
 
 from workflow_coordinator.model import (
+    ConvergenceAssessment,
     ConvergenceAssessmentResult,
     ConvergenceRole,
     CorrectionObligation,
     CorrectionObligationOwner,
+    CoverageClaim,
     CoverageDisposition,
     Escalation,
     ExistingFindingDelta,
@@ -569,6 +571,27 @@ def test_corrector_rejects_unknown_coverage(finding_id):
     assert reduced.run.status is RunStatus.AWAITING_HUMAN
 
 
+@pytest.mark.parametrize("state", [FindingState.RESOLVED, FindingState.SUPERSEDED])
+def test_corrector_rejects_coverage_of_closed_or_superseded_obligations(state):
+    workflow, run = introduce_obligation()
+    run = replace(
+        run,
+        findings=(replace(run.findings[0], state=state),),
+    )
+    run, hop_id = charge_hop(run)
+    reduced = reduce_result(
+        run,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(coverage("F001"),),
+        ),
+        workflow,
+        hop_id=hop_id,
+    )
+    assert "closed, superseded, or untracked" in (reduced.run.stop_reason or "")
+
+
 def test_evaluator_assessment_is_total_and_residualization_is_nonblocking():
     workflow, run = introduce_obligation()
     run, correction_hop = charge_hop(run)
@@ -604,6 +627,58 @@ def test_evaluator_assessment_is_total_and_residualization_is_nonblocking():
         hop_id=evaluator_hop,
     )
     assert missing.run.findings[0].state is FindingState.OPEN
+
+
+def test_residualized_assessment_rejects_mismatch_and_missing_authority_atomically():
+    workflow, run = introduce_obligation()
+    run, correction_hop = charge_hop(run)
+    run = reduce_result(
+        run,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(coverage("F001"),),
+        ),
+        workflow,
+        hop_id=correction_hop,
+    ).run
+    run, evaluator_hop = charge_hop(run, role="independent_reviewer")
+    mismatch = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(existing_delta("F001", "residual"),),
+            convergence_assessments=(
+                assessment("F001", correction_hop, "closed"),
+            ),
+        ),
+        workflow,
+        hop_id=evaluator_hop,
+    )
+    assert mismatch.run.findings == run.findings
+    assert "does not match Finding delta" in (mismatch.run.stop_reason or "")
+
+    no_residual_authority = convergence_profile(evaluator_authority=("resolve",))
+    unauthorized = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(existing_delta("F001", "residual"),),
+            convergence_assessments=(
+                assessment("F001", correction_hop, "residualized"),
+            ),
+        ),
+        no_residual_authority,
+        hop_id=evaluator_hop,
+    )
+    assert unauthorized.run.findings == run.findings
+    assert "cannot perform Finding operation residual" in (
+        unauthorized.run.stop_reason or ""
+    )
 
 
 def test_carried_new_counterexample_requires_previously_absent_ledger_evidence():
@@ -666,6 +741,9 @@ def test_same_result_local_successor_is_resolved_without_prediction():
         ((new_delta("open", local_ref="F002"),), "local_ref must match"),
         ((existing_delta("F001", "superseded", successor_ref="local:N404"),), "unknown local successor"),
         ((existing_delta("F001", "superseded", successor_ref="local:N2"), new_delta("open", blocking=False, local_ref="N2")), "open blocking tracked obligation"),
+        ((existing_delta("F001", "superseded", successor_ref="local:N2"), new_delta("resolved", local_ref="N2")), "open blocking tracked obligation"),
+        ((existing_delta("F001", "superseded", successor_ref="F002"),), "unknown concrete successor"),
+        ((new_delta("superseded", successor_ref="local:N1", local_ref="N1"),), "only on existing-Finding deltas"),
         ((existing_delta("F001", "superseded", successor_ref="F001"),), "cycle"),
     ],
 )
@@ -674,7 +752,7 @@ def test_local_reference_failures_are_atomic_and_consume_no_id(deltas, message):
     with pytest.raises(ReductionError, match=message):
         apply_finding_deltas(
             run, deltas, hop_id="H002", authority=FindingAuthority.GATE,
-            permitted_gate_operations=("supersede",),
+            permitted_gate_operations=("supersede", "resolve"),
             convergence_role=ConvergenceRole.EVALUATOR, result_schema_version=2,
         )
     accepted = apply_finding_deltas(
@@ -683,6 +761,29 @@ def test_local_reference_failures_are_atomic_and_consume_no_id(deltas, message):
         convergence_role=ConvergenceRole.EVALUATOR, result_schema_version=2,
     )
     assert accepted.findings[-1].finding_id == "F002"
+
+
+def test_new_blocker_gets_a_distinct_identity_without_mutating_unrelated_obligation():
+    _, run = introduce_obligation()
+    original = run.findings[0]
+    updated = apply_finding_deltas(
+        run,
+        (
+            new_delta(
+                "open",
+                invariant="A separately discovered obligation.",
+                evidence="new-obligation-evidence",
+                local_ref="N2",
+            ),
+        ),
+        hop_id="H002",
+        authority=FindingAuthority.GATE,
+        convergence_role=ConvergenceRole.EVALUATOR,
+        result_schema_version=2,
+    )
+    assert [finding.finding_id for finding in updated.findings] == ["F001", "F002"]
+    assert updated.findings[0] == original
+    assert updated.findings[1].evidence_refs == ("new-obligation-evidence",)
 
 
 def test_direct_and_transitive_supersession_cycles_reject_atomically():
@@ -732,10 +833,19 @@ def test_evaluator_reopen_authority_is_rejected_but_simple_reopen_remains():
 
 
 def test_new_core_vocabulary_is_domain_neutral():
-    names = {field.name for field in fields(CorrectionObligation)}
+    names = {
+        field.name
+        for record in (CorrectionObligation, CoverageClaim, ConvergenceAssessment)
+        for field in fields(record)
+    }
     values = {
         item.value
-        for enum_type in (ConvergenceRole, CoverageDisposition, ConvergenceAssessmentResult)
+        for enum_type in (
+            ConvergenceRole,
+            CorrectionObligationOwner,
+            CoverageDisposition,
+            ConvergenceAssessmentResult,
+        )
         for item in enum_type
     }
     text = " ".join(sorted(names | values)).lower()

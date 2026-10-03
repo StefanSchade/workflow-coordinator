@@ -21,7 +21,11 @@ from workflow_coordinator.codex_adapter import (
     structured_result_envelope_openai_schema,
 )
 from workflow_coordinator.serialization import (
-    EXISTING_FINDING_DELTA_KEYS, NEW_FINDING_DELTA_KEYS, ROUTING_RESULT_REQUIRED_KEYS,
+    EXISTING_FINDING_DELTA_KEYS,
+    NEW_FINDING_DELTA_KEYS,
+    NEW_FINDING_DELTA_V2_KEYS,
+    ROUTING_RESULT_REQUIRED_KEYS,
+    ROUTING_RESULT_V2_REQUIRED_KEYS,
 )
 
 
@@ -75,6 +79,74 @@ def test_projection_derives_from_canonical_semantic_contract_facts():
     assert set(existing_finding["required"]) == set(EXISTING_FINDING_DELTA_KEYS)
     assert "invariant" not in existing_finding["properties"]
     assert "blocking" not in existing_finding["properties"]
+
+
+def test_result_v2_projection_is_strict_closed_and_null_only_for_later_slice_records():
+    schema = structured_result_envelope_openai_schema(_invocation(), 2)
+    assert_openai_strict_schema(schema)
+    assert schema["properties"]["schema_version"]["enum"] == [2]
+    result = schema["properties"]["result"]
+    assert set(result["required"]) == set(ROUTING_RESULT_V2_REQUIRED_KEYS)
+    new_finding, existing_finding = result["properties"]["findings"]["items"]["anyOf"]
+    assert set(new_finding["required"]) == set(NEW_FINDING_DELTA_V2_KEYS)
+    assert "local_ref" not in existing_finding["properties"]
+    for field in ("diagnosis", "strategy_revision", "strategy_assessment"):
+        assert result["properties"][field] == {"type": "null"}
+
+
+def test_contract_version_selector_defaults_to_v1_and_rejects_mixed_envelopes():
+    invocation = _invocation()
+    result_v2 = {
+        "schema_version": 2,
+        "outcome": "completed",
+        "requested_route": "done",
+        "scope_changed": False,
+        "requires_human": False,
+        "escalation": None,
+        "findings": [],
+        "claimed_commits": [],
+        "commit_intent": None,
+        "evidence_refs": [],
+        "summary": "done",
+        "coverage_claims": [],
+        "convergence_assessments": [],
+        "diagnosis": None,
+        "strategy_revision": None,
+        "strategy_assessment": None,
+    }
+    envelope = json.dumps({
+        "schema_version": 2,
+        "run_id": invocation.run_id,
+        "hop_id": invocation.hop_id,
+        "invocation_id": invocation.invocation_id,
+        "result": result_v2,
+    })
+    assert validated_result(envelope, invocation, 2).schema_version == 2
+    with pytest.raises(ResultValidationError, match="unsupported schema version"):
+        validated_result(envelope, invocation)
+
+    mixed = json.loads(envelope)
+    mixed["schema_version"] = 1
+    with pytest.raises(ResultValidationError, match="does not match"):
+        validated_result(json.dumps(mixed), invocation, 1)
+
+
+def test_codex_execute_uses_explicit_v2_selector_without_changing_default(tmp_path: Path):
+    executable = tmp_path / "fake-codex"
+    executable.write_text("#!/usr/bin/env python3\npass\n")
+    executable.chmod(0o755)
+    adapter = CodexCliAdapter(
+        tmp_path, model="explicit-model", reasoning_effort="high", executable=str(executable)
+    )
+    request = AgentExecutionRequest(
+        _invocation(), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5,
+        contract_version=2,
+    )
+    adapter.execute(request)
+    emitted = json.loads(
+        (tmp_path / "structured-result.schema.json").read_text(encoding="utf-8")
+    )
+    assert emitted == structured_result_envelope_openai_schema(request.invocation, 2)
 
 
 def test_codex_argv_is_adapter_owned_and_request_is_provider_neutral(tmp_path: Path):

@@ -1119,12 +1119,27 @@ def _validate_v3_run(run: Run) -> None:
     hops_by_id = {hop.hop_id: hop for hop in run.hops}
     hop_order = {hop.hop_id: index for index, hop in enumerate(run.hops)}
     findings_by_id = {finding.finding_id: finding for finding in run.findings}
+    for index, hop in enumerate(run.hops, start=1):
+        if hop.sequence != index:
+            raise ValidationError("Run v3 Hop sequence is not contiguous and ordered")
     for finding in run.findings:
         if re.fullmatch(r"F[0-9]{3,}", finding.finding_id) is None:
             raise ValidationError(f"Run v3 has invalid concrete Finding ID: {finding.finding_id}")
         if finding.introduced_by_hop not in hops_by_id or finding.changed_by_hop not in hops_by_id:
             raise ValidationError(
                 f"Run v3 Finding {finding.finding_id} references an absent Hop"
+            )
+        if finding.finding_id not in hops_by_id[finding.introduced_by_hop].finding_delta_ids:
+            raise ValidationError(
+                f"Run v3 Finding {finding.finding_id} introduction Hop lacks its delta ID"
+            )
+        if finding.finding_id not in hops_by_id[finding.changed_by_hop].finding_delta_ids:
+            raise ValidationError(
+                f"Run v3 Finding {finding.finding_id} change Hop lacks its delta ID"
+            )
+        if hop_order[finding.changed_by_hop] < hop_order[finding.introduced_by_hop]:
+            raise ValidationError(
+                f"Run v3 Finding {finding.finding_id} changed before its introduction"
             )
         obligation = finding.correction_obligation
         if finding.state is FindingState.OPEN and finding.blocking and obligation is None:
@@ -1156,7 +1171,12 @@ def _validate_v3_run(run: Run) -> None:
                 raise ValidationError(
                     f"Run v3 tracked Finding {finding.finding_id} has an untracked successor"
                 )
+            if hop_order[successor.introduced_by_hop] > hop_order[finding.changed_by_hop]:
+                raise ValidationError(
+                    f"Run v3 Finding {finding.finding_id} successor was introduced later"
+                )
 
+    assessed_correction_hops: set[str] = set()
     for hop in run.hops:
         unknown_delta_ids = sorted(set(hop.finding_delta_ids) - set(findings_by_id))
         if unknown_delta_ids:
@@ -1172,6 +1192,10 @@ def _validate_v3_run(run: Run) -> None:
                 raise ValidationError(
                     f"Run v3 Hop {hop.hop_id} coverage references unknown or untracked Finding"
                 )
+            if hop_order[finding.introduced_by_hop] >= hop_order[hop.hop_id]:
+                raise ValidationError(
+                    f"Run v3 Hop {hop.hop_id} coverage does not reference a prior Finding"
+                )
         assessment_ids = [item.finding_id for item in hop.convergence_assessments]
         if len(set(assessment_ids)) != len(assessment_ids):
             raise ValidationError(
@@ -1184,6 +1208,11 @@ def _validate_v3_run(run: Run) -> None:
             )
         if correction_ids:
             correction_hop_id = next(iter(correction_ids))
+            if correction_hop_id in assessed_correction_hops:
+                raise ValidationError(
+                    f"Run v3 correction Hop {correction_hop_id} is assessed more than once"
+                )
+            assessed_correction_hops.add(correction_hop_id)
             correction_hop = hops_by_id.get(correction_hop_id)
             if (
                 correction_hop is None
@@ -1202,6 +1231,10 @@ def _validate_v3_run(run: Run) -> None:
             if finding is None or finding.correction_obligation is None:
                 raise ValidationError(
                     f"Run v3 Hop {hop.hop_id} assessment references unknown or untracked Finding"
+                )
+            if hop_order[finding.introduced_by_hop] >= hop_order[assessment.correction_hop_id]:
+                raise ValidationError(
+                    f"Run v3 Hop {hop.hop_id} assessment Finding was not projected into correction"
                 )
 
     edges = {

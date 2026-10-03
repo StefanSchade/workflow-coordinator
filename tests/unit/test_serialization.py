@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 from workflow_coordinator.model import (
+    FindingState,
     DurableArtifact,
     Hop,
     RouteEffect,
@@ -13,6 +14,7 @@ from workflow_coordinator.model import (
     WorkflowRole,
     new_run,
 )
+from workflow_coordinator.reducer import reduce_result
 from workflow_coordinator.serialization import (
     ValidationError,
     repository_policy_from_yaml,
@@ -24,7 +26,18 @@ from workflow_coordinator.serialization import (
     workflow_profile_from_yaml,
 )
 from workflow_coordinator.persistence import checkpoint_projection
-from tests.support import charge_hop, phase, profile, route, run_for
+from tests.support import (
+    assessment,
+    charge_hop,
+    coverage,
+    existing_delta,
+    new_delta,
+    phase,
+    profile,
+    result,
+    route,
+    run_for,
+)
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
@@ -126,6 +139,79 @@ def valid_result_data(**changes):
     }
     data.update(changes)
     return data
+
+
+def valid_result_v2_data(**changes):
+    data = valid_result_data(
+        schema_version=2,
+        coverage_claims=[],
+        convergence_assessments=[],
+        diagnosis=None,
+        strategy_revision=None,
+        strategy_assessment=None,
+    )
+    data.update(changes)
+    return data
+
+
+def v3_run_with_assessment():
+    workflow = profile(
+        {
+            "evaluate": phase(
+                {"correct": route("goto", "correct")},
+                role="independent_reviewer",
+                review="gate",
+                finding_authority=("resolve", "residual", "supersede"),
+                convergence_role="evaluator",
+            ),
+            "correct": phase(
+                {"evaluate": route("goto", "evaluate")},
+                convergence_role="corrector",
+            ),
+        }
+    )
+    run, introduction_hop = charge_hop(
+        run_for(workflow, initial_phase="evaluate", run_schema_version=3),
+        role="independent_reviewer",
+    )
+    run = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(new_delta("open", local_ref="N1"),),
+        ),
+        workflow,
+        hop_id=introduction_hop,
+    ).run
+    run, correction_hop = charge_hop(run)
+    run = reduce_result(
+        run,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(coverage("F001", "addressed", "worker-evidence"),),
+        ),
+        workflow,
+        hop_id=correction_hop,
+    ).run
+    run, evaluation_hop = charge_hop(run, role="independent_reviewer")
+    run = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(existing_delta("F001", "open", evidence="still-unmet"),),
+            convergence_assessments=(
+                assessment("F001", correction_hop, "carried_unmet", "gate-evidence"),
+            ),
+        ),
+        workflow,
+        hop_id=evaluation_hop,
+    ).run
+    return run
 
 
 def policy_yaml(**changes):
@@ -464,8 +550,127 @@ def test_commit_intent_is_explicit_strict_semantic_data_not_a_commit_claim():
 
 
 def test_structured_schema_versions_fail_closed():
-    with pytest.raises(ValidationError, match="unsupported version"):
+    with pytest.raises(ValidationError, match="missing fields"):
         routing_result_from_data(valid_result_data(schema_version=2))
+    with pytest.raises(ValidationError, match="unsupported version"):
+        routing_result_from_data(valid_result_data(schema_version=3))
+
+
+def test_result_v1_remains_closed_and_result_v2_requires_its_exact_shape():
+    legacy = valid_result_data()
+    assert routing_result_from_data(legacy).schema_version == 1
+    for field in (
+        "coverage_claims",
+        "convergence_assessments",
+        "diagnosis",
+        "strategy_revision",
+        "strategy_assessment",
+    ):
+        with pytest.raises(ValidationError, match="unknown fields"):
+            routing_result_from_data({**legacy, field: None if field.endswith("assessment") or field == "diagnosis" or field == "strategy_revision" else []})
+
+    parsed = routing_result_from_data(valid_result_v2_data())
+    assert parsed.schema_version == 2
+    assert parsed.coverage_claims == parsed.convergence_assessments == ()
+    assert parsed.diagnosis is parsed.strategy_revision is parsed.strategy_assessment is None
+    for field in ("diagnosis", "strategy_revision", "strategy_assessment"):
+        with pytest.raises(ValidationError, match=f"{field} must be null"):
+            routing_result_from_data(valid_result_v2_data(**{field: {}}))
+
+
+def test_result_v2_local_ref_is_new_finding_only_and_v1_rejects_it():
+    new_finding = {
+        "finding_id": None,
+        "invariant": "A bounded obligation.",
+        "blocking": True,
+        "proposed_state": "open",
+        "evidence_refs": ["gate"],
+        "local_ref": "N1",
+    }
+    parsed = routing_result_from_data(valid_result_v2_data(findings=[new_finding]))
+    assert parsed.findings[0].local_ref == "N1"
+    with pytest.raises(ValidationError, match="unknown fields"):
+        routing_result_from_data(valid_result_data(findings=[new_finding]))
+    existing = {
+        "finding_id": "F001",
+        "proposed_state": "open",
+        "evidence_refs": [],
+        "local_ref": "N1",
+    }
+    with pytest.raises(ValidationError, match="unknown fields"):
+        routing_result_from_data(valid_result_v2_data(findings=[existing]))
+
+
+def test_profile_v2_shape_stays_closed_and_cannot_select_convergence_role():
+    with pytest.raises(ValidationError, match="unknown fields: convergence_role"):
+        workflow_profile_from_yaml(
+            PROFILE_YAML.replace(
+                "    role: worker\n",
+                "    role: worker\n    convergence_role: corrector\n",
+                1,
+            )
+        )
+
+
+def test_run_v3_round_trip_persists_only_concrete_identity_and_new_hop_records():
+    run = v3_run_with_assessment()
+    encoded = run_to_json(run)
+    data = json.loads(encoded)
+    assert data["schema_version"] == 3
+    assert data["findings"][0]["correction_obligation"] == {
+        "owner": "gate",
+        "introduced_by_hop": "H001",
+    }
+    assert data["hops"][1]["coverage_claims"][0]["finding_id"] == "F001"
+    assert data["hops"][2]["convergence_assessments"][0]["correction_hop_id"] == "H002"
+    assert "local_ref" not in encoded and "local:N1" not in encoded
+    assert run_from_json(encoded) == run
+
+
+def test_run_v3_rejects_untracked_blockers_and_invalid_new_cross_references():
+    data = json.loads(run_to_json(v3_run_with_assessment()))
+    data["findings"][0]["correction_obligation"] = None
+    with pytest.raises(ValidationError, match="lacks correction_obligation"):
+        run_from_json(json.dumps(data))
+
+    data = json.loads(run_to_json(v3_run_with_assessment()))
+    data["hops"][0]["finding_delta_ids"] = []
+    with pytest.raises(ValidationError, match="introduction Hop lacks its delta ID"):
+        run_from_json(json.dumps(data))
+
+    data = json.loads(run_to_json(v3_run_with_assessment()))
+    data["hops"][1]["coverage_claims"][0]["finding_id"] = "F999"
+    with pytest.raises(ValidationError, match="unknown or untracked"):
+        run_from_json(json.dumps(data))
+
+    data = json.loads(run_to_json(v3_run_with_assessment()))
+    data["hops"][2]["convergence_assessments"][0]["correction_hop_id"] = "H404"
+    with pytest.raises(ValidationError, match="absent or non-prior"):
+        run_from_json(json.dumps(data))
+
+
+def test_run_v3_rejects_local_successors_cycles_and_reused_correction_assessments():
+    run = v3_run_with_assessment()
+    data = json.loads(run_to_json(run))
+    data["findings"][0]["state"] = FindingState.SUPERSEDED.value
+    data["findings"][0]["successor_ref"] = "local:N1"
+    with pytest.raises(ValidationError, match="only a concrete Finding ID"):
+        run_from_json(json.dumps(data))
+
+    data = json.loads(run_to_json(run))
+    data["findings"][0]["state"] = FindingState.SUPERSEDED.value
+    data["findings"][0]["successor_ref"] = "F001"
+    with pytest.raises(ValidationError, match="cycle"):
+        run_from_json(json.dumps(data))
+
+    data = json.loads(run_to_json(run))
+    duplicate = dict(data["hops"][2])
+    duplicate["hop_id"] = "H004"
+    duplicate["sequence"] = 4
+    data["hops"].append(duplicate)
+    data["hop_used"] = 4
+    with pytest.raises(ValidationError, match="assessed more than once"):
+        run_from_json(json.dumps(data))
 
 
 def test_run_json_round_trip_is_deterministic_and_strict():
