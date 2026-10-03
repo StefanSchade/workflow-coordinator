@@ -670,6 +670,8 @@ This note does not:
   (§11);
 * select capability/version discovery, a Runtime-independent report reader, or
   any other mechanism for §12's versioning question;
+* propose a module tree, an extraction plan, or an architecture-decomposition
+  requirement for `operator.py` merely because the file is large (§18);
 * create or modify any FTR, BUG, WorkItem, profile, policy, task, Project
   Memory record, Runtime, source, test, archive repository, ledger, or
   remote.
@@ -697,3 +699,136 @@ This note does not:
   justifies, given §14's leaning but explicitly non-committed reading of the
   evidence? -- deliberately left open here, exactly as the Predecessor left it
   open at its own §12.
+* At what evidence threshold would an `operator.py` decomposition review
+  become worthwhile, and has that threshold been reached yet (§18)?
+
+== 18. Architectural watch item: `operator.py` responsibility concentration
+
+*[OPERATOR OBSERVATION]* `operator.py` has grown substantially
+(1564 lines at this note's anchor commit) and now visibly contains several
+distinct concerns: admission/preflight, Run execution/orchestration, operator
+projections/reporting, status/inspection, salvage export, and
+successor-descriptor preparation/validation. File length is recorded here
+only as the signal that prompted inspection, per this note's own instruction
+to prefer responsibility/cohesion/change-pressure evidence over LOC; the
+classification below rests on that evidence, not on the line count.
+
+*[OBSERVED CURRENT FACT, responsibility inventory]* Reading the file in full
+against its own commit history (`git log --oneline -- operator.py`, 29
+commits total) separates six regions with different textures:
+
+[cols="2,2,3",options="header"]
+|===
+| Region (approx. lines) | Representative symbols | Change-pressure evidence
+
+| Admission/preflight
+| `_admit_a1`, `_within_scope`, `_normalized_scope`, `_preflight`
+  (`operator.py:75-446`)
+| Last substantively changed by the A1-A4 carve-out commits
+  (`49c9832`, `b67def9`, `119ee62`, `47388aa`) and later binding/Hop-ceiling
+  commits (`ec397b6`, `dcb1da0`); not touched by the current
+  `SCOPE-ESCALATION-CONTINUATION` series.
+
+| Run execution/orchestration
+| `_reconstructed_context`, `_binding_evidence`, `_execution_evidence`,
+  `run_serial_hops` (`operator.py:460-747`)
+| Driven by the Slice-5a/5b convergence-loop commits (`cf0996d`, `2761658`,
+  `10d8eab`, `9519edb`); also not touched by the current series.
+
+| Operator projections/reporting
+| `_summary`, `_best_effort_failure_summary`, `_write_failure_summary`,
+  `_next_explicit_action` (`operator.py:750-826`, `1203-1213`)
+| Shared by the ordinary launch path, `status`, and successor preparation;
+  the only region independently re-touched by three successive
+  implementation reviews under "R3 -- explicit next-action output
+  ergonomics" (§9) -- a distinct, recurring reason to change (presentation
+  ergonomics) orthogonal to the other regions' reasons.
+
+| Salvage export
+| `_load_manifest`, `_validate_manifest_bytes`, `_export_salvage`,
+  publication primitives (`operator.py:829-1176`)
+| Introduced and then hardened through repeated H001/H003/H005-shaped
+  patches within a single WorkItem series
+  (`ab91946` through `a2542de`, 12 of the last 13 commits touching this
+  file). Currently the most actively churning region.
+
+| Successor-descriptor preparation/validation
+| `_prepare_successor`, `_validated_successor_descriptor`,
+  `_successor_context` (`operator.py:1179-1313`, `1313-1442`)
+| Same commit series as salvage export, usually touched in the same
+  commits because the descriptor's `salvage` field references the salvage
+  manifest; conceptually distinct (provenance/continuation integrity versus
+  untrusted-bytes bundling) but not yet demonstrated independent in its
+  own change history.
+
+| CLI parsing/dispatch and low-level atomic-publication primitives
+| `_parse_args`, `main`, `_rename_no_replace`, `_write_descriptor_no_clobber`,
+  `_discard_export_bundle`, `_canonical_json_bytes`, `_descriptor_integrity`,
+  `_salvage_publication_modes`, `_outside_protected`,
+  `_repository_store_identity`
+| Cross-cutting dispatch, plus a cluster of filesystem-safety primitives
+  (no-clobber rename, canonical JSON, permission-mode verification) that
+  carry no Run/Hop/Finding domain semantics and are already reused
+  independently by both the salvage-export and successor-descriptor call
+  sites.
+|===
+
+*[HYPOTHESIS, answering the five framing questions without deciding
+anything]*
+
+* *Temporary concentration while semantics stabilize?* Partly, and
+  unevenly. Admission/preflight and Run execution/orchestration have gone
+  quiet since their respective carve-out/convergence commits landed,
+  consistent with those semantics having stabilized. Salvage export and
+  successor-descriptor preparation show the opposite pattern: they are the
+  newest code in the file and are still being hardened Hop-by-Hop within one
+  active WorkItem series. That recency argues against extracting them now,
+  not for it -- extraction would freeze a boundary around a concern still
+  being corrected.
+* *Which responsibilities already have demonstrably different reasons to
+  change?* Four, evidenced by four distinct commit clusters: authority/scope
+  ceilings (admission), convergence-loop mechanics (execution), presentation
+  ergonomics (reporting, via the independently recurring R3 review item), and
+  successor-continuation/salvage safety (the current series). Four different
+  reasons to change is itself evidence of low cohesion, independent of file
+  length.
+* *Which prospective seams depend on unresolved operator input/output design
+  and should not yet be frozen?* The reporting seam (`_summary` and what
+  `operator-plan.json`/`operator-summary.json` should contain) is exactly
+  what this note's §3 and §9 still leave open; extracting a "reporting
+  module" before that content question settles would bake today's
+  incomplete projection into a module contract. The salvage/successor-
+  descriptor seam is similarly unsettled: the descriptor schema is at
+  version 1, exercised by only one WorkItem series, and its boundary with
+  salvage is still being renegotiated patch-by-patch.
+* *Which responsibilities appear stable enough that later extraction would
+  be mostly mechanical?* The low-level atomic-publication primitives
+  (no-clobber rename, canonical JSON, permission-mode verification,
+  `_repository_store_identity`) carry no WFC domain semantics, are already
+  called independently from two sites, and their own hardening commits only
+  tightened validation without changing their shape. Admission/preflight's
+  core shape has likewise been stable since the A1 carve-out and sits outside
+  the currently churning series. Both are more plausible candidates for a
+  later, mostly-mechanical move than the still-moving regions above.
+* *At what evidence threshold would a decomposition review become
+  worthwhile?* Not yet, by this note's own reading. A plausible threshold,
+  offered as a hypothesis and not a plan:
+
+[source,text]
+----
+convergence semantics + operator input/output model stabilize
+    -> observe through additional real Runs
+    -> perform a separate architecture/decomposition review
+    -> only then commission refactoring if justified
+----
+
+  Concretely: when the salvage/successor-descriptor series stops producing
+  H001/H003/H005-shaped hardening patches, when the `operator-plan.json`/
+  `operator-summary.json` content questions in §3 and §9 reach their own
+  settled state, and when at least one real successor-continuation Run has
+  exercised this code end-to-end rather than only under unit test, the
+  module boundaries visible today would be worth re-examining in a
+  dedicated review. This note does not commission that review, does not
+  name a target module tree, and treats the five-question framing above as
+  the reusable instrument for conducting it later -- not as a conclusion
+  reached now.
