@@ -42,7 +42,11 @@ document to a Run identity and it does not preserve the exact required-command
 set against which its observations must be judged. A later, separately
 commissioned implementation shall introduce the bounded schema-version-4
 extension specified below. It shall not add a qualification field to Run,
-Hop, HopSummary, or Finding and shall not add a mutable convergence counter.
+or Finding and shall not add a mutable convergence counter. It does add one
+immutable, Coordinator-created *pre-route correlation anchor* to a v3
+HopSummary. That anchor is neither a mechanical pass/fail fact nor a route;
+it is the stable identity by which the separately owned evidence row is joined
+to the semantic Hop without waiting for route-dependent finalization.
 
 This revision is architecture-convergence input only. Independent acceptance
 makes it additional accepted design authority for the narrow superseded
@@ -267,7 +271,7 @@ for deterministic qualification:
       "hop_id": "H002",
       "hop_sequence": 2,
       "invocation_id": "INV-...",
-      "hop_summary_sha256": "...",
+      "pre_route_anchor_sha256": "...",
       "phase": "review",
       "workflow_role": "independent_reviewer",
       "outcome": "changes_required",
@@ -275,6 +279,8 @@ for deterministic qualification:
       "end_head": "...",
       "actual_commits": [],
       "candidate_result_present": true,
+      "candidate_result_sha256": "...",
+      "publication": "staged",
       "required_evidence": [
         {
           "command_name": "pytest",
@@ -305,16 +311,33 @@ commands it actually executes; it must not reconstruct it from observation
 presence after execution.
 
 The document-level Run identity is mandatory. `hop_sequence` and
-`hop_summary_sha256` are mandatory. The latter is the SHA-256 of the canonical
-closed-wire JSON object for that exact persisted HopSummary, using the same
-field set and canonical JSON rules as Run serialization. It binds the row to
-the complete semantic Hop without adding invocation or evidence fields to Run
-wire. `invocation_id` remains mandatory and must be unique within the
-document. Unknown fields or malformed values fail strict parsing. Schema 4
-does not add a mutable `qualified` boolean; qualification remains derived from
-plan plus observations.
+`pre_route_anchor_sha256` are mandatory. The anchor is a SHA-256 over the
+canonical closed JSON object constructed by the Coordinator *before route
+selection*. It contains exactly: the document Run identity; Hop ID and
+sequence; invocation ID; phase and workflow role; candidate semantic outcome;
+base HEAD, end HEAD, and ordered actual commits; the mandatory
+`candidate_result_sha256` over canonical validated candidate structured-result
+bytes; and the ordered prepared required-command identity tuples. It deliberately
+excludes applied route, route reason, stop reason, Run status, checkpoint
+material, and Observations. The row retains `candidate_result_sha256` so replay
+can recompute the anchor without relying on a transient result file. The
+Coordinator creates the same anchor once, writes it into the staged evidence
+attempt, and persists its digest as the immutable `pre_route_anchor_sha256` on
+the final v3 HopSummary if reduction succeeds. Canonical JSON and SHA-256 rules
+are the existing closed Run-wire rules. Thus the anchor is available when the
+live predicate is consumed and remains exactly checkable after route selection.
 
-=== Exact correlation rule
+`invocation_id` remains mandatory and must be unique in the document. Unknown
+fields or malformed values fail strict parsing. Schema 4 does not add a mutable
+`qualified` boolean; qualification remains derived from plan plus
+Observations. The evidence attempt has the immutable publication value
+`staged`: it records a complete pre-route fact, and is eligible only when it
+has the exact paired Hop below. Recovery deterministically classifies a staged
+row belonging to a charged uncertain Hop as abandoned for qualification without
+rewriting its evidence bytes. This publication provenance is not a qualification
+truth field and cannot turn a failing or missing command into a pass.
+
+=== Exact durable and live correlation rule
 
 An execution-evidence attempt correlates to semantic evaluator Hop `h` only
 when all of the following hold:
@@ -323,32 +346,66 @@ when all of the following hold:
   `profile_revision` equal the Run's pinned identities;
 . exactly one attempt row names `h.hop_id` and `h.sequence`;
 . that row's non-empty `invocation_id` is unique in the document;
-. the row's `hop_summary_sha256` equals the digest recomputed from `h`'s
-  canonical persisted wire object;
+. the row's `pre_route_anchor_sha256` equals `h.pre_route_anchor_sha256`, and
+  that digest recomputes from the exact pre-route tuple defined above;
 . the row's workflow role, semantic outcome, base HEAD, end HEAD, and ordered
-  `actual_commits` exactly equal the Hop summary;
+  `actual_commits` exactly equal both the pre-route tuple and the Hop summary;
 . the row records a validated candidate (`candidate_result_present=true`).
 
 The accepted convergence assessment in `h` already proves Slice-1 evaluator
 provenance; derivation does not re-admit that semantic record from the attempt
 row. The row's retained `phase` is audit context, while its workflow role and
-complete Hop-summary digest are checked as above. This avoids making a mutable
-live profile file an additional replay input.
+complete pre-route anchor are checked as above. This avoids both a mutable live
+profile file as replay input and the impossible dependence on a final
+route-bearing HopSummary digest.
 
-Every present attempt row must correlate to exactly one Hop in the identified
-Run. A row for an unknown Hop, a duplicate row for one Hop, duplicate
-invocation identity, reordered/mismatched commit anchors, cross-Run document,
-or conflicting provenance is inconsistent input. It must never be selected by
-best effort, first/last wins, route inference, or nearest-sequence matching.
+Every pair-qualified attempt row must correlate to exactly one Hop in the
+identified Run. During the bounded evidence-before-Run interval, the one staged
+row named by the live dispatch marker is permitted to be temporarily unpaired;
+it is usable only by that in-flight reduction and not by any durable replay.
+A row for an unknown Hop outside that interval, a duplicate row for one Hop,
+duplicate invocation identity, reordered/mismatched commit anchors, cross-Run
+document, or conflicting provenance is inconsistent input. It must never be
+selected by best effort, first/last wins, route inference, or nearest-sequence
+matching.
 
 Missing and inconsistent input differ operationally but both fail closed. No
 row for an otherwise valid evaluator Hop means that candidate is simply
-unqualified. Structurally malformed, duplicate, cross-Run, or contradictory
-input raises one deterministic qualification-input error; a consumer must not
-publish a new convergence checkpoint or take a convergence route from it.
-The existing mechanical/human stop boundary handles such an integration error
-when live routing is later commissioned. It is not converted to count zero and
-silently ignored, because doing so would conceal corrupted trusted input.
+unqualified. Structurally malformed, duplicate, cross-Run, contradictory, or
+unpaired `staged` input raises one deterministic qualification-input error; a
+consumer must not publish a new convergence checkpoint or take a convergence
+route from it. The existing mechanical/human stop boundary handles such an
+integration error when live routing is later commissioned. It is not converted
+to count zero and silently ignored, because doing so would conceal corrupted
+trusted input.
+
+The sole retained-unpaired exception is recovery's own exact record: when the
+marker identifies the staged row but no accepted Hop was persisted, recovery
+charges that exact Hop as `uncertain_dispatch` and persists the same anchor on
+the uncertain Hop solely to classify the row abandoned. That row is audit-only,
+not an index member. A staged row without this exact uncertain-Hop record, or
+with a different Run, Hop, invocation, sequence, or anchor, remains an error.
+
+=== Current evaluator Hop live trusted input
+
+For the current evaluator Hop only, the integration layer constructs a frozen
+`StagedQualificationAttempt` after it has validated the candidate result,
+observed the repository end state, prepared and executed the admitted required
+commands, and computed the pre-route anchor. The object contains precisely the
+schema-4 row's Run/Hop/invocation identity, candidate/repository tuple,
+prepared command plan, and trusted Observations. It is strict-parsed by the
+same schema-4 attempt validator used for durable replay; it is not an agent
+object, a reducer inference, or a mutable overlay.
+
+The Coordinator atomically publishes that exact row in
+`execution-evidence.json` before calling the route-selecting reduction. It
+then supplies the parsed immutable index for the already durable rows plus
+that same parsed staged row to `reduce_result`. The current evaluator's
+mechanical predicate is therefore the same exact plan/Observation conjunction
+that replay later uses, not a shortcut from `MechanicalFacts` or agent prose.
+The reducer may use this current-Hop input only after the normal semantic
+predicate has been established; a mechanical pass cannot create an assessment,
+Finding disposition, or route on its own.
 
 === Mechanical qualification semantics
 
@@ -399,6 +456,13 @@ Replay determinism:: Identical Run bytes, identical validated schema-4
 execution-evidence bytes, and the same finite limit produce identical facts
 and ordered source Hop IDs.
 
+Live/replay equivalence:: For a current evaluator Hop, reduction receives the
+strictly parsed staged row that has already been atomically published. The final
+Hop persists the same pre-route anchor, so replay validates and evaluates the
+identical row, semantic predicate, and finite limit. A route selected from that
+cycle is authoritative only if this equality holds; otherwise recovery stops
+fail-closed and the route is not usable.
+
 Fail closed:: Missing qualification is false; ambiguous or inconsistent
 trusted input blocks its consumer. None can cause qualification.
 
@@ -439,42 +503,115 @@ All twelve required invariants are therefore preserved without revision.
 == Crash, recovery, replay, and publication
 
 The semantic Run snapshot and execution-evidence document remain separately
-atomic files; this revision does not require a cross-file transaction.
-Qualification becomes durable only when the complete schema-4 document
-containing the exactly correlated attempt row has been atomically published.
+atomic files; this revision does not introduce a cross-file transaction,
+general event store, or new persistence substrate. It extends the existing
+dispatch marker with the expected invocation and pre-route-anchor digest, and
+makes a valid Run/evidence *pair* the authority for a convergence-dependent
+route. An isolated `run.json` containing such a route is not route-authoritative
+until the exact qualifying evidence row validates against its immutable Hop
+anchor. This pair rule prevents a persisted route from surviving as authority
+when replay excludes its source cycle.
 
-The safe publication sequence for a candidate-bearing Hop is:
+The finite publication sequence for every candidate-bearing evaluator Hop is:
 
-. atomically persist the reduced Run snapshot, retaining the semantic claim;
-. atomically append-by-replacement the schema-4 attempt and its complete
-  trusted observations; and
-. regenerate the checkpoint from those two durable inputs.
+. Persist the ordinary dispatch marker before provider invocation, as today.
+. Validate the candidate result; observe final repository facts; execute the
+  admitted required-command plan; construct and strictly validate the immutable
+  staged attempt and pre-route anchor; record that anchor in the marker.
+. Atomically replace `execution-evidence.json` with all prior rows plus the
+  complete `publication: staged` schema-4 row. This is the durable current-Hop
+  qualification input.
+. Reduce using the strict index containing that same staged row. If it selects
+  a convergence/escape route, atomically persist the reduced Run with the same
+  immutable anchor on its HopSummary. The route is authoritative only with the
+  already-published, exactly matching row.
+. Atomically regenerate the derived checkpoint from paired Run/evidence bytes,
+  then remove the dispatch marker.
 
-A crash after step 1 but before step 2 leaves truthful semantic history and no
-durable mechanical qualification; the cycle does not qualify. A crash after
-step 2 but before step 3 leaves sufficient authoritative input for replay; the
-checkpoint is stale and must be regenerated. A partial execution-evidence
-write is not visible because publication remains atomic. Existing dispatch
-marker, uncertain-Hop charging, and reconcile rules are unchanged. An
-uncertain Hop has no semantic assessment admitted through reduction and cannot
-qualify; an accepted semantic Hop whose attempt row was lost in a crash also
-cannot qualify. Safety intentionally wins over recovering an uncommitted pass.
+The following matrix is normative. “Qualifies” concerns the current evaluator
+cycle; no other semantic cycle is reinterpreted by an interrupted attempt.
+
+[cols="2,2,2,2,4",options="header"]
+|===
+|Boundary / fault |Authoritative artifact(s) |Current cycle qualifies? |Convergence/escape route? |Recovery
+
+|Before step 3 completes, including evidence replacement failure
+|Prior Run and prior complete evidence; dispatch marker remains
+|No
+|No
+|Charge/reconcile the marker as an uncertain Hop under the existing rule; no
+attempt row is invented and normal continuation may proceed only after recovery.
+
+|After step 3, before step 4 Run publication
+|Prior Run plus a staged, unpaired evidence row and matching marker
+|No; an unpaired row is never an index member
+|No
+|Charge the invocation uncertain, retain the immutable staged row and classify
+it abandoned for qualification, then regenerate the projection. Recovery never
+guesses an absent agent result to complete reduction.
+
+|After step 4 Run publication, before checkpoint regeneration
+|The exact paired Run and staged evidence row
+|Yes, exactly as live reduction decided
+|Yes, if reduction selected one; the pair, not a checkpoint, authorizes it
+|Validate the pair, retain the recorded route, regenerate checkpoint, and
+remove the matching marker. A missing, duplicate, mismatched, or malformed row
+makes the route unusable and stops fail-closed for reconciliation.
+
+|After step 5 checkpoint publication, before marker removal
+|The same paired Run/evidence; checkpoint is derived
+|Yes
+|Yes, subject to pair validation
+|Validate pair, regenerate only if either checkpoint digest mismatches, then
+remove the marker. The marker does not recharge an accepted paired Hop.
+
+|Partial or failed atomic replacement of Run, evidence, or checkpoint
+|The previous complete version of that one file, never partial bytes
+|Only if the complete paired Run/evidence versions validate
+|Only if the pair validates
+|Use the corresponding prior-matrix row; never select best effort or infer a
+pass from route, marker, log, or checkpoint.
+
+|Crash with dispatch marker present
+|Determined by the exact marker, Run Hop anchor, and evidence row state above
+|Only for a complete matching pair
+|Only for a complete matching pair
+|Recognize a completed pair idempotently; otherwise charge/reconcile uncertain
+and retain an abandoned audit row as non-qualifying. A stale or conflicting marker
+stops fail-closed.
+
+|Duplicate continuation or publication attempt
+|Existing complete document and matching Run, if any
+|Only once
+|Only once
+|The same Hop/invocation/anchor with byte-identical row is idempotent; a second
+row or differing content is a deterministic conflict and stops fail-closed.
+Prior rows are preserved, never replaced by an empty array or last-write-wins.
+|===
+
+No state permits Run publication before evidence publication. Thus the former
+“Run published but evidence absent” state is not normally reachable; discovery
+of it after storage loss or tampering is pair-validation failure, not an
+unqualified route that may continue. A staged row deterministically abandoned
+because its Hop was charged uncertain retains raw trusted observations for audit
+but is excluded from the qualification index and cannot be reused by a later
+Hop.
 
 The schema-4 writer must preserve already durable rows when continuing a Run;
-it must not initialize an empty array and erase predecessor attempts. Duplicate
-append of the same Hop/invocation is rejected rather than deduplicated by
-last-write-wins.
+it must not initialize an empty array and erase predecessor attempts.
 
 Checkpoint identity shall bind both inputs, using the existing Run snapshot
 digest plus an `execution_evidence_sha256` of the exact schema-4 bytes. A
 checkpoint with either digest mismatch is stale and cannot supply routing or
 qualification truth. Rebuilding it is mechanical and changes no authority.
 
-Replay validates the complete execution-evidence document first, builds the
-immutable qualification index, and then derives facts in Run Hop order. It
-does not depend on filesystem enumeration, JSON member order, live policy
-files, or observation arrival order. `source_evaluator_hops` remains ordered by
-semantic Run Hop order.
+Replay validates the complete execution-evidence document first, validates the
+Run/evidence pair and every immutable anchor, builds the immutable
+qualification index, and then derives facts in Run Hop order. It does not
+depend on filesystem enumeration, JSON member order, live policy files, or
+observation arrival order. `source_evaluator_hops` remains ordered by semantic
+Run Hop order. A pair failure is not repaired by checkpoint regeneration and
+cannot leave a convergence/escape route usable.
 
 == Legacy and compatibility semantics
 
@@ -496,22 +633,26 @@ authorized fresh Run must create new trusted records.
 
 == Wire and checkpoint consequences
 
-Run/Hop/Finding wire change:: None. `HopSummary` does not gain
-`required_evidence_failed`, invocation ID, Observation values, or a
-qualification boolean. The existing `ConvergenceFact` shape is unchanged.
+Run/Hop/Finding wire change:: Narrow HopSummary addition only. A v3
+HopSummary gains the immutable Coordinator-created `pre_route_anchor_sha256`.
+It is a correlation digest over pre-route candidate and repository facts, not
+`required_evidence_failed`, an Observation, an invocation field, mutable
+qualification boolean, count, or goalpost truth. Finding wire and the existing
+`ConvergenceFact` shape remain unchanged.
 
 Execution-evidence wire change:: Yes. Schema version 4 adds the mandatory Run
-identity, `hop_sequence`, `hop_summary_sha256`, and exact per-attempt
-`required_evidence` plan while retaining strict existing attempt and
-Observation facts. Older versions remain audit-readable but mechanically
-ineligible for revised qualification.
+identity, `hop_sequence`, `pre_route_anchor_sha256`, immutable publication
+provenance, and exact per-attempt `required_evidence` plan while retaining
+strict existing attempt and Observation facts. Older versions remain
+audit-readable but mechanically ineligible for revised qualification.
 
-Checkpoint change:: The optional convergence projection consumes the
+Checkpoint change:: The optional convergence projection consumes the paired
 qualification index and includes `execution_evidence_sha256` beside the Run
 digest. It continues to serialize only derived `ConvergenceFact` values and
 source evaluator Hop IDs. It does not persist a qualification decision as
-authority. Missing evidence produces no qualified source Hop; inconsistent
-evidence prevents publication of a fresh convergence projection.
+authority, repair an invalid pair, or authorize an isolated Run route. Missing
+evidence produces no qualified source Hop; inconsistent evidence prevents a
+fresh projection and makes a convergence-dependent route unusable.
 
 == Slice implications
 
@@ -534,9 +675,14 @@ with this composite contract. It must:
 * strictly model/parse schema-4 execution evidence and construct the immutable
   qualification index;
 * make convergence derivation require that index and apply the exact
-  evaluator-Hop conjunction;
-* make the operator publish Run identity, Hop sequence, and the prepared
-  per-attempt required-command plan without losing prior rows;
+  evaluator-Hop conjunction, including the current evaluator's immutable
+  staged attempt before its route is selected;
+* make the operator publish Run identity, Hop sequence, pre-route anchor, and
+  prepared per-attempt required-command plan before a convergence-dependent
+  Run route, without losing prior rows;
+* extend the dispatch/recovery path to validate the Run/evidence pair,
+  recognize a completed marked publication idempotently, and classify an
+  unpaired staged attempt as abandoned rather than guessing a pass;
 * bind checkpoint projection to both authoritative input digests;
 * preserve the absence of routing, escape, diagnosis, reframe, and generation
   advancement in Slice 2; and
@@ -550,35 +696,47 @@ the implementation blocker.
 
 Slice 3, when separately authorized, must supply the same validated
 qualification index and pinned finite limit to its convergence projection
-before considering escape substitution. An unavailable evaluator row makes
-that cycle non-qualifying; inconsistent trusted input mechanically preempts
+before considering escape substitution. For the current evaluator it receives
+the strictly parsed, already-published staged attempt; for history it receives
+only exact Run/evidence pairs. An unavailable evaluator row makes that cycle
+non-qualifying; inconsistent or unpaired trusted input mechanically preempts
 convergence routing. Slice 3 must not recreate the old Run-only overload,
-infer evidence state from the failed-evidence route, or treat checkpoint data
-as authority. No Slice-3 behavior is implemented or otherwise revised here.
+infer evidence state from the failed-evidence route, treat a checkpoint as
+authority, or finalize a route before the required staged attempt exists. No
+Slice-3 behavior is implemented or otherwise revised here.
 
 == Exact future implementation mutation scope
 
 No path below is authorized by this design Run. A separately commissioned
 implementation may authorize this closed production union:
 
-* `src/workflow_coordinator/model.py` -- immutable schema-4/qualification input
-  records if needed; no mutable fact state;
-* `src/workflow_coordinator/reducer.py` -- revised pure composite derivation;
-* `src/workflow_coordinator/persistence.py` -- strict execution-evidence
-  validation/read projection and dual-input checkpoint binding;
-* `src/workflow_coordinator/operator.py` -- schema-4 identity/plan emission,
-  append preservation, and final checkpoint regeneration; and
-* `src/workflow_coordinator/serialization.py` only if the Commission chooses
-  to place strict schema-4 parsing in the repository's central wire module
-  rather than `persistence.py`.
+* `src/workflow_coordinator/model.py` -- immutable staged-attempt,
+  publication-provenance, anchor, and dispatch-marker records; no mutable fact
+  state;
+* `src/workflow_coordinator/serialization.py` -- closed v3 Hop anchor,
+  dispatch-marker, and schema-4 evidence parsing/serialization;
+* `src/workflow_coordinator/reducer.py` -- revised pure composite derivation,
+  current-Hop qualification input, and anchor-preserving final reduction;
+* `src/workflow_coordinator/persistence.py` -- strict Run/evidence-pair
+  validation, atomic evidence replacement, recovery reconciliation, and
+  dual-input checkpoint binding;
+* `src/workflow_coordinator/vertical.py` -- construction and strict validation
+  of the pre-route anchor and staged current-Hop input from the same prepared
+  commands and trusted Observations;
+* `src/workflow_coordinator/slice4.py` -- evidence-before-Run publication,
+  marker completion recognition, and crash recovery ordering; and
+* `src/workflow_coordinator/operator.py` -- schema-4 attempt accumulation,
+  append preservation, idempotent duplicate handling, and final checkpoint
+  regeneration.
 
-The corresponding focused test scope may include existing unit tests for
-those modules, `tests/support.py`, `tests/architecture/test_replays.py`, and
-operator serial-loop tests. The later Commission must name exact paths. No
-adapter, prompt, evidence-command execution, Finding admission, Runtime,
-governance, consumer repository, evidence repository, or Project Memory path
-is implied. Discovery of another necessary production seam requires its own
-reviewed scope decision.
+The corresponding focused test scope may include existing unit tests for those
+modules, `tests/support.py`, `tests/architecture/test_replays.py`, and operator
+serial-loop tests. The later Commission must name exact paths. No adapter,
+prompt, Finding admission, Runtime, governance, consumer repository, evidence
+repository, or Project Memory path is implied. Evidence-command execution is
+not semantically widened: the existing Coordinator execution seam only supplies
+the already admitted plan and Observations to the staged record. Discovery of
+another necessary production seam requires its own reviewed scope decision.
 
 == Deterministic tests required before Slice-2 acceptance
 
@@ -587,6 +745,9 @@ deterministic coverage for at least:
 
 . one correlated semantic cycle plus one exact all-pass evaluator attempt
   increments once and records that evaluator Hop;
+. a current evaluator Hop whose all-pass staged attempt reaches the goalpost
+  takes the live convergence/escape route, persists its pre-route anchor, and
+  produces the identical qualification fact and route authority on replay;
 . the S2-IR-001 counterexample: the same semantic history with evaluator
   `status=fail` yields count zero and no source Hop;
 . `error` and `not_run` each yield count zero;
@@ -614,6 +775,21 @@ deterministic coverage for at least:
   not create a cycle, Finding disposition, or semantic acceptance;
 . replay from byte-identical Run and schema-4 evidence produces identical
   facts and checkpoint bytes;
+. injection at every publication boundary: before staged-evidence replacement,
+  after staged evidence before Run replacement, after paired Run replacement
+  before checkpoint replacement, and after checkpoint replacement before marker
+  removal. Each case proves the matrix's precise recovery result, no partial
+  qualification, and no convergence/escape route usable without replayable
+  paired authority;
+. atomic replacement failures for both prior-row-preserving evidence writes
+  and Run writes leave only the prior complete file version visible; a later
+  missing, duplicate, malformed, cross-Run, stale, or anchor-mismatched row
+  stops recovery fail-closed rather than preserving an isolated route;
+. a dispatch marker left by a fully paired Hop is recognized idempotently and
+  does not recharge the Hop; a marker with no paired Run Hop charges uncertain,
+  classifies any staged row abandoned, and never allows it to qualify;
+. duplicate publication with byte-identical Hop/invocation/anchor is idempotent,
+  while duplicate or differing Hop/invocation/anchor content is rejected;
 . checkpoint digest mismatch for either Run or execution evidence is rejected
   and reconstruction restores the same derived view;
 . atomic evidence-publication failure leaves the previous complete document
