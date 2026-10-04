@@ -1799,3 +1799,46 @@ def test_multiple_goalpost_findings_produce_sorted_trigger_ids():
         first.run, workflow, evidence_prefix="second"
     )
     assert threshold.run.hops[-1].route_reason == "convergence_escape:F001,F002"
+
+
+def test_profile_v3_none_role_uses_result_v2_and_keeps_findings_informational():
+    workflow = convergence_routing_profile()
+    workflow = replace(
+        workflow,
+        phases={
+            **workflow.phases,
+            "observe": phase({"halt": route("stop")}),
+        },
+    )
+    run, hop_id = charge_hop(
+        run_for(workflow, initial_phase="observe", run_schema_version=3)
+    )
+    accepted = reduce_result(
+        run,
+        result(
+            "halt",
+            schema_version=2,
+            findings=(
+                new_delta(
+                    "open",
+                    blocking=False,
+                    invariant="An informational observation remains recorded.",
+                ),
+            ),
+        ),
+        workflow,
+        hop_id=hop_id,
+    )
+    assert accepted.run.status is RunStatus.STOPPED
+    assert accepted.run.findings[0].blocking is False
+    assert accepted.run.findings[0].correction_obligation is None
+
+    legacy_contract = reduce_result(
+        run,
+        result("halt", schema_version=1),
+        workflow,
+        hop_id=hop_id,
+    )
+    assert "unsupported result schema version" in (
+        legacy_contract.run.stop_reason or ""
+    )

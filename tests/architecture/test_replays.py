@@ -39,6 +39,7 @@ from workflow_coordinator.serialization import (
 from tests.support import (
     charge_hop,
     convergence_cycle,
+    convergence_routing_profile,
     existing_delta,
     new_delta,
     phase,
@@ -143,17 +144,20 @@ def test_slice2_convergence_projection_is_replay_deterministic_and_ignores_uncer
 
 
 def test_slice3_applied_escape_replay_preserves_facts_sources_and_route_truth():
-    workflow, run = tracked_convergence_run()
-    run, _, first = convergence_cycle(run, workflow, evidence_prefix="first-escape")
-    run, _, second = convergence_cycle(run, workflow, evidence_prefix="second-escape")
-    run, qualification, evidence_json = qualification_evidence(
-        run, {first: ("pass",), second: ("pass",)}
+    history_workflow, run = tracked_convergence_run()
+    workflow = convergence_routing_profile()
+    run, _, first = convergence_cycle(
+        run, history_workflow, evidence_prefix="first-escape"
+    )
+    run, _, second = convergence_cycle(
+        run, history_workflow, evidence_prefix="second-escape"
     )
     run = replace(
         run,
         hops=tuple(
             replace(
                 hop,
+                outcome="changes_required",
                 requested_route="correct",
                 applied_route="diagnose",
                 route_reason="convergence_escape:F001",
@@ -162,6 +166,9 @@ def test_slice3_applied_escape_replay_preserves_facts_sources_and_route_truth():
             else hop
             for hop in run.hops
         ),
+    )
+    run, qualification, evidence_json = qualification_evidence(
+        run, {first: ("pass",), second: ("pass",)}
     )
     replayed = run_from_json(run_to_json(run))
 

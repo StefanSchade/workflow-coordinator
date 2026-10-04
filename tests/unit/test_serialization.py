@@ -908,6 +908,26 @@ def test_run_v3_rejects_untracked_blockers_and_invalid_new_cross_references():
         run_from_json(json.dumps(data))
 
 
+def test_run_v3_persists_source_phase_and_rejects_unknown_escape_triggers():
+    run = v3_run_with_assessment()
+    data = json.loads(run_to_json(run))
+    assert data["hops"][-1]["phase"] == "evaluate"
+
+    missing_phase = json.loads(run_to_json(run))
+    del missing_phase["hops"][-1]["phase"]
+    with pytest.raises(ValidationError, match="missing fields: phase"):
+        run_from_json(json.dumps(missing_phase))
+
+    unknown_trigger = json.loads(run_to_json(run))
+    unknown_trigger["hops"][-1].update(
+        requested_route="correct",
+        applied_route="diagnose",
+        route_reason="convergence_escape:F999",
+    )
+    with pytest.raises(ValidationError, match="malformed convergence route truth"):
+        run_from_json(json.dumps(unknown_trigger))
+
+
 def test_run_v3_rejects_local_successors_cycles_and_reused_correction_assessments():
     run = v3_run_with_assessment()
     data = json.loads(run_to_json(run))

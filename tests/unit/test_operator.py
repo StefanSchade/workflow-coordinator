@@ -30,8 +30,18 @@ from workflow_coordinator.prompt import (
     PromptComponent,
     load_agent_operating_contract,
 )
-from workflow_coordinator.slice4 import register_checkout
-from tests.support import convergence_routing_profile, phase, profile, route, run_for
+from workflow_coordinator.reducer import ReductionError
+from workflow_coordinator.slice4 import checkout_state_root, register_checkout
+from tests.support import (
+    convergence_cycle,
+    convergence_routing_profile,
+    phase,
+    profile,
+    qualification_evidence,
+    route,
+    run_for,
+    tracked_convergence_run,
+)
 from workflow_coordinator.serialization import (
     ValidationError,
     component_manifest_from_yaml,
@@ -84,6 +94,76 @@ def test_operator_summary_projects_v3_convergence_context_only_when_supplied(rep
     assert "convergence" not in operator._summary(
         repository, simple, None, convergence_projection=convergence
     )
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["absent", "legacy", "malformed", "cross_run", "duplicate", "anchor"],
+)
+def test_serial_operator_rejects_invalid_anchored_evidence_before_provider_call(
+    repository, tmp_path, monkeypatch, corruption
+):
+    history_workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run, history_workflow, evidence_prefix="operator-pair"
+    )
+    run, _, evidence_json = qualification_evidence(
+        run, {evaluator_hop: ("pass",)}
+    )
+    workflow = convergence_routing_profile()
+    state_root = tmp_path / "state"
+    association = register_checkout(state_root, repository)
+    evidence_path = checkout_state_root(state_root, association) / "execution-evidence.json"
+    if corruption != "absent":
+        if corruption == "legacy":
+            text = json.dumps({"schema_version": 3, "attempts": []})
+        elif corruption == "malformed":
+            text = "{"
+        else:
+            data = json.loads(evidence_json)
+            if corruption == "cross_run":
+                data["run"]["run_id"] = "RUN-other"
+            elif corruption == "duplicate":
+                data["attempts"].append(dict(data["attempts"][0]))
+            else:
+                data["attempts"][0]["pre_route_anchor_sha256"] = "0" * 64
+            text = json.dumps(data)
+        evidence_path.write_text(text, encoding="utf-8")
+
+    monkeypatch.setattr(operator, "validate_checkout", lambda *_args: None)
+    monkeypatch.setattr(operator, "preflight_hop", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        operator, "_governing_inputs_unchanged", lambda *_args, **_kwargs: True
+    )
+
+    class NeverCalledAdapter:
+        calls = 0
+
+        def execute(self, _request):
+            self.calls += 1
+            raise AssertionError("provider must not be called")
+
+    adapter = NeverCalledAdapter()
+    with pytest.raises((ReductionError, ValidationError)):
+        run_serial_hops(
+            run,
+            workflow,
+            repository,
+            {
+                "worker": PromptComponent("worker", "worker", "pin", "worker"),
+                "testing": PromptComponent("testing", "testing", "pin", "testing"),
+            },
+            state_root=state_root,
+            association=association,
+            agent_operating_contract=load_agent_operating_contract(),
+            task_payload="bounded correction",
+            governing={},
+            timeout_seconds=1,
+            personas=TWO_ROLE_PERSONAS,
+            adapter=adapter,
+        )
+    assert adapter.calls == 0
+    assert run.hop_used == len(run.hops)
 
 
 def test_successor_descriptor_unknown_field_is_rejected_before_predecessor_or_provider_access(

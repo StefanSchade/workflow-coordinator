@@ -113,7 +113,13 @@ def _selected_ids(phase: Phase) -> tuple[str, ...]:
     return (*phase.role_components, *phase.modifier_components, *phase.repository_policy_components)
 
 
-def _header(run: Run, phase: Phase, invocation: Invocation) -> str:
+def _header(
+    run: Run,
+    phase: Phase,
+    invocation: Invocation,
+    *,
+    contract_version: int,
+) -> str:
     routes = ", ".join(
         sorted(
             key
@@ -125,11 +131,7 @@ def _header(run: Run, phase: Phase, invocation: Invocation) -> str:
         )
     )
     finding_authority = phase.review.finding_authority if phase.review is not None else ()
-    result_contract = (
-        "structured_result_v2"
-        if phase.convergence_role is not ConvergenceRole.NONE
-        else "structured_result_v1"
-    )
+    result_contract = f"structured_result_v{contract_version}"
     return (
         "[identity]\n"
         f"work_item_id={run.work_item_id}\nrun_id={invocation.run_id}\n"
@@ -158,6 +160,7 @@ def assemble_prompt(
     diff_base: str | None = None,
     diff_head: str | None = None,
     changed_paths: tuple[str, ...] = (),
+    contract_version: int | None = None,
 ) -> PromptPackage:
     """Compose one fresh prompt; all optional content is included or referenced."""
 
@@ -169,7 +172,20 @@ def assemble_prompt(
         raise CoordinatorResourceError("Coordinator operating contract resource is unavailable")
     selected: list[dict[str, object]] = []
     omissions: list[dict[str, object]] = []
-    blocks = [_header(run, phase, invocation), agent_operating_contract.text]
+    selected_contract_version = (
+        2 if run.schema_version == 3 else 1
+    ) if contract_version is None else contract_version
+    if selected_contract_version not in {1, 2}:
+        raise ValueError("unsupported structured-result contract version")
+    blocks = [
+        _header(
+            run,
+            phase,
+            invocation,
+            contract_version=selected_contract_version,
+        ),
+        agent_operating_contract.text,
+    ]
     used = 0
     for component_id in _selected_ids(phase):
         component = components.get(component_id)
@@ -215,10 +231,9 @@ def assemble_prompt(
         else:
             inline_diff = diff
             blocks.append("[diff]\n" + diff)
-    contract_version = 2 if phase.convergence_role is not ConvergenceRole.NONE else 1
     blocks.append(
         "[result_output_contract]\n"
-        f"Return one JSON structured_result_v{contract_version} envelope; prose cannot replace fields."
+        f"Return one JSON structured_result_v{selected_contract_version} envelope; prose cannot replace fields."
     )
     return PromptPackage(
         "\n\n".join(blocks) + "\n",

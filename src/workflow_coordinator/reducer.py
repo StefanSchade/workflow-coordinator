@@ -28,7 +28,6 @@ from .model import (
     Run,
     RunStatus,
     SemanticStop,
-    StagedQualificationAttempt,
     TrustedQualificationIndex,
     WorkflowProfile,
 )
@@ -159,6 +158,111 @@ def derive_convergence_facts(
         )
         for finding_id in sorted(eligible_findings)
     )
+
+
+def validate_convergence_route_history(
+    run: Run,
+    profile: WorkflowProfile,
+    trusted_qualification_index: TrustedQualificationIndex,
+) -> None:
+    """Replay-check every persisted Slice-3 escape decision.
+
+    The Run wire provides syntax and concrete Finding identity checks.  This
+    profile/evidence-aware boundary additionally proves the source phase,
+    pinned route declarations, and exact post-assessment goalpost set.
+    """
+
+    if run.schema_version != 3 or not any(
+        hop.route_reason is not None for hop in run.hops
+    ):
+        return
+    if profile.schema_version != 3 or profile.convergence is None:
+        raise ReductionError("Run v3 requires its pinned convergence profile")
+    if (
+        run.profile_id != profile.profile_id
+        or run.profile_revision != profile.revision
+    ):
+        raise ReductionError("pinned profile identity changed")
+
+    hop_order = {hop.hop_id: index for index, hop in enumerate(run.hops)}
+    for boundary, hop in enumerate(run.hops):
+        if hop.route_reason is None:
+            continue
+        phase = profile.phases.get(hop.phase or "")
+        if phase is None or phase.convergence_role is not ConvergenceRole.EVALUATOR:
+            raise ReductionError(
+                f"convergence escape Hop {hop.hop_id} is not an evaluator phase"
+            )
+        if (
+            hop.outcome != Outcome.CHANGES_REQUIRED.value
+            or hop.requested_route != phase.normal_correction_route
+        ):
+            raise ReductionError(
+                f"convergence escape Hop {hop.hop_id} did not request its normal correction route"
+            )
+        if hop.applied_route is None:
+            if hop.stop_reason != "autonomous_hop_budget_exhausted":
+                raise ReductionError(
+                    f"convergence escape Hop {hop.hop_id} lacks an applied escape route"
+                )
+        elif hop.applied_route != phase.escape_route:
+            raise ReductionError(
+                f"convergence escape Hop {hop.hop_id} applied the wrong escape route"
+            )
+
+        prefix_hops = run.hops[: boundary + 1]
+        boundary_findings: list[Finding] = []
+        for finding in run.findings:
+            obligation = finding.correction_obligation
+            introduced_at = hop_order.get(finding.introduced_by_hop)
+            if obligation is None or introduced_at is None or introduced_at > boundary:
+                continue
+            state = FindingState.OPEN
+            blocking = True
+            for prior_hop in prefix_hops[introduced_at:]:
+                matching = next(
+                    (
+                        assessment
+                        for assessment in prior_hop.convergence_assessments
+                        if assessment.finding_id == finding.finding_id
+                    ),
+                    None,
+                )
+                if matching is None:
+                    continue
+                if matching.result is ConvergenceAssessmentResult.CLOSED:
+                    state = FindingState.RESOLVED
+                elif matching.result is ConvergenceAssessmentResult.RESIDUALIZED:
+                    state = FindingState.RESIDUAL
+                    blocking = False
+                elif matching.result is ConvergenceAssessmentResult.SUPERSEDED:
+                    state = FindingState.SUPERSEDED
+                else:
+                    state = FindingState.OPEN
+                    blocking = True
+            boundary_findings.append(
+                replace(finding, state=state, blocking=blocking)
+            )
+        boundary_run = replace(
+            run,
+            hops=prefix_hops,
+            hop_used=len(prefix_hops),
+            findings=tuple(boundary_findings),
+        )
+        expected = tuple(
+            fact.finding_id
+            for fact in derive_convergence_facts(
+                boundary_run,
+                trusted_qualification_index,
+                profile.convergence.qualified_cycle_limit,
+            )
+            if fact.goalpost_reached
+        )
+        actual = tuple(hop.route_reason.removeprefix("convergence_escape:").split(","))
+        if actual != expected:
+            raise ReductionError(
+                f"convergence escape Hop {hop.hop_id} trigger set is not replayable"
+            )
 
 
 def _stop_for_human(run: Run, reason: str, question: str | None = None) -> Reduction:
@@ -430,7 +534,11 @@ def _apply_v2_finding_deltas(
 
     if authority is FindingAuthority.SUPERVISOR and deltas:
         raise ReductionError("supervisor cannot authoritatively change Finding state")
-    if convergence_role not in {ConvergenceRole.CORRECTOR, ConvergenceRole.EVALUATOR}:
+    if convergence_role in {
+        ConvergenceRole.DIAGNOSIS,
+        ConvergenceRole.REFRAME,
+        ConvergenceRole.STRATEGY_GATE,
+    }:
         if deltas:
             raise ReductionError(
                 f"{convergence_role.value} result cannot mutate Findings"
@@ -695,11 +803,6 @@ def _validate_convergence_records_before_apply(
     route: Route,
 ) -> None:
     role = phase.convergence_role
-    expected_version = 1 if role is ConvergenceRole.NONE else 2
-    if result.schema_version != expected_version:
-        raise ReductionError(
-            f"phase requires result schema_version {expected_version}"
-        )
     if role is ConvergenceRole.NONE:
         if result.coverage_claims or result.convergence_assessments:
             raise ReductionError("ordinary phase cannot submit convergence records")
@@ -930,7 +1033,11 @@ def reduce_result(
     result_state_error = None
     expected_result_version = (
         2
-        if phase is not None and phase.convergence_role is not ConvergenceRole.NONE
+        if profile.schema_version == 3
+        or (
+            phase is not None
+            and phase.convergence_role is not ConvergenceRole.NONE
+        )
         else 1
     )
     if result.schema_version != expected_result_version:

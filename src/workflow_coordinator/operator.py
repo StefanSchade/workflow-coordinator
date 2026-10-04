@@ -40,7 +40,6 @@ from .model import (
     RunStatus,
     ExecutionEvidenceDocument,
     SuccessorProvenance,
-    TrustedQualificationIndex,
     WorkflowRole,
     new_run,
 )
@@ -48,7 +47,7 @@ from .persistence import (
     atomic_write_json,
     checkpoint_projection,
     observation_to_data,
-    trusted_qualification_index_for_run,
+    qualification_index_for_inputs,
     write_run_snapshot,
 )
 from .prompt import (
@@ -673,14 +672,12 @@ def run_serial_hops(
         )
 
     def qualification_index(current_run):
-        if current_run.schema_version != 3 or not execution_evidence_path.exists():
-            return TrustedQualificationIndex.empty()
-        parsed = execution_evidence_from_json(
+        evidence_json = (
             execution_evidence_path.read_text(encoding="utf-8")
+            if execution_evidence_path.exists()
+            else None
         )
-        if not isinstance(parsed, ExecutionEvidenceDocument):
-            return TrustedQualificationIndex.empty()
-        return trusted_qualification_index_for_run(current_run, parsed)
+        return qualification_index_for_inputs(current_run, evidence_json)
 
     def stop_continuation(reason: str, question: str):
         stopped = replace(run, status=RunStatus.AWAITING_HUMAN,
@@ -768,11 +765,12 @@ def run_serial_hops(
             if run.hop_used == 0 and durable_artifacts
             else artifact_map.get(run.phase, ())
         )
+        current_qualification_index = qualification_index(run)
         reconstructed = _reconstructed_context(
             run, profile, repository, phase_artifacts, prior_observations
         )
         convergence_context = convergence_prompt_context(
-            run, profile, qualification_index(run)
+            run, profile, current_qualification_index
         )
         projected_context = (
             reconstructed

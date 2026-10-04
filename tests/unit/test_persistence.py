@@ -29,6 +29,7 @@ from workflow_coordinator.serialization import (
 from tests.support import (
     charge_hop,
     convergence_cycle,
+    convergence_routing_profile,
     phase,
     prepared_evidence,
     profile,
@@ -218,19 +219,21 @@ def test_checkpoint_optionally_projects_derived_convergence_facts_and_sources():
     assert "convergence_facts" not in json.loads(run_to_json(run))
 
 
-def test_checkpoint_projects_requested_applied_escape_truth_and_triggers():
-    workflow, run = tracked_convergence_run()
-    run, _, evaluator_hop = convergence_cycle(
-        run, workflow, evidence_prefix="escape"
+def _replayable_escape_history():
+    history_workflow, run = tracked_convergence_run()
+    workflow = convergence_routing_profile()
+    run, _, first_evaluator_hop = convergence_cycle(
+        run, history_workflow, evidence_prefix="escape-first"
     )
-    run, _, evidence_json = qualification_evidence(
-        run, {evaluator_hop: ("pass",)}
+    run, _, evaluator_hop = convergence_cycle(
+        run, history_workflow, evidence_prefix="escape-second"
     )
     run = replace(
         run,
         hops=tuple(
             replace(
                 hop,
+                outcome="changes_required",
                 requested_route="correct",
                 applied_route="diagnose",
                 route_reason="convergence_escape:F001",
@@ -240,6 +243,15 @@ def test_checkpoint_projects_requested_applied_escape_truth_and_triggers():
             for hop in run.hops
         ),
     )
+    run, _, evidence_json = qualification_evidence(
+        run,
+        {first_evaluator_hop: ("pass",), evaluator_hop: ("pass",)},
+    )
+    return workflow, run, evaluator_hop, evidence_json
+
+
+def test_checkpoint_projects_requested_applied_escape_truth_and_triggers():
+    workflow, run, evaluator_hop, evidence_json = _replayable_escape_history()
 
     projected = checkpoint_projection(
         run,
@@ -258,6 +270,52 @@ def test_checkpoint_projects_requested_applied_escape_truth_and_triggers():
             "route_reason": "convergence_escape:F001",
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"phase": "correct"}, "conflicts with Hop provenance"),
+        ({"requested_route": "accept"}, "normal correction route"),
+        ({"applied_route": "correct"}, "wrong escape route"),
+        ({"route_reason": "convergence_escape:F999"}, "not replayable"),
+    ],
+)
+def test_checkpoint_rejects_corrupt_escape_phase_routes_and_triggers(
+    changes, message
+):
+    workflow, run, evaluator_hop, evidence_json = _replayable_escape_history()
+    corrupted = replace(
+        run,
+        hops=tuple(
+            replace(hop, **changes) if hop.hop_id == evaluator_hop else hop
+            for hop in run.hops
+        ),
+    )
+    with pytest.raises(ReductionError, match=message):
+        checkpoint_projection(
+            corrupted,
+            workflow,
+            qualified_cycle_limit=2,
+            execution_evidence_json=evidence_json,
+        )
+
+
+def test_checkpoint_rejects_escape_unsupported_by_paired_qualification():
+    workflow, run, _, evidence_json = _replayable_escape_history()
+    evidence = json.loads(evidence_json)
+    evidence["attempts"][-1]["trusted_observations"][0]["status"] = "fail"
+    evidence["attempts"][-1]["trusted_observations"][0]["exit_code"] = 1
+    with pytest.raises(ReductionError, match="not replayable"):
+        checkpoint_projection(
+            run,
+            workflow,
+            qualified_cycle_limit=2,
+            execution_evidence_json=json.dumps(
+                evidence, sort_keys=True, separators=(",", ":")
+            )
+            + "\n",
+        )
 
 
 def test_schema4_publication_preserves_rows_is_idempotent_and_rejects_conflicts(

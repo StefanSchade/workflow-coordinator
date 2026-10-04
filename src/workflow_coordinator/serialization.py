@@ -1199,6 +1199,7 @@ def run_to_json(run: Run) -> str:
             hop.pop("pre_route_anchor_sha256", None)
             hop.pop("requested_route", None)
             hop.pop("route_reason", None)
+            hop.pop("phase", None)
         for finding in data["findings"]:
             finding.pop("correction_obligation", None)
     elif run.schema_version == 3:
@@ -1217,13 +1218,18 @@ def _hop_summary(value: Any, *, context: str, run_version: int) -> HopSummary:
     convergence_fields = {"coverage_claims", "convergence_assessments"}
     anchor_field = {"pre_route_anchor_sha256"}
     routing_truth_fields = {"requested_route", "route_reason"}
+    phase_field = {"phase"}
     data = _fields(
         value,
         context=context,
         required=(
             all_fields - anchor_field
             if run_version == 3
-            else all_fields - convergence_fields - anchor_field - routing_truth_fields
+            else all_fields
+            - convergence_fields
+            - anchor_field
+            - routing_truth_fields
+            - phase_field
         ),
         optional=anchor_field if run_version == 3 else frozenset(),
     )
@@ -1277,6 +1283,11 @@ def _hop_summary(value: Any, *, context: str, run_version: int) -> HopSummary:
             None
             if run_version != 3
             else _optional_string(data["route_reason"], context=f"{context}.route_reason")
+        ),
+        phase=(
+            None
+            if run_version != 3
+            else _string(data["phase"], context=f"{context}.phase")
         ),
     )
 
@@ -1775,6 +1786,7 @@ def _validate_v3_run(run: Run) -> None:
                 not trigger_ids
                 or trigger_ids != sorted(set(trigger_ids))
                 or any(re.fullmatch(r"F[0-9]{3,}", item) is None for item in trigger_ids)
+                or any(item not in findings_by_id for item in trigger_ids)
                 or hop.requested_route is None
                 or (
                     hop.applied_route is not None

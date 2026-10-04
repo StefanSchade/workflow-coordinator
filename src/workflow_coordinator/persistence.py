@@ -26,7 +26,7 @@ from .reducer import (
     derive_convergence_facts,
     permitted_route_keys,
     require_reconcile,
-    trusted_evaluator_qualification,
+    validate_convergence_route_history,
 )
 from .serialization import (
     dispatch_marker_from_json,
@@ -273,6 +273,7 @@ def trusted_qualification_index_for_run(
             raise ReductionError("execution evidence row is unpaired")
         if (
             attempt.pre_route_anchor_sha256 != hop.pre_route_anchor_sha256
+            or attempt.phase != hop.phase
             or attempt.workflow_role != hop.role
             or attempt.outcome != hop.outcome
             or attempt.base_head != hop.base_head
@@ -322,6 +323,17 @@ def _qualification_index_for_inputs(
     return TrustedQualificationIndex.empty()
 
 
+def qualification_index_for_inputs(
+    run: Run,
+    execution_evidence_json: str | None,
+    *,
+    marker: DispatchMarker | None = None,
+) -> TrustedQualificationIndex:
+    """Expose the one strict qualification-input policy to live consumers."""
+
+    return _qualification_index_for_inputs(run, execution_evidence_json, marker=marker)
+
+
 def checkpoint_projection(
     run: Run,
     profile: WorkflowProfile,
@@ -341,6 +353,7 @@ def checkpoint_projection(
     qualification_index = _qualification_index_for_inputs(
         run, execution_evidence_json, marker=dispatch_marker
     )
+    validate_convergence_route_history(run, profile, qualification_index)
     projection = {
         "identity": {
             "work_item_id": run.work_item_id,
@@ -384,6 +397,7 @@ def checkpoint_projection(
         "hops": [
             {
                 "hop_id": hop.hop_id,
+                **({"phase": hop.phase} if run.schema_version == 3 else {}),
                 "role": hop.role,
                 "outcome": hop.outcome,
                 "range": f"{hop.base_head}..{hop.end_head}",
@@ -544,6 +558,7 @@ __all__ = [
     "load_run",
     "recover_uncertain_dispatch",
     "publish_execution_evidence",
+    "qualification_index_for_inputs",
     "trusted_qualification_index_for_run",
     "validate_checkpoint_inputs",
     "write_dispatch_marker",

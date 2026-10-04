@@ -406,6 +406,7 @@ class Hop:
             pre_route_anchor_sha256=self.pre_route_anchor_sha256,
             requested_route=self.requested_route,
             route_reason=self.route_reason,
+            phase=self.phase,
         )
 
 
@@ -429,6 +430,7 @@ class HopSummary:
     pre_route_anchor_sha256: str | None = None
     requested_route: str | None = None
     route_reason: str | None = None
+    phase: str | None = None
 
 
 @dataclass(frozen=True)
@@ -649,6 +651,9 @@ def record_hop(run: Run, hop: Hop) -> Run:
         raise ValueError("autonomous Hop budget exhausted")
     if any(existing.hop_id == hop.hop_id for existing in run.hops):
         raise ValueError(f"duplicate Hop ID: {hop.hop_id}")
+    summary = hop.compact()
+    if run.schema_version != 3:
+        summary = replace(summary, phase=None)
     return replace(
         run,
         current_head=hop.end_head,
@@ -658,7 +663,7 @@ def record_hop(run: Run, hop: Hop) -> Run:
             else RunStatus.RUNNING
         ),
         hop_used=expected_sequence,
-        hops=(*run.hops, hop.compact()),
+        hops=(*run.hops, summary),
         stop_reason=None,
         human_question=None,
     )

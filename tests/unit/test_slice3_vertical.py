@@ -391,6 +391,44 @@ def test_profile_v3_later_role_names_dispatch_live_result_v2_with_null_placehold
     assert adapter.request.contract_version == 2
 
 
+def test_profile_v3_none_role_dispatches_the_closed_result_v2_contract(repository):
+    workflow = convergence_routing_profile()
+    workflow = replace(
+        workflow,
+        phases={
+            **workflow.phases,
+            "observe": replace(phase({"halt": route("stop")}), evidence=()),
+        },
+    )
+    head = subprocess.run(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    run = replace(
+        run_for(workflow, initial_phase="observe", run_schema_version=3),
+        current_head=head,
+        baseline_head=head,
+    )
+    adapter = CapturingAdapter(envelope_v2())
+    completed = run_one_hop(
+        run,
+        workflow,
+        repository,
+        adapter,
+        components(("worker", 1), ("testing", 1)),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture observer",
+        task_payload="observe",
+        invocation_id="INV-1",
+    )
+    assert completed.reduction.run.status.value == "stopped"
+    assert adapter.request is not None
+    assert adapter.request.contract_version == 2
+    assert "output_contract=structured_result_v2" in adapter.request.prompt
+
+
 class CommitAdapter:
     def __init__(self, repository: Path, subject: str, output: str, path: str = "src/change"):
         self.repository = repository
