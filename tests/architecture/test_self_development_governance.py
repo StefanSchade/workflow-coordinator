@@ -4240,7 +4240,15 @@ def test_correction_convergence_escape_implementation_s3_003_bundle_passes_produ
     ``finding_authority: [resolve]`` and nothing broader. This is a FRESH
     successor Run: it inherits no predecessor Run-native Finding, mutates no
     S3-002 Run state, and begins directly in ``rereview`` with no
-    ``implement``/``review`` phase. The admission succeeds entirely through
+    ``implement``/``review`` phase. The stable cross-Run identifiers
+    S3-IR-001/002/003 are durable review-artifact prose, never WFC Finding
+    IDs: a rereview that confirms all three corrections and finds no new
+    current blocker closes them in the durable artifact and requests
+    ``accept`` with an EMPTY S3-003 Findings delta, never a synthetic
+    S3-003 Run-native Finding created merely to mirror them.
+    ``finding_authority: [resolve]`` exists only defensively, for a genuine
+    S3-003-local Finding this Run's own rereview might materialize and a
+    later correction fix. The admission succeeds entirely through
     provider-free preflight: no provider is invoked and no state root is
     created.
     """
@@ -4313,10 +4321,18 @@ def test_correction_convergence_escape_implementation_s3_003_bundle_passes_produ
     assert "may resolve S3-002" not in work_item.authority_source
     assert "transition S3-002" not in work_item.authority_source
 
-    # Stable cross-Run durable review identifiers carried forward.
+    # Stable cross-Run durable review identifiers carried forward. The
+    # persona dispositions them in the durable artifact and separately holds
+    # resolve-only authority for genuine S3-003-local Run Findings -- it
+    # never claims that S3-IR-001/002/003 are themselves Run-native Findings
+    # or that disposition authority is granted "to disposition S3-IR".
     assert "S3-IR-001" in work_item.authority_source
     assert "S3-IR-002" in work_item.authority_source
     assert "S3-IR-003" in work_item.authority_source
+    reviewer_persona = work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+    assert "dispositions S3-IR-001/002/003 in the durable review artifact" in reviewer_persona
+    assert "resolve-only Finding authority for any genuine S3-003-local Run Finding" in reviewer_persona
+    assert "resolve-only Finding authority to disposition S3-IR" not in reviewer_persona
 
     # New governance BUG referenced; source correction-carryover BUG remains
     # independently open and unreferenced as shared authority.
@@ -4426,6 +4442,23 @@ def test_correction_convergence_escape_implementation_s3_003_bundle_passes_produ
     assert "S3-IR-001" in task_text and "S3-IR-002" in task_text and "S3-IR-003" in task_text
     assert "finding_authority: [resolve]" in task_text
     assert "not residual, not supersede, not reopen, not human" in task_text
+
+    # Critical Finding-identity distinction: S3-IR-001/002/003 are durable
+    # review-artifact prose identifiers dispositioned by writing into that
+    # artifact, never WFC Finding-ledger `resolve` operations. An empty
+    # Findings delta is explicitly permitted (and expected) on immediate
+    # acceptance, and creating a synthetic S3-003 Finding merely to mirror a
+    # historical S3-IR identifier is explicitly forbidden. `resolve`
+    # authority is reserved for a genuine S3-003-local Finding only.
+    assert "durable review-artifact prose identifiers, not WFC" in task_text
+    assert "never a WFC Finding-ledger `resolve` operation" in task_text
+    assert "EMPTY S3-003 WFC Findings delta" in task_text
+    assert "must NOT create a synthetic S3-003" in task_text
+    assert "merely to mirror a historical S3-IR identifier" in task_text
+    assert "exists purely" in task_text and "defensively" in task_text
+    assert "genuine S3-003-local Finding may ever be the" in task_text
+    assert "never operates on S3-002's F001/F002/F003" in task_text
+    assert "never the mechanism by" in task_text and "an S3-IR prose identifier is dispositioned" in task_text
     assert "Slice 4" in task_text
     assert "Slice 5" in task_text
     assert "R1A dogfood" in task_text
