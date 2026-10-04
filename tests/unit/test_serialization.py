@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 from workflow_coordinator.model import (
+    ConvergenceRole,
     FindingState,
     DurableArtifact,
     Hop,
@@ -132,6 +133,70 @@ phases:
 """
 
 
+def profile_v3_data():
+    phase_base = {
+        "role": "worker",
+        "components": {"role": ["worker"], "modifiers": [], "repository_policy": ["testing"]},
+        "durable_artifact": "none",
+        "authorized_scope": ["scripts"],
+        "authorized_actions": ["edit", "commit"],
+        "human_gates": [],
+        "evidence": ["tests"],
+        "review": None,
+    }
+    gate = {
+        "purpose": "falsify",
+        "breadth": "implementation",
+        "authority": "gate",
+        "context": "fresh",
+        "blocking_policy": "blocking_only",
+        "trigger": "profile_selected",
+        "exit": "declared_route",
+        "finding_authority": ["resolve", "residual", "supersede"],
+    }
+    phases = {
+        "correct": {**phase_base, "convergence_role": "corrector", "routes": {"evaluate": {"effect": "goto", "target": "evaluate"}}},
+        "evaluate": {
+            **phase_base,
+            "role": "independent_reviewer",
+            "review": gate,
+            "convergence_role": "evaluator",
+            "normal_correction_route": "correct",
+            "escape_route": "diagnose",
+            "routes": {
+                "accept": {"effect": "complete"},
+                "correct": {"effect": "goto", "target": "correct"},
+                "diagnose": {"effect": "goto", "target": "diagnose"},
+            },
+        },
+        "diagnose": {**phase_base, "convergence_role": "diagnosis", "routes": {"reframe": {"effect": "goto", "target": "reframe"}}},
+        "reframe": {**phase_base, "convergence_role": "reframe", "routes": {"assess": {"effect": "goto", "target": "strategy"}}},
+        "strategy": {
+            **phase_base,
+            "role": "independent_reviewer",
+            "review": {**gate, "finding_authority": []},
+            "convergence_role": "strategy_gate",
+            "routes": {"correct": {"effect": "goto", "target": "correct"}},
+        },
+    }
+    return {
+        "schema_version": 3,
+        "profile_id": "convergence",
+        "revision": "r1",
+        "convergence": {
+            "protocol": "repeated_counterexample_v1",
+            "qualified_cycle_limit": 2,
+        },
+        "phases": phases,
+    }
+
+
+def profile_v3_yaml(**changes):
+    data = profile_v3_data()
+    data.update(changes)
+    return yaml.safe_dump(data, sort_keys=False)
+
+
 def valid_result_data(**changes):
     data = {
         "schema_version": 1,
@@ -248,6 +313,84 @@ def test_strict_yaml_loads_work_item_profile_and_policy():
     )
     assert policy.work_item_scope_ceiling == ("scripts",)
     assert policy.max_autonomous_hops == 1
+
+
+def test_profile_v3_loads_closed_convergence_grammar_and_routes():
+    parsed = workflow_profile_from_yaml(profile_v3_yaml())
+
+    assert parsed.schema_version == 3
+    assert parsed.convergence is not None
+    assert parsed.convergence.qualified_cycle_limit == 2
+    evaluator = parsed.phases["evaluate"]
+    assert evaluator.convergence_role is ConvergenceRole.EVALUATOR
+    assert evaluator.normal_correction_route == "correct"
+    assert evaluator.escape_route == "diagnose"
+    assert parsed.phases["diagnose"].convergence_role is ConvergenceRole.DIAGNOSIS
+    assert parsed.phases["reframe"].convergence_role is ConvergenceRole.REFRAME
+    assert parsed.phases["strategy"].convergence_role is ConvergenceRole.STRATEGY_GATE
+
+
+@pytest.mark.parametrize("limit", [True, 0, 1, 21])
+def test_profile_v3_rejects_out_of_bounds_convergence_limit(limit):
+    data = profile_v3_data()
+    data["convergence"]["qualified_cycle_limit"] = limit
+    with pytest.raises(ValidationError, match="qualified_cycle_limit"):
+        workflow_profile_from_yaml(yaml.safe_dump(data, sort_keys=False))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda data: data["convergence"].update(protocol="custom"), "protocol"),
+        (lambda data: data["convergence"].update(expression="count > 1"), "unknown fields"),
+        (lambda data: data["phases"]["correct"].update(convergence_role="optimizer"), "convergence_role"),
+        (lambda data: data["phases"]["evaluate"].update(extra="value"), "unknown fields"),
+        (lambda data: data["phases"]["evaluate"].update(normal_correction_route="absent"), "unknown convergence route"),
+        (lambda data: data["phases"]["evaluate"].update(escape_route="absent"), "unknown convergence route"),
+        (lambda data: data["phases"]["evaluate"].update(normal_correction_route="accept"), "evaluator goto routes"),
+        (lambda data: data["phases"]["evaluate"].update(escape_route="accept"), "evaluator goto routes"),
+        (lambda data: data["phases"]["diagnose"]["routes"]["reframe"].update(target="correct"), "diagnosis goto"),
+        (lambda data: data["phases"]["reframe"]["routes"]["assess"].update(target="correct"), "reframe goto"),
+        (lambda data: data["phases"]["strategy"]["routes"]["correct"].update(target="diagnose"), "strategy_gate goto"),
+        (lambda data: data["phases"]["evaluate"]["review"].update(finding_authority=["resolve"]), "lacks Finding authority"),
+        (lambda data: data["phases"]["evaluate"]["review"].update(failed_evidence_route="diagnose"), "reserved escape_route"),
+    ],
+)
+def test_profile_v3_fail_closed_cases(mutation, message):
+    data = profile_v3_data()
+    mutation(data)
+    with pytest.raises(ValidationError, match=message):
+        workflow_profile_from_yaml(yaml.safe_dump(data, sort_keys=False))
+
+
+def test_profile_versions_reject_mixed_v2_v3_shapes():
+    data = profile_v3_data()
+    data["schema_version"] = 2
+    with pytest.raises(ValidationError, match="unknown fields: convergence"):
+        workflow_profile_from_yaml(yaml.safe_dump(data, sort_keys=False))
+
+
+def test_new_run_selects_run_wire_version_from_pinned_profile():
+    item = work_item_from_yaml(WORK_ITEM_YAML.replace("initial_phase: implement", "initial_phase: correct"))
+    policy = repository_policy_from_yaml(POLICY_YAML)
+    convergence_profile = workflow_profile_from_yaml(profile_v3_yaml())
+    v3 = new_run(item, convergence_profile, policy, run_id="RUN-v3", baseline_head="abc")
+    assert v3.schema_version == 3
+
+    simple_item = work_item_from_yaml(WORK_ITEM_YAML)
+    simple = new_run(
+        simple_item,
+        workflow_profile_from_yaml(PROFILE_YAML),
+        policy,
+        run_id="RUN-v2",
+        baseline_head="abc",
+    )
+    assert simple.schema_version == 2
+
+    data = yaml.safe_load(PROFILE_YAML)
+    data["schema_version"] = 3
+    with pytest.raises(ValidationError, match="missing fields: convergence"):
+        workflow_profile_from_yaml(yaml.safe_dump(data, sort_keys=False))
 
 
 @pytest.mark.parametrize(

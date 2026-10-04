@@ -20,8 +20,11 @@ from .model import (
     COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
     COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS,
     CommitIntent,
+    ConvergenceConfiguration,
     ConvergenceAssessment,
     ConvergenceAssessmentResult,
+    ConvergenceProtocol,
+    ConvergenceRole,
     CorrectionObligation,
     CorrectionObligationOwner,
     CoverageClaim,
@@ -638,11 +641,50 @@ def _check_action_coherence(
 
 
 def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
-    data = _fields(
-        _yaml_mapping(text, context="workflow profile"),
-        context="workflow profile",
-        required={"schema_version", "profile_id", "revision", "phases"},
+    raw_profile = _yaml_mapping(text, context="workflow profile")
+    profile_version = _integer(
+        raw_profile.get("schema_version"), context="profile.schema_version"
     )
+    if profile_version not in {2, 3}:
+        raise ValidationError(
+            f"profile.schema_version has unsupported version: {profile_version}"
+        )
+    data = _fields(
+        raw_profile,
+        context="workflow profile",
+        required={
+            "schema_version",
+            "profile_id",
+            "revision",
+            "phases",
+            *({"convergence"} if profile_version == 3 else set()),
+        },
+    )
+    convergence = None
+    if profile_version == 3:
+        raw_convergence = _fields(
+            data["convergence"],
+            context="profile.convergence",
+            required={"protocol", "qualified_cycle_limit"},
+        )
+        limit = _integer(
+            raw_convergence["qualified_cycle_limit"],
+            context="profile.convergence.qualified_cycle_limit",
+            positive=True,
+        )
+        if not 2 <= limit <= COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS:
+            raise ValidationError(
+                "profile.convergence.qualified_cycle_limit must be between 2 and "
+                f"{COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS}"
+            )
+        convergence = ConvergenceConfiguration(
+            protocol=_enum(
+                ConvergenceProtocol,
+                raw_convergence["protocol"],
+                context="profile.convergence.protocol",
+            ),
+            qualified_cycle_limit=limit,
+        )
     raw_phases = _mapping(data["phases"], context="profile.phases")
     if not raw_phases:
         raise ValidationError("profile.phases must not be empty")
@@ -662,7 +704,13 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
                 "evidence",
                 "review",
                 "routes",
+                *({"convergence_role"} if profile_version == 3 else set()),
             },
+            optional=(
+                {"normal_correction_route", "escape_route"}
+                if profile_version == 3
+                else set()
+            ),
         )
         components = _fields(
             phase_data["components"],
@@ -690,6 +738,35 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
         evidence = _strings(phase_data["evidence"], context=f"{phase_context}.evidence")
         if len(set(evidence)) != len(evidence):
             raise ValidationError(f"{phase_context}.evidence references must be unique")
+        convergence_role = (
+            _enum(
+                ConvergenceRole,
+                phase_data["convergence_role"],
+                context=f"{phase_context}.convergence_role",
+            )
+            if profile_version == 3
+            else ConvergenceRole.NONE
+        )
+        normal_correction_route = _optional_string(
+            phase_data.get("normal_correction_route"),
+            context=f"{phase_context}.normal_correction_route",
+        )
+        escape_route = _optional_string(
+            phase_data.get("escape_route"), context=f"{phase_context}.escape_route"
+        )
+        if convergence_role is ConvergenceRole.EVALUATOR:
+            if normal_correction_route is None or escape_route is None:
+                raise ValidationError(
+                    f"{phase_context} evaluator requires normal_correction_route and escape_route"
+                )
+            if normal_correction_route == escape_route:
+                raise ValidationError(
+                    f"{phase_context} evaluator routes must be distinct"
+                )
+        elif normal_correction_route is not None or escape_route is not None:
+            raise ValidationError(
+                f"{phase_context} convergence route declarations are evaluator-only"
+            )
         phases[phase_key] = Phase(
             role=_enum(
                 WorkflowRole, phase_data["role"], context=f"{phase_context}.role"
@@ -713,6 +790,9 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
             evidence=evidence,
             review=_review(phase_data["review"], context=f"{phase_context}.review"),
             routes=routes,
+            convergence_role=convergence_role,
+            normal_correction_route=normal_correction_route,
+            escape_route=escape_route,
         )
     for phase_key, phase in phases.items():
         for route_key, route in phase.routes.items():
@@ -730,13 +810,142 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
                 raise ValidationError(
                     f"profile.phases.{phase_key}.review.failed_evidence_route must name a goto route"
                 )
+        if profile_version == 3:
+            role = phase.convergence_role
+            goto_targets = tuple(
+                phases[route.target]
+                for route in phase.routes.values()
+                if route.effect is RouteEffect.GOTO and route.target is not None
+            )
+            if role is ConvergenceRole.CORRECTOR and any(
+                target.convergence_role is not ConvergenceRole.EVALUATOR
+                for target in goto_targets
+            ):
+                raise ValidationError(
+                    f"profile.phases.{phase_key} corrector goto routes must target evaluators"
+                )
+            if role is ConvergenceRole.EVALUATOR:
+                if (
+                    phase.review is None
+                    or phase.review.authority is not ReviewAuthority.GATE
+                    or phase.role is not WorkflowRole.INDEPENDENT_REVIEWER
+                ):
+                    raise ValidationError(
+                        f"profile.phases.{phase_key} evaluator must be an independent gate review"
+                    )
+                if "reopen" in phase.review.finding_authority:
+                    raise ValidationError(
+                        f"profile.phases.{phase_key} evaluator cannot authorize reopen"
+                    )
+                if phase.review.failed_evidence_route == phase.escape_route:
+                    raise ValidationError(
+                        f"profile.phases.{phase_key} reserved escape_route cannot be a failed-evidence route"
+                    )
+                missing_authority = {
+                    "resolve",
+                    "residual",
+                    "supersede",
+                } - set(phase.review.finding_authority)
+                if missing_authority:
+                    raise ValidationError(
+                        f"profile.phases.{phase_key} evaluator lacks Finding authority: "
+                        + ", ".join(sorted(missing_authority))
+                    )
+                if (
+                    phase.normal_correction_route not in phase.routes
+                    or phase.escape_route not in phase.routes
+                ):
+                    raise ValidationError(
+                        f"profile.phases.{phase_key} evaluator names an unknown convergence route"
+                    )
+                normal = phase.routes[phase.normal_correction_route or ""]
+                escape = phase.routes[phase.escape_route or ""]
+                goto_route_keys = {
+                    key
+                    for key, candidate in phase.routes.items()
+                    if candidate.effect is RouteEffect.GOTO
+                }
+                permitted_goto_keys = {
+                    phase.normal_correction_route,
+                    phase.escape_route,
+                }
+                if phase.review.failed_evidence_route is not None:
+                    permitted_goto_keys.add(phase.review.failed_evidence_route)
+                if goto_route_keys != permitted_goto_keys:
+                    raise ValidationError(
+                        f"profile.phases.{phase_key} evaluator goto routes must be exactly its normal, escape, and optional failed-evidence routes"
+                    )
+                if (
+                    normal.effect is not RouteEffect.GOTO
+                    or phases[normal.target or ""].convergence_role
+                    is not ConvergenceRole.CORRECTOR
+                ):
+                    raise ValidationError(
+                        f"profile.phases.{phase_key}.normal_correction_route must goto a corrector"
+                    )
+                if (
+                    escape.effect is not RouteEffect.GOTO
+                    or phases[escape.target or ""].convergence_role
+                    is not ConvergenceRole.DIAGNOSIS
+                ):
+                    raise ValidationError(
+                        f"profile.phases.{phase_key}.escape_route must goto diagnosis"
+                    )
+            if role in {ConvergenceRole.DIAGNOSIS, ConvergenceRole.REFRAME} and phase.review is not None:
+                raise ValidationError(
+                    f"profile.phases.{phase_key} {role.value} must be a non-review phase"
+                )
+            if role is ConvergenceRole.STRATEGY_GATE and (
+                phase.review is None
+                or phase.review.authority is not ReviewAuthority.GATE
+                or phase.review.finding_authority
+            ):
+                raise ValidationError(
+                    f"profile.phases.{phase_key} strategy_gate must be a gate with empty Finding authority"
+                )
+            target_roles = {target.convergence_role for target in goto_targets}
+            if role is ConvergenceRole.DIAGNOSIS and (
+                not target_roles or target_roles != {ConvergenceRole.REFRAME}
+            ):
+                raise ValidationError(
+                    f"profile.phases.{phase_key} diagnosis goto routes must target reframe"
+                )
+            if role is ConvergenceRole.REFRAME and (
+                not target_roles or target_roles != {ConvergenceRole.STRATEGY_GATE}
+            ):
+                raise ValidationError(
+                    f"profile.phases.{phase_key} reframe goto routes must target strategy_gate"
+                )
+            if role is ConvergenceRole.STRATEGY_GATE and (
+                not target_roles
+                or not target_roles.issubset(
+                    {ConvergenceRole.CORRECTOR, ConvergenceRole.REFRAME}
+                )
+            ):
+                raise ValidationError(
+                    f"profile.phases.{phase_key} strategy_gate goto routes must target corrector or reframe"
+                )
+    if profile_version == 3:
+        declared_roles = {phase.convergence_role for phase in phases.values()}
+        required_roles = {
+            ConvergenceRole.CORRECTOR,
+            ConvergenceRole.EVALUATOR,
+            ConvergenceRole.DIAGNOSIS,
+            ConvergenceRole.REFRAME,
+            ConvergenceRole.STRATEGY_GATE,
+        }
+        missing_roles = required_roles - declared_roles
+        if missing_roles:
+            raise ValidationError(
+                "profile v3 convergence topology lacks roles: "
+                + ", ".join(sorted(role.value for role in missing_roles))
+            )
     return WorkflowProfile(
-        schema_version=_migrated_version(
-            data["schema_version"], context="profile.schema_version", expected=2
-        ),
+        schema_version=profile_version,
         profile_id=_string(data["profile_id"], context="profile.profile_id"),
         revision=_string(data["revision"], context="profile.revision"),
         phases=phases,
+        convergence=convergence,
     )
 
 
@@ -988,6 +1197,8 @@ def run_to_json(run: Run) -> str:
             hop.pop("coverage_claims", None)
             hop.pop("convergence_assessments", None)
             hop.pop("pre_route_anchor_sha256", None)
+            hop.pop("requested_route", None)
+            hop.pop("route_reason", None)
         for finding in data["findings"]:
             finding.pop("correction_obligation", None)
     elif run.schema_version == 3:
@@ -1005,13 +1216,14 @@ def _hop_summary(value: Any, *, context: str, run_version: int) -> HopSummary:
     all_fields = {field.name for field in fields(HopSummary)}
     convergence_fields = {"coverage_claims", "convergence_assessments"}
     anchor_field = {"pre_route_anchor_sha256"}
+    routing_truth_fields = {"requested_route", "route_reason"}
     data = _fields(
         value,
         context=context,
         required=(
             all_fields - anchor_field
             if run_version == 3
-            else all_fields - convergence_fields - anchor_field
+            else all_fields - convergence_fields - anchor_field - routing_truth_fields
         ),
         optional=anchor_field if run_version == 3 else frozenset(),
     )
@@ -1053,6 +1265,18 @@ def _hop_summary(value: Any, *, context: str, run_version: int) -> HopSummary:
                 data["pre_route_anchor_sha256"],
                 context=f"{context}.pre_route_anchor_sha256",
             )
+        ),
+        requested_route=(
+            None
+            if run_version != 3
+            else _optional_string(
+                data["requested_route"], context=f"{context}.requested_route"
+            )
+        ),
+        route_reason=(
+            None
+            if run_version != 3
+            else _optional_string(data["route_reason"], context=f"{context}.route_reason")
         ),
     )
 
@@ -1540,6 +1764,26 @@ def _validate_v3_run(run: Run) -> None:
     for index, hop in enumerate(run.hops, start=1):
         if hop.sequence != index:
             raise ValidationError("Run v3 Hop sequence is not contiguous and ordered")
+        if hop.route_reason is not None:
+            prefix = "convergence_escape:"
+            if not hop.route_reason.startswith(prefix):
+                raise ValidationError(
+                    f"Run v3 Hop {hop.hop_id} has unknown route_reason"
+                )
+            trigger_ids = hop.route_reason.removeprefix(prefix).split(",")
+            if (
+                not trigger_ids
+                or trigger_ids != sorted(set(trigger_ids))
+                or any(re.fullmatch(r"F[0-9]{3,}", item) is None for item in trigger_ids)
+                or hop.requested_route is None
+                or (
+                    hop.applied_route is not None
+                    and hop.requested_route == hop.applied_route
+                )
+            ):
+                raise ValidationError(
+                    f"Run v3 Hop {hop.hop_id} has malformed convergence route truth"
+                )
     for finding in run.findings:
         if re.fullmatch(r"F[0-9]{3,}", finding.finding_id) is None:
             raise ValidationError(f"Run v3 has invalid concrete Finding ID: {finding.finding_id}")

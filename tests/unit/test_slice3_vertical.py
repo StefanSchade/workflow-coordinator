@@ -18,8 +18,17 @@ from workflow_coordinator.prompt import (
     COMPONENT_LIMIT_BYTES, CONTEXT_LIMIT_BYTES, DIFF_FILE_LIMIT, DIFF_LIMIT_BYTES,
     ContextItem, PromptComponent, assemble_prompt, load_agent_operating_contract,
 )
-from workflow_coordinator.vertical import run_one_hop
-from tests.support import phase, profile, route, run_for
+from workflow_coordinator.vertical import convergence_prompt_context, run_one_hop
+from tests.support import (
+    convergence_cycle,
+    convergence_routing_profile,
+    phase,
+    profile,
+    qualification_evidence,
+    route,
+    run_for,
+    tracked_convergence_run,
+)
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
@@ -32,6 +41,39 @@ def envelope(run_id="RUN-1", hop_id="H001", invocation_id="INV-1", **result_chan
     result.update(result_changes)
     return json.dumps({"schema_version": 1, "run_id": run_id, "hop_id": hop_id,
                        "invocation_id": invocation_id, "result": result})
+
+
+def envelope_v2(
+    run_id="RUN-1", hop_id="H001", invocation_id="INV-1", **result_changes
+):
+    result = {
+        "schema_version": 2,
+        "outcome": "completed",
+        "requested_route": "halt",
+        "scope_changed": False,
+        "requires_human": False,
+        "escalation": None,
+        "findings": [],
+        "claimed_commits": [],
+        "commit_intent": None,
+        "evidence_refs": [],
+        "summary": "done",
+        "coverage_claims": [],
+        "convergence_assessments": [],
+        "diagnosis": None,
+        "strategy_revision": None,
+        "strategy_assessment": None,
+    }
+    result.update(result_changes)
+    return json.dumps(
+        {
+            "schema_version": 2,
+            "run_id": run_id,
+            "hop_id": hop_id,
+            "invocation_id": invocation_id,
+            "result": result,
+        }
+    )
 
 
 def components(*items: tuple[str, int]) -> dict[str, PromptComponent]:
@@ -74,6 +116,64 @@ def test_prompt_projects_current_hop_actions_separately_from_exit_routes():
 
     assert "\nauthorized_actions=edit,commit\n" in header
     assert "\npermitted_routes=review\n" in header
+
+
+def test_convergence_prompt_hides_reserved_escape_and_selects_result_v2():
+    workflow = convergence_routing_profile()
+    current = workflow.phases["evaluate"]
+    _, run = tracked_convergence_run()
+    run = replace(run, phase="evaluate")
+    package = assemble_prompt(
+        run,
+        current,
+        components(("independent_reviewer", 1), ("testing", 1)),
+        invocation=invocation(),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture evaluator",
+        task_payload="task",
+    )
+    header = package.text.split("\n\n", 1)[0]
+    assert "permitted_routes=accept, correct" in header
+    assert "diagnose" not in header
+    assert "output_contract=structured_result_v2" in header
+    assert "Return one JSON structured_result_v2 envelope" in package.text
+
+
+def test_vertical_owned_convergence_context_is_complete_and_attributed():
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="prompt"
+    )
+    run, qualification, _ = qualification_evidence(
+        run, {evaluator_hop: ("pass",)}
+    )
+    convergence_profile = replace(
+        convergence_routing_profile(), phases=workflow.phases
+    )
+    context = convergence_prompt_context(run, convergence_profile, qualification)
+    assert context is not None and context.required is True
+    payload = json.loads(context.content.split("\n", 1)[1])
+    assert payload["provenance"] == "coordinator_derived"
+    assert payload["open_tracked_obligations"][0]["finding_id"] == "F001"
+    assert payload["open_tracked_obligations"][0]["semantic_attribution"] == "agent_attributed"
+    assert payload["open_tracked_obligations"][0]["latest_coverage"]["source_hop_id"]
+    assert payload["open_tracked_obligations"][0]["latest_evaluation"]["source_hop_id"] == evaluator_hop
+    assert payload["convergence_facts"][0]["source_evaluator_hops"] == [evaluator_hop]
+
+
+def test_required_convergence_context_cannot_be_silently_omitted():
+    workflow = profile({"work": phase({"done": route("complete")})})
+    with pytest.raises(ValueError, match="required prompt context"):
+        assemble_prompt(
+            run_for(workflow),
+            workflow.phases["work"],
+            components(("worker", 1), ("testing", 1)),
+            invocation=invocation(),
+            agent_operating_contract=load_agent_operating_contract(),
+            persona="fixture persona",
+            task_payload="task",
+            context=(ContextItem("required", "x" * (CONTEXT_LIMIT_BYTES + 1), True),),
+        )
 
 
 def test_prompt_projects_explicit_empty_finding_authority_for_non_review_phase():
@@ -240,6 +340,55 @@ def test_one_invocation_identity_is_projected_dispatched_and_validated(repositor
     assert adapter.request.invocation == invocation()
     for name, value in adapter.request.invocation.__dict__.items():
         assert f"{name}={value}" in adapter.request.prompt
+
+
+@pytest.mark.parametrize("phase_key", ["diagnose", "reframe", "strategy"])
+def test_profile_v3_later_role_names_dispatch_live_result_v2_with_null_placeholders(
+    repository, phase_key
+):
+    workflow = convergence_routing_profile()
+    current = workflow.phases[phase_key]
+    workflow = replace(
+        workflow,
+        phases={
+            **workflow.phases,
+            phase_key: replace(current, routes={"halt": route("stop")}, evidence=()),
+        },
+    )
+    head = subprocess.run(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    run = replace(
+        run_for(workflow, initial_phase=phase_key, run_schema_version=3),
+        current_head=head,
+        baseline_head=head,
+    )
+    adapter = CapturingAdapter(envelope_v2())
+    completed = run_one_hop(
+        run,
+        workflow,
+        repository,
+        adapter,
+        components(
+            (
+                "independent_reviewer"
+                if current.role.value == "independent_reviewer"
+                else "worker",
+                1,
+            ),
+            ("testing", 1),
+        ),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona",
+        task_payload="tiny",
+        invocation_id="INV-1",
+    )
+    assert completed.reduction.run.status.value == "stopped"
+    assert adapter.request is not None
+    assert adapter.request.contract_version == 2
 
 
 class CommitAdapter:

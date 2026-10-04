@@ -206,10 +206,58 @@ def test_checkpoint_optionally_projects_derived_convergence_facts_and_sources():
             "source_evaluator_hops": [evaluator_hop],
         }
     ]
+    assert projected["convergence"]["open_tracked_obligations"][0]["finding_id"] == "F001"
+    assert projected["convergence"]["open_tracked_obligations"][0]["semantic_attribution"] == "agent_attributed"
+    assert projected["convergence"]["facts"][0]["source_evaluator_hops"] == [
+        evaluator_hop
+    ]
+    assert projected["convergence"]["attribution"] == "coordinator_derived"
     assert "convergence_facts" not in checkpoint_projection(
         run, workflow, execution_evidence_json=evidence_json
     )
     assert "convergence_facts" not in json.loads(run_to_json(run))
+
+
+def test_checkpoint_projects_requested_applied_escape_truth_and_triggers():
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="escape"
+    )
+    run, _, evidence_json = qualification_evidence(
+        run, {evaluator_hop: ("pass",)}
+    )
+    run = replace(
+        run,
+        hops=tuple(
+            replace(
+                hop,
+                requested_route="correct",
+                applied_route="diagnose",
+                route_reason="convergence_escape:F001",
+            )
+            if hop.hop_id == evaluator_hop
+            else hop
+            for hop in run.hops
+        ),
+    )
+
+    projected = checkpoint_projection(
+        run,
+        workflow,
+        qualified_cycle_limit=2,
+        execution_evidence_json=evidence_json,
+    )
+    assert projected["hops"][-1]["requested_route"] == "correct"
+    assert projected["hops"][-1]["applied_route"] == "diagnose"
+    assert projected["convergence"]["escape_routes"] == [
+        {
+            "evaluator_hop_id": evaluator_hop,
+            "triggering_finding_ids": ["F001"],
+            "requested_route": "correct",
+            "applied_route": "diagnose",
+            "route_reason": "convergence_escape:F001",
+        }
+    ]
 
 
 def test_schema4_publication_preserves_rows_is_idempotent_and_rejects_conflicts(

@@ -175,7 +175,13 @@ def _stop_for_human(run: Run, reason: str, question: str | None = None) -> Reduc
     )
 
 
-def _with_hop_decision(reduction: Reduction, hop_id: str) -> Reduction:
+def _with_hop_decision(
+    reduction: Reduction,
+    hop_id: str,
+    *,
+    requested_route: str | None = None,
+    route_reason: str | None = None,
+) -> Reduction:
     """Correlate the reducer decision back into the compact accepted-Hop record."""
 
     updated_hops = tuple(
@@ -184,6 +190,8 @@ def _with_hop_decision(reduction: Reduction, hop_id: str) -> Reduction:
                 hop,
                 applied_route=reduction.route_key,
                 stop_reason=reduction.run.stop_reason,
+                requested_route=requested_route,
+                route_reason=route_reason,
             )
             if hop.hop_id == hop_id
             else hop
@@ -194,8 +202,10 @@ def _with_hop_decision(reduction: Reduction, hop_id: str) -> Reduction:
 
 
 def _profile_phase(run: Run, profile: WorkflowProfile):
-    if run.schema_version not in {1, 2, 3} or profile.schema_version != 2:
+    if run.schema_version not in {1, 2, 3} or profile.schema_version not in {2, 3}:
         return None, "unsupported state/profile schema version"
+    if profile.schema_version == 3 and run.schema_version != 3:
+        return None, "profile v3 requires Run schema_version 3"
     if run.profile_id != profile.profile_id or run.profile_revision != profile.revision:
         return None, "pinned profile identity changed"
     phase = profile.phases.get(run.phase)
@@ -421,7 +431,11 @@ def _apply_v2_finding_deltas(
     if authority is FindingAuthority.SUPERVISOR and deltas:
         raise ReductionError("supervisor cannot authoritatively change Finding state")
     if convergence_role not in {ConvergenceRole.CORRECTOR, ConvergenceRole.EVALUATOR}:
-        raise ReductionError("result v2 requires a convergence corrector or evaluator role")
+        if deltas:
+            raise ReductionError(
+                f"{convergence_role.value} result cannot mutate Findings"
+            )
+        return run, ()
 
     originals = {finding.finding_id: finding for finding in run.findings}
     local_refs: dict[str, NewFindingDelta] = {}
@@ -689,6 +703,15 @@ def _validate_convergence_records_before_apply(
     if role is ConvergenceRole.NONE:
         if result.coverage_claims or result.convergence_assessments:
             raise ReductionError("ordinary phase cannot submit convergence records")
+        if run.schema_version == 3 and any(
+            isinstance(delta, NewFindingDelta)
+            and delta.proposed_state is FindingState.OPEN
+            and delta.blocking
+            for delta in result.findings
+        ):
+            raise ReductionError(
+                "Run v3 ordinary phase cannot create an untracked open blocker"
+            )
         return
     if run.schema_version != 3:
         raise ReductionError("result v2 convergence reduction requires Run schema_version 3")
@@ -738,6 +761,17 @@ def _validate_convergence_records_before_apply(
                 raise ReductionError("addressed coverage cannot take a complete route")
         if set(claim_ids) != set(tracked_open):
             raise ReductionError("coverage claims must cover every open tracked obligation exactly once")
+        return
+
+    if role in {
+        ConvergenceRole.DIAGNOSIS,
+        ConvergenceRole.REFRAME,
+        ConvergenceRole.STRATEGY_GATE,
+    }:
+        if result.coverage_claims or result.convergence_assessments:
+            raise ReductionError(
+                f"{role.value} cannot submit Slice-1 convergence records"
+            )
         return
 
     if result.coverage_claims:
@@ -881,8 +915,15 @@ def reduce_result(
 ) -> Reduction:
     """Apply mandatory preemption before any Finding or route authority."""
 
+    route_reason: str | None = None
+
     def finish(reduction: Reduction) -> Reduction:
-        return _with_hop_decision(reduction, hop_id)
+        return _with_hop_decision(
+            reduction,
+            hop_id,
+            requested_route=result.requested_route,
+            route_reason=route_reason,
+        )
 
     phase, profile_error = _profile_phase(run, profile)
     correlated_hop = bool(run.hops and run.hops[-1].hop_id == hop_id)
@@ -896,8 +937,31 @@ def reduce_result(
         result_state_error = "unsupported result schema version"
     elif run.status is not RunStatus.RUNNING or not correlated_hop:
         result_state_error = "result is not correlated to the current accepted Hop"
+    elif (
+        profile.schema_version == 3
+        and phase is not None
+        and phase.convergence_role is ConvergenceRole.EVALUATOR
+        and trusted_qualification_index is None
+    ):
+        result_state_error = "current evaluator lacks trusted qualification input"
     elif trusted_qualification_index is not None and run.schema_version == 3:
         current_hop = run.hops[-1]
+        expected_identity = (
+            run.run_id,
+            run.work_item_id,
+            run.profile_id,
+            run.profile_revision,
+        )
+        actual_identity = (
+            None
+            if trusted_qualification_index.run is None
+            else (
+                trusted_qualification_index.run.run_id,
+                trusted_qualification_index.run.work_item_id,
+                trusted_qualification_index.run.profile_id,
+                trusted_qualification_index.run.profile_revision,
+            )
+        )
         matching = tuple(
             attempt
             for attempt in trusted_qualification_index.attempts
@@ -906,7 +970,9 @@ def reduce_result(
             and attempt.pre_route_anchor_sha256
             == current_hop.pre_route_anchor_sha256
         )
-        if len(matching) != 1:
+        if actual_identity != expected_identity:
+            result_state_error = "trusted qualification index identity mismatch"
+        elif len(matching) != 1:
             result_state_error = (
                 "current Hop lacks one exact staged qualification attempt"
             )
@@ -958,6 +1024,16 @@ def reduce_result(
         return finish(_stop_for_human(run, "mechanical_preemption:scope_changed"))
 
     assert phase is not None
+    if (
+        phase.convergence_role is ConvergenceRole.EVALUATOR
+        and result.requested_route == phase.escape_route
+    ):
+        return finish(
+            _stop_for_human(
+                run,
+                f"mechanical_preemption:reserved_route:{result.requested_route}",
+            )
+        )
     route = phase.routes.get(result.requested_route)
     if route is None:
         return finish(
@@ -1006,12 +1082,19 @@ def reduce_result(
         return finish(_stop_for_human(run, f"mechanical_preemption:invalid_finding_delta:{error}"))
 
     updated = _with_convergence_records(updated, hop_id, result)
+    updated = replace(
+        updated,
+        hops=tuple(
+            replace(hop, finding_delta_ids=finding_delta_ids)
+            if hop.hop_id == hop_id
+            else hop
+            for hop in updated.hops
+        ),
+    )
 
     if result.outcome is Outcome.BLOCKED:
         reduction = _stop_for_human(updated, "result_blocked")
-        return _with_hop_decision(
-            _with_finding_delta_ids(reduction, hop_id, finding_delta_ids), hop_id
-        )
+        return finish(_with_finding_delta_ids(reduction, hop_id, finding_delta_ids))
 
     route_key = result.requested_route
     if facts.required_evidence_failed:
@@ -1026,17 +1109,56 @@ def reduce_result(
             reduction = _stop_for_human(
                 updated, "required_evidence_failed_without_route"
             )
-            return _with_hop_decision(
-                _with_finding_delta_ids(reduction, hop_id, finding_delta_ids), hop_id
-            )
+            return finish(_with_finding_delta_ids(reduction, hop_id, finding_delta_ids))
         route_key = failure_key
         route = failure_route
 
+    if (
+        profile.schema_version == 3
+        and profile.convergence is not None
+        and phase.convergence_role is ConvergenceRole.EVALUATOR
+        and result.outcome is Outcome.CHANGES_REQUIRED
+        and result.requested_route == phase.normal_correction_route
+        and route_key == result.requested_route
+        and not facts.required_evidence_failed
+    ):
+        assert trusted_qualification_index is not None
+        try:
+            convergence_facts = derive_convergence_facts(
+                updated,
+                trusted_qualification_index,
+                profile.convergence.qualified_cycle_limit,
+            )
+        except (ReductionError, ValueError) as error:
+            reduction = _stop_for_human(
+                updated,
+                f"mechanical_preemption:invalid_qualification_input:{error}",
+            )
+            return finish(
+                _with_finding_delta_ids(reduction, hop_id, finding_delta_ids)
+            )
+        triggering_ids = tuple(
+            fact.finding_id
+            for fact in convergence_facts
+            if fact.goalpost_reached
+        )
+        if triggering_ids:
+            escape_key = phase.escape_route
+            escape = phase.routes.get(escape_key or "")
+            if escape_key is None or escape is None:
+                reduction = _stop_for_human(
+                    updated, "mechanical_preemption:invalid_convergence_profile"
+                )
+                return finish(
+                    _with_finding_delta_ids(reduction, hop_id, finding_delta_ids)
+                )
+            route_key = escape_key
+            route = escape
+            route_reason = "convergence_escape:" + ",".join(triggering_ids)
+
     if result.outcome is Outcome.CHANGES_REQUIRED and route.effect is RouteEffect.COMPLETE:
         reduction = _stop_for_human(updated, "changes_required_cannot_complete")
-        return _with_hop_decision(
-            _with_finding_delta_ids(reduction, hop_id, finding_delta_ids), hop_id
-        )
+        return finish(_with_finding_delta_ids(reduction, hop_id, finding_delta_ids))
 
     invocation_needed = route.supervisor or route.effect is RouteEffect.GOTO
     if invocation_needed and updated.hop_used >= updated.hop_limit:
@@ -1229,4 +1351,10 @@ def permitted_route_keys(run: Run, profile: WorkflowProfile) -> tuple[str, ...]:
         return ()
     if run.status is RunStatus.AWAITING_SUPERVISOR:
         return tuple(sorted(key for key, route in phase.routes.items() if route.supervisor))
-    return tuple(sorted(phase.routes))
+    reserved = (
+        {phase.escape_route}
+        if phase.convergence_role is ConvergenceRole.EVALUATOR
+        and phase.escape_route is not None
+        else set()
+    )
+    return tuple(sorted(key for key in phase.routes if key not in reserved))

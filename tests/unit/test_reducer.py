@@ -34,11 +34,12 @@ from workflow_coordinator.reducer import (
     require_reconcile,
     resume_after_reconcile,
 )
-from workflow_coordinator.serialization import run_to_json
+from workflow_coordinator.serialization import run_from_json, run_to_json
 from tests.support import (
     assessment,
     charge_hop,
     convergence_cycle,
+    convergence_routing_profile,
     coverage,
     existing_delta,
     new_delta,
@@ -1399,3 +1400,402 @@ def test_one_failed_attempt_removes_only_its_source_hop_without_off_by_one():
     assert fact.qualified_cycle_count == 1
     assert fact.goalpost_reached is False
     assert fact.source_evaluator_hops == (first,)
+
+
+def _reduce_qualified_slice3_evaluator(
+    run,
+    workflow,
+    *,
+    evidence_prefix,
+    assessment_result="carried_new_counterexample",
+    facts=MechanicalFacts(),
+    current_evidence_status="pass",
+    new_findings=(),
+):
+    tracked_ids = tuple(
+        finding.finding_id
+        for finding in run.findings
+        if finding.state is FindingState.OPEN and finding.blocking
+    )
+    corrected, correction_hop = charge_hop(run)
+    corrected = reduce_result(
+        corrected,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=tuple(
+                coverage(finding_id, "addressed", f"{evidence_prefix}-coverage-{finding_id}")
+                for finding_id in tracked_ids
+            ),
+        ),
+        workflow,
+        hop_id=correction_hop,
+    ).run
+    evaluated, evaluator_hop = charge_hop(
+        corrected,
+        role="independent_reviewer",
+        outcome="changes_required",
+    )
+    qualifying_hops = {
+        hop.hop_id: ("pass",)
+        for hop in evaluated.hops
+        if hop.convergence_assessments
+    }
+    qualifying_hops[evaluator_hop] = (current_evidence_status,)
+    evaluated, qualification, _ = qualification_evidence(
+        evaluated, qualifying_hops
+    )
+    counterexamples = {
+        finding_id: f"{evidence_prefix}-evaluation-{finding_id}"
+        for finding_id in tracked_ids
+    }
+    proposed_state = "resolved" if assessment_result == "closed" else "open"
+    reduction = reduce_result(
+        evaluated,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=tuple(
+                existing_delta(
+                    finding_id, proposed_state, evidence=counterexamples[finding_id]
+                )
+                for finding_id in tracked_ids
+            ) + tuple(new_findings),
+            convergence_assessments=tuple(
+                assessment(
+                    finding_id,
+                    correction_hop,
+                    assessment_result,
+                    counterexamples[finding_id],
+                )
+                for finding_id in tracked_ids
+            ),
+        ),
+        workflow,
+        hop_id=evaluator_hop,
+        facts=facts,
+        trusted_qualification_index=qualification,
+    )
+    return reduction, evaluator_hop
+
+
+def test_profile_v3_reserved_escape_is_hidden_and_direct_request_fails_closed():
+    workflow = convergence_routing_profile()
+    _, run = tracked_convergence_run()
+    run = replace(run, phase="evaluate")
+    assert permitted_route_keys(run, workflow) == ("accept", "correct")
+
+    charged, hop_id = charge_hop(
+        run, role="independent_reviewer", outcome="changes_required"
+    )
+    charged, qualification, _ = qualification_evidence(
+        charged, {hop_id: ("pass",)}
+    )
+    before = (charged.findings, charged.hop_used, charged.phase)
+    rejected = reduce_result(
+        charged,
+        result("diagnose", outcome="changes_required", schema_version=2),
+        workflow,
+        hop_id=hop_id,
+        trusted_qualification_index=qualification,
+    )
+    assert "reserved_route:diagnose" in (rejected.run.stop_reason or "")
+    assert (rejected.run.findings, rejected.run.hop_used, rejected.run.phase) == before
+    assert rejected.run.hops[-1].applied_route is None
+
+
+def test_qualified_cycle_below_limit_uses_normal_route_and_threshold_substitutes_escape():
+    workflow = convergence_routing_profile(qualified_cycle_limit=2)
+    _, run = tracked_convergence_run()
+
+    below, first_evaluator = _reduce_qualified_slice3_evaluator(
+        run, workflow, evidence_prefix="first"
+    )
+    assert below.route_key == "correct"
+    assert below.run.hops[-1].requested_route == "correct"
+    assert below.run.hops[-1].applied_route == "correct"
+    assert below.run.hops[-1].route_reason is None
+
+    threshold, second_evaluator = _reduce_qualified_slice3_evaluator(
+        below.run, workflow, evidence_prefix="second"
+    )
+    assert threshold.route_key == "diagnose"
+    assert threshold.run.phase == "diagnose"
+    assert threshold.run.hops[-1].hop_id == second_evaluator
+    assert threshold.run.hops[-1].requested_route == "correct"
+    assert threshold.run.hops[-1].applied_route == "diagnose"
+    assert threshold.run.hops[-1].route_reason == "convergence_escape:F001"
+    replayed = run_to_json(threshold.run)
+    assert '"requested_route":"correct"' in replayed
+    assert '"applied_route":"diagnose"' in replayed
+    assert first_evaluator in {
+        source
+        for fact in derive_convergence_facts(
+            threshold.run,
+            qualification_evidence(
+                threshold.run,
+                {first_evaluator: ("pass",), second_evaluator: ("pass",)},
+            )[1],
+            2,
+        )
+        for source in fact.source_evaluator_hops
+    }
+
+
+def test_threshold_finding_resolved_in_evaluator_hop_does_not_escape():
+    workflow = convergence_routing_profile(qualified_cycle_limit=2)
+    _, run = tracked_convergence_run()
+    first, _ = _reduce_qualified_slice3_evaluator(
+        run, workflow, evidence_prefix="first"
+    )
+
+    closed, _ = _reduce_qualified_slice3_evaluator(
+        first.run,
+        workflow,
+        evidence_prefix="closed",
+        assessment_result="closed",
+    )
+    assert closed.route_key == "correct"
+    assert closed.run.hops[-1].requested_route == "correct"
+    assert closed.run.hops[-1].applied_route == "correct"
+    assert closed.run.hops[-1].route_reason is None
+    assert closed.run.findings[0].state is FindingState.RESOLVED
+
+
+def test_missing_current_evaluator_qualification_preempts_before_mutation():
+    workflow = convergence_routing_profile()
+    _, run = tracked_convergence_run()
+    run, correction_hop = charge_hop(run)
+    run = reduce_result(
+        run,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(coverage("F001", "addressed", "coverage"),),
+        ),
+        workflow,
+        hop_id=correction_hop,
+    ).run
+    run, evaluator_hop = charge_hop(
+        run, role="independent_reviewer", outcome="changes_required"
+    )
+    before = run.findings
+    rejected = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(existing_delta("F001", "open", evidence="new-counterexample"),),
+            convergence_assessments=(
+                assessment(
+                    "F001",
+                    correction_hop,
+                    "carried_new_counterexample",
+                    "new-counterexample",
+                ),
+            ),
+        ),
+        workflow,
+        hop_id=evaluator_hop,
+    )
+    assert "lacks trusted qualification input" in (rejected.run.stop_reason or "")
+    assert rejected.run.findings == before
+    assert rejected.run.hops[-1].finding_delta_ids == ()
+    assert rejected.run.hops[-1].applied_route is None
+
+
+def test_inconsistent_qualification_identity_preempts_before_finding_transaction():
+    workflow = convergence_routing_profile()
+    _, run = tracked_convergence_run()
+    run, correction_hop = charge_hop(run)
+    run = reduce_result(
+        run,
+        result(
+            "evaluate",
+            schema_version=2,
+            coverage_claims=(coverage("F001", "addressed", "coverage"),),
+        ),
+        workflow,
+        hop_id=correction_hop,
+    ).run
+    run, evaluator_hop = charge_hop(
+        run, role="independent_reviewer", outcome="changes_required"
+    )
+    run, qualification, _ = qualification_evidence(
+        run, {evaluator_hop: ("pass",)}
+    )
+    assert qualification.run is not None
+    inconsistent = replace(
+        qualification,
+        run=replace(qualification.run, run_id="RUN-other"),
+    )
+    before = run.findings
+    rejected = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(existing_delta("F001", "open", evidence="counterexample"),),
+            convergence_assessments=(
+                assessment(
+                    "F001",
+                    correction_hop,
+                    "carried_new_counterexample",
+                    "counterexample",
+                ),
+            ),
+        ),
+        workflow,
+        hop_id=evaluator_hop,
+        trusted_qualification_index=inconsistent,
+    )
+    assert "qualification index identity mismatch" in (rejected.run.stop_reason or "")
+    assert rejected.run.findings == before
+    assert rejected.run.hops[-1].finding_delta_ids == ()
+
+
+def test_escape_selection_still_yields_to_hop_budget_exhaustion():
+    workflow = convergence_routing_profile(qualified_cycle_limit=2)
+    _, run = tracked_convergence_run()
+    first, _ = _reduce_qualified_slice3_evaluator(
+        run, workflow, evidence_prefix="first"
+    )
+    at_last_cycle = replace(first.run, hop_limit=first.run.hop_used + 2)
+
+    exhausted, _ = _reduce_qualified_slice3_evaluator(
+        at_last_cycle, workflow, evidence_prefix="second"
+    )
+    assert exhausted.route_key is None
+    assert exhausted.run.status is RunStatus.AWAITING_HUMAN_BUDGET
+    assert exhausted.run.stop_reason == "autonomous_hop_budget_exhausted"
+    assert exhausted.run.hops[-1].requested_route == "correct"
+    assert exhausted.run.hops[-1].applied_route is None
+    assert exhausted.run.hops[-1].route_reason == "convergence_escape:F001"
+    assert run_from_json(run_to_json(exhausted.run)) == exhausted.run
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [
+        MechanicalFacts(state_error="state"),
+        MechanicalFacts(repository_anomaly="repository"),
+        MechanicalFacts(policy_anomaly="policy"),
+        MechanicalFacts(required_evidence_error="evidence"),
+    ],
+)
+def test_mechanical_preemptions_remain_stronger_than_escape(facts):
+    workflow = convergence_routing_profile(qualified_cycle_limit=2)
+    _, run = tracked_convergence_run()
+    first, _ = _reduce_qualified_slice3_evaluator(
+        run, workflow, evidence_prefix="first"
+    )
+    preempted, _ = _reduce_qualified_slice3_evaluator(
+        first.run,
+        workflow,
+        evidence_prefix="second",
+        facts=facts,
+    )
+    assert preempted.route_key is None
+    assert preempted.run.hops[-1].applied_route is None
+    assert preempted.run.hops[-1].route_reason is None
+    assert (preempted.run.stop_reason or "").startswith("mechanical_preemption:")
+
+
+def test_required_evidence_failure_route_precedes_escape_substitution():
+    workflow = convergence_routing_profile(qualified_cycle_limit=2)
+    evaluator = workflow.phases["evaluate"]
+    assert evaluator.review is not None
+    workflow = replace(
+        workflow,
+        phases={
+            **workflow.phases,
+            "evaluate": replace(
+                evaluator,
+                review=replace(evaluator.review, failed_evidence_route="correct"),
+            ),
+        },
+    )
+    _, run = tracked_convergence_run()
+    first, _ = _reduce_qualified_slice3_evaluator(
+        run, workflow, evidence_prefix="first"
+    )
+    failed, _ = _reduce_qualified_slice3_evaluator(
+        first.run,
+        workflow,
+        evidence_prefix="second",
+        facts=MechanicalFacts(required_evidence_failed=True),
+        current_evidence_status="fail",
+    )
+    assert failed.route_key == "correct"
+    assert failed.run.hops[-1].requested_route == "correct"
+    assert failed.run.hops[-1].applied_route == "correct"
+    assert failed.run.hops[-1].route_reason is None
+
+
+def test_new_blocker_starts_at_zero_and_does_not_inherit_triggering_identity():
+    workflow = convergence_routing_profile(qualified_cycle_limit=2)
+    _, run = tracked_convergence_run()
+    first, _ = _reduce_qualified_slice3_evaluator(
+        run, workflow, evidence_prefix="first"
+    )
+    threshold, second_evaluator = _reduce_qualified_slice3_evaluator(
+        first.run,
+        workflow,
+        evidence_prefix="second",
+        new_findings=(
+            new_delta(
+                "open",
+                invariant="A distinct newly discovered blocker remains open.",
+                evidence="new-blocker",
+            ),
+        ),
+    )
+    assert threshold.run.hops[-1].route_reason == "convergence_escape:F001"
+    anchored, qualification, _ = qualification_evidence(
+        threshold.run,
+        {
+            hop.hop_id: ("pass",)
+            for hop in threshold.run.hops
+            if hop.convergence_assessments
+        },
+    )
+    facts = derive_convergence_facts(anchored, qualification, 2)
+    assert [(fact.finding_id, fact.qualified_cycle_count) for fact in facts] == [
+        ("F001", 2),
+        ("F002", 0),
+    ]
+    assert second_evaluator in facts[0].source_evaluator_hops
+
+
+def test_multiple_goalpost_findings_produce_sorted_trigger_ids():
+    old_workflow, run = tracked_convergence_run()
+    run = replace(run, phase="evaluate")
+    run, hop_id = charge_hop(run, role="independent_reviewer")
+    run = reduce_result(
+        run,
+        result(
+            "correct",
+            outcome="changes_required",
+            schema_version=2,
+            findings=(
+                new_delta(
+                    "open",
+                    invariant="A second independent obligation remains open.",
+                    evidence="second-obligation",
+                ),
+            ),
+        ),
+        old_workflow,
+        hop_id=hop_id,
+    ).run
+    workflow = convergence_routing_profile(qualified_cycle_limit=2)
+    first, _ = _reduce_qualified_slice3_evaluator(
+        run, workflow, evidence_prefix="first"
+    )
+    threshold, _ = _reduce_qualified_slice3_evaluator(
+        first.run, workflow, evidence_prefix="second"
+    )
+    assert threshold.run.hops[-1].route_reason == "convergence_escape:F001,F002"

@@ -9,7 +9,7 @@ from importlib import resources
 from typing import Mapping
 
 from .adapter import Invocation
-from .model import Phase, Run
+from .model import ConvergenceRole, Phase, Run
 
 COMPONENT_LIMIT_BYTES = 65_536
 CONTEXT_LIMIT_BYTES = 196_608
@@ -90,6 +90,7 @@ class PromptComponent:
 class ContextItem:
     reference: str
     content: str
+    required: bool = False
 
     @property
     def byte_size(self) -> int:
@@ -113,8 +114,22 @@ def _selected_ids(phase: Phase) -> tuple[str, ...]:
 
 
 def _header(run: Run, phase: Phase, invocation: Invocation) -> str:
-    routes = ", ".join(sorted(phase.routes))
+    routes = ", ".join(
+        sorted(
+            key
+            for key in phase.routes
+            if not (
+                phase.convergence_role is ConvergenceRole.EVALUATOR
+                and key == phase.escape_route
+            )
+        )
+    )
     finding_authority = phase.review.finding_authority if phase.review is not None else ()
+    result_contract = (
+        "structured_result_v2"
+        if phase.convergence_role is not ConvergenceRole.NONE
+        else "structured_result_v1"
+    )
     return (
         "[identity]\n"
         f"work_item_id={run.work_item_id}\nrun_id={invocation.run_id}\n"
@@ -125,7 +140,7 @@ def _header(run: Run, phase: Phase, invocation: Invocation) -> str:
         f"authorized_actions={','.join(phase.authorized_actions)}\n"
         f"permitted_routes={routes}\nfinding_authority={','.join(finding_authority)}\n"
         f"evidence={','.join(phase.evidence)}\n"
-        "output_contract=structured_result_v1\n"
+        f"output_contract={result_contract}\n"
     )
 
 
@@ -180,6 +195,10 @@ def assemble_prompt(
     for item in context:
         reference = {"reference": item.reference, "bytes": item.byte_size, "retrieval": item.reference}
         if used + item.byte_size > CONTEXT_LIMIT_BYTES:
+            if item.required:
+                raise ValueError(
+                    f"required prompt context exceeds bounded context limit: {item.reference}"
+                )
             omissions.append({"kind": "context", "reason": "total_limit", **reference})
         else:
             blocks.append("[context]\n" + item.content)
@@ -196,7 +215,11 @@ def assemble_prompt(
         else:
             inline_diff = diff
             blocks.append("[diff]\n" + diff)
-    blocks.append("[result_output_contract]\nReturn one JSON structured_result_v1 envelope; prose cannot replace fields.")
+    contract_version = 2 if phase.convergence_role is not ConvergenceRole.NONE else 1
+    blocks.append(
+        "[result_output_contract]\n"
+        f"Return one JSON structured_result_v{contract_version} envelope; prose cannot replace fields."
+    )
     return PromptPackage(
         "\n\n".join(blocks) + "\n",
         agent_operating_contract.provenance(),

@@ -40,6 +40,7 @@ from .model import (
     RunStatus,
     ExecutionEvidenceDocument,
     SuccessorProvenance,
+    TrustedQualificationIndex,
     WorkflowRole,
     new_run,
 )
@@ -47,6 +48,7 @@ from .persistence import (
     atomic_write_json,
     checkpoint_projection,
     observation_to_data,
+    trusted_qualification_index_for_run,
     write_run_snapshot,
 )
 from .prompt import (
@@ -69,6 +71,7 @@ from .serialization import (
 )
 from .slice4 import Slice4Error, checkout_state_root, register_checkout, run_real_one_hop, validate_checkout
 from .codex_adapter import CodexCliAdapter
+from .vertical import convergence_prompt_context
 
 
 class OperatorPreflightError(RuntimeError):
@@ -530,7 +533,9 @@ def _reconstructed_context(
                 f"prior_range={hop.base_head}..{hop.end_head}",
                 f"prior_commits={','.join(hop.actual_commits)}",
                 f"prior_changed_paths={','.join(changed_paths)}",
+                f"prior_requested_route={hop.requested_route or ''}",
                 f"prior_applied_route={hop.applied_route or ''}",
+                f"prior_route_reason={hop.route_reason or ''}",
                 f"agent_attributed_prior_summary={agent_literal(hop.summary)}",
             )
         )
@@ -660,6 +665,23 @@ def run_serial_hops(
     artifact_map = dict(durable_artifacts_by_phase or {})
     prior_observations: tuple[object, ...] = ()
 
+    def qualified_cycle_limit() -> int | None:
+        return (
+            profile.convergence.qualified_cycle_limit
+            if profile.convergence is not None
+            else None
+        )
+
+    def qualification_index(current_run):
+        if current_run.schema_version != 3 or not execution_evidence_path.exists():
+            return TrustedQualificationIndex.empty()
+        parsed = execution_evidence_from_json(
+            execution_evidence_path.read_text(encoding="utf-8")
+        )
+        if not isinstance(parsed, ExecutionEvidenceDocument):
+            return TrustedQualificationIndex.empty()
+        return trusted_qualification_index_for_run(current_run, parsed)
+
     def stop_continuation(reason: str, question: str):
         stopped = replace(run, status=RunStatus.AWAITING_HUMAN,
                           stop_reason=reason, human_question=question)
@@ -672,7 +694,10 @@ def run_serial_hops(
         atomic_write_json(
             run_root / "checkpoint.json",
             checkpoint_projection(
-                stopped, profile, execution_evidence_json=evidence_json
+                stopped,
+                profile,
+                qualified_cycle_limit=qualified_cycle_limit(),
+                execution_evidence_json=evidence_json,
             ),
         )
         return stopped, evidence
@@ -743,6 +768,17 @@ def run_serial_hops(
             if run.hop_used == 0 and durable_artifacts
             else artifact_map.get(run.phase, ())
         )
+        reconstructed = _reconstructed_context(
+            run, profile, repository, phase_artifacts, prior_observations
+        )
+        convergence_context = convergence_prompt_context(
+            run, profile, qualification_index(run)
+        )
+        projected_context = (
+            reconstructed
+            if convergence_context is None
+            else (*reconstructed, convergence_context)
+        )
         hop_run = run_real_one_hop(
             run, profile, repository, components,
             agent_operating_contract=agent_operating_contract,
@@ -752,17 +788,35 @@ def run_serial_hops(
             adapter=execution_adapter,
             durable_artifacts=phase_artifacts,
             context_items=(
-                (*initial_context_items, *_reconstructed_context(
-                    run, profile, repository, phase_artifacts, prior_observations
-                )) if run.hop_used == 0 else _reconstructed_context(
-                    run, profile, repository, phase_artifacts, prior_observations
-                )
+                (*initial_context_items, *projected_context)
+                if run.hop_used == 0
+                else projected_context
             ),
             evidence_runner=evidence_runner,
             evidence_commands=evidence_commands or {},
             execution_binding=binding,
         )
         run = hop_run.run
+        if hop_run.vertical is not None or run.status is not RunStatus.RECONCILE_REQUIRED:
+            current_evidence_json = (
+                execution_evidence_path.read_text(encoding="utf-8")
+                if execution_evidence_path.exists()
+                else None
+            )
+            atomic_write_json(
+                run_root / "checkpoint.json",
+                checkpoint_projection(
+                    run,
+                    profile,
+                    observations=(
+                        hop_run.vertical.observations
+                        if hop_run.vertical is not None
+                        else ()
+                    ),
+                    qualified_cycle_limit=qualified_cycle_limit(),
+                    execution_evidence_json=current_evidence_json,
+                ),
+            )
         if progress is not None:
             progress(run, invocation_id, hop_run.outcome)
         if hop_run.outcome is not None and run.hops:
@@ -803,7 +857,15 @@ def run_serial_hops(
     return run, evidence
 
 
-def _summary(repository: Path, run, outcome, error: str | None = None, *, execution_evidence: list[dict[str, object]] | None = None) -> dict[str, object]:
+def _summary(
+    repository: Path,
+    run,
+    outcome,
+    error: str | None = None,
+    *,
+    execution_evidence: list[dict[str, object]] | None = None,
+    convergence_projection: dict[str, object] | None = None,
+) -> dict[str, object]:
     facts = observe_repository(repository)
     commits = []
     for hop in run.hops:
@@ -819,8 +881,17 @@ def _summary(repository: Path, run, outcome, error: str | None = None, *, execut
         changed = _git(repository, "diff", "--name-only", f"{hop.base_head}..{hop.end_head}").splitlines()
         hops.append({"hop_id": hop.hop_id, "base_head": hop.base_head, "end_head": hop.end_head,
                      "actual_commits": list(hop.actual_commits), "changed_paths": changed,
-                     "outcome": hop.outcome})
-    return {"schema_version": 2, "work_item_id": run.work_item_id, "run_id": run.run_id,
+                     "outcome": hop.outcome,
+                     **(
+                         {
+                             "requested_route": hop.requested_route,
+                             "applied_route": hop.applied_route,
+                             "route_reason": hop.route_reason,
+                         }
+                         if run.schema_version == 3
+                         else {}
+                     )})
+    summary = {"schema_version": 2, "work_item_id": run.work_item_id, "run_id": run.run_id,
             "invocation_id": getattr(outcome, "invocation_id", None), "baseline_head": run.baseline_head,
             "current_head": run.current_head,
             "final_head": facts.head, "run_status": run.status.value, "hop_used": run.hop_used,
@@ -832,6 +903,9 @@ def _summary(repository: Path, run, outcome, error: str | None = None, *, execut
             "changed_paths": _git(repository, "diff", "--name-only", f"{run.baseline_head}..{facts.head}").splitlines(),
             "worktree_clean": facts.clean and not facts.unresolved_submodules, "operator_error": error,
             "hops": hops, "execution_evidence": hop_evidence}
+    if run.schema_version == 3 and convergence_projection is not None:
+        summary["convergence"] = convergence_projection
+    return summary
 
 
 def _best_effort_failure_summary(
@@ -1592,7 +1666,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             initial_context_items=successor_context,
         )
         latest_run = final_run
-        summary = _summary(repository, final_run, None, execution_evidence=execution_evidence)
+        checkpoint_data = json.loads(
+            (
+                checkout_state_root(state_root, association) / "checkpoint.json"
+            ).read_text(encoding="utf-8")
+        )
+        summary = _summary(
+            repository,
+            final_run,
+            None,
+            execution_evidence=execution_evidence,
+            convergence_projection=checkpoint_data.get("convergence"),
+        )
         summary["invocation_id"] = execution_evidence[-1]["invocation_id"] if execution_evidence else None
         summary["checkout_id"] = association.checkout_id
         atomic_write_json(state_root / "operator-summary.json", summary)

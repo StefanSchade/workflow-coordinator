@@ -392,6 +392,15 @@ def checkpoint_projection(
                 "route": hop.applied_route,
                 "summary": hop.summary,
                 "attribution": hop.attribution,
+                **(
+                    {
+                        "requested_route": hop.requested_route,
+                        "applied_route": hop.applied_route,
+                        "route_reason": hop.route_reason,
+                    }
+                    if run.schema_version == 3
+                    else {}
+                ),
             }
             for hop in run.hops
         ],
@@ -410,6 +419,9 @@ def checkpoint_projection(
         "next_permitted_route_keys": list(permitted_route_keys(run, profile)),
     }
     if qualified_cycle_limit is not None:
+        facts = derive_convergence_facts(
+            run, qualification_index, qualified_cycle_limit
+        )
         projection["convergence_facts"] = [
             {
                 "finding_id": fact.finding_id,
@@ -419,10 +431,75 @@ def checkpoint_projection(
                 "goalpost_reached": fact.goalpost_reached,
                 "source_evaluator_hops": list(fact.source_evaluator_hops),
             }
-            for fact in derive_convergence_facts(
-                run, qualification_index, qualified_cycle_limit
-            )
+            for fact in facts
         ]
+        if run.schema_version == 3:
+            latest_coverage: dict[str, dict[str, Any]] = {}
+            latest_evaluation: dict[str, dict[str, Any]] = {}
+            for hop in run.hops:
+                for claim in hop.coverage_claims:
+                    latest_coverage[claim.finding_id] = {
+                        "source_hop_id": hop.hop_id,
+                        "disposition": claim.disposition.value,
+                        "evidence_refs": list(claim.evidence_refs),
+                        "attribution": "agent_attributed",
+                    }
+                for assessment in hop.convergence_assessments:
+                    latest_evaluation[assessment.finding_id] = {
+                        "source_hop_id": hop.hop_id,
+                        "correction_hop_id": assessment.correction_hop_id,
+                        "result": assessment.result.value,
+                        "evidence_refs": list(assessment.evidence_refs),
+                        "attribution": "agent_attributed",
+                    }
+            projection["convergence"] = {
+                "attribution": "coordinator_derived",
+                "open_tracked_obligations": [
+                    {
+                        "finding_id": finding.finding_id,
+                        "owner": finding.correction_obligation.owner.value,
+                        "introduced_by_hop": finding.correction_obligation.introduced_by_hop,
+                        "invariant": finding.invariant,
+                        "evidence_refs": list(finding.evidence_refs),
+                        "semantic_attribution": "agent_attributed",
+                        "latest_coverage": latest_coverage.get(finding.finding_id),
+                        "latest_evaluation": latest_evaluation.get(finding.finding_id),
+                    }
+                    for finding in sorted(run.findings, key=lambda item: item.finding_id)
+                    if (
+                        finding.correction_obligation is not None
+                        and finding.state.value == "open"
+                        and finding.blocking
+                    )
+                ],
+                "facts": [
+                    {
+                        "finding_id": fact.finding_id,
+                        "strategy_generation": fact.strategy_generation,
+                        "qualified_cycle_count": fact.qualified_cycle_count,
+                        "qualified_cycle_limit": fact.qualified_cycle_limit,
+                        "goalpost_reached": fact.goalpost_reached,
+                        "source_evaluator_hops": list(fact.source_evaluator_hops),
+                    }
+                    for fact in facts
+                ],
+                "escape_routes": [
+                    {
+                        "evaluator_hop_id": hop.hop_id,
+                        "triggering_finding_ids": [
+                            item
+                            for item in (hop.route_reason or "").partition(":")[2].split(",")
+                            if item
+                        ],
+                        "requested_route": hop.requested_route,
+                        "applied_route": hop.applied_route,
+                        "route_reason": hop.route_reason,
+                    }
+                    for hop in run.hops
+                    if hop.route_reason is not None
+                    and hop.route_reason.startswith("convergence_escape:")
+                ],
+            }
     return projection
 
 

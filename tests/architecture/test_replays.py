@@ -1,6 +1,6 @@
 """Executable architecture acceptance replays A--J from the accepted FTR."""
 
-from dataclasses import fields
+from dataclasses import fields, replace
 import json
 from pathlib import Path
 
@@ -140,6 +140,50 @@ def test_slice2_convergence_projection_is_replay_deterministic_and_ignores_uncer
     )
     assert uncertain.hops[-1].outcome == "uncertain"
     assert derive_convergence_facts(uncertain, qualification, 2) == expected
+
+
+def test_slice3_applied_escape_replay_preserves_facts_sources_and_route_truth():
+    workflow, run = tracked_convergence_run()
+    run, _, first = convergence_cycle(run, workflow, evidence_prefix="first-escape")
+    run, _, second = convergence_cycle(run, workflow, evidence_prefix="second-escape")
+    run, qualification, evidence_json = qualification_evidence(
+        run, {first: ("pass",), second: ("pass",)}
+    )
+    run = replace(
+        run,
+        hops=tuple(
+            replace(
+                hop,
+                requested_route="correct",
+                applied_route="diagnose",
+                route_reason="convergence_escape:F001",
+            )
+            if hop.hop_id == second
+            else hop
+            for hop in run.hops
+        ),
+    )
+    replayed = run_from_json(run_to_json(run))
+
+    assert replayed.hops[-1].requested_route == "correct"
+    assert replayed.hops[-1].applied_route == "diagnose"
+    assert replayed.hops[-1].route_reason == "convergence_escape:F001"
+    assert derive_convergence_facts(replayed, qualification, 2) == derive_convergence_facts(
+        run, qualification, 2
+    )
+    projected = checkpoint_projection(
+        replayed,
+        workflow,
+        qualified_cycle_limit=2,
+        execution_evidence_json=evidence_json,
+    )
+    assert projected["convergence"]["facts"][0]["source_evaluator_hops"] == [
+        first,
+        second,
+    ]
+    assert projected["convergence"]["escape_routes"][0][
+        "triggering_finding_ids"
+    ] == ["F001"]
 
 
 def test_replay_a_productive_correction_can_continue_beyond_three_loops():

@@ -8,6 +8,8 @@ import hashlib
 from workflow_coordinator.model import (
     ConvergenceAssessment,
     ConvergenceAssessmentResult,
+    ConvergenceConfiguration,
+    ConvergenceProtocol,
     ConvergenceRole,
     CoverageClaim,
     CoverageDisposition,
@@ -68,6 +70,8 @@ def phase(
     finding_authority: tuple[str, ...] = (),
     breadth: str = "focused",
     convergence_role: str = "none",
+    normal_correction_route: str | None = None,
+    escape_route: str | None = None,
 ) -> Phase:
     descriptor = None
     if review is not None:
@@ -94,12 +98,31 @@ def phase(
         review=descriptor,
         routes=routes,
         convergence_role=ConvergenceRole(convergence_role),
+        normal_correction_route=normal_correction_route,
+        escape_route=escape_route,
     )
 
 
-def profile(phases: dict[str, Phase], *, profile_id: str = "fixture") -> WorkflowProfile:
+def profile(
+    phases: dict[str, Phase],
+    *,
+    profile_id: str = "fixture",
+    schema_version: int = 2,
+    qualified_cycle_limit: int | None = None,
+) -> WorkflowProfile:
     return WorkflowProfile(
-        schema_version=2, profile_id=profile_id, revision="profile-r1", phases=phases
+        schema_version=schema_version,
+        profile_id=profile_id,
+        revision="profile-r1",
+        phases=phases,
+        convergence=(
+            ConvergenceConfiguration(
+                ConvergenceProtocol.REPEATED_COUNTEREXAMPLE_V1,
+                qualified_cycle_limit,
+            )
+            if qualified_cycle_limit is not None
+            else None
+        ),
     )
 
 
@@ -148,6 +171,7 @@ def charge_hop(
     end_head: str | None = None,
     finding_delta_ids: tuple[str, ...] = (),
     evidence_refs: tuple[str, ...] = ("tests",),
+    outcome: str = "completed",
 ) -> tuple[Run, str]:
     sequence = run.hop_used + 1
     hop_id = f"H{sequence:03d}"
@@ -164,7 +188,7 @@ def charge_hop(
         end_head=end,
         actual_commits=(end,) if end != run.current_head else (),
         invocation_status="accepted",
-        outcome="completed",
+        outcome=outcome,
         finding_delta_ids=finding_delta_ids,
         evidence_refs=evidence_refs,
         applied_route=None,
@@ -289,6 +313,48 @@ def convergence_fixture_profile() -> WorkflowProfile:
                 convergence_role="corrector",
             ),
         }
+    )
+
+
+def convergence_routing_profile(*, qualified_cycle_limit: int = 2) -> WorkflowProfile:
+    """Return the Slice-3 profile-selected routing topology."""
+
+    return profile(
+        {
+            "evaluate": phase(
+                {
+                    "accept": route("complete"),
+                    "correct": route("goto", "correct"),
+                    "diagnose": route("goto", "diagnose"),
+                },
+                role="independent_reviewer",
+                review="gate",
+                finding_authority=("resolve", "residual", "supersede"),
+                convergence_role="evaluator",
+                normal_correction_route="correct",
+                escape_route="diagnose",
+            ),
+            "correct": phase(
+                {"evaluate": route("goto", "evaluate")},
+                convergence_role="corrector",
+            ),
+            "diagnose": phase(
+                {"reframe": route("goto", "reframe")}, convergence_role="diagnosis"
+            ),
+            "reframe": phase(
+                {"strategy": route("goto", "strategy")},
+                convergence_role="reframe",
+            ),
+            "strategy": phase(
+                {"correct": route("goto", "correct")},
+                role="independent_reviewer",
+                review="gate",
+                finding_authority=(),
+                convergence_role="strategy_gate",
+            ),
+        },
+        schema_version=3,
+        qualified_cycle_limit=qualified_cycle_limit,
     )
 
 

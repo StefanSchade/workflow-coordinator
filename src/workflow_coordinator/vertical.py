@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
@@ -65,7 +66,7 @@ from .prompt import (
     PromptPackage,
     assemble_prompt,
 )
-from .reducer import Reduction, reduce_result
+from .reducer import Reduction, derive_convergence_facts, reduce_result
 from .serialization import (
     canonical_candidate_result_sha256,
     execution_evidence_from_json,
@@ -89,6 +90,105 @@ class VerticalRun:
     staged_attempt: StagedQualificationAttempt | None
     qualification_index: TrustedQualificationIndex
     execution_evidence_json: str | None
+
+
+def convergence_prompt_context(
+    run: Run,
+    profile: WorkflowProfile,
+    qualification_index: TrustedQualificationIndex,
+) -> ContextItem | None:
+    """Build the complete required pre-dispatch v3 convergence projection."""
+
+    if run.schema_version != 3 or profile.convergence is None:
+        return None
+    facts = derive_convergence_facts(
+        run,
+        qualification_index,
+        profile.convergence.qualified_cycle_limit,
+    )
+    latest_coverage = {}
+    latest_assessment = {}
+    for hop in run.hops:
+        for claim in hop.coverage_claims:
+            latest_coverage[claim.finding_id] = {
+                "source_hop_id": hop.hop_id,
+                "disposition": claim.disposition.value,
+                "evidence_refs": list(claim.evidence_refs),
+                "attribution": "agent_attributed",
+            }
+        for assessment in hop.convergence_assessments:
+            latest_assessment[assessment.finding_id] = {
+                "source_hop_id": hop.hop_id,
+                "correction_hop_id": assessment.correction_hop_id,
+                "result": assessment.result.value,
+                "evidence_refs": list(assessment.evidence_refs),
+                "attribution": "agent_attributed",
+            }
+    obligations = []
+    for finding in sorted(run.findings, key=lambda item: item.finding_id):
+        if (
+            finding.correction_obligation is None
+            or finding.state.value != "open"
+            or not finding.blocking
+        ):
+            continue
+        obligations.append(
+            {
+                "finding_id": finding.finding_id,
+                "owner": finding.correction_obligation.owner.value,
+                "introduced_by_hop": finding.correction_obligation.introduced_by_hop,
+                "state": finding.state.value,
+                "blocking": finding.blocking,
+                "coordinator_attribution": "coordinator_derived",
+                "invariant": finding.invariant,
+                "evidence_refs": list(finding.evidence_refs),
+                "semantic_attribution": "agent_attributed",
+                "latest_coverage": latest_coverage.get(finding.finding_id),
+                "latest_evaluation": latest_assessment.get(finding.finding_id),
+            }
+        )
+    escapes = []
+    for hop in run.hops:
+        if hop.route_reason and hop.route_reason.startswith("convergence_escape:"):
+            triggers = tuple(
+                item for item in hop.route_reason.partition(":")[2].split(",") if item
+            )
+            escapes.append(
+                {
+                    "evaluator_hop_id": hop.hop_id,
+                    "triggering_finding_ids": list(triggers),
+                    "requested_route": hop.requested_route,
+                    "applied_route": hop.applied_route,
+                    "route_reason": hop.route_reason,
+                    "attribution": "coordinator_derived",
+                }
+            )
+    payload = {
+        "provenance": "coordinator_derived",
+        "protocol": profile.convergence.protocol.value,
+        "qualified_cycle_limit": profile.convergence.qualified_cycle_limit,
+        "open_tracked_obligations": obligations,
+        "convergence_facts": [
+            {
+                "finding_id": fact.finding_id,
+                "strategy_generation": fact.strategy_generation,
+                "qualified_cycle_count": fact.qualified_cycle_count,
+                "qualified_cycle_limit": fact.qualified_cycle_limit,
+                "goalpost_reached": fact.goalpost_reached,
+                "source_evaluator_hops": list(fact.source_evaluator_hops),
+                "attribution": "coordinator_derived",
+            }
+            for fact in facts
+        ],
+        "escape_routes": escapes,
+    }
+    return ContextItem(
+        reference=f"Coordinator convergence projection for {run.run_id}",
+        content="[convergence_context]\n" + json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        ),
+        required=True,
+    )
 
 
 def _subject_anomalies(
@@ -434,6 +534,11 @@ def run_one_hop(
         reduction.run,
         profile,
         observations=observations,
+        qualified_cycle_limit=(
+            profile.convergence.qualified_cycle_limit
+            if profile.convergence is not None
+            else None
+        ),
         execution_evidence_json=evidence_json,
     )
     terminal = f"{run.work_item_id}/{run.run_id} {reduction.run.status.value} {hop_id} {delta.base_head}..{delta.end_head}"

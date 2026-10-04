@@ -31,7 +31,7 @@ from workflow_coordinator.prompt import (
     load_agent_operating_contract,
 )
 from workflow_coordinator.slice4 import register_checkout
-from tests.support import phase, profile, route
+from tests.support import convergence_routing_profile, phase, profile, route, run_for
 from workflow_coordinator.serialization import (
     ValidationError,
     component_manifest_from_yaml,
@@ -52,6 +52,38 @@ TWO_ROLE_PERSONAS = {
 
 def git(repository: Path, *args: str) -> str:
     return subprocess.run(("git", "-C", str(repository), *args), text=True, capture_output=True, check=True).stdout.strip()
+
+
+def test_operator_summary_projects_v3_convergence_context_only_when_supplied(repository):
+    workflow = convergence_routing_profile()
+    head = git(repository, "rev-parse", "HEAD")
+    run = replace(
+        run_for(workflow, initial_phase="correct", run_schema_version=3),
+        baseline_head=head,
+        current_head=head,
+    )
+    convergence = {
+        "attribution": "coordinator_derived",
+        "open_tracked_obligations": [],
+        "facts": [],
+        "escape_routes": [],
+    }
+    summary = operator._summary(
+        repository,
+        run,
+        None,
+        convergence_projection=convergence,
+    )
+    assert summary["convergence"] == convergence
+
+    simple = replace(
+        run_for(profile({"work": phase({"done": route("complete")})})),
+        baseline_head=head,
+        current_head=head,
+    )
+    assert "convergence" not in operator._summary(
+        repository, simple, None, convergence_projection=convergence
+    )
 
 
 def test_successor_descriptor_unknown_field_is_rejected_before_predecessor_or_provider_access(

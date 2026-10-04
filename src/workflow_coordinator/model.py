@@ -56,11 +56,18 @@ class FindingAuthority(CoordinatorValue):
 
 
 class ConvergenceRole(CoordinatorValue):
-    """Slice-1-only in-memory role signal; profile YAML cannot set it yet."""
+    """Closed profile-v3 phase role vocabulary."""
 
     NONE = "none"
     CORRECTOR = "corrector"
     EVALUATOR = "evaluator"
+    DIAGNOSIS = "diagnosis"
+    REFRAME = "reframe"
+    STRATEGY_GATE = "strategy_gate"
+
+
+class ConvergenceProtocol(CoordinatorValue):
+    REPEATED_COUNTEREXAMPLE_V1 = "repeated_counterexample_v1"
 
 
 class CorrectionObligationOwner(CoordinatorValue):
@@ -202,6 +209,14 @@ class Phase:
     review: ReviewDescriptor | None
     routes: Mapping[str, Route]
     convergence_role: ConvergenceRole = ConvergenceRole.NONE
+    normal_correction_route: str | None = None
+    escape_route: str | None = None
+
+
+@dataclass(frozen=True)
+class ConvergenceConfiguration:
+    protocol: ConvergenceProtocol
+    qualified_cycle_limit: int
 
 
 @dataclass(frozen=True)
@@ -210,6 +225,7 @@ class WorkflowProfile:
     profile_id: str
     revision: str
     phases: Mapping[str, Phase]
+    convergence: ConvergenceConfiguration | None = None
 
 
 @dataclass(frozen=True)
@@ -369,6 +385,8 @@ class Hop:
     summary: str
     attribution: str
     pre_route_anchor_sha256: str | None = None
+    requested_route: str | None = None
+    route_reason: str | None = None
 
     def compact(self) -> "HopSummary":
         return HopSummary(
@@ -386,6 +404,8 @@ class Hop:
             summary=self.summary,
             attribution=self.attribution,
             pre_route_anchor_sha256=self.pre_route_anchor_sha256,
+            requested_route=self.requested_route,
+            route_reason=self.route_reason,
         )
 
 
@@ -407,6 +427,8 @@ class HopSummary:
     coverage_claims: tuple[CoverageClaim, ...] = ()
     convergence_assessments: tuple[ConvergenceAssessment, ...] = ()
     pre_route_anchor_sha256: str | None = None
+    requested_route: str | None = None
+    route_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -597,7 +619,7 @@ def new_run(
     if work_item.repository not in policy.scope:
         raise ValueError("work item repository is outside repository policy scope")
     return Run(
-        schema_version=2,
+        schema_version=3 if profile.schema_version == 3 else 2,
         run_id=run_id,
         work_item_id=work_item.work_item_id,
         profile_id=profile.profile_id,
