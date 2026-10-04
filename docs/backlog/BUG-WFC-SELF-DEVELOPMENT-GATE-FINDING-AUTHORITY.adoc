@@ -1,0 +1,219 @@
+= BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY -- Self-Development Review/Rereview Gates Commissioned Without the Finding-Disposition Authority Their Purpose Requires
+
+Type:: bug -- self-development governance / Commission-profile authority mismatch
+(latent defect, newly exposed; not a reducer, provider, Slice-3, correction-
+blocking-set-carryover, or Runtime defect)
+Status:: open
+Date:: 2026-10-04
+Classification:: self-development governance / Commission-profile authority
+mismatch
+Discovery:: WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S3-002
+
+== What this is not
+
+* This is not a reducer Finding-authority enforcement defect. The reducer's
+  fail-closed boundary behaved exactly as designed: it would have rejected an
+  unauthorized `resolve` exactly as it already does (see the closed
+  `BUG-WFC-FINDING-AUTHORITY-PROMPT-PROJECTION`), and in S3-002 it correctly
+  left the independent reviewer with no authority to call rather than
+  silently permitting one.
+* This is not a provider defect. H003's provider session reasoned correctly,
+  trusted the green `pytest` evidence, judged all three technical corrections
+  sufficient, and truthfully escalated instead of fabricating authority it did
+  not hold.
+* This is not a Slice-3 implementation defect. The three technical defects
+  S3-IR-001/002/003 named were real and were correctly closed by H002's
+  commit `70c252c5e22f52d7933b9f65cd60118ec83000e0`.
+* This is not `BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER`. That record
+  concerns a correction Hop silently failing to close a long-lived named
+  blocker while fixing only the latest reviewer counterexample. This record
+  concerns a Commission profile that never granted its gate the operation it
+  would need to close any blocker at all, however faithfully addressed.
+* This is not a Runtime defect. No Runtime behavior needs to change; the
+  Runtime's prompt/reducer already project and enforce `finding_authority`
+  correctly (again per the closed prompt-projection BUG). The defect is
+  entirely in the self-development Commission *profiles* authored for this
+  lineage.
+
+== Observed behavior (S3-002 factual trigger)
+
+Commission `7738078f0905af78dfffe56d081062c58409c2d2` authorized
+`WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S3-002`, Run
+`RUN-2bc443f24ec642a3ae1f4d1da462a336`, under profile
+`governance/self-development/correction-convergence-escape-implementation-s3-002-profile.yaml`.
+Both its `review` and `rereview` phases are `authority: gate`,
+`blocking_policy: blocking_only`, and declare `finding_authority: []`.
+
+* H001 (independent review), commit
+  `dc811ae4055801f4afc7181378bd1dbaa6940f2d`: found three genuine blocking
+  implementation defects, created Run-native Findings `F001`/`F002`/`F003`
+  (durable identifiers `S3-IR-001`/`S3-IR-002`/`S3-IR-003`), and requested
+  `changes_required -> correct`.
+* H002 (correction), commit `70c252c5e22f52d7933b9f65cd60118ec83000e0`:
+  corrected all three technical defects across the authorized fourteen
+  Slice-3 implementation/test paths. It asserted no Finding disposition --
+  `correct` has no review descriptor and therefore no disposition authority
+  of its own, so this is exactly the choreography the closed
+  prompt-projection BUG establishes as correct.
+* H003 (rereview), invocation `INV-d4ed8e692ea442bf8220916ad36050d6`: a fresh
+  independent rereview, with fresh context, trusted the green `pytest`
+  evidence, technically judged all three corrections sufficient, and
+  requested `accept`. It could not resolve `F001`/`F002`/`F003` because the
+  profile's `rereview.review.finding_authority` was `[]`. It truthfully
+  escalated rather than fabricating disposition authority it did not hold.
+  The Run stopped `awaiting_human`, with `F001`/`F002`/`F003` remaining open.
+
+The admission test for this profile,
+`tests/architecture/test_self_development_governance.py::test_correction_convergence_escape_implementation_s3_002_bundle_passes_production_preflight`,
+explicitly asserts
+`review.review.finding_authority == ()` and
+`rereview.review.finding_authority == ()` -- the empty-authority Commission
+shape was deliberately authored and admitted, not an oversight that slipped
+past review.
+
+== Contradictory Commission pattern
+
+The S3-002 profile is a gate review/rereview commissioning pattern whose
+purpose and persona are a disposition-bearing rereview: the `rereview`
+phase's own stated purpose is "fresh independent disposition of the
+corrected Slice-3 implementation ... carrying stable S3-IRxxx identifiers
+forward with an explicit disposition". A phase whose declared purpose is to
+produce a disposition cannot do so without `finding_authority` naming at
+least one disposition operation. `finding_authority: []` and a
+disposition-bearing purpose/persona are mutually contradictory once that
+phase's review record may enter the authoritative Run Finding ledger --
+which S3-002 was the first Run in this lineage to do (see "Historical
+evidence" below).
+
+== Root cause and invariant
+
+Generic WFC semantics (`src/workflow_coordinator/reducer.py`,
+`src/workflow_coordinator/serialization.py`,
+`src/workflow_coordinator/model.py`) already correctly separate two distinct
+authorities that this Commission pattern conflated:
+
+* `review.authority: gate` controls whether a phase's `accept`/`complete`
+  route is reachable at all (an advisory review cannot complete or accept).
+* Finding-lifecycle authority -- whether OPEN can become RESOLVED (or
+  RESIDUAL, SUPERSEDED, reopened) -- is controlled independently by
+  `review.finding_authority`, enforced in `reducer._apply_finding_deltas` via
+  `permitted_operations = phase.review.finding_authority` for gate phases,
+  and validated at parse time in `serialization._review` against the closed
+  operation set `{resolve, residual, supersede, reopen}`.
+
+Gate authority does not imply Finding-disposition authority, and the
+converse does not hold either. The engine already implements and tests this
+separation (see `tests/unit/test_reducer.py` around the generic
+`finding_authority` resolve/residual rejection coverage, and the
+already-closed `BUG-WFC-FINDING-AUTHORITY-PROMPT-PROJECTION`, whose Runtime
+fix makes the prompt truthfully project whatever `finding_authority` the
+pinned phase/profile actually grants). No engine or product change is
+required to fix this BUG; the defect is entirely that the S3-002 Commission
+profile asked its rereview gate to disposition Findings while granting it no
+operation capable of doing so.
+
+The invariant:
+
+----
+A gate expected to disposition authoritative Run Findings must declare the
+minimal required finding_authority. Review-route/gate authority and
+Finding-lifecycle authority are independent and neither implies the other.
+----
+
+Specifically for self-development Commission authoring:
+
+----
+A review/rereview commissioning pattern with finding_authority: [] is valid
+only when that phase is not expected to disposition Run-native Findings.
+Once review Findings may enter the authoritative Run Finding ledger, a
+disposition-capable gate must declare the required operation(s).
+----
+
+Least authority is preferred. For ordinary verified implementation closure,
+`resolve` is the expected minimal operation. `residual`, `supersede`, and
+`reopen` remain separate authority decisions, granted only when a
+Commission's purpose actually requires them.
+
+== Historical evidence
+
+Every predecessor self-development review/rereview profile in this lineage
+repeats the same empty-authority convention:
+`governance/self-development/correction-convergence-escape-implementation-s1-001-profile.yaml`,
+`-s2-001-profile.yaml`, and `-s3-001-profile.yaml` all declare
+`finding_authority: []` on every gate review/rereview phase, as do the
+S1-002/003 and S2-002/003 continuation profiles in the same family.
+
+The prior accepted S1 and S2 Runs in this lineage (S1-003 H002, S2-003 H004 --
+see `docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc`,
+sections "S1-003 H002 rereview" and "Revised Slice 2 S2-003 rereview H004")
+each recorded `route: accept` with an *empty* WFC Findings delta: their
+independent reviewers never populated a Run-native blocking Finding in the
+first place, so the empty `finding_authority` was never exercised and never
+exposed. The defect was therefore latent across the entire S1/S2/S3-001
+lineage, not previously exercised. S3-002 H001 was the first relevant
+lineage Run to populate Run-native Findings (`F001`/`F002`/`F003`), and its
+H003 rereview was accordingly the first Hop in this lineage that needed, and
+lacked, disposition authority.
+
+The already-closed `BUG-WFC-FINDING-AUTHORITY-PROMPT-PROJECTION` is
+corroborating precedent, not the same defect: it proved that the engine and
+its prompt correctly expose `finding_authority` and correctly reject an
+unauthorized disposition attempt (a `correct` Hop proposing `resolve`
+without authority). This BUG is the mirror case at the Commission-authoring
+layer: a phase whose purpose requires disposition was never granted the
+operation to perform it, so the engine correctly had nothing to authorize
+and the Run correctly, truthfully escalated instead of silently stalling or
+fabricating acceptance.
+
+== Relationship to the source BUG
+
+`BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER` remains independent and OPEN.
+This new BUG does not close it, does not replace it, and does not depend on
+it: that record concerns correction Hops dropping a known named blocker
+while fixing only the latest counterexample, a behavioral-convergence
+concern orthogonal to whether a gate was ever granted the authority to
+disposition a Finding in the first place.
+
+== CRITICAL successor-identity note (for any future correction of this BUG)
+
+`F001`/`F002`/`F003` belong permanently to S3-002 /
+`RUN-2bc443f24ec642a3ae1f4d1da462a336`. They are frozen historical Run-local
+Finding state: S3-002's final status remains `awaiting_human` with all three
+Findings open. No future successor Run inherits, mutates, or can transition
+these specific predecessor Run-native Finding IDs -- a fresh successor Run
+begins with no inherited predecessor Findings, carries semantic continuity
+only through candidate Git ancestry, accepted architecture, the durable
+implementation-review artifact, and stable cross-Run review identifiers
+(`S3-IR-001`/`S3-IR-002`/`S3-IR-003`), and must never claim authority over
+predecessor Run-local Finding identity.
+
+== Follow-up direction (not authorized here)
+
+This record does not implement a global fix. Likely future closure work,
+each a separate bounded act:
+
+* Audit every self-development Commission profile/template in this
+  repository for the same purpose/authority mismatch: does the phase's
+  stated purpose or persona expect it to disposition a Run-native Finding,
+  and if so, does `finding_authority` actually grant the needed operation?
+* Strengthen self-development governance admission tests
+  (`tests/architecture/test_self_development_governance.py`) to require
+  authority/purpose consistency -- for example, reject (or at least flag) a
+  gate `rereview` phase whose stated purpose names "disposition" while
+  `finding_authority` is empty, unless the profile's `durable_artifacts`/
+  commentary explicitly documents that no Run-native Finding is expected.
+* Use least-privilege Finding operations: grant exactly `resolve` for
+  ordinary verified-correction closure, and treat `residual`/`supersede`/
+  `reopen` as separate, independently justified authority decisions.
+* Add a regression proving a gate that opens a Run-native blocking Finding
+  can later resolve it once correction is verified, when (and only when) its
+  profile is commissioned with `resolve` -- mirroring the already-accepted
+  Finding-authority prompt-projection vertical coverage.
+* Preserve valid empty-authority profiles wherever no Finding disposition is
+  actually intended by that phase's purpose; this BUG does not call for
+  mandating broad authority everywhere.
+
+Commissioning a fresh S3-003 rereview successor Commission with
+`rereview.finding_authority: [resolve]` (see the accompanying commit) is the
+first concrete, narrowly scoped instance of applying this invariant; it is
+not itself the general audit/governance-test strengthening described above.
