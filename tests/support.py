@@ -316,7 +316,11 @@ def convergence_fixture_profile() -> WorkflowProfile:
     )
 
 
-def convergence_routing_profile(*, qualified_cycle_limit: int = 2) -> WorkflowProfile:
+def convergence_routing_profile(
+    *,
+    qualified_cycle_limit: int = 2,
+    escape_supervisor: bool = False,
+) -> WorkflowProfile:
     """Return the Slice-3 profile-selected routing topology."""
 
     return profile(
@@ -325,7 +329,9 @@ def convergence_routing_profile(*, qualified_cycle_limit: int = 2) -> WorkflowPr
                 {
                     "accept": route("complete"),
                     "correct": route("goto", "correct"),
-                    "diagnose": route("goto", "diagnose"),
+                    "diagnose": route(
+                        "goto", "diagnose", supervisor=escape_supervisor
+                    ),
                 },
                 role="independent_reviewer",
                 review="gate",

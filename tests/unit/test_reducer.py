@@ -33,6 +33,7 @@ from workflow_coordinator.reducer import (
     reduce_result,
     require_reconcile,
     resume_after_reconcile,
+    validate_convergence_route_history,
 )
 from workflow_coordinator.serialization import run_from_json, run_to_json
 from tests.support import (
@@ -1542,6 +1543,95 @@ def test_qualified_cycle_below_limit_uses_normal_route_and_threshold_substitutes
         for source in fact.source_evaluator_hops
     }
 
+    anchored, qualification, _ = qualification_evidence(
+        threshold.run,
+        {first_evaluator: ("pass",), second_evaluator: ("pass",)},
+    )
+    validate_convergence_route_history(anchored, workflow, qualification)
+
+
+def test_supervisor_gated_threshold_escape_is_replay_valid_while_pending():
+    workflow = convergence_routing_profile(
+        qualified_cycle_limit=2,
+        escape_supervisor=True,
+    )
+    _, run = tracked_convergence_run()
+    first, first_evaluator = _reduce_qualified_slice3_evaluator(
+        run, workflow, evidence_prefix="first-supervised"
+    )
+
+    pending, second_evaluator = _reduce_qualified_slice3_evaluator(
+        first.run, workflow, evidence_prefix="second-supervised"
+    )
+    assert pending.route_key is None
+    assert pending.supervisor_required is True
+    assert pending.run.status is RunStatus.AWAITING_SUPERVISOR
+    assert pending.run.stop_reason == "supervisor_judgment_required"
+    assert pending.run.hops[-1].requested_route == "correct"
+    assert pending.run.hops[-1].applied_route is None
+    assert pending.run.hops[-1].route_reason == "convergence_escape:F001"
+
+    anchored, qualification, _ = qualification_evidence(
+        pending.run,
+        {first_evaluator: ("pass",), second_evaluator: ("pass",)},
+    )
+    replayed = run_from_json(run_to_json(anchored))
+    validate_convergence_route_history(replayed, workflow, qualification)
+
+    supervised, _ = charge_hop(
+        replayed,
+        role="routing supervisor",
+        attribution="supervisor",
+    )
+    confirmed = confirm_supervisor_route(supervised, workflow, "diagnose")
+    assert confirmed.route_key == "diagnose"
+    assert confirmed.run.phase == "diagnose"
+    assert confirmed.run.hops[-2].applied_route is None
+    validate_convergence_route_history(confirmed.run, workflow, qualification)
+
+
+@pytest.mark.parametrize(
+    ("profile_changes", "hop_changes"),
+    [
+        ({"escape_supervisor": False}, {}),
+        ({"escape_supervisor": True}, {"stop_reason": "arbitrary_stop"}),
+    ],
+)
+def test_pending_escape_history_rejects_non_supervisor_route_or_wrong_stop_reason(
+    profile_changes, hop_changes
+):
+    supervised = convergence_routing_profile(
+        qualified_cycle_limit=2,
+        escape_supervisor=True,
+    )
+    _, run = tracked_convergence_run()
+    first, first_evaluator = _reduce_qualified_slice3_evaluator(
+        run, supervised, evidence_prefix="first-invalid-pending"
+    )
+    pending, second_evaluator = _reduce_qualified_slice3_evaluator(
+        first.run, supervised, evidence_prefix="second-invalid-pending"
+    )
+    anchored, qualification, _ = qualification_evidence(
+        pending.run,
+        {first_evaluator: ("pass",), second_evaluator: ("pass",)},
+    )
+    corrupted = replace(
+        anchored,
+        hops=tuple(
+            replace(hop, **hop_changes)
+            if hop.hop_id == second_evaluator
+            else hop
+            for hop in anchored.hops
+        ),
+    )
+    workflow = convergence_routing_profile(
+        qualified_cycle_limit=2,
+        **profile_changes,
+    )
+
+    with pytest.raises(ReductionError, match="lacks an applied escape route"):
+        validate_convergence_route_history(corrupted, workflow, qualification)
+
 
 def test_threshold_finding_resolved_in_evaluator_hop_does_not_escape():
     workflow = convergence_routing_profile(qualified_cycle_limit=2)
@@ -1675,6 +1765,15 @@ def test_escape_selection_still_yields_to_hop_budget_exhaustion():
     assert exhausted.run.hops[-1].applied_route is None
     assert exhausted.run.hops[-1].route_reason == "convergence_escape:F001"
     assert run_from_json(run_to_json(exhausted.run)) == exhausted.run
+    qualifying_hops = {
+        hop.hop_id: ("pass",)
+        for hop in exhausted.run.hops
+        if hop.convergence_assessments
+    }
+    anchored, qualification, _ = qualification_evidence(
+        exhausted.run, qualifying_hops
+    )
+    validate_convergence_route_history(anchored, workflow, qualification)
 
 
 @pytest.mark.parametrize(

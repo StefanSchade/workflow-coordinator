@@ -200,8 +200,17 @@ def validate_convergence_route_history(
             raise ReductionError(
                 f"convergence escape Hop {hop.hop_id} did not request its normal correction route"
             )
+        escape_route = phase.routes.get(phase.escape_route or "")
         if hop.applied_route is None:
-            if hop.stop_reason != "autonomous_hop_budget_exhausted":
+            budget_preempted = (
+                hop.stop_reason == "autonomous_hop_budget_exhausted"
+            )
+            supervisor_pending = (
+                hop.stop_reason == "supervisor_judgment_required"
+                and escape_route is not None
+                and escape_route.supervisor
+            )
+            if not (budget_preempted or supervisor_pending):
                 raise ReductionError(
                     f"convergence escape Hop {hop.hop_id} lacks an applied escape route"
                 )
