@@ -4941,6 +4941,8 @@ def test_correction_convergence_escape_implementation_s4_002_bundle_passes_produ
     assert "awaiting_human" in work_item.authority_source
     assert "no H002 ever occurred" in work_item.authority_source
     assert "no S4-IR identifier was ever opened" in work_item.authority_source
+    assert "exactly eight in-scope paths" in work_item.authority_source
+    assert "eight in-scope production paths" not in work_item.authority_source
 
     # Salvage vs assurance baseline: the salvage commit, its frozen diff
     # hash, and the evidence-repository archive are named as preservation
@@ -5096,6 +5098,9 @@ def test_correction_convergence_escape_implementation_s4_002_bundle_passes_produ
 
     reviewer_persona = work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
     assert "changes_required is this gate's verdict" in reviewer_persona
+    assert "genuine S4-002-local Run Findings" in reviewer_persona
+    assert "S4-IR identifiers are durable review-artifact prose" in reviewer_persona
+    assert "Finding authority disposes S4-IR identifiers" not in reviewer_persona
     assert len(reviewer_persona.encode("utf-8")) <= 512
     assert reviewer_persona.splitlines() == [reviewer_persona]
 
@@ -5150,6 +5155,8 @@ def test_correction_convergence_escape_implementation_s4_002_bundle_passes_produ
     assert "no H002 ever occurred" in task_text
     assert "Review was never reached" in task_text
     assert "do not invent one" in task_text
+    assert "exactly eight in-scope paths" in task_text
+    assert "eight in-scope production paths" not in task_text
 
     # Critical S4-002 prompt/role hardening section is present with the
     # exact required phase-local outcome semantics.
