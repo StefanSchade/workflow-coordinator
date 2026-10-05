@@ -5219,7 +5219,7 @@ def test_correction_convergence_escape_implementation_s4_003_bundle_passes_produ
     fresh independent rereview of the trusted corrected Slice-4 candidate
     ``b5f4aba6f0eb03ca621551e54a413844ddde18e4`` (S4-002's H003 correction).
     S4-002's own H004 rereview performed useful adversarial work -- it
-    correctly proposed ``F002 -> resolved`` and found a sharper replay
+    proposed ``F002 -> resolved`` and reported finding a sharper replay
     counterexample against ``F001`` -- but was mechanically preempted
     (``commit_intent=null``, ``claimed_commits=[]``) because its required
     durable artifact was never produced; see
