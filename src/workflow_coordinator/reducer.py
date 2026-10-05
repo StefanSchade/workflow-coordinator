@@ -846,6 +846,7 @@ def _validate_strategy_chain(run: Run, result: RoutingResult, role: ConvergenceR
     if not set(trigger_ids).issubset(open_ids):
         raise ReductionError("escape trigger Finding is no longer open and tracked")
     hop_by_id = {hop.hop_id: hop for hop in run.hops}
+    hop_order = {hop.hop_id: index for index, hop in enumerate(run.hops)}
     if role is ConvergenceRole.DIAGNOSIS:
         report = result.diagnosis
         assert report is not None
@@ -858,6 +859,8 @@ def _validate_strategy_chain(run: Run, result: RoutingResult, role: ConvergenceR
         diagnosis = hop_by_id.get(revision.diagnosis_hop_id)
         if (revision.escape_hop_id != escape.hop_id or revision.finding_ids != trigger_ids
                 or diagnosis is None or diagnosis.diagnosis is None
+                or hop_order[diagnosis.hop_id] <= hop_order[escape.hop_id]
+                or diagnosis.outcome != Outcome.COMPLETED.value
                 or diagnosis.diagnosis.escape_hop_id != escape.hop_id
                 or diagnosis.diagnosis.finding_ids != trigger_ids):
             raise ReductionError("revision does not exactly correlate to a reduced diagnosis")
@@ -868,9 +871,13 @@ def _validate_strategy_chain(run: Run, result: RoutingResult, role: ConvergenceR
     revision = hop_by_id.get(assessment.revision_hop_id)
     if (assessment.escape_hop_id != escape.hop_id or assessment.finding_ids != trigger_ids
             or diagnosis is None or diagnosis.diagnosis is None
+            or hop_order[diagnosis.hop_id] <= hop_order[escape.hop_id]
+            or diagnosis.outcome != Outcome.COMPLETED.value
             or diagnosis.diagnosis.escape_hop_id != escape.hop_id
             or diagnosis.diagnosis.finding_ids != trigger_ids
             or revision is None or revision.strategy_revision is None
+            or hop_order[revision.hop_id] <= hop_order[diagnosis.hop_id]
+            or revision.outcome != Outcome.COMPLETED.value
             or revision.strategy_revision.escape_hop_id != escape.hop_id
             or revision.strategy_revision.diagnosis_hop_id != diagnosis.hop_id
             or revision.strategy_revision.finding_ids != trigger_ids):
@@ -887,6 +894,7 @@ def _validate_convergence_records_before_apply(
     result: RoutingResult,
     *,
     phase,
+    profile: WorkflowProfile,
     route: Route,
 ) -> None:
     role = phase.convergence_role
@@ -983,10 +991,20 @@ def _validate_convergence_records_before_apply(
             assert assessment is not None
             if route.effect is RouteEffect.COMPLETE:
                 raise ReductionError("strategy gate cannot complete the Run")
-            if assessment.result is StrategyAssessmentResult.ACCEPTED and result.outcome is not Outcome.COMPLETED:
-                raise ReductionError("accepted strategy assessment requires accepted outcome")
-            if assessment.result is StrategyAssessmentResult.CHANGES_REQUIRED and result.outcome is not Outcome.CHANGES_REQUIRED:
-                raise ReductionError("changes_required strategy assessment requires changes_required outcome")
+            if assessment.result is StrategyAssessmentResult.ACCEPTED and (
+                result.outcome is not Outcome.COMPLETED
+                or route.effect is not RouteEffect.GOTO
+                or profile.phases.get(route.target or "") is None
+                or profile.phases[route.target or ""].convergence_role is not ConvergenceRole.CORRECTOR
+            ):
+                raise ReductionError("accepted strategy assessment requires completed outcome and a correction route")
+            if assessment.result is StrategyAssessmentResult.CHANGES_REQUIRED and (
+                result.outcome is not Outcome.CHANGES_REQUIRED
+                or route.effect is not RouteEffect.GOTO
+                or profile.phases.get(route.target or "") is None
+                or profile.phases[route.target or ""].convergence_role is not ConvergenceRole.REFRAME
+            ):
+                raise ReductionError("changes_required strategy assessment requires changes_required outcome and a reframe route")
         return
 
     if result.coverage_claims:
@@ -1286,6 +1304,7 @@ def reduce_result(
             run,
             result,
             phase=phase,
+            profile=profile,
             route=route,
         )
         updated, finding_delta_ids = _apply_finding_deltas(

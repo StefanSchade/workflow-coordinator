@@ -176,7 +176,7 @@ def profile_v3_data():
             "role": "independent_reviewer",
             "review": {**gate, "finding_authority": []},
             "convergence_role": "strategy_gate",
-            "routes": {"correct": {"effect": "goto", "target": "correct"}},
+            "routes": {"correct": {"effect": "goto", "target": "correct"}, "reframe": {"effect": "goto", "target": "reframe"}},
         },
     }
     return {
@@ -352,6 +352,7 @@ def test_profile_v3_rejects_out_of_bounds_convergence_limit(limit):
         (lambda data: data["phases"]["diagnose"]["routes"]["reframe"].update(target="correct"), "diagnosis goto"),
         (lambda data: data["phases"]["reframe"]["routes"]["assess"].update(target="correct"), "reframe goto"),
         (lambda data: data["phases"]["strategy"]["routes"]["correct"].update(target="diagnose"), "strategy_gate goto"),
+        (lambda data: data["phases"]["strategy"]["routes"].pop("reframe"), "strategy_gate goto"),
         (lambda data: data["phases"]["evaluate"]["review"].update(finding_authority=["resolve"]), "lacks Finding authority"),
         (lambda data: data["phases"]["evaluate"]["review"].update(failed_evidence_route="diagnose"), "reserved escape_route"),
     ],

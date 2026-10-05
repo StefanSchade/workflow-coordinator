@@ -932,12 +932,10 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
                 )
             if role is ConvergenceRole.STRATEGY_GATE and (
                 not target_roles
-                or not target_roles.issubset(
-                    {ConvergenceRole.CORRECTOR, ConvergenceRole.REFRAME}
-                )
+                or target_roles != {ConvergenceRole.CORRECTOR, ConvergenceRole.REFRAME}
             ):
                 raise ValidationError(
-                    f"profile.phases.{phase_key} strategy_gate goto routes must target corrector or reframe"
+                    f"profile.phases.{phase_key} strategy_gate goto routes must target both corrector and reframe"
                 )
     if profile_version == 3:
         declared_roles = {phase.convergence_role for phase in phases.values()}

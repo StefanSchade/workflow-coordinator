@@ -354,7 +354,7 @@ def convergence_routing_profile(
                 convergence_role="reframe",
             ),
             "strategy": phase(
-                {"correct": route("goto", "correct")},
+                {"correct": route("goto", "correct"), "reframe": route("goto", "reframe")},
                 role="independent_reviewer",
                 review="gate",
                 finding_authority=(),

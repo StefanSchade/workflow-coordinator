@@ -261,15 +261,14 @@ def test_checkpoint_projects_requested_applied_escape_truth_and_triggers():
     )
     assert projected["hops"][-1]["requested_route"] == "correct"
     assert projected["hops"][-1]["applied_route"] == "diagnose"
-    assert projected["convergence"]["escape_routes"] == [
-        {
-            "evaluator_hop_id": evaluator_hop,
-            "triggering_finding_ids": ["F001"],
-            "requested_route": "correct",
-            "applied_route": "diagnose",
-            "route_reason": "convergence_escape:F001",
-        }
-    ]
+    escape = projected["convergence"]["escape_routes"]
+    assert len(escape) == 1
+    assert escape[0]["evaluator_hop_id"] == evaluator_hop
+    assert escape[0]["triggering_finding_ids"] == ["F001"]
+    assert escape[0]["state"] == "unconsumed"
+    assert escape[0]["diagnosis"] is None
+    assert escape[0]["strategy_revision"] is None
+    assert escape[0]["strategy_assessment"] is None
 
 
 @pytest.mark.parametrize(

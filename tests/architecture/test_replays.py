@@ -55,6 +55,13 @@ pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
 TESTS_ROOT = Path(__file__).resolve().parents[1]
 NEUTRAL_FIXTURE = TESTS_ROOT / "fixtures" / "slice5b_non_dmc.yaml"
+CURRICULUM_FIXTURE = TESTS_ROOT / "fixtures" / "convergence_curriculum.yaml"
+
+
+def test_curriculum_escape_fixture_remains_domain_neutral():
+    payload = yaml.safe_load(CURRICULUM_FIXTURE.read_text(encoding="utf-8"))
+    assert payload["domain"] == "curriculum_construction"
+    assert len(payload["independent_counterexamples"]) == 2
 PRE_SLICE1_V2_RUN_JSON = '{"anomalies":[],"baseline_head":"abc","child_run_id":null,"current_head":"abc","findings":[],"hop_limit":1,"hop_used":0,"hops":[],"human_question":null,"phase":"implement","policy_id":"core-policy","policy_revision":"policy-r1","profile_id":"core","profile_revision":"profile-r1","reconcile_anchor":null,"reconcile_reason":null,"repository":"repo","run_id":"RUN-v2","schema_version":2,"semantic_stop":null,"status":"ready","stop_reason":null,"successor_provenance":null,"suspension_head":null,"work_item_id":"WI-1"}\n'
 
 

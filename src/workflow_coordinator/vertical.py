@@ -153,6 +153,11 @@ def convergence_prompt_context(
             }
         )
     escapes = []
+    accepted_escapes = {
+        hop.strategy_assessment.escape_hop_id for hop in run.hops
+        if hop.strategy_assessment is not None and hop.strategy_assessment.result.value == "accepted"
+    }
+    generations: dict[str, int] = {}
     for hop in run.hops:
         if hop.route_reason and hop.route_reason.startswith("convergence_escape:"):
             triggers = tuple(
@@ -162,12 +167,20 @@ def convergence_prompt_context(
                 {
                     "evaluator_hop_id": hop.hop_id,
                     "triggering_finding_ids": list(triggers),
+                    "trigger_generations": {item: generations.get(item, 0) for item in triggers},
+                    "state": "consumed" if hop.hop_id in accepted_escapes else "unconsumed",
                     "requested_route": hop.requested_route,
                     "applied_route": hop.applied_route,
                     "route_reason": hop.route_reason,
                     "attribution": "coordinator_derived",
+                    "diagnosis": next(({"hop_id": item.hop_id, "classification": item.diagnosis.classification.value, "analysis": item.diagnosis.analysis, "evidence_refs": list(item.diagnosis.evidence_refs), "attribution": "agent_attributed"} for item in run.hops if item.diagnosis is not None and item.diagnosis.escape_hop_id == hop.hop_id), None),
+                    "strategy_revision": next(({"hop_id": item.hop_id, "kind": item.strategy_revision.kind.value, "plan": item.strategy_revision.plan, "evidence_refs": list(item.strategy_revision.evidence_refs), "attribution": "agent_attributed"} for item in reversed(run.hops) if item.strategy_revision is not None and item.strategy_revision.escape_hop_id == hop.hop_id), None),
+                    "strategy_assessment": next(({"hop_id": item.hop_id, "result": item.strategy_assessment.result.value, "evidence_refs": list(item.strategy_assessment.evidence_refs), "attribution": "agent_attributed"} for item in reversed(run.hops) if item.strategy_assessment is not None and item.strategy_assessment.escape_hop_id == hop.hop_id), None),
                 }
             )
+        if hop.strategy_assessment is not None and hop.strategy_assessment.result.value == "accepted":
+            for finding_id in hop.strategy_assessment.finding_ids:
+                generations[finding_id] = generations.get(finding_id, 0) + 1
     payload = {
         "provenance": "coordinator_derived",
         "protocol": profile.convergence.protocol.value,

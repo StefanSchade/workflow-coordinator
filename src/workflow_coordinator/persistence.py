@@ -508,6 +508,17 @@ def checkpoint_projection(
                         "requested_route": hop.requested_route,
                         "applied_route": hop.applied_route,
                         "route_reason": hop.route_reason,
+                        "state": (
+                            "consumed" if any(
+                                item.strategy_assessment is not None
+                                and item.strategy_assessment.escape_hop_id == hop.hop_id
+                                and item.strategy_assessment.result.value == "accepted"
+                                for item in run.hops
+                            ) else "unconsumed"
+                        ),
+                        "diagnosis": next(({"hop_id": item.hop_id, "classification": item.diagnosis.classification.value, "analysis": item.diagnosis.analysis, "evidence_refs": list(item.diagnosis.evidence_refs), "attribution": "agent_attributed"} for item in run.hops if item.diagnosis is not None and item.diagnosis.escape_hop_id == hop.hop_id), None),
+                        "strategy_revision": next(({"hop_id": item.hop_id, "kind": item.strategy_revision.kind.value, "plan": item.strategy_revision.plan, "evidence_refs": list(item.strategy_revision.evidence_refs), "attribution": "agent_attributed"} for item in reversed(run.hops) if item.strategy_revision is not None and item.strategy_revision.escape_hop_id == hop.hop_id), None),
+                        "strategy_assessment": next(({"hop_id": item.hop_id, "result": item.strategy_assessment.result.value, "evidence_refs": list(item.strategy_assessment.evidence_refs), "attribution": "agent_attributed"} for item in reversed(run.hops) if item.strategy_assessment is not None and item.strategy_assessment.escape_hop_id == hop.hop_id), None),
                     }
                     for hop in run.hops
                     if hop.route_reason is not None
