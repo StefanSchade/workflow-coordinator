@@ -36,8 +36,11 @@ from .serialization import (
 from .model import (
     ConvergenceAssessmentResult,
     CoverageDisposition,
+    DiagnosisClassification,
     FindingState,
     Outcome,
+    StrategyAssessmentResult,
+    StrategyRevisionKind,
 )
 
 
@@ -170,12 +173,34 @@ def routing_result_openai_schema(contract_version: int = 1) -> dict[str, Any]:
                 "evidence_refs": string_array,
             },
         }
+        diagnosis = {
+            "type": "object", "additionalProperties": False,
+            "required": ["escape_hop_id", "finding_ids", "classification", "analysis", "evidence_refs"],
+            "properties": {"escape_hop_id": {"type": "string"}, "finding_ids": string_array,
+                           "classification": {"type": "string", "enum": [item.value for item in DiagnosisClassification]},
+                           "analysis": {"type": "string"}, "evidence_refs": string_array},
+        }
+        revision = {
+            "type": "object", "additionalProperties": False,
+            "required": ["escape_hop_id", "diagnosis_hop_id", "finding_ids", "kind", "plan", "evidence_refs"],
+            "properties": {"escape_hop_id": {"type": "string"}, "diagnosis_hop_id": {"type": "string"},
+                           "finding_ids": string_array, "kind": {"type": "string", "enum": [item.value for item in StrategyRevisionKind]},
+                           "plan": {"type": "string"}, "evidence_refs": string_array},
+        }
+        strategy_assessment = {
+            "type": "object", "additionalProperties": False,
+            "required": ["escape_hop_id", "diagnosis_hop_id", "revision_hop_id", "finding_ids", "result", "evidence_refs"],
+            "properties": {"escape_hop_id": {"type": "string"}, "diagnosis_hop_id": {"type": "string"},
+                           "revision_hop_id": {"type": "string"}, "finding_ids": string_array,
+                           "result": {"type": "string", "enum": [item.value for item in StrategyAssessmentResult]},
+                           "evidence_refs": string_array},
+        }
         properties.update({
             "coverage_claims": {"type": "array", "items": coverage_claim},
             "convergence_assessments": {"type": "array", "items": assessment},
-            "diagnosis": {"type": "null"},
-            "strategy_revision": {"type": "null"},
-            "strategy_assessment": {"type": "null"},
+            "diagnosis": {"anyOf": [{"type": "null"}, diagnosis]},
+            "strategy_revision": {"anyOf": [{"type": "null"}, revision]},
+            "strategy_assessment": {"anyOf": [{"type": "null"}, strategy_assessment]},
         })
     return {
         "type": "object", "additionalProperties": False,

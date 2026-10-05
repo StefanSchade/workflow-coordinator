@@ -25,6 +25,8 @@ from .model import (
     ConvergenceAssessmentResult,
     ConvergenceProtocol,
     ConvergenceRole,
+    DiagnosisClassification,
+    DiagnosisReport,
     CorrectionObligation,
     CorrectionObligationOwner,
     CoverageClaim,
@@ -54,6 +56,10 @@ from .model import (
     Route,
     RouteEffect,
     RoutingResult,
+    StrategyAssessment,
+    StrategyAssessmentResult,
+    StrategyRevision,
+    StrategyRevisionKind,
     Run,
     RunExecutionConfiguration,
     RunStatus,
@@ -895,6 +901,14 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
                 raise ValidationError(
                     f"profile.phases.{phase_key} {role.value} must be a non-review phase"
                 )
+            if role is ConvergenceRole.DIAGNOSIS and (
+                EDIT_ACTION in phase.authorized_actions
+                or COMMIT_ACTION in phase.authorized_actions
+                or phase.durable_artifact is not DurableArtifact.NONE
+            ):
+                raise ValidationError(
+                    f"profile.phases.{phase_key} diagnosis must be read-only with no durable artifact"
+                )
             if role is ConvergenceRole.STRATEGY_GATE and (
                 phase.review is None
                 or phase.review.authority is not ReviewAuthority.GATE
@@ -1082,14 +1096,56 @@ def _convergence_assessment(value: Any, *, context: str) -> ConvergenceAssessmen
     )
     return ConvergenceAssessment(
         finding_id=_string(data["finding_id"], context=f"{context}.finding_id"),
-        correction_hop_id=_string(
-            data["correction_hop_id"], context=f"{context}.correction_hop_id"
-        ),
-        result=_enum(
-            ConvergenceAssessmentResult,
-            data["result"],
-            context=f"{context}.result",
-        ),
+        correction_hop_id=_string(data["correction_hop_id"], context=f"{context}.correction_hop_id"),
+        result=_enum(ConvergenceAssessmentResult, data["result"], context=f"{context}.result"),
+        evidence_refs=_strings(data["evidence_refs"], context=f"{context}.evidence_refs"),
+    )
+
+
+def _nonempty_ids(value: Any, *, context: str) -> tuple[str, ...]:
+    ids = _strings(value, context=context)
+    if not ids:
+        raise ValidationError(f"{context} must not be empty")
+    return ids
+
+
+def _diagnosis_report(value: Any, *, context: str) -> DiagnosisReport | None:
+    if value is None:
+        return None
+    data = _fields(value, context=context, required={"escape_hop_id", "finding_ids", "classification", "analysis", "evidence_refs"})
+    return DiagnosisReport(
+        escape_hop_id=_string(data["escape_hop_id"], context=f"{context}.escape_hop_id"),
+        finding_ids=_nonempty_ids(data["finding_ids"], context=f"{context}.finding_ids"),
+        classification=_enum(DiagnosisClassification, data["classification"], context=f"{context}.classification"),
+        analysis=_string(data["analysis"], context=f"{context}.analysis"),
+        evidence_refs=_strings(data["evidence_refs"], context=f"{context}.evidence_refs"),
+    )
+
+
+def _strategy_revision(value: Any, *, context: str) -> StrategyRevision | None:
+    if value is None:
+        return None
+    data = _fields(value, context=context, required={"escape_hop_id", "diagnosis_hop_id", "finding_ids", "kind", "plan", "evidence_refs"})
+    return StrategyRevision(
+        escape_hop_id=_string(data["escape_hop_id"], context=f"{context}.escape_hop_id"),
+        diagnosis_hop_id=_string(data["diagnosis_hop_id"], context=f"{context}.diagnosis_hop_id"),
+        finding_ids=_nonempty_ids(data["finding_ids"], context=f"{context}.finding_ids"),
+        kind=_enum(StrategyRevisionKind, data["kind"], context=f"{context}.kind"),
+        plan=_string(data["plan"], context=f"{context}.plan"),
+        evidence_refs=_strings(data["evidence_refs"], context=f"{context}.evidence_refs"),
+    )
+
+
+def _strategy_assessment(value: Any, *, context: str) -> StrategyAssessment | None:
+    if value is None:
+        return None
+    data = _fields(value, context=context, required={"escape_hop_id", "diagnosis_hop_id", "revision_hop_id", "finding_ids", "result", "evidence_refs"})
+    return StrategyAssessment(
+        escape_hop_id=_string(data["escape_hop_id"], context=f"{context}.escape_hop_id"),
+        diagnosis_hop_id=_string(data["diagnosis_hop_id"], context=f"{context}.diagnosis_hop_id"),
+        revision_hop_id=_string(data["revision_hop_id"], context=f"{context}.revision_hop_id"),
+        finding_ids=_nonempty_ids(data["finding_ids"], context=f"{context}.finding_ids"),
+        result=_enum(StrategyAssessmentResult, data["result"], context=f"{context}.result"),
         evidence_refs=_strings(data["evidence_refs"], context=f"{context}.evidence_refs"),
     )
 
@@ -1143,12 +1199,6 @@ def routing_result_from_data(value: Any) -> RoutingResult:
         )
         for index, item in enumerate(raw_assessments)
     )
-    if version == 2:
-        for placeholder in ("diagnosis", "strategy_revision", "strategy_assessment"):
-            if data[placeholder] is not None:
-                raise ValidationError(
-                    f"routing result.{placeholder} must be null in result schema_version 2"
-                )
     return RoutingResult(
         schema_version=version,
         outcome=_enum(Outcome, data["outcome"], context="routing result.outcome"),
@@ -1170,6 +1220,9 @@ def routing_result_from_data(value: Any) -> RoutingResult:
         summary=_string(data["summary"], context="routing result.summary"),
         coverage_claims=coverage_claims,
         convergence_assessments=assessments,
+        diagnosis=_diagnosis_report(data.get("diagnosis"), context="routing result.diagnosis"),
+        strategy_revision=_strategy_revision(data.get("strategy_revision"), context="routing result.strategy_revision"),
+        strategy_assessment=_strategy_assessment(data.get("strategy_assessment"), context="routing result.strategy_assessment"),
     )
 
 
@@ -1200,6 +1253,9 @@ def run_to_json(run: Run) -> str:
             hop.pop("requested_route", None)
             hop.pop("route_reason", None)
             hop.pop("phase", None)
+            hop.pop("diagnosis", None)
+            hop.pop("strategy_revision", None)
+            hop.pop("strategy_assessment", None)
         for finding in data["findings"]:
             finding.pop("correction_obligation", None)
     elif run.schema_version == 3:
@@ -1215,7 +1271,7 @@ def run_to_json(run: Run) -> str:
 
 def _hop_summary(value: Any, *, context: str, run_version: int) -> HopSummary:
     all_fields = {field.name for field in fields(HopSummary)}
-    convergence_fields = {"coverage_claims", "convergence_assessments"}
+    convergence_fields = {"coverage_claims", "convergence_assessments", "diagnosis", "strategy_revision", "strategy_assessment"}
     anchor_field = {"pre_route_anchor_sha256"}
     routing_truth_fields = {"requested_route", "route_reason"}
     phase_field = {"phase"}
@@ -1289,6 +1345,9 @@ def _hop_summary(value: Any, *, context: str, run_version: int) -> HopSummary:
             if run_version != 3
             else _string(data["phase"], context=f"{context}.phase")
         ),
+        diagnosis=(None if run_version != 3 else _diagnosis_report(data["diagnosis"], context=f"{context}.diagnosis")),
+        strategy_revision=(None if run_version != 3 else _strategy_revision(data["strategy_revision"], context=f"{context}.strategy_revision")),
+        strategy_assessment=(None if run_version != 3 else _strategy_assessment(data["strategy_assessment"], context=f"{context}.strategy_assessment")),
     )
 
 

@@ -72,6 +72,7 @@ def phase(
     convergence_role: str = "none",
     normal_correction_route: str | None = None,
     escape_route: str | None = None,
+    authorized_actions: tuple[str, ...] = ("edit", "commit"),
 ) -> Phase:
     descriptor = None
     if review is not None:
@@ -92,7 +93,7 @@ def phase(
         repository_policy_components=("testing",),
         durable_artifact=DurableArtifact.NONE,
         authorized_scope=("repo",),
-        authorized_actions=("edit", "commit"),
+        authorized_actions=authorized_actions,
         human_gates=(),
         evidence=(),
         review=descriptor,
@@ -345,7 +346,8 @@ def convergence_routing_profile(
                 convergence_role="corrector",
             ),
             "diagnose": phase(
-                {"reframe": route("goto", "reframe")}, convergence_role="diagnosis"
+                {"reframe": route("goto", "reframe")}, convergence_role="diagnosis",
+                authorized_actions=()
             ),
             "reframe": phase(
                 {"strategy": route("goto", "strategy")},

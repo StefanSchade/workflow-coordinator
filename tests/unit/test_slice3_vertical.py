@@ -386,7 +386,8 @@ def test_profile_v3_later_role_names_dispatch_live_result_v2_with_null_placehold
         task_payload="tiny",
         invocation_id="INV-1",
     )
-    assert completed.reduction.run.status.value == "stopped"
+    assert completed.reduction.run.status.value == "awaiting_human"
+    assert completed.reduction.run.stop_reason.startswith("mechanical_preemption:invalid_finding_delta:")
     assert adapter.request is not None
     assert adapter.request.contract_version == 2
 

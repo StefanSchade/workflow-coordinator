@@ -91,7 +91,8 @@ def test_result_v2_projection_is_strict_closed_and_null_only_for_later_slice_rec
     assert set(new_finding["required"]) == set(NEW_FINDING_DELTA_V2_KEYS)
     assert "local_ref" not in existing_finding["properties"]
     for field in ("diagnosis", "strategy_revision", "strategy_assessment"):
-        assert result["properties"][field] == {"type": "null"}
+        assert result["properties"][field]["anyOf"][0] == {"type": "null"}
+        assert result["properties"][field]["anyOf"][1]["additionalProperties"] is False
 
 
 def test_contract_version_selector_defaults_to_v1_and_rejects_mixed_envelopes():

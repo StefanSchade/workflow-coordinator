@@ -25,6 +25,7 @@ from .model import (
     Route,
     RouteEffect,
     RoutingResult,
+    StrategyAssessmentResult,
     Run,
     RunStatus,
     SemanticStop,
@@ -67,7 +68,7 @@ def derive_convergence_facts(
     trusted_qualification_index: TrustedQualificationIndex,
     qualified_cycle_limit: int,
 ) -> tuple[ConvergenceFact, ...]:
-    """Derive generation-zero convergence facts from accepted Slice-1 history.
+    """Derive convergence facts from immutable accepted Hop history.
 
     Slice 1 admits and validates coverage, assessment correlation, evidence
     freshness, and post-assessment Finding state.  This read-side projection
@@ -112,6 +113,7 @@ def derive_convergence_facts(
     source_hops: dict[str, list[str]] = {
         finding_id: [] for finding_id in eligible_findings
     }
+    generations: dict[str, int] = {finding_id: 0 for finding_id in eligible_findings}
     hops_by_id = {hop.hop_id: hop for hop in run.hops}
     hop_order = {hop.hop_id: index for index, hop in enumerate(run.hops)}
 
@@ -144,11 +146,19 @@ def derive_convergence_facts(
             ):
                 continue
             source_hops[assessment.finding_id].append(evaluator_hop.hop_id)
+        # An accepted assessment is the only immutable event that starts the
+        # next generation; exact correlation was checked on admission.
+        accepted = evaluator_hop.strategy_assessment
+        if accepted is not None and accepted.result is StrategyAssessmentResult.ACCEPTED:
+            for finding_id in accepted.finding_ids:
+                if finding_id in generations:
+                    generations[finding_id] += 1
+                    source_hops[finding_id] = []
 
     return tuple(
         ConvergenceFact(
             finding_id=finding_id,
-            strategy_generation=0,
+            strategy_generation=generations[finding_id],
             qualified_cycle_count=len(source_hops[finding_id]),
             qualified_cycle_limit=qualified_cycle_limit,
             goalpost_reached=(
@@ -804,6 +814,74 @@ def _apply_route(run: Run, route_key: str, route: Route) -> Reduction:
     )
 
 
+def _escape_trigger_ids(hop) -> tuple[str, ...] | None:
+    if not hop.route_reason or not hop.route_reason.startswith("convergence_escape:"):
+        return None
+    values = tuple(hop.route_reason.partition(":")[2].split(","))
+    return values if values and all(values) else None
+
+
+def _validate_strategy_chain(run: Run, result: RoutingResult, role: ConvergenceRole) -> None:
+    """Validate Slice-4's single active escape chain before any state changes."""
+
+    accepted_escapes = {
+        hop.strategy_assessment.escape_hop_id
+        for hop in run.hops
+        if hop.strategy_assessment is not None
+        and hop.strategy_assessment.result is StrategyAssessmentResult.ACCEPTED
+    }
+    escapes = [(hop, _escape_trigger_ids(hop)) for hop in run.hops]
+    active = [(hop, ids) for hop, ids in escapes if ids is not None and hop.hop_id not in accepted_escapes]
+    if len(active) != 1:
+        raise ReductionError("strategy record requires exactly one unconsumed escape")
+    escape, trigger_ids = active[0]
+    assert trigger_ids is not None
+    if tuple(sorted(trigger_ids)) != trigger_ids or len(set(trigger_ids)) != len(trigger_ids):
+        raise ReductionError("escape trigger set is not canonical")
+    open_ids = {
+        finding.finding_id for finding in run.findings
+        if finding.correction_obligation is not None
+        and finding.state is FindingState.OPEN and finding.blocking
+    }
+    if not set(trigger_ids).issubset(open_ids):
+        raise ReductionError("escape trigger Finding is no longer open and tracked")
+    hop_by_id = {hop.hop_id: hop for hop in run.hops}
+    if role is ConvergenceRole.DIAGNOSIS:
+        report = result.diagnosis
+        assert report is not None
+        if report.escape_hop_id != escape.hop_id or report.finding_ids != trigger_ids:
+            raise ReductionError("diagnosis does not exactly correlate to the active escape")
+        return
+    if role is ConvergenceRole.REFRAME:
+        revision = result.strategy_revision
+        assert revision is not None
+        diagnosis = hop_by_id.get(revision.diagnosis_hop_id)
+        if (revision.escape_hop_id != escape.hop_id or revision.finding_ids != trigger_ids
+                or diagnosis is None or diagnosis.diagnosis is None
+                or diagnosis.diagnosis.escape_hop_id != escape.hop_id
+                or diagnosis.diagnosis.finding_ids != trigger_ids):
+            raise ReductionError("revision does not exactly correlate to a reduced diagnosis")
+        return
+    assessment = result.strategy_assessment
+    assert assessment is not None
+    diagnosis = hop_by_id.get(assessment.diagnosis_hop_id)
+    revision = hop_by_id.get(assessment.revision_hop_id)
+    if (assessment.escape_hop_id != escape.hop_id or assessment.finding_ids != trigger_ids
+            or diagnosis is None or diagnosis.diagnosis is None
+            or diagnosis.diagnosis.escape_hop_id != escape.hop_id
+            or diagnosis.diagnosis.finding_ids != trigger_ids
+            or revision is None or revision.strategy_revision is None
+            or revision.strategy_revision.escape_hop_id != escape.hop_id
+            or revision.strategy_revision.diagnosis_hop_id != diagnosis.hop_id
+            or revision.strategy_revision.finding_ids != trigger_ids):
+        raise ReductionError("strategy assessment does not exactly correlate to the active chain")
+    revisions = [hop for hop in run.hops if hop.strategy_revision is not None
+                 and hop.strategy_revision.escape_hop_id == escape.hop_id
+                 and hop.strategy_revision.diagnosis_hop_id == diagnosis.hop_id]
+    if not revisions or revisions[-1].hop_id != revision.hop_id:
+        raise ReductionError("strategy assessment must reference the latest revision")
+
+
 def _validate_convergence_records_before_apply(
     run: Run,
     result: RoutingResult,
@@ -812,7 +890,10 @@ def _validate_convergence_records_before_apply(
     route: Route,
 ) -> None:
     role = phase.convergence_role
+    typed = (result.diagnosis, result.strategy_revision, result.strategy_assessment)
     if role is ConvergenceRole.NONE:
+        if any(item is not None for item in typed):
+            raise ReductionError("ordinary phase cannot submit strategy records")
         if result.coverage_claims or result.convergence_assessments:
             raise ReductionError("ordinary phase cannot submit convergence records")
         if run.schema_version == 3 and any(
@@ -838,6 +919,8 @@ def _validate_convergence_records_before_apply(
         )
     }
     if role is ConvergenceRole.CORRECTOR:
+        if any(item is not None for item in typed):
+            raise ReductionError("corrector cannot submit strategy records")
         if result.convergence_assessments:
             raise ReductionError("corrector cannot submit convergence assessments")
         claim_ids = [claim.finding_id for claim in result.coverage_claims]
@@ -884,10 +967,32 @@ def _validate_convergence_records_before_apply(
             raise ReductionError(
                 f"{role.value} cannot submit Slice-1 convergence records"
             )
+        expected = {
+            ConvergenceRole.DIAGNOSIS: (True, False, False),
+            ConvergenceRole.REFRAME: (False, True, False),
+            ConvergenceRole.STRATEGY_GATE: (False, False, True),
+        }[role]
+        present = tuple(item is not None for item in typed)
+        if present != expected:
+            raise ReductionError(f"{role.value} requires exactly its typed strategy record")
+        _validate_strategy_chain(run, result, role)
+        if result.findings:
+            raise ReductionError(f"{role.value} result cannot mutate Findings")
+        if role is ConvergenceRole.STRATEGY_GATE:
+            assessment = result.strategy_assessment
+            assert assessment is not None
+            if route.effect is RouteEffect.COMPLETE:
+                raise ReductionError("strategy gate cannot complete the Run")
+            if assessment.result is StrategyAssessmentResult.ACCEPTED and result.outcome is not Outcome.COMPLETED:
+                raise ReductionError("accepted strategy assessment requires accepted outcome")
+            if assessment.result is StrategyAssessmentResult.CHANGES_REQUIRED and result.outcome is not Outcome.CHANGES_REQUIRED:
+                raise ReductionError("changes_required strategy assessment requires changes_required outcome")
         return
 
     if result.coverage_claims:
         raise ReductionError("evaluator cannot submit coverage claims")
+    if any(item is not None for item in typed):
+        raise ReductionError("evaluator cannot submit strategy records")
     if phase.review is None or phase.review.authority is not ReviewAuthority.GATE:
         raise ReductionError("evaluator must be a gate review")
     if "reopen" in phase.review.finding_authority:
@@ -1331,6 +1436,9 @@ def _with_convergence_records(run: Run, hop_id: str, result: RoutingResult) -> R
                 hop,
                 coverage_claims=result.coverage_claims,
                 convergence_assessments=result.convergence_assessments,
+                diagnosis=result.diagnosis,
+                strategy_revision=result.strategy_revision,
+                strategy_assessment=result.strategy_assessment,
             )
             if hop.hop_id == hop_id
             else hop

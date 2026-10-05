@@ -89,6 +89,32 @@ class ConvergenceAssessmentResult(CoordinatorValue):
     SUPERSEDED = "superseded"
 
 
+class DiagnosisClassification(CoordinatorValue):
+    REQUIREMENT_AMBIGUITY = "requirement_ambiguity"
+    PROBLEM_SOLUTION_MODEL_MISMATCH = "problem_solution_model_mismatch"
+    DECOMPOSITION_MISMATCH = "decomposition_mismatch"
+    EVIDENCE_GAP = "evidence_gap"
+    CAPABILITY_GAP = "capability_gap"
+    AUTHORITY_SCOPE_GAP = "authority_scope_gap"
+    REGRESSION_CHAIN = "regression_chain"
+    UNKNOWN = "unknown"
+
+
+class StrategyRevisionKind(CoordinatorValue):
+    CLARIFY_REQUIREMENT_INTERPRETATION = "clarify_requirement_interpretation"
+    CHANGE_PROBLEM_SOLUTION_MODEL = "change_problem_solution_model"
+    REDECOMPOSE_WORK = "redecompose_work"
+    CHANGE_EVIDENCE_STRATEGY = "change_evidence_strategy"
+    USE_AUTHORIZED_CAPABILITY = "use_authorized_capability"
+    ADDRESS_REGRESSION_CHAIN = "address_regression_chain"
+    OTHER = "other"
+
+
+class StrategyAssessmentResult(CoordinatorValue):
+    ACCEPTED = "accepted"
+    CHANGES_REQUIRED = "changes_required"
+
+
 class RouteEffect(CoordinatorValue):
     GOTO = "goto"
     COMPLETE = "complete"
@@ -330,6 +356,35 @@ class ConvergenceFact:
 
 
 @dataclass(frozen=True)
+class DiagnosisReport:
+    escape_hop_id: str
+    finding_ids: tuple[str, ...]
+    classification: DiagnosisClassification
+    analysis: str
+    evidence_refs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StrategyRevision:
+    escape_hop_id: str
+    diagnosis_hop_id: str
+    finding_ids: tuple[str, ...]
+    kind: StrategyRevisionKind
+    plan: str
+    evidence_refs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StrategyAssessment:
+    escape_hop_id: str
+    diagnosis_hop_id: str
+    revision_hop_id: str
+    finding_ids: tuple[str, ...]
+    result: StrategyAssessmentResult
+    evidence_refs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class RoutingResult:
     schema_version: int
     outcome: Outcome
@@ -344,9 +399,9 @@ class RoutingResult:
     summary: str
     coverage_claims: tuple[CoverageClaim, ...] = ()
     convergence_assessments: tuple[ConvergenceAssessment, ...] = ()
-    diagnosis: None = None
-    strategy_revision: None = None
-    strategy_assessment: None = None
+    diagnosis: DiagnosisReport | None = None
+    strategy_revision: StrategyRevision | None = None
+    strategy_assessment: StrategyAssessment | None = None
 
 
 @dataclass(frozen=True)
@@ -387,6 +442,9 @@ class Hop:
     pre_route_anchor_sha256: str | None = None
     requested_route: str | None = None
     route_reason: str | None = None
+    diagnosis: DiagnosisReport | None = None
+    strategy_revision: StrategyRevision | None = None
+    strategy_assessment: StrategyAssessment | None = None
 
     def compact(self) -> "HopSummary":
         return HopSummary(
@@ -407,6 +465,9 @@ class Hop:
             requested_route=self.requested_route,
             route_reason=self.route_reason,
             phase=self.phase,
+            diagnosis=self.diagnosis,
+            strategy_revision=self.strategy_revision,
+            strategy_assessment=self.strategy_assessment,
         )
 
 
@@ -431,6 +492,9 @@ class HopSummary:
     requested_route: str | None = None
     route_reason: str | None = None
     phase: str | None = None
+    diagnosis: DiagnosisReport | None = None
+    strategy_revision: StrategyRevision | None = None
+    strategy_assessment: StrategyAssessment | None = None
 
 
 @dataclass(frozen=True)

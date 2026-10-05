@@ -169,7 +169,7 @@ def profile_v3_data():
                 "diagnose": {"effect": "goto", "target": "diagnose"},
             },
         },
-        "diagnose": {**phase_base, "convergence_role": "diagnosis", "routes": {"reframe": {"effect": "goto", "target": "reframe"}}},
+        "diagnose": {**phase_base, "authorized_actions": [], "convergence_role": "diagnosis", "routes": {"reframe": {"effect": "goto", "target": "reframe"}}},
         "reframe": {**phase_base, "convergence_role": "reframe", "routes": {"assess": {"effect": "goto", "target": "strategy"}}},
         "strategy": {
             **phase_base,
@@ -726,7 +726,7 @@ def test_result_v1_remains_closed_and_result_v2_requires_its_exact_shape():
     assert parsed.coverage_claims == parsed.convergence_assessments == ()
     assert parsed.diagnosis is parsed.strategy_revision is parsed.strategy_assessment is None
     for field in ("diagnosis", "strategy_revision", "strategy_assessment"):
-        with pytest.raises(ValidationError, match=f"{field} must be null"):
+        with pytest.raises(ValidationError):
             routing_result_from_data(valid_result_v2_data(**{field: {}}))
 
 
@@ -878,9 +878,6 @@ def test_v3_hop_anchor_is_the_only_new_semantic_wire_field():
         "goalpost_reached",
         "route_substitution",
         "convergence_escape",
-        "diagnosis",
-        "strategy_revision",
-        "strategy_assessment",
         "strategy_generation",
     }
     assert semantic_fields & forbidden == set()
