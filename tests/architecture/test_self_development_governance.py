@@ -4535,23 +4535,31 @@ def test_correction_convergence_escape_implementation_s4_001_bundle_passes_produ
     curriculum-domain falsification fixture the accepted FTR assigns to this
     slice), while still deliberately excluding ``adapter.py`` (generic
     provider-neutral delegation, no schema of its own),
-    ``src/workflow_coordinator/slice4.py`` (an unrelated existing production
+    ``src/workflow_coordinator/slice4.py`` (an unrelated EXISTING production
     file for Design-Revision-001's own crash-recovery numbering, not this
-    FTR's Slice 4), ``tests/unit/test_slice4.py`` (never created -- no
-    established convention for a slice-numbered test file; new semantics
-    land in the existing test files exactly as every prior slice's did), and
-    ``tests/unit/test_slice5b.py`` (unrelated prior implementation). The
-    profile applies the self-development Finding-authority governance fix
-    from the outset: ``review`` (the first Hop, which can only ever create a
-    Run-native Finding) is granted ``finding_authority: []``, while
-    ``rereview`` (which may need to resolve a Finding review or an earlier
-    rereview opened) is granted the minimal ``finding_authority: [resolve]``
-    -- mirroring the fix the S3-003 successor Commission already applied
-    after ``BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY`` was discovered,
-    rather than repeating S3-002's empty-everywhere defect. Both the source
-    BUG and the self-development governance BUG remain open and ungranted.
-    The admission succeeds entirely through provider-free preflight: no
-    provider is invoked and no state root is created.
+    FTR's Slice 4), ``tests/unit/test_slice4.py`` (an unrelated EXISTING
+    historical test file for that same crash-recovery surface, excluded for
+    semantic-ownership / naming-collision reasons -- NOT because it does not
+    exist; new semantics land in the existing test files exactly as every
+    prior slice's did), and ``tests/unit/test_slice5b.py`` (unrelated prior
+    implementation). The profile applies the self-development
+    Finding-authority governance fix from the outset: because initial_phase
+    is ``implement``, the normal fresh-Run sequence is H001 = implement,
+    H002 = review -- ``review`` is NOT the first Hop, and the H001
+    ``implement`` Hop may legitimately create a genuine current-Run OPEN
+    Finding without any disposition authority (creating OPEN is not itself a
+    disposition operation under the reducer's ``_finding_operation``
+    semantics). Both ``review`` and ``rereview`` are therefore granted the
+    identical minimal ``finding_authority: [resolve]`` -- mirroring, but not
+    identically reproducing, the fix the S3-003 successor Commission already
+    applied after ``BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY`` was
+    discovered (S3-003 began directly at ``rereview`` with no
+    ``implement``/``review`` phase, so only its one gate phase needed the
+    grant; this Commission's four-phase topology gives both gates a
+    preceding worker Hop, so both need it). Both the source BUG and the
+    self-development governance BUG remain open and ungranted. The admission
+    succeeds entirely through provider-free preflight: no provider is
+    invoked and no state root is created.
     """
 
     repository, expected_head = _materialize_bundle(
@@ -4611,7 +4619,25 @@ def test_correction_convergence_escape_implementation_s4_001_bundle_passes_produ
     assert "F003" in work_item.authority_source
     assert "BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc" in work_item.authority_source
     assert "finding_authority: [resolve]" in work_item.authority_source
-    assert "finding_authority: []" in work_item.authority_source
+
+    # Corrected identity/authority wording: F001/F002/F003 (Run-native WFC
+    # Finding IDs) and S3-IR-001/002/003 (durable review-artifact prose
+    # identifiers) are explicitly named as distinct identity surfaces, never
+    # aliases; S3-003's own Run-native Finding ledger is stated to have
+    # remained empty throughout, not merely "if any"; and the implement-then-
+    # review topology (H001 implement may leave a genuine OPEN Finding for
+    # H002 review) is stated accurately rather than claiming review is the
+    # first Hop with nothing to resolve.
+    assert "NOT the same" in work_item.authority_source
+    assert "distinct identity surfaces" in work_item.authority_source
+    assert "never aliases" in work_item.authority_source
+    assert "remained EMPTY throughout" in work_item.authority_source
+    assert "Run-native Findings, if any" not in work_item.authority_source
+    assert "H001 is implement, not review" in work_item.authority_source
+    assert "is NOT itself a disposition operation" in work_item.authority_source
+    assert "review is the first Hop" not in work_item.authority_source
+    assert "it is the first Hop; nothing" not in work_item.authority_source
+
     assert "BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc" in work_item.authority_source
     assert "remains OPEN" in work_item.authority_source
     assert "Slice 5" in work_item.authority_source
@@ -4690,13 +4716,21 @@ def test_correction_convergence_escape_implementation_s4_001_bundle_passes_produ
     assert {"edit", "commit"}.issubset(set(review.authorized_actions))
     assert {"edit", "commit"}.issubset(set(rereview.authorized_actions))
 
-    # The core governance-authority invariant of this Commission: review
-    # (the first Hop) is granted NO Finding authority because it can only
-    # ever create a Finding, never disposition one; rereview alone is
-    # granted the minimal resolve-only authority, never residual/supersede/
-    # reopen/human -- the S3-002 defect is not repeated.
-    assert review.review.finding_authority == ()
+    # The core governance-authority invariant of this Commission: review is
+    # NOT the first Hop (implement precedes it), so H001 implement may
+    # legitimately leave a genuine current-Run OPEN Finding for H002 review
+    # to resolve once independently verified -- creating OPEN is not itself
+    # a disposition operation, so implement needed no finding_authority to
+    # do so, but review's own resolve of it IS a disposition operation and
+    # requires the grant. Both review and rereview are therefore granted the
+    # identical minimal resolve-only authority, never residual/supersede/
+    # reopen/human -- the S3-002 defect (an empty-everywhere disposition-
+    # bearing gate) is not repeated.
+    assert review.review.finding_authority == ("resolve",)
     assert rereview.review.finding_authority == ("resolve",)
+    assert "residual" not in review.review.finding_authority
+    assert "supersede" not in review.review.finding_authority
+    assert "reopen" not in review.review.finding_authority
     assert "residual" not in rereview.review.finding_authority
     assert "supersede" not in rereview.review.finding_authority
     assert "reopen" not in rereview.review.finding_authority
@@ -4743,7 +4777,6 @@ def test_correction_convergence_escape_implementation_s4_001_bundle_passes_produ
     assert "a889f9a3b515b4cac600dc9f7366637a388f2e25" in task_text
     assert "NAMING COLLISIONS" in task_text
     assert "slice4.py" in task_text and "NOT authorized" in task_text
-    assert "test_slice4.py" in task_text and "deliberately NOT created" in task_text
     assert "DiagnosisReport" in task_text
     assert "StrategyRevision" in task_text
     assert "StrategyAssessment" in task_text
@@ -4759,6 +4792,34 @@ def test_correction_convergence_escape_implementation_s4_001_bundle_passes_produ
     assert "Slice 5" in task_text
     assert "R1A dogfood" in task_text
     assert "NOT authorized" in task_text
+
+    # Correction A: the task text truthfully states review follows implement
+    # (H001 = implement, H002 = review) and explicitly flags the superseded
+    # "first Hop / nothing exists yet to resolve" premise as FALSE, rather
+    # than silently asserting it; it also states the reducer-level reason
+    # creating an OPEN Finding needs no finding_authority.
+    assert "NOT this Run's first Hop" in task_text
+    assert "is\nFALSE" in task_text
+    assert "H001 = implement, H002 = review" in task_text
+    assert "H001-created current-Run OPEN Finding" in task_text
+    assert "_finding_operation(None, FindingState.OPEN)` returns no operation" in task_text
+
+    # Correction B: tests/unit/test_slice4.py is described truthfully as an
+    # EXISTING historical file, excluded for semantic-ownership/naming-
+    # collision reasons, never as nonexistent.
+    assert "test_slice4.py` IS an EXISTING historical test file" in task_text
+    assert "NOT because the file\n  does not exist" in task_text
+    assert "test_slice4.py` does NOT exist" not in task_text
+    assert "deliberately NOT created" not in task_text
+
+    # Correction C: F001/F002/F003 (Run-native WFC Finding IDs) and
+    # S3-IR-001/002/003 (durable review-artifact identifiers) are kept
+    # explicitly distinct, never aliased, and S3-003's own Run-native
+    # Finding ledger is stated to have remained empty throughout.
+    assert "NOT the\n     same identifiers as, and never aliases of" in task_text
+    assert "distinct identity surfaces" in task_text
+    assert "remained EMPTY throughout" in task_text
+    assert "durable identifiers S3-IR-001/002/003" not in task_text
 
     assert policy.governance_paths == ("governance",)
     assert not _within_scope("src", policy.work_item_scope_ceiling)
