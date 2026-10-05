@@ -265,6 +265,8 @@ def test_checkpoint_projects_requested_applied_escape_truth_and_triggers():
     assert len(escape) == 1
     assert escape[0]["evaluator_hop_id"] == evaluator_hop
     assert escape[0]["triggering_finding_ids"] == ["F001"]
+    assert escape[0]["trigger_generations"] == {"F001": 0}
+    assert escape[0]["attribution"] == "coordinator_derived"
     assert escape[0]["state"] == "unconsumed"
     assert escape[0]["diagnosis"] is None
     assert escape[0]["strategy_revision"] is None

@@ -926,6 +926,28 @@ def test_run_v3_persists_source_phase_and_rejects_unknown_escape_triggers():
         run_from_json(json.dumps(unknown_trigger))
 
 
+def test_run_v3_rejects_forged_accepted_assessment_without_a_causal_chain():
+    """Persisted acceptance cannot advance a derived generation by itself."""
+
+    data = json.loads(run_to_json(v3_run_with_assessment()))
+    escape = data["hops"][-1]
+    escape.update(
+        requested_route="correct",
+        applied_route="diagnose",
+        route_reason="convergence_escape:F001",
+        strategy_assessment={
+            "escape_hop_id": escape["hop_id"],
+            "diagnosis_hop_id": "H404",
+            "revision_hop_id": "H405",
+            "finding_ids": ["F001"],
+            "result": "accepted",
+            "evidence_refs": [],
+        },
+    )
+    with pytest.raises(ValidationError, match="does not correlate to the current chain"):
+        run_from_json(json.dumps(data))
+
+
 def test_run_v3_rejects_local_successors_cycles_and_reused_correction_assessments():
     run = v3_run_with_assessment()
     data = json.loads(run_to_json(run))

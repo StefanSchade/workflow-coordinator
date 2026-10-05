@@ -505,9 +505,21 @@ def checkpoint_projection(
                             for item in (hop.route_reason or "").partition(":")[2].split(",")
                             if item
                         ],
+                        "trigger_generations": {
+                            finding_id: sum(
+                                1
+                                for prior in run.hops[:index]
+                                if prior.strategy_assessment is not None
+                                and prior.strategy_assessment.result.value == "accepted"
+                                and finding_id in prior.strategy_assessment.finding_ids
+                            )
+                            for finding_id in (hop.route_reason or "").partition(":")[2].split(",")
+                            if finding_id
+                        },
                         "requested_route": hop.requested_route,
                         "applied_route": hop.applied_route,
                         "route_reason": hop.route_reason,
+                        "attribution": "coordinator_derived",
                         "state": (
                             "consumed" if any(
                                 item.strategy_assessment is not None
@@ -520,7 +532,7 @@ def checkpoint_projection(
                         "strategy_revision": next(({"hop_id": item.hop_id, "kind": item.strategy_revision.kind.value, "plan": item.strategy_revision.plan, "evidence_refs": list(item.strategy_revision.evidence_refs), "attribution": "agent_attributed"} for item in reversed(run.hops) if item.strategy_revision is not None and item.strategy_revision.escape_hop_id == hop.hop_id), None),
                         "strategy_assessment": next(({"hop_id": item.hop_id, "result": item.strategy_assessment.result.value, "evidence_refs": list(item.strategy_assessment.evidence_refs), "attribution": "agent_attributed"} for item in reversed(run.hops) if item.strategy_assessment is not None and item.strategy_assessment.escape_hop_id == hop.hop_id), None),
                     }
-                    for hop in run.hops
+                    for index, hop in enumerate(run.hops)
                     if hop.route_reason is not None
                     and hop.route_reason.startswith("convergence_escape:")
                 ],

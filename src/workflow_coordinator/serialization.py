@@ -1907,6 +1907,117 @@ def _validate_v3_run(run: Run) -> None:
                     f"Run v3 Finding {finding.finding_id} successor was introduced later"
                 )
 
+    # Strategy records are durable v3 causal history, not annotations that a
+    # reader may trust independently.  Reconstruct each chain before a
+    # persisted accepted assessment is allowed to consume its escape (and thus
+    # affect the derived generation).  Profile-specific route authority is
+    # checked by reduction/replay; this wire-level check closes the causal
+    # graph without needing to deserialize a profile here.
+    escapes: dict[str, tuple[str, ...]] = {}
+    diagnoses: dict[str, tuple[object, tuple[str, ...]]] = {}
+    revisions: dict[str, tuple[object, tuple[str, ...], str]] = {}
+    accepted_escapes: set[str] = set()
+    tracked_ids = {
+        finding.finding_id
+        for finding in run.findings
+        if finding.correction_obligation is not None
+    }
+    for hop in run.hops:
+        trigger_ids = (
+            tuple(hop.route_reason.removeprefix("convergence_escape:").split(","))
+            if hop.route_reason is not None
+            and hop.route_reason.startswith("convergence_escape:")
+            else None
+        )
+        if trigger_ids is not None:
+            escapes[hop.hop_id] = trigger_ids
+
+        records = (
+            hop.diagnosis,
+            hop.strategy_revision,
+            hop.strategy_assessment,
+        )
+        if sum(record is not None for record in records) > 1:
+            raise ValidationError(
+                f"Run v3 Hop {hop.hop_id} has multiple strategy records"
+            )
+        if hop.diagnosis is not None:
+            report = hop.diagnosis
+            expected = escapes.get(report.escape_hop_id)
+            if (
+                expected is None
+                or report.escape_hop_id in accepted_escapes
+                or report.finding_ids != expected
+                or not set(expected).issubset(tracked_ids)
+            ):
+                raise ValidationError(
+                    f"Run v3 Hop {hop.hop_id} diagnosis does not correlate to an active escape"
+                )
+            diagnoses[hop.hop_id] = (report, expected)
+            continue
+        if hop.strategy_revision is not None:
+            revision = hop.strategy_revision
+            diagnosis_entry = diagnoses.get(revision.diagnosis_hop_id)
+            expected = escapes.get(revision.escape_hop_id)
+            if (
+                expected is None
+                or revision.escape_hop_id in accepted_escapes
+                or revision.finding_ids != expected
+                or diagnosis_entry is None
+                or hop_order[revision.diagnosis_hop_id] >= hop_order[hop.hop_id]
+                or diagnosis_entry[0].escape_hop_id != revision.escape_hop_id
+                or diagnosis_entry[1] != expected
+                or run.hops[hop_order[revision.diagnosis_hop_id]].outcome
+                != Outcome.COMPLETED.value
+                or not set(expected).issubset(tracked_ids)
+            ):
+                raise ValidationError(
+                    f"Run v3 Hop {hop.hop_id} revision does not correlate to a completed diagnosis"
+                )
+            revisions[hop.hop_id] = (revision, expected, revision.diagnosis_hop_id)
+            continue
+        if hop.strategy_assessment is not None:
+            assessment = hop.strategy_assessment
+            diagnosis_entry = diagnoses.get(assessment.diagnosis_hop_id)
+            revision_entry = revisions.get(assessment.revision_hop_id)
+            expected = escapes.get(assessment.escape_hop_id)
+            latest_revision = next(
+                (
+                    prior.hop_id
+                    for prior in reversed(run.hops[:hop_order[hop.hop_id]])
+                    if prior.strategy_revision is not None
+                    and prior.strategy_revision.escape_hop_id == assessment.escape_hop_id
+                    and prior.strategy_revision.diagnosis_hop_id
+                    == assessment.diagnosis_hop_id
+                ),
+                None,
+            )
+            if (
+                expected is None
+                or assessment.escape_hop_id in accepted_escapes
+                or assessment.finding_ids != expected
+                or diagnosis_entry is None
+                or revision_entry is None
+                or latest_revision != assessment.revision_hop_id
+                or hop_order[assessment.diagnosis_hop_id] >= hop_order[hop.hop_id]
+                or hop_order[assessment.revision_hop_id] >= hop_order[hop.hop_id]
+                or diagnosis_entry[0].escape_hop_id != assessment.escape_hop_id
+                or diagnosis_entry[1] != expected
+                or revision_entry[0].escape_hop_id != assessment.escape_hop_id
+                or revision_entry[1] != expected
+                or revision_entry[2] != assessment.diagnosis_hop_id
+                or run.hops[hop_order[assessment.diagnosis_hop_id]].outcome
+                != Outcome.COMPLETED.value
+                or run.hops[hop_order[assessment.revision_hop_id]].outcome
+                != Outcome.COMPLETED.value
+                or not set(expected).issubset(tracked_ids)
+            ):
+                raise ValidationError(
+                    f"Run v3 Hop {hop.hop_id} strategy assessment does not correlate to the current chain"
+                )
+            if assessment.result is StrategyAssessmentResult.ACCEPTED:
+                accepted_escapes.add(assessment.escape_hop_id)
+
     assessed_correction_hops: set[str] = set()
     for hop in run.hops:
         unknown_delta_ids = sorted(set(hop.finding_delta_ids) - set(findings_by_id))
