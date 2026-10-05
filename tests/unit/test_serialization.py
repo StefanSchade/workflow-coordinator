@@ -948,6 +948,63 @@ def test_run_v3_rejects_forged_accepted_assessment_without_a_causal_chain():
         run_from_json(json.dumps(data))
 
 
+def test_run_v3_rejects_diagnosis_on_its_own_escape_hop():
+    """A persisted diagnosis must follow, rather than share, its escape Hop."""
+
+    data = json.loads(run_to_json(v3_run_with_assessment()))
+    escape = data["hops"][-1]
+    escape.update(
+        route_reason="convergence_escape:F001",
+        requested_route="correct",
+        applied_route="diagnose",
+        diagnosis={
+            "escape_hop_id": escape["hop_id"],
+            "finding_ids": ["F001"],
+            "classification": "regression_chain",
+            "analysis": "Forged same-Hop diagnosis.",
+            "evidence_refs": [],
+        },
+    )
+    revision = dict(escape)
+    revision.update(
+        hop_id="H004",
+        sequence=4,
+        route_reason=None,
+        requested_route="correct",
+        applied_route="strategy",
+        diagnosis=None,
+        strategy_revision={
+            "escape_hop_id": "H003",
+            "diagnosis_hop_id": "H003",
+            "finding_ids": ["F001"],
+            "kind": "address_regression_chain",
+            "plan": "Forged follow-up revision.",
+            "evidence_refs": [],
+        },
+    )
+    assessment = dict(revision)
+    assessment.update(
+        hop_id="H005",
+        sequence=5,
+        applied_route="correct",
+        strategy_revision=None,
+        strategy_assessment={
+            "escape_hop_id": "H003",
+            "diagnosis_hop_id": "H003",
+            "revision_hop_id": "H004",
+            "finding_ids": ["F001"],
+            "result": "accepted",
+            "evidence_refs": [],
+        },
+    )
+    data["hops"].extend((revision, assessment))
+    data["hop_used"] = 5
+    data["hop_limit"] = 5
+
+    with pytest.raises(ValidationError, match="diagnosis does not correlate"):
+        run_from_json(json.dumps(data))
+
+
 def test_run_v3_rejects_strategy_chain_for_older_of_two_unconsumed_escapes():
     """Replay cannot use an older escape while a newer one remains active."""
 

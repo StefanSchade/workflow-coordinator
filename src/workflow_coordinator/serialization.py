@@ -1959,6 +1959,7 @@ def _validate_v3_run(run: Run) -> None:
                 expected is None
                 or report.escape_hop_id in accepted_escapes
                 or report.finding_ids != expected
+                or hop_order[report.escape_hop_id] >= hop_order[hop.hop_id]
                 or not set(expected).issubset(tracked_ids)
             ):
                 raise ValidationError(
