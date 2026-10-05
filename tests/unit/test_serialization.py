@@ -948,6 +948,82 @@ def test_run_v3_rejects_forged_accepted_assessment_without_a_causal_chain():
         run_from_json(json.dumps(data))
 
 
+def test_run_v3_rejects_strategy_chain_for_older_of_two_unconsumed_escapes():
+    """Replay cannot use an older escape while a newer one remains active."""
+
+    data = json.loads(run_to_json(v3_run_with_assessment()))
+    data["hops"][-1].update(
+        route_reason="convergence_escape:F001",
+        requested_route="correct",
+        applied_route="diagnose",
+    )
+    escape = dict(data["hops"][-1])
+    escape.update(
+        hop_id="H004",
+        sequence=4,
+        coverage_claims=[],
+        convergence_assessments=[],
+        finding_delta_ids=[],
+        route_reason="convergence_escape:F001",
+        requested_route="correct",
+        applied_route="diagnose",
+        diagnosis=None,
+        strategy_revision=None,
+        strategy_assessment=None,
+    )
+    diagnosis = dict(escape)
+    diagnosis.update(
+        hop_id="H005",
+        sequence=5,
+        route_reason=None,
+        requested_route="correct",
+        applied_route="reframe",
+        diagnosis={
+            "escape_hop_id": "H003",
+            "finding_ids": ["F001"],
+            "classification": "regression_chain",
+            "analysis": "Older chain diagnosis.",
+            "evidence_refs": [],
+        },
+    )
+    revision = dict(diagnosis)
+    revision.update(
+        hop_id="H006",
+        sequence=6,
+        applied_route="strategy",
+        diagnosis=None,
+        strategy_revision={
+            "escape_hop_id": "H003",
+            "diagnosis_hop_id": "H005",
+            "finding_ids": ["F001"],
+            "kind": "address_regression_chain",
+            "plan": "Older chain revision.",
+            "evidence_refs": [],
+        },
+    )
+    assessment = dict(revision)
+    assessment.update(
+        hop_id="H007",
+        sequence=7,
+        applied_route="correct",
+        strategy_revision=None,
+        strategy_assessment={
+            "escape_hop_id": "H003",
+            "diagnosis_hop_id": "H005",
+            "revision_hop_id": "H006",
+            "finding_ids": ["F001"],
+            "result": "accepted",
+            "evidence_refs": [],
+        },
+    )
+    data["hops"].extend((escape, diagnosis, revision, assessment))
+    data["hop_used"] = 7
+    data["hop_limit"] = 7
+
+    with pytest.raises(ValidationError, match="more than one unconsumed escape"):
+        run_from_json(json.dumps(data))
+
+
 def test_run_v3_rejects_local_successors_cycles_and_reused_correction_assessments():
     run = v3_run_with_assessment()
     data = json.loads(run_to_json(run))

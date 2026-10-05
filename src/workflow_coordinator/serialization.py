@@ -1931,6 +1931,10 @@ def _validate_v3_run(run: Run) -> None:
         )
         if trigger_ids is not None:
             escapes[hop.hop_id] = trigger_ids
+            if len(set(escapes) - accepted_escapes) > 1:
+                raise ValidationError(
+                    "Run v3 contains more than one unconsumed escape"
+                )
 
         records = (
             hop.diagnosis,
@@ -1940,6 +1944,13 @@ def _validate_v3_run(run: Run) -> None:
         if sum(record is not None for record in records) > 1:
             raise ValidationError(
                 f"Run v3 Hop {hop.hop_id} has multiple strategy records"
+            )
+        if any(record is not None for record in records) and len(
+            set(escapes) - accepted_escapes
+        ) != 1:
+            raise ValidationError(
+                f"Run v3 Hop {hop.hop_id} strategy record requires exactly one "
+                "unconsumed escape"
             )
         if hop.diagnosis is not None:
             report = hop.diagnosis
