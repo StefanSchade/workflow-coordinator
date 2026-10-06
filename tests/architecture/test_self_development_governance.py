@@ -467,6 +467,21 @@ CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_003_SCOPE = (
 CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_003_REVIEW_ARTIFACT = (
     CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_002_REVIEW_ARTIFACT
 )
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_GOVERNING_PATHS = (
+    "governance/work-items/correction-convergence-escape-implementation-s4-004.yaml",
+    "governance/self-development/correction-convergence-escape-implementation-s4-004-profile.yaml",
+    "governance/self-development/correction-convergence-escape-implementation-s4-004-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/correction-convergence-escape-implementation-s4-004-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_SCOPE = (
+    CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_003_SCOPE
+)
+CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_REVIEW_ARTIFACT = (
+    CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_003_REVIEW_ARTIFACT
+)
 IMPLEMENTATION_PATHS = (
     "Makefile",
     "README.md",
@@ -5480,6 +5495,261 @@ def test_correction_convergence_escape_implementation_s4_003_bundle_passes_produ
     # provider/executable was ever invoked, no Runtime/Evidence/STATE/OPS
     # mutation occurred, and the state root the launch would eventually use
     # was never created by this process.
+    assert not state_root.exists()
+
+
+def test_correction_convergence_escape_implementation_s4_004_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Bounded post-acceptance correction commission against later external assurance.
+
+    ``WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S4-004`` corrects
+    the accepted Slice-4 implementation against the later independent
+    external assurance review (OPUS-S4-001 blocking, OPUS-S4-002 blocking
+    assurance defect, OPUS-S4-003 non-blocking), then obtains a fresh
+    independent rereview, looping ``correct -> rereview -> {accept,
+    correct}``. Unlike the rereview-first S4-003 successor, this Commission
+    starts directly in ``correct`` because the external assurance review
+    found a concrete correction obligation up front. ``correct`` carries no
+    durable artifact and no Finding-disposition authority; ``rereview`` is
+    gate/fresh/blocking-only with resolve-only Finding authority, scoped to
+    the single shared durable implementation-review artifact. The admission
+    succeeds entirely through provider-free preflight: no provider is
+    invoked and no state root is created.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "correction-convergence-escape-implementation-s4-004"
+
+    assert not state_root.exists()
+    result = _preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_GOVERNING_PATHS,
+    ))
+    texts = result[4]
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    correct = profile.phases["correct"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = (
+        *CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_SCOPE,
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_REVIEW_ARTIFACT,
+    )
+    assert len(CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_SCOPE) == 17
+
+    # (1)/(2)/(3) exact identity, initial phase, and Hop ceiling.
+    assert work_item.work_item_id == "WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S4-004"
+    assert profile.profile_id == "correction-convergence-escape-implementation-s4-004"
+    assert policy.policy_id == "workflow-coordinator-correction-convergence-escape-implementation-s4-004"
+    assert work_item.initial_phase == "correct"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 16
+
+    # (4) exact phase order / topology: correct and rereview only.
+    assert "implement" not in profile.phases
+    assert "review" not in profile.phases
+    assert "diagnosis" not in profile.phases
+    assert "reframe" not in profile.phases
+    assert "strategy_gate" not in profile.phases
+    assert tuple(profile.phases) == ("correct", "rereview")
+
+    # (5) exact routes: correct -> rereview; rereview accept -> complete;
+    # rereview correct -> correct.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "correct": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correct", "goto", "correct"),
+        ),
+    }
+
+    # (6) correct phase: worker role; exact seventeen-path scope; edit+commit
+    # only; no review descriptor; no Finding disposition authority; no
+    # durable artifact.
+    assert correct.role == "worker"
+    assert correct.authorized_scope == CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_SCOPE
+    assert set(correct.authorized_actions) == {"edit", "commit"}
+    assert correct.review is None
+    assert correct.durable_artifact.value == "none"
+
+    # (7) rereview phase: independent_reviewer; fresh context; gate;
+    # blocking_only; finding_authority: [resolve]; exact single durable
+    # artifact scope; review/edit/commit; no source/test mutation authority.
+    assert rereview.role == "independent_reviewer"
+    assert rereview.review.context == "fresh"
+    assert rereview.review.authority.value == "gate"
+    assert rereview.review.blocking_policy == "blocking_only"
+    assert rereview.review.finding_authority == ("resolve",)
+    assert "residual" not in rereview.review.finding_authority
+    assert "supersede" not in rereview.review.finding_authority
+    assert "reopen" not in rereview.review.finding_authority
+    assert rereview.authorized_scope == (
+        CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_REVIEW_ARTIFACT,
+    )
+    assert {"review", "edit", "commit"}.issubset(set(rereview.authorized_actions))
+    assert rereview.durable_artifact.value == "required"
+    assert not set(CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_SCOPE) & set(rereview.authorized_scope)
+
+    # (8) phase scopes are disjoint.
+    assert set(correct.authorized_scope).isdisjoint(rereview.authorized_scope)
+    assert CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_REVIEW_ARTIFACT not in correct.authorized_scope
+
+    # (9) WorkItem / policy scope ceiling is exactly the union of the
+    # seventeen correction paths and the one durable review artifact.
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    assert durable_artifacts == {
+        "rereview": (CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_REVIEW_ARTIFACT,),
+    }
+    for path in CORRECTION_CONVERGENCE_ESCAPE_IMPLEMENTATION_S4_004_SCOPE:
+        assert _within_scope(path, work_item.scope)
+    for withheld in (
+        "Makefile",
+        "src",
+        "governance",
+        "workflow-coordinator-runtime",
+        "workflow-coordinator-run-evidence",
+        "project_memory/canonical",
+        "src/workflow_coordinator/adapter.py",
+        "src/workflow_coordinator/slice4.py",
+        "tests/unit/test_slice4.py",
+        "tests/unit/test_slice5b.py",
+        "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc",
+        "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_design_revision_001.adoc",
+        "docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_slice4_post_acceptance_assurance_review_001.adoc",
+        "docs/backlog/BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc",
+        "docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc",
+        "docs/backlog/BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc",
+        "tests/architecture/test_self_development_governance.py",
+        "governance/work-items/correction-convergence-escape-implementation-s4-003.yaml",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+
+    # (10) authority text pins the required lineage and distinctions.
+    assert "4edcea0e341e9c8669378fa299104d66aed2851f" in work_item.authority_source
+    assert "f08c8cb61480ec5b9e2529eebc5ae44a0463bc9e" in work_item.authority_source
+    assert "83cccb98bb800479645d87051fb1cd66b3a4ac7f" in work_item.authority_source
+    assert "01a0dead992e32f6569f9a06324e5fce1b828a2d" in work_item.authority_source
+    assert "a889f9a3b515b4cac600dc9f7366637a388f2e25" in work_item.authority_source
+    assert "ea45e564dac1fb51624c6ed0aacb8c5dc4e556f1" in work_item.authority_source
+    assert "2845573c253e9019db701a8c12ab04c7625f042c" in work_item.authority_source
+    assert "37aa97fb66a6703123b2076e22d1bc50c024ad39" in work_item.authority_source
+    assert "OPUS-S4-001" in work_item.authority_source
+    assert "OPUS-S4-002" in work_item.authority_source
+    assert "OPUS-S4-003" in work_item.authority_source
+    assert "OPUS-S4-004" in work_item.authority_source
+    assert "OPUS-S4-005" in work_item.authority_source
+    assert "NOT correction targets" in work_item.authority_source or "OUT OF" in work_item.authority_source
+    assert "does NOT authorize projected-schema or Phase-Completion-Contract work" in work_item.authority_source
+    assert "Historical acceptance and current assurance sufficiency are distinct" in work_item.authority_source
+    assert "H005 historically accepted Slice 4" in work_item.authority_source
+    assert "That historical acceptance happened and is NOT rewritten" in work_item.authority_source
+
+    # (11) explicit withheld-authority list.
+    assert "does NOT authorize Runtime promotion" in work_item.authority_source
+    assert "mutation of" in work_item.authority_source and "workflow-coordinator-runtime" in work_item.authority_source
+    assert "Slice 5" in work_item.authority_source
+    assert "R1A dogfood" in work_item.authority_source
+    assert "foreign-domain falsification" in work_item.authority_source
+    assert "push" in work_item.authority_source
+    assert "Evidence mutation" in work_item.authority_source
+    assert "Project Memory mutation" in work_item.authority_source
+    assert "OPS/STATE mutation" in work_item.authority_source
+    assert "another nested Run" in work_item.authority_source
+    assert "automatic provider fallback" in work_item.authority_source
+    assert "Claude adapter work" in work_item.authority_source
+    assert "Operator Harness implementation" in work_item.authority_source
+    assert "projected phase-specific result contracts" in work_item.authority_source
+    assert "Coordinator-owned effect redesign" in work_item.authority_source
+    assert "Commission-generation redesign" in work_item.authority_source
+    assert "hard-hop-ceiling configuration work" in work_item.authority_source
+    assert "correction of OPUS-S4-004" in work_item.authority_source
+    assert "redesign motivated by OPUS-S4-005" in work_item.authority_source
+    assert "closure of any of the three currently" in work_item.authority_source
+
+    assert work_item.personas[WorkflowRole.WORKER] != work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+
+    task_text = texts["task"]
+
+    # (10)/(11) the same pins and withheld-authority items must also be
+    # legible in the operational task text, not only in the dense
+    # authority_source narrative.
+    assert "4edcea0e341e9c8669378fa299104d66aed2851f" in task_text
+    assert "f08c8cb61480ec5b9e2529eebc5ae44a0463bc9e" in task_text
+    assert "ea45e564dac1fb51624c6ed0aacb8c5dc4e556f1" in task_text
+    assert "2845573c253e9019db701a8c12ab04c7625f042c" in task_text
+    assert "37aa97fb66a6703123b2076e22d1bc50c024ad39" in task_text
+    assert "Verdict: C -- MATERIAL BLOCKING DEFECT FOUND" in task_text
+    assert "historical acceptance happened and MUST NOT be rewritten" in task_text
+    assert "a reopening of S4-003 Run-native F001/F002" in task_text
+    assert "a claim that S4-003 H005 never accepted Slice 4" in task_text
+
+    # The required negative-regression classes (A-D) for OPUS-S4-001 and the
+    # twelve positive-assurance obligations for OPUS-S4-002 are present.
+    assert "OPUS-S4-001 (BLOCKING)" in task_text
+    assert "Strategy records relabelled onto phases/roles" in task_text
+    assert "supervisor_judgment_required" in task_text
+    assert "autonomous_hop_budget_exhausted" in task_text
+    assert "A triggering Finding persisted outside the required open/blocking/" in task_text
+    assert "OPUS-S4-002 (BLOCKING ASSURANCE DEFECT)" in task_text
+    assert "tests/support.py:result()" in task_text
+    assert "a valid live complete chain" in task_text
+    assert "qualified-cycle count resets correctly" in task_text
+
+    # OPUS-S4-003 is bounded and explicitly not promoted to blocking, with an
+    # explicit non-silent-disappearance requirement.
+    assert "OPUS-S4-003 (NON-BLOCKING)" in task_text
+    assert "is not promoted to a blocking acceptance condition merely by\nthis" in task_text
+    assert "It must\nnot be silently omitted from the rereview disposition." in task_text
+
+    # OPUS-S4-004/005 are confirmed out of correction scope.
+    assert "OUT OF CORRECTION SCOPE" in task_text
+    assert "OPUS-S4-004 -- misleading pre-existing" in task_text
+    assert "does NOT\nauthorize projected-schema work in this Run" in task_text
+
+    # Historical H005 vs. later-assurance distinction, and the historical
+    # S4-IR disposition-under-challenge table, are legible verbatim.
+    assert "S4-IR-001 CLOSED,\nS4-IR-002 CLOSED, S4-IR-003 CLOSED, S4-IR-004 CLOSED" in task_text
+    assert "historical closure assurance falsified by later evidence" in task_text
+    assert "substantive closure survives, but part of the cited closure" in task_text
+
+    # Open-BUG verify-not-close boundary.
+    assert "BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc" in task_text
+    assert "BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc" in task_text
+    assert "BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc" in task_text
+    assert "verify status only; close none" in task_text
+
+    # Withheld scope restated operationally in the task text.
+    assert "Runtime promotion, Slice 5, R1A\ndogfood" in task_text or "Slice 5" in task_text
+    assert "the Operator Harness, projected phase-specific" in task_text
+    assert "Commission generation, or Runtime hard-hop-ceiling" in task_text
+
+    # Phase-completion-contract hardening against the exact S4-002 H004
+    # failure mode is carried forward unchanged into S4-004.
+    assert "ROLE / RESULT SEMANTICS UNDER THE CURRENT MECHANISM" in task_text
+    assert "`changes_required` is NOT a valid worker outcome" in task_text
+    assert "a route-eligible\nrereview result with no required durable-artifact commit is NOT a valid\nphase-completion handoff" in task_text
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-run-evidence", policy.work_item_scope_ceiling)
+    assert not _within_scope("project_memory/canonical", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    # (12) preflight remains entirely provider-free and creates no state
+    # root: no provider/executable was invoked, no Runtime/Evidence/STATE/
+    # OPS mutation occurred, and the state root a later launch would use was
+    # never created by this process.
     assert not state_root.exists()
 
 
