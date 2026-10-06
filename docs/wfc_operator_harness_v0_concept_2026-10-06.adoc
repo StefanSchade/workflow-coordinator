@@ -1,0 +1,365 @@
+= WFC Operator Harness v0 -- Concept
+:toc:
+:toclevels: 2
+
+Status:: *CONCEPT ONLY. AUTHORIZES NOTHING. NOT IMPLEMENTATION AUTHORITY.*
+
+Date:: 2026-10-06.
+
+Scope:: A small, implementation-oriented concept for a pragmatic
+"WFC Operator Harness v0" that removes repeated manual operator mechanics
+around `prepare` / `launch` / `status` / `archive`, adding no new semantic
+workflow authority. A quick-win concept, not a generic agent platform,
+outer orchestrator, or WFC replacement.
+
+Anchor:: Development `e86a4477b6b7c0c18b8978036538f942e5cc0c8b`, Runtime
+`c1773ffb7ae11b5ddf3c5786163f092279034755` (detached, clean, push disabled),
+Evidence `2f972c7d3b73cddca03d40ebcb5befd06aec34da` -- all verified against
+live state before drafting. Slice 4 is closed; not reopened here. Cites,
+without modifying, `docs/run-preparation.adoc`, `docs/self-development.adoc`,
+`docs/run-recovery-and-salvage.adoc`, `operator.py`, `wfc-archive-run`, and
+the two prior operator-UX evidence notes (the 2026-09-28 "Predecessor" and
+2026-10-03 "Follow-Up" notes).
+
+[IMPORTANT]
+====
+Creates no FTR, WorkItem, profile, policy, task, Commission, or backlog
+requirement; authorizes no Run, Runtime promotion, or push; implements
+nothing. Overlap with the Predecessor/Follow-Up notes is an addition, not a
+replacement; overlap with `run-preparation.adoc`, `self-development.adoc`,
+or `run-recovery-and-salvage.adoc` leaves those authoritative and unrestated.
+====
+
+== 1. Purpose / problem statement
+
+Recent self-development Runs (notably S4-005) required large, freshly
+hand-authored shell blocks to pin repository identities, build OPS/state
+roots, export and install the Runtime, prepare a Development/evidence
+environment, assemble a controlled `PATH`, run provider-free preflight,
+write `launch.sh`, launch, inspect the result, and archive it. None of this
+is semantic LLM work -- `run-preparation.adoc` already names steps 1-9 of
+this sequence "deterministic maintainer/operator mechanics... not another
+semantic agent Hop." Re-authoring that mechanics by hand each time is itself
+now a source of operator risk: the S4-005 PREPARE Hop ran a full pytest
+suite against a `git archive` export with no `.git`, and a reducer test
+invoking `git rev-parse HEAD` failed with Git exit 128 before any Run
+existed. The fix was mechanical, but nothing *required* the correct
+substrate; a human had to notice.
+
+Harness v0 exists to make these already-documented steps repeatable and
+refusal-capable by construction, not to decide anything new. The Follow-Up
+note's §14 ranked a preparation wrapper the *least* evidenced of three UX
+candidates at the time; S4-005 is the additional repeated-pain evidence that
+note was waiting for, for the preparation/launch arc specifically. This acts
+on it without reopening the other two candidates (admission legibility,
+post-Run report enrichment), which remain WFC-core documentation questions.
+
+== 2. Current repeated operator workflow
+
+[source,text]
+----
+commission reviewed/committed -> hand-authored PREPARE shell block
+    (pin identities; verify clean/detached/push-disabled; create OPS;
+     select fresh STATE; export+install Runtime venv; build Dev/evidence
+     venv; write execution-bindings.yaml; assemble PATH; provider-free
+     preflight; materialize launch.sh)
+  -> maintainer executes PREPARE -> hand-authored LAUNCH block
+  -> maintainer executes LAUNCH -> WFC Run (provider boundary here)
+  -> maintainer inspects operator-summary.json / checkpoint.json
+  -> hand-invoked archive wrapper -> LLM-assisted run-ledger maintenance
+----
+
+Everything up to `launch.sh` is deterministic mechanics, composed by hand in
+the same conversational surface used for semantic commissioning -- exactly
+how a substrate mistake, a `set -e` hazard, or a wrong repository root (all
+reported in the Follow-Up note's §6) enters a Run unnoticed until it fails.
+
+== 3. V0 goals
+
+* Collapse the hand-authored PREPARE/LAUNCH blocks into one small, testable,
+  repository-owned tool performing exactly the steps `run-preparation.adoc`
+  and `self-development.adoc` already document.
+* Make the PREPARED/NOT-LAUNCHED boundary, and the launch boundary itself,
+  mechanically enforced, not merely documented.
+* Make `status` a read-only mechanical projection of already-persisted Run
+  facts.
+* Make `archive` a deterministic, delegating wrapper around the existing
+  canonical archiver, never a reimplementation.
+* Fail closed on every precondition this concept enumerates.
+
+== 4. Explicit non-goals
+
+Not: a generic agent platform, workflow framework, outer orchestrator, new
+policy/Commission engine, or WFC replacement. Excludes: projected/
+phase-specific result schemas, Phase Completion contract redesign, automatic
+successor creation, outer orchestration/LangGraph integration, hierarchical
+escalation handling, backlog picking, automatic retry, provider fallback,
+model-selection policy, cost optimization, arbitrary-N workflow control,
+Runtime promotion, GitHub push, semantic ledger curation, Commission
+generation, a generic plugin architecture, a capability ontology, sandbox or
+trust-classification redesign, fixing unit tests Harness happens to reveal,
+and Slice 5 / R1A work. These may become future Harness consumers, never
+prerequisites for v0.
+
+== 5. Authority boundary
+
+----
+HARNESS owns mechanics.           WFC owns workflow execution.
+GOVERNING INPUTS own authority.   AGENTS own bounded semantic work.
+MAINTAINER owns authorization / promotion / push.
+----
+
+Harness v0 never decides: whether a WorkItem should exist, which problem to
+solve, which workflow/profile is appropriate, whether a Finding is valid or
+how it is dispositioned, whether a Run should semantically continue, Runtime
+promotion, Development push, or successor creation. It only performs or
+exposes mechanics `run-preparation.adoc`, `self-development.adoc`, and the
+existing archive wrapper already define as deterministic.
+
+== 6. Command/surface proposal
+
+Smallest coherent surface, illustrative naming only:
+
+[source,text]
+----
+wfc-op prepare --attempt <name> --development <path> --runtime <path> \
+               --evidence <path> --work-item <path> --profile <path> \
+               --policy <path> --components <path> --task <path>
+wfc-op launch <attempt>
+wfc-op status <attempt>
+wfc-op archive <attempt> [--semantic-json PATH] [--dry-run]
+----
+
+Four subcommands matching the four mechanical phases already performed by
+hand. `collect` is deliberately *not* included: `status` already renders
+persisted facts and `archive`'s manifest already enumerates every archived
+file, so a separate "collect" verb would duplicate, not add, mechanics. If
+real use demonstrates otherwise, it is a v0.1/v1 candidate (§19), not a v0
+commitment made on spec.
+
+== 7. `prepare` semantics
+
+Owns, in the order `run-preparation.adoc` already specifies:
+
+. Pin exact Development/Runtime/Evidence commit identities from the live
+  checkouts, not re-typed by the maintainer.
+. Require clean Development/Evidence worktrees and a clean, detached,
+  push-disabled Runtime (self-development's specialization).
+. Refuse an attempt whose OPS or STATE path already exists.
+. Create OPS; select a fresh STATE path without creating it (STATE's
+  absence is a launch precondition WFC enforces, not a Harness side effect).
+. Export the exact Runtime commit via `git archive` into a fresh external
+  runtime venv; build the Development/evidence venv from the pinned
+  Development baseline.
+. Write `execution-bindings.yaml`; construct the controlled `PATH`; verify
+  executable resolution (`<runtime-env>/bin/wfc --help`; never bare `wfc`).
+. Run provider-free preflight (`snapshot_environment()` /
+  `prepare_evidence_commands()`).
+. Persist preparation facts to `preparation-pins.txt`, extending it with
+  Development/Evidence pins alongside the `attempt_id`/`state_root` keys
+  `wfc-archive-run` already reads.
+. Materialize `launch.sh`. Stop. Print `PREPARED / NOT LAUNCHED`. Never
+  launch.
+
+`prepare` must prove it created no Run: STATE remains absent on exit.
+
+== 8. `launch` semantics
+
+Takes only `<attempt>`. Re-derives OPS/STATE from the name (§11), re-checks
+that the identities and cleanliness recorded in `preparation-pins.txt`
+still hold (refuses on drift), re-checks STATE is still absent, then
+executes the already-materialized `launch.sh` unmodified, preserving its
+stdout/stderr/return status verbatim. `launch` never re-derives bindings or
+rewrites OPS content; a stale preparation is a named refusal requiring
+`prepare` to be re-run, never silently patched. `launch` never runs
+implicitly from `prepare`; nothing before it crosses the provider boundary.
+
+== 9. `status` semantics
+
+Read-only; never creates, mutates, or launches anything. Resolves STATE from
+the attempt name and renders mechanically: `preparation-pins.txt` (what was
+prepared, against which identities); `operator-plan.json` (what was
+admitted, schema-version-checked); `operator-summary.json`/
+`checkpoint.json`/`run.json` (what happened, located in the same priority
+order `wfc-archive-run`'s own `facts` probe already uses); and whether an
+archive already exists for this attempt.
+
+Where two sources disagree on a field both claim, `status` surfaces the
+disagreement rather than picking one -- the discipline `wfc-archive-run`'s
+`agree()` helper already enforces. `status` never invokes the pinned
+Runtime's own `wfc status` subcommand: that is Runtime-version-coupled, and
+the Follow-Up note's §12 already records a real incident of post-Run
+tooling assuming a newer Runtime CLI surface than the pinned Runtime had.
+Reading only persisted files keeps `status` correct across Runtime-N/
+Development-N+1 drift by construction.
+
+== 10. `archive` semantics
+
+A deterministic wrapper around
+`workflow-coordinator-run-evidence/scripts/wfc-archive-run`. Harness derives
+`<state-root>` from the attempt name, resolves the Evidence repository, and
+forwards `--semantic-json`/`--dry-run` verbatim, always running the
+archiver's own `--dry-run` plan first before any real archive proceeds.
+Harness implements none of the wrapper's copying, hashing, manifest, or
+fact-extraction logic -- only derives its two positional arguments and
+reports its output and resulting Evidence commit. Semantic run-ledger
+curation remains separate and is never performed by `archive`.
+
+== 11. Attempt / OPS / STATE identity
+
+V0 formalizes, rather than replaces, the existing convention:
+
+[source,text]
+----
+attempt = <work-item-slug>-<date>-<counter>   # already in use, e.g.
+                                               # wfc-correction-convergence-
+                                               # escape-implementation-s4-005-
+                                               # 20261006-01
+OPS   = $HOME/wfc-ops/<attempt>
+STATE = $HOME/wfc-state/<attempt>
+----
+
+This is exactly `wfc-archive-run`'s own derivation
+(`attempt_id=${state_root##*/}`, `ops_candidate=$HOME/wfc-ops/$attempt_id`),
+reused rather than duplicated, rejecting the same implausible forms that
+wrapper already rejects. No registry or database is introduced; the attempt
+name is the key, sufficient for the current single-attempt-at-a-time
+pattern. A multi-attempt registry is deferred (§19) pending concurrent-
+attempt pain, which has not been observed.
+
+== 12. Source identity vs. test-execution substrate
+
+Two different questions, kept separate: *pinned source identity* -- which
+exact commit is Development/Runtime/Evidence, verified by Git fact
+comparison, what `prepare` pins and `launch` re-checks -- versus
+*test-execution substrate* -- the filesystem provider-free preflight (and
+any repository-aware tests it triggers) actually runs against. S4-005
+showed these diverge: a `git archive` export of the pinned commit is a
+valid *source* export but not a valid *substrate* for a test shelling out
+to `git rev-parse HEAD`, since the export has no `.git`.
+
+Harness v0's narrow responsibility: know and record which artifact (export
+vs. live checkout) is used as which environment's substrate; run
+provider-free validation in an explicitly chosen, named substrate, not an
+ambient working directory; and require repository-aware tests not to depend
+on ambient CWD (fixing individual tests that do is out of scope, §4). V0
+does *not* adopt a blanket rule that all tests require the canonical
+checkout -- that would overcorrect from one incident class. Pytest markers
+distinguishing repository-aware tests are a plausible follow-up (§19), not a
+v0 prerequisite.
+
+== 13. Failure/refusal behavior
+
+Harness v0 refuses rather than guesses when: pinned identities differ from
+what was recorded; required cleanliness is lost; Runtime is attached or
+push-enabled; an attempt's OPS or STATE path already exists; prepared facts
+have drifted before `launch`; STATE is no longer absent at `launch`;
+canonical archive prerequisites are missing; or an operation would overwrite
+existing state unexpectedly. Every refusal names the specific mismatch
+(expected vs. observed); none are silently repaired, retried, or bypassed.
+No recovery automation is introduced -- if a Run or Hop does not cleanly
+complete, `run-recovery-and-salvage.adoc`'s four maintainer-chosen outcomes
+still govern, unautomated by Harness.
+
+== 14. Security / Git / Runtime invariants
+
+Harness v0 preserves every invariant `self-development.adoc` states and
+adds none of its own: Development and Runtime remain separate clones with
+separate object stores; Runtime is selected only via its absolute
+`<runtime-env>/bin/wfc` path, never bare `wfc`; Runtime stays detached with
+push disabled before and after every Harness operation; OPS/STATE/exports/
+venvs live outside all three clones; no Harness command pushes or promotes
+Runtime; only `launch` invokes the pinned Runtime, and only the Runtime's
+own first real provider dispatch -- not Harness -- crosses the provider
+boundary.
+
+== 15. Relationship to current WFC operator code
+
+Harness v0 invokes `operator.py`'s `main()` exactly as a maintainer does
+today -- the pinned Runtime's absolute `wfc` executable as a subprocess with
+documented flags -- and never imports `workflow_coordinator` internals. It
+reads `operator-plan.json`/`operator-summary.json`/`checkpoint.json`/
+`run.json` defensively (checking `schema_version` where present) as an
+on-disk contract it does not own, and does not call the existing `status`/
+`export-salvage`/`prepare-successor` subcommand group (`operator.py`
+`_parse_args`): that group serves successor/salvage preparation, a
+different, already-productized mechanism, not ordinary post-Run inspection;
+Harness `status` (§9) reads persisted JSON directly instead.
+
+== 16. Relationship to later projected contracts
+
+Harness v0 sits *before* the planned phase-/role-specific result-typing
+work (`accepted Slice 4 -> Harness v0 -> projected/phase-specific result
+contracts -> Harness v1 refinement`). It treats every WFC-owned Run/result
+field it reads as opaque, persisted state, accessed through one small
+internal reading seam per artifact, rather than scattering field names
+through command implementations. When projected contracts land, only that
+seam changes; `prepare`/`launch`/`archive`'s mechanics (Git identity,
+OPS/STATE, venvs, `PATH`, the archive wrapper's arguments) are unaffected
+because none depend on Run/result content shape.
+
+== 17. Proposed implementation slices
+
+*Form.* One small Python script/module with argparse subcommands, living in
+the Development repository but *outside* the `workflow_coordinator`
+package -- positioned like `wfc-archive-run`, not like `operator.py`.
+Anything inside `src/workflow_coordinator/` is exported and frozen at
+Runtime promotion, so a Harness living there would itself go stale against
+Development, as the §9/§12 incident describes for `wfc status`. Harness
+must always run at Development's current HEAD, never a pinned Runtime's
+frozen copy, since its job is to prepare and launch *against* a pinned
+Runtime, not be one. A single file plus a small test module is proportionate
+here; a service, daemon, web UI, database, event bus, or plugin system
+would not be.
+
+Slice H0-1 -- `prepare` + `launch`:: the highest-incident-rate arc (§1-§2);
+  replaces the exact shell blocks that caused the S4-005 substrate incident,
+  end to end, with no `status`/`archive` needed yet.
+
+Slice H0-2 -- `status` + `archive` + polish/tests:: read-only post-Run
+  projection, the delegating archive wrapper, and the refusal-path/fixture
+  test suite (§18); usable on its own against any attempt prepared/launched
+  by hand, since both need only the attempt name and the standard OPS/STATE
+  layout.
+
+*Should Harness v0 itself be developed through WFC?* Assessed, not merely
+repeated: *probably not.* The scope is a few hundred lines directly
+encoding mechanics two documents and one existing script already fully
+specify; there is no undecided semantic surface for a WorkItem/profile/
+policy/review cycle to add value over ordinary code review. Routing v0's
+construction through a WFC Commission would mean using the exact PREPARE/
+LAUNCH ceremony this concept exists to remove, to build the tool that
+removes it -- circular at this size. Harness v1, once projected contracts
+force genuine interpretive choices about richer Run/result content, is a
+materially better dogfood candidate.
+
+== 18. Acceptance criteria
+
+* `prepare` on correctly-pinned/clean/detached/push-disabled inputs produces
+  OPS, `execution-bindings.yaml`, `launch.sh`, and `preparation-pins.txt`,
+  leaving STATE absent and no Run/checkout created -- asserted by a test.
+* `prepare` refuses, with a named mismatch, for dirty Development/Runtime/
+  Evidence, attached or push-enabled Runtime, and an existing OPS/STATE path.
+* `launch` is separately testable from `prepare`, including against a
+  deliberately staled `preparation-pins.txt`.
+* `status` never writes to STATE, OPS, or any repository under test.
+* `archive` tests assert delegation (the exact arguments passed to
+  `wfc-archive-run`), not its internal copy/hash/manifest behavior.
+* All tests are provider-free, run against temporary repositories/state
+  roots, with explicit Git fixtures wherever Git behavior is under test.
+* `git diff --check` is clean and exactly one file differs from `main`;
+  Harness v0's implementation is a separate, later change.
+
+== 19. Deferred v1 ideas
+
+* `collect` as a distinct verb, if `status`+`archive` prove insufficient by
+  real use (§6).
+* Capability/version discovery, or a Runtime-independent stable report
+  reader, for the Follow-Up note's §12 open question.
+* Surfacing `operator-plan.json`'s omitted authorized-scope/action/review
+  content through `status` -- a WFC-core enrichment, not Harness-owned.
+* Pytest markers/fixture categories distinguishing repository-aware tests
+  from environment-independent ones (§12).
+* A multi-attempt registry, only if genuine concurrent-attempt use appears,
+  and Harness v1 as a WFC dogfood candidate once projected contracts give it
+  real interpretive surface (§17).
