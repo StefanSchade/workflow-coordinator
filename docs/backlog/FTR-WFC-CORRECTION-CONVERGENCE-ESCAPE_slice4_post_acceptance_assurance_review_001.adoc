@@ -1,0 +1,713 @@
+= FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE -- Slice-4 Post-Acceptance Assurance Review 001
+
+Status:: INDEPENDENT, NON-AUTHORIZING POST-ACCEPTANCE ASSURANCE REVIEW -- MATERIAL
+BLOCKING DEFECT FOUND.
+Type:: milestone-level independent adversarial assurance review of an already
+accepted implementation slice
+Date:: 2026-10-06
+Reviewer identity:: single frontier-model session (Anthropic Opus 5), fresh
+context, read-only across all three repositories, no subagent and no second
+provider
+Authority:: none. This artifact is not a Commission, not a correction, not a new
+accepted FTR, not a WFC Run, not Run-native evidence, and not a maintainer
+authorization. It records later independent evidence about an earlier accepted
+state and nothing else.
+
+== What this artifact is and is not
+
+* It *is* a durable record of an independent adversarial assurance review
+  performed after, and outside, the commissioned S4-003 Run.
+* It *is* later evidence than the `S4-003` `H005` independent acceptance.
+* It does *not* rewrite history. `S4-003` `H005` did historically reach its
+  commissioned independent acceptance boundary under the evidence available to
+  that Run, and this artifact does not alter, reopen, or re-disposition the
+  historical dispositions recorded in
+  `FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc`.
+* It does *not* authorize any correction, implementation change, test change,
+  BUG record, Commission, Runtime promotion, Slice-5/R1A dogfood, push, or
+  further Run.
+* It was *not* executed through WFC. It is maintainer-facing external assurance
+  evidence, not a Run ledger entry, and it allocates no WFC Finding.
+
+== Provenance
+
+Development HEAD reviewed::
+`2845573c253e9019db701a8c12ab04c7625f042c`
+(`docs(convergence): WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S4-003 H005 record Slice-4 acceptance`)
+Slice-4 implementation candidate::
+`ea45e564dac1fb51624c6ed0aacb8c5dc4e556f1`
+(`fix(convergence): WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S4-003 H004 reject same-hop diagnosis`)
+Complete reviewed implementation range::
+`a889f9a3b515b4cac600dc9f7366637a388f2e25..ea45e564dac1fb51624c6ed0aacb8c5dc4e556f1`
+(28 files, +4718/-48), plus each intermediate correction
+(`76b7ee2`, `b5f4aba`, `637614a`, `ea45e56`) read individually, plus the
+acceptance-only commit `2845573c`
+Runtime inspected read-only::
+`a390ac23b42f69112af8f4c81cd171795920873a`
+Evidence baseline inspected read-only::
+`6fc1cd2ae0b1a5de52aecfaf8c3c6c79c533995a`, including archive
+`archive/unclassified/wfc-correction-convergence-escape-implementation-s4-003-20261005-01`
+Relevant Run:: `RUN-0c6a9c86861249b88d52f529489901a0`
+Relevant historical acceptance:: `S4-003` `H005`,
+`workflow-coordinator@2845573c253e9019db701a8c12ab04c7625f042c`
+
+Design baseline read directly:
+`FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc` (questions E, F, G, I in
+particular), `FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_design_revision_001.adoc`,
+the complete Slice-1--4 history in
+`FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc`, and the
+three independently open BUG records.
+
+All three repositories were clean at entry and at exit, at the identities above.
+No repository was mutated during the review.
+
+== Verdict
+
+*C -- MATERIAL BLOCKING DEFECT FOUND.*
+
+The Slice-4 *live* mechanism behaved correctly on every valid live path that was
+constructed and challenged. What does not survive is the accepted *replay-closure*
+claim recorded under `S4-IR-001`, and the recorded claim that the positive path
+(a complete valid chain advancing each triggering pair exactly once) was
+verified.
+
+== OPUS-S4-001 -- Persisted Run-v3 replay validation is weaker than live reduction
+
+*Severity: BLOCKING.*
+
+=== Invariant
+
+Run-v3 replay must be fail-closed over the complete Slice-4 causal chain, so
+that no persisted history which valid live execution could not have produced can
+reach derived strategy-generation advancement. `S4-IR-001` stated this scope
+explicitly, naming *role provenance* and *Finding state/generation at the
+escape* among the unproven facts. The accepted FTR (question F) additionally
+requires Core to reject the complete result when a chain reference "points to a
+Finding that is now closed, residualized, superseded, or no longer at the
+event's recorded generation", and (question I) characterizes the escape event as
+"an immutable routing decision".
+
+=== Current code path
+
+* `src/workflow_coordinator/serialization.py:1907-2031` -- the Slice-4 wire
+  validator reconstructs the chain from `hop.diagnosis`,
+  `hop.strategy_revision`, `hop.strategy_assessment` and `hop.route_reason`
+  only. It never consults `hop.phase`, `hop.role`, `hop.attribution`, or
+  `hop.applied_route`. Its `tracked_ids` set
+  (`serialization.py:1920-1924`) tests only
+  `finding.correction_obligation is not None`, not
+  `state is OPEN and blocking`.
+* `src/workflow_coordinator/reducer.py:824-889` -- the live validator
+  `_validate_strategy_chain` is strictly stronger: it derives `open_ids` with
+  `state is FindingState.OPEN and finding.blocking`
+  (`reducer.py:841-847`). Reduction additionally enforces phase/role gating
+  (`reducer.py:903-904`, `930-931`, `1012-1013`) and strategy-gate route
+  authority (`reducer.py:989-1007`).
+* `src/workflow_coordinator/reducer.py:195-281` --
+  `validate_convergence_route_history`, the only profile-aware replay boundary,
+  iterates *only* hops carrying a non-`None` `route_reason`. It never
+  re-examines a persisted diagnosis, revision, or assessment, so it supplies
+  none of the missing provenance. It also deliberately permits
+  `applied_route is None` for `supervisor_judgment_required` and
+  `autonomous_hop_budget_exhausted` (`reducer.py:208-226`), which is correct
+  for Slice-3 escape replay but is not compensated for anywhere in the Slice-4
+  chain check.
+
+=== Independently reproduced classes of invalid persisted history
+
+Starting from one genuine live-reduced chain (`H005` escape
+`convergence_escape:F001`, `H006` diagnosis, `H007` revision, `H008` accepted
+assessment, deriving `strategy_generation=1`), each mutation below was applied
+to the persisted bytes alone and round-tripped through
+`run_to_json()`/`run_from_json()`:
+
+. *Phase/role relabelling.* The diagnosis and revision Hops relabelled
+  `phase="correct"`/`role="worker"` and the accepted-assessment Hop relabelled
+  `phase="evaluate"`/`role="independent_reviewer"` -- i.e. a chain whose records
+  are authored by phases that could not author them live.
+. *Supervisor judgment still pending.* The escape Hop's `applied_route` set to
+  `null` with `stop_reason="supervisor_judgment_required"`, validated against
+  `convergence_routing_profile(escape_supervisor=True)` -- i.e. a complete
+  strategy chain anchored to an escape whose supervisor gate was never
+  satisfied and whose escape route was therefore never applied.
+. *Autonomous-hop-budget preemption.* The escape Hop's `applied_route` set to
+  `null` with `stop_reason="autonomous_hop_budget_exhausted"` -- again a
+  complete chain anchored to an escape that was never applied.
+. *Trigger Finding no longer open.* On a two-Finding escape
+  `convergence_escape:F001,F002` with an otherwise complete valid chain, `F002`
+  persisted as `state="residual"`, `blocking=false` rather than remaining
+  open/blocking/tracked.
+
+In every one of the four cases:
+
+----
+run_from_json:                      ACCEPTED
+validate_convergence_route_history: ACCEPTED
+derive_convergence_facts:           F001 strategy_generation=1,
+                                    qualified_cycle_count=0
+----
+
+and `convergence_prompt_context()` published the advanced fact to the next
+dispatch.
+
+=== Live controls
+
+The same semantics attempted through `reduce_result()` on the same profile are
+refused:
+
+----
+corrector phase submits a diagnosis
+  -> mechanical_preemption:...:corrector cannot submit strategy records
+evaluator phase submits a diagnosis
+  -> rejected (reducer.py:1012-1013, "evaluator cannot submit strategy records")
+diagnosis naming a resolved trigger Finding
+  -> mechanical_preemption:...:escape trigger Finding is no longer open and tracked
+----
+
+Cases 2 and 3 are live-unreachable outright: while the escape is pending or
+preempted the Run is not `running`, and `record_hop()` raises
+`Run status prohibits invocation`.
+
+=== Expected versus actual
+
+Expected:: each of the four histories is rejected -- by `run_from_json()`, or at
+latest by `validate_convergence_route_history()` -- *before*
+`derive_convergence_facts()`, `checkpoint_projection()`, or
+`convergence_prompt_context()` can observe it.
+Actual:: all four parse, both replay validators accept, the derived generation
+advances, the qualified-cycle count resets to zero, and the advanced fact is
+projected as Coordinator-derived truth.
+
+=== Key consequence
+
+These malformed persisted histories can be admitted and influence
+`derive_convergence_facts()`, including strategy-generation advancement,
+although valid live execution could not have produced them. Case 2 is the
+sharpest: a persisted history can present a complete accepted strategy chain
+built on an escape whose supervisor judgment was never given, and replay treats
+the resulting generation advancement as truth. That is an authority effect, not
+only a bookkeeping one.
+
+=== Why existing assurance missed it
+
+Every S4 reproduction in the review chain (`S4-IR-001` original, `S4-IR-003`,
+`S4-IR-004`) forged a chain that was *internally* non-causal: a nonexistent
+diagnosis Hop, two active escapes, a same-Hop diagnosis. Each correction added
+the predicate that rejected that one shape (`b5f4aba` link reconstruction,
+`637614a` single-active-escape, `ea45e56` one strict comparison). None of the
+three reviews tested a chain that is internally perfectly causal but externally
+unauthorized -- wrong phase, unapplied escape, or a trigger Finding no longer
+open. The committed tests carry the same bias: all three new
+`test_run_v3_rejects_*` cases mutate internal references only. The predicate
+class was never generalized, and `_validate_v3_run` and
+`_validate_strategy_chain` were allowed to diverge rather than converge.
+
+=== Required semantic correction (obligation only; not implemented here)
+
+* Persisted replay must prove the equivalent relevant authority and provenance
+  facts that live reduction proves, *before* strategy material may affect any
+  derived truth or projection.
+* A persisted strategy record must originate from the phase/role semantics that
+  own that record type -- and, for the assessment, from an independent gate.
+* The referenced escape must actually have been applied; a `route_reason` whose
+  Hop has `applied_route is null` is a pending or preempted routing decision and
+  must not anchor a chain.
+* Every triggering Finding must satisfy the required open/blocking/tracked state
+  at the relevant causal point, not merely carry a correction obligation.
+* Because the first two obligations are profile-dependent, the natural home is
+  `validate_convergence_route_history()` (or a sibling invoked from every path
+  that reaches derivation or projection), with the wire validator retaining only
+  the profile-free subset. This artifact states the obligation, not the design.
+* The existing exact-sorted-trigger-set, strict temporal-order,
+  latest-revision, one-current-unconsumed-escape and exactly-once rules all
+  remain required and must survive the correction unchanged, and the valid chain
+  must still advance exactly once.
+
+== OPUS-S4-002 -- Central positive Slice-4 paths were not exercised by the accepted suite
+
+*Severity: BLOCKING ASSURANCE DEFECT.*
+
+This is an assurance defect, not a behavioral one: the reachable live behavior
+itself worked correctly on every valid chain the independent probes built.
+
+=== Invariant
+
+`S4-IR-001`'s stated closure obligation was that the correction "must prove that
+a complete valid chain alone advances each triggering pair exactly once".
+`S4-IR-002`'s closure cited, as its evidence, an "added persisted complete-chain
+projection test" said to confirm that the per-escape generation mapping survives
+replay.
+
+=== Independently measured execution coverage
+
+A `sys.settrace` line-level execution trace of the complete suite at HEAD (677
+tests, exit 0) over `reducer.py`, `serialization.py`, `persistence.py`, and
+`vertical.py` establishes that the suite does not execute the central successful
+strategy-chain admission or generation-advancement branches:
+
+[cols="3,1,1"]
+|===
+| Code | Lines | Executed by the suite?
+
+| `reducer._escape_trigger_ids` | 817-821 | never
+| `reducer._validate_strategy_chain` (entire function) | 824-889 | never
+| `reducer` strategy-gate route-authority block | 989-1007 | never
+| `reducer` `"{role} result cannot mutate Findings"` | 987-988 | never
+| `reducer.derive_convergence_facts` generation advancement | 153-156 | never
+| `serialization._validate_v3_run` -- a diagnosis *passing* validation | 1968-1969 | never
+| `serialization._validate_v3_run` revision branch (entire) | 1971-1990 | never
+| `serialization._validate_v3_run` -- `accepted_escapes.add(...)` | 2030-2031 | never
+|===
+
+Harness validity control: within the same function,
+`reducer.py:985` (`raise ReductionError(f"{role.value} requires exactly its
+typed strategy record")`) *is* recorded as executed while the immediately
+following `reducer.py:986` (`_validate_strategy_chain(...)`) is not. The suite
+therefore enters the convergence-role branch only to be rejected for a *missing*
+record, and never reaches the branch with a well-formed one.
+
+=== Corroborating artifacts
+
+* `tests/unit/test_reducer.py` contains zero occurrences of `diagnosis`,
+  `strategy_revision`, or `strategy_assessment`, and was not modified at all by
+  the Slice-4 delta: 131 new lines of live admission logic in `reducer.py` with
+  no reducer test.
+* `tests/support.py:203-229` -- the `result()` helper was never extended with
+  `diagnosis` / `strategy_revision` / `strategy_assessment` parameters, so the
+  fixture layer cannot express a live strategy result at all.
+* Repository-wide, `trigger_generations` is asserted exactly once
+  (`tests/unit/test_persistence.py:268`) as `{"F001": 0}`, and escape `state`
+  exactly once (line 270) as `"unconsumed"`, on an escape whose `diagnosis`,
+  `strategy_revision`, and `strategy_assessment` are all asserted `None`. There
+  is no test anywhere of a consumed escape, a non-zero trigger generation, or a
+  complete-chain projection.
+* `git show b5f4aba -- tests/` -- the commit that allegedly added the
+  complete-chain projection test added exactly two assertion lines to the
+  existing *unconsumed*-escape test (`trigger_generations == {"F001": 0}` and
+  `attribution == "coordinator_derived"`) plus one forged-rejection
+  serialization test. The independent review could not find the cited
+  "persisted complete-chain projection test" in Git history or at HEAD.
+* `tests/unit/test_slice3_vertical.py` is the only live touch point, and it
+  asserts the *preemption* path, not a successful strategy reduction.
+
+=== Preserved facts
+
+* No deterministic complete live
+  `escape -> diagnosis -> reframe -> accepted strategy_gate` acceptance test
+  existed.
+* No test demonstrated the complete positive-chain replay/projection
+  equivalence claimed by the durable implementation review.
+* The durable review cited a "persisted complete-chain projection test" that
+  the independent review could not find in Git history or at HEAD.
+* The independent Opus probes nevertheless showed that the reachable live
+  behavior itself worked correctly on the tested valid chains. Constructed by
+  the review rather than by the suite:
+
+----
+escape(H005, convergence_escape:F001) -> diagnosis(H006) -> revision(H007)
+  -> accepted(H008)
+  facts:  F001 strategy_generation=1, qualified_cycle_count=0,
+          goalpost_reached=false
+  replay: identical;  validate_convergence_route_history: OK
+two generations (escapes H005 and H012): strategy_generation=2; checkpoint and
+  prompt both report H005 -> trigger_generations {F001:0}, state consumed and
+  H012 -> {F001:1}, state consumed
+changes_required -> second revision -> accepted: advances exactly once
+stale-revision accept: rejected
+two Findings {F001,F002}: both advance exactly once; subset/reordered/superset
+  all rejected
+non-triggering Finding F002 (count 1 of 2): generation 0 and count 1 preserved
+----
+
+=== Why existing assurance missed it
+
+The review chain's exploratory evidence was consistently *negative*: forged
+histories that should be rejected, re-run as focused `pytest` selections plus
+`git diff --check`. The Coordinator-projected trusted evidence
+(`run/operator-summary.json` in the S4-003 archive, five `pytest` observations,
+all `status: pass`) is a suite-level pass/fail signal and carries no coverage
+information. Nothing in the loop asked whether the accepted path was executed at
+all, so three consecutive rereviews re-certified an untested positive path and
+twice cited a test that was never written.
+
+=== Required assurance obligation (obligation only; not implemented here)
+
+Add deterministic positive tests covering at least:
+
+* live complete chain admission;
+* phase/role gating;
+* accepted strategy-gate route authority;
+* exactly-once advancement of every and only the triggering pairs;
+* qualified-cycle reset;
+* non-triggering Finding isolation;
+* `changes_required` neither consuming the escape nor advancing a generation;
+* replay equivalence over the same valid chain;
+* checkpoint/operator/prompt projection consistency over that chain.
+
+`tests/support.py:result()` needs the three typed parameters so such tests are
+expressible. Separately, the `S4-IR-002` closure sentence citing a "persisted
+complete-chain projection test" is factually unsupported and should not stand as
+closure evidence -- which is recorded here rather than by editing that artifact.
+
+== OPUS-S4-003 -- First-versus-latest diagnosis projection asymmetry
+
+*Severity: NON-BLOCKING.*
+
+Invariant:: projections must not present a consumer with a diagnosis that is not
+the one the accepted assessment is correlated to (FTR question I: "any current
+diagnosis, proposed strategy, and independently accepted strategy generation
+with explicit attribution").
+
+Evidence:: `persistence.py:530` and `vertical.py:176` select an escape's
+`diagnosis` with `next(... for item in run.hops if ...)` -- *first* match --
+while `strategy_revision` and `strategy_assessment` on the following lines use
+`for item in reversed(run.hops)` -- *last* match. `_validate_v3_run` places no
+cap on the number of diagnoses naming one unconsumed escape.
+
+Reproduction:: a persisted history with two diagnosis Hops naming the same
+unconsumed escape, where the revision and the accepted assessment correlate to
+the second (`H007`):
+
+----
+run_from_json:                      ACCEPTED
+validate_convergence_route_history: ACCEPTED
+derived:                            strategy_generation=1
+projected diagnosis hop:            H006 ("FIRST stale diagnosis")
+chain actually used diagnosis:      H007 ("SECOND diagnosis actually used")
+----
+
+Normal live topology cannot currently create this shape: the profile permits
+`diagnosis -> reframe` only, and `strategy_gate(changes_required) -> reframe`,
+never back to diagnosis, so there is exactly one diagnosis per escape live.
+Today it is reachable only through the same wire gap as OPUS-S4-001. It is
+recorded separately because the first/last asymmetry is a real projection and
+replay hardening concern in its own right and would survive a correction to
+OPUS-S4-001 that merely added role provenance.
+
+This finding is *not* promoted to BLOCKING.
+
+Hardening obligation (obligation only):: make the per-escape record selection
+single-valued and consistent -- either reject a second diagnosis for one
+unconsumed escape on the wire, or select every projected record by the same
+"latest, and the one the chain references" rule.
+
+Why existing assurance missed it:: `S4-IR-002` was closed on field presence and
+on agreement between checkpoint and prompt. Both projections share the same
+asymmetry, so they agree with each other while both can disagree with the chain;
+an agreement test cannot detect it, and no test constructs more than one
+diagnosis per escape.
+
+== OPUS-S4-004 -- Misleading mechanical-preemption stop label
+
+*Severity: OBSERVATION.*
+
+Every `ReductionError` raised inside `reduce_result()`'s convergence block is
+stamped `mechanical_preemption:invalid_finding_delta:{error}`
+(`reducer.py:1322`). Slice 4 routes all of its new error classes through it, so
+an operator sees, verbatim:
+
+----
+mechanical_preemption:invalid_finding_delta:accepted strategy assessment
+  requires completed outcome and a correction route
+mechanical_preemption:invalid_finding_delta:strategy_gate result cannot mutate
+  Findings
+mechanical_preemption:invalid_finding_delta:escape trigger Finding is no longer
+  open and tracked
+mechanical_preemption:invalid_finding_delta:corrector cannot submit strategy
+  records
+----
+
+None of these is a Finding-delta error. The label *predates* Slice 4 --
+Slice-1/2/3 coverage and assessment errors already used it -- so this is not a
+Slice-4 regression; Slice 4 roughly doubles the error classes it mislabels. This
+is operator-legibility debt only. There is no authority or derived-truth effect,
+and it is *not* a Slice-4 acceptance blocker. Its visible manifestation in the
+accepted delta is the `tests/unit/test_slice3_vertical.py:386` assertion change
+from `"stopped"` to `awaiting_human` plus
+`mechanical_preemption:invalid_finding_delta:`.
+
+== OPUS-S4-005 -- Result-v2 schema structurally permits strategy records in more phases than may use them
+
+*Severity: OBSERVATION.*
+
+Slice 4 removed the result-v2 null-only guard in `routing_result_from_data()`
+and widened the dispatched strict schema from `{"type": "null"}` to
+`anyOf: [null, <strict object>]` for all three records. Because
+`expected_result_version` is 2 for *every* phase of a v3 profile
+(`reducer.py:1167-1174`), an ordinary, corrector, or evaluator phase is now
+dispatched a schema that structurally permits a diagnosis, revision, or
+assessment, and the role narrowing happens only later in reduction. A provider
+emitting a stray record in those phases therefore converts a formerly
+schema-impossible output into a fail-closed `awaiting_human` preemption.
+
+Explicitly:
+
+* this is design-conformant under the current accepted Slice-4 design -- FTR
+  question I specifies a single v2 result shape with phase-appropriate *version*
+  validation, and requires exact-set output only of the three convergence
+  prompts;
+* it is *not* a Slice-4 defect;
+* it is relevant to the already-separate future Phase-Completion / projected
+  contract work (`BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc`), because
+  it enlarges the human-stop surface for the common phases of every v3 Run;
+* this review does *not* authorize that future redesign, and did not review
+  projected phase-specific result schemas, Coordinator-owned deterministic
+  effects, Commission generation, the Operator Harness, or future Runtime
+  hard-hop-ceiling configuration.
+
+It is also the mechanism behind OPUS-S4-004's visible symptom.
+
+== Prior Slice-4 implementation-review finding challenge
+
+These dispositions are *this external review's* independent findings. They do
+not retroactively edit
+`FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc`, and the
+historical `S4-003` `H005` dispositions recorded there stand as the historical
+record of that Run.
+
+=== S4-IR-001 -- Persisted strategy records are not replay-validated as one exact causal chain
+
+*Closure falsified.*
+
+The identifier's own stated scope named role provenance and Finding
+state/generation at the escape as unproven, and its correction obligation
+required replay to reject malformed historical chains fail-closed and to prove
+exactly-once advancement for a complete valid chain. At HEAD,
+`_validate_v3_run` consults no phase, role, attribution, or `applied_route`, and
+tests Finding membership rather than open/blocking state;
+`validate_convergence_route_history` never re-examines a strategy record. Four
+distinct persisted histories are admitted by both replay validators and advance
+a derived generation (OPUS-S4-001). The exactly-once proof obligation is also
+unmet, because the advancement code never executes in the suite
+(OPUS-S4-002). The *enumerated* `H005` sentence -- exactly one active escape,
+exact trigger set, temporally causal, latest completed revision -- is
+individually true, and each clause was independently confirmed; it is simply a
+narrower claim than the identifier it closed.
+
+=== S4-IR-002 -- Checkpoint and operator projection omit the immutable trigger generations
+
+*Substantive closure survives challenge, but part of its cited evidence is
+factually unsupported.*
+
+The substance was independently verified on a live two-generation chain:
+`checkpoint_projection()` emits per-escape `trigger_generations` (`{F001:0}` for
+the first escape, `{F001:1}` for the second), `operator.py:1677` consumes that
+same checkpoint `convergence` block, `convergence_prompt_context()` emits the
+identical mapping, and all three agree with
+`derive_convergence_facts(... strategy_generation=2)` across a
+`run_to_json()`/`run_from_json()` round trip. The requirement is met. The
+closure's *evidence* -- an "added persisted complete-chain projection test" --
+is not supported (OPUS-S4-002). The latent record-selection asymmetry is
+recorded as OPUS-S4-003.
+
+=== S4-IR-003 -- Multiple persisted unconsumed escapes permit an older chain to advance generation
+
+*Closure survives challenge.*
+
+`serialization.py:1932-1937` rejects the second unconsumed escape at the point
+it is added, and `serialization.py:1948-1954` independently refuses any strategy
+record unless exactly one escape is unconsumed. The committed counterexample
+raises `ValidationError: Run v3 contains more than one unconsumed escape`. The
+predicate was also confirmed not to be over-strict: a legitimate
+consumed-escape-then-new-escape history (two full generations, escapes `H005`
+and `H012`) still parses, replays, and derives `strategy_generation=2`.
+Cross-escape link substitution also holds -- an assessment naming a new escape
+with the previous chain's diagnosis or revision is rejected.
+
+=== S4-IR-004 -- Persisted strategy chain permits a same-Hop escape and diagnosis
+
+*Closure survives challenge.*
+
+`serialization.py:1962` is the `H004` fix and it is correct. All four temporal
+edges were confirmed *strictly* ordered on replay: escape < diagnosis (1962),
+diagnosis < revision (1979), diagnosis < assessment (2014), revision <
+assessment (2015); escape < assessment follows transitively because `diagnoses`
+is populated only after edge 1962 passes. The live path enforces the same
+strictness (`reducer.py:862`, `874`, `879`). No admitted same-Hop or inverted
+order variant was found.
+
+== Positive assurance evidence -- adversarial probes that did not falsify the implementation
+
+This section is deliberately preserved. The artifact is not a defect-only
+summary; absence of a finding in these areas is itself evidence, bounded by what
+was actually executed.
+
+* *Duplicate / unsorted trigger IDs rejected.* The review's strongest initial
+  hypothesis -- `derive_convergence_facts` increments per *occurrence* in
+  `accepted.finding_ids` (`reducer.py:153-155`), so
+  `convergence_escape:F001,F001` would advance one Finding twice -- does not
+  reproduce. The pre-existing Slice-3 guard `serialization.py:1842-1854`
+  requires `trigger_ids == sorted(set(trigger_ids))` plus `F[0-9]{3,}` shape
+  plus existence in `findings`, so parsing raises
+  `Run v3 Hop H005 has malformed convergence route truth`. The profile-aware
+  `reducer.py:277-281` independently pins the trigger set to the sorted
+  goalpost-reached set. The "exact sorted trigger IDs" claim is sound.
+* *Double consumption rejected.* A second accepted assessment for an
+  already-consumed escape is rejected on both paths. No representation advanced
+  twice.
+* *`changes_required` does not advance generation.* Verified live: the escape
+  stays `unconsumed`, the generation stays 0, the qualified count and
+  `goalpost_reached` are untouched, and the route goes to `reframe`. Routing a
+  `changes_required` assessment to a corrector is rejected; routing an
+  `accepted` assessment to `reframe` is rejected; `RouteEffect.COMPLETE` from a
+  strategy gate is rejected.
+* *Stale revision rejected.* `changes_required -> new revision -> accepted`
+  advances exactly once, and an accept naming the superseded revision is
+  rejected with `strategy assessment must reference the latest revision`.
+* *Exact trigger correlation held.* On a two-Finding escape `{F001,F002}`:
+  subset `("F001",)`, reordered `("F002","F001")`, and superset `(+"F999")` are
+  each rejected live with
+  `diagnosis does not exactly correlate to the active escape`.
+* *Cross-Finding isolation held.* Escape triggered by `F001` only (2 of 2) while
+  `F002` sat at 1 of 2: the accepted assessment advanced `F001` to generation 1
+  / count 0 and left `F002` at generation 0 / count 1 /
+  `source_evaluator_hops=('H005',)`. No unrelated Finding advanced, and no
+  partial advancement of the trigger set occurred on any live path.
+* *Diagnosis remained read-only.* Profile validation forces diagnosis phases
+  read-only (`serialization.py:904-910`: no `edit`, no `commit`,
+  `durable_artifact: none`) and non-review, with `goto` targets restricted to
+  `reframe` only. Live: `scope_changed=True` is refused
+  (`mechanical_preemption:scope_changed`), a Finding delta is refused
+  (`diagnosis result cannot mutate Findings`), and an undeclared route is
+  refused (`unknown_route:correct`).
+* *`authority_scope_gap` granted no authority.* The classification is inert; the
+  designed path works instead -- `requires_human` plus `escalation(scope)`
+  yields `mechanical_preemption:human_authority:scope`.
+* *Strategy gate could not resolve Findings, complete the Run, or grant scope.*
+  Profile topology pins the gate to a `ReviewAuthority.GATE` with *empty*
+  `finding_authority` and `goto` targets exactly `{corrector, reframe}`
+  (`serialization.py:931-937`, `964-970`; the Slice-4 tightening from
+  `issubset` to `==` is a genuine strengthening). Finding mutation, Run
+  completion, and scope change are all refused live.
+* *Valid two-generation chain advanced correctly.* Escapes `H005` and `H012`,
+  reaching `strategy_generation=2` with count reset, replay-identical.
+* *Valid multiple-Finding chain advanced every and only triggering Findings.*
+  `{F001,F002}` both advanced exactly once.
+* *Legacy behavior held.* result-v1 rejects all three record keys as
+  `unknown fields` (closed `_fields`); Run-v2 round-trips byte-identically and a
+  v2 Hop carrying `diagnosis` is rejected as an unknown field; `run_to_json()`
+  pops all three for v1/v2 and `_hop_summary` hard-forces `None` for
+  `run_version != 3`; a profile-v2 ordinary phase submitting a diagnosis is
+  refused (`ordinary phase cannot submit strategy records`). No Slice-1/2/3
+  behavior exercised had changed except the intended
+  `test_slice3_vertical.py:386` tightening.
+* *Strict provider schema conformance held.* `assert_openai_strict_schema`
+  passes for both envelope contracts; the new nodes are pure
+  `anyOf: [{"type":"null"}, <strict object>]` with
+  `additionalProperties: false` and `required` exactly covering `properties`;
+  the three enums are generated from the model enums and match the FTR text
+  verbatim. The only widening -- `analysis`/`plan`/`finding_ids` admitting empty
+  values the parser then rejects -- is fail-closed and matches the pre-existing
+  `invariant`/`summary` pattern. No shape passed conformance while being
+  semantically wider in a way that reaches state.
+* *Domain neutrality held.* `DiagnosisClassification` (8 members) and
+  `StrategyRevisionKind` (7) match the accepted FTR exactly;
+  `DiagnosisReport`/`StrategyRevision`/`StrategyAssessment` introduce no
+  software-development vocabulary; all `commit`/`repository`/`git` vocabulary in
+  `model.py` is pre-existing WFC Core.
+  `tests/fixtures/convergence_curriculum.yaml`
+  (`domain: curriculum_construction`) is a genuine non-software neutrality
+  fixture.
+* *No Slice-5 / R1A leakage found.*
+  `git diff a889f9a..ea45e56 -- src/` matched nothing for
+  slice-5/R1A/retry/resume/promotion/planner/supervisor vocabulary. There is no
+  persisted `strategy_generation` or `goalpost_reached` counter -- the guard
+  test `test_v3_hop_anchor_is_the_only_new_semantic_wire_field` still forbids
+  both -- so generations remain purely derived.
+  `src/workflow_coordinator/slice4.py` and `slice5b.py` are the unrelated
+  P-series modules and were untouched.
+* *Valid checkpoint/operator/prompt projections agreed across replay.*
+  Checkpoint, prompt, operator, and `derive_convergence_facts` agreed exactly
+  across two consumed escapes and two generations, before and after a wire round
+  trip.
+
+== Test and probe evidence
+
+* *Full suite:* `PYTHONPATH=src .venv/bin/python -m pytest --disable-warnings`
+  -- *677 passed*, exit 0. Confirmed green before and after all probe work. The
+  Coordinator-projected trusted evidence in the S4-003 archive
+  (`run/operator-summary.json`, five `pytest` observations) is likewise
+  `status: pass`, consistent with the independent run.
+* *Independent read-only live-chain probes:* a genuine reduced
+  `tracked_convergence_run -> 2 qualified cycles -> escape -> diagnosis ->
+  reframe -> strategy_gate(accepted)` chain, which no repository test builds;
+  two-generation and multi-Finding variants; a live authority battery of nine
+  cases; an exact-correlation battery; a cross-Finding isolation case; and a
+  `changes_required -> re-revise -> accept` sequence.
+* *Forged-wire probes:* nine adversarial persisted Run-v3 histories
+  round-tripped through `run_to_json()`/`run_from_json()` and then pushed
+  through `derive_convergence_facts()`,
+  `validate_convergence_route_history()`, `checkpoint_projection()`, and
+  `convergence_prompt_context()`.
+* *Line-level execution tracing:* a stdlib `sys.settrace` harness over
+  `pytest.main()` was used to establish the missing positive-path coverage. No
+  coverage package was installed and the project `.venv` was not modified.
+* *No repository mutation during review:* all probe material lived in a
+  scratchpad outside every repository; all three repositories were verified
+  clean at the identities recorded under "Provenance" both before and after.
+
+== Assurance consequence
+
+This review does *not* erase the historical fact that `S4-003` `H005` accepted
+Slice 4 under the evidence available to that Run. That acceptance happened, and
+its record stands.
+
+However, later material evidence now falsifies an acceptance-critical
+replay-closure claim (OPUS-S4-001), and falsifies the recorded positive-path
+verification claim (OPUS-S4-002).
+
+Therefore the `H005` acceptance record is *not currently sufficient* as the
+assurance baseline for:
+
+* Runtime promotion;
+* Slice 5 / R1A dogfood;
+* any claim that Slice 4 is fully replay-closed.
+
+A separately authorized correction and a fresh independent re-review are
+required before those conclusions may be restored.
+
+This assurance review itself authorizes no correction. It opens no BUG, authors
+no Commission, allocates no WFC Finding, and changes no code, test, FTR, or
+prior review artifact.
+
+== Bounded interpretation of the Terra-only S4-003 chain
+
+This evidence must not be over-read. Precisely:
+
+* The Terra-only `S4-003` chain performed useful implementation and review
+  convergence and closed several genuine defects. `S4-IR-002`, `S4-IR-003`, and
+  `S4-IR-004` survive independent challenge, and the reproductions behind them
+  were real.
+* The independently probed live mechanism behaved correctly in every valid live
+  path challenged by this review. The implementation is not broadly wrong.
+* The missed issue was primarily *incomplete generalization of replay
+  invariants* -- each correction rejected the one forged shape in front of it
+  rather than establishing the invariant class -- together with *insufficient
+  positive-path assurance*.
+* Three rereviews concentrated on concrete malformed-history counterexamples and
+  did not establish equivalence between all relevant live authority predicates
+  and persisted replay.
+* A green suite was treated as stronger assurance than its actual path coverage
+  justified.
+
+This supports occasional *stronger milestone-level adversarial assurance*. It
+does *not* establish that frontier models must execute ordinary WFC work, and it
+does *not* establish that Terra should be replaced. It is one adversarial sample
+(nine forged histories, roughly twenty-five live cases), not a completeness
+proof, and the absence of further findings in the probed areas is bounded
+accordingly.
+
+== Out of scope for this artifact
+
+This artifact does not fix OPUS-S4-001, OPUS-S4-002, or OPUS-S4-003; does not
+modify code, tests, the FTR, or the existing implementation-review artifact;
+opens no BUG; authors no Commission; mutates no Runtime, Evidence, OPS, or STATE
+material; promotes no Runtime; runs no Slice 5; invokes neither WFC nor another
+provider; and pushes nothing.
+
+It does not close, reopen, or otherwise disposition
+`BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc`,
+`BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER.adoc`, or
+`BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc`, and it does not redesign
+projected phase contracts, Coordinator-owned deterministic effects, the Operator
+Harness, Commission generation, or hard-hop-ceiling configuration.
