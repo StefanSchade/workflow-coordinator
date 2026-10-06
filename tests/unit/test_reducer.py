@@ -1,5 +1,8 @@
 from dataclasses import fields, replace
 import inspect
+import json
+from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -42,6 +45,9 @@ from workflow_coordinator.reducer import (
     validate_convergence_route_history,
 )
 from workflow_coordinator.serialization import run_from_json, run_to_json
+from workflow_coordinator.persistence import checkpoint_projection
+from workflow_coordinator.vertical import convergence_prompt_context
+from workflow_coordinator import operator
 from tests.support import (
     assessment,
     charge_hop,
@@ -1906,12 +1912,8 @@ def test_multiple_goalpost_findings_produce_sorted_trigger_ids():
     assert threshold.run.hops[-1].route_reason == "convergence_escape:F001,F002"
 
 
-def test_live_strategy_chain_advances_generation_once_and_replay_validates_authority():
-    history_workflow, run = tracked_convergence_run(budget=12)
-    run, _, first = convergence_cycle(run, history_workflow, evidence_prefix="first")
-    run, _, escape_id = convergence_cycle(run, history_workflow, evidence_prefix="escape")
-    workflow = convergence_routing_profile()
-    run = replace(
+def _mark_strategy_escape(run, escape_id, trigger_ids):
+    return replace(
         run,
         phase="diagnose",
         hops=tuple(
@@ -1920,76 +1922,219 @@ def test_live_strategy_chain_advances_generation_once_and_replay_validates_autho
                 outcome="changes_required",
                 requested_route="correct",
                 applied_route="diagnose",
-                route_reason="convergence_escape:F001",
+                route_reason=f"convergence_escape:{','.join(trigger_ids)}",
             ) if hop.hop_id == escape_id else hop
             for hop in run.hops
         ),
     )
-    run, qualification, _ = qualification_evidence(
-        run, {first: ("pass",), escape_id: ("pass",)}
-    )
+
+
+def _reduce_strategy_diagnosis(run, workflow, escape_id, trigger_ids):
     diagnosis_hop, diagnosis_id = charge_hop(run)
     run = reduce_result(
         diagnosis_hop,
         result("reframe", schema_version=2, diagnosis=DiagnosisReport(
-            escape_id, ("F001",), DiagnosisClassification.REGRESSION_CHAIN,
+            escape_id, trigger_ids, DiagnosisClassification.REGRESSION_CHAIN,
             "The qualified cycle needs a reframe.", ("diagnosis",),
         )), workflow, hop_id=diagnosis_id,
     ).run
+    return run, diagnosis_id
+
+
+def _reduce_strategy_revision(run, workflow, escape_id, diagnosis_id, trigger_ids):
     revision_hop, revision_id = charge_hop(run)
     run = reduce_result(
         revision_hop,
         result("strategy", schema_version=2, strategy_revision=StrategyRevision(
-            escape_id, diagnosis_id, ("F001",),
+            escape_id, diagnosis_id, trigger_ids,
             StrategyRevisionKind.ADDRESS_REGRESSION_CHAIN,
             "Change the strategy.", ("revision",),
         )), workflow, hop_id=revision_id,
     ).run
-    assessment_hop, assessment_id = charge_hop(run, role="independent_reviewer")
+    return run, revision_id
+
+
+def _reduce_strategy_assessment(
+    run, workflow, escape_id, diagnosis_id, revision_id, trigger_ids, result_value
+):
+    assessment_hop, assessment_id = charge_hop(
+        run,
+        role="independent_reviewer",
+        outcome="changes_required" if result_value == "changes_required" else "completed",
+    )
     run = reduce_result(
         assessment_hop,
-        result("correct", schema_version=2, strategy_assessment=StrategyAssessment(
-            escape_id, diagnosis_id, revision_id, ("F001",),
-            StrategyAssessmentResult.ACCEPTED, ("assessment",),
+        result("reframe" if result_value == "changes_required" else "correct",
+               outcome=("changes_required" if result_value == "changes_required" else "completed"),
+               schema_version=2, strategy_assessment=StrategyAssessment(
+            escape_id, diagnosis_id, revision_id, trigger_ids,
+            StrategyAssessmentResult(result_value), ("assessment",),
         )), workflow, hop_id=assessment_id,
     ).run
+    return run, assessment_id
 
-    assert derive_convergence_facts(run, qualification, 2)[0].strategy_generation == 1
+
+def _all_qualified_evidence(run):
+    return qualification_evidence(
+        run,
+        {
+            hop.hop_id: ("pass",)
+            for hop in run.hops
+            if hop.convergence_assessments
+        },
+    )
+
+
+def test_live_strategy_chain_changes_required_then_latest_revision_advances_multi_trigger_generation():
+    history_workflow, run = tracked_convergence_run(budget=24)
+    run = replace(run, phase="evaluate")
+    introduced, introduced_id = charge_hop(run, role="independent_reviewer")
+    run = reduce_result(
+        introduced,
+        result("correct", outcome="changes_required", schema_version=2,
+               findings=(new_delta("open", invariant="A second tracked blocker."),)),
+        history_workflow, hop_id=introduced_id,
+    ).run
+    run, _, first = convergence_cycle(run, history_workflow, evidence_prefix="first")
+    run, _, escape_id = convergence_cycle(run, history_workflow, evidence_prefix="escape")
+    workflow = convergence_routing_profile()
+    triggers = ("F001", "F002")
+    run = _mark_strategy_escape(run, escape_id, triggers)
+    run, diagnosis_id = _reduce_strategy_diagnosis(run, workflow, escape_id, triggers)
+    run, rejected_revision_id = _reduce_strategy_revision(
+        run, workflow, escape_id, diagnosis_id, triggers
+    )
+    run, rejected_assessment_id = _reduce_strategy_assessment(
+        run, workflow, escape_id, diagnosis_id, rejected_revision_id, triggers,
+        "changes_required",
+    )
+
+    assert run.phase == "reframe"
+    assert run.hops[-1].applied_route == "reframe"
+    run, latest_revision_id = _reduce_strategy_revision(
+        run, workflow, escape_id, diagnosis_id, triggers
+    )
+    stale_assessment, stale_assessment_id = charge_hop(run, role="independent_reviewer")
+    stale = reduce_result(
+        stale_assessment,
+        result("correct", schema_version=2, strategy_assessment=StrategyAssessment(
+            escape_id, diagnosis_id, rejected_revision_id, triggers,
+            StrategyAssessmentResult.ACCEPTED, ("stale",),
+        )), workflow, hop_id=stale_assessment_id,
+    )
+    assert stale.run.stop_reason == "mechanical_preemption:invalid_finding_delta:strategy assessment must reference the latest revision"
+    run, accepted_assessment_id = _reduce_strategy_assessment(
+        run, workflow, escape_id, diagnosis_id, latest_revision_id, triggers, "accepted"
+    )
+    run, qualification, evidence_json = _all_qualified_evidence(run)
+
+    facts = derive_convergence_facts(run, qualification, 2)
+    assert [(fact.finding_id, fact.strategy_generation, fact.qualified_cycle_count)
+            for fact in facts] == [("F001", 1, 0), ("F002", 1, 0)]
+    assert run.hops[-1].phase == "strategy"
+    assert run.hops[-1].role == "independent_reviewer"
+    assert run.hops[-1].applied_route == "correct"
+    assert rejected_assessment_id != accepted_assessment_id
+    assert run.hops[-1].strategy_assessment is not None
+
     replayed = run_from_json(run_to_json(run))
     validate_convergence_route_history(replayed, workflow, qualification)
+    assert derive_convergence_facts(replayed, qualification, 2) == facts
+
+    checkpoint = checkpoint_projection(
+        run, workflow, qualified_cycle_limit=2, execution_evidence_json=evidence_json,
+    )
+    context = convergence_prompt_context(run, workflow, qualification)
+    assert context is not None
+    prompt_projection = json.loads(context.content.split("\n", 1)[1])
+    escape = checkpoint["convergence"]["escape_routes"][-1]
+    assert escape["state"] == "consumed"
+    assert escape["trigger_generations"] == {"F001": 0, "F002": 0}
+    assert [fact["strategy_generation"] for fact in checkpoint["convergence"]["facts"]] == [1, 1]
+    assert prompt_projection["escape_routes"][-1]["state"] == "consumed"
+    assert [fact["strategy_generation"] for fact in prompt_projection["convergence_facts"]] == [1, 1]
+    head = subprocess.run(
+        ("git", "rev-parse", "HEAD"), text=True, capture_output=True, check=True
+    ).stdout.strip()
+    operator_run = replace(
+        run,
+        baseline_head=head,
+        current_head=head,
+        hops=tuple(
+            replace(hop, base_head=head, end_head=head, actual_commits=())
+            for hop in run.hops
+        ),
+    )
+    assert operator._summary(
+        Path.cwd(), operator_run, None, convergence_projection=checkpoint["convergence"]
+    )["convergence"] == checkpoint["convergence"]
+
+
+def test_live_strategy_chain_reuses_the_mapping_across_generations_without_touching_non_triggers():
+    history_workflow, run = tracked_convergence_run(budget=32)
+    run = replace(run, phase="evaluate")
+    introduced, introduced_id = charge_hop(run, role="independent_reviewer")
+    run = reduce_result(
+        introduced,
+        result("correct", outcome="changes_required", schema_version=2,
+               findings=(new_delta("open", invariant="A non-triggering blocker."),)),
+        history_workflow, hop_id=introduced_id,
+    ).run
+    run, _, first = convergence_cycle(run, history_workflow, evidence_prefix="first")
+    run, _, escape_id = convergence_cycle(run, history_workflow, evidence_prefix="escape")
+    workflow = convergence_routing_profile()
+    run = _mark_strategy_escape(run, escape_id, ("F001",))
+    run, diagnosis_id = _reduce_strategy_diagnosis(run, workflow, escape_id, ("F001",))
+    run, revision_id = _reduce_strategy_revision(run, workflow, escape_id, diagnosis_id, ("F001",))
+    run, _ = _reduce_strategy_assessment(run, workflow, escape_id, diagnosis_id, revision_id, ("F001",), "accepted")
+
+    run, _, second_first = convergence_cycle(run, history_workflow, evidence_prefix="second-first")
+    run, _, second_escape = convergence_cycle(run, history_workflow, evidence_prefix="second-escape")
+    run = _mark_strategy_escape(run, second_escape, ("F001",))
+    run, second_diagnosis_id = _reduce_strategy_diagnosis(run, workflow, second_escape, ("F001",))
+    run, second_revision_id = _reduce_strategy_revision(run, workflow, second_escape, second_diagnosis_id, ("F001",))
+    run, _ = _reduce_strategy_assessment(run, workflow, second_escape, second_diagnosis_id, second_revision_id, ("F001",), "accepted")
+    run, qualification, _ = _all_qualified_evidence(run)
+
+    facts = {fact.finding_id: fact for fact in derive_convergence_facts(run, qualification, 2)}
+    assert facts["F001"].strategy_generation == 2
+    assert facts["F001"].qualified_cycle_count == 0
+    assert facts["F002"].strategy_generation == 0
+    assert facts["F002"].qualified_cycle_count == 4
+    assert first != second_first
+
+
+def test_replay_rejects_forged_strategy_authority_and_unapplied_or_inactive_triggers():
+    history_workflow, run = tracked_convergence_run(budget=12)
+    run, _, _ = convergence_cycle(run, history_workflow, evidence_prefix="first")
+    run, _, escape_id = convergence_cycle(run, history_workflow, evidence_prefix="escape")
+    workflow = convergence_routing_profile()
+    run = _mark_strategy_escape(run, escape_id, ("F001",))
+    run, diagnosis_id = _reduce_strategy_diagnosis(run, workflow, escape_id, ("F001",))
+    run, revision_id = _reduce_strategy_revision(run, workflow, escape_id, diagnosis_id, ("F001",))
+    run, _ = _reduce_strategy_assessment(run, workflow, escape_id, diagnosis_id, revision_id, ("F001",), "accepted")
+    run, qualification, _ = _all_qualified_evidence(run)
+    replayed = run_from_json(run_to_json(run))
 
     forged = replace(
         replayed,
-        hops=tuple(
-            replace(hop, phase="correct") if hop.hop_id == diagnosis_id else hop
-            for hop in replayed.hops
-        ),
+        hops=tuple(replace(hop, phase="correct") if hop.hop_id == diagnosis_id else hop for hop in replayed.hops),
     )
     with pytest.raises(ReductionError, match="phase/role authority"):
         validate_convergence_route_history(forged, workflow, qualification)
-
-    for stop_reason in (
-        "supervisor_judgment_required",
-        "autonomous_hop_budget_exhausted",
-    ):
+    for stop_reason in ("supervisor_judgment_required", "autonomous_hop_budget_exhausted"):
         unapplied = replace(
             replayed,
-            hops=tuple(
-                replace(hop, applied_route=None, stop_reason=stop_reason)
-                if hop.hop_id == escape_id else hop
-                for hop in replayed.hops
-            ),
+            hops=tuple(replace(hop, applied_route=None, stop_reason=stop_reason)
+                       if hop.hop_id == escape_id else hop for hop in replayed.hops),
         )
         with pytest.raises(ReductionError, match="unapplied escape"):
             validate_convergence_route_history(unapplied, workflow, qualification)
-
     inactive = replace(
         replayed,
         findings=tuple(
-            replace(finding, state=FindingState.RESIDUAL, blocking=False,
-                    changed_by_hop=escape_id)
-            if finding.finding_id == "F001" else finding
-            for finding in replayed.findings
+            replace(finding, state=FindingState.RESIDUAL, blocking=False, changed_by_hop=escape_id)
+            if finding.finding_id == "F001" else finding for finding in replayed.findings
         ),
     )
     with pytest.raises(ReductionError, match="non-open, non-blocking, or untracked"):
