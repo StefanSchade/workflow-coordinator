@@ -17,6 +17,7 @@ from .model import (
     ExistingFindingDelta,
     FindingDeltaValue,
     FindingState,
+    HopSummary,
     MechanicalFacts,
     NewFindingDelta,
     Outcome,
@@ -196,6 +197,23 @@ def validate_convergence_route_history(
 
     hop_order = {hop.hop_id: index for index, hop in enumerate(run.hops)}
 
+    def is_live_budget_preemption(boundary: int, hop: HopSummary) -> bool:
+        """Whether this persisted Hop has the complete live budget-stop shape.
+
+        ``reduce_result`` charges the Hop before testing the autonomous budget.
+        A preempted dispatch therefore leaves the record as the final Hop and
+        atomically records an exhausted, budget-stopped Run.
+        """
+
+        return (
+            hop.applied_route is None
+            and hop.stop_reason == "autonomous_hop_budget_exhausted"
+            and boundary == len(run.hops) - 1
+            and hop.sequence == boundary + 1 == run.hop_used == run.hop_limit
+            and run.status is RunStatus.AWAITING_HUMAN_BUDGET
+            and run.stop_reason == "autonomous_hop_budget_exhausted"
+        )
+
     def trigger_is_active_at(finding: Finding, boundary: int) -> bool:
         """Reconstruct the causal Finding state at a strategy-record boundary."""
 
@@ -263,10 +281,7 @@ def validate_convergence_route_history(
                     )
             if expected_role is ConvergenceRole.STRATEGY_GATE:
                 route = phase.routes.get(hop.requested_route or "")
-                budget_preempted = (
-                    hop.applied_route is None
-                    and hop.stop_reason == "autonomous_hop_budget_exhausted"
-                )
+                budget_preempted = is_live_budget_preemption(boundary, hop)
                 if (
                     route is None
                     or (

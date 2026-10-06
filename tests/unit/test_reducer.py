@@ -2136,12 +2136,83 @@ def test_replay_accepts_a_budget_preempted_strategy_gate_that_live_reduction_can
     assert run.hops[-1].strategy_assessment is not None
     assert run.hops[-1].applied_route is None
     assert run.hops[-1].stop_reason == "autonomous_hop_budget_exhausted"
+    assert run.hop_used == run.hop_limit == run.hops[-1].sequence
 
     replayed = run_from_json(run_to_json(run))
     validate_convergence_route_history(replayed, workflow, qualification)
     assert derive_convergence_facts(replayed, qualification, 2) == derive_convergence_facts(
         run, qualification, 2
     )
+
+
+def test_replay_rejects_strategy_budget_preemption_without_live_terminal_state():
+    """The exception proves the whole live-produced budget-stop state shape."""
+
+    history_workflow, run = tracked_convergence_run(budget=12)
+    run, _, _ = convergence_cycle(run, history_workflow, evidence_prefix="first")
+    run, _, escape_id = convergence_cycle(
+        run, history_workflow, evidence_prefix="escape"
+    )
+    workflow = convergence_routing_profile()
+    run = _mark_strategy_escape(run, escape_id, ("F001",))
+    run, diagnosis_id = _reduce_strategy_diagnosis(
+        run, workflow, escape_id, ("F001",)
+    )
+    run, revision_id = _reduce_strategy_revision(
+        run, workflow, escape_id, diagnosis_id, ("F001",)
+    )
+    run, assessment_id = _reduce_strategy_assessment(
+        run,
+        workflow,
+        escape_id,
+        diagnosis_id,
+        revision_id,
+        ("F001",),
+        "accepted",
+    )
+    run, qualification, _ = _all_qualified_evidence(run)
+    replayed = run_from_json(run_to_json(run))
+
+    forged_hop = lambda hop: replace(
+        hop,
+        applied_route=None,
+        stop_reason="autonomous_hop_budget_exhausted",
+    ) if hop.hop_id == assessment_id else hop
+    premature = replace(replayed, hops=tuple(forged_hop(hop) for hop in replayed.hops))
+    with pytest.raises(ReductionError, match="strategy assessment Hop .* lacks route authority"):
+        validate_convergence_route_history(premature, workflow, qualification)
+
+    exhausted_but_not_terminal = replace(
+        premature,
+        hop_limit=premature.hop_used,
+    )
+    with pytest.raises(ReductionError, match="strategy assessment Hop .* lacks route authority"):
+        validate_convergence_route_history(
+            exhausted_but_not_terminal, workflow, qualification
+        )
+
+    terminal_but_not_final = replace(
+        exhausted_but_not_terminal,
+        status=RunStatus.AWAITING_HUMAN_BUDGET,
+        stop_reason="autonomous_hop_budget_exhausted",
+        hops=(
+            *exhausted_but_not_terminal.hops,
+            replace(
+                exhausted_but_not_terminal.hops[-1],
+                hop_id="synthetic-follow-up",
+                sequence=exhausted_but_not_terminal.hop_used + 1,
+                strategy_assessment=None,
+                applied_route="correct",
+                stop_reason=None,
+            ),
+        ),
+        hop_used=exhausted_but_not_terminal.hop_used + 1,
+        hop_limit=exhausted_but_not_terminal.hop_used + 1,
+    )
+    with pytest.raises(ReductionError, match="strategy assessment Hop .* lacks route authority"):
+        validate_convergence_route_history(
+            terminal_but_not_final, workflow, qualification
+        )
 
 
 def test_replay_rejects_forged_strategy_authority_and_unapplied_or_inactive_triggers():
