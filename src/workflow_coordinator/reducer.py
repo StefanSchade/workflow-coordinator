@@ -263,9 +263,16 @@ def validate_convergence_route_history(
                     )
             if expected_role is ConvergenceRole.STRATEGY_GATE:
                 route = phase.routes.get(hop.requested_route or "")
+                budget_preempted = (
+                    hop.applied_route is None
+                    and hop.stop_reason == "autonomous_hop_budget_exhausted"
+                )
                 if (
                     route is None
-                    or hop.applied_route != hop.requested_route
+                    or (
+                        hop.applied_route != hop.requested_route
+                        and not budget_preempted
+                    )
                     or (record.result is StrategyAssessmentResult.ACCEPTED and (
                         hop.outcome != Outcome.COMPLETED.value
                         or route.effect is not RouteEffect.GOTO

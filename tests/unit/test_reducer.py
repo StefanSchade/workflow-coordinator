@@ -2104,6 +2104,46 @@ def test_live_strategy_chain_reuses_the_mapping_across_generations_without_touch
     assert first != second_first
 
 
+def test_replay_accepts_a_budget_preempted_strategy_gate_that_live_reduction_can_produce():
+    """A final accepted gate persists its record although routing is preempted."""
+
+    history_workflow, run = tracked_convergence_run(budget=8)
+    run, _, _ = convergence_cycle(run, history_workflow, evidence_prefix="first")
+    run, _, escape_id = convergence_cycle(
+        run, history_workflow, evidence_prefix="escape"
+    )
+    workflow = convergence_routing_profile()
+    run = _mark_strategy_escape(run, escape_id, ("F001",))
+    run, diagnosis_id = _reduce_strategy_diagnosis(
+        run, workflow, escape_id, ("F001",)
+    )
+    run, revision_id = _reduce_strategy_revision(
+        run, workflow, escape_id, diagnosis_id, ("F001",)
+    )
+    run, assessment_id = _reduce_strategy_assessment(
+        run,
+        workflow,
+        escape_id,
+        diagnosis_id,
+        revision_id,
+        ("F001",),
+        "accepted",
+    )
+    run, qualification, _ = _all_qualified_evidence(run)
+
+    assert run.status is RunStatus.AWAITING_HUMAN_BUDGET
+    assert run.hops[-1].hop_id == assessment_id
+    assert run.hops[-1].strategy_assessment is not None
+    assert run.hops[-1].applied_route is None
+    assert run.hops[-1].stop_reason == "autonomous_hop_budget_exhausted"
+
+    replayed = run_from_json(run_to_json(run))
+    validate_convergence_route_history(replayed, workflow, qualification)
+    assert derive_convergence_facts(replayed, qualification, 2) == derive_convergence_facts(
+        run, qualification, 2
+    )
+
+
 def test_replay_rejects_forged_strategy_authority_and_unapplied_or_inactive_triggers():
     history_workflow, run = tracked_convergence_run(budget=12)
     run, _, _ = convergence_cycle(run, history_workflow, evidence_prefix="first")
