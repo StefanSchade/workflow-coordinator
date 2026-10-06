@@ -33,6 +33,9 @@ from workflow_coordinator.model import (
     Route,
     RouteEffect,
     RoutingResult,
+    DiagnosisReport,
+    StrategyRevision,
+    StrategyAssessment,
     Run,
     StagedQualificationAttempt,
     StatFingerprint,
@@ -211,6 +214,9 @@ def result(
     schema_version: int = 1,
     coverage_claims: tuple[CoverageClaim, ...] = (),
     convergence_assessments: tuple[ConvergenceAssessment, ...] = (),
+    diagnosis: DiagnosisReport | None = None,
+    strategy_revision: StrategyRevision | None = None,
+    strategy_assessment: StrategyAssessment | None = None,
 ) -> RoutingResult:
     return RoutingResult(
         schema_version=schema_version,
@@ -226,6 +232,9 @@ def result(
         summary="fixture decision",
         coverage_claims=coverage_claims,
         convergence_assessments=convergence_assessments,
+        diagnosis=diagnosis,
+        strategy_revision=strategy_revision,
+        strategy_assessment=strategy_assessment,
     )
 
 

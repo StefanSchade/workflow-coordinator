@@ -12,6 +12,8 @@ from workflow_coordinator.model import (
     CorrectionObligationOwner,
     CoverageClaim,
     CoverageDisposition,
+    DiagnosisClassification,
+    DiagnosisReport,
     Escalation,
     ExistingFindingDelta,
     Finding,
@@ -20,6 +22,10 @@ from workflow_coordinator.model import (
     MechanicalFacts,
     Run,
     RunStatus,
+    StrategyAssessment,
+    StrategyAssessmentResult,
+    StrategyRevision,
+    StrategyRevisionKind,
     TrustedQualificationIndex,
     WorkflowRole,
 )
@@ -1898,6 +1904,96 @@ def test_multiple_goalpost_findings_produce_sorted_trigger_ids():
         first.run, workflow, evidence_prefix="second"
     )
     assert threshold.run.hops[-1].route_reason == "convergence_escape:F001,F002"
+
+
+def test_live_strategy_chain_advances_generation_once_and_replay_validates_authority():
+    history_workflow, run = tracked_convergence_run(budget=12)
+    run, _, first = convergence_cycle(run, history_workflow, evidence_prefix="first")
+    run, _, escape_id = convergence_cycle(run, history_workflow, evidence_prefix="escape")
+    workflow = convergence_routing_profile()
+    run = replace(
+        run,
+        phase="diagnose",
+        hops=tuple(
+            replace(
+                hop,
+                outcome="changes_required",
+                requested_route="correct",
+                applied_route="diagnose",
+                route_reason="convergence_escape:F001",
+            ) if hop.hop_id == escape_id else hop
+            for hop in run.hops
+        ),
+    )
+    run, qualification, _ = qualification_evidence(
+        run, {first: ("pass",), escape_id: ("pass",)}
+    )
+    diagnosis_hop, diagnosis_id = charge_hop(run)
+    run = reduce_result(
+        diagnosis_hop,
+        result("reframe", schema_version=2, diagnosis=DiagnosisReport(
+            escape_id, ("F001",), DiagnosisClassification.REGRESSION_CHAIN,
+            "The qualified cycle needs a reframe.", ("diagnosis",),
+        )), workflow, hop_id=diagnosis_id,
+    ).run
+    revision_hop, revision_id = charge_hop(run)
+    run = reduce_result(
+        revision_hop,
+        result("strategy", schema_version=2, strategy_revision=StrategyRevision(
+            escape_id, diagnosis_id, ("F001",),
+            StrategyRevisionKind.ADDRESS_REGRESSION_CHAIN,
+            "Change the strategy.", ("revision",),
+        )), workflow, hop_id=revision_id,
+    ).run
+    assessment_hop, assessment_id = charge_hop(run, role="independent_reviewer")
+    run = reduce_result(
+        assessment_hop,
+        result("correct", schema_version=2, strategy_assessment=StrategyAssessment(
+            escape_id, diagnosis_id, revision_id, ("F001",),
+            StrategyAssessmentResult.ACCEPTED, ("assessment",),
+        )), workflow, hop_id=assessment_id,
+    ).run
+
+    assert derive_convergence_facts(run, qualification, 2)[0].strategy_generation == 1
+    replayed = run_from_json(run_to_json(run))
+    validate_convergence_route_history(replayed, workflow, qualification)
+
+    forged = replace(
+        replayed,
+        hops=tuple(
+            replace(hop, phase="correct") if hop.hop_id == diagnosis_id else hop
+            for hop in replayed.hops
+        ),
+    )
+    with pytest.raises(ReductionError, match="phase/role authority"):
+        validate_convergence_route_history(forged, workflow, qualification)
+
+    for stop_reason in (
+        "supervisor_judgment_required",
+        "autonomous_hop_budget_exhausted",
+    ):
+        unapplied = replace(
+            replayed,
+            hops=tuple(
+                replace(hop, applied_route=None, stop_reason=stop_reason)
+                if hop.hop_id == escape_id else hop
+                for hop in replayed.hops
+            ),
+        )
+        with pytest.raises(ReductionError, match="unapplied escape"):
+            validate_convergence_route_history(unapplied, workflow, qualification)
+
+    inactive = replace(
+        replayed,
+        findings=tuple(
+            replace(finding, state=FindingState.RESIDUAL, blocking=False,
+                    changed_by_hop=escape_id)
+            if finding.finding_id == "F001" else finding
+            for finding in replayed.findings
+        ),
+    )
+    with pytest.raises(ReductionError, match="non-open, non-blocking, or untracked"):
+        validate_convergence_route_history(inactive, workflow, qualification)
 
 
 def test_profile_v3_none_role_uses_result_v2_and_keeps_findings_informational():

@@ -195,6 +195,93 @@ def validate_convergence_route_history(
         raise ReductionError("pinned profile identity changed")
 
     hop_order = {hop.hop_id: index for index, hop in enumerate(run.hops)}
+
+    def trigger_is_active_at(finding: Finding, boundary: int) -> bool:
+        """Reconstruct the causal Finding state at a strategy-record boundary."""
+
+        # A direct persisted state change already recorded at or before the
+        # boundary is authoritative.  Otherwise replay the only v3 assessment
+        # transitions from the open/blocking introduction state.
+        if hop_order[finding.changed_by_hop] <= boundary:
+            return finding.state is FindingState.OPEN and finding.blocking
+        state, blocking = FindingState.OPEN, True
+        for prior in run.hops[: boundary + 1]:
+            assessment = next(
+                (item for item in prior.convergence_assessments
+                 if item.finding_id == finding.finding_id),
+                None,
+            )
+            if assessment is None:
+                continue
+            if assessment.result is ConvergenceAssessmentResult.CLOSED:
+                state = FindingState.RESOLVED
+            elif assessment.result is ConvergenceAssessmentResult.RESIDUALIZED:
+                state, blocking = FindingState.RESIDUAL, False
+            elif assessment.result is ConvergenceAssessmentResult.SUPERSEDED:
+                state = FindingState.SUPERSEDED
+            else:
+                state, blocking = FindingState.OPEN, True
+        return state is FindingState.OPEN and blocking
+
+    # Wire validation establishes causal correlation.  This profile-pinned
+    # replay boundary additionally establishes the authority facts that live
+    # reduction proves before a strategy record is admitted.
+    for boundary, hop in enumerate(run.hops):
+        records = (
+            (ConvergenceRole.DIAGNOSIS, hop.diagnosis),
+            (ConvergenceRole.REFRAME, hop.strategy_revision),
+            (ConvergenceRole.STRATEGY_GATE, hop.strategy_assessment),
+        )
+        for expected_role, record in records:
+            if record is None:
+                continue
+            phase = profile.phases.get(hop.phase or "")
+            if (
+                phase is None
+                or phase.convergence_role is not expected_role
+                or hop.role != phase.role.value
+            ):
+                raise ReductionError(
+                    f"strategy record Hop {hop.hop_id} lacks its profile phase/role authority"
+                )
+            escape = next(
+                (item for item in run.hops if item.hop_id == record.escape_hop_id),
+                None,
+            )
+            if escape is None or escape.applied_route is None:
+                raise ReductionError(
+                    f"strategy record Hop {hop.hop_id} references an unapplied escape"
+                )
+            for finding_id in record.finding_ids:
+                finding = next(
+                    (item for item in run.findings if item.finding_id == finding_id),
+                    None,
+                )
+                if finding is None or finding.correction_obligation is None or not trigger_is_active_at(finding, boundary):
+                    raise ReductionError(
+                        f"strategy record Hop {hop.hop_id} references a non-open, non-blocking, or untracked trigger"
+                    )
+            if expected_role is ConvergenceRole.STRATEGY_GATE:
+                route = phase.routes.get(hop.requested_route or "")
+                if (
+                    route is None
+                    or hop.applied_route != hop.requested_route
+                    or (record.result is StrategyAssessmentResult.ACCEPTED and (
+                        hop.outcome != Outcome.COMPLETED.value
+                        or route.effect is not RouteEffect.GOTO
+                        or profile.phases.get(route.target or "") is None
+                        or profile.phases[route.target or ""].convergence_role is not ConvergenceRole.CORRECTOR
+                    ))
+                    or (record.result is StrategyAssessmentResult.CHANGES_REQUIRED and (
+                        hop.outcome != Outcome.CHANGES_REQUIRED.value
+                        or route.effect is not RouteEffect.GOTO
+                        or profile.phases.get(route.target or "") is None
+                        or profile.phases[route.target or ""].convergence_role is not ConvergenceRole.REFRAME
+                    ))
+                ):
+                    raise ReductionError(
+                        f"strategy assessment Hop {hop.hop_id} lacks route authority"
+                    )
     for boundary, hop in enumerate(run.hops):
         if hop.route_reason is None:
             continue

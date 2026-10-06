@@ -1915,6 +1915,7 @@ def _validate_v3_run(run: Run) -> None:
     # graph without needing to deserialize a profile here.
     escapes: dict[str, tuple[str, ...]] = {}
     diagnoses: dict[str, tuple[object, tuple[str, ...]]] = {}
+    diagnosis_escapes: set[str] = set()
     revisions: dict[str, tuple[object, tuple[str, ...], str]] = {}
     accepted_escapes: set[str] = set()
     tracked_ids = {
@@ -1965,6 +1966,11 @@ def _validate_v3_run(run: Run) -> None:
                 raise ValidationError(
                     f"Run v3 Hop {hop.hop_id} diagnosis does not correlate to an active escape"
                 )
+            if report.escape_hop_id in diagnosis_escapes:
+                raise ValidationError(
+                    f"Run v3 escape {report.escape_hop_id} has more than one diagnosis"
+                )
+            diagnosis_escapes.add(report.escape_hop_id)
             diagnoses[hop.hop_id] = (report, expected)
             continue
         if hop.strategy_revision is not None:

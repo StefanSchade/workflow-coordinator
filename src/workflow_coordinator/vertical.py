@@ -105,12 +105,12 @@ def convergence_prompt_context(
 
     if run.schema_version != 3 or profile.convergence is None:
         return None
+    validate_convergence_route_history(run, profile, qualification_index)
     facts = derive_convergence_facts(
         run,
         qualification_index,
         profile.convergence.qualified_cycle_limit,
     )
-    validate_convergence_route_history(run, profile, qualification_index)
     latest_coverage = {}
     latest_assessment = {}
     for hop in run.hops:
