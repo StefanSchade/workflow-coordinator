@@ -36,7 +36,11 @@ from tests.support import (
     tracked_convergence_run,
 )
 from workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
-from workflow_coordinator.model import DispatchMarker, ExecutionEvidenceDocument
+from workflow_coordinator.model import (
+    DispatchMarker,
+    ExecutionEvidenceDocument,
+    ResultContractKind,
+)
 from workflow_coordinator.persistence import (
     trusted_qualification_index_for_run,
     write_dispatch_marker,
@@ -428,6 +432,7 @@ def test_live_evaluator_uses_the_same_published_qualification_as_replay(
     class Adapter:
         def execute(self, request):
             assert request.contract_version == 2
+            assert request.result_contract_kind is ResultContractKind.GENERIC_ROUTING_RESULT
             payload = {
                 "schema_version": 2,
                 "run_id": request.invocation.run_id,

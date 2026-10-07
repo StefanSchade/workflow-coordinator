@@ -23,6 +23,7 @@ from workflow_coordinator.model import (
     FindingAuthority,
     FindingState,
     MechanicalFacts,
+    ResultContractKind,
     Run,
     RunStatus,
     StrategyAssessment,
@@ -44,6 +45,7 @@ from workflow_coordinator.reducer import (
     resume_after_reconcile,
     validate_convergence_route_history,
 )
+import workflow_coordinator.reducer as reducer_module
 from workflow_coordinator.serialization import run_from_json, run_to_json
 from workflow_coordinator.persistence import checkpoint_projection
 from workflow_coordinator.vertical import convergence_prompt_context
@@ -2293,3 +2295,38 @@ def test_profile_v3_none_role_uses_result_v2_and_keeps_findings_informational():
     assert "unsupported result schema version" in (
         legacy_contract.run.stop_reason or ""
     )
+
+
+def test_reducer_legacy_contract_fallback_uses_the_shared_selector_version_seam(
+    monkeypatch,
+):
+    workflow = profile({"ordinary": phase({"done": route("complete")})})
+    run, hop_id = charge_hop(run_for(workflow, initial_phase="ordinary"))
+    calls = []
+
+    def select(profile_arg, phase_arg, run_arg):
+        calls.append(("select", profile_arg, phase_arg, run_arg))
+        return ResultContractKind.GENERIC_ROUTING_RESULT
+
+    def version(kind, profile_arg, phase_arg, run_arg):
+        calls.append(("version", kind, profile_arg, phase_arg, run_arg))
+        return 1
+
+    monkeypatch.setattr(reducer_module, "select_result_contract", select)
+    monkeypatch.setattr(reducer_module, "result_contract_version", version)
+
+    accepted = reduce_result(
+        run, result("done", schema_version=1), workflow, hop_id=hop_id
+    )
+
+    assert accepted.run.status is RunStatus.COMPLETED
+    assert calls == [
+        ("select", workflow, workflow.phases["ordinary"], run),
+        (
+            "version",
+            ResultContractKind.GENERIC_ROUTING_RESULT,
+            workflow,
+            workflow.phases["ordinary"],
+            run,
+        ),
+    ]

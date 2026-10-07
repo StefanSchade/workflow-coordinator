@@ -26,6 +26,7 @@ from workflow_coordinator.prompt import (
 from workflow_coordinator.vertical import convergence_prompt_context, run_one_hop
 from tests.support import (
     convergence_cycle,
+    convergence_fixture_profile,
     convergence_routing_profile,
     phase,
     profile,
@@ -343,6 +344,8 @@ def test_one_invocation_identity_is_projected_dispatched_and_validated(repositor
     assert "WI-1/RUN-1 completed H001" in completed.terminal
     assert adapter.request is not None
     assert adapter.request.invocation == invocation()
+    assert adapter.request.contract_version == 1
+    assert adapter.request.result_contract_kind is ResultContractKind.GENERIC_ROUTING_RESULT
     for name, value in adapter.request.invocation.__dict__.items():
         assert f"{name}={value}" in adapter.request.prompt
 
@@ -438,14 +441,24 @@ def test_profile_v3_none_role_dispatches_the_closed_result_v2_contract(repositor
 
 
 def test_result_contract_selection_is_phase_fact_based_and_generic_for_current_profiles():
-    workflow = convergence_routing_profile()
-    for phase_value in workflow.phases.values():
-        run = run_for(workflow, initial_phase=next(
-            key for key, candidate in workflow.phases.items() if candidate is phase_value
-        ), run_schema_version=3)
-        kind = select_result_contract(workflow, phase_value, run)
-        assert kind is ResultContractKind.GENERIC_ROUTING_RESULT
-        assert result_contract_version(kind, workflow, phase_value, run) == 2
+    fixtures = (
+        (profile({"work": phase({"done": route("complete")})}), 2, 1),
+        (convergence_fixture_profile(), 3, 2),
+        (convergence_routing_profile(), 3, 2),
+    )
+    for workflow, run_schema_version, expected_version in fixtures:
+        for phase_key, phase_value in workflow.phases.items():
+            run = run_for(
+                workflow,
+                initial_phase=phase_key,
+                run_schema_version=run_schema_version,
+            )
+            kind = select_result_contract(workflow, phase_value, run)
+            assert kind is ResultContractKind.GENERIC_ROUTING_RESULT
+            assert (
+                result_contract_version(kind, workflow, phase_value, run)
+                == expected_version
+            )
 
 
 class CommitAdapter:

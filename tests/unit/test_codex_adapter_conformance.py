@@ -20,6 +20,7 @@ from workflow_coordinator.codex_adapter import (
     assert_openai_strict_schema,
     structured_result_envelope_openai_schema,
 )
+from workflow_coordinator.model import ResultContractKind
 from workflow_coordinator.serialization import (
     EXISTING_FINDING_DELTA_KEYS,
     NEW_FINDING_DELTA_KEYS,
@@ -132,7 +133,10 @@ def test_contract_version_selector_defaults_to_v1_and_rejects_mixed_envelopes():
         validated_result(json.dumps(mixed), invocation, 1)
 
 
-def test_codex_execute_uses_explicit_v2_selector_without_changing_default(tmp_path: Path):
+@pytest.mark.parametrize("contract_version", [1, 2])
+def test_codex_execute_uses_the_generic_kind_for_both_legacy_versions(
+    tmp_path: Path, contract_version: int,
+):
     executable = tmp_path / "fake-codex"
     executable.write_text("#!/usr/bin/env python3\npass\n")
     executable.chmod(0o755)
@@ -141,13 +145,16 @@ def test_codex_execute_uses_explicit_v2_selector_without_changing_default(tmp_pa
     )
     request = AgentExecutionRequest(
         _invocation(), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5,
-        contract_version=2,
+        contract_version=contract_version,
+        result_contract_kind=ResultContractKind.GENERIC_ROUTING_RESULT,
     )
     adapter.execute(request)
     emitted = json.loads(
         (tmp_path / "structured-result.schema.json").read_text(encoding="utf-8")
     )
-    assert emitted == structured_result_envelope_openai_schema(request.invocation, 2)
+    assert emitted == structured_result_envelope_openai_schema(
+        request.invocation, contract_version
+    )
 
 
 def test_codex_argv_is_adapter_owned_and_request_is_provider_neutral(tmp_path: Path):
