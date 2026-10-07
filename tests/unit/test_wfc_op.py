@@ -11,7 +11,6 @@ script, exactly like `tests/unit/test_operator.py`'s own `fake()` pattern.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import shlex
@@ -25,11 +24,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WFC_OP = REPO_ROOT / "scripts" / "wfc_op.py"
-
-# Sibling Evidence repository (see repos-root CLAUDE.md topology); the ARCHIVE
-# tests copy its real `scripts/archive_run.py` / `scripts/wfc-archive-run`
-# into a disposable Evidence fixture rather than ever touching the real one.
-EVIDENCE_REPO_ROOT = REPO_ROOT.parent / "workflow-coordinator-run-evidence"
 
 
 def git(repo: Path, *args: str) -> str:
@@ -1026,128 +1020,85 @@ def test_launch_sh_safely_quotes_shell_significant_paths(world, tmp_path_factory
 
 # ----------------------------------------------------------------------- ARCHIVE
 #
-# These tests exercise the REAL canonical `wfc-archive-run` / `archive_run.py`
-# mechanism (copied, not reimplemented) through disposable Evidence Git
-# repositories, per TESTING -- ARCHIVE. The real Evidence repository
-# (`workflow-coordinator-run-evidence`) is never touched: only its two
-# scripts are read and copied.
+# ======================================================================
+# LAYER 1 -- REQUIRED, SELF-CONTAINED HARNESS DELEGATION TESTS
+# ======================================================================
 #
-# `archive_template` does exactly ONE real prepare+launch, at a fixed HOME, and
-# its OPS/STATE are never copied or mutated by content -- archiving never
-# writes into STATE/OPS (acceptance criterion), so every test below safely
-# shares the very same OPS/STATE directories read-only. Only the recorded
-# Evidence path (two small OPS text/JSON fields) is temporarily repointed at a
-# fresh disposable Evidence clone per test, then restored -- this sidesteps
-# needing to rewrite WFC-owned, self-referential absolute paths inside a copied
-# `operator-plan.json` (`state_root`, `execution_bindings_source`), which a
-# naive "copy STATE+OPS to a new HOME" strategy would otherwise require.
+# These tests prove Harness's OWN archive mechanics -- locating the recorded
+# Evidence repository, mechanical prechecks, dry-run-before-real sequencing,
+# argument pass-through, and reporting -- using a deliberately tiny FAKE
+# canonical wrapper. They need no sibling repository, no Development/Runtime
+# clone, no real prepare/launch, no network, and no real provider: just
+# enough OPS/STATE/Evidence shape for `archive` to locate and invoke the
+# fake wrapper. What a real completed WFC Run looks like, how an archive
+# destination is derived, and how a real Evidence commit is composed are
+# ARCHIVE_RUN/Evidence-repository concerns, not re-tested here.
 
-def make_disposable_archive_evidence(tmp_path_factory) -> Path:
-    canonical_scripts = EVIDENCE_REPO_ROOT / "scripts"
-    archiver = canonical_scripts / "archive_run.py"
-    wrapper = canonical_scripts / "wfc-archive-run"
-    assert archiver.is_file() and wrapper.is_file(), (
-        "the real Evidence repository's canonical archive scripts are required to build "
-        "the disposable ARCHIVE fixture -- see workflow-coordinator-run-evidence/scripts/"
-    )
+_FAKE_WRAPPER_SOURCE = '''#!/usr/bin/env python3
+"""TEST DOUBLE ONLY -- records invocation argv and emits controlled,
+canonical-looking labeled report lines. Implements NONE of the real
+`wfc-archive-run` / `archive_run.py` copy/manifest/hashing/collision/Evidence-
+commit logic; it exists only to prove Harness's OWN delegation mechanics.
+"""
+import sys
+from pathlib import Path
 
-    destination = tmp_path_factory.mktemp("archive-evidence")
-    subprocess.run(("git", "init", "--quiet", str(destination)), check=True)
+here = Path(__file__).resolve().parent
+args = sys.argv[1:]
+with (here / "invocations.log").open("a", encoding="utf-8") as log:
+    log.write(" ".join(args) + "\\n")
+
+dry_run = "--dry-run" in args
+attempt = Path(args[0]).name if args else "unknown"
+
+if dry_run:
+    if (here.parent / "FAIL_DRY_RUN").exists():
+        print("fake wrapper: configured dry-run failure", file=sys.stderr)
+        sys.exit(1)
+    print("DRY RUN -- NOTHING WRITTEN")
+    print(f"dest:       archive/fake/{attempt}")
+    sys.exit(0)
+
+if (here.parent / "FAIL_REAL").exists():
+    print("fake wrapper: configured real-invocation failure", file=sys.stderr)
+    sys.exit(1)
+print(f"dest:       archive/fake/{attempt}")
+print("commit:     FAKE-COMMIT")
+sys.exit(0)
+'''
+
+
+def _init_git_repo(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(("git", "init", "--quiet", str(path)), check=True)
     for key, value in (("user.email", "harness-fixture@example.invalid"), ("user.name", "Harness Fixture")):
-        subprocess.run(("git", "-C", str(destination), "config", key, value), check=True)
+        subprocess.run(("git", "-C", str(path), "config", key, value), check=True)
+    return path
+
+
+def make_fake_evidence(tmp_path_factory) -> Path:
+    """A disposable Evidence-shaped Git repository carrying the fake archive
+    wrapper above -- a test double, never the real `wfc-archive-run`.
+    """
+
+    destination = tmp_path_factory.mktemp("fake-evidence")
+    _init_git_repo(destination)
     scripts_dir = destination / "scripts"
     scripts_dir.mkdir()
-    shutil.copy2(archiver, scripts_dir / "archive_run.py")
-    shutil.copy2(wrapper, scripts_dir / "wfc-archive-run")
-    (scripts_dir / "wfc-archive-run").chmod(0o755)
-    (destination / "README.md").write_text("disposable ARCHIVE test fixture; not the real Evidence repository\n")
+    wrapper = scripts_dir / "wfc-archive-run"
+    wrapper.write_text(_FAKE_WRAPPER_SOURCE, encoding="utf-8")
+    wrapper.chmod(0o755)
+    (destination / "README.md").write_text("fake Evidence fixture; not a real archive implementation\n")
+    # The fake wrapper's own control/log files (test-double plumbing, not
+    # archived content) must never make this fixture's Evidence worktree
+    # look dirty to Harness's own precheck.
+    (destination / ".gitignore").write_text("/scripts/invocations.log\n/FAIL_DRY_RUN\n/FAIL_REAL\n")
     git(destination, "add", ".")
-    git(destination, "commit", "--quiet", "-m", "test: disposable Evidence baseline with the real canonical archive scripts")
+    git(destination, "commit", "--quiet", "-m", "test: fake Evidence baseline with a fake archive wrapper")
     return destination
 
 
-def _clone_disposable_evidence(template: Path, destination: Path) -> Path:
-    subprocess.run(
-        ("git", "clone", "--local", "--no-hardlinks", "--quiet", str(template), str(destination)), check=True,
-    )
-    for key, value in (("user.email", "harness-fixture@example.invalid"), ("user.name", "Harness Fixture")):
-        subprocess.run(("git", "-C", str(destination), "config", key, value), check=True)
-    return destination
-
-
-@contextlib.contextmanager
-def _recorded_evidence_pointed_at(ops: Path, evidence: Path):
-    """Temporarily repoint OPS's two preparation-fact files at `evidence`,
-    restoring their exact original bytes afterward -- `archive_template`'s
-    real OPS/STATE are shared read-only across every test in this section.
-    """
-
-    pins_path = ops / "preparation-pins.txt"
-    record_path = ops / "harness-prepared.json"
-    original_pins = pins_path.read_text()
-    original_record_text = record_path.read_text()
-    record = json.loads(original_record_text)
-    old_evidence = record["evidence"]["path"]
-    new_pins = original_pins.replace(f"evidence_path={old_evidence}\n", f"evidence_path={evidence}\n")
-    assert new_pins != original_pins, "preparation-pins.txt did not contain the expected evidence_path line"
-    record["evidence"]["path"] = str(evidence)
-    try:
-        pins_path.write_text(new_pins)
-        record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
-        yield
-    finally:
-        pins_path.write_text(original_pins)
-        record_path.write_text(original_record_text)
-
-
-@pytest.fixture(scope="module")
-def archive_template(tmp_path_factory):
-    """One real prepare+launch, at a fixed HOME, against a disposable Evidence
-    repository carrying the real canonical archive scripts. Never archived
-    into directly; only cloned from.
-    """
-
-    development = make_development(tmp_path_factory)
-    runtime = make_runtime(tmp_path_factory)
-    evidence = make_disposable_archive_evidence(tmp_path_factory)
-    home = tmp_path_factory.mktemp("archive-template-home")
-    tmp_path = tmp_path_factory.mktemp("archive-template-fake")
-    executable = fake_executable(tmp_path, ONE_HOP_FAKE_BODY)
-    attempt = "wi-harness-archive-template-01"
-    result = run_wfc_op(
-        home,
-        *prepare_argv(
-            attempt=attempt, development=development, runtime=runtime,
-            evidence=evidence, executable=str(executable),
-        ),
-    )
-    assert result.returncode == 0, result.stderr
-    launch_result = run_wfc_op(home, "launch", attempt)
-    assert launch_result.returncode == 0, (launch_result.stdout, launch_result.stderr)
-    return {
-        "home": home, "attempt": attempt,
-        "ops": home / "wfc-ops" / attempt, "state": home / "wfc-state" / attempt,
-        "evidence_template": evidence, "development": development, "runtime": runtime,
-    }
-
-
-@pytest.fixture
-def archive_case(archive_template, tmp_path_factory):
-    """The shared real OPS/STATE, with a fresh, not-yet-archived-into
-    disposable Evidence clone repointed for the duration of one test."""
-
-    evidence = _clone_disposable_evidence(
-        archive_template["evidence_template"], tmp_path_factory.mktemp("archive-case-evidence"),
-    )
-    with _recorded_evidence_pointed_at(archive_template["ops"], evidence):
-        yield {
-            "home": archive_template["home"], "attempt": archive_template["attempt"],
-            "ops": archive_template["ops"], "state": archive_template["state"], "evidence": evidence,
-            "development": archive_template["development"], "runtime": archive_template["runtime"],
-        }
-
-
-def _minimal_ops_pointing_at(home: Path, *, attempt: str, state: Path, evidence: Path) -> Path:
+def _ops_pointing_at(home: Path, *, attempt: str, state: Path, evidence: Path) -> Path:
     ops = home / "wfc-ops" / attempt
     ops.mkdir(parents=True)
     (ops / "preparation-pins.txt").write_text(
@@ -1157,14 +1108,48 @@ def _minimal_ops_pointing_at(home: Path, *, attempt: str, state: Path, evidence:
     return ops
 
 
-def test_archive_missing_state_refuses(tmp_path_factory, fresh_attempt_name):
+def _invocation_log_lines(evidence: Path) -> list[str]:
+    log_path = evidence / "scripts" / "invocations.log"
+    if not log_path.is_file():
+        return []
+    return log_path.read_text(encoding="utf-8").splitlines()
+
+
+@pytest.fixture
+def fake_archive_case(tmp_path_factory, fresh_attempt_name):
+    """A minimal, fully self-contained archivable attempt: an empty STATE dir
+    (the fake wrapper does not recognize WFC Run shape -- that discipline is
+    the real wrapper's job, proven only in the optional Layer 2 test below),
+    an OPS dir recording the fake Evidence path, and the fake Evidence repo
+    itself.
+    """
+
+    home = tmp_path_factory.mktemp("fake-archive-home")
+    state = home / "wfc-state" / fresh_attempt_name
+    state.mkdir(parents=True)
+    evidence = make_fake_evidence(tmp_path_factory)
+    ops = _ops_pointing_at(home, attempt=fresh_attempt_name, state=state, evidence=evidence)
+    return {"home": home, "attempt": fresh_attempt_name, "ops": ops, "state": state, "evidence": evidence}
+
+
+def test_archive_locates_wrapper_from_recorded_evidence_path(fake_archive_case):
+    result = run_wfc_op(fake_archive_case["home"], "archive", fake_archive_case["attempt"])
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    lines = _invocation_log_lines(fake_archive_case["evidence"])
+    assert len(lines) == 2, "dry-run, then real"
+    for line in lines:
+        assert str(fake_archive_case["state"]) in line
+        assert str(fake_archive_case["evidence"]) in line
+
+
+def test_archive_refuses_missing_state(tmp_path_factory, fresh_attempt_name):
     home = tmp_path_factory.mktemp("home")
     result = run_wfc_op(home, "archive", fresh_attempt_name)
     assert result.returncode == 2
     assert "STATE is absent" in result.stderr
 
 
-def test_archive_disagreeing_evidence_facts_refuses(tmp_path_factory, fresh_attempt_name):
+def test_archive_refuses_disagreeing_evidence_facts(tmp_path_factory, fresh_attempt_name):
     home = tmp_path_factory.mktemp("home")
     ops = home / "wfc-ops" / fresh_attempt_name
     state = home / "wfc-state" / fresh_attempt_name
@@ -1179,100 +1164,61 @@ def test_archive_disagreeing_evidence_facts_refuses(tmp_path_factory, fresh_atte
     assert "disagree" in result.stderr
 
 
-def test_archive_dirty_evidence_refuses(tmp_path_factory, fresh_attempt_name, archive_template):
-    home = tmp_path_factory.mktemp("home")
-    state = home / "wfc-state" / fresh_attempt_name
-    state.mkdir(parents=True)
-    evidence = _clone_disposable_evidence(
-        archive_template["evidence_template"], tmp_path_factory.mktemp("dirty-evidence"),
-    )
-    _minimal_ops_pointing_at(home, attempt=fresh_attempt_name, state=state, evidence=evidence)
-    (evidence / "untracked-dirt.txt").write_text("dirt\n")
-    head_before = git(evidence, "rev-parse", "HEAD")
-
-    result = run_wfc_op(home, "archive", fresh_attempt_name)
+def test_archive_refuses_dirty_evidence_without_invoking_wrapper(fake_archive_case):
+    (fake_archive_case["evidence"] / "untracked-dirt.txt").write_text("dirt\n")
+    result = run_wfc_op(fake_archive_case["home"], "archive", fake_archive_case["attempt"])
     assert result.returncode == 2
     assert "not clean" in result.stderr
-    assert git(evidence, "rev-parse", "HEAD") == head_before
-    assert not (evidence / "archive").exists()
+    assert _invocation_log_lines(fake_archive_case["evidence"]) == [], "a dirty Evidence precheck must refuse before ever invoking the wrapper"
 
 
-def test_archive_dry_run_failure_prevents_real_archive(tmp_path_factory, fresh_attempt_name, archive_template):
-    """An unrecognizable STATE (no operator-summary.json/operator-plan.json/
-    checkouts/*/run.json) makes the canonical wrapper's OWN `facts` probe
-    refuse during our explicit `--dry-run` step; this must prevent the real
-    invocation entirely, never partially archive.
-    """
+def test_archive_default_sequence_is_dry_run_then_real_in_order(fake_archive_case):
+    result = run_wfc_op(fake_archive_case["home"], "archive", fake_archive_case["attempt"])
+    assert result.returncode == 0, (result.stdout, result.stderr)
 
-    home = tmp_path_factory.mktemp("home")
-    state = home / "wfc-state" / fresh_attempt_name
-    state.mkdir(parents=True)  # deliberately empty: no recognizable WFC Run state
-    evidence = _clone_disposable_evidence(
-        archive_template["evidence_template"], tmp_path_factory.mktemp("unrecognizable-evidence"),
-    )
-    _minimal_ops_pointing_at(home, attempt=fresh_attempt_name, state=state, evidence=evidence)
-    head_before = git(evidence, "rev-parse", "HEAD")
+    lines = _invocation_log_lines(fake_archive_case["evidence"])
+    assert len(lines) == 2, "exactly two invocations: dry-run, then real"
+    assert "--dry-run" in lines[0], "the FIRST invocation must be the dry-run"
+    assert "--dry-run" not in lines[1], "the SECOND invocation must be the real one"
 
-    result = run_wfc_op(home, "archive", fresh_attempt_name)
+    # Harness only parses/reports the wrapper's own already-printed facts; it
+    # never derives a destination or commit identity itself.
+    assert f"ARCHIVE DESTINATION: archive/fake/{fake_archive_case['attempt']}" in result.stdout
+    assert "ARCHIVE COMMIT: FAKE-COMMIT" in result.stdout
+
+
+def test_archive_dry_run_failure_prevents_real_invocation(fake_archive_case):
+    (fake_archive_case["evidence"] / "FAIL_DRY_RUN").touch()
+    result = run_wfc_op(fake_archive_case["home"], "archive", fake_archive_case["attempt"])
     assert result.returncode == 2
     assert "dry-run refused" in result.stderr
-    assert "not a WFC Run state root" in result.stderr
-    assert git(evidence, "rev-parse", "HEAD") == head_before
-    assert not (evidence / "archive").exists()
+    lines = _invocation_log_lines(fake_archive_case["evidence"])
+    assert len(lines) == 1, "the real invocation must never occur after a dry-run failure"
+    assert "--dry-run" in lines[0]
 
 
-def test_archive_default_sequence_is_dry_run_then_real(archive_case):
-    development, runtime = archive_case["development"], archive_case["runtime"]
-    dev_head_before = git(development, "rev-parse", "HEAD")
-    runtime_head_before = git(runtime, "rev-parse", "HEAD")
-    state_before = {p: p.read_bytes() for p in archive_case["state"].rglob("*") if p.is_file()}
-
-    result = run_wfc_op(archive_case["home"], "archive", archive_case["attempt"])
+def test_archive_dry_run_flag_invokes_wrapper_exactly_once(fake_archive_case):
+    result = run_wfc_op(fake_archive_case["home"], "archive", fake_archive_case["attempt"], "--dry-run")
     assert result.returncode == 0, (result.stdout, result.stderr)
-    assert "DRY RUN" in result.stdout
-    assert "ARCHIVED" in result.stdout
-    assert "EVIDENCE HEAD (before)" in result.stdout
-    assert "EVIDENCE HEAD (after)" in result.stdout
-
-    log = git(archive_case["evidence"], "log", "--oneline")
-    assert len(log.splitlines()) == 2, "exactly one new commit over the disposable Evidence baseline"
-    commit_subject = git(archive_case["evidence"], "log", "-1", "--format=%s")
-    assert archive_case["attempt"] in commit_subject or "archive" in commit_subject.lower()
-
-    dest_glob = list((archive_case["evidence"] / "archive").glob("*/" + archive_case["attempt"]))
-    assert len(dest_glob) == 1, "exactly one archive destination for this attempt"
-    manifest = json.loads((dest_glob[0] / "manifest.json").read_text())
-    assert manifest["attempt_id"] == archive_case["attempt"]
-    assert manifest["copied_files"]
-
-    # Re-archiving the same attempt (into the same clone) must refuse --
-    # canonical collision/refusal behavior, owned entirely by the wrapper.
-    second = run_wfc_op(archive_case["home"], "archive", archive_case["attempt"])
-    assert second.returncode == 2
-    assert "already exists" in second.stderr
-
-    # Harness implements no archive mechanics of its own: only the disposable
-    # Evidence clone changed; Development/Runtime/STATE are untouched.
-    assert git(development, "rev-parse", "HEAD") == dev_head_before
-    assert git(development, "status", "--porcelain") == ""
-    assert git(runtime, "rev-parse", "HEAD") == runtime_head_before
-    assert git(runtime, "status", "--porcelain") == ""
-    state_after = {p: p.read_bytes() for p in archive_case["state"].rglob("*") if p.is_file()}
-    assert state_before == state_after, "archive never writes into STATE"
-
-
-def test_archive_dry_run_only_performs_no_real_archive(archive_case):
-    head_before = git(archive_case["evidence"], "rev-parse", "HEAD")
-    result = run_wfc_op(archive_case["home"], "archive", archive_case["attempt"], "--dry-run")
-    assert result.returncode == 0, (result.stdout, result.stderr)
-    assert "DRY RUN" in result.stdout
-    assert "DRY-RUN ONLY" in result.stdout
+    lines = _invocation_log_lines(fake_archive_case["evidence"])
+    assert len(lines) == 1, "`archive --dry-run` must invoke the wrapper exactly once"
+    assert "--dry-run" in lines[0]
     assert "ARCHIVED" not in result.stdout
-    assert "EVIDENCE HEAD (after)" not in result.stdout
 
-    head_after = git(archive_case["evidence"], "rev-parse", "HEAD")
-    assert head_after == head_before, "no commit may be made in dry-run-only mode"
-    assert not (archive_case["evidence"] / "archive").exists(), "no archive directory in dry-run-only mode"
+
+def test_archive_passes_semantic_json_through_unchanged(fake_archive_case, tmp_path_factory):
+    semantic = tmp_path_factory.mktemp("semantic") / "semantic.json"
+    semantic.write_text(json.dumps({"domain": "d", "workstream": "w"}))
+
+    result = run_wfc_op(
+        fake_archive_case["home"], "archive", fake_archive_case["attempt"], "--semantic-json", str(semantic),
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+    lines = _invocation_log_lines(fake_archive_case["evidence"])
+    assert len(lines) == 2
+    for line in lines:
+        assert f"--semantic-json {semantic.resolve()}" in line, "passed through verbatim, not reinterpreted"
 
 
 def test_harness_implements_no_archive_mechanics():
@@ -1285,3 +1231,61 @@ def test_harness_implements_no_archive_mechanics():
     assert "wfc-archive-run" in source, "archive must delegate to the canonical wrapper"
     for forbidden in ("shutil.copy", "fnmatch", "ARCHIVE_ROOT", "manifest.json", "sha256_of"):
         assert forbidden not in source, f"Harness must not reimplement archive mechanics ({forbidden!r} found)"
+
+
+# ======================================================================
+# LAYER 2 -- OPTIONAL CROSS-REPO INTEGRATION (skips cleanly if unavailable)
+# ======================================================================
+#
+# Extra integration evidence only, never required: the REAL canonical
+# `wfc-archive-run` / `archive_run.py` from the sibling Evidence repository
+# archives a real disposable Harness/WFC attempt for real. Layer 1 above
+# already proves Harness's own delegation mechanics without this sibling at
+# all; ordinary `pytest` success in THIS repository never depends on it.
+
+_SIBLING_EVIDENCE_SCRIPTS = REPO_ROOT.parent / "workflow-coordinator-run-evidence" / "scripts"
+_SIBLING_CANONICAL_SCRIPTS_AVAILABLE = (
+    (_SIBLING_EVIDENCE_SCRIPTS / "archive_run.py").is_file()
+    and (_SIBLING_EVIDENCE_SCRIPTS / "wfc-archive-run").is_file()
+)
+
+
+@pytest.mark.skipif(
+    not _SIBLING_CANONICAL_SCRIPTS_AVAILABLE,
+    reason="optional cross-repo integration: sibling workflow-coordinator-run-evidence not found",
+)
+def test_optional_real_canonical_wrapper_archives_a_real_completed_attempt(tmp_path_factory):
+    development = make_development(tmp_path_factory)
+    runtime = make_runtime(tmp_path_factory)
+    evidence = tmp_path_factory.mktemp("real-wrapper-evidence")
+    _init_git_repo(evidence)
+    scripts_dir = evidence / "scripts"
+    scripts_dir.mkdir()
+    shutil.copy2(_SIBLING_EVIDENCE_SCRIPTS / "archive_run.py", scripts_dir / "archive_run.py")
+    shutil.copy2(_SIBLING_EVIDENCE_SCRIPTS / "wfc-archive-run", scripts_dir / "wfc-archive-run")
+    (scripts_dir / "wfc-archive-run").chmod(0o755)
+    git(evidence, "add", ".")
+    git(evidence, "commit", "--quiet", "-m", "test: real-wrapper disposable Evidence baseline")
+
+    home = tmp_path_factory.mktemp("real-wrapper-home")
+    tmp_path = tmp_path_factory.mktemp("real-wrapper-fake-provider")
+    executable = fake_executable(tmp_path, ONE_HOP_FAKE_BODY)
+    attempt = "wi-harness-real-wrapper-integration-01"
+    result = run_wfc_op(
+        home,
+        *prepare_argv(
+            attempt=attempt, development=development, runtime=runtime,
+            evidence=evidence, executable=str(executable),
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+    launch_result = run_wfc_op(home, "launch", attempt)
+    assert launch_result.returncode == 0, (launch_result.stdout, launch_result.stderr)
+
+    archive_result = run_wfc_op(home, "archive", attempt)
+    assert archive_result.returncode == 0, (archive_result.stdout, archive_result.stderr)
+    assert "ARCHIVED" in archive_result.stdout
+
+    dest = evidence / "archive" / "unclassified" / attempt
+    manifest = json.loads((dest / "manifest.json").read_text())
+    assert manifest["attempt_id"] == attempt
