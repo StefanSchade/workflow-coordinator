@@ -37,6 +37,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -431,28 +432,41 @@ def write_preparation_pins(
 
 
 def write_launch_sh(
-    ops: Path, *, runtime_env: Path, dev_env: Path, development: Path,
+    ops: Path, *, runtime_env: Path, development: Path,
     state: Path, expected_head: str, work_item: str, profile: str,
     policy: str, components: str, task: str, execution_bindings: Path,
-    executable: str, timeout_seconds: str,
+    executable: str, timeout_seconds: str, controlled_path_value: str,
 ) -> Path:
+    """Materialize the already-prepared launch artifact.
+
+    The controlled PATH is frozen here as a literal value, not a `$PATH`
+    reference: ``controlled_path_value`` is the exact string canonical
+    preflight was admitted under during ``prepare`` (see ``cmd_prepare``), so
+    a later ``launch`` -- from any shell, with any ambient PATH -- still
+    executes the pinned Runtime under the identical environment preflight
+    validated.  Every dynamic value is passed through ``shlex.quote`` so a
+    path or executable string containing shell metacharacters cannot gain
+    shell interpretation.
+    """
+
     wfc = runtime_env / "bin" / "wfc"
+    q = shlex.quote
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
-        f'export PATH="{dev_env / "bin"}:{runtime_env / "bin"}:$PATH"',
-        f'exec "{wfc}" \\',
-        f'  --repository "{development}" \\',
-        f'  --state-root "{state}" \\',
-        f'  --expected-head "{expected_head}" \\',
-        f'  --work-item "{work_item}" \\',
-        f'  --profile "{profile}" \\',
-        f'  --policy "{policy}" \\',
-        f'  --components "{components}" \\',
-        f'  --task "{task}" \\',
-        f'  --execution-bindings "{execution_bindings}" \\',
-        f'  --timeout-seconds "{timeout_seconds}" \\',
-        f'  --executable "{executable}"',
+        f"export PATH={q(controlled_path_value)}",
+        f"exec {q(str(wfc))} \\",
+        f"  --repository {q(str(development))} \\",
+        f"  --state-root {q(str(state))} \\",
+        f"  --expected-head {q(expected_head)} \\",
+        f"  --work-item {q(work_item)} \\",
+        f"  --profile {q(profile)} \\",
+        f"  --policy {q(policy)} \\",
+        f"  --components {q(components)} \\",
+        f"  --task {q(task)} \\",
+        f"  --execution-bindings {q(str(execution_bindings))} \\",
+        f"  --timeout-seconds {q(timeout_seconds)} \\",
+        f"  --executable {q(executable)}",
         "",
     ]
     path = ops / "launch.sh"
@@ -544,11 +558,11 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     run_canonical_preflight_seam(runtime_env, ops, seam_argv, seam_env)
 
     launch_sh = write_launch_sh(
-        ops, runtime_env=runtime_env, dev_env=dev_env, development=development.path,
+        ops, runtime_env=runtime_env, development=development.path,
         state=state, expected_head=development.head, work_item=args.work_item,
         profile=args.profile, policy=args.policy, components=args.components,
         task=args.task, execution_bindings=execution_bindings, executable=args.executable,
-        timeout_seconds=str(args.timeout_seconds),
+        timeout_seconds=str(args.timeout_seconds), controlled_path_value=path_value,
     )
     write_preparation_pins(
         ops, attempt=attempt, state=state, development=development, runtime=runtime,

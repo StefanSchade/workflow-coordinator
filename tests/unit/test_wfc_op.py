@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -319,6 +321,12 @@ def test_prepare_positive_produces_complete_envelope_and_leaves_state_absent(pre
     bindings = (ops / "execution-bindings.yaml").read_text()
     assert "adapter: codex_cli" in bindings and "model: fixture-worker" in bindings
 
+    # The controlled PATH is frozen as a literal value during prepare; launch.sh
+    # must never re-expand a future launcher's own $PATH.
+    launch_sh_text = (ops / "launch.sh").read_text()
+    assert "$PATH" not in launch_sh_text
+    assert record["controlled_path"] in launch_sh_text
+
     # Development/Runtime/Evidence themselves are unchanged.
     assert git(prepared["development"], "status", "--porcelain") == ""
     assert git(prepared["runtime"], "status", "--porcelain") == ""
@@ -528,7 +536,6 @@ def test_launch_executes_prepared_artifact_exactly_once_with_fake_executable(pre
         assert second.returncode == 2
         assert "STATE already exists" in second.stderr
     finally:
-        import shutil
         if state.exists():
             shutil.rmtree(state)
         if git(development, "rev-parse", "HEAD") != pre_head:
@@ -633,3 +640,151 @@ def test_launch_refuses_missing_ops(tmp_path_factory, fresh_attempt_name):
     result = run_wfc_op(home, "launch", fresh_attempt_name)
     assert result.returncode == 2
     assert "not prepared" in result.stderr
+
+
+# ------------------------------------------------------- PATH-freeze regression
+
+def _path_capturing_fake_body(capture: Path) -> str:
+    return textwrap.dedent(f'''
+        import json, os, pathlib, sys
+        args = sys.argv[1:]
+        repo = pathlib.Path(args[args.index("--cd") + 1])
+        output = pathlib.Path(args[args.index("--output-last-message") + 1])
+        prompt = sys.stdin.read()
+
+        def fact(name):
+            return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
+
+        pathlib.Path({str(capture)!r}).write_text(
+            "argv0=" + sys.argv[0] + "\\n" + "PATH=" + os.environ.get("PATH", "")
+        )
+        repo.joinpath("PROOF.md").write_text("after\\n")
+        result = {{
+            "schema_version": 1, "outcome": "completed", "requested_route": "done",
+            "scope_changed": False, "requires_human": False, "escalation": None,
+            "findings": [], "claimed_commits": [],
+            "commit_intent": {{"paths": ["PROOF.md"], "subject": "docs(workflow): WI-HARNESS-FIXTURE H001 fixture"}},
+            "evidence_refs": [], "summary": "fixture",
+        }}
+        output.write_text(json.dumps({{
+            "schema_version": 1, "run_id": fact("run_id"), "hop_id": fact("hop_id"),
+            "invocation_id": fact("invocation_id"), "result": result,
+        }}))
+    ''')
+
+
+def test_launch_uses_the_frozen_prepared_path_not_a_later_ambient_path(world, tmp_path_factory, fresh_attempt_name):
+    """DEFECT 1 regression: canonical preflight admits a concrete controlled
+    PATH during `prepare`; a later `launch` from a shell with a materially
+    different ambient PATH must still execute the pinned Runtime (and
+    anything it spawns) under the exact PATH preflight admitted, never the
+    launch-time ambient one.
+    """
+
+    base = tmp_path_factory.mktemp("path-freeze")
+    capture = base / "observed.txt"
+    executable = fake_executable(base, _path_capturing_fake_body(capture))
+
+    marker_prepare = tmp_path_factory.mktemp("marker-prepare-time")
+    marker_launch = tmp_path_factory.mktemp("marker-launch-time")
+    ambient_base = os.environ.get("PATH", "")
+
+    home = tmp_path_factory.mktemp("home")
+    development = world["development"]
+    pre_head = git(development, "rev-parse", "HEAD")
+    try:
+        prepare_env = {**os.environ, "HOME": str(home), "PATH": f"{marker_prepare}{os.pathsep}{ambient_base}"}
+        result = subprocess.run(
+            (sys.executable, str(WFC_OP), *prepare_argv(
+                attempt=fresh_attempt_name, development=development, runtime=world["runtime"],
+                evidence=world["evidence"], executable=str(executable),
+            )),
+            text=True, capture_output=True, env=prepare_env,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "PREPARED / NOT LAUNCHED" in result.stdout
+
+        ops = home / "wfc-ops" / fresh_attempt_name
+        record = json.loads((ops / "harness-prepared.json").read_text())
+        assert str(marker_prepare) in record["controlled_path"]
+        launch_sh_text = (ops / "launch.sh").read_text()
+        assert "$PATH" not in launch_sh_text
+        assert str(marker_prepare) in launch_sh_text
+
+        launch_env = {**os.environ, "HOME": str(home), "PATH": f"{marker_launch}{os.pathsep}{ambient_base}"}
+        launch_result = subprocess.run(
+            (sys.executable, str(WFC_OP), "launch", fresh_attempt_name),
+            text=True, capture_output=True, env=launch_env,
+        )
+        assert launch_result.returncode == 0, (launch_result.stdout, launch_result.stderr)
+
+        observed = capture.read_text()
+        assert f"argv0={executable}" in observed
+        observed_path = observed.split("PATH=", 1)[1]
+        assert str(marker_prepare) in observed_path, observed_path
+        assert str(marker_launch) not in observed_path, observed_path
+    finally:
+        state = home / "wfc-state" / fresh_attempt_name
+        if state.exists():
+            shutil.rmtree(state)
+        if git(development, "rev-parse", "HEAD") != pre_head:
+            git(development, "reset", "--quiet", "--hard", pre_head)
+
+
+# ---------------------------------------------------------- shell-quoting regression
+
+def test_launch_sh_safely_quotes_shell_significant_paths(world, tmp_path_factory, fresh_attempt_name):
+    """DEFECT 2 regression: the provider executable path contains shell
+    metacharacters (spaces, `$`, backticks, a single quote). Ad-hoc
+    double-quote interpolation would either break `launch.sh`'s syntax or let
+    the shell reinterpret part of the path; robust quoting must execute the
+    exact artifact/argument unchanged.
+
+    HOME/OPS themselves stay on an ordinary path: hosting a venv under a path
+    containing shell metacharacters hits an unrelated, pre-existing POSIX
+    limitation (the kernel's own `#!`-shebang line parsing has no quoting),
+    which is orthogonal to `write_launch_sh`'s own quoting under test here.
+    """
+
+    home = tmp_path_factory.mktemp("home")
+    exe_base = tmp_path_factory.mktemp("quoting")
+    exe_dir = exe_base / "provider dir $with spaces"
+    exe_dir.mkdir()
+    capture = exe_base / "observed.txt"
+    executable = exe_dir / "fake provider $exe `name` 'quoted'"
+    executable.write_text("#!/usr/bin/env python3\n" + _path_capturing_fake_body(capture))
+    executable.chmod(0o755)
+
+    development = world["development"]
+    pre_head = git(development, "rev-parse", "HEAD")
+    try:
+        result = run_wfc_op(
+            home,
+            *prepare_argv(
+                attempt=fresh_attempt_name, development=development, runtime=world["runtime"],
+                evidence=world["evidence"], executable=str(executable),
+            ),
+        )
+        assert result.returncode == 0, result.stderr
+        assert "PREPARED / NOT LAUNCHED" in result.stdout
+
+        launch_sh_text = (home / "wfc-ops" / fresh_attempt_name / "launch.sh").read_text()
+        assert shlex.quote(str(executable)) in launch_sh_text
+
+        launch_result = run_wfc_op(home, "launch", fresh_attempt_name)
+        assert launch_result.returncode == 0, (launch_result.stdout, launch_result.stderr)
+
+        state = home / "wfc-state" / fresh_attempt_name
+        summary_path = next(state.glob("operator-summary.json"), None)
+        assert summary_path is not None
+        summary = json.loads(summary_path.read_text())
+        assert summary["run_status"] == "completed"
+
+        observed = capture.read_text()
+        assert f"argv0={executable}" in observed
+    finally:
+        state = home / "wfc-state" / fresh_attempt_name
+        if state.exists():
+            shutil.rmtree(state)
+        if git(development, "rev-parse", "HEAD") != pre_head:
+            git(development, "reset", "--quiet", "--hard", pre_head)
