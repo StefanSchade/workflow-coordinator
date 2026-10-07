@@ -1,0 +1,418 @@
+Implement P1 ("Projection infrastructure") of the accepted concept
+docs/wfc_projected_result_contracts_concept_2026-10-07.adoc, then obtain a
+fresh independent review. Loop implement -> independent_review ->
+{accept: complete, correction: correction}; correction -> rereview;
+rereview -> {accept: complete, correction: correction}. Initial phase:
+implement. No supervisor. No child Run. No nested WFC.
+
+THIS IS P1 ONLY. It does NOT authorize:
+  * P2 strict WorkResult / ReviewVerdict types;
+  * worker/reviewer outcome-enum narrowing;
+  * elimination of `changes_required` from worker wire schemas;
+  * review schema vocabulary change;
+  * Finding-shape change beyond unavoidable plumbing;
+  * P3 Finding-authority generalization;
+  * P4 Coordinator-owned effect extraction;
+  * P5 provider capability/registry cleanup;
+  * a Claude adapter, provider registry, or capability matrix;
+  * hierarchical escalation; Harness v1; outer orchestration; backlog
+    picker; automatic Runtime promotion; automatic push; semantic ledger
+    curation; Commission generation; sandbox redesign; unrelated BUG
+    closure; Slice 5 / R1A; provider fallback; model routing; cost
+    optimization; any Harness/operator architecture change.
+
+======================================================================
+GOVERNING CONCEPT
+======================================================================
+
+Read completely before touching code:
+docs/wfc_projected_result_contracts_concept_2026-10-07.adoc. It is CONCEPT
+ONLY and authorizes nothing by itself; THIS task text and its governing
+WorkItem/profile/policy are the sole authorization for actual mutation,
+and where this task text summarizes the concept's wording, the concept
+document's own exact wording controls if the two ever appear to differ.
+Do not resolve an apparent conflict by inventing a third reading -- stop
+and escalate (requires_human=true, escalation.kind=scope) instead.
+
+Core target architecture (concept section 6):
+
+  admitted Profile + Phase + Run facts
+      v
+  SELECTION (new, P1) -- deterministic function of the facts,
+      never a phase-name switch -- returns a ResultContractKind
+      v
+  semantic result TYPE (RoutingResult only, in P1)
+      v
+  adapter projection (existing seam) -- kind -> provider schema
+      v
+  provider invocation (unchanged) -> parse -> reducer (UNCHANGED)
+
+Selection and the ResultContractKind identity are the only new permanent
+concepts P1 introduces. Every stage below the semantic-type line already
+exists and must not change shape or behavior for any currently supported
+phase.
+
+======================================================================
+WHAT INSPECTION FOUND: TWO INLINE SEAMS, NOT ONE
+======================================================================
+
+The concept document's own section 5 diagram and section 15 "likely
+mutation surfaces" describe exactly one inline selection seam,
+`vertical.py:300-305`:
+
+  result_contract_version = (
+      2 if profile.schema_version == 3
+      or phase.convergence_role is not ConvergenceRole.NONE
+      else 1
+  )
+
+Commission-time source inspection found a SECOND, textually identical
+inline copy of this same predicate inside `reducer.py`'s `reduce_result`
+(currently around lines 1275-1283), there named `expected_result_version`
+and used to fail closed when `result.schema_version != expected_result_version`:
+
+  expected_result_version = (
+      2 if profile.schema_version == 3
+      or (phase is not None and phase.convergence_role is not ConvergenceRole.NONE)
+      else 1
+  )
+
+Within one live dispatch both copies read the same in-memory `profile`
+object, so today this duplication is not itself a live correctness bug.
+It IS, however, a second permanent copy of the exact logic P1's
+acceptance criteria require to be replaced, not left standing ("the old
+inline selection seam is replaced, not left as parallel logic"). If P1
+introduces `select_result_contract(...)` and calls it only from
+vertical.py while leaving reducer.py's copy untouched, that is a FAILED
+P1: a real seam exists at one call site while a parallel, un-replaced
+duplicate survives at another. `reducer.py` and `tests/unit/test_reducer.py`
+are therefore authorized, narrowly: replace reducer.py's inline duplicate
+predicate with a call to (or a value consistently derived from) the same
+selector vertical.py now calls, so there is exactly one selection
+computation in the codebase. Do not change any other reducer.py behavior:
+Finding authority, convergence-fact derivation, route authority, and every
+other `reduce_result` check must be byte-for-byte unchanged in effect.
+
+======================================================================
+P1 MUST ESTABLISH
+======================================================================
+
+1. A provider-neutral closed result-contract identity, `ResultContractKind`,
+   following the repository's `CoordinatorValue` pattern (model.py:30-31,
+   e.g. `class ResultContractKind(CoordinatorValue): ...`). At minimum it
+   must have one member equivalent to today's generic routing-result
+   contract (both v1 and v2 legacy shapes remain reachable through it; P1
+   does not collapse the existing v1/v2 axis, it sits alongside/above it).
+
+2. One deterministic selector, conceptually
+   `select_result_contract(profile, phase, run) -> ResultContractKind` (or
+   the smallest truthful equivalent; exact parameter list is
+   implementation's choice as long as it is a pure function of ADMITTED
+   facts, never of ambient/mutable state). It must be keyed ONLY by:
+     - `Phase.role` (WorkflowRole);
+     - whether `Phase.review` is present, and `Phase.review.finding_authority`;
+     - `Phase.convergence_role` (ConvergenceRole);
+     - the Run's governing contract-version lineage (today:
+       `profile.schema_version` / `run.schema_version`, exactly the facts
+       already read at both existing inline sites).
+   NEVER by hard-coded phase-key strings such as `if phase_key == "review"`.
+
+3. The selector REPLACES, at BOTH existing inline sites (vertical.py AND
+   reducer.py; see prior section), the current duplicated computation. No
+   dual permanent architecture: no new path running beside an un-replaced
+   old one.
+
+4. The selected kind reaches the adapter boundary: `AgentExecutionRequest`
+   (adapter.py) must carry the selected kind (a new field, or an
+   equivalent carrier) alongside its existing `contract_version`/
+   `result_contract` fields, not merely an internal vertical.py-local
+   variable the adapter never sees.
+
+5. `codex_adapter.py`'s `CodexCliAdapter.execute` must consult the
+   selected kind it was given and must NOT infer workflow semantics from
+   `request`'s phase, role, or any phase-name string -- it has none of
+   those today and must gain none. It is authorized to add exactly one
+   narrow guard: reject (fail closed) a kind it does not support, mirroring
+   its existing `request.contract_version not in {1, 2}` check. Its
+   existing schema-generation functions (`routing_result_openai_schema`,
+   `structured_result_envelope_openai_schema`) are not expected to change
+   shape or behavior in P1, only to become reachable through the new seam
+   for the one generic kind every current phase selects.
+
+6. Every currently supported phase (every phase in every current
+   governance fixture, test profile, and the self-development profiles
+   themselves) must select a kind equivalent to today's generic
+   RoutingResult/`routing-result-envelope` contract. No phase's dispatched
+   schema, parser, or reducer input changes shape in P1.
+
+7. Existing reducer semantics remain unchanged (see prior section: the
+   ONLY reducer.py change authorized is replacing the inline duplicate
+   predicate with the selector call).
+
+8. Existing provider-visible JSON schema remains semantically equivalent
+   (same required keys, same shapes, same v1/v2 branching) for every
+   phase.
+
+9. Existing prompt semantics remain unchanged. `prompt.py` is NOT
+   authorized for this P1 scope: the selected kind need not be mentioned
+   in agent-facing prompt text to satisfy any P1 acceptance criterion
+   (the audit requirement in the next section is met by persisting the
+   kind on the Hop record, not by prompt text). If implementation
+   discovers a genuine reason `prompt.py` must change, escalate
+   (requires_human=true, escalation.kind=scope) rather than touch it.
+
+======================================================================
+PERSISTENCE / REPLAY REQUIREMENT (resolve explicitly, do not skip)
+======================================================================
+
+Current state, confirmed by inspection: `Hop` and `HopSummary` (model.py)
+persist NO per-Hop contract/version identity field today.
+`AgentExecutionRequest.contract_version` and the parsed
+`RoutingResult.schema_version` are used transiently for dispatch and
+validation and are never written onto a Hop or Run record. The only
+durably persisted version fact today is `Run.schema_version` itself
+(1/2/3, a Run-level fact, unrelated to any single Hop's dispatched
+contract).
+
+`serialization.py` already establishes the working precedent for adding
+exactly this kind of optional, version-gated, backward-compatible Hop
+field: `pre_route_anchor_sha256` is present only where available, is
+never fabricated for historical data, and required no Run.schema_version
+bump or migration (`run_to_json`/`_hop_summary`, see the
+`anchor_field`/`run_version == 3` handling). P1 must follow the identical
+discipline for the new identity:
+
+  * For NEW P1-created Hops: the exact `ResultContractKind` actually
+    selected for dispatch must be durably recorded on that Hop/HopSummary,
+    at the same granularity `pre_route_anchor_sha256` already
+    demonstrates, so a later inspector or replay never has to re-derive it
+    from current (possibly since-edited) profile YAML content.
+  * For HISTORICAL Hops/Runs created before P1: they remain readable and
+    replayable with NO migration, NO reinterpretation, and NO fabricated
+    `ResultContractKind` invented from current configuration. Where no
+    such field was ever recorded, none is synthesized; legacy behavior
+    (today's version-int-only path) continues to apply to that history
+    exactly as it does today.
+  * Byte-identical serialization of NEW Runs is NOT required if adding the
+    identity requires a new field; byte-identical serialization of
+    PRE-EXISTING persisted Runs (`run_to_json` round-trip) IS required and
+    must be tested (see test coverage section).
+  * `reduce_result`/replay must not re-derive a NEW Hop's persisted kind
+    from mutable current profile configuration when a durable per-Hop
+    record exists for it; where no persisted identity exists (legacy
+    Hops), the existing recompute-from-profile behavior is correct and
+    must be preserved unchanged.
+
+Exact field name and placement (a new `Hop`/`HopSummary` field; whether it
+extends `contract_version`'s existing role or is a sibling field) is left
+to implementation. The binding requirement is that replay semantics are
+unambiguous: given the rule above, a reviewer must be able to state, for
+any Hop old or new, exactly which contract/version governed it and why,
+without guessing.
+
+======================================================================
+FAIL-CLOSED BEHAVIOR
+======================================================================
+
+If P1 introduces a representable condition where a contract kind is
+unsupported, unknown, inconsistent with the carried version, or missing
+where new history requires it, the implementation must fail closed BEFORE
+any provider invocation (mirroring today's `OpenAIStrictSchemaError`/
+`ResultValidationError` paths). Do not invent a fallback to the generic
+contract for an unknown NEW kind. Truthful legacy/historical handling is
+different and must keep working exactly as today: an old persisted Hop
+with no kind recorded is legitimately legacy, not an error condition.
+
+======================================================================
+TEST COVERAGE REQUIRED
+======================================================================
+
+Add the smallest focused coverage that proves the seam is real, in the
+narrowest authorized test files:
+
+1. Deterministic selection tests (likely `tests/unit/test_slice3_vertical.py`
+   and/or a focused addition near it): given profile/phase/run facts,
+   `select_result_contract` (or its frozen equivalent name) returns the
+   expected kind, including today's generic kind for every existing
+   profile fixture in `tests/support.py`. No test may assert on a
+   phase-name string driving the result; assert only on the admitted
+   facts (role/review/convergence_role/version lineage).
+
+2. The selected kind reaching the adapter: extend the existing
+   `request.contract_version == 2` assertions in
+   `tests/unit/test_slice3_vertical.py` and `tests/unit/test_slice4.py` to
+   also assert the new kind field/carrier is populated and equivalent to
+   today's generic contract for both the v1 and v2 legacy paths.
+
+3. `tests/unit/test_codex_adapter_conformance.py`: prove the new
+   selected-kind path reaches identical schema-generation behavior as
+   today (same required keys/shapes for both contract versions); add one
+   negative test proving the adapter fails closed on an unsupported/
+   unknown kind before any subprocess launch, mirroring the existing
+   `test_adapter_rejects_an_unsupported_result_contract_before_launch`
+   pattern. Do not alter the existing schema-generation assertions'
+   expected shapes.
+
+4. `tests/unit/test_reducer.py`: prove reducer.py's `expected_result_version`
+   (or its replacement) is now produced by the same selector vertical.py
+   uses -- not a second independent computation -- while every existing
+   `reduce_result` acceptance/rejection test in that file continues to
+   pass unmodified in behavior. Add one direct unit test on the selector
+   itself if reducer.py's own test file is the clearest place to express
+   it against full Run/Profile fixtures.
+
+5. `tests/unit/test_serialization.py`: round-trip tests for the new
+   optional Hop/HopSummary field analogous to existing
+   `pre_route_anchor_sha256` coverage -- present when set, absent and
+   never fabricated for historical schema_version 1/2 data, and a byte-
+   identical `run_to_json` round trip for at least one pre-P1-shaped fixture
+   Run that never carried the field.
+
+6. `tests/architecture/test_replays.py`: add or extend a replay test
+   proving (a) a pre-P1 historical fixture Run continues to replay
+   unchanged; (b) a new P1-created Hop's persisted kind is NOT re-derived
+   from a deliberately mutated current profile object at replay time
+   (construct the Hop with its real dispatched kind, then replay against a
+   `profile`/`phase` fixture whose facts would select a DIFFERENT kind if
+   recomputed fresh, and assert the persisted kind -- not the freshly
+   recomputed one -- governs); (c) generic-result semantic behavior
+   (acceptance, rejection, Finding handling) is unchanged; (d) a malformed
+   or internally inconsistent new persisted kind fails closed before any
+   derived truth is trusted.
+
+7. `tests/support.py` may gain small helper additions (e.g. a kwarg or
+   helper for constructing a Hop/Run fixture carrying an explicit
+   `ResultContractKind`) only if an existing helper cannot already express
+   the needed fixture; do not restructure existing helpers' signatures in
+   ways that would break other, out-of-scope test files that import them.
+
+Do not weaken, delete, or narrow any existing passing test as a way to
+make P1 "pass." Every existing test in every authorized file must keep
+passing in substance, not merely in count.
+
+======================================================================
+EXACT SCOPE (authoritative; matches WorkItem/profile/policy exactly)
+======================================================================
+
+IMPLEMENT and CORRECTION (role: worker) -- identical authorized_scope,
+exactly these 13 paths, no others:
+
+  src/workflow_coordinator/model.py
+  src/workflow_coordinator/vertical.py
+  src/workflow_coordinator/reducer.py
+  src/workflow_coordinator/adapter.py
+  src/workflow_coordinator/codex_adapter.py
+  src/workflow_coordinator/serialization.py
+  tests/support.py
+  tests/unit/test_slice3_vertical.py
+  tests/unit/test_slice4.py
+  tests/unit/test_reducer.py
+  tests/unit/test_codex_adapter_conformance.py
+  tests/unit/test_serialization.py
+  tests/architecture/test_replays.py
+
+INDEPENDENT_REVIEW and REREVIEW (role: independent_reviewer) -- exactly
+one durable path, disjoint from the worker scope above:
+
+  docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_001.adoc
+
+The reviewer creates this file on its first invocation (it does not exist
+yet; this Commission intentionally does not pre-create it) and must not
+touch any of the 13 worker-scope paths. The worker must not touch the
+review file. No wildcard scope; no `src/`; no `tests/`.
+
+`persistence.py`, `prompt.py`, `operator.py`, `scripts/wfc_op.py`,
+`tests/unit/test_operator.py`, `tests/unit/test_wfc_op.py`,
+`tests/unit/test_persistence.py`, and every other path are NOT authorized
+for this Commission.
+
+======================================================================
+ROLE / RESULT SEMANTICS UNDER THE CURRENT MECHANISM
+======================================================================
+
+IMPLEMENT / CORRECTION -- role worker; no durable artifact; no review
+descriptor; no Finding disposition authority. Requested route must be
+`independent_review` (from implement) or `rereview` (from correction).
+Authorized mutation stays strictly inside the 13-path scope above.
+
+INDEPENDENT_REVIEW / REREVIEW -- role independent_reviewer; fresh context
+on every invocation; gate; blocking_only; `finding_authority: []` (no
+Finding-disposition authority is needed or granted for this bounded
+infrastructure Run). Authorized mutation: only the one durable review
+path. No source/test mutation by the reviewer. The reviewer must inspect
+the complete current selection seam (both former inline sites and the new
+selector), the adapter boundary, the persisted-identity handling, and the
+full relevant test suite -- never merely the latest diff.
+
+======================================================================
+ACCEPTANCE BOUNDARY
+======================================================================
+
+P1 may complete only when fresh independent review establishes ALL of:
+
+ 1. One permanent provider-neutral ResultContractKind identity exists.
+ 2. Contract selection is deterministic from admitted semantic facts and
+    uses no hard-coded phase-name branching.
+ 3. BOTH old inline selection copies (vertical.py and reducer.py) are
+    replaced by the one selector; neither survives as parallel dead or
+    live logic.
+ 4. The selected contract kind reaches AgentExecutionRequest/the adapter
+    boundary.
+ 5. The adapter does not infer workflow semantics from phase names.
+ 6. Every currently supported phase still receives the generic current
+    contract.
+ 7. Current provider-visible schema remains equivalent.
+ 8. Current generic RoutingResult semantic parsing/reduction remains
+    equivalent.
+ 9. New P1-created history durably preserves the actual selected contract
+    identity at replay-relevant granularity.
+10. Pre-P1 historical Runs remain readable/replayable without migration or
+    fabricated current-profile-derived identity.
+11. Replay does not re-derive a new Hop's contract identity from mutable
+    current profile configuration when a persisted record exists.
+12. Missing/unknown/inconsistent new contract identity fails closed where
+    applicable.
+13. No real provider invocation was required to demonstrate any of this.
+14. The full active test suite is green.
+15. No P2 strict worker/reviewer result types were introduced.
+16. No reducer authority was weakened, narrowed, or bypassed anywhere
+    outside the one authorized predicate replacement.
+17. No Harness/operator architecture was changed.
+18. No unrelated source/test/governance path was modified.
+
+The reviewer must explicitly answer, in the durable review artifact:
+  * Is the new seam real, or merely dead indirection around the same
+    global constant?
+  * Could P2 add genuinely distinct WorkResult/ReviewVerdict projections
+    through this seam without replacing P1?
+  * Does persisted new history prove which contract was actually
+    dispatched?
+  * Can historical old Runs still replay truthfully?
+  * Is there any path where the adapter or replay layer guesses semantic
+    contract kind from phase-name strings?
+  * Did implementation accidentally alter current generic provider schema
+    or reducer behavior?
+  * Did scope creep into P2/P3/P4/P5?
+
+Acceptance means only that P1 infrastructure is sound; it does NOT itself
+promote Runtime, authorize P2, or push.
+
+======================================================================
+WITHHELD (restated for the executing agents)
+======================================================================
+
+P2 WorkResult/ReviewVerdict implementation; worker/reviewer enum
+narrowing; P3 Finding authority generalization; P4 Coordinator-owned
+effect extraction; P5 provider capability/registry cleanup; Claude
+adapter; hierarchical escalation; Harness v1; outer orchestration;
+backlog picker; automatic Runtime promotion; automatic push; semantic
+ledger curation; Commission generation; sandbox redesign; unrelated BUG
+closure; Slice 5/R1A; provider fallback; model routing; cost
+optimization; any Harness/operator architecture change; Runtime
+mutation; Evidence mutation; Project Memory mutation.
+
+Where this task text summarizes the governing concept document's wording,
+the concept document's own exact wording controls if the two ever appear
+to differ; do not resolve an apparent conflict by inventing a third
+reading -- stop and report it (requires_human=true, escalation.kind=scope)
+instead.

@@ -1,0 +1,121 @@
+schema_version: 2
+work_item_id: WI-WFC-PROJECTED-RESULT-CONTRACTS-P1
+authority_source: >-
+  maintainer-authorized bounded WFC self-development implementation
+  commission for P1 ("Projection infrastructure") only of the accepted
+  concept docs/wfc_projected_result_contracts_concept_2026-10-07.adoc
+  (anchored Development a2c497cdeb21c5b13d358f91db1d6f8af78fa442, committed
+  as 37cf58c5b162e24421f7fcf8c7921e872503f38f, "docs(wfc): define projected
+  result contract architecture"). That concept is CONCEPT ONLY and
+  authorizes nothing by itself; THIS Commission is the maintainer
+  authorization that lets a bounded P1 Run act on it. P1 introduces the
+  permanent projection-selection seam (admitted profile/phase facts ->
+  ResultContractKind -> selected semantic result contract ->
+  AgentExecutionRequest -> adapter) while preserving today's semantic
+  behavior unchanged: every currently supported phase must still receive a
+  contract equivalent to today's generic RoutingResult contract. P1 is
+  infrastructure only; it introduces no P2 strict WorkResult/ReviewVerdict
+  types, no worker/reviewer outcome-enum narrowing, and no Finding-shape
+  change beyond unavoidable plumbing.
+
+  DISCOVERED DUPLICATE INLINE SEAM (binding fact, not merely the concept
+  document's own section 5 diagram): source inspection at commissioning
+  time found the coarse version-selection computation duplicated in TWO
+  places, not one. `vertical.py:300-305` computes
+  `result_contract_version = 2 if profile.schema_version == 3 or
+  phase.convergence_role is not ConvergenceRole.NONE else 1` once per Hop
+  dispatch. `reducer.py` (`reduce_result`, around lines 1275-1283)
+  independently recomputes the IDENTICAL predicate as
+  `expected_result_version`, used only to fail closed when
+  `result.schema_version != expected_result_version`; it does not
+  re-derive from a different or more mutable source than vertical.py's
+  copy inside one live invocation (both read the same in-memory `profile`
+  object), but it is a second, independent textual copy of the same
+  selection logic. The concept document's own "likely mutation surfaces"
+  (section 15) and this Commission's governing task both named
+  `reducer.py`/`tests/unit/test_reducer.py` as reachable-but-not-expected-
+  to-change-behavior; inspection shows reducer.py's inline duplicate MUST
+  itself be replaced by the one new selector, not left standing, or
+  acceptance criterion "the old inline selection seam is replaced, not
+  left as parallel logic" is violated by construction. This Commission
+  authorizes reducer.py and tests/unit/test_reducer.py precisely, and only,
+  for that narrow purpose: replacing reducer.py's inline duplicate
+  predicate with a call to (or a value derived from) the same new
+  `select_result_contract`-family function vertical.py now calls, with no
+  change to any other reducer.py authority, Finding, or convergence
+  semantics.
+
+  PERSISTENCE / REPLAY: `Hop`/`HopSummary` (model.py) today persist NO
+  per-Hop contract/version identity field at all; `contract_version` is
+  purely recomputed at dispatch time from the live `profile`/`phase`
+  objects and is never written onto a Hop. `serialization.py`'s
+  `run_to_json`/`_hop_summary` already establish the precedent for adding
+  an optional, version-gated Hop field without breaking history
+  (`pre_route_anchor_sha256` is present only where available and silently
+  absent for schema_version 1/2 Runs; no migration, no backfill). P1 must
+  follow that exact precedent for the new `ResultContractKind` identity:
+  new Hops persist the kind actually dispatched, at the same durable
+  granularity, legacy Hops are read back exactly as before with no
+  fabricated value. Exact field name/placement (a new Hop/HopSummary
+  field, vs. extending the existing `contract_version` int's role) is left
+  to implementation; the binding requirement is that a persisted new-Hop
+  identity must never be silently reconstructed at replay time from
+  current (possibly since-edited) profile YAML content when a durable
+  per-Hop record is available, and that no historical Hop gains a
+  fabricated kind it never carried.
+
+  EXACT P1 MUTATION SURFACE (frozen after inspection, not the governing
+  task's unfiltered candidate list): production --
+  src/workflow_coordinator/model.py, src/workflow_coordinator/vertical.py,
+  src/workflow_coordinator/reducer.py, src/workflow_coordinator/adapter.py,
+  src/workflow_coordinator/codex_adapter.py,
+  src/workflow_coordinator/serialization.py. Tests -- tests/support.py,
+  tests/unit/test_slice3_vertical.py, tests/unit/test_slice4.py,
+  tests/unit/test_reducer.py, tests/unit/test_codex_adapter_conformance.py,
+  tests/unit/test_serialization.py, tests/architecture/test_replays.py.
+  `persistence.py`, `prompt.py`, `operator.py`, `scripts/wfc_op.py`, and
+  their test files are explicitly NOT authorized: the selected kind need
+  only reach the `AgentExecutionRequest`/adapter boundary and the new
+  persisted Hop-level identity, neither of which requires touching the
+  Harness/operator/prompt-text layers in P1. If implementation genuinely
+  cannot be expressed without one of these, the worker must escalate
+  (requires_human=true, escalation.kind=scope) rather than silently
+  widen authority.
+
+  WITHHELD: P2 WorkResult/ReviewVerdict types; worker/reviewer outcome-enum
+  narrowing; elimination of `changes_required` from worker wire schemas;
+  review schema vocabulary change; Finding-shape change beyond unavoidable
+  plumbing; P3 Finding-authority generalization; P4 Coordinator-owned
+  effect extraction; P5 provider capability/registry cleanup; a Claude
+  adapter; hierarchical escalation; Harness v1; outer orchestration;
+  backlog picker; automatic Runtime promotion; automatic push; semantic
+  ledger curation; Commission generation; sandbox redesign; unrelated BUG
+  closure; Slice 5/R1A; provider fallback; model routing; cost
+  optimization; any Harness/operator architecture change.
+profile_ref: governance/self-development/projected-result-contracts-p1-profile.yaml
+repository: workflow-coordinator
+scope:
+  - src/workflow_coordinator/model.py
+  - src/workflow_coordinator/vertical.py
+  - src/workflow_coordinator/reducer.py
+  - src/workflow_coordinator/adapter.py
+  - src/workflow_coordinator/codex_adapter.py
+  - src/workflow_coordinator/serialization.py
+  - tests/support.py
+  - tests/unit/test_slice3_vertical.py
+  - tests/unit/test_slice4.py
+  - tests/unit/test_reducer.py
+  - tests/unit/test_codex_adapter_conformance.py
+  - tests/unit/test_serialization.py
+  - tests/architecture/test_replays.py
+  - docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_001.adoc
+initial_phase: implement
+max_autonomous_hops: 8
+personas:
+  worker: senior workflow-systems/Python engineer introducing the permanent provider-neutral ResultContractKind identity and its one deterministic selector, replacing both inline copies of today's coarse version-selection predicate (vertical.py and reducer.py) without changing any current phase's dispatched schema, parser, or reducer input, and without introducing any P2 strict worker/review typing
+  independent_reviewer: independent adversarial reviewer with fresh context every invocation, examining the selection seam against the accepted concept, confirming no hard-coded phase-name branching, no dead/parallel selection logic, that every current phase still selects today's generic contract, that new-Hop history durably records the actually-dispatched kind, that historical Runs replay unchanged, and that no P2/P3 scope crept in
+durable_artifacts:
+  independent_review:
+    - docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_001.adoc
+  rereview:
+    - docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_001.adoc
