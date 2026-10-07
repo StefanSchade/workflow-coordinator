@@ -1,0 +1,473 @@
+= Projected / Phase-Specific Result Contracts -- Concept
+:toc:
+:toclevels: 2
+
+Status:: *CONCEPT ONLY. AUTHORIZES NOTHING. NOT IMPLEMENTATION AUTHORITY.*
+
+Date:: 2026-10-07.
+
+Scope:: The smallest coherent architecture for projecting a phase-/role-
+specific semantic result contract to each agent invocation, so a category of
+already-observed mechanical contract failures becomes unrepresentable by
+construction rather than merely rejected after the fact. Not a Coordinator
+redesign.
+
+Anchor:: Development `a2c497cdeb21c5b13d358f91db1d6f8af78fa442`, Runtime
+`c1773ffb7ae11b5ddf3c5786163f092279034755` (detached, clean, push disabled),
+Evidence `2f972c7d3b73cddca03d40ebcb5befd06aec34da` -- all verified against
+live state before drafting. Follows the now-complete
+`docs/wfc_operator_harness_v0_concept_2026-10-06.adoc`, whose section 16
+named exactly this work as its successor: "accepted Slice 4 -> Harness v0 ->
+projected/phase-specific result contracts -> Harness v1 refinement."
+
+[IMPORTANT]
+====
+Creates no FTR, WorkItem, profile, policy, task, Commission, or backlog
+requirement; authorizes no Run, Runtime promotion, or push; modifies no
+source or test file. It gives a precise shape to deferred record
+`docs/backlog/FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA.adoc`, whose own activation
+criterion -- "materially recurring schema-valid but phase-authority-invalid
+outputs despite correct, explicit prompt/contract projection" -- this
+document treats as now met, on the evidence in section 2.
+====
+
+== 1. Purpose
+
+Define a provider-neutral, phase-/role-projected semantic result contract so
+a WFC agent invocation can only emit the result vocabulary its current
+phase actually owns. The reducer already enforces statefully that a result
+is *authorized*; this work makes a class of results *inexpressible* before
+authority is even checked, removing recurring mechanical preemption of
+otherwise-useful agent work. Sequenced into small permanent slices (P1-P5,
+section 16) with Runtime promotion points between them (section 17).
+
+== 2. Empirical problem statement
+
+Three reproductions, already recorded in
+`docs/backlog/BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc`, motivate
+this concept; that record offers them as evidence toward the deferred FTR's
+activation criterion, which this document treats as satisfied.
+
+*S4-001, worker-phase contract mismatch* (`WI-WFC-CORRECTION-CONVERGENCE-
+ESCAPE-IMPLEMENTATION-S4-001`, Run `RUN-3efc7eb2aa374263a2b12954213642f1`,
+Hop H001, `role: worker`). The worker did useful partial implementation but
+returned `outcome: changes_required` -- a review-style disposition the
+`worker` phase does not produce when completing -- made no commit, and left
+the worktree dirty. The Coordinator mechanically preempted it; the useful
+partial work survived only as non-authoritative salvage, and a fresh
+successor Run (S4-002) had to begin. `Outcome.CHANGES_REQUIRED` is one value
+of the single `Outcome` enum shared by every phase's `RoutingResult.outcome`
+(`model.py:138-142`, `:388-404`); nothing in today's schema
+(`codex_adapter.py:141-142`) keys its admissible members to the dispatching
+phase's role.
+
+*Existing-Finding invariant restatement*
+(`docs/backlog/BUG-WFC-IMMUTABLE-FINDING-ECHO.adoc`, Latin Story-2 dogfood,
+Run `RUN-b57dcdacecb142239cb80a45015da0bf`, Hop H004, `independent_reviewer`
+rereview). H004 correctly judged Finding F001 resolved, but its
+finding-delta supplied an `invariant` string that paraphrased -- rather than
+reproduced byte-for-byte -- F001's Coordinator-owned original text;
+`reducer.py` correctly rejected it. The judgment was correct; only the
+unconstrained-string projection of Coordinator-owned state caused the stop.
+(A different, textually similar identifier, `S4-004` Hop `H006` in
+`FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_implementation_review_001.adoc`, is an
+unrelated replay budget-preemption finding; this document cites the Latin
+incident, not that one.)
+
+This instance is *already structurally fixed*, and is this concept's working
+precedent (section 5, section 10): `FindingDeltaValue` (`model.py:310`) now
+splits into `NewFindingDelta` (`:297-308`, carries `invariant`/`blocking`,
+agent-authored) and `ExistingFindingDelta` (`:286-295`, carries only
+`finding_id`/`proposed_state`/`evidence_refs`/`successor_ref`/
+`new_material_evidence` -- no `invariant`, no `blocking`). The Codex/OpenAI
+projection (`codex_adapter.py:105-135`) emits an `anyOf` of two disjoint
+strict schemas matching that split, so the wire contract no longer offers an
+`invariant`-replacement slot for an existing Finding, and `reducer.py`
+dispatches on `isinstance(delta, ExistingFindingDelta)` (`:598`, `:715`), not
+a string discriminator.
+
+*S3-002, Finding-authority mismatch.* H003 rereview correctly judged three
+Findings resolved but could not express it because
+`rereview.review.finding_authority` was `[]` -- an authority *projection*
+gap, tracked separately
+(`docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc`), cited
+here only as evidence of the shared pattern, not as a P1-P3 target.
+
+*Common property:* in each case the agent's semantic judgment was sound; a
+different independently-expressed surface of the generic envelope (an
+untyped shared `outcome` enum, an unconstrained `invariant` string, an
+unprojected authority gate) let a locally plausible result become globally
+inadmissible, caught only by mechanical preemption. The fix is to stop
+offering the inadmissible shape, not to weaken any check.
+
+== 3. Design principles
+
+* *Generic inside, specific at the agent boundary* -- the reducer/domain
+  layer may keep internal generic representations (`FindingDeltaValue`
+  already is one); the contract projected for one invocation must be
+  role/phase-specific.
+* *Semantics from the model, mechanics from the Coordinator* -- the model
+  emits only the degrees of freedom it owns; deterministic mechanics are
+  derived where already true, or later made so (section 11).
+* *Structural invalidity unrepresentable; stateful invalidity rejected* --
+  parse/schema boundaries make a class of shapes impossible to construct;
+  the reducer alone decides whether a structurally valid result is
+  permitted here, now, by this history.
+* *Declarative derivation, no hardcoded phase names* -- already required by
+  the deferred FTR ("designs such as `if phase == "correct":
+  forbid_resolve()` are explicitly rejected"); selection keys off admitted
+  configuration (`WorkflowRole`, `ReviewDescriptor` presence,
+  `finding_authority`, `ConvergenceRole`), the same facts
+  `vertical.py:300-305` and `prompt.py` already read declaratively.
+* *Defense in depth, three layers, never collapsed* -- prompt projection
+  tells the model what it may do; the phase-scoped schema makes a locally
+  invalid action hard or impossible to emit; the reducer remains
+  authoritative regardless. This document does not touch reducer authority.
+
+== 4. Structural vs. stateful validity
+
+[source,text]
+----
+STRUCTURAL (parse/schema)              STATEFUL (reducer)
+"Can a worker emit changes_required    "Does F001 exist? Does this
+ at all?" -- NO, type has no field      authority have permission to
+"Can an existing-Finding delta carry    resolve/reopen it? Is the
+ a replacement invariant?" -- NO,       transition legal given history?
+ field absent from that variant         Is evidence sufficient?" --
+                                         reducer decides, always
+----
+
+A review schema may structurally permit `finding_id` + `disposition` +
+`evidence_refs`; the reducer still decides whether that Finding exists,
+whether this phase has authority over it, whether the transition is legal,
+and whether evidence is sufficient. Projected contracts narrow vocabulary;
+they never narrow or replace reducer authority. `ExistingFindingDelta` is
+the live proof: removing `invariant` from the type removed rewriting from
+the realm of possibility, while every reducer check on what the type still
+*can* carry is untouched.
+
+== 5. Current architecture seam
+
+[source,text]
+----
+Phase (role, convergence_role, review.finding_authority) -- model.py:225
+    v
+vertical.py:300-305 -- result_contract_version = 2 if
+    profile.schema_version == 3 or phase.convergence_role is not NONE
+    else 1  <- declarative selector, but coarse: one axis, never role
+    v
+prompt.py:assemble_prompt (:149) -- already phase-derived, no names
+    v
+AgentExecutionRequest(..., ROUTING_RESULT_ENVELOPE_CONTRACT,
+    contract_version=...) (adapter.py:39-51) -- result_contract is
+    ALWAYS the one constant; only the version int varies
+    v
+CodexCliAdapter.execute (codex_adapter.py:269-270) -- ONE schema
+    per version, covering every phase/role
+    v
+provider -> adapter.validated_result (:104) ->
+    serialization.routing_result_from_data (:1151) -- ONE parser,
+    version-gated, not role-gated
+    v
+RoutingResult (model.py:388) -- one shape, superset of every phase
+    v
+reducer.py -- per-field checks, e.g. isinstance(delta,
+    ExistingFindingDelta) (:598, :715)
+----
+
+Three facts matter for P1. First, the selection mechanism already exists,
+narrowly: `vertical.py:300-305` is a real declarative fact-to-variant
+selector; P1 generalizes its *shape*, not its content. Second, the identity-
+versioning discipline already exists and already survives replay:
+`RoutingResult.schema_version`, `AgentExecutionRequest.contract_version`,
+and `Run.schema_version` (1/2/3) are persisted facts, checked for
+consistency (`adapter.py:117-121`), and `serialization.run_to_json`
+(`:1239`) already drops fields a historical version never had. Third, the
+one working precedent for a role-aware disjoint projection is
+`ExistingFindingDelta`/`NewFindingDelta` (section 2) -- a real `anyOf` of two
+disjoint strict schemas, serialized/parsed/reduced without a string
+discriminator. P1-P3 scale this from one field family to the whole
+per-invocation result contract.
+
+== 6. Target projected-contract architecture
+
+[source,text]
+----
+admitted Profile + Phase + Run facts
+    v
+SELECTION (new, P1) -- deterministic function of the facts,
+    never a phase-name switch -- returns a ResultContractKind
+    v
+semantic result TYPE (WorkResult | ReviewVerdict | RoutingResult)
+    -- "parse, don't validate": invalid combinations for THIS kind
+    cannot be constructed from provider output at all
+    v
+adapter projection (existing seam) -- kind -> provider schema,
+    exactly as routing_result_openai_schema already does
+    v
+provider invocation (unchanged) -> kind-specific parse -> reducer
+    (UNCHANGED)
+----
+
+Selection and the `ResultContractKind` identity are the only new permanent
+concepts; every stage below the semantic-type line already exists in some
+form. P1-P5 change what flows through the existing pipe, not its stages.
+
+== 7. Contract ownership
+
+Profile/domain layer defines semantics -- `WorkflowProfile`/`Phase` already
+carries every fact selection needs; no new ontology. The orchestration layer
+(`vertical.py`, at its existing `result_contract_version` call site) owns
+invoking selection once per Hop. The provider adapter receives an
+already-selected kind and never infers semantics from phase names, exactly
+as it already only knows how to render a given `contract_version` today.
+The reducer never participates in selection; it consumes whichever semantic
+type the kind produced, unchanged.
+
+== 8. Worker / corrector direction
+
+Illustrative only, not implemented here:
+
+[source,text]
+----
+WorkResult:
+    status: completed | blocked
+    summary, evidence_refs, claimed_commits
+    commit_intent: CommitIntent | null
+    escalation: Escalation | null   (only if this phase owns escalation)
+----
+
+No `changes_required` branch exists on this type -- absent from the type,
+not merely forbidden by a reducer check. S4-001 becomes structurally
+impossible: a worker cannot emit a review-style disposition because
+`WorkResult` has no field that could hold one. Whether `findings` belongs
+on `WorkResult` for worker-role phases that today create new Findings in
+some profiles is an open P2 question (section 21).
+
+== 9. Review / rereview direction
+
+[source,text]
+----
+ReviewVerdict:
+    verdict: accept | changes_required
+    finding_updates: [ExistingFindingUpdate | NewFindingAuthoring]
+    evidence_refs, summary
+----
+
+`changes_required` exists only on this family's type. The S4-001 category
+mistake is eliminated at both ends: a worker cannot emit it, and a
+reviewer's authority to emit it is visible in the type it was given, not
+inferred from prose a prompt already constructs per phase but today's
+single shared `Outcome` enum does not mirror at the schema level.
+
+== 10. Finding projection direction
+
+The slice with a working precedent already in production (section 2,
+section 4); P3's job is to generalize, not invent. `NewFindingAuthoring`
+(P3 name for today's `NewFindingDelta`) carries `invariant`/`blocking`/
+`proposed_state`/`evidence_refs`/`successor_ref?`, unchanged, because
+new-Finding authorship is genuinely agent-owned. `ExistingFindingUpdate`
+(P3 name for today's `ExistingFindingDelta`) carries `finding_id`/
+`disposition`/`evidence_refs`/`new_material_evidence?`/`successor_ref?`,
+unchanged; immutable trusted fields (`invariant`, `blocking`, origin hop)
+are never re-authored by the model, because the reducer already sources
+them from Coordinator-held `Finding` state (`model.py:408-419`), never from
+the delta. P3's actual work is confirming this is the general pattern P2's
+`finding_updates` field should embed, and auditing whether any other field
+named a "related echo" in the accepted `WI-WFC-GENERATIVE-ECHO-AUDIT-001`
+assessment needs the same treatment once P2's per-family types exist to
+host it.
+
+== 11. Coordinator-owned mechanics boundary
+
+Assessed only, not committed to P1-P3. `requested_route` may be derivable
+from `verdict`/`status` plus `Phase.routes` once a total per-family mapping
+exists. `commit_intent` is already partly Coordinator-materialized
+(`model.py:314-324`'s docstring: deliberately distinct from
+`claimed_commits`). `requires_human` may be derivable from
+`escalation is not None` plus phase `human_gates` rather than an
+independently settable boolean. Durable-artifact bookkeeping is
+`BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc` candidate direction C's
+future territory, for which projected contracts are a prerequisite, not a
+substitute. P1-P3 remove none of these from agent-owned fields; naming them
+here only keeps P2/P3's new types from calcifying fields P4 would otherwise
+cleanly drop.
+
+== 12. Provider-neutral projection boundary
+
+The semantic result type is provider-neutral by construction, an ordinary
+dataclass like today's `RoutingResult`. The seam from semantic type to wire
+dialect already exists and already isolates this concern:
+`codex_adapter.py`'s module docstring states it "owns Codex argv/process
+behavior and the OpenAI Structured Outputs dialect... neither parses nor
+accepts a semantic RoutingResult," and `routing_result_openai_schema`/
+`assert_openai_strict_schema` (`:60-96`, `:100`) are today's concrete
+instance. P1 does not relocate this seam, only makes it receive a *selected*
+kind instead of always the one generic type. A future Claude adapter would
+implement its own `<kind> -> schema` function beside this one; neither
+adapter infers semantics from phase names. Full capability-registry cleanup
+is P5, assessed only if still needed after P1-P4.
+
+== 13. Replay / persistence implications
+
+Replay must never validate a historical Hop against a contract other than
+the one actually used, and must never infer contract identity from mutable
+current configuration. Section 5 already shows the working answer for the
+coarser existing axis: `Run.schema_version`, `RoutingResult.schema_version`,
+and `AgentExecutionRequest.contract_version` are persisted per-invocation
+facts, not re-derived from current profile YAML, and `run_to_json` branches
+on the *persisted* version. P1 generalizes this from one global version int
+to one `ResultContractKind` identity, same discipline: persist the kind
+actually dispatched, at `contract_version`'s existing granularity, not
+re-derived at replay time from a possibly since-edited profile; a historical
+Run recorded under today's generic contract stays valid forever under its
+own recorded kind, no migration, no re-validation of existing Runs. P1 can
+truthfully preserve current serialized history unchanged (section 20);
+nothing in today's persistence needs to change shape, only to grow one more
+identity field, the way `Run.schema_version` already grew 1 -> 3 without
+breaking `run_to_json`'s historical branches. Whether that identity reuses
+or extends `contract_version`, or is a sibling field, is left open
+(section 21).
+
+== 14. Prompt implications
+
+`prompt.py:assemble_prompt` already derives its text entirely from `Phase`
+facts (role, routes, authorized_scope/actions, evidence, finding_authority
+-- `:116-147`), with no phase-name branching. P1 need not change this; P2
+must keep it synchronized with its strict types, so a worker's prompt never
+describes a `changes_required` option its `WorkResult` type cannot carry.
+Because `assemble_prompt` already receives `phase` and `contract_version`,
+threading the selected kind through the same call is additive.
+
+== 15. P1 exact scope
+
+*Selected today* at `vertical.py:300-305`, threaded through
+`AgentExecutionRequest.contract_version` (`adapter.py:51`), checked at
+`codex_adapter.py:270` / `adapter.py:117-121`. *Smallest permanent seam:*
+one pure function, e.g. `select_result_contract(profile, phase) ->
+ResultContractKind`, replacing `vertical.py:300-305`'s inline computation;
+one closed `ResultContractKind` identity following the `CoordinatorValue`
+pattern (`model.py:30-31`). *Keyed by* `Phase.role`,
+`Phase.review is not None`, `Phase.review.finding_authority`,
+`Phase.convergence_role`, and the Run's governing `contract_version`
+lineage -- exactly the facts `vertical.py:300-305` and `prompt.py`'s header
+already read declaratively; never phase-key strings, never a new parallel
+ontology. *Owning layer:* orchestration (`vertical.py`'s existing call
+site, section 7); the adapter receives the result and never infers
+semantics from phase names. *Persisted identity:* the kind actually
+dispatched, at `contract_version`'s existing granularity (section 13);
+exact field placement is implementation detail. *Historical replay* must
+remain valid against the original contract; P1 must not regress section
+5/13's existing behavior. *Interaction with `RoutingResult`/
+`ROUTING_RESULT_ENVELOPE_CONTRACT`/`routing_result_from_data`/
+`validated_result`/reducer:* every one becomes one legitimate kind among
+possibly several -- every current phase continues to select
+`generic-routing-result/v1-or-v2` through the new seam; no phase's
+dispatched schema, parser, or reducer input changes shape in P1. *History
+preserved unchanged:* yes (section 13). *Tests proving a real seam:*
+section 18. *Likely mutation surfaces* (named, not frozen; actual scope set
+at Commission time after inspection): a `ResultContractKind` addition
+in/near `model.py`; replacing `vertical.py:300-305`'s inline computation
+with a call to the selection function; threading the kind through
+`AgentExecutionRequest`/`assemble_prompt` alongside `contract_version`;
+corresponding additions in `tests/unit/test_slice3_vertical.py`,
+`tests/unit/test_slice4.py`, `tests/architecture/test_replays.py`.
+`reducer.py`, `codex_adapter.py`'s existing schema functions, and
+`serialization.py`'s existing parsers are not expected to change behavior,
+only to become reachable through the new seam.
+
+== 16. P2-P5 sequencing
+
+P1, projection infrastructure (section 15): low-risk foundation, no semantic
+behavior change. P2, strict worker + review contracts (sections 8-9):
+`WorkResult`/`ReviewVerdict` become genuinely distinct types, eliminating
+the S4-001 class by construction -- first major usability relief. P3,
+Finding authority types (section 10): generalizes the already-working
+`NewFindingDelta`/`ExistingFindingDelta` split into P2's per-family
+`finding_updates` field, and audits remaining generative-echo-audit
+candidates. P4, Coordinator-owned effects (section 11): assessed only here,
+may be a larger refactor, does not block P1-P3 shipping. P5, provider
+projection/capabilities cleanup (section 12): only if still needed after
+P1-P4. Each slice is permanent architecture; none is a parallel v1/v2
+result system requiring later removal.
+
+== 17. Runtime promotion points
+
+A Runtime promotion is possible, and expected, after each of P1, P2, and P3
+independently -- mirroring Harness v0's slice-then-promote pattern
+(`docs/wfc_operator_harness_v0_concept_2026-10-06.adoc`, section 17). P1's
+gate: no semantic behavior changed, new seam live and tested. P2's gate:
+worker/review category mistakes structurally impossible, existing
+generic-contract phases unaffected. P3's gate: Finding authority types
+generalized, generative-echo-audit candidates disposed. P4/P5 gates are not
+designed here.
+
+== 18. Testing strategy
+
+P1 (conceptual; no tests written here): deterministic selection tests
+(given profile/phase facts, `select_result_contract` returns the expected
+kind, including today's generic kind for every existing profile fixture);
+the selected kind reaches the adapter unchanged; current generic behavior
+provably equivalent (existing Slice 3/4 and Codex-conformance suites pass
+unmodified in shape, only exercised through the new seam); provider-free
+throughout, following `test_codex_adapter_conformance.py` and
+`test_replays.py`'s existing pattern; historical/replay behavior unchanged
+(existing `Run.schema_version` 1/2/3 fixtures keep passing); an
+unsupported/missing projection fails closed before any provider call,
+analogous to today's `OpenAIStrictSchemaError`/`ResultValidationError`
+paths.
+
+P2 (not designed here): worker schema cannot represent review-only outcomes
+and vice versa at the type level, not a runtime check; provider
+schema-generation tests per family; reducer remains the stateful authority.
+
+P3 (not designed here): `ExistingFindingUpdate` cannot carry `invariant`
+(already true today; P3 generalizes this to the per-family types);
+`NewFindingAuthoring` still requires full authored fields; authority/state
+tests stay in the reducer.
+
+== 19. Non-goals
+
+Per the governing task: Harness v1; outer orchestration/LangGraph; backlog
+picker; parent/child Runs; hierarchical escalation handling; automatic
+retry/fallback; model routing/cost optimization; a Claude adapter
+implementation; Runtime promotion automation; push automation; Commission
+generation; semantic ledger automation; sandbox/trust redesign; Slice
+5/R1A; correction-convergence redesign; Finding lifecycle redesign beyond
+result-authority projection; a new workflow DSL; a new ontology; a generic
+plugin system. Also excluded: P2's strict per-family types themselves
+(sketched only), P3's full generalization (sketched only), and all of P4-P5
+(assessed, not designed).
+
+== 20. Acceptance criteria for P1
+
+One provider-neutral `ResultContractKind` identity exists. Contract
+selection is a deterministic function of admitted profile/phase facts,
+callable and testable without a provider. The adapter receives an
+already-selected kind through `AgentExecutionRequest` (or an equivalent
+carrier), not a single global constant it must assume. Every phase in every
+current governance fixture selects a kind equivalent to today's generic
+contract; no phase's dispatched schema, parser, or reducer input changes
+shape. No provider invocation is required to demonstrate correctness.
+Existing persisted Run/result history remains valid and replays unchanged.
+New tests prove the seam is live; no test is weakened. No dual permanent
+architecture: `vertical.py:300-305`'s inline computation is replaced, not
+duplicated alongside a new path. P2's strict worker/review types are not
+introduced by P1.
+
+== 21. Open questions / explicitly deferred items
+
+Exact field/placement for the persisted `ResultContractKind` identity
+(extend `contract_version`'s role, or add a sibling field) -- left to P1
+implementation after source inspection. Whether `findings`/`finding_updates`
+belongs on `WorkResult` for worker-role phases that today create new
+Findings in some profiles -- a P2 question. Whether `escalation` should be
+typed per-family or remain one shared shape available wherever
+`human_gates`/routes admit it -- a P2 question; this document does not
+resolve the future hierarchical-escalation architecture. Which, if any, of
+the generative-echo-audit assessment's remaining candidates
+(`requested_route`, `escalation`, `CommitIntent`, `claimed_commits`,
+`summary`) eventually move into section 11's P4 mechanics boundary --
+assessed there only, not decided. Whether P5's adapter-capability registry
+is needed at all, given Codex/OpenAI is the only current provider --
+deferred until a second adapter is actually being built.
