@@ -153,8 +153,10 @@ Owns, in the order `run-preparation.adoc` already specifies:
   Development baseline.
 . Write `execution-bindings.yaml`; construct the controlled `PATH`; verify
   executable resolution (`<runtime-env>/bin/wfc --help`; never bare `wfc`).
-. Run provider-free preflight (`snapshot_environment()` /
-  `prepare_evidence_commands()`).
+. Run provider-free preflight via one narrow, isolated adapter invoking the
+  pinned Runtime's own `operator._preflight()` under its runtime-env
+  interpreter -- today's only path to canonical admission/preflight, since
+  no public `wfc preflight` CLI exists yet (§15).
 . Persist preparation facts to `preparation-pins.txt`, extending it with
   Development/Evidence pins alongside the `attempt_id`/`state_root` keys
   `wfc-archive-run` already reads.
@@ -275,16 +277,34 @@ boundary.
 
 == 15. Relationship to current WFC operator code
 
-Harness v0 invokes `operator.py`'s `main()` exactly as a maintainer does
-today -- the pinned Runtime's absolute `wfc` executable as a subprocess with
-documented flags -- and never imports `workflow_coordinator` internals. It
-reads `operator-plan.json`/`operator-summary.json`/`checkpoint.json`/
-`run.json` defensively (checking `schema_version` where present) as an
-on-disk contract it does not own, and does not call the existing `status`/
-`export-salvage`/`prepare-successor` subcommand group (`operator.py`
-`_parse_args`): that group serves successor/salvage preparation, a
-different, already-productized mechanism, not ordinary post-Run inspection;
-Harness `status` (§9) reads persisted JSON directly instead.
+For `launch`, Harness v0 invokes `operator.py`'s `main()` exactly as a
+maintainer does today -- the pinned Runtime's absolute `wfc` executable as a
+subprocess with documented flags. One narrow exception exists for
+`prepare`'s provider-free preflight step (§7): no public `wfc preflight`
+CLI or API exists today, and the canonical admission/preflight checks
+(profile/policy/scope/binding validation, governing-input digesting,
+evidence-command preparation) are currently reachable only through the
+Runtime's internal `operator._preflight()`, called before Run-ID
+allocation, Run creation, state-root creation, checkout registration, or
+any adapter construction (`operator.py` `main()`, `_preflight()` called at
+line 1590, before `run_id`/`new_run`/`state_root.mkdir`/
+`register_checkout`). Harness v0 therefore depends on that one function
+through a single, isolated compatibility adapter -- not spread through
+Harness code, and not a reimplementation of its checks -- run under the
+pinned runtime venv's own interpreter, so it is always the pinned Runtime's
+own code executing, never a Harness copy. This is an integration seam to
+*current* Runtime mechanics, not Harness owning preflight semantics: WFC
+remains the sole owner of admission/preflight semantics, and the seam
+should be replaced by a public, stable `wfc preflight` CLI/API if one is
+introduced later; that replacement is not a v0 prerequisite. Beyond this one
+seam, Harness v0 reads `operator-plan.json`/`operator-summary.json`/
+`checkpoint.json`/`run.json` defensively (checking `schema_version` where
+present) as an on-disk contract it does not own, and does not call the
+existing `status`/`export-salvage`/`prepare-successor` subcommand group
+(`operator.py` `_parse_args`): that group serves successor/salvage
+preparation, a different, already-productized mechanism, not ordinary
+post-Run inspection; Harness `status` (§9) reads persisted JSON directly
+instead.
 
 == 16. Relationship to later projected contracts
 
@@ -347,8 +367,9 @@ materially better dogfood candidate.
   `wfc-archive-run`), not its internal copy/hash/manifest behavior.
 * All tests are provider-free, run against temporary repositories/state
   roots, with explicit Git fixtures wherever Git behavior is under test.
-* `git diff --check` is clean and exactly one file differs from `main`;
-  Harness v0's implementation is a separate, later change.
+* `git diff --check` is clean; only explicitly authorized H0-1/H0-2
+  implementation and test paths changed; no unrelated WFC/Runtime/
+  governance surface changed.
 
 == 19. Deferred v1 ideas
 
