@@ -1,0 +1,145 @@
+= FTR-WFC-PROJECTED-RESULT-CONTRACTS -- P1 Implementation Review 001
+
+Independent adversarial review of candidate
+`a54ad63ef49e8a03a352002910b8fb1d124d17b8`
+(`feat(WI-WFC-PROJECTED-RESULT-CONTRACTS-P1): add projected result contract seam H001`)
+against baseline `d03cd2b73f42cfdd9d131f19471f20ed0f522c85`.
+
+Review Hop identity:: Run `RUN-157080a2fa7b44de8429aa9b8fba53ab`, Hop
+`H002`, invocation `INV-f3dc3541503a4d28b941a4256dbbf0fb`
+Reviewer/gate identity:: independent reviewer, gate authority, blocking-only
+Candidate range:: `d03cd2b73f42cfdd9d131f19471f20ed0f522c85..a54ad63ef49e8a03a352002910b8fb1d124d17b8`
+
+This review inspected the governing projected-result-contracts concept in full,
+the complete candidate range, both former inline selection sites, the adapter
+boundary, model persistence, serialization, and replay behavior.  The only
+mutation performed by this review is this required durable artifact.
+
+== Verdict
+
+*CHANGES_REQUIRED; route `correction`.*
+
+The implementation itself establishes the intended P1 infrastructure:
+`ResultContractKind` is a provider-neutral closed identity;
+`select_result_contract()` reads only admitted phase/profile/Run facts and
+uses no phase-key string; the version computation is centralized in
+`result_contract_version()`; and the former inline computations in both
+`vertical.py` and `reducer.py` no longer survive.  The vertical boundary puts
+the selected kind on `AgentExecutionRequest`, and `CodexCliAdapter` rejects a
+kind it does not support before it builds or launches a provider command.
+
+New accepted Hops retain both the selected kind and selected wire version.
+`Hop.compact()` preserves them, serialization parses them as optional closed
+fields, and the reducer uses a persisted complete pair rather than deriving a
+new-Hop identity from a subsequently changed profile.  A missing half-pair or
+an unsupported pair fails closed; a no-pair historical Hop retains the legacy
+selector path.  No P2 strict result types, Finding-authority change,
+provider-registry work, prompt change, or operator/Harness work was added.
+
+The candidate cannot yet be accepted because its tests omit several explicit,
+load-bearing P1 coverage obligations.  Passing current tests do not replace
+the requested proof that the new projection carrier is live on both existing
+wire-version paths and at the Slice-4 dispatch site.
+
+== Evidence
+
+* `git diff --check d03cd2b73f42cfdd9d131f19471f20ed0f522c85..a54ad63ef49e8a03a352002910b8fb1d124d17b8` completed without errors.
+* `.venv/bin/python -m pytest -q` completed successfully in the review
+  environment.  The Coordinator-projected trusted `pytest` evidence is also
+  green.
+* `.venv/bin/python -m ruff check` over every changed production and test path
+  completed with `All checks passed!`.
+* The review inspected the full current selection/replay flow:
+  `vertical.run_one_hop()` -> `AgentExecutionRequest.result_contract_kind` ->
+  `CodexCliAdapter.execute()`, and `record_hop()` -> `Hop.compact()` ->
+  serialization -> `reduce_result()`.
+
+== Required correction
+
+=== P1-IR-001 -- Required contract-seam coverage is incomplete
+
+Underlying invariant:: The generic P1 contract kind must be demonstrably
+selected and carried to every current adapter boundary for both legacy
+wire-version branches, while the reducer's legacy fallback demonstrably uses
+the same selector rather than a recreated version predicate.
+
+The candidate adds kind assertions only to two v2 dispatch tests in
+`tests/unit/test_slice3_vertical.py`.  It leaves the pre-existing Slice-4
+v2 dispatch assertion at `tests/unit/test_slice4.py:430` as an assertion of
+`contract_version` only, and it adds no v1 dispatch assertion for
+`request.result_contract_kind`.  The new selector test iterates only
+`convergence_routing_profile()` (all v2) rather than the current fixture
+families and their ordinary v1 path.  `tests/unit/test_reducer.py` also has no
+direct regression proving that the legacy/no-persisted-identity branch gets
+its expected version via the shared selector/version helper.
+
+Consequently, a future accidental omission at the unmodified Slice-4 call
+site, or a v1-only propagation regression, could pass the new tests while
+violating this WorkItem's exact P1 test requirements.  The production code is
+currently coherent, but the requested seam proof is not complete.
+
+Required bounded correction:
+
+. Extend the existing Slice-4 v2 adapter assertion to require
+  `ResultContractKind.GENERIC_ROUTING_RESULT`.
+. Add focused v1 and v2 adapter-boundary assertions that the request carries
+  the generic kind; retain the existing schema-shape expectations unchanged.
+. Exercise every current support-profile family (including ordinary v1 and
+  convergence/v2 phases) through the selector and assert the generic kind.
+  Assertions must continue to use admitted facts, not phase-key names.
+. Add the smallest focused reducer regression that demonstrates the
+  no-persisted-identity compatibility branch calls the shared selector/version
+  seam, while the persisted-identity replay path continues not to re-derive
+  from mutable profile facts.
+
+This correction is limited to the already authorized P1 test paths
+`tests/unit/test_slice3_vertical.py`, `tests/unit/test_slice4.py`, and
+`tests/unit/test_reducer.py` (plus a small support helper only if genuinely
+needed).  It requires no source, policy, or scope expansion.
+
+== Explicit acceptance questions
+
+Is the new seam real, or merely dead indirection around the same global constant?::
+*Real for P1.*  The kind is selected in one pure function, transported into
+the provider request, guarded by the adapter, recorded on the accepted Hop,
+and consumed by replay.  P1 necessarily maps all currently admitted facts to
+the one generic kind; the explicit admitted-fact key is the future extension
+point rather than a phase-name switch.
+
+Could P2 add genuinely distinct WorkResult/ReviewVerdict projections through this seam without replacing P1?::
+*Yes.*  P2 can add closed kinds and fact-based selector branches, then add
+their parser/schema projection, without replacing the dispatch, persistence,
+or adapter carrier introduced here.
+
+Does persisted new history prove which contract was actually dispatched?::
+*Yes for the implementation.*  `run_one_hop()` records the selected kind and
+version on the accepted Hop, and compaction/serialization retain the pair.
+The present test coverage for that claim needs completion under P1-IR-001.
+
+Can historical old Runs still replay truthfully?::
+*Yes.*  Missing fields remain absent on serialization; no kind is fabricated;
+and the legacy reducer branch retains profile-derived version selection.
+
+Is there any path where the adapter or replay layer guesses semantic contract kind from phase-name strings?::
+*No.*  The inspected production paths contain no phase-key selection; the
+adapter only sees request facts and the replay layer uses persisted identity
+when available.
+
+Did implementation accidentally alter current generic provider schema or reducer behavior?::
+*No material alteration found.*  Generic v1/v2 schema generators and the
+RoutingResult parser remain in place.  The reducer's original duplicate
+version predicate is replaced by the shared helper or durable pair without
+changing Finding/route/convergence checks.
+
+Did scope creep into P2/P3/P4/P5?::
+*No.*  The candidate touches only ten authorized worker paths and introduces
+none of the withheld result types, authority changes, provider architecture,
+or Harness/operator changes.
+
+== Route and lifecycle effect
+
+Request `correction`.  This review records one blocking implementation-review
+requirement only; it does not create or disposition a current-Run Finding,
+alter source/tests, promote Runtime, push, or authorize any future P2-P5 work.
+The correction Hop should address P1-IR-001, after which a fresh rereview must
+inspect the complete candidate and this artifact again.
