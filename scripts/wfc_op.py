@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""wfc-op -- WFC Operator Harness v0 (Slice H0-1: ``prepare`` + ``launch``).
+"""wfc-op -- WFC Operator Harness v0 (complete: ``prepare`` / ``launch`` /
+``status`` / ``archive``).
 
 Deterministic, repository-owned replacement for the hand-authored PREPARE /
-LAUNCH shell blocks documented in ``docs/run-preparation.adoc`` and
-``docs/self-development.adoc``.  See
+LAUNCH / STATUS / ARCHIVE shell blocks documented in
+``docs/run-preparation.adoc`` and ``docs/self-development.adoc``.  See
 ``docs/wfc_operator_harness_v0_concept_2026-10-06.adoc`` for the accepted
 concept this implements.
 
@@ -17,17 +18,31 @@ Authority boundary (unchanged by this tool):
 Development/Runtime/Evidence identities, exporting and installing the pinned
 Runtime, building the Development/evidence environment, writing
 ``execution-bindings.yaml``, assembling the controlled ``PATH``, running the
-pinned Runtime's own canonical provider-free preflight, and materializing
-``launch.sh`` -- and then stops.  It never launches.
+pinned Runtime's own canonical provider-free preflight, materializing
+``launch.sh``, and finally re-revalidating every pinned identity immediately
+before declaring success -- and then stops.  It never launches.
 
 ``launch`` revalidates the prepared envelope against drift and, only then,
 executes the already-materialized ``launch.sh`` exactly once, reporting its
 stdout/stderr/return code faithfully.  It never repairs, retries, or
 reconciles.
 
+``status`` is a strictly read-only mechanical projection of whatever Harness
+preparation facts and WFC-owned persisted Run state already exist on disk for
+an attempt.  It never launches, retries, reconciles, or mutates anything, and
+never reinterprets a semantic conclusion WFC itself did not already persist.
+
+``archive`` is a deterministic, delegating wrapper around the canonical
+``workflow-coordinator-run-evidence/scripts/wfc-archive-run`` mechanism: it
+locates the prepared STATE/Evidence facts, performs mechanical prechecks, and
+invokes the canonical wrapper's own ``--dry-run`` plan before any real
+archive proceeds. It implements no copying, manifest, or archive-destination
+logic of its own.
+
 This module intentionally duplicates none of the pinned Runtime's own
-admission/preflight semantics (see ``run_canonical_preflight_seam``) and does
-not implement ``status`` or ``archive`` (Slice H0-2, not yet built).
+admission/preflight semantics (see ``run_canonical_preflight_seam``) and none
+of the canonical archiver's copy/manifest/commit semantics (see
+``cmd_archive``).
 """
 
 from __future__ import annotations
@@ -508,6 +523,94 @@ def write_harness_record(
     return path
 
 
+# ------------------------------------------------------- status / archive facts
+#
+# Shared, strictly read-only helpers for projecting already-persisted Harness
+# preparation facts and WFC-owned Run state.  None of this reinterprets or
+# resolves semantic meaning; disagreement between sources that each carry
+# their own non-empty value for the same field is surfaced, never silently
+# picked -- the same discipline `wfc-archive-run`'s own `agree()` helper
+# already enforces (see
+# ``workflow-coordinator-run-evidence/scripts/wfc-archive-run``).
+
+_ABSENT = object()
+
+
+def _read_json_optional(path: Path) -> tuple[dict | None, str | None]:
+    """``(data, None)`` if absent or a parseable JSON object; ``(None, error)``
+    if present but corrupt or not a JSON object.  Never raises.
+    """
+
+    if not path.is_file():
+        return None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return None, f"{path}: corrupt JSON: {error}"
+    if not isinstance(data, dict):
+        return None, f"{path}: expected a JSON object, found {type(data).__name__}"
+    return data, None
+
+
+def _read_preparation_pins(path: Path) -> dict[str, str] | None:
+    if not path.is_file():
+        return None
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            values[key.strip()] = value.strip()
+    return values
+
+
+def _first_run_json(state: Path) -> tuple[Path | None, dict | None, str | None]:
+    """The first ``checkouts/<id>/run.json``, in sorted checkout-directory
+    order -- the same location `wfc-archive-run`'s own `facts` probe reads.
+    Current practice registers exactly one checkout per state root.
+    """
+
+    checkouts = state / "checkouts"
+    if not checkouts.is_dir():
+        return None, None, None
+    for directory in sorted(p for p in checkouts.iterdir() if p.is_dir()):
+        candidate = directory / "run.json"
+        if candidate.is_file():
+            data, error = _read_json_optional(candidate)
+            return candidate, data, error
+    return None, None, None
+
+
+def _agree(field: str, *labeled_sources: tuple[str, dict | None]) -> tuple[str | None, list[str]]:
+    """First non-empty string value for ``field`` across labeled sources, in
+    priority order; a list of mechanical-inconsistency messages if two
+    sources that each carry their own non-empty value disagree.
+    """
+
+    found = [
+        (label, source[field].strip())
+        for label, source in labeled_sources
+        if source is not None and isinstance(source.get(field), str) and source.get(field, "").strip()
+    ]
+    distinct = sorted({value for _, value in found})
+    if len(distinct) > 1:
+        detail = ", ".join(f"{label}={value!r}" for label, value in found)
+        return None, [f"{field} disagrees across persisted sources: {detail}"]
+    return (found[0][1] if found else None), []
+
+
+def _first_present(key: str, *dicts: dict | None) -> object:
+    """The value of ``key`` from the first dict (in priority order) that
+    actually has it -- including an explicitly persisted ``null`` -- never a
+    guess, and distinguishable from "no source carries this fact" via
+    ``_ABSENT``.
+    """
+
+    for d in dicts:
+        if d is not None and key in d:
+            return d[key]
+    return _ABSENT
+
+
 # --------------------------------------------------------------------- prepare
 
 def cmd_prepare(args: argparse.Namespace) -> int:
@@ -576,8 +679,24 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         runtime_env=runtime_env, dev_env=dev_env, controlled_path_value=path_value,
     )
 
+    # Final repository revalidation, immediately before declaring PREPARED --
+    # the smallest equivalent of the old manual preparation flow's closing
+    # verification step.  Reuses the exact same fail-closed helper `launch`
+    # already uses against drift between `prepare` and `launch`; drift that
+    # occurred *during* preparation itself (e.g. a concurrent push/commit
+    # into Development/Runtime/Evidence while venvs were being built) must
+    # equally never be reported as PREPARED.
+    _revalidate({"path": str(development.path), "head": development.head}, name="Development", pin_fn=pin_development)
+    _revalidate({"path": str(runtime.path), "head": runtime.head}, name="Runtime", pin_fn=pin_runtime)
+    _revalidate({"path": str(evidence.path), "head": evidence.head}, name="Evidence", pin_fn=pin_evidence)
+
     if state.exists():
         raise HarnessRefusal("STATE unexpectedly materialized during preparation")
+    for artifact in (
+        ops / "preparation-pins.txt", ops / "harness-prepared.json", launch_sh, execution_bindings,
+    ):
+        if not artifact.is_file():
+            raise HarnessRefusal(f"expected prepared artifact is missing at final revalidation: {artifact}")
 
     print(f"OPS: {ops}")
     print(f"STATE: {state} (absent)")
@@ -637,6 +756,281 @@ def cmd_launch(args: argparse.Namespace) -> int:
     return result.returncode
 
 
+# ----------------------------------------------------------------------- status
+
+def _render_text(value: object) -> str:
+    if value is _ABSENT:
+        return "(not persisted)"
+    return repr(value) if isinstance(value, (list, dict)) else str(value)
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Strictly read-only.  Never creates, mutates, retries, reconciles, or
+    launches anything -- only projects already-persisted Harness preparation
+    facts and WFC-owned Run state.  Always exits 0: an unknown attempt,
+    missing preparation, or a mechanical inconsistency are reportable facts,
+    not failures of this command itself.
+    """
+
+    attempt = validate_attempt(args.attempt)
+    ops = ops_root(attempt)
+    state = state_root(attempt)
+
+    report: dict[str, object] = {"attempt": attempt, "ops": str(ops), "state": str(state)}
+
+    if not ops.exists() and not state.exists():
+        report["lifecycle"] = "UNKNOWN_ATTEMPT"
+        _print_status(report, as_json=args.json)
+        return 0
+
+    prep_record, prep_record_error = _read_json_optional(ops / "harness-prepared.json")
+    prep_pins = _read_preparation_pins(ops / "preparation-pins.txt")
+    corrupt: list[str] = []
+    if prep_record_error:
+        corrupt.append(prep_record_error)
+
+    report["preparation_present"] = bool(prep_record or prep_pins)
+    pinned_development = (prep_pins or {}).get("development_head") or (
+        (prep_record or {}).get("development") or {}
+    ).get("head")
+    pinned_runtime = (prep_pins or {}).get("runtime_head") or ((prep_record or {}).get("runtime") or {}).get("head")
+    pinned_evidence = (prep_pins or {}).get("evidence_head") or ((prep_record or {}).get("evidence") or {}).get("head")
+    if pinned_development:
+        report["prepared_development_head"] = pinned_development
+    if pinned_runtime:
+        report["prepared_runtime_head"] = pinned_runtime
+    if pinned_evidence:
+        report["prepared_evidence_head"] = pinned_evidence
+
+    if not state.exists():
+        report["state_present"] = False
+        if ops.exists() and not (prep_record or prep_pins):
+            report["lifecycle"] = "PREPARATION_INCOMPLETE_OR_UNREADABLE"
+        else:
+            report["lifecycle"] = "PREPARED_NOT_LAUNCHED"
+        if corrupt:
+            report["corrupt_sources"] = corrupt
+        _print_status(report, as_json=args.json)
+        return 0
+
+    report["state_present"] = True
+
+    plan, plan_error = _read_json_optional(state / "operator-plan.json")
+    summary, summary_error = _read_json_optional(state / "operator-summary.json")
+    run_json_path, run_json, run_json_error = _first_run_json(state)
+    assoc, assoc_error = _read_json_optional(state / "checkout-association.json")
+
+    for label, error in (
+        ("operator-plan.json", plan_error), ("operator-summary.json", summary_error),
+        (str(run_json_path) if run_json_path else "run.json", run_json_error),
+        ("checkout-association.json", assoc_error),
+    ):
+        if error:
+            corrupt.append(error)
+    if corrupt:
+        report["corrupt_sources"] = corrupt
+
+    issues: list[str] = []
+    run_id, run_id_issues = _agree(
+        "run_id", ("operator-summary.json", summary), ("operator-plan.json", plan), ("run.json", run_json),
+    )
+    work_item_id, wi_issues = _agree(
+        "work_item_id",
+        ("operator-summary.json", summary), ("operator-plan.json", plan), ("run.json", run_json),
+    )
+    checkout_id, checkout_issues = _agree(
+        "checkout_id", ("operator-summary.json", summary), ("checkout-association.json", assoc),
+    )
+    issues += run_id_issues + wi_issues + checkout_issues
+    if issues:
+        report["inconsistencies"] = issues
+
+    def emit(name: str, key: str, *dicts: dict | None) -> None:
+        value = _first_present(key, *dicts)
+        if value is not _ABSENT:
+            report[name] = value
+
+    if run_id is not None:
+        report["run_id"] = run_id
+    if work_item_id is not None:
+        report["work_item_id"] = work_item_id
+    if checkout_id is not None:
+        report["checkout_id"] = checkout_id
+
+    # `run_status` lives under different keys in the two artifacts
+    # (`operator-summary.json["run_status"]` vs. the canonical
+    # `run.json["status"]`) -- the exact distinction `wfc-archive-run`'s own
+    # `facts` probe preserves rather than merging.
+    run_status = _first_present("run_status", summary)
+    if run_status is _ABSENT:
+        run_status = _first_present("status", run_json)
+    if run_status is not _ABSENT:
+        report["run_status"] = run_status
+
+    emit("current_phase", "phase", run_json)
+    emit("hop_used", "hop_used", summary, run_json)
+    emit("hop_limit", "hop_limit", summary, run_json)
+    emit("stop_reason", "stop_reason", summary, run_json)
+    emit("human_question", "human_question", summary, run_json)
+    emit("operator_status", "operator_status", summary)
+    emit("operator_error", "operator_error", summary)
+    emit("final_head", "final_head", summary)
+    emit("worktree_clean", "worktree_clean", summary)
+    emit("anomalies", "anomalies", summary, run_json)
+
+    if not (summary or plan or run_json):
+        report["lifecycle"] = "STATE_PRESENT_NO_RECOGNIZABLE_WFC_STATE"
+    else:
+        report["lifecycle"] = "RUN_RECORDED"
+
+    _print_status(report, as_json=args.json)
+    return 0
+
+
+_STATUS_FIELD_ORDER = (
+    "attempt", "ops", "state", "lifecycle",
+    "preparation_present", "prepared_development_head", "prepared_runtime_head", "prepared_evidence_head",
+    "state_present", "run_id", "work_item_id", "checkout_id", "run_status", "current_phase",
+    "hop_used", "hop_limit", "stop_reason", "human_question", "operator_status", "operator_error",
+    "final_head", "worktree_clean", "anomalies", "inconsistencies", "corrupt_sources",
+)
+
+
+def _print_status(report: dict[str, object], *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
+    for key in _STATUS_FIELD_ORDER:
+        if key in report:
+            print(f"{key}: {_render_text(report[key])}")
+
+
+# ---------------------------------------------------------------------- archive
+
+def _resolve_recorded_evidence_path(ops: Path) -> Path:
+    """The Evidence repository path recorded during `prepare` -- never a
+    user-supplied override (the CLI surface takes none).  Refuses rather than
+    guesses if the two preparation records disagree.
+    """
+
+    pins = _read_preparation_pins(ops / "preparation-pins.txt")
+    record, record_error = _read_json_optional(ops / "harness-prepared.json")
+    if record_error:
+        raise HarnessRefusal(f"harness-prepared.json is corrupt: {record_error}")
+
+    pins_path = (pins or {}).get("evidence_path") or None
+    record_path = None
+    if record and isinstance(record.get("evidence"), dict):
+        value = record["evidence"].get("path")
+        record_path = value if isinstance(value, str) and value else None
+
+    if not pins_path and not record_path:
+        raise HarnessRefusal(
+            f"cannot derive Evidence repository: no preparation record found for attempt (checked {ops})"
+        )
+    if pins_path and record_path and Path(pins_path).resolve() != Path(record_path).resolve():
+        raise HarnessRefusal(
+            "preparation facts disagree on Evidence repository path: "
+            f"preparation-pins.txt={pins_path!r} harness-prepared.json={record_path!r}"
+        )
+    return Path(pins_path or record_path)
+
+
+_REPORT_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z ]*):\s+(.*)$")
+
+
+def _parse_wrapper_report(stdout: str) -> dict[str, str]:
+    """Thin extraction of the canonical wrapper's OWN already-printed labeled
+    report lines (e.g. ``dest:       archive/unclassified/<attempt>``) -- not
+    a reimplementation of how it derives them.
+    """
+
+    fields: dict[str, str] = {}
+    for line in stdout.splitlines():
+        match = _REPORT_LINE_RE.match(line)
+        if match:
+            key = match.group(1).strip().lower().replace(" ", "_")
+            fields[key] = match.group(2).strip()
+    return fields
+
+
+def _invoke_canonical_archive(
+    wrapper: Path, state: Path, evidence: Path, *, dry_run: bool, semantic_json: Path | None,
+) -> subprocess.CompletedProcess:
+    argv = [str(wrapper), str(state), str(evidence)]
+    if semantic_json is not None:
+        argv += ["--semantic-json", str(semantic_json)]
+    if dry_run:
+        argv.append("--dry-run")
+    return subprocess.run(argv, capture_output=True, text=True)
+
+
+def cmd_archive(args: argparse.Namespace) -> int:
+    """Deterministic, delegating wrapper around the canonical
+    ``workflow-coordinator-run-evidence/scripts/wfc-archive-run``.  Harness
+    derives only the wrapper's two positional arguments (state root, Evidence
+    repository) from preparation facts, performs mechanical prechecks, and
+    always runs the wrapper's own ``--dry-run`` plan before any real archive
+    proceeds.  It implements no copying, hashing, manifest, or
+    fact-extraction logic of its own -- that remains entirely owned by the
+    canonical wrapper and `scripts/archive_run.py` in the Evidence repository.
+    """
+
+    attempt = validate_attempt(args.attempt)
+    ops = ops_root(attempt)
+    state = state_root(attempt)
+
+    if not state.is_dir():
+        raise HarnessRefusal(f"STATE is absent; nothing to archive: {state}")
+    if not ops.is_dir():
+        raise HarnessRefusal(f"OPS directory not found; cannot derive Evidence repository automatically: {ops}")
+
+    evidence_path = _resolve_recorded_evidence_path(ops)
+    evidence = _require_git_toplevel(evidence_path, name="Evidence")
+    if not _is_clean(evidence):
+        raise HarnessRefusal(f"Evidence worktree is not clean; refusing to archive: {evidence}")
+
+    wrapper = evidence / "scripts" / "wfc-archive-run"
+    if not wrapper.is_file() or not os.access(wrapper, os.X_OK):
+        raise HarnessRefusal(f"canonical archive wrapper is missing or not executable: {wrapper}")
+
+    semantic_json = Path(args.semantic_json).resolve() if args.semantic_json else None
+
+    head_before = _git(evidence, "rev-parse", "HEAD")
+
+    dry = _invoke_canonical_archive(wrapper, state, evidence, dry_run=True, semantic_json=semantic_json)
+    if dry.returncode != 0:
+        detail = (dry.stderr or dry.stdout).strip()
+        raise HarnessRefusal(f"canonical archive dry-run refused: {detail}")
+    dry_fields = _parse_wrapper_report(dry.stdout)
+
+    print(dry.stdout)
+    print(f"ATTEMPT: {attempt}")
+    print(f"EVIDENCE: {evidence}")
+    print(f"EVIDENCE HEAD (before): {head_before}")
+
+    if args.dry_run:
+        print("ARCHIVE DRY-RUN ONLY: no real archive performed")
+        return 0
+
+    real = _invoke_canonical_archive(wrapper, state, evidence, dry_run=False, semantic_json=semantic_json)
+    print(real.stdout)
+    if real.returncode != 0:
+        detail = (real.stderr or real.stdout).strip()
+        raise HarnessRefusal(f"canonical archive failed: {detail}")
+    real_fields = _parse_wrapper_report(real.stdout)
+
+    head_after = _git(evidence, "rev-parse", "HEAD")
+    destination = real_fields.get("dest") or dry_fields.get("dest") or "(unknown; not reported by wrapper)"
+    commit = real_fields.get("commit") or head_after
+
+    print(f"EVIDENCE HEAD (after): {head_after}")
+    print(f"ARCHIVE DESTINATION: {destination}")
+    print(f"ARCHIVE COMMIT: {commit}")
+    print("ARCHIVED")
+    return 0
+
+
 # -------------------------------------------------------------------------- CLI
 
 def build_parser() -> argparse.ArgumentParser:
@@ -667,6 +1061,27 @@ def build_parser() -> argparse.ArgumentParser:
     launch = sub.add_parser("launch", help="revalidate and execute the already-prepared launch artifact exactly once")
     launch.add_argument("attempt")
 
+    status = sub.add_parser(
+        "status",
+        help="strictly read-only mechanical projection of persisted Harness/WFC facts for an attempt",
+    )
+    status.add_argument("attempt")
+    status.add_argument(
+        "--json", action="store_true",
+        help="emit a small JSON projection of persisted facts instead of human-readable text",
+    )
+
+    archive = sub.add_parser(
+        "archive",
+        help="delegate to the canonical Evidence archive wrapper (dry-run, then real archive)",
+    )
+    archive.add_argument("attempt")
+    archive.add_argument("--semantic-json", help="passed verbatim to wfc-archive-run")
+    archive.add_argument(
+        "--dry-run", action="store_true",
+        help="invoke only the canonical wrapper's dry-run plan; perform no real archive",
+    )
+
     return parser
 
 
@@ -678,6 +1093,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_prepare(args)
         if args.command == "launch":
             return cmd_launch(args)
+        if args.command == "status":
+            return cmd_status(args)
+        if args.command == "archive":
+            return cmd_archive(args)
         parser.error("unknown command")
         return 2
     except HarnessRefusal as error:
