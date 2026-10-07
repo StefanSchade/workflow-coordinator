@@ -38,7 +38,6 @@ from .git_facts import (
 )
 from .model import (
     COMMIT_ACTION,
-    ConvergenceRole,
     EDIT_ACTION,
     Hop,
     ExecutionEvidenceDocument,
@@ -52,6 +51,8 @@ from .model import (
     TrustedQualificationIndex,
     WorkflowProfile,
     record_hop,
+    result_contract_version,
+    select_result_contract,
 )
 from .persistence import (
     checkpoint_projection,
@@ -297,11 +298,9 @@ def run_one_hop(
     """Execute only the N=1 fake/subprocess boundary and reduce observed facts."""
 
     phase = profile.phases[run.phase]
-    result_contract_version = (
-        2
-        if profile.schema_version == 3
-        or phase.convergence_role is not ConvergenceRole.NONE
-        else 1
+    selected_result_contract = select_result_contract(profile, phase, run)
+    selected_result_contract_version = result_contract_version(
+        selected_result_contract, profile, phase, run
     )
     try:
         preflight_hop(repository, expected_repository=repository, expected_head=run.current_head)
@@ -314,14 +313,15 @@ def run_one_hop(
             run, phase, components, agent_operating_contract=agent_operating_contract,
             invocation=invocation, persona=persona, task_payload=task_payload,
             context=context_items,
-            contract_version=result_contract_version,
+            contract_version=selected_result_contract_version,
         )
     except Exception as error:
         raise ExecutionNotStartedError(str(error)) from error
     outcome = adapter.execute(AgentExecutionRequest(
         invocation, prompt.text, repository,
         ROUTING_RESULT_ENVELOPE_CONTRACT, execution_timeout_seconds,
-        contract_version=result_contract_version,
+        contract_version=selected_result_contract_version,
+        result_contract_kind=selected_result_contract,
     ))
     if outcome.candidate_result is None:
         raise ExecutionResultValidationError(outcome, "agent execution produced no candidate structured result")
@@ -329,7 +329,7 @@ def run_one_hop(
         result = validated_result(
             outcome.candidate_result,
             invocation,
-            result_contract_version,
+            selected_result_contract_version,
         )
     except ResultValidationError as error:
         raise ExecutionResultValidationError(outcome, str(error)) from error
@@ -532,6 +532,8 @@ def run_one_hop(
             result.summary,
             "agent",
             anchor,
+            selected_result_contract,
+            selected_result_contract_version,
         ),
     )
     if attempt is not None:

@@ -149,6 +149,12 @@ class WorkflowRole(CoordinatorValue):
     INDEPENDENT_REVIEWER = "independent_reviewer"
 
 
+class ResultContractKind(CoordinatorValue):
+    """Provider-neutral identity for a projected semantic result contract."""
+
+    GENERIC_ROUTING_RESULT = "generic-routing-result"
+
+
 @dataclass(frozen=True)
 class ExecutionBinding:
     """One explicit, authority-neutral production execution choice."""
@@ -440,6 +446,8 @@ class Hop:
     summary: str
     attribution: str
     pre_route_anchor_sha256: str | None = None
+    result_contract_kind: ResultContractKind | None = None
+    result_contract_version: int | None = None
     requested_route: str | None = None
     route_reason: str | None = None
     diagnosis: DiagnosisReport | None = None
@@ -462,6 +470,8 @@ class Hop:
             summary=self.summary,
             attribution=self.attribution,
             pre_route_anchor_sha256=self.pre_route_anchor_sha256,
+            result_contract_kind=self.result_contract_kind,
+            result_contract_version=self.result_contract_version,
             requested_route=self.requested_route,
             route_reason=self.route_reason,
             phase=self.phase,
@@ -489,6 +499,8 @@ class HopSummary:
     coverage_claims: tuple[CoverageClaim, ...] = ()
     convergence_assessments: tuple[ConvergenceAssessment, ...] = ()
     pre_route_anchor_sha256: str | None = None
+    result_contract_kind: ResultContractKind | None = None
+    result_contract_version: int | None = None
     requested_route: str | None = None
     route_reason: str | None = None
     phase: str | None = None
@@ -528,6 +540,45 @@ class Run:
     @property
     def hop_remaining(self) -> int:
         return self.hop_limit - self.hop_used
+
+
+def select_result_contract(
+    profile: WorkflowProfile, phase: Phase, run: Run,
+) -> ResultContractKind:
+    """Select the semantic contract from admitted, provider-neutral facts.
+
+    P1 deliberately maps every currently admitted combination to the generic
+    RoutingResult contract.  Keeping those facts at this single seam makes
+    later distinct projections additive rather than phase-name special cases.
+    """
+
+    # Read the complete admitted selection key here, rather than letting an
+    # adapter infer workflow semantics.  The values intentionally share one
+    # P1 projection; P2 can introduce distinct mappings at this seam.
+    _selection_key = (
+        phase.role,
+        phase.review is not None,
+        () if phase.review is None else phase.review.finding_authority,
+        phase.convergence_role,
+        profile.schema_version,
+        run.schema_version,
+    )
+    return ResultContractKind.GENERIC_ROUTING_RESULT
+
+
+def result_contract_version(
+    kind: ResultContractKind, profile: WorkflowProfile, phase: Phase, run: Run,
+) -> int:
+    """Return the legacy wire version for one selected semantic contract."""
+
+    if kind is not ResultContractKind.GENERIC_ROUTING_RESULT:
+        raise ValueError(f"unsupported result contract kind: {kind}")
+    return (
+        2
+        if profile.schema_version == 3
+        or phase.convergence_role is not ConvergenceRole.NONE
+        else 1
+    )
 
 
 @dataclass(frozen=True)

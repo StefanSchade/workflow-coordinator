@@ -39,6 +39,7 @@ from .model import (
     DiagnosisClassification,
     FindingState,
     Outcome,
+    ResultContractKind,
     StrategyAssessmentResult,
     StrategyRevisionKind,
 )
@@ -269,6 +270,8 @@ class CodexCliAdapter:
     def execute(self, request: AgentExecutionRequest) -> AgentExecutionOutcome:
         if request.result_contract != ROUTING_RESULT_ENVELOPE_CONTRACT:
             raise CodexCliError(f"unsupported result contract: {request.result_contract}")
+        if request.result_contract_kind is not ResultContractKind.GENERIC_ROUTING_RESULT:
+            raise CodexCliError(f"unsupported result contract kind: {request.result_contract_kind}")
         if request.timeout_seconds <= 0:
             raise CodexCliError("timeout must be positive")
         if request.contract_version not in {1, 2}:

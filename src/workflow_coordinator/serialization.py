@@ -49,6 +49,7 @@ from .model import (
     Observation,
     Outcome,
     Phase,
+    ResultContractKind,
     RepositoryPolicy,
     RequiredEvidenceIdentity,
     ReviewAuthority,
@@ -1260,6 +1261,11 @@ def run_to_json(run: Run) -> str:
         for hop in data["hops"]:
             if hop.get("pre_route_anchor_sha256") is None:
                 hop.pop("pre_route_anchor_sha256", None)
+    for hop in data["hops"]:
+        if hop.get("result_contract_kind") is None:
+            hop.pop("result_contract_kind", None)
+        if hop.get("result_contract_version") is None:
+            hop.pop("result_contract_version", None)
     text = json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n"
     # Callers may construct immutable dataclasses directly.  Persisted Run
     # truth must still pass the same closed-wire validation as loaded state.
@@ -1271,21 +1277,24 @@ def _hop_summary(value: Any, *, context: str, run_version: int) -> HopSummary:
     all_fields = {field.name for field in fields(HopSummary)}
     convergence_fields = {"coverage_claims", "convergence_assessments", "diagnosis", "strategy_revision", "strategy_assessment"}
     anchor_field = {"pre_route_anchor_sha256"}
+    contract_identity_fields = {"result_contract_kind", "result_contract_version"}
     routing_truth_fields = {"requested_route", "route_reason"}
     phase_field = {"phase"}
     data = _fields(
         value,
         context=context,
         required=(
-            all_fields - anchor_field
+            all_fields - anchor_field - contract_identity_fields
             if run_version == 3
             else all_fields
             - convergence_fields
             - anchor_field
+            - contract_identity_fields
             - routing_truth_fields
             - phase_field
         ),
-        optional=anchor_field if run_version == 3 else frozenset(),
+        optional=(anchor_field | contract_identity_fields)
+        if run_version == 3 else contract_identity_fields,
     )
     raw_coverage = data.get("coverage_claims", [])
     raw_assessments = data.get("convergence_assessments", [])
@@ -1324,6 +1333,22 @@ def _hop_summary(value: Any, *, context: str, run_version: int) -> HopSummary:
             else _sha256(
                 data["pre_route_anchor_sha256"],
                 context=f"{context}.pre_route_anchor_sha256",
+            )
+        ),
+        result_contract_kind=(
+            None
+            if data.get("result_contract_kind") is None
+            else _enum(
+                ResultContractKind, data["result_contract_kind"],
+                context=f"{context}.result_contract_kind",
+            )
+        ),
+        result_contract_version=(
+            None
+            if data.get("result_contract_version") is None
+            else _integer(
+                data["result_contract_version"],
+                context=f"{context}.result_contract_version", positive=True,
             )
         ),
         requested_route=(

@@ -13,6 +13,7 @@ from workflow_coordinator.model import (
     Escalation,
     FindingAuthority,
     FindingState,
+    ResultContractKind,
     Run,
     RunStatus,
     TrustedQualificationIndex,
@@ -89,6 +90,34 @@ def test_pre_slice1_v2_replay_is_byte_preserving_and_fabricates_no_v3_records():
         run, workflow, qualified_cycle_limit=2
     )["convergence_facts"] == []
     assert process(run, workflow, result("done")).run.status is RunStatus.COMPLETED
+
+
+def test_persisted_result_contract_identity_governs_replay_not_mutated_profile():
+    workflow = profile({"implement": phase({"done": route("complete")})})
+    charged, hop_id = charge_hop(run_for(workflow, run_schema_version=3))
+    persisted = replace(
+        charged,
+        hops=(replace(
+            charged.hops[-1],
+            result_contract_kind=ResultContractKind.GENERIC_ROUTING_RESULT,
+            result_contract_version=1,
+        ),),
+    )
+    changed_profile = replace(workflow, schema_version=3)
+    reduced = reduce_result(
+        persisted, result("done", schema_version=1), changed_profile, hop_id=hop_id
+    )
+    assert reduced.run.status is RunStatus.COMPLETED
+
+    malformed = replace(
+        persisted,
+        hops=(replace(persisted.hops[-1], result_contract_version=None),),
+    )
+    rejected = reduce_result(
+        malformed, result("done", schema_version=1), changed_profile, hop_id=hop_id
+    )
+    assert rejected.run.status is RunStatus.AWAITING_HUMAN
+    assert "persisted result contract identity is incomplete" in rejected.run.stop_reason
 
 
 def test_slice2_convergence_projection_is_replay_deterministic_and_ignores_uncertain_hops():

@@ -13,7 +13,12 @@ from workflow_coordinator.adapter import (
     AgentExecutionOutcome, AgentExecutionRequest, Invocation,
     ResultValidationError, SubprocessAdapter, validated_result,
 )
-from workflow_coordinator.model import DurableArtifact
+from workflow_coordinator.model import (
+    DurableArtifact,
+    ResultContractKind,
+    result_contract_version,
+    select_result_contract,
+)
 from workflow_coordinator.prompt import (
     COMPONENT_LIMIT_BYTES, CONTEXT_LIMIT_BYTES, DIFF_FILE_LIMIT, DIFF_LIMIT_BYTES,
     ContextItem, PromptComponent, assemble_prompt, load_agent_operating_contract,
@@ -390,6 +395,7 @@ def test_profile_v3_later_role_names_dispatch_live_result_v2_with_null_placehold
     assert completed.reduction.run.stop_reason.startswith("mechanical_preemption:invalid_finding_delta:")
     assert adapter.request is not None
     assert adapter.request.contract_version == 2
+    assert adapter.request.result_contract_kind is ResultContractKind.GENERIC_ROUTING_RESULT
 
 
 def test_profile_v3_none_role_dispatches_the_closed_result_v2_contract(repository):
@@ -427,7 +433,19 @@ def test_profile_v3_none_role_dispatches_the_closed_result_v2_contract(repositor
     assert completed.reduction.run.status.value == "stopped"
     assert adapter.request is not None
     assert adapter.request.contract_version == 2
+    assert adapter.request.result_contract_kind is ResultContractKind.GENERIC_ROUTING_RESULT
     assert "output_contract=structured_result_v2" in adapter.request.prompt
+
+
+def test_result_contract_selection_is_phase_fact_based_and_generic_for_current_profiles():
+    workflow = convergence_routing_profile()
+    for phase_value in workflow.phases.values():
+        run = run_for(workflow, initial_phase=next(
+            key for key, candidate in workflow.phases.items() if candidate is phase_value
+        ), run_schema_version=3)
+        kind = select_result_contract(workflow, phase_value, run)
+        assert kind is ResultContractKind.GENERIC_ROUTING_RESULT
+        assert result_contract_version(kind, workflow, phase_value, run) == 2
 
 
 class CommitAdapter:

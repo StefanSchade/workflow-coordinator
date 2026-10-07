@@ -171,6 +171,19 @@ def test_adapter_rejects_an_unsupported_result_contract_before_launch(tmp_path: 
         adapter.execute(request)
 
 
+def test_adapter_rejects_an_unsupported_selected_kind_before_launch(tmp_path: Path):
+    adapter = CodexCliAdapter(
+        tmp_path, model="explicit-model", reasoning_effort="high", executable="must-not-run"
+    )
+    request = AgentExecutionRequest(
+        Invocation("RUN", "H001", "INV"), "prompt", tmp_path,
+        ROUTING_RESULT_ENVELOPE_CONTRACT, 1,
+        result_contract_kind="future-kind",  # type: ignore[arg-type]
+    )
+    with pytest.raises(RuntimeError, match="unsupported result contract kind"):
+        adapter.execute(request)
+
+
 def test_production_adapter_has_no_model_or_reasoning_fallback(tmp_path: Path):
     with pytest.raises(TypeError):
         CodexCliAdapter(tmp_path)

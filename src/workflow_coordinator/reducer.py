@@ -29,9 +29,12 @@ from .model import (
     StrategyAssessmentResult,
     Run,
     RunStatus,
+    ResultContractKind,
     SemanticStop,
     TrustedQualificationIndex,
     WorkflowProfile,
+    result_contract_version,
+    select_result_contract,
 )
 
 
@@ -1272,16 +1275,27 @@ def reduce_result(
     phase, profile_error = _profile_phase(run, profile)
     correlated_hop = bool(run.hops and run.hops[-1].hop_id == hop_id)
     result_state_error = None
-    expected_result_version = (
-        2
-        if profile.schema_version == 3
-        or (
-            phase is not None
-            and phase.convergence_role is not ConvergenceRole.NONE
+    current_hop = run.hops[-1] if correlated_hop else None
+    persisted_kind = None if current_hop is None else current_hop.result_contract_kind
+    persisted_version = None if current_hop is None else current_hop.result_contract_version
+    if (persisted_kind is None) != (persisted_version is None):
+        result_state_error = "persisted result contract identity is incomplete"
+    elif persisted_kind is not None:
+        if (
+            persisted_kind is not ResultContractKind.GENERIC_ROUTING_RESULT
+            or persisted_version not in {1, 2}
+        ):
+            result_state_error = "persisted result contract identity is unsupported"
+        else:
+            expected_result_version = persisted_version
+    elif phase is not None:
+        selected_kind = select_result_contract(profile, phase, run)
+        expected_result_version = result_contract_version(
+            selected_kind, profile, phase, run
         )
-        else 1
-    )
-    if result.schema_version != expected_result_version:
+    else:
+        expected_result_version = None
+    if result_state_error is None and result.schema_version != expected_result_version:
         result_state_error = "unsupported result schema version"
     elif run.status is not RunStatus.RUNNING or not correlated_hop:
         result_state_error = "result is not correlated to the current accepted Hop"

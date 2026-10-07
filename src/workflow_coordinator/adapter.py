@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .model import RoutingResult
+from .model import ResultContractKind, RoutingResult
 from .serialization import ValidationError, routing_result_from_data
 
 
@@ -49,6 +49,7 @@ class AgentExecutionRequest:
     result_contract: str
     timeout_seconds: float
     contract_version: int = 1
+    result_contract_kind: ResultContractKind = ResultContractKind.GENERIC_ROUTING_RESULT
 
 
 @dataclass(frozen=True)

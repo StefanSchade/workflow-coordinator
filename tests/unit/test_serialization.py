@@ -13,6 +13,7 @@ from workflow_coordinator.model import (
     Run,
     Finding,
     RouteEffect,
+    ResultContractKind,
     SemanticStop,
     SuccessorProvenance,
     WorkflowRole,
@@ -1139,6 +1140,25 @@ def test_legacy_v1_read_only_replay_and_inspection_preserve_the_exact_wire_bytes
     second = checkpoint_projection(run_from_json(PRECHANGE_RUN_JSON), workflow)
     assert first == second
     assert run_to_json(legacy).encode("utf-8") == original
+
+
+def test_hop_result_contract_identity_is_optional_and_round_trips_without_backfill():
+    workflow = profile({"implement": phase({"done": route("complete")})})
+    run, _ = charge_hop(run_for(workflow))
+    historical = json.loads(run_to_json(run))
+    assert "result_contract_kind" not in historical["hops"][0]
+    persisted = replace(
+        run,
+        hops=(replace(
+            run.hops[0],
+            result_contract_kind=ResultContractKind.GENERIC_ROUTING_RESULT,
+            result_contract_version=1,
+        ),),
+    )
+    encoded = json.loads(run_to_json(persisted))
+    assert encoded["hops"][0]["result_contract_kind"] == "generic-routing-result"
+    assert encoded["hops"][0]["result_contract_version"] == 1
+    assert run_from_json(json.dumps(encoded)) == persisted
 
 
 def test_v2_non_null_successor_records_are_closed_and_strict():
