@@ -1,0 +1,515 @@
+Implement P2 ("Strict worker / review result families") of the accepted
+concept docs/wfc_projected_result_contracts_concept_2026-10-07.adoc
+(sections 6-9), then obtain a fresh independent review. Loop
+implement -> independent_review -> {accept: complete, correction:
+correction}; correction -> rereview; rereview -> {accept: complete,
+correction: correction}. Initial phase: implement. No supervisor. No child
+Run. No nested WFC.
+
+THIS IS P2 ONLY. It does NOT authorize: P3 full Finding-authority/update
+generalization beyond the one bounded P2-local decision below; P3.5
+Commission/profile static authority-conformance implementation; P4
+Coordinator-owned effects/mechanics extraction including canonical
+CommitIntent rendering; P5 provider-capability/registry cleanup; Harness
+v1; moving baseline pinning from `prepare` to `launch`; outer/higher
+orchestration; a new workflow DSL/ontology/generic plugin system/provider
+registry; a Claude adapter; hierarchical escalation; provider fallback;
+model/cost routing; sandbox/trust redesign; backlog picker; automatic
+Commission generation; automatic Runtime promotion; automatic push;
+semantic-ledger automation; unrelated BUG closure; retroactive mutation of
+historical Runs/evidence/ledger; any Harness/operator architecture change;
+Operator Manual changes; Runtime mutation; Evidence mutation.
+
+======================================================================
+GOVERNING DOCUMENTS (read completely before touching code)
+======================================================================
+
+1. docs/wfc_projected_result_contracts_concept_2026-10-07.adoc -- the
+   accepted concept, especially sections 1-10 (P1-shipped architecture,
+   unchanged), section 17 (P2-P5 sequencing), and section 22 (open
+   questions). CONCEPT ONLY; where this task text summarizes its wording,
+   the concept document's own exact wording controls.
+2. docs/wfc_projected_result_contracts_concept_2026-10-07_review_001.adoc
+   and
+   docs/wfc_projected_result_contracts_concept_2026-10-07_review_002.adoc
+   -- the adversarial review and its narrow closure review of the
+   revision that added P3.5/P4. review_002's verdict is ACCEPT.
+   review_001 section 8 explicitly found P2 "ready to be commissioned as
+   the next implementation slice ... no MUST-resolve-before-Commission
+   blocker." Neither review touches P1's completion/promotion or P2's own
+   scope.
+3. docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_002.adoc
+   -- the fresh successor assurance review that confirmed P1 complete and
+   promoted to Runtime, and confirmed "P2 add genuinely distinct
+   WorkResult/ReviewVerdict projections through this seam without
+   replacing P1" is possible.
+4. governance/work-items/projected-result-contracts-p1.yaml,
+   governance/work-items/projected-result-contracts-p1-task.txt,
+   governance/self-development/projected-result-contracts-p1-profile.yaml,
+   governance/self-development/projected-result-contracts-p1-policy.yaml --
+   the original P1 Commission, structural precedent for this one.
+5. governance/work-items/projected-result-contracts-p1-assurance-closure.yaml,
+   governance/self-development/projected-result-contracts-p1-assurance-closure-profile.yaml
+   -- the precedent for this Commission's own `finding_authority: [resolve]`
+   grant on independent_review/rereview (see FINDING AUTHORITY section
+   below).
+6. docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc -- the
+   governance defect this Commission's own profile must not repeat.
+   Remains OPEN; this Commission does not close it and is not P3.5.
+
+======================================================================
+CORE P2 PROPERTY
+======================================================================
+
+Make worker-vs-review category mistakes structurally unrepresentable, not
+merely rejected after the fact by the reducer.
+
+Worker/corrector semantic family -- `WorkResult`:
+
+  status: completed | blocked
+
+plus the genuinely applicable existing semantic/evidence/effect fields
+required to preserve current behavior (see SCOPE OF WHAT MUST BE
+PRESERVED below). A WorkResult MUST NOT be able to express
+`changes_required` or any other review-only verdict -- absent from the
+type and the provider schema, not merely rejected later by the reducer.
+
+Review/rereview semantic family -- `ReviewVerdict`:
+
+  verdict: accept | changes_required
+
+plus Finding proposals/updates, evidence, summary, and only those
+currently required fields that genuinely apply to review semantics. A
+ReviewVerdict MUST NOT expose worker-only status vocabulary merely
+because the old generic RoutingResult did.
+
+Every other still-supported invocation family remains on the existing
+generic `RoutingResult` contract unless this task explicitly says
+otherwise. Concretely, confirmed by source inspection at commissioning
+time: every phase with `phase.convergence_role is not
+ConvergenceRole.NONE` (Slice 4: CORRECTOR, DIAGNOSIS, REFRAME,
+STRATEGY_GATE, EVALUATOR) is OUT OF SCOPE for P2's new kinds and MUST
+continue selecting today's generic contract, unaffected in dispatched
+schema, parser, or reducer input. P2's `WorkResult`/`ReviewVerdict`
+mapping applies only where `phase.convergence_role is
+ConvergenceRole.NONE`: `WorkResult` for `phase.role is WorkflowRole.WORKER`
+with no review descriptor; `ReviewVerdict` for `phase.role is
+WorkflowRole.INDEPENDENT_REVIEWER` with a review descriptor present.
+
+======================================================================
+PARSE, DON'T VALIDATE
+======================================================================
+
+Invalid category combinations must not be representable in the selected
+semantic type or provider schema. Do NOT solve P2 by: keeping one huge
+RoutingResult provider schema; merely adding more post-parse reducer
+checks; parsing everything into RoutingResult and then translating
+afterward; relying on prompt prose to tell the model not to use
+inappropriate fields; phase-name branching; a second parallel selector.
+The provider wire schema must reflect the selected semantic result
+family.
+
+======================================================================
+P1 SEAM MUST BE USED, NOT REPLACED
+======================================================================
+
+Extend `select_result_contract(profile, phase, run) -> ResultContractKind`
+(model.py:545) with the two new closed `ResultContractKind` members and
+their admitted-fact mappings (see CORE P2 PROPERTY above for the exact
+selection predicate). Do not introduce a second selection mechanism. The
+selected kind must continue to flow through: the one selector ->
+`AgentExecutionRequest` (already carries `result_contract_kind`,
+adapter.py:52) -> `CodexCliAdapter.execute`'s existing kind-rejection
+guard (codex_adapter.py:255-262), extended to accept the two new kinds and
+project the matching strict schema -> a kind-specific parser (new
+sibling functions beside `routing_result_from_data`,
+serialization.py:1152) -> the matching semantic result value -> the
+reducer. `adapter.validated_result` (adapter.py:107) currently calls
+`routing_result_from_data` unconditionally regardless of
+`request.result_contract_kind`; it must become kind-dispatched so each
+kind parses into its own type, not merely a wider union still coerced
+through one parser. The actually dispatched kind/version must remain
+persisted per Hop (`Hop.result_contract_kind`/`result_contract_version`,
+model.py:449-450) and govern replay exactly as P1 established
+(reducer.py's persisted-identity-governs-replay discipline, unchanged in
+principle, extended to recognize the two new kinds as supported and
+everything else exactly as today).
+
+======================================================================
+PROMPT / SCHEMA / PARSER ALIGNMENT
+======================================================================
+
+Keep agent instructions and machine contract synchronized. For a
+worker/corrector Hop: prompt must describe only WorkResult-owned semantic
+vocabulary; provider schema must permit only WorkResult-owned vocabulary;
+parser must produce WorkResult; reducer must consume that family
+correctly. For a review/rereview Hop: prompt must describe ReviewVerdict
+vocabulary; provider schema must permit that vocabulary; parser must
+produce ReviewVerdict; reducer must consume it correctly.
+
+Source inspection found `prompt.py:_header` (prompt.py:116-142) and
+`assemble_prompt`'s `[result_output_contract]` footer (prompt.py:
+234-236) are currently keyed ONLY on the legacy int `contract_version`
+(e.g. `output_contract=structured_result_v2`, "Return one JSON
+structured_result_v2 envelope"), with no kind-awareness at all. This text
+must become kind-synchronized so it is never false for a dispatched
+WorkResult/ReviewVerdict Hop. `tests/unit/test_a3_operating_contract.py`
+asserts this exact footer string byte-for-byte
+(`test_prompt_places_complete_contract_once_after_header_before_consumers_and_footer`);
+update that assertion to match the new kind-aware text for the fixtures
+it exercises, without weakening any other assertion in that file. Do not
+touch or re-derive the SHA256-pinned
+`agent_operating_contract_v6.txt` resource itself; it describes result
+reporting only in generic terms today and needs no change.
+
+It is unacceptable for the prompt to say one thing while the schema
+admits the old generic union.
+
+======================================================================
+FINDINGS -- P2/P3 BOUNDARY
+======================================================================
+
+Do NOT implement P3. P3 remains the later generalization of Finding
+authorship/update typing into `NewFindingAuthoring`/
+`ExistingFindingUpdate`.
+
+Resolved by source inspection (do not re-litigate): worker-role phases
+creating new Findings via `NewFindingDelta` under `FindingAuthority.AGENT`
+is CURRENT, SUPPORTED, EXERCISED behavior today --
+`reducer._apply_finding_deltas` (reducer.py:515 ff.) already admits
+`result.findings` from a worker phase with `review: null` under agent
+authority, unconditionally. `WorkResult` MUST preserve this existing
+capability for worker-role phases that use it in currently supported
+profiles: it may carry Finding proposals using the existing disjoint
+`NewFindingDelta`/`ExistingFindingDelta` split exactly as today, reused
+as-is. Do NOT redesign Finding lifecycle; do NOT broaden Finding
+authority beyond what is already exercised; do NOT reintroduce immutable
+trusted Finding fields (`invariant`, `blocking`, origin Hop) into
+`ExistingFindingDelta`-equivalent updates; do NOT implement P3's full
+`NewFindingAuthoring`/`ExistingFindingUpdate` generalization beyond this
+one preserved capability.
+
+======================================================================
+ESCALATION -- BOUNDED P2 DECISION
+======================================================================
+
+Whether `escalation` is one shared shape available to both result
+families, or projected per-family, is left open by the concept
+(section 22) and is MAY-RESOLVE-DURING-P2, not a reason to widen scope.
+Inspect current source/profile usage and choose the smallest
+representation that preserves existing `requires_human`/`escalation`
+behavior (reducer.py:1345-1375's mechanical-preemption/semantic-stop
+handling), keeps schemas truthful, does not introduce hierarchical
+escalation, and does not move escalation mechanics into P4 prematurely.
+Document the choice explicitly in the implementation review.
+
+======================================================================
+P4 FIELDS MUST NOT BE "CLEANED UP" IN P2
+======================================================================
+
+P4 remains separately deferred. Do not redesign merely because they are
+awkward today: `CommitIntent` ownership/rendering; `requested_route`
+derivation; `requires_human` derivation; `claimed_commits`;
+durable-artifact mechanics; `summary` ownership. If one of these fields
+must remain present in P2's new types to preserve current behavior,
+preserve it exactly as it is today.
+
+======================================================================
+P3.5 MUST NOT BE IMPLEMENTED
+======================================================================
+
+Do NOT implement Commission/authority conformance checking in P2. The
+accepted concept deliberately keeps P3.5 separate (section 11). However
+THIS P2 Commission's OWN profile must not repeat the known authority
+defect it exists to eventually generalize-fix. See FINDING AUTHORITY
+below.
+
+======================================================================
+SCOPE OF WHAT MUST BE PRESERVED
+======================================================================
+
+For every currently admitted Profile/Phase/Run combination with
+`phase.convergence_role is not ConvergenceRole.NONE` (every Slice-4
+convergence-role phase): dispatched schema, parser, and reducer input
+must remain byte-for-byte unchanged -- these phases are untouched by P2.
+
+For every currently admitted worker-role, non-convergence phase newly
+mapped to `WorkResult`: the fields of `WorkResult` and its provider
+schema must still be able to express every currently exercised worker
+behavior in current governance fixtures and self-development profiles
+(commit intent, claimed commits, evidence refs, summary, new-Finding
+proposals, scope-changed/requires-human/escalation signaling as resolved
+above) -- `status: completed | blocked` only, never `changes_required`.
+
+For every currently admitted independent_reviewer-role, non-convergence,
+review-descriptor-bearing phase newly mapped to `ReviewVerdict`: the
+fields of `ReviewVerdict` and its provider schema must still be able to
+express every currently exercised reviewer behavior (Finding
+proposals/updates via the existing disjoint delta split, evidence, route
+request, summary) -- `verdict: accept | changes_required` only, no
+worker-only status vocabulary.
+
+No reducer authority may be weakened, narrowed, or bypassed anywhere
+outside of consuming the new types correctly in place of the generic one.
+Reducer processing remains the stateful authority; semantic authorization
+must not move into the adapter or parser.
+
+======================================================================
+WORKFLOW
+======================================================================
+
+Initial phase: implement.
+
+Topology:
+
+  implement
+    role: worker
+    success -> independent_review
+
+  independent_review
+    role: independent_reviewer
+    context: fresh
+    gate
+    accept -> complete
+    changes_required/correction -> correction
+
+  correction
+    role: worker
+    success -> rereview
+
+  rereview
+    role: independent_reviewer
+    context: fresh
+    gate
+    accept -> complete
+    changes_required/correction -> correction
+
+Use the exact route/result vocabulary supported by the current WFC/
+profile schema (`independent_review`, `correction`, `rereview`, `accept`,
+`complete` -- matching this Commission's own profile exactly). Do not
+invent new route keys.
+
+max_autonomous_hops: 8 -- a bounded worst-case safety ceiling against
+genuine non-convergence, NOT an estimate of expected Run length. A
+healthy P2 Run is expected to converge in roughly 2-4 Hops; do not reduce
+the ceiling on that basis, and do not treat a legitimate extra
+correction/rereview cycle as abnormal.
+
+======================================================================
+ROLE PERSONAS
+======================================================================
+
+Worker persona (see also WorkItem.personas, which this task must not
+contradict): senior workflow-systems/Python engineer implementing only P2
+strict worker/review result-family contracts through the already-shipped
+P1 projection seam; preserves reducer authority, replay truth, current
+Finding semantics, and existing effects; introduces no P3/P3.5/P4/P5
+work.
+
+Independent reviewer persona: fresh adversarial reviewer verifying that
+P2 genuinely makes worker/review category mistakes structurally
+unrepresentable at semantic type, prompt, provider-schema, and parser
+boundaries simultaneously; checks P1 seam reuse, reducer/replay truth,
+current Finding semantics, historical compatibility, convergence-role
+phase non-interference, and absence of P3/P3.5/P4/P5 scope creep.
+
+======================================================================
+DURABLE REVIEW ARTIFACT
+======================================================================
+
+Both `independent_review` and `rereview` may mutate ONLY
+`docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_003.adoc`,
+a NEW artifact for this Commission (this Commission intentionally does
+not pre-create it; the reviewer creates it on first invocation). Review
+gates must not mutate production/tests. `implement`/`correction` must not
+mutate the review artifact. Do not append to, rewrite, or renumber
+`_implementation_review_001.adoc` or `_implementation_review_002.adoc` --
+both are predecessor historical evidence, not this Commission's artifact.
+
+======================================================================
+IMPLEMENTATION SCOPE (authoritative; matches WorkItem/profile/policy
+exactly)
+======================================================================
+
+IMPLEMENT and CORRECTION (role: worker) -- identical authorized_scope,
+exactly these 15 paths, no others:
+
+  src/workflow_coordinator/model.py
+  src/workflow_coordinator/adapter.py
+  src/workflow_coordinator/codex_adapter.py
+  src/workflow_coordinator/vertical.py
+  src/workflow_coordinator/reducer.py
+  src/workflow_coordinator/serialization.py
+  src/workflow_coordinator/prompt.py
+  tests/support.py
+  tests/unit/test_slice3_vertical.py
+  tests/unit/test_slice4.py
+  tests/unit/test_reducer.py
+  tests/unit/test_codex_adapter_conformance.py
+  tests/unit/test_serialization.py
+  tests/architecture/test_replays.py
+  tests/unit/test_a3_operating_contract.py
+
+INDEPENDENT_REVIEW and REREVIEW (role: independent_reviewer) -- exactly
+one durable path, disjoint from the worker scope above:
+
+  docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_003.adoc
+
+No wildcard scope; no bare `src/`; no bare `tests/`. `persistence.py`,
+`operator.py`, `scripts/wfc_op.py`, `tests/unit/test_operator.py`,
+`tests/unit/test_wfc_op.py`, `tests/unit/test_persistence.py`,
+`tests/architecture/test_package_boundaries.py`,
+`tests/architecture/test_self_development_governance.py` (a P3.5-scoped
+file), and every other path are NOT authorized. If implementation
+genuinely cannot be expressed without one of these, escalate
+(requires_human=true, escalation.kind=scope) rather than silently widen
+authority.
+
+======================================================================
+TEST COVERAGE REQUIRED
+======================================================================
+
+Add the smallest focused coverage proving, provider-free:
+
+1. `tests/unit/test_slice3_vertical.py` / `tests/unit/test_slice4.py`:
+   `select_result_contract` returns `WORK_RESULT`/`REVIEW_VERDICT` (or
+   their frozen names) for the admitted worker/reviewer facts described
+   above, and continues returning the existing generic kind for every
+   convergence-role fixture already covered -- no existing Slice-4
+   assertion changes behavior.
+2. `tests/unit/test_codex_adapter_conformance.py`: the worker schema
+   structurally has no `changes_required` alternative anywhere in its
+   `anyOf`/`enum` surface; the review schema exposes exactly
+   `accept`/`changes_required`, no worker-only status vocabulary; the
+   adapter fails closed on an unsupported/mismatched kind before any
+   subprocess launch, mirroring the existing
+   `test_adapter_rejects_an_unsupported_result_contract_before_launch`
+   pattern; existing generic-contract schema-generation assertions remain
+   unchanged in behavior.
+3. `tests/unit/test_serialization.py`: each kind parses provider output
+   into the expected semantic type (`WorkResult`, `ReviewVerdict`,
+   `RoutingResult`); a WorkResult-kind payload carrying
+   `changes_required`-shaped data is rejected at parse (because the field
+   does not exist to populate), not merely post-parse; round-trip tests
+   for any new persisted fields analogous to existing
+   `pre_route_anchor_sha256` coverage.
+4. `tests/unit/test_reducer.py`: reducer admits WorkResult/ReviewVerdict
+   correctly for the newly mapped phases while every existing
+   `reduce_result` acceptance/rejection test continues to pass unmodified
+   in behavior; a test proving the former
+   `result.outcome is Outcome.CHANGES_REQUIRED and phase.review is None`
+   mechanical-rejection path (reducer.py:1407) is now unreachable for a
+   WorkResult-kind Hop because the shape cannot exist, while remaining
+   correct, unchanged behavior for any legacy/generic-kind Hop.
+5. `tests/architecture/test_replays.py`: a historical pre-P2 fixture Run
+   continues to replay unchanged; a new P2-created Hop's persisted kind
+   governs replay rather than being re-derived from a deliberately
+   mutated current profile at replay time; a malformed/unsupported
+   persisted kind fails closed before any derived truth is trusted.
+6. `tests/unit/test_a3_operating_contract.py`: update the exact
+   byte-for-byte footer/header assertions to the new kind-aware text for
+   the fixtures they exercise; do not weaken any other assertion in this
+   file.
+7. `tests/support.py` may gain small helper additions only if an existing
+   helper cannot already express a needed fixture; do not restructure
+   existing helper signatures in ways that break other, out-of-scope test
+   files that import them.
+
+Do not weaken, delete, or narrow any existing passing test as a way to
+make P2 "pass." Every existing test in every authorized file must keep
+passing in substance, not merely in count.
+
+======================================================================
+FINDING AUTHORITY -- LOAD-BEARING (this Commission's own profile)
+======================================================================
+
+Both `independent_review` and `rereview` are granted
+`finding_authority: [resolve]` -- the same minimal, least-privilege
+operation already established as the correct fix for the self-development
+authority-gap defect elsewhere in this repository (e.g.
+`governance/self-development/projected-result-contracts-p1-assurance-closure-profile.yaml`).
+This is sufficient for either gate to resolve a genuine current-Run-local
+Finding it (or an earlier phase of this same Run) opened, once
+independently verified corrected. Do NOT grant `residual`, `supersede`,
+or `reopen` -- none is required for this Commission's purpose. If
+implementation discovers current repository semantics strictly require
+one of these three, STOP during Commission authoring (if encountered
+before the Commission commit) or escalate during the Run
+(requires_human=true, escalation.kind=scope) rather than silently
+widening authority.
+
+======================================================================
+VALIDATION / EVIDENCE
+======================================================================
+
+Use the current repository's trusted evidence-command convention: the
+normal full `python -m pytest -q` command this policy's
+`evidence_commands.pytest` declares, with its existing 900-second timeout
+convention. Implementation/reviewer may run focused pytest and ruff
+exploratorily, but do not invent a new trusted evidence provider merely
+for P2.
+
+======================================================================
+ACCEPTANCE QUESTIONS
+======================================================================
+
+The durable `_003.adoc` artifact must explicitly answer:
+
+1. Does a worker/corrector provider schema make review-only
+   `changes_required` structurally impossible?
+2. Does a review/rereview provider schema expose only the review verdict
+   vocabulary rather than the old generic outcome union?
+3. Are WorkResult and ReviewVerdict genuinely distinct provider-neutral
+   semantic types, not aliases/wrappers over one generic RoutingResult?
+4. Does selection use the one P1 selector and admitted semantic phase
+   facts, with zero phase-key string branching?
+5. Does the selected kind reach the adapter unchanged and choose the
+   correct strict provider schema/parser?
+6. Do prompts describe exactly the family-specific vocabulary the
+   provider schema actually permits?
+7. Does reducer processing remain the stateful authority rather than
+   moving semantic authorization into the adapter/parser?
+8. Are current Finding semantics preserved without implementing P3?
+9. Are historical P1/pre-P2 Runs replayable truthfully with their
+   persisted or legacy contract identities?
+10. Do new P2 Hops persist and replay against the contract kind actually
+    dispatched?
+11. Are existing non-P2/generic contract families (all Slice-4
+    convergence-role phases) unchanged?
+12. Is P4 effect/mechanics cleanup absent?
+13. Is P3.5 Commission-conformance implementation absent?
+14. Is P5 provider-capability/registry work absent?
+15. Does the complete trusted repository test suite pass?
+
+If independent_review finds no defect, `accept -> complete` must be
+reachable in that one Hop. If it finds a real, bounded P2 defect, it
+opens a Run-native blocking Finding and requests `correction`. Further
+legitimate correction/rereview cycles are allowed up to the ceiling of 8
+Hops.
+
+Acceptance means only that P2 is soundly implemented; it does NOT itself
+promote Runtime, authorize P3/P3.5/P4/P5, or push.
+
+======================================================================
+WITHHELD (restated for the executing agents)
+======================================================================
+
+P3 full Finding-authority/update generalization beyond the one bounded
+P2-local decision above; P3.5 Commission/profile static
+authority-conformance implementation; P4 Coordinator-owned
+effects/mechanics extraction including canonical CommitIntent rendering;
+P5 provider-capability/registry cleanup; Harness v1; moving baseline
+pinning from `prepare` to `launch`; outer/higher orchestration; a new
+workflow DSL/ontology/generic plugin system/provider registry; a Claude
+adapter; hierarchical escalation; provider fallback; model/cost routing;
+sandbox/trust redesign; backlog picker; automatic Commission generation;
+automatic Runtime promotion; automatic push; semantic-ledger automation;
+unrelated BUG closure; retroactive mutation of historical Runs/evidence/
+ledger; any Harness/operator architecture change; Operator Manual
+changes; Runtime mutation; Evidence mutation.
+
+Where this task text summarizes the governing concept document's or
+review's wording, their own exact wording controls if they ever appear to
+differ; do not resolve an apparent conflict by inventing a third reading
+-- stop and report it (requires_human=true, escalation.kind=scope)
+instead.
