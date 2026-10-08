@@ -57,6 +57,8 @@ from .model import (
     Route,
     RouteEffect,
     RoutingResult,
+    ReviewDisposition,
+    ReviewVerdict,
     StrategyAssessment,
     StrategyAssessmentResult,
     StrategyRevision,
@@ -71,6 +73,8 @@ from .model import (
     WorkItem,
     WorkflowProfile,
     WorkflowRole,
+    WorkResult,
+    WorkStatus,
 )
 
 
@@ -1223,6 +1227,41 @@ def routing_result_from_data(value: Any) -> RoutingResult:
         strategy_revision=_strategy_revision(data.get("strategy_revision"), context="routing result.strategy_revision"),
         strategy_assessment=_strategy_assessment(data.get("strategy_assessment"), context="routing result.strategy_assessment"),
     )
+
+
+def _family_result_data(value: Any, *, field: str, values: set[str], context: str) -> tuple[dict[str, Any], int, Escalation | None]:
+    raw = _mapping(value, context=context)
+    version = _integer(raw.get("schema_version"), context=f"{context}.schema_version")
+    if version not in {1, 2}:
+        raise ValidationError(f"{context}.schema_version has unsupported version: {version}")
+    required = {
+        "schema_version", field, "requested_route", "scope_changed", "requires_human",
+        "escalation", "findings", "claimed_commits", "commit_intent", "evidence_refs", "summary",
+    }
+    data = _fields(raw, context=context, required=required)
+    parsed = _string(data[field], context=f"{context}.{field}")
+    if parsed not in values:
+        raise ValidationError(f"{context}.{field} is not admitted by this result family")
+    escalation = None
+    if data["escalation"] is not None:
+        raw_escalation = _fields(data["escalation"], context=f"{context}.escalation", required=set(ESCALATION_REQUIRED_KEYS))
+        kind = _string(raw_escalation["kind"], context=f"{context}.escalation.kind")
+        if kind not in ESCALATION_KINDS:
+            raise ValidationError(f"{context}.escalation.kind is unknown: {kind}")
+        escalation = Escalation(kind=kind, question=_string(raw_escalation["question"], context=f"{context}.escalation.question"))
+    if not isinstance(data["findings"], list):
+        raise ValidationError(f"{context}.findings must be a list")
+    return data, version, escalation
+
+
+def work_result_from_data(value: Any) -> WorkResult:
+    data, version, escalation = _family_result_data(value, field="status", values={item.value for item in WorkStatus}, context="work result")
+    return WorkResult(schema_version=version, status=_enum(WorkStatus, data["status"], context="work result.status"), requested_route=_string(data["requested_route"], context="work result.requested_route"), scope_changed=_boolean(data["scope_changed"], context="work result.scope_changed"), requires_human=_boolean(data["requires_human"], context="work result.requires_human"), escalation=escalation, findings=tuple(_finding_delta_for_version(item, context=f"work result.findings[{index}]", result_version=version) for index, item in enumerate(data["findings"])), claimed_commits=_strings(data["claimed_commits"], context="work result.claimed_commits"), commit_intent=_commit_intent(data["commit_intent"], context="work result.commit_intent"), evidence_refs=_strings(data["evidence_refs"], context="work result.evidence_refs"), summary=_string(data["summary"], context="work result.summary"))
+
+
+def review_verdict_from_data(value: Any) -> ReviewVerdict:
+    data, version, escalation = _family_result_data(value, field="verdict", values={item.value for item in ReviewDisposition}, context="review verdict")
+    return ReviewVerdict(schema_version=version, verdict=_enum(ReviewDisposition, data["verdict"], context="review verdict.verdict"), requested_route=_string(data["requested_route"], context="review verdict.requested_route"), scope_changed=_boolean(data["scope_changed"], context="review verdict.scope_changed"), requires_human=_boolean(data["requires_human"], context="review verdict.requires_human"), escalation=escalation, findings=tuple(_finding_delta_for_version(item, context=f"review verdict.findings[{index}]", result_version=version) for index, item in enumerate(data["findings"])), claimed_commits=_strings(data["claimed_commits"], context="review verdict.claimed_commits"), commit_intent=_commit_intent(data["commit_intent"], context="review verdict.commit_intent"), evidence_refs=_strings(data["evidence_refs"], context="review verdict.evidence_refs"), summary=_string(data["summary"], context="review verdict.summary"))
 
 
 def _json_value(value: Any) -> Any:

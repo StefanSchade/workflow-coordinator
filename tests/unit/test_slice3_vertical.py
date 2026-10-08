@@ -14,6 +14,7 @@ from workflow_coordinator.adapter import (
     ResultValidationError, SubprocessAdapter, validated_result,
 )
 from workflow_coordinator.model import (
+    ConvergenceRole,
     DurableArtifact,
     ResultContractKind,
     result_contract_version,
@@ -40,7 +41,7 @@ pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
 
 def envelope(run_id="RUN-1", hop_id="H001", invocation_id="INV-1", **result_changes):
-    result = {"schema_version": 1, "outcome": "completed", "requested_route": "done",
+    result = {"schema_version": 1, "status": "completed", "requested_route": "done",
               "scope_changed": False, "requires_human": False, "escalation": None,
               "findings": [], "claimed_commits": [], "commit_intent": None,
               "evidence_refs": ["git_version"], "summary": "done"}
@@ -80,6 +81,16 @@ def envelope_v2(
             "result": result,
         }
     )
+
+
+def work_envelope_v2(**changes):
+    envelope_data = json.loads(envelope_v2(**changes))
+    result = envelope_data["result"]
+    result.pop("outcome")
+    for field in ("coverage_claims", "convergence_assessments", "diagnosis", "strategy_revision", "strategy_assessment"):
+        result.pop(field)
+    result["status"] = "completed"
+    return json.dumps(envelope_data)
 
 
 def components(*items: tuple[str, int]) -> dict[str, PromptComponent]:
@@ -122,6 +133,19 @@ def test_prompt_projects_current_hop_actions_separately_from_exit_routes():
 
     assert "\nauthorized_actions=edit,commit\n" in header
     assert "\npermitted_routes=review\n" in header
+
+
+def test_prompt_projects_the_selected_work_result_vocabulary():
+    workflow = profile({"work": phase({"done": route("complete")})})
+    package = assemble_prompt(
+        run_for(workflow), workflow.phases["work"], components(("worker", 1), ("testing", 1)),
+        invocation=invocation(), agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona", task_payload="task",
+        result_contract_kind=ResultContractKind.WORK_RESULT,
+    )
+    assert "output_contract=work-result_v1" in package.text
+    assert "status=completed|blocked" in package.text
+    assert "review verdict vocabulary" in package.text
 
 
 def test_convergence_prompt_hides_reserved_escape_and_selects_result_v2():
@@ -293,11 +317,11 @@ def test_diff_bounds_are_visible_and_exact(size, files, omitted):
 
 def test_result_validation_accepts_only_complete_correlated_structured_envelope():
     expected = type("Expected", (), {"run_id": "RUN-1", "hop_id": "H001", "invocation_id": "INV-1"})()
-    assert validated_result(envelope(), expected).requested_route == "done"
+    assert validated_result(envelope(), expected, result_contract_kind=ResultContractKind.WORK_RESULT).requested_route == "done"
     for raw in ("{", envelope(run_id="RUN-2"), envelope(run_id="RUN-1,"), envelope(hop_id="H002"),
                 envelope(invocation_id="INV-2"), json.dumps({"schema_version": 1})):
         with pytest.raises(ResultValidationError):
-            validated_result(raw, expected)
+            validated_result(raw, expected, result_contract_kind=ResultContractKind.WORK_RESULT)
 
 
 def test_result_validation_uses_distinct_existing_finding_wire_form():
@@ -305,10 +329,10 @@ def test_result_validation_uses_distinct_existing_finding_wire_form():
     existing = {
         "finding_id": "F001", "proposed_state": "resolved", "evidence_refs": ["review"],
     }
-    parsed = validated_result(envelope(findings=[existing]), expected).findings[0]
+    parsed = validated_result(envelope(findings=[existing]), expected, result_contract_kind=ResultContractKind.WORK_RESULT).findings[0]
     assert not hasattr(parsed, "invariant") and not hasattr(parsed, "blocking")
     with pytest.raises(ResultValidationError):
-        validated_result(envelope(findings=[{**existing, "invariant": "replacement"}]), expected)
+        validated_result(envelope(findings=[{**existing, "invariant": "replacement"}]), expected, result_contract_kind=ResultContractKind.WORK_RESULT)
 
 
 @pytest.fixture
@@ -345,7 +369,7 @@ def test_one_invocation_identity_is_projected_dispatched_and_validated(repositor
     assert adapter.request is not None
     assert adapter.request.invocation == invocation()
     assert adapter.request.contract_version == 1
-    assert adapter.request.result_contract_kind is ResultContractKind.GENERIC_ROUTING_RESULT
+    assert adapter.request.result_contract_kind is ResultContractKind.WORK_RESULT
     for name, value in adapter.request.invocation.__dict__.items():
         assert f"{name}={value}" in adapter.request.prompt
 
@@ -421,7 +445,7 @@ def test_profile_v3_none_role_dispatches_the_closed_result_v2_contract(repositor
         current_head=head,
         baseline_head=head,
     )
-    adapter = CapturingAdapter(envelope_v2())
+    adapter = CapturingAdapter(work_envelope_v2())
     completed = run_one_hop(
         run,
         workflow,
@@ -436,13 +460,14 @@ def test_profile_v3_none_role_dispatches_the_closed_result_v2_contract(repositor
     assert completed.reduction.run.status.value == "stopped"
     assert adapter.request is not None
     assert adapter.request.contract_version == 2
-    assert adapter.request.result_contract_kind is ResultContractKind.GENERIC_ROUTING_RESULT
-    assert "output_contract=structured_result_v2" in adapter.request.prompt
+    assert adapter.request.result_contract_kind is ResultContractKind.WORK_RESULT
+    assert "output_contract=work-result_v2" in adapter.request.prompt
 
 
-def test_result_contract_selection_is_phase_fact_based_and_generic_for_current_profiles():
+def test_result_contract_selection_is_phase_fact_based_and_preserves_convergence_generic():
     fixtures = (
         (profile({"work": phase({"done": route("complete")})}), 2, 1),
+        (profile({"review": phase({"accept": route("complete")}, role="independent_reviewer", review="gate")}), 2, 1),
         (convergence_fixture_profile(), 3, 2),
         (convergence_routing_profile(), 3, 2),
     )
@@ -454,7 +479,16 @@ def test_result_contract_selection_is_phase_fact_based_and_generic_for_current_p
                 run_schema_version=run_schema_version,
             )
             kind = select_result_contract(workflow, phase_value, run)
-            assert kind is ResultContractKind.GENERIC_ROUTING_RESULT
+            expected_kind = (
+                ResultContractKind.GENERIC_ROUTING_RESULT
+                if phase_value.convergence_role is not ConvergenceRole.NONE
+                else ResultContractKind.WORK_RESULT
+                if phase_value.role.value == "worker" and phase_value.review is None
+                else ResultContractKind.REVIEW_VERDICT
+                if phase_value.role.value == "independent_reviewer" and phase_value.review is not None
+                else ResultContractKind.GENERIC_ROUTING_RESULT
+            )
+            assert kind is expected_kind
             assert (
                 result_contract_version(kind, workflow, phase_value, run)
                 == expected_version

@@ -26,6 +26,8 @@ from .model import (
     Route,
     RouteEffect,
     RoutingResult,
+    ResultValue,
+    ReviewVerdict,
     StrategyAssessmentResult,
     Run,
     RunStatus,
@@ -33,6 +35,7 @@ from .model import (
     SemanticStop,
     TrustedQualificationIndex,
     WorkflowProfile,
+    WorkResult,
     result_contract_version,
     select_result_contract,
 )
@@ -1003,18 +1006,22 @@ def _validate_strategy_chain(run: Run, result: RoutingResult, role: ConvergenceR
 
 def _validate_convergence_records_before_apply(
     run: Run,
-    result: RoutingResult,
+    result: ResultValue,
     *,
     phase,
     profile: WorkflowProfile,
     route: Route,
 ) -> None:
     role = phase.convergence_role
-    typed = (result.diagnosis, result.strategy_revision, result.strategy_assessment)
+    typed = (
+        getattr(result, "diagnosis", None),
+        getattr(result, "strategy_revision", None),
+        getattr(result, "strategy_assessment", None),
+    )
     if role is ConvergenceRole.NONE:
         if any(item is not None for item in typed):
             raise ReductionError("ordinary phase cannot submit strategy records")
-        if result.coverage_claims or result.convergence_assessments:
+        if getattr(result, "coverage_claims", ()) or getattr(result, "convergence_assessments", ()):
             raise ReductionError("ordinary phase cannot submit convergence records")
         if run.schema_version == 3 and any(
             isinstance(delta, NewFindingDelta)
@@ -1253,7 +1260,7 @@ def _validate_assessments_after_apply(
 
 def reduce_result(
     run: Run,
-    result: RoutingResult,
+    result: ResultValue,
     profile: WorkflowProfile,
     *,
     hop_id: str,
@@ -1281,10 +1288,7 @@ def reduce_result(
     if (persisted_kind is None) != (persisted_version is None):
         result_state_error = "persisted result contract identity is incomplete"
     elif persisted_kind is not None:
-        if (
-            persisted_kind is not ResultContractKind.GENERIC_ROUTING_RESULT
-            or persisted_version not in {1, 2}
-        ):
+        if persisted_kind not in set(ResultContractKind) or persisted_version not in {1, 2}:
             result_state_error = "persisted result contract identity is unsupported"
         else:
             expected_result_version = persisted_version
@@ -1295,6 +1299,15 @@ def reduce_result(
         )
     else:
         expected_result_version = None
+    actual_kind = (
+        ResultContractKind.WORK_RESULT if isinstance(result, WorkResult)
+        else ResultContractKind.REVIEW_VERDICT if isinstance(result, ReviewVerdict)
+        else ResultContractKind.GENERIC_ROUTING_RESULT
+    )
+    if result_state_error is None and persisted_kind is not None and actual_kind is not persisted_kind:
+        result_state_error = "result semantic family does not match persisted contract identity"
+    elif result_state_error is None and persisted_kind is None and actual_kind is not ResultContractKind.GENERIC_ROUTING_RESULT:
+        result_state_error = "unpersisted result semantic family is unsupported"
     if result_state_error is None and result.schema_version != expected_result_version:
         result_state_error = "unsupported result schema version"
     elif run.status is not RunStatus.RUNNING or not correlated_hop:
@@ -1568,8 +1581,8 @@ def _with_finding_delta_ids(
     return replace(reduction, run=replace(reduction.run, hops=updated_hops))
 
 
-def _with_convergence_records(run: Run, hop_id: str, result: RoutingResult) -> Run:
-    if result.schema_version != 2:
+def _with_convergence_records(run: Run, hop_id: str, result: ResultValue) -> Run:
+    if not isinstance(result, RoutingResult) or result.schema_version != 2:
         return run
     return replace(
         run,

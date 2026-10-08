@@ -142,6 +142,16 @@ class Outcome(CoordinatorValue):
     FAILED = "failed"
 
 
+class WorkStatus(CoordinatorValue):
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+
+
+class ReviewDisposition(CoordinatorValue):
+    ACCEPT = "accept"
+    CHANGES_REQUIRED = "changes_required"
+
+
 class WorkflowRole(CoordinatorValue):
     """Closed phase-function vocabulary; role names grant no authority."""
 
@@ -153,6 +163,8 @@ class ResultContractKind(CoordinatorValue):
     """Provider-neutral identity for a projected semantic result contract."""
 
     GENERIC_ROUTING_RESULT = "generic-routing-result"
+    WORK_RESULT = "work-result"
+    REVIEW_VERDICT = "review-verdict"
 
 
 @dataclass(frozen=True)
@@ -411,6 +423,55 @@ class RoutingResult:
 
 
 @dataclass(frozen=True)
+class WorkResult:
+    """The worker-only result family projected outside convergence phases."""
+
+    schema_version: int
+    status: WorkStatus
+    requested_route: str
+    scope_changed: bool
+    requires_human: bool
+    escalation: Escalation | None
+    findings: tuple[FindingDeltaValue, ...]
+    claimed_commits: tuple[str, ...]
+    commit_intent: CommitIntent | None
+    evidence_refs: tuple[str, ...]
+    summary: str
+
+    @property
+    def outcome(self) -> Outcome:
+        return Outcome(self.status.value)
+
+
+@dataclass(frozen=True)
+class ReviewVerdict:
+    """The review-only result family projected outside convergence phases."""
+
+    schema_version: int
+    verdict: ReviewDisposition
+    requested_route: str
+    scope_changed: bool
+    requires_human: bool
+    escalation: Escalation | None
+    findings: tuple[FindingDeltaValue, ...]
+    claimed_commits: tuple[str, ...]
+    commit_intent: CommitIntent | None
+    evidence_refs: tuple[str, ...]
+    summary: str
+
+    @property
+    def outcome(self) -> Outcome:
+        return (
+            Outcome.COMPLETED
+            if self.verdict is ReviewDisposition.ACCEPT
+            else Outcome.CHANGES_REQUIRED
+        )
+
+
+ResultValue = RoutingResult | WorkResult | ReviewVerdict
+
+
+@dataclass(frozen=True)
 class Finding:
     finding_id: str
     invariant: str
@@ -563,6 +624,12 @@ def select_result_contract(
         profile.schema_version,
         run.schema_version,
     )
+    if phase.convergence_role is not ConvergenceRole.NONE:
+        return ResultContractKind.GENERIC_ROUTING_RESULT
+    if phase.role is WorkflowRole.WORKER and phase.review is None:
+        return ResultContractKind.WORK_RESULT
+    if phase.role is WorkflowRole.INDEPENDENT_REVIEWER and phase.review is not None:
+        return ResultContractKind.REVIEW_VERDICT
     return ResultContractKind.GENERIC_ROUTING_RESULT
 
 
@@ -571,7 +638,11 @@ def result_contract_version(
 ) -> int:
     """Return the legacy wire version for one selected semantic contract."""
 
-    if kind is not ResultContractKind.GENERIC_ROUTING_RESULT:
+    if kind not in {
+        ResultContractKind.GENERIC_ROUTING_RESULT,
+        ResultContractKind.WORK_RESULT,
+        ResultContractKind.REVIEW_VERDICT,
+    }:
         raise ValueError(f"unsupported result contract kind: {kind}")
     return (
         2

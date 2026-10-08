@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .model import ResultContractKind, RoutingResult
-from .serialization import ValidationError, routing_result_from_data
+from .model import ResultContractKind, ResultValue
+from .serialization import ValidationError, review_verdict_from_data, routing_result_from_data, work_result_from_data
 
 
 class ResultValidationError(ValidationError):
@@ -103,8 +103,9 @@ class SubprocessAdapter:
 
 
 def validated_result(
-    raw: str, expected: Invocation, contract_version: int = 1
-) -> RoutingResult:
+    raw: str, expected: Invocation, contract_version: int = 1,
+    result_contract_kind: ResultContractKind = ResultContractKind.GENERIC_ROUTING_RESULT,
+) -> ResultValue:
     if contract_version not in {1, 2}:
         raise ResultValidationError("unsupported structured result contract version")
     try:
@@ -120,7 +121,15 @@ def validated_result(
     if actual != wanted:
         raise ResultValidationError("structured result identity does not correlate to dispatch")
     try:
-        result = routing_result_from_data(envelope["result"])
+        parsers = {
+            ResultContractKind.GENERIC_ROUTING_RESULT: routing_result_from_data,
+            ResultContractKind.WORK_RESULT: work_result_from_data,
+            ResultContractKind.REVIEW_VERDICT: review_verdict_from_data,
+        }
+        parser = parsers.get(result_contract_kind)
+        if parser is None:
+            raise ResultValidationError("unsupported result contract kind")
+        result = parser(envelope["result"])
         if result.schema_version != contract_version:
             raise ResultValidationError(
                 "structured result version does not match the selected contract"

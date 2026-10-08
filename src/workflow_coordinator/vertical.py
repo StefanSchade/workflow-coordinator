@@ -314,6 +314,7 @@ def run_one_hop(
             invocation=invocation, persona=persona, task_payload=task_payload,
             context=context_items,
             contract_version=selected_result_contract_version,
+            result_contract_kind=selected_result_contract,
         )
     except Exception as error:
         raise ExecutionNotStartedError(str(error)) from error
@@ -330,6 +331,7 @@ def run_one_hop(
             outcome.candidate_result,
             invocation,
             selected_result_contract_version,
+            selected_result_contract,
         )
     except ResultValidationError as error:
         raise ExecutionResultValidationError(outcome, str(error)) from error

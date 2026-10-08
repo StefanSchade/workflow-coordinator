@@ -178,6 +178,20 @@ def test_adapter_rejects_an_unsupported_result_contract_before_launch(tmp_path: 
         adapter.execute(request)
 
 
+def test_projected_worker_and_review_schemas_have_disjoint_vocabulary():
+    worker = structured_result_envelope_openai_schema(
+        _invocation(), 1, ResultContractKind.WORK_RESULT
+    )["properties"]["result"]
+    review = structured_result_envelope_openai_schema(
+        _invocation(), 1, ResultContractKind.REVIEW_VERDICT
+    )["properties"]["result"]
+    assert "outcome" not in worker["properties"]
+    assert worker["properties"]["status"]["enum"] == ["completed", "blocked"]
+    assert "changes_required" not in str(worker)
+    assert "status" not in review["properties"]
+    assert review["properties"]["verdict"]["enum"] == ["accept", "changes_required"]
+
+
 def test_adapter_rejects_an_unsupported_selected_kind_before_launch(tmp_path: Path):
     adapter = CodexCliAdapter(
         tmp_path, model="explicit-model", reasoning_effort="high", executable="must-not-run"

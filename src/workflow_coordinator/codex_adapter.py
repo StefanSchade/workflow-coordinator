@@ -8,6 +8,7 @@ dialect.  It derives that dialect projection from canonical semantic facts in
 from __future__ import annotations
 
 import os
+import copy
 import signal
 import subprocess
 from dataclasses import dataclass
@@ -118,6 +119,8 @@ def routing_result_openai_schema(contract_version: int = 1) -> dict[str, Any]:
             "new_material_evidence": {"type": "boolean"},
         },
     }
+
+
     if contract_version == 2:
         new_finding["properties"]["local_ref"] = {"type": ["string", "null"]}
     existing_finding = {
@@ -214,8 +217,35 @@ def routing_result_openai_schema(contract_version: int = 1) -> dict[str, Any]:
     }
 
 
+def projected_result_openai_schema(kind: ResultContractKind, contract_version: int) -> dict[str, Any]:
+    """Project one selected semantic family without widening it to RoutingResult."""
+    if kind is ResultContractKind.GENERIC_ROUTING_RESULT:
+        return routing_result_openai_schema(contract_version)
+    if kind not in {ResultContractKind.WORK_RESULT, ResultContractKind.REVIEW_VERDICT}:
+        raise OpenAIStrictSchemaError(f"unsupported result contract kind: {kind}")
+    schema = copy.deepcopy(routing_result_openai_schema(contract_version))
+    result = schema["properties"]
+    required = schema["required"]
+    result.pop("outcome")
+    required.remove("outcome")
+    # Convergence records remain exclusively on the untouched generic family.
+    for name in ("coverage_claims", "convergence_assessments", "diagnosis", "strategy_revision", "strategy_assessment"):
+        result.pop(name, None)
+        if name in required:
+            required.remove(name)
+    field, values = (
+        ("status", [Outcome.COMPLETED.value, Outcome.BLOCKED.value])
+        if kind is ResultContractKind.WORK_RESULT
+        else ("verdict", ["accept", Outcome.CHANGES_REQUIRED.value])
+    )
+    result[field] = {"type": "string", "enum": values}
+    required.append(field)
+    return schema
+
+
 def structured_result_envelope_openai_schema(
-    invocation: Invocation, contract_version: int = 1
+    invocation: Invocation, contract_version: int = 1,
+    result_contract_kind: ResultContractKind = ResultContractKind.GENERIC_ROUTING_RESULT,
 ) -> dict[str, Any]:
     """Return the exact strict schema supplied by ``CodexCliAdapter``.
 
@@ -235,7 +265,7 @@ def structured_result_envelope_openai_schema(
             "schema_version": {"type": "integer", "enum": [contract_version]},
             "run_id": dispatched(invocation.run_id), "hop_id": dispatched(invocation.hop_id),
             "invocation_id": dispatched(invocation.invocation_id),
-            "result": routing_result_openai_schema(contract_version),
+            "result": projected_result_openai_schema(result_contract_kind, contract_version),
         },
     }
 
@@ -270,7 +300,7 @@ class CodexCliAdapter:
     def execute(self, request: AgentExecutionRequest) -> AgentExecutionOutcome:
         if request.result_contract != ROUTING_RESULT_ENVELOPE_CONTRACT:
             raise CodexCliError(f"unsupported result contract: {request.result_contract}")
-        if request.result_contract_kind is not ResultContractKind.GENERIC_ROUTING_RESULT:
+        if request.result_contract_kind not in set(ResultContractKind):
             raise CodexCliError(f"unsupported result contract kind: {request.result_contract_kind}")
         if request.timeout_seconds <= 0:
             raise CodexCliError("timeout must be positive")
@@ -282,7 +312,7 @@ class CodexCliAdapter:
             atomic_write_json(
                 schema,
                 structured_result_envelope_openai_schema(
-                    request.invocation, request.contract_version
+                    request.invocation, request.contract_version, request.result_contract_kind
                 ),
             )
             atomic_write_text(result, "")

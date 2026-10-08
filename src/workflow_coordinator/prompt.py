@@ -9,7 +9,7 @@ from importlib import resources
 from typing import Mapping
 
 from .adapter import Invocation
-from .model import ConvergenceRole, Phase, Run
+from .model import ConvergenceRole, Phase, ResultContractKind, Run
 
 COMPONENT_LIMIT_BYTES = 65_536
 CONTEXT_LIMIT_BYTES = 196_608
@@ -119,6 +119,7 @@ def _header(
     invocation: Invocation,
     *,
     contract_version: int,
+    result_contract_kind: ResultContractKind,
 ) -> str:
     routes = ", ".join(
         sorted(
@@ -131,7 +132,11 @@ def _header(
         )
     )
     finding_authority = phase.review.finding_authority if phase.review is not None else ()
-    result_contract = f"structured_result_v{contract_version}"
+    result_contract = (
+        f"structured_result_v{contract_version}"
+        if result_contract_kind is ResultContractKind.GENERIC_ROUTING_RESULT
+        else f"{result_contract_kind.value}_v{contract_version}"
+    )
     return (
         "[identity]\n"
         f"work_item_id={run.work_item_id}\nrun_id={invocation.run_id}\n"
@@ -161,6 +166,7 @@ def assemble_prompt(
     diff_head: str | None = None,
     changed_paths: tuple[str, ...] = (),
     contract_version: int | None = None,
+    result_contract_kind: ResultContractKind = ResultContractKind.GENERIC_ROUTING_RESULT,
 ) -> PromptPackage:
     """Compose one fresh prompt; all optional content is included or referenced."""
 
@@ -183,6 +189,7 @@ def assemble_prompt(
             phase,
             invocation,
             contract_version=selected_contract_version,
+            result_contract_kind=result_contract_kind,
         ),
         agent_operating_contract.text,
     ]
@@ -231,9 +238,17 @@ def assemble_prompt(
         else:
             inline_diff = diff
             blocks.append("[diff]\n" + diff)
+    family_label = f"structured_result_v{selected_contract_version}"
+    family_vocabulary = ""
+    if result_contract_kind is ResultContractKind.WORK_RESULT:
+        family_label = f"work-result structured_result_v{selected_contract_version}"
+        family_vocabulary = " Use status=completed|blocked; do not emit review verdict vocabulary."
+    elif result_contract_kind is ResultContractKind.REVIEW_VERDICT:
+        family_label = f"review-verdict structured_result_v{selected_contract_version}"
+        family_vocabulary = " Use verdict=accept|changes_required; do not emit worker status vocabulary."
     blocks.append(
         "[result_output_contract]\n"
-        f"Return one JSON structured_result_v{selected_contract_version} envelope; prose cannot replace fields."
+        f"Return one JSON {family_label} envelope; prose cannot replace fields.{family_vocabulary}"
     )
     return PromptPackage(
         "\n\n".join(blocks) + "\n",

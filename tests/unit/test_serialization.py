@@ -27,6 +27,8 @@ from workflow_coordinator.serialization import (
     pre_route_anchor_material,
     repository_policy_from_yaml,
     routing_result_from_data,
+    review_verdict_from_data,
+    work_result_from_data,
     run_execution_configuration_from_yaml,
     run_from_json,
     run_to_json,
@@ -51,6 +53,19 @@ from tests.support import (
 )
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
+
+
+def test_projected_result_families_parse_to_distinct_types_and_reject_cross_family_vocabulary():
+    work_data = valid_result_data()
+    work_data.pop("outcome")
+    work_data["status"] = "completed"
+    review_data = valid_result_data()
+    review_data.pop("outcome")
+    review_data["verdict"] = "changes_required"
+    assert type(work_result_from_data(work_data)).__name__ == "WorkResult"
+    assert type(review_verdict_from_data(review_data)).__name__ == "ReviewVerdict"
+    with pytest.raises(ValidationError, match="unknown fields|missing fields"):
+        work_result_from_data({**work_data, "verdict": "changes_required"})
 
 # Stable pre-change schema-v1 wire fixture: do not infer its absent facts.
 PRECHANGE_RUN_JSON = '{"anomalies":[],"baseline_head":"abc","child_run_id":null,"current_head":"abc","findings":[],"hop_limit":1,"hop_used":0,"hops":[],"human_question":"old question","phase":"implement","policy_id":"core-policy","policy_revision":"policy-r1","profile_id":"core","profile_revision":"profile-r1","reconcile_anchor":null,"reconcile_reason":null,"repository":"repo","run_id":"RUN-legacy","schema_version":1,"status":"ready","stop_reason":null,"suspension_head":null,"work_item_id":"WI-1"}\n'
