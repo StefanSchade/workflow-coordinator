@@ -405,10 +405,24 @@ now as permanent architecture rather than left as a sequence of one-off
 per-Commission authority grants: the failure is structural to how
 Commission/profile authority is authored, not an isolated incident.
 
-*Target property:* if a reachable workflow state can carry an open blocking
-Finding into a gate whose successful route requires disposition of that
-Finding, some phase on every path to that gate must possess the Finding
-operation needed to dispose of it. For example, in
+*Target property (ordered reachability, not path membership):* for every
+phase `P_open` capable of producing a new, open, blocking Finding (any
+phase with a `review` descriptor whose `authority`/`blocking_policy`
+admit opening one), and for every forward path from `P_open` that may
+reach a `complete`/`accept`-gated route while that Finding can remain
+open, some phase *strictly reachable after `P_open` on that same forward
+path* -- not `P_open` itself, unless a route loops back to it and a later
+invocation of that same phase occurs after the Finding was opened -- must
+possess the Finding operation needed to dispose of it before completion.
+Authority located only at or before `P_open` does not satisfy this:
+`reducer.py:1413-1423` computes `permitted_operations` from the
+*currently executing* Hop's phase alone, so `P_open`'s own authority is
+already spent by the time a later Hop on the same forward path needs to
+close the Finding it opened. This is a static ordered-reachability
+condition over the existing declarative `Phase.routes`/
+`finding_authority` facts -- a suffix-of-path check relative to where the
+Finding becomes open, not set membership over the whole path -- not an
+addition of temporal logic or a generic model checker. For example, in
 
 [source,text]
 ----
@@ -419,10 +433,15 @@ independent_review
 ----
 
 if `independent_review` can produce an open blocking Finding and
-`correction` does not itself own Finding disposition, then `rereview` must
-hold sufficient `finding_authority` (at minimum `resolve`) to close a
-corrected Finding before `accept -> complete` is reachable. A Commission
-that cannot satisfy this for some reachable state should fail a trusted
+`correction` does not itself own Finding disposition, then a phase
+*after* `independent_review` on the forward path -- here, `rereview` --
+must hold sufficient `finding_authority` (at minimum `resolve`) to close
+the corrected Finding before `accept -> complete` is reachable. Granting
+`resolve` to `independent_review` itself instead of (or in addition to)
+`rereview` does NOT satisfy this property: `independent_review` is the
+opening phase, already executed by the time disposition is needed, and
+this topology does not route back to it. A Commission that cannot satisfy
+the ordered property for some reachable state should fail a trusted
 preflight check -- `INVALID COMMISSION / PROFILE` -- before provider
 invocation, agent cost, semantic work, or the creation of a doomed Run.
 
@@ -712,9 +731,14 @@ category mistakes structurally impossible, existing generic-contract phases
 unaffected. P3's gate: Finding authority types generalized, generative-
 echo-audit candidates disposed. P3.5's gate: the targeted static conformance
 check (section 11) correctly rejects the motivating S3-002-shaped
-counterexample and correctly admits every currently accepted Commission/
-profile, without becoming a broader workflow-DSL redesign. P4/P5 gates are
-not designed here.
+counterexample (and every other profile sharing its structural shape),
+without becoming a broader workflow-DSL redesign. "Correctly admits every
+currently accepted Commission/profile" is not one undifferentiated
+promise here -- section 19's testing paragraph distinguishes the four
+compatibility promises P3.5 must hold apart, and names the eight
+self-development profile lineages whose new-launch admissibility P3.5 is
+designed to revoke rather than preserve. P4/P5 gates are not designed
+here.
 
 == 19. Testing strategy
 
@@ -734,12 +758,44 @@ P3 (not designed here): `ExistingFindingUpdate` cannot carry `invariant`
 tests stay in the reducer.
 
 P3.5 (not designed here, sketched only): fixture Commission/profile pairs
-covering both a known-good topology (sufficient `finding_authority`
-somewhere on every path to a gate that may need it) and a known-bad one
-modeled directly on the S3-002 shape (section 11), asserting the trusted
-preflight check accepts the former and rejects the latter with
-`INVALID COMMISSION / PROFILE` before any provider call; every currently
-accepted self-development Commission/profile must continue to pass.
+covering both a known-good topology (sufficient `finding_authority`,
+correctly *ordered* per section 11's ordered-reachability property, on
+the forward path after any phase that can open a blocking Finding) and a
+known-bad one modeled directly on the S3-002 shape (section 11), asserting
+the trusted preflight check accepts the former and rejects the latter with
+`INVALID COMMISSION / PROFILE` before any provider call.
+
+"Every currently accepted self-development Commission/profile must
+continue to pass" is not one undifferentiated promise. P3.5 must hold
+four distinct compatibility promises apart and must not conflate them:
+
+. *Historical artifact remains parseable* -- unaffected; P3.5 is a
+  preflight-time check over profile YAML, never the historical-Run
+  parsing path.
+. *Historical Run remains truthfully replayable* -- unaffected; section
+  14's replay discipline is per-Hop persisted-identity based, and P3.5
+  runs before a Run exists, not during replay.
+. *Old profile remains usable as a regression fixture* -- preserved, but
+  the fixture's *assertion* changes: the profile document stays and keeps
+  exercising exactly the shape P3.5 exists to catch.
+. *Profile remains admissible for a NEW launch under current preflight* --
+  intentionally and deliberately revoked by P3.5 for any profile whose
+  topology matches the structurally invalid shape (a gate phase capable
+  of opening a blocking Finding, a non-disposing correction phase, and a
+  rereview gate with `finding_authority: []`, routing to `complete`).
+
+P3.5 MUST preserve promises 1-3 for every existing profile. P3.5 MUST
+revoke promise 4 for any profile matching the invalid shape above --
+explicitly including the eight self-development profile lineages
+`correction-convergence-escape-implementation-{s1-001,s1-002,s1-003,
+s2-001,s2-002,s2-003,s3-001,s3-002}-profile.yaml`, whose
+`tests/architecture/test_self_development_governance.py`
+`..._bundle_passes_production_preflight` assertions are expected to flip
+to an equivalent `..._bundle_fails_production_preflight` assertion as
+part of P3.5's own bounded implementation. This is not a regression: it
+is the intended behavioral effect of shipping P3.5 at all. Every other
+currently accepted Commission/profile, whose topology does not match this
+shape, must continue to pass unchanged.
 
 P4 (not designed here, sketched only): canonical-rendering tests proving the
 Coordinator-rendered commit subject matches exactly what
