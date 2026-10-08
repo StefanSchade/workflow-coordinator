@@ -1,0 +1,474 @@
+= Agent Workflow Coordinator -- Adversarial Review of the Revised Projected / Phase-Specific Result Contracts Concept
+
+:toc:
+:toclevels: 3
+
+Status:: *INDEPENDENT, NON-AUTHORIZING ARCHITECTURE REVIEW.*
+
+Date:: 2026-10-08.
+
+Reviewed commit:: `965d14d35240c19b197314e0fee7c12115787524`
+(`docs(wfc): refine projected result contract roadmap`).
+
+Review object:: `docs/wfc_projected_result_contracts_concept_2026-10-07.adoc`,
+specifically the revision's sections 11 (P3.5, new), 12 (P4, sharpened), 17-20
+(sequencing / testing / non-goals), and 22 (open questions), checked against
+the unchanged P1-shipped architecture (sections 1-10, 13-16, 21).
+
+[IMPORTANT]
+====
+This review authorizes nothing. It does not modify the reviewed concept, any
+production source, any test, any governance/Commission input, or any
+Runtime/Evidence state. It executes no Run, Harness invocation, or provider
+call. It creates exactly one artifact: this document.
+====
+
+== 1. Starting identities (verified before review)
+
+Development:: `965d14d35240c19b197314e0fee7c12115787524`, clean, matches the
+governing task's expected value.
+Runtime:: `9e49458de12e79dae4d8827a60f7cd39d18b4c80`, `HEAD detached`, clean,
+`origin` push URL `DISABLED`, matches the governing task's expected value.
+Evidence:: `165b3de09e41d583a77e1c29854102d8d2ddce43`, clean, matches the
+governing task's expected value.
+
+All three matched exactly; the review proceeded.
+
+== 2. Method
+
+Read the complete revised concept. Inspected `model.py`, `reducer.py`,
+`vertical.py`, `operator.py`, `git_facts.py`, `serialization.py`, and
+`prompt.py` only where a concrete architecture claim needed source grounding,
+not exhaustively. Inspected
+`docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc`,
+`docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_002.adoc`,
+and the self-development governance test suite and profile fixtures the BUG
+record cites. Ran the existing, already-committed `pytest` suite read-only
+(selected tests only) to confirm present-tense claims about which fixtures
+currently pass; this executed no WFC Commission, Harness, or provider call --
+it is ordinary static/unit test inspection of already-authored test code, the
+same category of check the cited successor assurance review itself performed
+as "exploratory validation."
+
+Posture: assume the revision is wrong until its important claims survive
+inspection. Reward nothing for completeness or prose.
+
+== 3. Evidence inventory
+
+* `src/workflow_coordinator/reducer.py:890-926` (`_apply_route`) --
+  `RouteEffect.COMPLETE` is gated by `_has_open_blocker(run)`
+  (`reducer.py:883-887`), which scans *all* of `run.findings` for any
+  `OPEN`+`blocking` Finding, irrespective of which phase is currently
+  executing.
+* `src/workflow_coordinator/reducer.py:1413-1423` -- `permitted_operations`
+  (the set of Finding operations a Hop's result may legally invoke) is
+  computed solely from the *current* Hop's `phase.review.finding_authority`.
+  Authority is therefore a per-invocation, per-phase fact at the moment a
+  Hop executes, not a Run-wide or graph-wide fact.
+* `src/workflow_coordinator/serialization.py:531-579` -- `finding_authority`
+  is validated against the closed set `{resolve, residual, supersede,
+  reopen}` at profile-parse time, independent of any P2/P3 result-type work.
+* `src/workflow_coordinator/operator.py:265-339` (`_preflight`) -- already a
+  trusted, pre-Run, cross-document static check over an already-parsed
+  `WorkflowProfile`/`WorkItem`/execution-binding triple (role-set equality
+  only; no path/reachability reasoning today).
+* `src/workflow_coordinator/git_facts.py:383-395,712-738` --
+  `commit_subject_error` validates (never renders) `intent.subject`;
+  `work_item_id`/`hop_id` are already-trusted parameters at commit time;
+  `_CONVENTIONAL_SUBJECT` (`:279`) is an open lowercase-prefix regex, not a
+  closed `kind` enum.
+* `governance/self-development/correction-convergence-escape-implementation-{s1-001,s2-001,s3-001,s3-002}-profile.yaml`
+  -- all four declare the identical gate shape: `review`/`rereview` both
+  `authority: gate`, `blocking_policy: blocking_only`,
+  `finding_authority: []`, separated only by a `correct` phase with no
+  review descriptor.
+* `tests/architecture/test_self_development_governance.py` -- contains
+  `finding_authority == ()` assertions for S1-001, S1-002, S1-003, S2-001,
+  S2-002, S2-003, S3-001, and S3-002 (eight profiles), each inside a test
+  named `..._bundle_passes_production_preflight`. Ran
+  `.venv/bin/python -m pytest -q ...-k "s1_001...or s2_001...or s3_001...or
+  s3_002..._bundle_passes_production_preflight"` -- all four selected tests
+  pass today, confirming these profiles are presently admitted as
+  production-preflight-passing fixtures, not merely frozen history.
+
+== 4. Findings
+
+=== 4.1 MATERIAL -- "admits every currently accepted Commission/profile" contradicts the S3-002-rejection goal
+
+*Claim challenged:* Section 18 -- "P3.5's gate: the targeted static
+conformance check ... correctly admits every currently accepted
+Commission/profile" -- and section 19's P3.5 paragraph, in the same breath,
+requiring the check to "reject [a known-bad fixture] modeled directly on the
+S3-002 shape ... every currently accepted self-development Commission/profile
+must continue to pass."
+
+*Evidence:* Section 3 above. `correction-convergence-escape-implementation-
+s1-001-profile.yaml` (and S1-002, S1-003, S2-001, S2-002, S2-003, S3-001) are
+*structurally identical* to S3-002 in exactly the dimension the target
+property (section 11) cares about: a gate review phase capable of opening a
+blocking Finding, a non-disposing correction phase, and a gate rereview phase
+with `finding_authority: []`, routing directly to `complete`. The BUG record
+itself states this plainly: "this same empty-authority convention was latent
+across every predecessor self-development profile in the lineage (S1-001
+through S2-003), never exercised only because no prior reviewer in that
+lineage had populated a Run-native blocking Finding." The target property in
+section 11 is explicitly *reachability*-based ("if a reachable workflow state
+*can* carry an open blocking Finding"), not history-based -- it does not ask
+whether a Finding was ever actually opened, only whether the topology permits
+it. A correctly implemented P3.5 check therefore cannot distinguish S1-001
+from S3-002: both are reachable-state-equivalent. All eight profiles'
+`..._bundle_passes_production_preflight` tests pass today (confirmed by
+running them). "Correctly admits every currently accepted Commission/profile"
+and "correctly rejects the S3-002 shape" cannot both hold once a correct P3.5
+implementation exists, because at least seven other currently-accepted,
+currently-passing profiles share that exact shape.
+
+*Consequence:* An implementer handed this revision as Commission authority
+for P3.5 faces an unsatisfiable acceptance gate: any correct implementation
+of the stated target property will break at least seven existing
+`_bundle_passes_production_preflight` tests, each of which the same document
+tells them must "continue to pass." Read literally, this either forces an
+implementer to weaken the conformance check until it is vacuous (defeating
+section 11's entire purpose) or to silently break the stated gate (section
+18) without authorization to do so. Either outcome is a Commission-authoring
+hazard this review is specifically tasked to catch before it reaches a P3.5
+Commission.
+
+*Resolution -- the four compatibility promises are not one promise:* the
+revision conflates four distinct claims that must be held apart:
+
+. *Historical artifact remains parseable* -- true and unaffected; P3.5 is a
+  preflight-time check over profile YAML, never touches `serialization`'s
+  historical-Run parsing path.
+. *Historical Run remains replayable truthfully* -- true and unaffected;
+  section 14's replay discipline is per-Hop persisted-identity based, and
+  P3.5 runs before a Run exists, not during replay. S1-001 through S3-002's
+  already-recorded Runs replay exactly as recorded regardless of what P3.5
+  later decides about their *profiles*.
+. *Old profile remains usable as a regression fixture* -- true, but the
+  fixture's *assertion* must change: once P3.5 ships, S1-001/S2-001/S3-001/
+  S3-002 (and S1-002/S1-003/S2-002/S2-003, confirmed identical in section 3)
+  become exactly the *known-bad* fixtures section 19 says P3.5 testing needs
+  -- they are the real-world instances of the shape, not merely a
+  hand-constructed analog. Their existing
+  `..._bundle_passes_production_preflight` tests must be repurposed (or
+  accompanied by new sibling tests) asserting P3.5 *rejects* them with
+  `INVALID COMMISSION / PROFILE`, not that they continue to pass.
+. *Profile remains admissible for a NEW launch under current preflight
+  rules* -- this is the one promise that must be explicitly dropped for
+  these eight profiles once P3.5 ships. That is the intended, correct
+  effect of shipping P3.5 at all; a profile a human could still hand-edit
+  and resubmit as a *fresh* Commission today must stop being admissible once
+  the structural gap it has always had is actually checked for.
+
+*Smallest recommended correction:* in section 18, replace "correctly admits
+every currently accepted Commission/profile" with language scoped to
+promises 1-3 above, and explicitly name promise 4 as the one P3.5 is
+*designed* to revoke for the S1-001-through-S3-002 shape. In section 19,
+replace "every currently accepted self-development Commission/profile must
+continue to pass" with: existing Commission/profile fixtures whose shape
+does *not* match the motivating gap must continue to pass unchanged; fixtures
+that do match it (named explicitly: S1-001, S1-002, S1-003, S2-001, S2-002,
+S2-003, S3-001, S3-002) are expected test-suite changes under P3.5, not
+regressions -- their `_bundle_passes_production_preflight` assertions become
+`_bundle_fails_production_preflight` (or equivalent) as part of P3.5's own
+bounded implementation, not a surprise discovered afterward. This is a
+wording correction to sections 18-19, not a reopening of section 11's target
+property or P1.
+
+=== 4.2 MATERIAL -- the target property under-specifies path *order*, not just path *membership*
+
+*Claim challenged:* Section 11's target property -- "if a reachable workflow
+state can carry an open blocking Finding into a gate whose successful route
+requires disposition of that Finding, some phase on every path to that gate
+must possess the Finding operation needed to dispose of it."
+
+*Counterexample:* Take the document's own illustrative topology and grant
+`resolve` to `independent_review` instead of (or in addition to) `rereview`:
+
+[source,text]
+----
+independent_review [finding_authority: resolve]
+    -> correction [no disposition authority]
+    -> rereview [finding_authority: ()]
+    -> accept -> complete
+----
+
+Read literally, "some phase on every path to [the completion] gate must
+possess the needed operation" is *satisfied*: `independent_review` is on the
+only path to `complete`, and it holds `resolve`. Yet the workflow is exactly
+as broken as S3-002. `reducer.py:1413-1423` computes `permitted_operations`
+strictly from the *currently executing* Hop's phase; `independent_review`'s
+own Hop is the one that *opens* F001 -- by the time `correction` and
+`rereview` have run and a later Hop needs to close F001, `independent_review`
+is not on the remaining forward path from "now" to `complete` unless the
+graph routes back to it, which this topology does not. The property as
+worded checks *set membership over the whole path*, not *order relative to
+where the Finding becomes open*. It is satisfiable by authority parked on
+the Finding's own opening phase, which can never help, because that phase's
+Hop has already executed by the time disposition is needed.
+
+*Consequence:* an implementation that faithfully codes the literal wording
+would accept Commission profiles that are just as broken as S3-002 but
+happen to park `finding_authority` on the wrong (upstream, already-consumed)
+phase instead of omitting it entirely -- a false negative in the one check
+whose entire purpose is to catch this failure class before a Run starts.
+This is more dangerous than a false positive (which only costs an
+unnecessary rejection): a false negative here reproduces the exact bug P3.5
+exists to close, silently.
+
+*Smallest recommended correction (not full temporal logic, not a model
+checker):* restate the property as an *ordered* reachability condition over
+the already-admitted phase graph: for every phase `P_open` capable of
+emitting a new, open, blocking Finding (i.e., any phase with a `review`
+descriptor whose `authority`/`blocking_policy` permit it), and for every
+forward path from `P_open` to a `complete`/`accept`-gated route, some phase
+*strictly reachable after `P_open` on that same path* -- not `P_open` itself,
+unless a route loops back to it -- must hold the required
+`finding_authority` operation. This is still a static, purely
+topological/order check over `Phase.routes` (a DAG/graph reachability
+question: "is there a disposition-capable phase on the suffix of this path
+after the opening phase"), not an addition of temporal logic or a generic
+model checker, and it directly rejects both the literal S3-002 shape and the
+counterexample above, which the current wording does not.
+
+=== 4.3 IMPORTANT -- P3.5's sequencing position is asserted, not argued
+
+*Claim challenged:* Section 17 places P3.5 third (`P2 -> P3 -> P3.5 -> P4`),
+justified only by "motivated by the P1-lineage reproduction of
+`BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY`'s failure class" and a
+loose analogy to Harness v0's slice-then-promote pattern (section 18).
+
+*Evidence:* Section 11's own "Boundary" and "where this belongs" paragraphs,
+and the source inspection in section 3 above, show P3.5 needs only
+`Phase.role`, `Phase.review`/`finding_authority`, and `Phase.routes` --
+*all* already present and already validated today (`serialization.py:
+531-579`), independent of P1, P2, or P3. There is no technical dependency
+forcing P3.5 to wait for P2 or P3; section 17 itself only claims P3.5
+"benefits from P3's stabilized vocabulary," not that it requires it. Unlike
+P2/P3 (genuine projected-typing work) or P4 (depends on `CommitIntent`,
+already shipped independent of P2/P3 too), P3.5 closes an *already-active,
+already-repeating* defect: it has now hit two independent lineages,
+including P1's own self-development Run, and the BUG record shows it was
+silently latent in at least six more historical profiles before that. Every
+additional self-development Commission authored before P3.5 ships risks
+reproducing the identical failure a third, fourth, or fifth time.
+
+*Consequence:* a reader implementing this roadmap in order would authorize
+P2 and P3 Commissions first, continuing to author self-development
+Commissions under the same empty-authority convention in the interim,
+before P3.5 ever exists to catch them -- not because anything in the document
+argues this is safe, but because the document never argues the reverse
+either. This is exactly the kind of "ambiguity likely to misdirect a later
+Commission" the governing task asks this review to flag.
+
+*Smallest recommended correction:* add one explicit sentence to section 17
+or 18 stating either (a) why P3.5 is deliberately deferred despite having no
+technical P2/P3 dependency (e.g., bounded reviewer/implementer bandwidth,
+deliberate risk acceptance for a bounded number of further self-development
+Commissions), or (b) resequence P3.5 ahead of P2/P3 given it is both
+independent and the only slice closing an actively-recurring defect. This
+review does not resequence the roadmap itself -- that is the governing task's
+explicit non-goal -- it only flags that the current placement is asserted,
+not argued, and a Commission author should not infer a technical dependency
+that section 3's evidence shows does not exist.
+
+=== 4.4 MINOR -- `kind` is proposed into a vocabulary the current commit-subject check does not define
+
+*Claim challenged:* Section 12's illustrative `CommitIntent.kind` field
+("docs/test/chore/feat/fix").
+
+*Evidence:* `git_facts.py:279`'s `_CONVENTIONAL_SUBJECT` is an open
+lowercase-prefix-token regex (`^[a-z][a-z0-9-]*(?:\([^)]+\))?!?: `), not a
+closed enum of commit kinds; nothing in current source constrains which
+lowercase token may prefix a commit subject today.
+
+*Consequence:* none for P2/P3/P3.5 readiness; this is purely a P4
+implementation-detail note. If P4 implementation introduces a genuinely
+closed `kind` enum on the Coordinator side, that is a small, bounded,
+Coordinator-local vocabulary addition fully within P4's own scope, not the
+"new workflow DSL, ontology, ... or generic compiler" the non-goals (section
+20) correctly forbid -- but the document's current wording does not say this
+explicitly, and an implementer could read "ontology" broadly enough to
+wrongly treat a closed `kind` set as out of bounds.
+
+*Smallest recommended correction:* add one clause to section 12 noting that
+today's Conventional-Commit check is an open-token regex, not a closed enum,
+so P4's `kind` vocabulary (whatever its final shape) is new Coordinator-side
+closed vocabulary, not a reopening of the non-goals' "new ontology"
+exclusion. Wording only; no normative field names implied, consistent with
+section 12's existing hedge.
+
+== 5. Explicit treatment of the two P3.5 challenges (per governing task)
+
+=== 5.1 Historical/current profile compatibility (Focus 1)
+
+Addressed fully in section 4.1. The four distinct compatibility promises are
+not interchangeable, and the current wording in sections 18-19 states a
+promise (4: new-launch admissibility for already-accepted profiles) that is
+incompatible with section 11's own stated purpose once the evidence in
+section 3 is accounted for. Classified MATERIAL. The correction is bounded
+wording in sections 18-19 plus an explicit list of the eight affected
+self-development profiles' test fixtures, not a reopening of section 11's
+purpose, P1, or replay/history compatibility (section 14), which this review
+explicitly declines to weaken, per the governing task's instruction.
+
+=== 5.2 P3.5 path-ordering (Focus 2)
+
+Addressed fully in section 4.2. The target property as worded is necessary
+but not sufficient: it is satisfiable by authority parked on a Finding's own
+opening phase, which cannot help once that phase's Hop has already executed.
+Classified MATERIAL because it is a soundness gap in the one check whose
+entire purpose is gate-keeping Commission authoring -- a false negative here
+reproduces the motivating bug, not merely a missed edge case. The smallest
+correction is an ordered-reachability restatement (phase strictly after the
+opening phase on the same forward path), not temporal logic or a model
+checker, and the governing task's own suggested direction already points at
+this exact fix.
+
+== 6. P3 / P3.5 boundary (Focus 3)
+
+Holds up. `Phase.review.finding_authority` is validated at parse time
+(`serialization.py:531-579`) against a Coordinator-owned closed operation
+set, entirely independent of whatever per-family result types P2/P3
+introduce for `WorkResult`/`ReviewVerdict`/Finding-update projections.
+P3.5 therefore needs no P3 Finding-lifecycle redesign to reason about
+authority, and P3's generalization of `NewFindingDelta`/`ExistingFindingDelta`
+into P2's per-family `finding_updates` field (section 10) does not touch,
+rename, or restructure `ReviewDescriptor.finding_authority` in any way that
+would leave P3.5 unable to read it. No finding here beyond confirming the
+claim.
+
+== 7. P4 CommitIntent ownership (Focus 4)
+
+The proposed split is directionally sound and matches current mechanics:
+`work_item_id`/`hop_id` are already-trusted parameters at commit time
+(`git_facts.py:383,712-738`), confirming the Coordinator does not need new
+authority to render them; `paths` are today proposed by the model
+(`CommitIntent.paths`) and independently re-observed against the actual
+worktree diff before trust (`_validated_intent_paths`/`actual_paths`,
+`git_facts.py:730-738`), so they are legitimately both model-proposed and
+Coordinator-verified, exactly as section 12 implies without stating
+explicitly; `feat`/`fix` is correctly flagged as not mechanically
+inferable from path classes alone, and the document correctly declines to
+force one rule for every `kind` value. One MINOR gap noted in section 4.4
+(no existing closed `kind` vocabulary to inherit); it does not block P4
+assessment and is explicitly deferred to P4 implementation already. Replay
+implications (section 14's extension to CommitIntent rendering) are
+consistent with the already-working persisted-identity discipline for
+`ResultContractKind`/`contract_version`.
+
+== 8. P2 readiness (Focus 5)
+
+No MUST-resolve-before-Commission blocker was found. Section 22's "still
+open" list triages correctly against the governing task's own MUST/MAY/DEFER
+framing once made explicit:
+
+MAY resolve inside bounded P2 implementation:: whether `findings`/
+`finding_updates` belongs on `WorkResult` for worker-role phases; whether
+`escalation` is typed per-family or remains one shared shape -- both are
+ordinary per-family schema decisions a P2 implementer can resolve by source
+inspection of current worker-role profiles, consistent with how P1 itself
+resolved its own narrower selection-seam questions.
+
+DEFER correctly to P3/P3.5/P4 (confirmed, not merely asserted):: the
+generative-echo-audit candidates (`requested_route`, `escalation`,
+`claimed_commits`, `summary`); exact `CommitIntent` field names; `kind`
+inference reliability; P3.5's implementation location; P5's capability
+registry need. None of these gate P2's own bounded `WorkResult`/
+`ReviewVerdict` scope.
+
+P2 is ready to be commissioned as the next implementation slice, independent
+of whether sections 4.1-4.3's corrections are applied first -- those
+corrections affect P3.5's wording and sequencing justification, not P2's own
+scope or acceptance criteria.
+
+== 9. Sequencing (Focus 6)
+
+P3 genuinely benefits from, but does not strictly require, P3's stabilized
+vocabulary (confirmed in section 6); P3.5 has no technical dependency on
+either P2 or P3 (confirmed in section 4.3, which classifies the resulting
+placement ambiguity IMPORTANT, not MATERIAL, since it misdirects a reader
+rather than breaking correctness). P4 does not depend on P2: `CommitIntent`
+already lives on the generic `RoutingResult` today, unconditioned on any
+P2/P3 type family, and section 17 already correctly states P4 "does not
+block P2/P3/P3.5 shipping" rather than claiming a dependency. No slice was
+found to accidentally require another slice's mechanics earlier than its
+stated position (e.g., no P2/P3 sketch references `CommitIntent` rendering,
+and no P4 sketch references P3.5's conformance check). This review does not
+recommend reshuffling the roadmap; section 4.3's correction is a
+justification gap, not a sequencing defect requiring a different order.
+
+== 10. Findings summary
+
+[cols="1,6"]
+|===
+| Severity | Finding
+
+| MATERIAL | 4.1 -- "admits every currently accepted Commission/profile"
+(section 18) and "every currently accepted ... must continue to pass"
+(section 19) contradict the S3-002-rejection goal; seven other
+currently-passing self-development profiles share the identical shape.
+
+| MATERIAL | 4.2 -- the target property (section 11) checks path
+*membership*, not path *order* relative to where a Finding opens; it is
+vacuously satisfiable by authority parked on the Finding's own opening
+phase.
+
+| IMPORTANT | 4.3 -- P3.5's sequencing after P2/P3 is asserted, not
+argued, despite having no technical dependency on either and closing an
+actively-recurring defect.
+
+| MINOR | 4.4 -- `CommitIntent.kind` is proposed into a vocabulary the
+current Conventional-Commit check does not define as a closed set; wording
+clarification only.
+|===
+
+== 11. Verdict
+
+*MATERIAL_REVISION_REQUIRED.*
+
+Two MATERIAL findings (4.1, 4.2) both concern section 11's target property
+and sections 18-19's stated P3.5 acceptance gate -- the newly-added slice this
+revision introduces, not P1 (unaffected, correctly restated as complete) or
+P2/P3's own scope (both ready to commission as-is, per section 8). The
+required corrections are bounded and precisely scoped:
+
+. Rewrite section 18's P3.5 gate criterion and section 19's P3.5 testing
+  paragraph to distinguish the four compatibility promises in section 4.1,
+  explicitly naming the eight self-development profiles (S1-001, S1-002,
+  S1-003, S2-001, S2-002, S2-003, S3-001, S3-002) whose
+  `_bundle_passes_production_preflight` fixtures are expected to flip to
+  `_bundle_fails_production_preflight`-equivalent assertions as part of
+  P3.5's own bounded implementation.
+. Restate section 11's target property as an ordered-reachability condition
+  (disposition authority strictly after the Finding-opening phase on the
+  same forward path), per section 4.2, still expressible over the existing
+  declarative `Phase.routes`/`finding_authority` facts with no new DSL or
+  model checker.
+
+Neither correction reopens P1, section 3's five design principles, replay/
+history compatibility (section 14), or P2/P3's own scope. Section 4.3's
+IMPORTANT finding (sequencing justification) and section 4.4's MINOR finding
+(`kind` vocabulary wording) are recommended but do not block P2 from being
+commissioned next; only P3.5's own eventual Commission is blocked until
+corrections 1-2 above are made, consistent with the governing task's
+instruction that this review identify bounded corrections, not implement
+them.
+
+== 12. Disposition summary (for the final report)
+
+* Historical-profile compatibility issue (Focus 1): MATERIAL, not
+  compatible as currently worded; bounded wording correction identified
+  (section 4.1 / section 11 above), replay/history compatibility
+  unweakened.
+* P3.5 path-ordering issue (Focus 2): MATERIAL, target property
+  insufficient as worded; bounded ordered-reachability correction
+  identified (section 4.2), no temporal logic or model checker introduced.
+* P4 CommitIntent ownership: sound and consistent with current
+  `git_facts.py`/`model.py` mechanics; one MINOR wording gap noted
+  (section 4.4); does not block P4 assessment.
+* P2 readiness: ready to commission next; no MUST-resolve blocker found
+  (section 8).
+* Verdict: MATERIAL_REVISION_REQUIRED, scoped to section 11 and sections
+  18-19 of the reviewed concept only.
