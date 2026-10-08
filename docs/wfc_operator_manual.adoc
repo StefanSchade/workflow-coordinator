@@ -1,0 +1,684 @@
+= WFC Operator Manual
+:toc:
+:toclevels: 3
+
+Status:: *OPERATIONAL REFERENCE. Describes current Harness v0 / WFC
+behavior. Not a concept paper, not implementation authority, and not a
+substitute for `docs/run-preparation.adoc`, `docs/self-development.adoc`, or
+`docs/run-recovery-and-salvage.adoc`, which remain authoritative wherever
+this manual summarizes them.*
+
+Date:: 2026-10-08.
+
+== 1. Purpose and audience
+
+This is the document a maintainer should open months from now, with no
+memory of the surrounding concept papers or chat history, to actually
+operate a WFC self-development Run: prepare it, launch it, check on it,
+archive it, and correctly interpret a stop.
+
+It is not another architecture concept
+(`docs/wfc_operator_harness_v0_concept_2026-10-06.adoc`,
+`docs/wfc_projected_result_contracts_concept_2026-10-07.adoc`), not a
+restatement of the generic deterministic-preparation contract
+(`docs/run-preparation.adoc`), not a restatement of the Runtime-N/
+Development-N+1 topology and promotion runbook
+(`docs/self-development.adoc`), and not a restatement of the four
+maintainer-chosen recovery outcomes (`docs/run-recovery-and-salvage.adoc`).
+Where this manual overlaps one of those, the dedicated document is
+authoritative; this manual summarizes only enough to operate correctly and
+links there for rationale.
+
+== 2. Five-minute mental model
+
+[source,text]
+----
+COMMISSION / GOVERNING INPUTS
+    = What may this Run do?
+      (WorkItem, Profile, RepositoryPolicy, Components, Task -- reviewed
+       and committed before any mechanics begin)
+
+EXECUTION BINDINGS
+    = Which adapter/model/reasoning configuration performs each role?
+      (--role-binding, written to execution-bindings.yaml)
+
+ATTEMPT
+    = The identity of one concrete prepared execution attempt.
+      (a name; deterministically maps to OPS and STATE paths)
+
+OPS
+    = Harness-owned prepared execution envelope.
+      Pins identities/environment/bindings/launch mechanics.
+      Created by PREPARE. Lives at ~/wfc-ops/<attempt>.
+
+STATE
+    = WFC-owned persisted Run state.
+      Created only when LAUNCH actually starts a Run.
+      Lives at ~/wfc-state/<attempt>.
+
+EVIDENCE
+    = Durable archived evidence derived from the Run after execution.
+      Today: the sibling workflow-coordinator-run-evidence repository.
+
+RUNTIME
+    = The accepted WFC implementation used to execute Runs.
+      Separate from Development; promoted only by explicit maintainer
+      action; never "latest main".
+----
+
+Two distinctions matter most operationally:
+
+* *OPS vs. STATE* -- OPS is Harness's own prepared envelope and exists the
+  moment `prepare` succeeds. STATE is WFC's own Run state and must *not*
+  exist yet at that point; it is created only when `launch` actually starts
+  a Run. Confusing "prepared" with "launched" is the most common misreading
+  of this system.
+* *Commission authority vs. execution choice* -- WorkItem/Profile/Policy/
+  Components/Task is *what may happen*; `--role-binding` is *which concrete
+  adapter/model/reasoning performs it*. A Commission may stay semantically
+  identical while its execution bindings differ, if separately authorized
+  (section 4).
+
+== 3. Repositories and trust boundaries
+
+[cols="1,3,2",options="header"]
+|===
+|Repository |Role |Mutability from Harness
+
+|`workflow-coordinator` (Development)
+|Evolving candidate implementation and Commission inputs.
+|Harness only reads it (pins HEAD, requires clean); `launch` invokes the
+pinned *Runtime's* executable against it.
+
+|`workflow-coordinator-runtime` (Runtime)
+|The accepted WFC implementation that executes Runs. Detached, clean,
+`remote.origin.pushurl=DISABLED`.
+|Never mutated by Harness or a Run. Changed only by explicit maintainer
+promotion (section 15).
+
+|`workflow-coordinator-run-evidence` (Evidence)
+|Durable mechanical archive plus the curated semantic run ledger.
+|Never mutated by `prepare`/`launch`/`status`. `archive` delegates to its
+own canonical wrapper, which commits into it.
+|===
+
+Harness v0 (`scripts/wfc_op.py`, living in Development, outside the
+`workflow_coordinator` package) is the deterministic mechanical layer that
+operates across all three. It owns none of their semantic content.
+
+== 4. Inputs and ownership/lifetime
+
+Two kinds of input are easy to conflate:
+
+*WFC / Commission authority* (what may happen; reviewed and committed before
+mechanics begin): WorkItem, Profile, RepositoryPolicy, Components, Task.
+
+*Provider/execution choice* (how authorized work is concretely performed):
+`--executable`, each `--role-binding`'s adapter/model/reasoning.
+
+The concrete model binding is intentionally *not* the semantic authority of
+the WorkItem itself. A Commission may remain semantically the same while its
+execution bindings differ, if separately authorized -- rerunning an
+identical Commission under a different model for cost/availability reasons
+is an execution-choice decision, not a re-commissioning.
+
+[cols="2,2,3,2",options="header"]
+|===
+|Input |Owner |Lifetime |Kind
+
+|`--development` / `--runtime` / `--evidence`
+|Maintainer (repo identity)
+|Path long-lived; HEAD pinned per Attempt (Runtime HEAD stable across many
+Runs, changes only at promotion)
+|Mechanics (identity pin)
+
+|`--work-item`
+|Commission / maintainer review
+|One per WorkItem; carries `max_autonomous_hops`, scope, authorized actions
+|*Authority*
+
+|`--profile`
+|Commission / maintainer review
+|Phases/roles/review structure/`finding_authority`; often reused across a
+lineage
+|*Authority*
+
+|`--policy`
+|Commission / maintainer review
+|RepositoryPolicy: evidence commands, ceilings; repository-lifetime
+|*Authority*
+
+|`--components`
+|Commission / maintainer review
+|Scope declarations authorized paths resolve against; repository-lifetime
+|*Authority*
+
+|`--task`
+|Commission / maintainer review
+|Concrete task text; one per WorkItem
+|*Authority*
+
+|`--executable`, `--role-binding`, `--timeout-seconds`
+|Maintainer (execution choice)
+|Chosen per Attempt; may change between otherwise-identical Runs
+|Execution mechanics
+
+|`--attempt`
+|Maintainer (naming)
+|Unique per prepared Attempt; deterministically derives OPS/STATE
+|Mechanics (identity)
+
+|OPS (`~/wfc-ops/<attempt>`)
+|Harness
+|Created by `prepare`; one per Attempt, never reused
+|Mechanics
+
+|STATE (`~/wfc-state/<attempt>`)
+|WFC
+|Created only by `launch`; persists until archived
+|Mechanics (content WFC-owned, Harness-opaque)
+|===
+
+== 5. Attempt / OPS / STATE identity
+
+[source,text]
+----
+attempt = <work-item-slug>-<date>-<counter>
+          # e.g. wfc-projected-result-contracts-p1-20261007-01
+
+OPS   = ~/wfc-ops/<attempt>
+STATE = ~/wfc-state/<attempt>
+----
+
+This mapping is deterministic and holds *before STATE actually exists*: the
+Attempt name alone determines where OPS will be created and where STATE will
+later materialize -- no registry or database. `wfc-op`'s own
+`ops_root()`/`state_root()` and the canonical `wfc-archive-run` wrapper's
+`attempt_id=${state_root##*/}` derivation are the same convention, reused,
+not duplicated.
+
+== 6. Normal operator workflow
+
+[source,text]
+----
+author / accept concept or task intent
+    -> author Commission (WorkItem, Profile, Policy, Components, Task)
+    -> commit Commission
+    -> wfc-op prepare                  [deterministic Harness mechanics]
+    -> inspect PREPARED / NOT LAUNCHED [maintainer decision point]
+    -> wfc-op launch                   [mechanics; crosses provider boundary]
+    -> wfc-op status                   [read-only, any time, any shell]
+    -> terminal Run state              [WFC-owned semantic/mechanical fact]
+    -> wfc-op archive                  [deterministic, delegating mechanics]
+    -> semantic ledger curation        [maintainer/LLM-assisted judgment,
+                                         never automated by Harness v0]
+    -> Runtime promotion, separately, if accepted
+    -> push, separately, if authorized
+----
+
+[cols="2,3",options="header"]
+|===
+|Step |Nature
+
+|Commission authoring/commit |Semantic -- maintainer-owned, reviewed
+|`prepare` |Deterministic mechanics (section 7), plus one provider-free
+preflight *validation* seam that refuses rather than decides
+|PREPARED / NOT LAUNCHED |Maintainer decision point: go or don't go
+|`launch` |Mechanics up to starting the Run; Hops themselves are WFC-owned
+semantic execution, not Harness mechanics
+|`status` |Deterministic, read-only projection
+|Interpreting a terminal state |Semantic -- maintainer judgment (13-14)
+|`archive` |Deterministic, delegating mechanics
+|Ledger curation |Semantic -- maintainer/LLM-assisted, never Harness-automated
+|Runtime promotion / push |Explicit maintainer action, never automatic
+|===
+
+== 7. PREPARE
+
+`prepare` performs every deterministic preparation mechanic
+`docs/run-preparation.adoc` and `docs/self-development.adoc` already
+document, nothing else:
+
+. Pins exact Development/Runtime/Evidence commit identities from the live
+  checkouts, never re-typed by the maintainer.
+. Requires clean Development/Evidence worktrees, and a clean, detached,
+  push-disabled Runtime.
+. Refuses an Attempt whose OPS or STATE already exists.
+. Creates OPS; derives (but never creates) the STATE path -- STATE's absence
+  is a WFC launch precondition, not a `prepare` side effect.
+. Exports the exact Runtime commit via `git archive` into a fresh runtime
+  venv; builds a separate development/evidence venv from the *live* pinned
+  Development checkout (never an export -- exporting would strip `.git`,
+  exactly the substrate mistake this tool prevents by construction).
+. Writes `execution-bindings.yaml` from the explicit `--role-binding` values
+  given; no automatic model/provider selection.
+. Assembles the controlled `PATH` and verifies it resolves `python3` to the
+  development/evidence interpreter.
+. Runs provider-free preflight through one narrow, isolated seam calling the
+  *pinned Runtime's own* `operator._preflight()` under its own interpreter --
+  never a Harness reimplementation of admission/preflight semantics.
+. Persists `preparation-pins.txt` and `harness-prepared.json` (pins, paths,
+  launch-artifact digests).
+. Materializes `launch.sh`; re-revalidates every pin; stops; prints:
+
+[source,text]
+----
+PREPARED / NOT LAUNCHED
+----
+
+It never launches. Drift between what was pinned and what is now true is a
+named refusal, never a guess.
+
+[source,shell]
+----
+python3 scripts/wfc_op.py prepare \
+  --attempt   wfc-<work-item-slug>-<date>-<counter> \
+  --development /home/stefan/repos/spreadsheet-handling/workflow-coordinator \
+  --runtime      /home/stefan/repos/spreadsheet-handling/workflow-coordinator-runtime \
+  --evidence     /home/stefan/repos/spreadsheet-handling/workflow-coordinator-run-evidence \
+  --work-item    governance/work-items/<work-item>.yaml \
+  --profile      governance/self-development/<profile>.yaml \
+  --policy       governance/self-development/<policy>.yaml \
+  --components   governance/self-development/components.yaml \
+  --task         governance/work-items/<task>.txt \
+  --executable   /usr/local/bin/codex \
+  --timeout-seconds 3600 \
+  --role-binding worker=codex_cli:gpt-5.6-terra:medium \
+  --role-binding independent_reviewer=codex_cli:gpt-5.6-terra:high
+----
+
+`--work-item`/`--profile`/`--policy`/`--components`/`--task` are
+Development-relative paths; Harness checks only that they exist and are
+repository-relative. It does not semantically validate their content -- that
+is the canonical preflight seam's job, and ultimately the reducer's.
+
+== 8. LAUNCH
+
+[source,shell]
+----
+python3 scripts/wfc_op.py launch "$ATTEMPT"
+----
+
+`launch` does *not* reconstruct operator CLI inputs from scratch. It locates
+OPS/STATE from the Attempt name; refuses if preparation never completed or
+STATE already exists (fail closed, never silently reused); re-digests
+`launch.sh`/`execution-bindings.yaml` against what `prepare` recorded,
+refusing on drift; re-revalidates Development/Runtime/Evidence HEAD and
+cleanliness; only then executes the already-materialized `launch.sh`
+unmodified, preserving stdout/stderr/return code verbatim.
+
+STATE is materialized at `~/wfc-state/<attempt>` only once the pinned
+Runtime's own process actually starts the Run; Hops then execute until a
+terminal state. `launch` may run for a long time before returning, and
+prints `LAUNCH RETURN CODE: <n>` to stderr. *A non-zero return code does not
+by itself mean provider or Harness failure* -- `awaiting_human` and other
+legitimate terminal states can produce one too (section 13). Always inspect
+persisted facts via `status`, never the return code alone.
+
+== 9. STATUS
+
+[source,shell]
+----
+python3 scripts/wfc_op.py status "$ATTEMPT"
+python3 scripts/wfc_op.py status "$ATTEMPT" --json
+----
+
+Strictly read-only; never creates, mutates, retries, reconciles, or launches
+anything. Safe and useful from a second shell while a Run executes in the
+first. Always exits `0`: an unknown Attempt, incomplete preparation, or a
+mechanical inconsistency are reportable facts, not command failures.
+
+It projects, in priority order, whatever persisted files exist:
+`preparation-pins.txt`/`harness-prepared.json` (what was prepared),
+`operator-plan.json` (what was admitted), `operator-summary.json`/
+per-checkout `run.json` (what happened). Where two sources each carry their
+own non-empty value for a field and disagree, `status` *surfaces the
+disagreement* rather than picking one -- the same discipline
+`wfc-archive-run`'s `agree()` helper enforces. It never invokes the pinned
+Runtime's own `wfc status` (that would be Runtime-version-coupled); reading
+only persisted JSON keeps it correct across Runtime-N/Development-N+1 drift.
+
+Fields to read: `lifecycle`, `run_id`, `work_item_id`, `checkout_id`,
+`run_status`, `current_phase`, `hop_used`/`hop_limit`, `stop_reason`,
+`human_question`, `final_head`, `worktree_clean`, `anomalies`/
+`inconsistencies`/`corrupt_sources`.
+
+Real example (worked attempt, section 18):
+
+[source,text]
+----
+attempt: wfc-projected-result-contracts-p1-20261007-01
+lifecycle: RUN_RECORDED
+run_id: RUN-157080a2fa7b44de8429aa9b8fba53ab
+run_status: awaiting_human
+current_phase: rereview
+hop_used: 4
+hop_limit: 8
+stop_reason: completion_blocked_by_open_blocking_findings
+final_head: 84fba1653738214bc49d0eabfeefeb4deb03023f
+worktree_clean: True
+anomalies: []
+----
+
+== 10. ARCHIVE
+
+[source,shell]
+----
+python3 scripts/wfc_op.py archive "$ATTEMPT" --dry-run
+python3 scripts/wfc_op.py archive "$ATTEMPT"
+----
+
+A deterministic, delegating wrapper around the canonical
+`workflow-coordinator-run-evidence/scripts/wfc-archive-run`. Harness derives
+the wrapper's two positional arguments -- STATE root and Evidence repository
+-- from the Attempt's own preparation facts, refusing if the two preparation
+records disagree on the Evidence path. Default behavior is always
+*canonical dry-run, then canonical real archive*; passing `--dry-run` to
+`wfc-op archive` stops after the plan. `--semantic-json`, if given, is
+forwarded verbatim. Harness implements none of the copying, hashing,
+manifest, or fact-extraction logic itself.
+
+Three layers stay conceptually separate:
+
+[source,text]
+----
+STATE              live/persisted WFC execution state
+mechanical archive deterministic archived evidence, committed by the
+                    canonical wrapper -- a faithful copy-with-manifest
+semantic ledger     curated semantic interpretation/history
+                    (project_memory/run_ledger.adoc in Evidence)
+----
+
+Harness v0 performs only the mechanical archive; it never writes, updates,
+or interprets the semantic ledger.
+
+== 11. Semantic ledger curation
+
+After a mechanical archive exists, current project convention adds a
+curated entry to `workflow-coordinator-run-evidence/project_memory/
+run_ledger.adoc`: Runtime version, domain exercised, what happened across
+Hops, model/role bindings, related commits/BUGs, predecessor/successor
+links, lessons, evidence location. This is maintainer-owned, commonly
+LLM-assisted, and performed separately against the already-archived
+mechanical facts -- not automated by `wfc-op archive` or designed here.
+
+== 12. max_autonomous_hops
+
+*This is a safety ceiling, not an estimate of expected Run length.* It is
+the single most commonly misapplied piece of operator judgment here.
+
+`max_autonomous_hops` is a WorkItem field, capped by the repository policy's
+own ceiling and a hard Coordinator maximum. At Run creation it becomes
+`Run.hop_limit`; `status` reports it alongside `hop_used`.
+
+Common mistake: expecting a task to need implementation, review,
+correction, and rereview -- maybe 2-4 Hops normally -- and concluding
+`max_autonomous_hops` should therefore be 4. That does not follow. The same
+task may legitimately need an additional review/correction cycle if a fresh
+reviewer finds another real Finding; a too-tight ceiling then converts
+healthy convergence into an unnecessary `awaiting_human` stop. Conversely,
+an excessively high ceiling enlarges cost and autonomous blast radius if
+agents genuinely fail to converge.
+
+Choose the value as a *bounded worst-case safety ceiling* against repeated
+symptom treatment, review/correction oscillation, an agent failing to
+recognize a legitimate stop condition, or other genuine convergence
+failures -- not as an *expected Hop count*. The probability of a convergence
+defect does not shrink merely because the task seems easy; a "simple" task
+does not justify an artificially tiny ceiling.
+
+For the current bounded self-development workflow, `8` -- the value used in
+section 18's worked example, which converged in 4 Hops with 4 unused -- is a
+reasonable illustration of this principle, not a universal recommendation.
+Set the value per WorkItem from this reasoning, not by copying `8`.
+
+== 13. Terminal states and awaiting_human
+
+`awaiting_human` is *not* synonymous with provider failure, implementation
+failure, or failed review. It means the current Run's authority/mechanics
+cannot legally continue -- the trusted reducer correctly refused rather than
+fabricate or assume authority it does not have.
+
+When a Run stops `awaiting_human`, inspect in order: `stop_reason`; any
+`human_question`; open Findings and which phase, if any, holds
+`finding_authority` over them; the last recorded phase/result; `anomalies`;
+durable review artifacts the Run references. This is correct fail-closed
+behavior, not a malfunction.
+
+== 14. Successor Runs
+
+Do not rewrite or "repair" historical terminal Run state. If additional
+authorized work is genuinely needed:
+
+[source,text]
+----
+archive the original Run truthfully
+    -> curate the ledger, if convention requires it
+    -> make a fresh maintainer decision
+    -> create a separately authorized successor Commission / Attempt
+----
+
+A successor may reference predecessor evidence but must never fabricate a
+different historical outcome for it -- the same discipline
+`docs/run-recovery-and-salvage.adoc` establishes for salvage (`salvage
+preserves work, not authority`). See that document for the full four-outcome
+procedure when a Run or Hop does not cleanly complete at all, as opposed to
+completing with an authority gap (section 13's example).
+
+== 15. Runtime promotion
+
+Runtime promotion is separate from WFC semantic acceptance, `archive`,
+ledger curation, and push; none of those four implies or performs it.
+
+Runtime always executes an *exact* accepted implementation commit, selected
+explicitly by the maintainer -- never "latest `main`", current Development
+HEAD, a `git pull`, or an implicit branch update. Review/closure commits may
+legitimately exist on Development/`main` after the accepted implementation
+commit; that is expected shape, not drift. Mechanically, promotion fetches
+the exact target commit into the Runtime clone and checks it out detached
+(full command/preconditions/postconditions:
+`docs/self-development.adoc`'s Runtime promotion runbook). Runtime stays a
+separate clone/object store, detached, `remote.origin.pushurl=DISABLED`,
+before and after. No Harness command promotes Runtime; no generic
+auto-promotion feature exists.
+
+Development, Runtime, Evidence, OPS, and STATE are five distinct things:
+Development is the evolving candidate plus Commission/implementation
+history; Runtime is the pinned accepted implementation that executes Runs;
+Evidence is the durable archive/ledger location; OPS is Harness's prepared
+envelope; STATE is WFC's own execution state. Collapsing any two -- e.g.
+assuming Development HEAD is what Runtime executes, or that OPS existing
+means a Run has started -- is the most common operator misunderstanding this
+manual exists to prevent.
+
+== 16. Evidence architecture: current state vs. future direction
+
+*Current state (implemented today).* For self-development, mechanical
+archive evidence lives in the sibling `workflow-coordinator-run-evidence`
+repository under `archive/<classification>/<attempt>/`, each with a
+`manifest.json` of copied files and SHA-256 digests. The curated semantic
+ledger lives in the same repository at `project_memory/run_ledger.adoc`.
+`wfc-op archive` delegates to its `scripts/wfc-archive-run`; Harness owns
+none of its copy/manifest/commit logic.
+
+*Future direction (design intent only -- not implemented).* Evidence
+archival should eventually be a WFC *product capability*, not merely a
+self-development add-on: a consumer repository might configure durable
+archival as disabled, repository-local, or external (a sibling/central
+Evidence repository, as self-development already uses). Motivation:
+long-term auditability favors curated, machine-readable records over
+uncontrolled raw logs; future retrieval tooling may be as simple as
+deterministic `jq`/scripts before anything more elaborate is justified.
+Nothing here designs or implements this; it is recorded so a future
+maintainer does not mistake today's self-development-specific arrangement
+for the final product shape.
+
+== 17. Troubleshooting
+
+[cols="2,3",options="header"]
+|===
+|Symptom |What to do
+
+|`python: command not found`
+|Only `python3` is guaranteed on a plain Debian host's base `PATH`. Use
+`python3 scripts/wfc_op.py ...`. Inside a prepared environment, Harness's
+controlled `PATH` does resolve `python3` correctly; bare `python` is never
+relied on anywhere in this system.
+
+|`prepare` refuses
+|Read the named mismatch and inspect that specific pin/cleanliness/
+Runtime-invariant/Evidence/preflight fact. Never hand-edit OPS or
+preparation records; re-run `prepare` against a corrected input.
+
+|STATE absent right after `prepare`
+|Expected and required -- `prepare` must prove it created no Run.
+
+|STATE already exists before `launch`
+|`launch` fails closed rather than reusing/overwriting it. Choose a new
+`--attempt` and `prepare` again; never delete an existing STATE to "retry"
+without a deliberate, separate maintainer decision.
+
+|`launch` returns non-zero, `status` shows `awaiting_human`
+|Not by itself evidence of provider/Harness failure. Inspect `status` and
+see section 13.
+
+|Development/Runtime/Evidence unexpectedly dirty
+|Investigate the cause before anything else; never manually override
+cleanliness/trust checks.
+
+|Run looks semantically accepted but is not `completed`
+|Check which phase holds `finding_authority` over any open blocking Finding
+and the recorded `stop_reason` -- a correct rereview with no disposition
+authority is expected to stop `awaiting_human`, not complete (section 13).
+|===
+
+Most "problems" here are this system correctly refusing or correctly
+stopping, not a defect to work around.
+
+== 18. What Harness v0 intentionally does not do
+
+Harness v0 does not: choose the next WorkItem; estimate task difficulty;
+choose semantic execution strategy; decompose tasks; author implementation
+plans or Commissions; decide which model to use semantically (it only
+records the maintainer's explicit `--role-binding`); curate the semantic
+ledger; promote Runtime; push; repair failed Runs; reinterpret terminal Run
+state.
+
+These belong to maintainer decisions or a possible future higher
+orchestration layer (section 20):
+
+[source,text]
+----
+higher orchestration / planning / curation   (not designed here)
+    -> Commission / execution choice          (maintainer-owned)
+    -> Harness v0 deterministic mechanics      (this manual)
+    -> WFC Run                                 (WFC-owned semantic execution)
+----
+
+== 19. Worked example
+
+A real attempt, used only to illustrate mechanics, not as a postmortem.
+
+[source,text]
+----
+Attempt: wfc-projected-result-contracts-p1-20261007-01
+OPS:     ~/wfc-ops/wfc-projected-result-contracts-p1-20261007-01
+STATE:   ~/wfc-state/wfc-projected-result-contracts-p1-20261007-01
+Run:     RUN-157080a2fa7b44de8429aa9b8fba53ab
+----
+
+Commission commit -> `prepare`:: pinned Development
+`d03cd2b73f42cfdd9d131f19471f20ed0f522c85`, the accepted Runtime
+`c1773ffb7ae11b5ddf3c5786163f092279034755`, Evidence
+`2f972c7d3b73cddca03d40ebcb5befd06aec34da`; authorized exactly P1
+("Projection infrastructure") of the accepted
+`docs/wfc_projected_result_contracts_concept_2026-10-07.adoc`. OPS existed
+afterward; STATE did not. Printed `PREPARED / NOT LAUNCHED`.
+
+`launch`:: STATE materialized; `RUN-157080a2fa7b44de8429aa9b8fba53ab`
+assigned; `hop_limit=8` from the WorkItem's `max_autonomous_hops`.
+
+H001 `worker` `completed`:: implemented the P1 projection seam
+(`ResultContractKind`, one `select_result_contract()` seam replacing two
+inline predicate copies) across thirteen authorized paths.
+
+H002 `independent_reviewer` `changes_required`:: the seam itself was sound
+but test proof was incomplete; opened blocking Finding `F001` with a
+reproducible invariant; requested route `correction`.
+
+H003 `worker` `completed`:: closed exactly the gaps H002 named, touching
+only test files.
+
+H004 `independent_reviewer` `completed`, requested route `accept`:: a fresh
+rereview verified every H002 gap was closed and no scope creep occurred --
+then could not complete the Run.
+
+Terminal state, `awaiting_human` / `completion_blocked_by_open_blocking_findings`::
+`rereview.review.finding_authority` on the governing profile was `[]`,
+identical to `independent_review`'s own authority. H004 had no operation
+capable of transitioning `F001` out of `open`; `applied_route` recorded
+`null`, and the trusted reducer correctly refused the `accept` completion
+route while a blocking Finding remained open -- exactly section 13's
+fail-closed behavior. The Run is not "completed"; it is correctly stopped,
+with the underlying authority gap left for a separate maintainer decision.
+
+`archive`:: a mechanical archive exists at
+`workflow-coordinator-run-evidence/archive/unclassified/
+wfc-projected-result-contracts-p1-20261007-01/manifest.json`, copying
+`operator-plan.json`, `operator-summary.json`, `checkout-association.json`,
+and per-checkout artifacts, each with a recorded SHA-256 digest.
+
+Ledger curation:: an entry already exists in
+`workflow-coordinator-run-evidence/project_memory/run_ledger.adoc`
+summarizing the four Hops, the authority gap, and its relationship to the
+already-open `BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc` (this
+Run independently reproduces that BUG's pattern in an unrelated lineage --
+corroborating evidence, not a new BUG, and no disposition of the existing
+one).
+
+No Runtime promotion and no push occurred as part of this sequence; both
+remain separate, explicitly authorized maintainer actions (14-15).
+
+== 20. Relation to future higher orchestration
+
+A future upper layer may perform non-deterministic activities such as
+authorized backlog/task picking, difficulty/risk estimation, model/profile
+selection, task decomposition, implementation planning, Commission
+authoring, invocation of Harness/WFC Runs, or semantic archive/ledger
+curation -- some delegating to reviewed WFC workflows, others using
+deliberately lightweight "do this once" profiles. This is an architectural
+observation, not current functionality; no such layer exists today. Harness
+v0 remains the deterministic execution boundary underneath any possible
+future layer.
+
+== 21. Quick-reference command flow
+
+[source,shell]
+----
+ATTEMPT=wfc-<work-item-slug>-<date>-<counter>
+
+python3 scripts/wfc_op.py prepare \
+  --attempt      "$ATTEMPT" \
+  --development  /home/stefan/repos/spreadsheet-handling/workflow-coordinator \
+  --runtime      /home/stefan/repos/spreadsheet-handling/workflow-coordinator-runtime \
+  --evidence     /home/stefan/repos/spreadsheet-handling/workflow-coordinator-run-evidence \
+  --work-item    governance/work-items/<work-item>.yaml \
+  --profile      governance/self-development/<profile>.yaml \
+  --policy       governance/self-development/<policy>.yaml \
+  --components   governance/self-development/components.yaml \
+  --task         governance/work-items/<task>.txt \
+  --executable   /usr/local/bin/codex \
+  --timeout-seconds 3600 \
+  --role-binding worker=codex_cli:<model>:<reasoning> \
+  --role-binding independent_reviewer=codex_cli:<model>:<reasoning>
+
+python3 scripts/wfc_op.py status "$ATTEMPT"       # expect PREPARED_NOT_LAUNCHED
+python3 scripts/wfc_op.py launch "$ATTEMPT"       # crosses the provider boundary
+python3 scripts/wfc_op.py status "$ATTEMPT"       # inspect terminal state (section 13)
+python3 scripts/wfc_op.py archive "$ATTEMPT" --dry-run
+python3 scripts/wfc_op.py archive "$ATTEMPT"
+----
+
+Curate the semantic ledger (section 11), make a fresh maintainer decision on
+any open authority/Finding gap (13-14), and only then, separately and
+explicitly, consider Runtime promotion (section 15) and push.
