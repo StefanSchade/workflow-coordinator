@@ -745,6 +745,16 @@ ledger lives in the same repository at `project_memory/run_ledger.adoc`.
 `wfc-op archive` delegates to its `scripts/wfc-archive-run`; Harness owns
 none of its copy/manifest/commit logic.
 
+One practical limitation of the current archive, confirmed by review
+(`docs/wfc_p2_stagnation_audit_2026-10-09.adoc`): a trusted evidence
+observation persists its exit classification, exit code, and byte-count/
+SHA-256 digests of stdout and stderr, but not the full output body. A
+subsequent correction Hop (section 22.4) is therefore told *that* required
+evidence failed, not *which* assertions or tests failed, and may need to
+re-run the relevant command itself to localize the failure. This is a known
+limitation of the current evidence persistence, not something redesigned
+here.
+
 *Future direction (design intent only -- not implemented).* Evidence
 archival should eventually be a WFC *product capability*, not merely a
 self-development add-on: a consumer repository might configure durable
@@ -794,6 +804,24 @@ cleanliness/trust checks.
 |Check which phase holds `finding_authority` over any open blocking Finding
 and the recorded `stop_reason` -- a correct rereview with no disposition
 authority is expected to stop `awaiting_human`, not complete (section 13).
+
+|`stop_reason: required_evidence_failed_without_route`
+a|The phase's required evidence cleanly failed and no gate on it could
+absorb that failure (section 22.3). Ask, in order:
+
+. Which phase owned the failed evidence?
+. Is this evidence really phase-local, or is it acceptance evidence that
+  belongs on a review gate?
+. Is the phase a gate capable of declaring `review.failed_evidence_route`
+  (section 22.3)?
+. If evidence failure is intended to be correctable, is an explicit `goto`
+  failure route declared?
+. If human intervention is intended here, is that a deliberate Commission
+  choice, or an accidental omission?
+
+This is not something to resume or override from the operator side --
+correct the Commission (profile and/or task prose) and prepare a fresh
+Attempt (section 14).
 |===
 
 Most "problems" here are this system correctly refusing or correctly
@@ -926,3 +954,259 @@ python3 scripts/wfc_op.py archive "$ATTEMPT"
 Curate the semantic ledger (section 11), make a fresh maintainer decision on
 any open authority/Finding gap (13-14), and only then, separately and
 explicitly, consider Runtime promotion (section 15) and push.
+
+== 22. Trusted evidence, worker completion, and correction routing
+
+*A Commission that conflates worker completion with trusted acceptance, or
+that omits `failed_evidence_route` from a review gate, can turn a declared
+evaluator/optimizer correction loop into a one-shot acceptance gate --
+silently, because the omission is syntactically valid.* This section
+documents the current mechanics precisely enough to author around that
+trap. The motivating observed failure is recorded in
+`docs/wfc_p2_stagnation_audit_2026-10-09.adoc`; read this section for the
+generic mechanism, that audit for one concrete case history.
+
+=== 22.1 The trusted ordering within a Hop
+
+Reconstructed from `vertical.py::run_one_hop` and
+`reducer.py::reduce_result`. This ordering governs every Hop and is the
+basis for everything else in this section:
+
+[source,text]
+----
+semantic agent result
+    -> CommitIntent admission
+    -> Coordinator-owned trusted commit
+    -> Coordinator-trusted evidence
+    -> route reduction / application
+----
+
+Each stage, briefly:
+
+* *Semantic agent result* -- the provider returns a structured result (a
+  `WorkResult` for a `worker` phase, a `ReviewVerdict` for a review gate).
+  It carries the agent's requested route and, optionally, a `CommitIntent`.
+* *CommitIntent admission* -- a non-null `CommitIntent` is admitted only
+  when the result's outcome is `completed` (or, for a gate, `changes_required`
+  committing only to that phase's own durable review artifact), scope is
+  unchanged, `requires_human` is false, `escalation` is null, and the phase
+  grants both the `edit` and `commit` actions. The agent never runs Git
+  itself; `CommitIntent` is a proposal, never proof that anything was
+  committed.
+* *Coordinator-owned trusted commit* -- if admitted, the Coordinator itself
+  materializes one bounded local commit. This is *publication of bounded
+  work, not acceptance*.
+* *Coordinator-trusted evidence* -- only now does the Coordinator execute
+  the phase's required evidence commands (`phase.evidence`), after the
+  result and after any commit (see section 16 for a persistence
+  limitation on this evidence). An agent cannot have proven this outcome at
+  result-authoring time; the fact does not exist yet when the result is
+  authored.
+* *Route reduction* -- the reducer resolves the applied route from the
+  requested route and the evidence disposition (22.3), then persists the
+  checkpoint.
+
+=== 22.2 Five concepts that must not be conflated
+
+[cols="1,1,3",options="header"]
+|===
+|Concept |Owner |Meaning
+
+|Worker completion
+|agent (semantic)
+|`status: completed` -- the bounded candidate for this phase is coherent
+and ready for its declared next step. Gates `CommitIntent` admission;
+nothing else.
+
+|Trusted commit
+|Coordinator
+|One bounded local commit materialized from an admitted `CommitIntent`.
+Publication, not acceptance.
+
+|Trusted evidence
+|Coordinator
+|Independent, post-commit, Coordinator-executed observation of
+`phase.evidence`: `pass`, clean `fail`, or `error`/`not_run`. Agent-side
+test runs are never this, however diagnostic they are.
+
+|Review acceptance
+|gate phase (semantic)
+|`verdict: accept` from a phase with sufficient Finding-disposition
+authority over any open blocking Finding.
+
+|Run completion
+|reducer
+|A `complete`-effect route actually applied, with no open blocking Finding
+and required evidence not cleanly failing.
+|===
+
+All five must align for a Run to complete; no single one implies any
+other. Review acceptance (a gate's own semantic verdict) and trusted
+evidence (the Coordinator's independent mechanical observation) are
+separate authorities over the same gate -- 22.3 explains how the reducer
+combines them.
+
+In particular, worker `completed` does *not* mean "I have already proven
+every downstream Coordinator-required acceptance criterion" -- that
+reading is unsatisfiable, because trusted evidence executes after the
+result is parsed (22.1), so no worker can truthfully assert its outcome at
+authoring time. A worker that downgrades to `blocked` to avoid asserting
+that is not being honest about a red downstream gate -- it is destroying
+its own trusted-commit path and leaving otherwise-good work uncommitted.
+Reserve `blocked` for when the current Hop itself lacks authority, scope,
+or a capability it needs -- never for a downstream gate that has not run
+yet.
+
+=== 22.3 `failed_evidence_route`
+
+`failed_evidence_route` is an optional field of a phase's `review:`
+descriptor -- `review.failed_evidence_route` -- and only a *gate* review
+(`review.authority: gate`) may declare it; a `worker` phase (`review:
+null`) structurally cannot. When declared, it must name one of that
+phase's own `routes` whose effect is `goto`; the loader refuses an unknown
+target or a non-`goto` target.
+
+Its effect at reduction:
+
+[source,text]
+----
+required evidence: pass
+    -> ordinary reduction of the agent's requested route
+
+required evidence: clean fail, gate declares a valid failed_evidence_route
+    -> that route REPLACES the agent's requested route
+       (a reviewer's `accept` can be deterministically overridden)
+
+required evidence: clean fail, no valid failed_evidence_route on this gate
+    -> Run stops awaiting_human / required_evidence_failed_without_route
+
+required evidence: error / not_run
+    -> hard mechanical stop, preempting even the semantic result
+----
+
+So `failed_evidence_route` is the *only* mechanism that lets a mechanical
+evidence failure be absorbed into a correction loop rather than stopping
+the Run. A gate carrying required evidence but no `failed_evidence_route`
+can still route a semantic `changes_required` Finding to correction -- but
+a clean mechanical evidence failure at that same gate has nowhere to go.
+If a Run stops this way, see the troubleshooting entry in section 17.
+
+Do not read this as "every evidence failure should route to correction."
+A Commission may deliberately want evidence failure to escalate to a human
+rather than loop -- that is a legitimate choice, fully expressible by
+simply not declaring `failed_evidence_route`. The documentation goal here
+is *deliberate authoring*, not a universal correction policy: know which
+one you are choosing, and choose it on purpose rather than by omission.
+
+*Future hardening (design intent only -- not implemented).* A future
+direction would make evidence-failure disposition an explicit,
+admission-time requirement on every route-bearing gate, rather than a
+silently valid omission. Nothing in the current Harness or reducer
+enforces that; this paragraph describes no current behavior.
+
+=== 22.4 Canonical converging review topology
+
+The current mechanics already support a genuine autonomous
+evaluator/optimizer correction loop. The canonical shape:
+
+[source,text]
+----
+integration / implementation [worker]
+    evidence: []
+    completed -> independent_review
+
+independent_review [gate]
+    evidence: [pytest or other acceptance evidence]
+    review.failed_evidence_route: correction
+    accept            -> complete
+    changes_required  -> goto correction
+
+correction [worker]
+    evidence: []
+    completed -> rereview
+
+rereview [gate]
+    evidence: [pytest or other acceptance evidence]
+    review.failed_evidence_route: correction
+    accept            -> complete
+    changes_required  -> goto correction
+----
+
+Properties this shape gives you, all already executable under the
+currently accepted mechanics, with no Core change:
+
+* An imperfect candidate can still be committed and handed to independent
+  review, because the worker phase carries no required evidence to fail.
+* It remains impossible to *complete* while required evidence is red,
+  because both `complete` routes sit behind gates carrying that evidence.
+* A reviewer's semantic `accept` is deterministically overridden by a
+  clean trusted-evidence failure, routing to `correction` instead.
+* `rereview` can repeat the same gate after correction, producing a
+  genuine multi-Hop autonomous loop, bounded by the ordinary Hop budget
+  (section 12) rather than looping indefinitely.
+
+Worker phases *may* still run the same evidence command themselves,
+diagnostically -- `phase.evidence` governs only what the *Coordinator*
+requires, never what an agent is permitted to run in its own shell. The
+distinction that matters:
+
+[source,text]
+----
+agent diagnostic execution  !=  Coordinator-required evidence attached to that phase
+----
+
+The first is useful input the worker can use to improve its candidate
+before handing it to the gate. The second is what the reducer actually
+trusts, and it belongs on the gate, not the worker.
+
+This canonical shape composes with the existing review-breadth guidance
+(section 4, "Review breadth and bounded rereview convergence"): a worker
+may make a small bounded correction and still hand the *complete current
+candidate* to review -- latest mutation scope and review scope are
+different concepts. The first `independent_review` of a candidate should
+be broad, inspecting the entire accumulated candidate rather than only the
+latest diff. A subsequent `rereview` should normally narrow to the known
+current-Run Findings, the corresponding correction, direct regressions,
+and the gate's own trusted evidence; a genuinely new MATERIAL defect
+supported by concrete new evidence may still escape that bounded surface.
+
+=== 22.5 Commission-authoring anti-patterns
+
+[cols="2,3,3",options="header"]
+|===
+|Anti-pattern |Shape |Why dangerous
+
+|Full acceptance evidence on a worker phase
+|A normal (non-gate) worker phase in a converging correction workflow
+declares the full/global acceptance evidence as `phase.evidence`.
+|A `worker` phase (`review: null`) structurally cannot declare
+`failed_evidence_route` (22.3). A clean evidence failure there has no
+absorbing route and is terminal -- the worker Hop becomes an accidental
+one-shot acceptance gate.
+
+|Gate without `failed_evidence_route`
+|A review/rereview gate carries required acceptance evidence and has a
+`correction` route available, but does not declare
+`review.failed_evidence_route`.
+|A semantic `changes_required` Finding can still route to `correction`,
+but a mechanical evidence failure cannot. The profile advertises a
+correction loop it cannot actually exercise from an evidence failure.
+
+|Task prose demanding full-suite proof before `completed`
+|Commission/task text tells a worker not to report `status: completed`
+until the downstream full acceptance suite is green.
+|Conflates worker completion with trusted acceptance (22.2). It can force
+useful, commit-ready work into `blocked`, which suppresses that work's own
+trusted-publication path instead of letting the gate's evidence do its
+job.
+
+|Escalating on a sandbox-only tooling gap
+|An agent cannot execute a trusted evidence command in its own sandbox
+(for example, a networked install its environment blocks) and escalates
+for that reason alone.
+|The worker should report that diagnostic limitation in its `summary` and
+continue, provided its bounded work can otherwise be completed --
+Coordinator execution, not the agent's shell, is the trusted authority.
+Escalating here is an unjustified scope/authority claim, not a correct
+refusal.
+|===
