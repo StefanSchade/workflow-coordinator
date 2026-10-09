@@ -346,6 +346,33 @@ def test_profile_v3_loads_closed_convergence_grammar_and_routes():
     assert parsed.phases["strategy"].convergence_role is ConvergenceRole.STRATEGY_GATE
 
 
+def test_failed_evidence_route_accepts_goto_or_await_human_only():
+    data = yaml.safe_load(PROFILE_YAML)
+    review = data["phases"]["review"]
+    review["review"]["failed_evidence_route"] = "retry"
+    review["routes"]["retry"] = {"effect": "goto", "target": "implement"}
+    assert workflow_profile_from_yaml(yaml.safe_dump(data, sort_keys=False)).phases["review"].review
+
+    review["review"]["failed_evidence_route"] = "ask"
+    review["routes"]["ask"] = {"effect": "await_human", "question": "Choose an evidence disposition."}
+    parsed = workflow_profile_from_yaml(yaml.safe_dump(data, sort_keys=False))
+    assert parsed.phases["review"].review.failed_evidence_route == "ask"
+    assert parsed.phases["review"].routes["ask"].effect is RouteEffect.AWAIT_HUMAN
+
+    review["review"]["failed_evidence_route"] = "halt"
+    with pytest.raises(ValidationError, match="goto or await_human"):
+        workflow_profile_from_yaml(yaml.safe_dump(data, sort_keys=False))
+
+
+def test_v3_evaluator_await_human_failed_evidence_route_is_not_a_goto_key():
+    data = profile_v3_data()
+    evaluator = data["phases"]["evaluate"]
+    evaluator["review"]["failed_evidence_route"] = "ask"
+    evaluator["routes"]["ask"] = {"effect": "await_human", "question": "Choose next action."}
+    parsed = workflow_profile_from_yaml(yaml.safe_dump(data, sort_keys=False))
+    assert parsed.phases["evaluate"].review.failed_evidence_route == "ask"
+
+
 @pytest.mark.parametrize("limit", [True, 0, 1, 21])
 def test_profile_v3_rejects_out_of_bounds_convergence_limit(limit):
     data = profile_v3_data()

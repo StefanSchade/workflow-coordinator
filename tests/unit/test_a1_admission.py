@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from workflow_coordinator.model import EvidenceCommand, RepositoryPolicy, WorkItem, WorkflowRole
-from workflow_coordinator.operator import OperatorPreflightError, _admit_a1
+from workflow_coordinator.operator import (
+    OperatorPreflightError,
+    _admit_a1,
+    _admit_evidence_disposition,
+)
+from workflow_coordinator.serialization import workflow_profile_from_yaml
 from tests.support import phase, profile, route
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -69,6 +75,39 @@ def test_a1_admits_multiple_governing_files_exact_ceilings_and_equal_hops():
             "docs/ai_info/components/worker.txt",
         ),
     )
+
+
+def test_evidence_disposition_admission_requires_an_explicit_gate_disposition():
+    worker_with_evidence = replace(workflow().phases["work"], evidence=("tests",))
+    with pytest.raises(OperatorPreflightError, match="not a gate review"):
+        _admit_evidence_disposition(profile({"work": worker_with_evidence}))
+
+    gate = phase({"accept": route("complete"), "correct": route("goto", "work")}, role="independent_reviewer", review="gate")
+    gate_with_evidence = replace(gate, evidence=("tests",))
+    with pytest.raises(OperatorPreflightError, match="no failed_evidence_route"):
+        _admit_evidence_disposition(profile({"work": gate_with_evidence}))
+
+    for disposition in ("correct", "ask"):
+        routes = {"accept": route("complete"), "correct": route("goto", "work")}
+        if disposition == "ask":
+            from workflow_coordinator.model import Route, RouteEffect
+            routes["ask"] = Route(RouteEffect.AWAIT_HUMAN, question="Choose next action.")
+        selected = replace(
+            gate_with_evidence,
+            routes=routes,
+            review=replace(gate_with_evidence.review, failed_evidence_route=disposition),
+        )
+        _admit_evidence_disposition(profile({"work": selected}))
+
+    _admit_evidence_disposition(workflow())
+
+
+def test_evidence_disposition_admission_accepts_the_successful_p2_profile():
+    profile_path = (
+        Path(__file__).parents[2]
+        / "governance/self-development/projected-result-contracts-p2-integration-completion-profile.yaml"
+    )
+    _admit_evidence_disposition(workflow_profile_from_yaml(profile_path.read_text()))
 
 
 @pytest.mark.parametrize(

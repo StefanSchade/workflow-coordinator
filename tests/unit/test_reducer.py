@@ -26,6 +26,8 @@ from workflow_coordinator.model import (
     ResultContractKind,
     Run,
     RunStatus,
+    Route,
+    RouteEffect,
     StrategyAssessment,
     StrategyAssessmentResult,
     StrategyRevision,
@@ -1846,6 +1848,36 @@ def test_required_evidence_failure_route_precedes_escape_substitution():
     assert failed.run.hops[-1].requested_route == "correct"
     assert failed.run.hops[-1].applied_route == "correct"
     assert failed.run.hops[-1].route_reason is None
+
+
+def test_required_evidence_failure_can_use_await_human_route_question():
+    workflow = gate_profile()
+    review = workflow.phases["review"]
+    workflow = replace(
+        workflow,
+        phases={
+            **workflow.phases,
+            "review": replace(
+                review,
+                routes={
+                    **review.routes,
+                    "ask": Route(RouteEffect.AWAIT_HUMAN, question="Choose the evidence disposition."),
+                },
+                review=replace(review.review, failed_evidence_route="ask"),
+            ),
+        },
+    )
+    run, hop_id = charge_hop(run_for(workflow), role="independent_reviewer")
+    reduced = reduce_result(
+        run,
+        result("accept"),
+        workflow,
+        hop_id=hop_id,
+        facts=MechanicalFacts(required_evidence_failed=True),
+    )
+    assert reduced.run.status is RunStatus.AWAITING_HUMAN
+    assert reduced.run.stop_reason == "route:ask"
+    assert reduced.run.human_question == "Choose the evidence disposition."
 
 
 def test_new_blocker_starts_at_zero_and_does_not_inherit_triggering_identity():

@@ -38,6 +38,7 @@ from .model import (
     ExecutionBinding,
     RunExecutionConfiguration,
     RunStatus,
+    ReviewAuthority,
     ExecutionEvidenceDocument,
     SuccessorProvenance,
     WorkflowRole,
@@ -117,6 +118,21 @@ def _within_scope(path: str, scope: tuple[str, ...]) -> bool:
 
 def _normalized_scope(values: tuple[str, ...], *, context: str) -> tuple[str, ...]:
     return tuple(_relative_path(value, context=context) for value in values)
+
+
+def _admit_evidence_disposition(profile) -> None:
+    """Require new profiles to make required-evidence failure routing explicit."""
+    for phase_key, phase in profile.phases.items():
+        if not phase.evidence:
+            continue
+        if phase.review is None or phase.review.authority is not ReviewAuthority.GATE:
+            raise OperatorPreflightError(
+                f"profile.phases.{phase_key} has required evidence but is not a gate review"
+            )
+        if phase.review.failed_evidence_route is None:
+            raise OperatorPreflightError(
+                f"profile.phases.{phase_key} has required evidence but no failed_evidence_route"
+            )
 
 
 def _admit_a1(work_item, profile, policy, governing_paths) -> None:
@@ -432,6 +448,7 @@ def _preflight(
         work_item, profile, policy,
         (*input_paths.values(), *selected_component_paths),
     )
+    _admit_evidence_disposition(profile)
     selected_evidence = _selected_evidence_names(profile, policy)
     environment = snapshot_environment()
     try:
@@ -1370,6 +1387,7 @@ def _prepare_successor(args: argparse.Namespace) -> int:
         component_paths.append(_relative_path(reference.path, context=f"component {component_id}"))
         governing[component_paths[-1]] = _governing_digest(_pinned_text(successor_repository, args.expected_head, component_paths[-1], context="component"))
     _admit_a1(item, profile, policy, (*inputs.values(), *component_paths))
+    _admit_evidence_disposition(profile)
     authority = Path(args.authority_decision).resolve()
     if not authority.is_file() or authority.is_symlink():
         raise OperatorPreflightError("authority decision must be an existing regular immutable input")

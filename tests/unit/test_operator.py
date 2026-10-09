@@ -225,7 +225,7 @@ phases:
     authorized_scope: [PROOF.md]
     authorized_actions: [edit, commit]
     human_gates: []
-    evidence: [local]
+    evidence: []
     review: null
     routes:
       done:
@@ -1486,6 +1486,8 @@ def test_a2_unknown_reference_has_no_run_state_checkout_evidence_adapter_or_prov
     )
     policy_path = repository / "policy.yml"
     policy_path.write_text(policy_path.read_text().replace("  local:\n", "  other:\n"))
+    profile_path = repository / "profile.yml"
+    profile_path.write_text(profile_path.read_text().replace("evidence: []", "evidence: [local]"))
     commit(repository, "test: undefined evidence reference")
     calls = {"run_id": 0, "new_run": 0, "checkout": 0, "adapter": 0, "evidence": 0}
 
@@ -1505,6 +1507,31 @@ def test_a2_unknown_reference_has_no_run_state_checkout_evidence_adapter_or_prov
     assert calls == {"run_id": 0, "new_run": 0, "checkout": 0, "adapter": 0, "evidence": 0}
     assert not state_root.exists()
     assert not counter.exists()
+
+
+def test_preflight_rejects_worker_required_evidence_before_provider(
+    repository: Path, tmp_path: Path, capsys
+):
+    executable = malformed_fake(tmp_path, tmp_path / "counter")
+    profile_path = repository / "profile.yml"
+    profile_path.write_text(profile_path.read_text().replace("evidence: []", "evidence: [local]"))
+    commit(repository, "test: require evidence on worker")
+    assert main(args(repository, tmp_path / "state", str(executable))) == 2
+    assert "required evidence but is not a gate review" in capsys.readouterr().err
+
+
+def test_export_salvage_does_not_apply_new_launch_evidence_admission(
+    repository: Path, tmp_path: Path, monkeypatch
+):
+    state, _descriptor, _authority, _baseline, _run_path = stopped_predecessor_and_descriptor(
+        repository, tmp_path, prepare=False
+    )
+
+    def forbidden(_profile):
+        raise AssertionError("salvage must not apply new-launch evidence admission")
+
+    monkeypatch.setattr(operator, "_admit_evidence_disposition", forbidden)
+    assert main(["export-salvage", "--state-root", str(state), "--output", str(tmp_path / "bundle")]) == 0
 
 
 def test_fake_success_is_one_hop_and_writes_compact_operator_evidence(
@@ -1546,8 +1573,7 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     assert plan["agent_operating_contract"] == loads[0].provenance()
     assert "agent_operating_contract" not in plan["governing_inputs"]
     assert plan["evidence"]["environment_policy"] == "coordinator-inherited-environment-v1"
-    assert plan["evidence"]["selected_commands"][0]["command_name"] == "local"
-    assert plan["evidence"]["selected_commands"][0]["argv_digest"]
+    assert plan["evidence"]["selected_commands"] == []
     assert summary["schema_version"] == 2
     assert summary["run_status"] == "completed" and summary["hop_used"] == 1 and summary["worktree_clean"] is True
     assert len(summary["commits"]) == 1 and summary["changed_paths"] == ["PROOF.md"]

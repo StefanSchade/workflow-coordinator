@@ -817,9 +817,9 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
                 raise ValidationError(
                     f"profile.phases.{phase_key}.review.failed_evidence_route names unknown route"
                 )
-            if route.effect is not RouteEffect.GOTO:
+            if route.effect not in {RouteEffect.GOTO, RouteEffect.AWAIT_HUMAN}:
                 raise ValidationError(
-                    f"profile.phases.{phase_key}.review.failed_evidence_route must name a goto route"
+                    f"profile.phases.{phase_key}.review.failed_evidence_route must name a goto or await_human route"
                 )
         if profile_version == 3:
             role = phase.convergence_role
@@ -880,7 +880,11 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
                     phase.normal_correction_route,
                     phase.escape_route,
                 }
-                if phase.review.failed_evidence_route is not None:
+                if (
+                    phase.review.failed_evidence_route is not None
+                    and phase.routes[phase.review.failed_evidence_route].effect
+                    is RouteEffect.GOTO
+                ):
                     permitted_goto_keys.add(phase.review.failed_evidence_route)
                 if goto_route_keys != permitted_goto_keys:
                     raise ValidationError(

@@ -1480,7 +1480,7 @@ def reduce_result(
             phase.review is None
             or phase.review.authority is not ReviewAuthority.GATE
             or failure_route is None
-            or failure_route.effect is not RouteEffect.GOTO
+            or failure_route.effect not in {RouteEffect.GOTO, RouteEffect.AWAIT_HUMAN}
         ):
             reduction = _stop_for_human(
                 updated, "required_evidence_failed_without_route"
