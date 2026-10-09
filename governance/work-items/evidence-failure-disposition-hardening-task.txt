@@ -1,0 +1,480 @@
+Implement the bounded evidence-failure disposition hardening defined by the
+accepted design record
+docs/wfc_evidence_failure_disposition_hardening_design_2026-10-09.adoc
+(Status: READY_FOR_BOUNDED_IMPLEMENTATION_COMMISSION). This is a FRESH
+Commission. It is NOT a resume, retry, replay, or reconciliation of any
+predecessor Run. Loop: implement -> independent_review -> {accept: complete,
+correction: correction}; correction -> rereview; rereview -> {accept:
+complete, correction: correction}. Initial phase: implement. No supervisor.
+No child Run. No nested WFC.
+
+Read in full, before starting any work:
+
+  docs/wfc_evidence_failure_disposition_hardening_design_2026-10-09.adoc
+  docs/wfc_operator_manual.adoc, section 22 ("Trusted evidence, worker
+    completion, and correction routing")
+  docs/wfc_p2_stagnation_audit_2026-10-09.adoc
+
+The design record is the engineering authority behind this Commission's
+scope and prose. Where this task text summarizes it, its own exact wording
+controls.
+
+======================================================================
+WHAT THIS COMMISSION MEANS
+======================================================================
+
+Today, `ReviewDescriptor.failed_evidence_route` may only name a route whose
+effect is `RouteEffect.GOTO`. Omitting the field, and declaring it pointing
+at anything else, both currently fall back to the same generic human stop
+(`required_evidence_failed_without_route`) -- making an accidental omission
+and a deliberate human-disposition choice structurally indistinguishable at
+authoring time. Three P2 Runs
+(RUN-90c24baad80645b0958ed96ae0a2cc3f, RUN-d5ae5bd0eadb41dba2c10c1d085e6c4d,
+RUN-6fa0b56e3b844896a55f147f4ee41fea) stopped before ever reaching an
+independent review because of exactly this ambiguity in their Commission
+topology -- not because of any defect in the trusted-evidence or routing
+mechanics. The corrected successor, RUN-26e233c979554260bcca8529d1b72c1f,
+completed in two Hops using the canonical shape of
+docs/wfc_operator_manual.adoc section 22.4.
+
+This Commission makes the deliberate choice machine-checked at NEW-launch
+admission time, reusing the existing `RouteEffect.AWAIT_HUMAN` effect as a
+second valid target for `failed_evidence_route`, rather than inventing any
+new schema concept. The full semantic detail is already fully specified in
+the design record; this task text governs what THIS Commission must
+additionally do to implement, review, and land it.
+
+======================================================================
+STATIC ADMISSION INVARIANT (verbatim from design section 6)
+======================================================================
+
+Every newly admitted phase whose Coordinator-required evidence tuple is
+non-empty must be a gate review (`review.authority == GATE`) that explicitly
+declares `review.failed_evidence_route`. That key must name one of the
+phase's own routes whose effect is either `GOTO` or `AWAIT_HUMAN`. A phase
+whose evidence tuple is empty is exempt from this invariant entirely.
+
+Valid: any phase with `evidence: []`; a gate with non-empty evidence and a
+`GOTO` failed_evidence_route; a gate with non-empty evidence and an
+`AWAIT_HUMAN` failed_evidence_route.
+
+Invalid, for NEW-launch admission only: a non-gate phase declaring
+non-empty evidence; a gate declaring non-empty evidence with
+failed_evidence_route omitted; failed_evidence_route naming an unknown
+route or a route whose effect is neither GOTO nor AWAIT_HUMAN.
+
+======================================================================
+NO NEW SCHEMA CONCEPT
+======================================================================
+
+Do NOT introduce: `evidence_failure_disposition`; a new disposition enum; a
+sentinel such as `failed_evidence_route: human`; another route namespace;
+another routing mechanism; another persisted Run field. Reuse
+`failed_evidence_route` and the existing `RouteEffect.AWAIT_HUMAN` exactly
+because the design (section 4) rejected every alternative that would
+duplicate routing semantics already present in `Route`/`RouteEffect`.
+
+======================================================================
+PRODUCTION CHANGE SHAPE
+======================================================================
+
+Bounded to exactly three files:
+
+  src/workflow_coordinator/serialization.py
+  src/workflow_coordinator/reducer.py
+  src/workflow_coordinator/operator.py
+
+serialization.py
+----------------
+- Permit `failed_evidence_route` to resolve to `GOTO` or `AWAIT_HUMAN`
+  (currently the per-phase route-shape check at the profile level rejects
+  anything but `GOTO`). Preserve rejection of every other `RouteEffect`.
+- Adjust the existing v3 evaluator's permitted-goto-key accounting: it
+  currently adds `phase.review.failed_evidence_route` unconditionally to
+  `permitted_goto_keys`, then compares that set for exact equality against
+  `goto_route_keys` (routes whose effect IS `GOTO`). If
+  `failed_evidence_route` resolves to `AWAIT_HUMAN`, it will never appear in
+  `goto_route_keys`, so the unconditional add would make the exact-set
+  comparison fail incorrectly for an otherwise-valid v3 evaluator profile.
+  Fix the accounting so an `AWAIT_HUMAN`-targeting failed-evidence route is
+  not counted as a `GOTO` route in that comparison.
+- Do not redesign WorkflowProfile serialization otherwise.
+
+reducer.py
+----------
+- In `reduce_result`, the clean-required-evidence-failure absorption
+  condition currently requires `failure_route.effect is RouteEffect.GOTO`.
+  Widen it to accept `GOTO` or `AWAIT_HUMAN`. Reuse the existing
+  `_apply_route` dispatch unchanged -- `_apply_route` already owns
+  `AWAIT_HUMAN` semantics (mandatory authored `question`,
+  `_stop_for_human(run, f"route:{route_key}", route.question)`). Do not
+  create a separate evidence-specific human-stop branch.
+- Preserve existing behavior for evidence `PASS`, `ERROR`, malformed
+  evidence, and `not_run`/mechanical evidence failure.
+
+operator.py
+-----------
+- Add one small, self-contained new-launch admission predicate,
+  conceptually `_admit_evidence_disposition(profile)` (exact naming may
+  follow repository convention), structurally a sibling to the existing
+  `_admit_a1`. It enforces exactly the invariant above: for each phase, if
+  `phase.evidence` is empty, no restriction; otherwise the phase must be a
+  gate review declaring `review.failed_evidence_route`. Route
+  existence/effect validity (unknown route, wrong effect) is already owned
+  by serialization/profile validation -- do not duplicate that check here.
+- Invoke it from `_preflight()` and from `_prepare_successor()`.
+- Do NOT invoke it from `_export_salvage()`.
+- Do not redesign general preflight architecture.
+
+======================================================================
+HISTORICAL / SALVAGE COMPATIBILITY IS LOAD-BEARING
+======================================================================
+
+The design census found 32 committed self-development profiles under
+`governance/self-development/`: 1
+(`projected-result-contracts-p2-integration-completion-profile.yaml`)
+already conforms to the new invariant; 31 would fail it, via the same
+two-part shape this hardening targets. Those 31 are historical governance
+records. Do NOT bulk-edit, migrate, or rewrite any of them.
+
+The new mandatory-explicitness admission predicate must NOT be enforced
+during generic historical profile loading, replay, or salvage scope
+reconstruction. Add a regression proving `_export_salvage()` can still load
+a pinned predecessor profile whose shape would be rejected for a NEW Run by
+the new admission predicate -- new-launch admission and historical
+readability are intentionally different boundaries.
+
+======================================================================
+WORKER-EVIDENCE SEMANTICS
+======================================================================
+
+Preserve the accepted design decision: a NEW admitted non-gate phase
+(worker, advisory, or a v3 convergence corrector) may not declare non-empty
+Coordinator-required `evidence:`. This does not prohibit an agent from
+executing tests diagnostically in its own shell. Keep the distinction:
+agent-side tests are diagnostics; `phase.evidence` is Coordinator-required
+trusted acceptance evidence. Worker completion remains "bounded candidate
+coherent and ready for its declared next step," never "proof that
+downstream acceptance evidence already passed."
+
+======================================================================
+AWAIT_HUMAN SEMANTICS
+======================================================================
+
+Do not invent new human-stop behavior. Reuse the current
+`RouteEffect.AWAIT_HUMAN` behavior exactly. A failed-evidence route
+targeting `AWAIT_HUMAN` must use the route's existing authored `question`
+and normal `_apply_route()` / human-stop semantics. Expected observable
+clean-failure shape: `stop_reason == "route:<route-key>"` with the
+explicitly authored question surfaced through existing Run mechanics. Do
+not fold this into `required_evidence_failed_without_route` -- the whole
+point is that this is now an EXPLICIT authored disposition.
+
+======================================================================
+OPERATOR MANUAL UPDATE
+======================================================================
+
+Update ONLY docs/wfc_operator_manual.adoc, principally section 22, so it no
+longer describes this guard solely as future design intent. Document:
+new-launch admission requires explicit clean-failure disposition for
+non-empty required evidence; the GOTO disposition shape; the AWAIT_HUMAN
+disposition shape with its authored question; that worker/non-gate trusted
+evidence is inadmissible for a new launch; that empty-evidence worker
+phases remain canonical; that historical parsing/replay/salvage is not
+revalidated under the new rule; and that `_export_salvage()` remains
+intentionally outside new-launch admission. Do not rewrite unrelated
+Operator Manual sections.
+
+======================================================================
+TEST AUTHORITY
+======================================================================
+
+Repository inspection at Commission-authoring time established that the
+relevant behavior is owned by:
+
+  tests/unit/test_serialization.py  -- serialization coverage
+  tests/unit/test_reducer.py        -- reducer coverage
+  tests/unit/test_a1_admission.py   -- pure bounded admission-predicate
+                                        tests, sibling to `_admit_a1`; the
+                                        new predicate's tests belong here
+  tests/unit/test_operator.py       -- `_preflight()` / `_prepare_successor()`
+                                        / `_export_salvage()` integration
+                                        coverage, incl. the
+                                        historical-salvage-compatibility
+                                        regression
+
+Inspect current repository truth yourself before adding tests; do not
+invent a new test module merely for organizational preference when these
+existing modules already own the behavior. At minimum provide coverage
+equivalent to:
+
+Serialization: failed_evidence_route -> GOTO still admitted (regression);
+failed_evidence_route -> AWAIT_HUMAN with a mandatory question newly
+admitted; an unsupported effect still rejected; round-trip of the
+AWAIT_HUMAN shape; v3 evaluator goto-key exactness preserved when
+failed_evidence_route resolves to AWAIT_HUMAN.
+
+Admission: non-gate + non-empty evidence rejected; gate + non-empty
+evidence + missing failed_evidence_route rejected; gate + GOTO disposition
+admitted; gate + AWAIT_HUMAN disposition admitted; empty evidence exempt
+for every role; the accepted P2 successful profile
+(projected-result-contracts-p2-integration-completion-profile.yaml) remains
+admissible at new-launch preflight.
+
+Reducer: evidence PASS unchanged; clean FAIL + GOTO still routes to
+correction; clean FAIL + AWAIT_HUMAN stops through the route with its
+authored question; ERROR unchanged; malformed unchanged;
+not_run/mechanical-preemption unchanged.
+
+Historical compatibility: `_export_salvage()` can still load/use a
+historical profile that violates the new NEW-launch invariant; existing
+replay/history behavior unchanged.
+
+======================================================================
+WORKER SCOPE
+======================================================================
+
+Use scope-as-authority, not fragile exact-file prediction. `implement` and
+`correction` authorized scope is exactly:
+
+  src/workflow_coordinator/serialization.py
+  src/workflow_coordinator/reducer.py
+  src/workflow_coordinator/operator.py
+  tests/unit
+  docs/wfc_operator_manual.adoc
+
+No wildcard syntax; no bare repository-wide scope. `independent_review` and
+`rereview` scope is exactly their one durable review artifact:
+
+  docs/backlog/FTR-WFC-EVIDENCE-FAILURE-DISPOSITION-HARDENING_implementation_review_001.adoc
+
+Review phases must not mutate production/tests/docs; worker phases must
+not mutate the review artifact. This Commission does NOT grant: broader
+governance mutation; Runtime mutation; Evidence mutation; Project Memory
+mutation; or any other unrelated repository authority. Do NOT mutate
+docs/wfc_evidence_failure_disposition_hardening_design_2026-10-09.adoc --
+that design is accepted input, not implementation output.
+
+======================================================================
+CORRECTED WORKFLOW TOPOLOGY (this Commission's own shape)
+======================================================================
+
+  implement [worker]
+      role: worker
+      review: null
+      evidence: []
+      routes:
+        completed -> independent_review
+
+  independent_review [gate]
+      role: independent_reviewer
+      review.authority: gate
+      review.finding_authority: [resolve]
+      evidence: [pytest]
+      review.failed_evidence_route: correction
+      routes:
+        accept                      -> complete
+        correction/changes_required -> correction
+
+  correction [worker]
+      role: worker
+      review: null
+      evidence: []
+      routes:
+        completed -> rereview
+
+  rereview [gate]
+      role: independent_reviewer
+      review.authority: gate
+      review.finding_authority: [resolve]
+      evidence: [pytest]
+      review.failed_evidence_route: correction
+      routes:
+        accept                      -> complete
+        correction/changes_required -> correction
+
+Initial phase: implement.
+
+DO NOT put full-suite `pytest` in `implement.evidence` or
+`correction.evidence` -- both carry `evidence: []`. The complete repository
+command `python -m pytest -q`, 900-second timeout, belongs as
+Coordinator-required evidence ONLY on `independent_review` and `rereview`.
+Both gates declare `review.failed_evidence_route: correction`, naming the
+existing `correction` goto route. This Commission's own topology is
+expected to conform to the future invariant it is itself implementing.
+
+======================================================================
+P2 RESULT-CONTRACT VOCABULARY
+======================================================================
+
+Runtime is promoted P2. Worker/correction semantics: `WorkResult`, `status:
+completed | blocked`. Reviewer/rereview semantics: `ReviewVerdict`,
+`verdict: accept | changes_required`. Do not instruct a worker to emit
+`outcome`/`accept`/`changes_required`; do not instruct a reviewer to emit
+worker `status`.
+
+======================================================================
+WORKER COMPLETION SEMANTICS
+======================================================================
+
+Per docs/wfc_operator_manual.adoc section 22.2: worker `status: completed`
+means the bounded candidate for this phase is coherent and ready for its
+declared next step. It does NOT mean the worker has proven all downstream
+trusted acceptance evidence -- Coordinator-trusted evidence runs after the
+semantic result and after any admitted Coordinator-owned commit. Agent-side
+tests, including a full-suite run in the agent's own sandbox, are
+diagnostic input, never Coordinator-trusted evidence. A red agent-side
+suite is NOT by itself a reason to return `blocked`; inability to run the
+full suite in the agent sandbox is NOT by itself a scope escalation.
+Report diagnostic limitations truthfully in `summary`. `blocked` is
+reserved for a real missing authority, scope, prerequisite, or capability
+needed by THIS Hop -- never for a downstream gate that has not run yet.
+
+======================================================================
+IMPLEMENT WORKER PURPOSE
+======================================================================
+
+1. Inspect the current `serialization.py`, `reducer.py`, and `operator.py`
+   at the authorized call sites named above; do not assume this task text's
+   line-level description is still exact -- establish current truth.
+2. Implement exactly the production change shape above: the two
+   serialization widenings, the reducer widening, and the new admission
+   predicate invoked at `_preflight()`/`_prepare_successor()` only.
+3. Add/extend tests in the four modules named under TEST AUTHORITY,
+   including the historical-salvage-compatibility regression.
+4. Update docs/wfc_operator_manual.adoc section 22 as described above.
+5. Run focused/full tests diagnostically where the sandbox permits.
+6. Return `completed` with a CommitIntent once the bounded candidate is
+   coherent and ready for independent review.
+
+======================================================================
+FIRST INDEPENDENT REVIEW -- MUST BE BROAD
+======================================================================
+
+This is the FIRST independent review of this hardening. It must assess the
+COMPLETE candidate, not only the latest diff, with fresh context
+(`context: fresh`). At minimum verify, numbered one through twenty-one:
+
+ 1. No new evidence-disposition schema field or parallel routing mechanism
+    was introduced.
+ 2. failed_evidence_route still names a real route key.
+ 3. Serialization admits exactly GOTO and AWAIT_HUMAN, and no other effect.
+ 4. AWAIT_HUMAN still requires its normal authored question.
+ 5. v3 evaluator goto-key accounting remains exact.
+ 6. New-launch admission rejects non-gate phases with non-empty trusted
+    evidence.
+ 7. New-launch admission rejects evidence-bearing gates that omit
+    failed_evidence_route.
+ 8. Empty-evidence phases remain unaffected.
+ 9. _preflight() enforces the invariant.
+10. _prepare_successor() enforces the invariant.
+11. _export_salvage() explicitly remains outside that admission predicate
+    and historical violating profiles remain readable for
+    salvage/recovery.
+12. Clean evidence FAIL + GOTO preserves correction routing.
+13. Clean evidence FAIL + AWAIT_HUMAN uses existing route application and
+    exposes its authored question.
+14. Evidence PASS is unchanged.
+15. ERROR / malformed / not_run / mechanical-preemption behavior remains
+    unchanged.
+16. Existing replay/history remains truthful.
+17. The accepted successful P2 profile remains admissible.
+18. Historical governance profiles were NOT bulk-migrated.
+19. Operator Manual accurately documents the implemented boundary.
+20. No P3/P3.5/P4/P5 or unrelated scope creep occurred.
+21. Full Coordinator-owned repository pytest evidence passes.
+
+Use the new durable review artifact:
+
+  docs/backlog/FTR-WFC-EVIDENCE-FAILURE-DISPOSITION-HARDENING_implementation_review_001.adoc
+
+This name is reserved, verified fresh against existing
+`docs/backlog/FTR-WFC-*` history at Commission-authoring time; it is not
+pre-created before the Run. The reviewer creates/updates it on first
+invocation.
+
+======================================================================
+REREVIEW -- DELIBERATELY NARROWER
+======================================================================
+
+Fresh reviewer context but a bounded surface: current-Run Findings opened
+by `independent_review` (or an earlier `rereview` of this same Run), their
+corrections, direct regressions caused by those corrections, and the gate's
+own trusted full pytest evidence. Do not reopen a broad architecture review
+merely because context is fresh. A genuinely new MATERIAL defect supported
+by concrete new evidence may still escape this narrow surface. Unrelated
+newly noticed MINOR observations should not indefinitely reset
+convergence.
+
+======================================================================
+FINDING AUTHORITY
+======================================================================
+
+Both `independent_review` and `rereview` hold `finding_authority: [resolve]`
+only, for any genuine current-Run-local Finding either phase of THIS Run
+itself opens, once independently verified corrected. No `residual`,
+`supersede`, or `reopen` is granted or required. This Run starts with no
+inherited Run-local Finding set and confers no authority over any prior
+Run's Findings. Do not use this Commission to fix
+BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS or any other unrelated BUG.
+
+======================================================================
+ROLE / MODEL STRATEGY
+======================================================================
+
+Use the established economical role strategy unless repository truth gives
+a concrete reason not to:
+
+  implement / correction:        codex_cli, gpt-5.6-terra, medium
+  independent_review / rereview: codex_cli, gpt-5.6-terra, high
+
+This hardening is deliberately small and bounded. Do not escalate to a
+frontier model merely because earlier P2 Runs had Commission topology
+defects unrelated to model capability.
+
+======================================================================
+HOP BUDGET
+======================================================================
+
+max_autonomous_hops: 8 -- a safety ceiling, not an expected hop count.
+Expected happy path may be only implement -> independent_review ->
+complete. Correction/rereview remain available if actually needed.
+
+======================================================================
+EXPLICITLY WITHHELD
+======================================================================
+
+P3 Finding authorship/update projection; P3.5 broad authority-conformance
+work beyond this one admission invariant; P4 Coordinator-owned
+effects/mechanics; P5 provider-capability cleanup; generic workflow DSL;
+generic recovery taxonomy; Higher Loop / outer orchestration; automatic
+successor generation; automatic Commission generation; automatic Runtime
+promotion; Runtime mutation/promotion during this Run; Evidence mutation;
+Project Memory mutation; provider/model routing; Claude adapter; sandbox
+redesign; evidence output-retention redesign; general repair of
+BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS; worker-completion redesign;
+commit-from-blocked changes; bulk migration of historical profiles;
+unrelated refactoring; unrelated BUG/FTR closure; push.
+
+If trusted evidence reveals a repository defect genuinely unrelated to this
+hardening, this Commission does not authorize silently absorbing or
+opportunistically fixing it -- escalate (requires_human=true,
+escalation.kind=scope) and preserve truth instead.
+
+======================================================================
+ACCEPTANCE MEANING
+======================================================================
+
+If this Commission completes successfully, acceptance means ONLY that the
+evidence-failure disposition hardening defined by
+docs/wfc_evidence_failure_disposition_hardening_design_2026-10-09.adoc has
+been implemented, independently reviewed, and passed trusted repository
+acceptance evidence. It does NOT itself promote Runtime, authorize P3,
+push, or migrate historical profiles. Any later Runtime promotion remains a
+separate maintainer action after archival and semantic ledger curation.
+
+Where this task text summarizes the design record, the Operator Manual, or
+the stagnation audit, their own exact wording controls if they ever appear
+to differ; do not resolve an apparent conflict by inventing a third
+reading -- stop and report it (requires_human=true, escalation.kind=scope)
+instead.
