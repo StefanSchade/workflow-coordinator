@@ -46,7 +46,7 @@ def repository(tmp_path: Path) -> Path:
     return repo
 
 
-def _result(*, intent: dict[str, object] | None, outcome: str = "completed") -> str:
+def _result(*, intent: dict[str, object] | None, status: str = "completed") -> str:
     return json.dumps(
         {
             "schema_version": 1,
@@ -55,7 +55,7 @@ def _result(*, intent: dict[str, object] | None, outcome: str = "completed") -> 
             "invocation_id": "INV-1",
             "result": {
                 "schema_version": 1,
-                "outcome": outcome,
+                "status": status,
                 "requested_route": "done",
                 "scope_changed": False,
                 "requires_human": False,
@@ -388,7 +388,7 @@ def test_failed_result_with_intent_never_synthesizes_a_commit(repository: Path):
     stopped = _vertical_run(
         repository,
         WorktreeOnlyAdapter(
-            _result(intent={"paths": ["src/a.py"], "subject": "fix(workflow): WI-1 H001 change"}, outcome="blocked"),
+            _result(intent={"paths": ["src/a.py"], "subject": "fix(workflow): WI-1 H001 change"}, status="blocked"),
             {"src/a.py": "after\n"},
         ),
     )
