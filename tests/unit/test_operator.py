@@ -292,7 +292,7 @@ def stopped_predecessor_and_descriptor(
 args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read()
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
 repo.joinpath(CANDIDATE_PATH).write_text("unaccepted predecessor candidate\\n")
-result={"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":True,"requires_human":True,"escalation":{"kind":"scope","question":"May a maintainer grant a fresh scope?"},"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"authority required"}
+result={"schema_version":1,"status":"completed","requested_route":"done","scope_changed":True,"requires_human":True,"escalation":{"kind":"scope","question":"May a maintainer grant a fresh scope?"},"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"authority required"}
 output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
 '''
     predecessor = fake(tmp_path, predecessor_body.replace("CANDIDATE_PATH", repr(candidate_path)))
@@ -352,7 +352,7 @@ def test_operator_vertical_layered_scope_stop_preserves_semantic_and_mechanical_
 args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read()
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
 repo.joinpath("PROOF.md").write_text("dirty candidate\\n")
-result={"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":True,"requires_human":True,"escalation":{"kind":"scope","question":"May PROOF.md scope include the missing companion test?"},"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 forbidden"},"evidence_refs":[],"summary":"needs authority"}
+result={"schema_version":1,"status":"completed","requested_route":"done","scope_changed":True,"requires_human":True,"escalation":{"kind":"scope","question":"May PROOF.md scope include the missing companion test?"},"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 forbidden"},"evidence_refs":[],"summary":"needs authority"}
 output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
 ''')
     state = tmp_path / "layered-state"
@@ -560,8 +560,8 @@ def test_successor_launch_revalidates_every_mutable_preprovider_input(
 
 
 @pytest.mark.parametrize("result_body", [
-    '{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":false,"requires_human":false,"escalation":null,"findings":[],"claimed_commits":[],"commit_intent":{"paths":["outside.md"],"subject":"fix(workflow): WI-OP H001 invalid"},"evidence_refs":[],"summary":"invalid intent"}',
-    '{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":false,"requires_human":false,"escalation":null,"findings":[],"claimed_commits":[],"commit_intent":null,"evidence_refs":[],"summary":"ordinary result"}',
+    '{"schema_version":1,"status":"completed","requested_route":"done","scope_changed":false,"requires_human":false,"escalation":null,"findings":[],"claimed_commits":[],"commit_intent":{"paths":["outside.md"],"subject":"fix(workflow): WI-OP H001 invalid"},"evidence_refs":[],"summary":"invalid intent"}',
+    '{"schema_version":1,"status":"completed","requested_route":"done","scope_changed":false,"requires_human":false,"escalation":null,"findings":[],"claimed_commits":[],"commit_intent":null,"evidence_refs":[],"summary":"ordinary result"}',
 ])
 def test_successor_provenance_does_not_weaken_ordinary_commit_or_evidence_fail_closed_rules(
     repository: Path, tmp_path: Path, monkeypatch, result_body: str
@@ -626,7 +626,7 @@ def test_successor_lifecycle_keeps_every_predecessor_publication_and_governing_i
     successor = fake(tmp_path, '''import json, pathlib, sys
 args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read()
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
-result={"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"fresh no-salvage successor"}
+result={"schema_version":1,"status":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"fresh no-salvage successor"}
 output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
 ''')
     successor_state = tmp_path / "byte-identical-successor"
@@ -758,7 +758,7 @@ def test_public_salvage_containment_modes_and_prompt_projection_are_bounded(
     successor = fake(tmp_path, f'''import json, pathlib, sys
 args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read(); pathlib.Path({str(prompt_path)!r}).write_text(prompt)
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
-result={{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"fresh"}}
+result={{"schema_version":1,"status":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"fresh"}}
 output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}}))
 ''')
     frozen = run_path.read_bytes()
@@ -906,7 +906,7 @@ def test_tracked_binary_salvage_uses_a_different_clean_successor_checkout_withou
 args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read()
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
 repo.joinpath("PROOF.md").write_bytes(b"\\x00binary candidate\\xff")
-result={"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":True,"requires_human":True,"escalation":{"kind":"scope","question":"May a maintainer grant new authority?"},"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 forbidden"},"evidence_refs":[],"summary":"authority required"}
+result={"schema_version":1,"status":"completed","requested_route":"done","scope_changed":True,"requires_human":True,"escalation":{"kind":"scope","question":"May a maintainer grant new authority?"},"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 forbidden"},"evidence_refs":[],"summary":"authority required"}
 output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
 ''')
     predecessor_state = tmp_path / "predecessor-state"
@@ -1005,7 +1005,7 @@ output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id
     successor = fake(tmp_path, f'''import json, pathlib, sys
 args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read(); pathlib.Path({str(prompt_path)!r}).write_text(prompt)
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
-result={{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"independently complete"}}
+result={{"schema_version":1,"status":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"independently complete"}}
 output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}}))
 ''')
     # The association is mutable operator wiring, not predecessor Run truth.
@@ -1096,7 +1096,7 @@ args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
 repo.joinpath("src/a.txt").write_text("same bytes\\n")
 repo.joinpath("src/b.txt").write_text("same bytes\\n")
-result={"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":True,"requires_human":True,"escalation":{"kind":"scope","question":"May a maintainer grant new authority?"},"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"authority required"}
+result={"schema_version":1,"status":"completed","requested_route":"done","scope_changed":True,"requires_human":True,"escalation":{"kind":"scope","question":"May a maintainer grant new authority?"},"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"authority required"}
 output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
 ''')
     predecessor_state = tmp_path / "same-content-predecessor"
@@ -1151,7 +1151,7 @@ args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
 repo.joinpath("src").mkdir(exist_ok=True)
 repo.joinpath("src/reproduced.txt").write_text("independently reproduced\\n")
-result={{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{{"paths":["src/reproduced.txt"],"subject":"fix(workflow): WI-OP H001 independently reproduce"}},"evidence_refs":[],"summary":"fresh successor"}}
+result={{"schema_version":1,"status":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{{"paths":["src/reproduced.txt"],"subject":"fix(workflow): WI-OP H001 independently reproduce"}},"evidence_refs":[],"summary":"fresh successor"}}
 output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}}))
 ''')
     successor_state = tmp_path / "same-content-successor-state"
@@ -1517,7 +1517,7 @@ counter=pathlib.Path({str(counter)!r}); counter.write_text(str(int(counter.read_
 repo.joinpath("PROOF.md").write_text("after\\n")
 prompt=sys.stdin.read()
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
-output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":{{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 fixture"}},"evidence_refs":[],"summary":"done"}}}}))
+output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":{{"schema_version":1,"status":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 fixture"}},"evidence_refs":[],"summary":"done"}}}}))
 '''
     executable = fake(tmp_path, body)
     state = tmp_path / "state"
@@ -1689,7 +1689,7 @@ args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message") 
 counter=pathlib.Path({str(counter)!r}); counter.write_text(str(int(counter.read_text()) + 1) if counter.exists() else "1")
 prompt=sys.stdin.read()
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
-output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":{{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"done"}}}}))
+output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":{{"schema_version":1,"status":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"done"}}}}))
 ''',
     )
     monkeypatch.setattr(operator, "_summary", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("post-provider observation failed")))
@@ -1795,7 +1795,7 @@ bindings:
             repository.joinpath("PROOF.md").write_text("after\n")
         result = {
             "schema_version": 1,
-            "outcome": "completed",
+            **({"status": "completed"} if first else {"outcome": "completed"}),
             "requested_route": "review" if first else "done",
             "scope_changed": False,
             "requires_human": False,
@@ -2013,7 +2013,7 @@ class _TwoHopAdapter:
         if invocation.hop_id == "H001":
             self.repository.joinpath("PROOF.md").write_text("after\n")
             work_item_id = request.prompt.split("work_item_id=", 1)[1].split("\n", 1)[0]
-            result = {"schema_version": 1, "outcome": "completed", "requested_route": "verify",
+            result = {"schema_version": 1, "status": "completed", "requested_route": "verify",
                       "scope_changed": False, "requires_human": False, "escalation": None, "findings": [],
                       "claimed_commits": [], "commit_intent": {"paths": ["PROOF.md"], "subject": f"docs(workflow): {work_item_id} H001 fixture"},
                       "evidence_refs": [], "summary": "prepared"}
@@ -2068,7 +2068,7 @@ def _two_hop_serial_fixture(repository: Path, tmp_path: Path, adapter):
 
 
 def _base_result(route_key: str, **overrides: object) -> dict[str, object]:
-    result = {"schema_version": 1, "outcome": "completed", "requested_route": route_key,
+    result = {"schema_version": 1, "status": "completed", "requested_route": route_key,
               "scope_changed": False, "requires_human": False, "escalation": None,
               "findings": [], "claimed_commits": [], "commit_intent": None,
               "evidence_refs": [], "summary": "fixture"}
@@ -2343,7 +2343,7 @@ args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd")+1]); output=pathlib
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
 first=fact("hop_id") == "H001"
 if first: repo.joinpath("PROOF.md").write_text("after\\n")
-result={"schema_version":1,"outcome":"completed","requested_route":"verify" if first else "done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 fixture"} if first else None,"evidence_refs":[],"summary":"fixture"}
+result={"schema_version":1,**({"status":"completed"} if first else {"outcome":"completed"}),"requested_route":"verify" if first else "done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 fixture"} if first else None,"evidence_refs":[],"summary":"fixture"}
 output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
 ''')
     state = tmp_path / "state"
@@ -2390,7 +2390,7 @@ def test_main_observation_only_run_reports_no_run_commits(repository: Path, tmp_
     executable = fake(tmp_path, '''import json, pathlib, sys
 output=pathlib.Path(sys.argv[sys.argv.index("--output-last-message") + 1]); prompt=sys.stdin.read()
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
-result={"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"observed"}
+result={"schema_version":1,"status":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"observed"}
 output.write_text(json.dumps({"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}))
 ''')
     state = tmp_path / "state"

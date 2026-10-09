@@ -136,7 +136,7 @@ def _walk_object_schemas(schema):
         yield from _walk_object_schemas(child)
 
 
-def _known_good_envelope():
+def _known_good_envelope(result_contract_kind=ResultContractKind.GENERIC_ROUTING_RESULT):
     return {
         "schema_version": 1,
         "run_id": "RUN-1",
@@ -144,7 +144,11 @@ def _known_good_envelope():
         "invocation_id": "INV-1",
         "result": {
             "schema_version": 1,
-            "outcome": "completed",
+            **(
+                {"status": "completed"}
+                if result_contract_kind is ResultContractKind.WORK_RESULT
+                else {"outcome": "completed"}
+            ),
             "requested_route": "done",
             "scope_changed": False,
             "requires_human": False,
@@ -272,7 +276,7 @@ def test_real_vertical_composition_uses_fake_cli_and_existing_reducer(repository
 args=sys.argv[1:]; repo=args[args.index("--cd")+1]; output=pathlib.Path(args[args.index("--output-last-message")+1])
 (output.parent / "argv.json").write_text(json.dumps(args))
 pathlib.Path(repo, "PROOF.md").write_text("after\\n")
-output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001","invocation_id":"INV-1","result":{"schema_version":1,"outcome":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-1 H001 fixture"},"evidence_refs":[],"summary":"done"}}))
+output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001","invocation_id":"INV-1","result":{"schema_version":1,"status":"completed","requested_route":"done","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{"paths":["PROOF.md"],"subject":"docs(workflow): WI-1 H001 fixture"},"evidence_refs":[],"summary":"done"}}))
 '''
     executable = _fake(tmp_path, script)
     workflow = profile({"work": phase({"done": route("complete")})})
@@ -304,7 +308,7 @@ def test_completed_pair_marker_is_reconciled_idempotently_without_redispatch(
     class Adapter:
         def execute(self, request):
             calls.append(request.invocation.invocation_id)
-            envelope = _known_good_envelope()
+            envelope = _known_good_envelope(request.result_contract_kind)
             return workflow_coordinator.adapter.AgentExecutionOutcome(
                 json.dumps(envelope), 0, False, "", ""
             )
@@ -529,7 +533,7 @@ def test_legacy_completed_marker_recovery_does_not_require_schema4_evidence(
         def execute(self, request):
             calls.append(request.invocation.invocation_id)
             return AgentExecutionOutcome(
-                json.dumps(_known_good_envelope()), 0, False, "", ""
+                json.dumps(_known_good_envelope(request.result_contract_kind)), 0, False, "", ""
             )
 
     workflow = profile({"work": phase({"done": route("complete")})})
@@ -619,7 +623,7 @@ def test_failed_evidence_publication_charges_uncertain_without_partial_row(
         def execute(self, request):
             calls.append(request.invocation.invocation_id)
             return AgentExecutionOutcome(
-                json.dumps(_known_good_envelope()), 0, False, "", ""
+                json.dumps(_known_good_envelope(request.result_contract_kind)), 0, False, "", ""
             )
 
     monkeypatch.setattr(
@@ -704,7 +708,7 @@ def test_staged_unpaired_row_is_abandoned_on_recovery_after_run_write_failure(
         def execute(self, request):
             calls.append(request.invocation.invocation_id)
             return AgentExecutionOutcome(
-                json.dumps(_known_good_envelope()), 0, False, "", ""
+                json.dumps(_known_good_envelope(request.result_contract_kind)), 0, False, "", ""
             )
 
     original_write = slice4.write_run_snapshot
@@ -889,7 +893,7 @@ pathlib.Path(repo, "PROOF.md").write_text("after\\n")
 subprocess.run(("git", "-C", repo, "add", "PROOF.md"), check=True)
 subprocess.run(("git", "-C", repo, "commit", "-m", "docs(workflow): WI-1 H001 fixture"), check=True)
 commit=subprocess.run(("git", "-C", repo, "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
-output.write_text(json.dumps({{"schema_version": 1, "run_id": "RUN-1", "hop_id": "H001", "invocation_id": "INV-1", "result": {{"schema_version": 1, "outcome": "completed", "requested_route": "done", "scope_changed": False, "requires_human": False, "escalation": None, "findings": [], "claimed_commits": [commit], "commit_intent": None, "evidence_refs": [], "summary": "done"}}}}))
+output.write_text(json.dumps({{"schema_version": 1, "run_id": "RUN-1", "hop_id": "H001", "invocation_id": "INV-1", "result": {{"schema_version": 1, "status": "completed", "requested_route": "done", "scope_changed": False, "requires_human": False, "escalation": None, "findings": [], "claimed_commits": [commit], "commit_intent": None, "evidence_refs": [], "summary": "done"}}}}))
 '''
     executable = _fake(tmp_path, script)
     workflow = profile({"work": phase({"done": route("complete")})})

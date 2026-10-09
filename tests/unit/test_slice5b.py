@@ -401,7 +401,7 @@ class ScriptedConvergenceAdapter:
         if hop == "H001":
             self.repository.joinpath("payload.txt").write_text("investigated\n")
             result_value = {
-                **common, "outcome": "completed", "requested_route": "review",
+                **common, "status": "completed", "requested_route": "review",
                 "findings": [],
                 "commit_intent": {"paths": ["payload.txt"],
                                   "subject": "feat(workflow): WI-GENERIC-5B H001 investigate"},
@@ -410,7 +410,7 @@ class ScriptedConvergenceAdapter:
         elif hop == "H002":
             self.repository.joinpath("review", "report.md").write_text("blocking issue\n")
             result_value = {
-                **common, "outcome": "changes_required", "requested_route": "correct",
+                **common, "verdict": "changes_required", "requested_route": "correct",
                 "findings": [{"finding_id": None, "invariant": "Payload must satisfy the generic invariant.",
                               "blocking": True, "proposed_state": "open",
                               "evidence_refs": ["review-observation"]}],
@@ -424,7 +424,7 @@ class ScriptedConvergenceAdapter:
             assert "finding_authority=resolve" not in request.prompt
             self.repository.joinpath("payload.txt").write_text("corrected\n")
             result_value = {
-                **common, "outcome": "completed", "requested_route": "rereview",
+                **common, "status": "completed", "requested_route": "rereview",
                 "findings": [],
                 "commit_intent": {"paths": ["payload.txt"],
                                   "subject": "fix(workflow): WI-GENERIC-5B H003 correct"},
@@ -435,7 +435,7 @@ class ScriptedConvergenceAdapter:
             assert "prior_hop=H003" in request.prompt
             assert "finding_authority=resolve" in request.prompt
             result_value = {
-                **common, "outcome": "completed", "requested_route": "accept",
+                **common, "verdict": "accept", "requested_route": "accept",
                 "findings": [{"finding_id": "F001", "proposed_state": "resolved",
                               "evidence_refs": ["fresh-rereview"]}],
                 "commit_intent": None,
@@ -551,11 +551,12 @@ def test_five_hop_budget_stops_before_h006_without_reservation_or_retry(tmp_path
 
         def execute(self, request):
             self.requests.append(request)
+            result_value = _result_for_request(base_result("again"), request)
             envelope = {
                 "schema_version": 1, "run_id": request.invocation.run_id,
                 "hop_id": request.invocation.hop_id,
                 "invocation_id": request.invocation.invocation_id,
-                "result": base_result("again"),
+                "result": result_value,
             }
             return AgentExecutionOutcome(json.dumps(envelope), 0, False, "", "")
 
@@ -589,11 +590,19 @@ class ResultAdapter:
     def execute(self, request):
         if self.mutate:
             self.mutate(request.repository)
+        result_value = dict(self.result_value)
+        outcome = result_value.pop("outcome", None)
+        if request.result_contract_kind.value == "work-result":
+            result_value["status"] = outcome
+        elif request.result_contract_kind.value == "review-verdict":
+            result_value["verdict"] = "accept" if outcome == "completed" else outcome
+        else:
+            result_value["outcome"] = outcome
         envelope = {
             "schema_version": 1, "run_id": request.invocation.run_id,
             "hop_id": request.invocation.hop_id,
             "invocation_id": request.invocation.invocation_id,
-            "result": self.result_value,
+            "result": result_value,
         }
         return AgentExecutionOutcome(json.dumps(envelope), 0, False, "", "")
 
@@ -605,6 +614,18 @@ def base_result(route_key: str, *, outcome="completed", commit_intent=None, find
         "findings": list(findings), "claimed_commits": [],
         "commit_intent": commit_intent, "evidence_refs": [], "summary": "fixture",
     }
+
+
+def _result_for_request(result_value, request):
+    projected = dict(result_value)
+    outcome = projected.pop("outcome", None)
+    if request.result_contract_kind.value == "work-result":
+        projected["status"] = outcome
+    elif request.result_contract_kind.value == "review-verdict":
+        projected["verdict"] = "accept" if outcome == "completed" else outcome
+    else:
+        projected["outcome"] = outcome
+    return projected
 
 
 @pytest.mark.parametrize("outcome, expected", [("blocked", "result_blocked"),
@@ -828,7 +849,7 @@ def test_reconstructed_context_encodes_agent_values_and_attributes_outcome(tmp_p
                 "run_id": request.invocation.run_id,
                 "hop_id": request.invocation.hop_id,
                 "invocation_id": request.invocation.invocation_id,
-                "result": result_value,
+                "result": _result_for_request(result_value, request),
             }
             return AgentExecutionOutcome(json.dumps(envelope), 0, False, "", "")
 
@@ -965,7 +986,7 @@ class DirectCommitResultAdapter(ResultAdapter):
             "run_id": request.invocation.run_id,
             "hop_id": request.invocation.hop_id,
             "invocation_id": request.invocation.invocation_id,
-            "result": self.result_value,
+            "result": _result_for_request(self.result_value, request),
         }
         return AgentExecutionOutcome(json.dumps(envelope), 0, False, "", "")
 

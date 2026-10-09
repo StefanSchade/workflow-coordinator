@@ -48,7 +48,7 @@ prompt=sys.stdin.read()
 assert prompt.count("[agent_operating_contract]") == 1
 run_id=prompt.split("run_id=", 1)[1].split("\\n", 1)[0]
 invocation_id=prompt.split("result invocation_id is `", 1)[1].split("`", 1)[0]
-output.write_text(json.dumps({"schema_version": 1, "run_id": run_id, "hop_id": "H001", "invocation_id": invocation_id, "result": {"schema_version": 1, "outcome": "completed", "requested_route": "complete", "scope_changed": False, "requires_human": False, "escalation": None, "findings": [], "claimed_commits": [], "commit_intent": {"paths": ["PROOF.md"], "subject": "docs(workflow): WFC-S4-PROOF H001 mark fixture"}, "evidence_refs": [], "summary": "done"}}))
+output.write_text(json.dumps({"schema_version": 1, "run_id": run_id, "hop_id": "H001", "invocation_id": invocation_id, "result": {"schema_version": 1, "status": "completed", "requested_route": "complete", "scope_changed": False, "requires_human": False, "escalation": None, "findings": [], "claimed_commits": [], "commit_intent": {"paths": ["PROOF.md"], "subject": "docs(workflow): WFC-S4-PROOF H001 mark fixture"}, "evidence_refs": [], "summary": "done"}}))
 ''',
     )
     proof_root = (tmp_path / "proof").resolve()

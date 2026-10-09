@@ -438,7 +438,7 @@ def repository(tmp_path: Path) -> Path:
 class CompletedAdapter:
     def execute(self, request):
         result = {
-            "schema_version": 1, "outcome": "completed", "requested_route": "done",
+            "schema_version": 1, "status": "completed", "requested_route": "done",
             "scope_changed": False, "requires_human": False, "escalation": None,
             "findings": [], "claimed_commits": [], "commit_intent": None,
             "evidence_refs": [], "summary": "done",
