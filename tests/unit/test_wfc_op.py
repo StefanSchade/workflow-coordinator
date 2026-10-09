@@ -205,7 +205,7 @@ ONE_HOP_FAKE_BODY = textwrap.dedent('''
 
     repo.joinpath("PROOF.md").write_text("after\\n")
     result = {
-        "schema_version": 1, "outcome": "completed", "requested_route": "done",
+        "schema_version": 1, "status": "completed", "requested_route": "done",
         "scope_changed": False, "requires_human": False, "escalation": None,
         "findings": [], "claimed_commits": [],
         "commit_intent": {"paths": ["PROOF.md"], "subject": "docs(workflow): WI-HARNESS-FIXTURE H001 fixture"},
@@ -888,7 +888,7 @@ def _path_capturing_fake_body(capture: Path) -> str:
         )
         repo.joinpath("PROOF.md").write_text("after\\n")
         result = {{
-            "schema_version": 1, "outcome": "completed", "requested_route": "done",
+            "schema_version": 1, "status": "completed", "requested_route": "done",
             "scope_changed": False, "requires_human": False, "escalation": None,
             "findings": [], "claimed_commits": [],
             "commit_intent": {{"paths": ["PROOF.md"], "subject": "docs(workflow): WI-HARNESS-FIXTURE H001 fixture"}},
