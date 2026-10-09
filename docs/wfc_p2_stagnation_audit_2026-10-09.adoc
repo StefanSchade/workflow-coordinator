@@ -1,0 +1,1001 @@
+= Agent Workflow Coordinator -- P2 Stagnation Audit
+
+:toc:
+:toclevels: 3
+
+Status:: *INDEPENDENT, NON-AUTHORIZING ARCHITECTURE / COMMISSIONING AUDIT.*
+
+Date:: 2026-10-09.
+
+Development committed baseline:: `14e8eff0e1b5a9e82cca6ed066d81b783b92cdb3`
+(`chore(self-development): commission P2 integration continuation`).
+
+Pinned Runtime:: `9e49458de12e79dae4d8827a60f7cd39d18b4c80` -- still the
+accepted P1 implementation, detached, clean, push-disabled.
+
+Audited Runs:: `RUN-90c24baad80645b0958ed96ae0a2cc3f` (original P2),
+`RUN-d5ae5bd0eadb41dba2c10c1d085e6c4d` (first integration successor),
+`RUN-6fa0b56e3b844896a55f147f4ee41fea` (current stopped continuation, Attempt
+`wfc-projected-result-contracts-p2-integration-continuation-20261009-01`).
+
+Review object:: why a nominal `integration -> independent_review -> correction
+-> rereview` workflow repeatedly terminated after exactly one worker Hop
+instead of ever exercising its own declared correction loop.
+
+[IMPORTANT]
+====
+This artifact records verified diagnosis and recommendations. It authorizes
+nothing.
+
+It specifically does *not*: accept P2; close P2; review the P2 implementation
+for semantic acceptance; replace the still-unreached first genuine P2
+independent review; authorize a successor Commission; authorize salvage;
+authorize Runtime promotion; authorize any Core, schema, or preflight change;
+close or mutate any BUG or FTR; modify Operator Manual guidance; modify
+governance; or mutate historical Run state.
+
+Every recommendation below is a recommendation only. None of section 16's
+follow-ups is executed, and none is authorized, by this document.
+====
+
+
+== 1. Status, baseline, and method
+
+The audit was performed *read-only* against the repository state above. It
+executed no WFC Run, no Harness command, and no provider invocation. It
+mutated no tracked file, no governance input, no Runtime, and no Evidence
+repository, and it pushed nothing.
+
+Diagnostics used were confined to: `pytest` against the current repository
+state; focused `pytest`; `grep`/`rg`; `git show`/`log`/`diff`/`status`; Python
+snippets that load production modules without mutating tracked repositories;
+inspection of the persisted OPS/STATE of the current Attempt; and *disposable*
+temporary clones outside the repository.
+
+=== The pre-existing dirty path
+
+At audit time the Development worktree was, and remains, intentionally dirty
+with exactly one uncommitted path:
+
+[source,text]
+----
+ M tests/unit/test_slice4b_git_authority.py
+----
+
+That change is the useful salvage candidate left behind by the stopped current
+Run (section 9). *It belongs to that stopped Run and is not part of this review
+commit.* The audit left it byte-for-byte untouched and unstaged, and this
+artifact neither commits nor otherwise authorizes it. A dirty worktree after
+this review commit is therefore the expected condition, not an anomaly.
+
+
+== 2. Verdict
+
+*NO P2 CORE IMPLEMENTATION DEFECT FOUND.* The current P2 candidate appears
+structurally coherent: the single result-contract selector, the `WorkResult` /
+`ReviewVerdict` families, the strict bidirectional parsers, the prompt
+vocabulary projection, and the persisted per-Hop contract identity are mutually
+consistent, and the audit found no defect among them.
+
+*P2 IS NOT ACCEPTED BY THIS AUDIT, AND IS NOT ACCEPTABLE ON ITS BASIS.* P2 has
+still never received its first genuine independent semantic review. No
+independent-review Hop has executed in any of the three Runs. This audit is an
+architecture and commissioning audit by a different reviewer under different
+authority; it is explicitly not that review and must not be treated as a
+substitute for it.
+
+Substantive conclusions:
+
+* Repeated stagnation was caused *primarily by Commission/profile topology and
+  trusted-evidence placement*, not by the P2 implementation.
+* Stale pre-P2 fixture debt was *real but small* -- five changed lines in total
+  across two test files, of which only two remain outstanding once the existing
+  uncommitted salvage is counted (section 3).
+* GPT-5.6 Terra was *not the primary cause* (section 17).
+* *No WFC Core change is required to complete P2* (section 10).
+* The *current* machinery can already express the intended autonomous
+  evaluator/optimizer correction loop; the audit loaded and simulated that
+  shape successfully against production mechanics.
+
+The repeated `awaiting_human` terminations were, in every case, the Coordinator
+*correctly* refusing to proceed on authority it did not have. None of them is
+characterized here as a Coordinator or reducer defect.
+
+
+== 3. Verified fact: the remaining test debt is small
+
+A *disposable clone* outside the repository, carrying only:
+
+. the current dirty Slice4B correction (section 9), and
+. correction of the two stale pre-P2 worker fakes in `tests/unit/test_wfc_op.py`
+
+made the complete suite green:
+
+[source,text]
+----
+python -m pytest -q
+  734 collected
+  1 skipped
+  exit 0
+----
+
+The current *tracked* state -- that is, with the dirty Slice4B correction
+present but without those two remaining fake corrections -- produced *eight*
+failures, every one of them in `tests/unit/test_wfc_op.py` (five `FAILED`,
+three `ERROR` at fixture setup). No other test file failed.
+
+The two stale fake result-construction sites observed by the audit are both in:
+
+[source,text]
+----
+tests/unit/test_wfc_op.py
+----
+
+namely the shared `ONE_HOP_FAKE_BODY` provider fake, and one further inline
+fake result constructed inside the frozen-`PATH` launch test. Both emit the
+retired generic `outcome` field where the now-selected strict `WorkResult`
+family requires `status`. *The audit did not mutate either site.*
+
+[CAUTION]
+====
+*The green disposable probe is DIAGNOSTIC REVIEW EVIDENCE ONLY.* It is not a
+trusted Coordinator Run observation, it is not required evidence of any Run, it
+was produced outside any Run in a throwaway directory, and it is *not* P2
+acceptance. It establishes only that the remaining integration debt is small
+and well-localized. Trusted acceptance evidence can be produced solely by a
+Coordinator-executed required-evidence command inside an authorized Run.
+====
+
+
+== 4. The actual Hop algorithm
+
+Reconstructed from production source (`vertical.py::run_one_hop` and
+`reducer.py::reduce_result`), not from task prose or expectation. The
+load-bearing ordering is:
+
+[source,text]
+----
+semantic result
+    -> CommitIntent admission
+    -> Coordinator-owned trusted commit
+    -> trusted evidence
+    -> route application
+----
+
+Numbered flow, sufficient to make the later diagnosis legible:
+
+. *Phase and result-contract selection.* The selector reads only declarative
+  facts -- phase role, whether a `review` descriptor exists, its
+  `finding_authority`, `convergence_role`, and the profile/Run schema versions.
+  A convergence phase maps to the generic contract; a `worker` phase with
+  `review: null` maps to `WORK_RESULT`; an `independent_reviewer` phase with a
+  review descriptor maps to `REVIEW_VERDICT`.
+. *Git preflight* (repository identity and expected HEAD). Failure means the
+  invocation never starts and no Hop budget is charged.
+. *Prompt construction*, carrying the selected contract kind/version, the
+  family-specific vocabulary (`status=completed|blocked` for a worker,
+  `verdict=accept|changes_required` for a review gate), and the phase's
+  required evidence *names*.
+. *Provider/agent invocation.*
+. *Structured-result validation* -- envelope field set, schema version,
+  dispatch correlation, then the family-specific strict parser. Field
+  validation is strict in both directions: unknown fields and missing fields
+  are both rejected. A validation failure is recovered as an uncertain
+  dispatch, never replayed.
+. *CommitIntent admission, before Git is touched.* A non-null CommitIntent is
+  permitted only when the result outcome is `completed` (or a gate's
+  `changes_required` review-artifact commit), *and* scope is unchanged, *and*
+  `requires_human` is false, *and* `escalation` is null -- and only when the
+  phase grants both the `edit` and `commit` workflow effects.
+. *Coordinator-owned trusted commit*, only if admitted. The agent never runs a
+  Git command; `CommitIntent` is a proposal to trusted Coordinator handling,
+  never proof that a commit occurred.
+. *Delta observation* if no commit was made, then post-acceptance anomaly
+  detection (commit-subject identity, required durable artifacts).
+. *Trusted evidence execution* -- the phase's required evidence commands are
+  prepared and executed by the Coordinator *here*, after the result and after
+  any commit.
+. *Post-evidence repository re-observation* (HEAD drift, worktree
+  cleanliness), contributing repository anomalies.
+. *Evidence classification* into `pass`, clean `fail`, and `error`/`not_run`.
+. *Budget charge* and Hop recording.
+. *Route reduction*, then checkpoint persistence.
+
+Inside reduction, mechanical preemption strictly precedes all route, Finding,
+and scope authority. A correlated semantic stop is captured as *observation
+only* and cannot hide a controlling mechanical fact. Evidence disposition is
+then resolved as follows:
+
+`pass`:: permits ordinary reduction of the requested route.
+
+clean `fail`:: a trusted negative observation. If -- and only if -- the current
+phase is a *gate* review declaring a `failed_evidence_route` that names an
+existing `goto` route, that route *replaces* the agent's requested route.
+Otherwise the Run stops `awaiting_human` with
+`required_evidence_failed_without_route`.
+
+`error` / `not_run`:: a hard mechanical stop, preempting even the semantic
+result.
+
+Three durable insights follow, and are the reason the later diagnosis holds:
+
+* *Trusted evidence runs AFTER the candidate result and after the trusted
+  commit.* An agent therefore cannot have proven it at result time; the fact
+  does not yet exist when the result is authored.
+* *Trusted evidence may override the agent's requested route* -- including
+  overriding a reviewer's `accept`. The audit confirmed this against existing
+  production tests, in which a gate requests `accept`, evidence fails, and the
+  applied route is the declared correction route.
+* *Agent self-tests are never trusted evidence.* They are agent-attributed
+  diagnostics only.
+
+
+== 5. Worker completion is not acceptance
+
+Worker `status: completed` means approximately:
+
+[source,text]
+----
+my bounded work/candidate for this phase is ready, and I request this
+declared route
+----
+
+It does *not* mean:
+
+[source,text]
+----
+I have already proven that every Coordinator-required acceptance criterion,
+including all downstream trusted evidence, is satisfied
+----
+
+The second reading is not merely undesirable; it is unsatisfiable. Required
+evidence executes after the result is parsed (section 4), so no agent can
+truthfully assert its outcome at authoring time. Worse, `completed` is itself
+the *precondition* for the candidate to be published at all: a worker that
+downgrades to `blocked` in order to be "honest" about a red downstream gate
+destroys its own trusted-commit path and leaves its work uncommitted.
+
+Five concepts must be kept separate:
+
+[cols="1,1,3",options="header"]
+|===
+|Concept |Owner |Meaning
+
+|Worker completion
+|agent (semantic)
+|Bounded work ready; declared route requested. Gates CommitIntent admission.
+
+|Trusted commit
+|Coordinator
+|One bounded local commit materialized from an admitted CommitIntent.
+Publication, not acceptance.
+
+|Trusted evidence
+|Coordinator
+|Independent post-commit mechanical observation: `pass`, clean `fail`, or
+`error`.
+
+|Review acceptance
+|gate phase (semantic)
+|`verdict: accept` from a phase with sufficient Finding disposition authority.
+
+|Run completion
+|reducer
+|A `complete`-effect route actually applied, with no open blocking Finding and
+required evidence not failing.
+|===
+
+All five must align for a Run to complete. *No single one implies any other.*
+
+Conflating worker completion with trusted acceptance was a decisive
+commissioning mistake in this lineage (finding `P2-STAG-03`), and it is the
+direct cause of the current Run's stop shape (section 8).
+
+
+== 6. Root causes, ranked
+
+Primary causes -- these three jointly and sufficiently explain the stagnation:
+
+. *Required full-suite evidence placed on the worker phases.* Both
+  `integration` and `correction` select the full-repository `pytest` command as
+  Coordinator-required evidence. The only mechanism able to absorb a clean
+  evidence failure, `failed_evidence_route`, lives on the review descriptor and
+  is validated as *gate-only*; a `worker` phase with `review: null` therefore
+  *structurally cannot* declare one. Every worker Hop was consequently an
+  accidental one-shot acceptance gate, and any red suite at a worker Hop could
+  only terminate the Run. This alone accounts for both predecessor Runs.
+  (`P2-STAG-01`)
+
+. *The review gates omit `failed_evidence_route` as well.* Verified
+  programmatically: no phase in the current profile declares one. So even once
+  a reviewer Hop were reached, a red suite would terminate the Run rather than
+  route to `correction`. The profile *advertises* a convergence topology it
+  cannot *exercise* from an evidence failure. (`P2-STAG-02`)
+
+. *Agent-facing "definition of done" prose.* The Commission told the worker
+  that the complete `python -m pytest -q` command is its acceptance boundary,
+  that it should run that exact command itself before reporting `completed`,
+  that a narrower check is insufficient, and that it should escalate
+  (`requires_human=true`, `escalation.kind=scope`) otherwise. This made
+  full-suite success a *prerequisite* for worker `completed`, which contradicts
+  the reviewed, Coordinator-owned agent operating contract -- that contract
+  states agent-side tests are not Coordinator-trusted evidence and that
+  inability to resolve or execute an authored evidence command in the agent
+  shell "must not, by itself, cause an operational escalation." The worker
+  obeyed the prose over the contract. (`P2-STAG-03`)
+
+Secondary and non-causes -- real, but not the reason the loop never ran:
+
+[start=4]
+. *Stale pre-P2 fixtures.* Genuine migration debt: eight tests in
+  `tests/unit/test_slice4b_git_authority.py` (addressed by the dirty salvage
+  patch, three changed lines) plus the two `tests/unit/test_wfc_op.py` fakes
+  (two changed lines, still outstanding). Five changed lines in total.
+  (`P2-STAG-04`)
+
+. *One narrow agent error.* The current worker's diagnosis of
+  `tests/unit/test_wfc_op.py` as a network / build-isolation blocker is
+  falsified as an explanation of the trusted repository failure (section 7).
+  (`P2-STAG-05`)
+
+. *Environment was not the cause of the trusted failure.* The nested PREPARE
+  completes and builds both virtual environments; the recorded preflight seam
+  is `ok`. The audit reproduced this.
+
+. *Core limitations noted, but not P2 blockers.* Two genuine observations,
+  neither blocking: `failed_evidence_route` is structurally unavailable to
+  non-gate phases; and a trusted observation's retained summary is only its
+  exit status, with the command's output body omitted (hashed, not retained),
+  so a subsequent correction Hop learns *that* required evidence failed but not
+  *which* tests failed. Neither needs to change for P2 to complete.
+
+Primary and secondary causes must not be blurred. In particular, the fixture
+debt was never large enough to explain three lost Runs; the topology was.
+
+
+== 7. `test_wfc_op` diagnosis
+
+The stale-fake mechanism was *confirmed*, by static reading of production
+source and by reproduction of the failing fixture.
+
+Verified chain, each link established independently:
+
+. `make_runtime()` builds the nested Runtime as a disposable *local clone of the
+  current repository*.
+. The nested Runtime therefore contains the current P2 implementation. The
+  reproduced preparation record shows the nested Runtime HEAD equal to the
+  current Development baseline, and the exported Runtime source contains the
+  P2 strict worker result family.
+. The fixture's phase is `role: worker` with `review: null`.
+. P2's selector therefore maps that phase to `WORK_RESULT`. Confirmed by
+  loading the actual fixture profile through the production loader and
+  evaluating the production selector.
+. `ONE_HOP_FAKE_BODY` still emits the legacy generic `outcome` field.
+. Strict `WorkResult` validation rejects it. Confirmed directly against the
+  production validator, which accepts the payload under the generic contract
+  and rejects it under the worker contract as an unknown `outcome` field.
+. The nested Run consequently recovers the invocation as an uncertain dispatch
+  and enters `reconcile_required` -- reproduced persisted state shows an
+  `uncertain_dispatch` Hop, `acceptance_not_disproved`, no trusted
+  observations, and a dirty worktree (the fake's authorized edit was never
+  committed, because validation failed before the trusted commit).
+. Because the nested Run is `reconcile_required` rather than `completed`, the
+  nested `launch` exits *returncode 1* -- precisely the assertion the
+  human-reproduced fixture failed on.
+. The remaining failures in the file *cascade* from the same cause. One
+  notable instance: a pin-drift test failed reporting an unclean Development
+  worktree instead of the expected HEAD drift, because a preceding launch had
+  left the shared fixture clone dirty for exactly this reason.
+
+Falsification of the agent's explanation:
+
+*The setuptools / network / build-isolation explanation was FALSE as the
+explanation of the trusted repository failure.* The nested PREPARE reaches
+completion and successfully builds both virtual environments; the first
+observed failure occurs afterwards, during the nested LAUNCH, for the stale
+vocabulary reason above. Conversely, correcting only the two stale fakes makes
+the file green.
+
+The claim *may* nonetheless have faithfully reflected the agent's own sandbox
+experience -- the nested preparation installs with an ordinary networked
+`pip install`, so a network-isolated agent sandbox would genuinely fail there.
+But an observation about the agent's own shell is not an observation about the
+repository, it did not describe the Coordinator's trusted failure at all, and
+under the agent operating contract it did not justify an operational
+escalation.
+
+The audit does not overgeneralize from the first failing test: the
+single-root-cause claim was established by *fixing only the fakes* and
+observing the whole file, and then the whole suite, turn green.
+
+
+== 8. Current Run versus its predecessors
+
+The three Runs did not fail the same way, and the distinction must be preserved.
+
+*Both predecessor Runs:*
+
+[source,text]
+----
+worker returned completed
+  -> CommitIntent admitted
+  -> trusted commit landed
+  -> Coordinator-required pytest failed (clean fail)
+  -> no failed_evidence_route declared on that phase
+  -> awaiting_human / required_evidence_failed_without_route
+----
+
+Useful work was *published* in both cases; the Run then stopped before any
+independent review.
+
+*Current Run:*
+
+[source,text]
+----
+worker returned blocked + requires_human=true + escalation.kind=scope
+  -> CommitIntent NOT permitted for that result disposition
+  -> no trusted commit
+  -> the useful Slice4B change remained dirty in the worktree
+  -> repository anomaly (dirty tracked state) preempted reduction
+  -> awaiting_human / mechanical_preemption
+----
+
+The recorded controlling stop reason combines the dirty tracked state, the
+unclean post-evidence worktree, and `trusted_commit:commit intent is not
+permitted for this result disposition`. The agent's semantic escalation was
+still captured as a correlated semantic-stop observation, carrying the
+falsified network claim of section 7.
+
+*Trusted `pytest` still ran in the current Run*, and still recorded a clean
+`fail` with exit status 1. Required evidence does not depend on the semantic
+result; the dirty-worktree anomaly simply preempted it in reduction.
+
+=== Relation to an already-open defect record
+
+The audit verified that the current Run's stop shape -- *useful authorized
+worktree mutation, plus a valid-looking CommitIntent, plus a non-completing
+result disposition, yielding no commit and a dirty worktree under mechanical
+preemption* -- reproduces an already-documented pattern recorded in:
+
+[source,text]
+----
+docs/backlog/BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc
+----
+
+That open record's first primary reproduction exhibits a layered stop string
+materially identical to the current Run's. The current Run is therefore a
+further reproduction of that existing, open defect class, not a newly
+discovered one.
+
+The audit also notes a sharpening worth recording: P2 is itself listed in that
+record as one of its candidate directions, and P2 does remove review-style
+`changes_required` from the worker surface, which is the improvement that
+direction sought. But P2 leaves `blocked` as the only non-`completed` worker
+option -- so prose forbidding "premature `completed`" now steers a worker into
+exactly the shape that record describes.
+
+*This artifact does not modify, reopen, extend, or close that BUG.*
+
+
+== 9. The current dirty Slice4B patch
+
+Audit conclusion on `tests/unit/test_slice4b_git_authority.py` as it currently
+stands uncommitted in the worktree:
+
+* *Correct.* It renames the legacy worker fake's result field from the retired
+  generic `outcome` to the strict worker `status`, and updates the one `blocked`
+  call site accordingly.
+* *Minimal.* Three changed lines; no production source touched.
+* *Complete for its file.* The focused file passes.
+* *Focused file green*, and the file's eight previously failing tests are
+  resolved by it.
+* *Strictness not weakened.* It migrates the stale consumer to P2's vocabulary
+  rather than making the production contract permissive to accommodate a stale
+  fixture.
+* *Should be preserved as non-authoritative salvage rather than discarded.*
+  Re-deriving it in a successor Run would be pure waste.
+
+[WARNING]
+====
+*Salvage preserves work, not authority.*
+
+Preserving this patch confers no correctness credit, no review credit, no
+acceptance, and no authority of any kind. It remains agent-attributed,
+unreviewed material produced by a Run that stopped before any independent
+review.
+
+*This review commit does not commit, stage, or otherwise authorize that
+patch.* Carrying it forward requires a separate, explicit maintainer decision
+under the ordinary salvage procedure.
+====
+
+
+== 10. Recommended P2 profile shape
+
+The audit loaded the following shape through the *current* production profile
+loader and simulated its reduction against *current* production mechanics.
+
+[source,text]
+----
+integration [worker]
+    role: worker
+    review: null
+    evidence: []                      # or only truly worker-local mechanics
+    routes:
+      independent_review -> goto independent_review
+
+independent_review [gate]
+    role: independent_reviewer
+    evidence: [pytest]
+    review.failed_evidence_route: correction
+    routes:
+      accept     -> complete
+      correction -> goto correction
+
+correction [worker]
+    role: worker
+    review: null
+    evidence: []
+    routes:
+      rereview -> goto rereview
+
+rereview [gate]
+    role: independent_reviewer
+    evidence: [pytest]
+    review.failed_evidence_route: correction
+    routes:
+      accept     -> complete
+      correction -> goto correction
+----
+
+The current loader *admitted* this shape unchanged, and the simulated
+reduction produced exactly the intended convergence behaviour:
+
+[source,text]
+----
+worker completed  (no worker evidence)        -> independent_review   (ready)
+reviewer accept   + trusted pytest fail       -> correction           (ready)
+correction completed                          -> rereview             (ready)
+rereview accept   + trusted pytest fail       -> correction           (ready, loops)
+rereview accept   + trusted pytest pass       -> COMPLETED
+----
+
+For contrast, the same simulation against the *current* profile reproduced the
+predecessor stop exactly: worker `completed` with a failing suite yielded no
+route and `required_evidence_failed_without_route`.
+
+Properties established:
+
+* An imperfect candidate *can* be committed and handed to independent review,
+  because the worker phase carries no required evidence to fail.
+* It remains *impossible to complete P2 while the full suite is red*, because
+  both `complete` routes sit on gates carrying the full-suite evidence.
+* A reviewer's semantic `accept` is *deterministically overridden* by a clean
+  trusted evidence failure, routing to `correction`.
+* `rereview` can repeat the same evidence gate after correction, producing a
+  genuine multi-Hop autonomous correction loop.
+* Non-convergence remains bounded by the existing autonomous Hop budget, which
+  terminates with the ordinary budget-exhaustion stop rather than looping
+  indefinitely.
+* Worker phases may still run the suite *themselves, diagnostically*;
+  `phase.evidence` governs only what the *Coordinator* requires.
+
+[IMPORTANT]
+====
+*NO Core change is needed for immediate P2 completion.*
+
+The pinned P1 Runtime `9e49458de12e79dae4d8827a60f7cd39d18b4c80` already
+supports the needed failed-evidence routing in both its profile validation and
+its reducer. The recommended shape is therefore executable under the *currently
+pinned* Runtime, with no Runtime promotion and no engine change.
+
+Recommending this shape is not authorizing it. Adopting it requires a separate,
+explicitly authorized successor Commission.
+====
+
+One caveat to carry into any such Commission: because a trusted observation
+retains only its exit status, a correction Hop is told *that* required evidence
+failed, together with the prior requested and applied routes, but not *which*
+tests failed. It should be instructed to re-run the suite itself to localize.
+
+
+== 11. Review breadth and incremental worker fixes
+
+A conceptual concern worth settling durably: *it is legitimate for a worker or
+correction Hop to correct only a bounded subset of known problems and still
+hand the resulting candidate to review.*
+
+The distinction that matters is between the *mutation surface* of the latest
+Hop and the *review surface* handed to the gate. These are independent. A
+worker that changed one or two fixture files still produces, and commits into,
+the *complete current candidate*; the gate reviews that candidate, not merely
+the latest diff.
+
+* *The first independent P2 review should be broad.* It should inspect the
+  entire accumulated P2 candidate -- the original strict result-family
+  implementation plus every subsequent integration correction -- even though
+  the immediately preceding worker Hop may have touched only one or two fixture
+  files. Adversarial discovery belongs there, because no independent review of
+  this candidate has ever executed.
+* *Subsequent rereview should narrow*, to: known current-Run Findings; the
+  corresponding corrections; direct regressions from those corrections; and the
+  required trusted evidence. A genuinely new MATERIAL defect supported by
+  concrete new material evidence may still escape that bounded surface; an
+  unrelated newly noticed MINOR observation should not automatically reset
+  convergence.
+
+This is consistent with the existing manual guidance that fresh reviewer
+context and broad review breadth are independent axes.
+
+The practical consequence is that the mistaken premise behind the current
+Commission's prose -- that a worker must drive the full suite green before
+review is useful -- is false. Review is useful on an imperfect candidate, and
+the gate's own trusted evidence is what prevents an imperfect candidate from
+being *completed*.
+
+
+== 12. Corrected agent-facing evidence semantics
+
+The conceptual replacement for the mistaken "the worker must prove the full
+definition of done before `completed`" framing. Recorded as recommended
+conceptual wording; adopting it is a separate authorized act.
+
+What the current wording got *right*, and should be kept: naming which trusted
+evidence the Coordinator will later execute; encouraging the worker to run the
+same or useful diagnostics where permitted; stating that the worker's own
+checks are agent-attributed rather than trusted; and letting the worker use
+test failures to improve its candidate.
+
+What must be removed: making full-suite success a *prerequisite* for
+`completed`; treating a narrower agent-side check as a failure to establish
+acceptance; and directing the worker to escalate when the suite is not green.
+
+Recommended conceptual wording:
+
+[source,text]
+----
+Trusted evidence. The Coordinator independently executes
+`python -m pytest -q` as required evidence ON THE REVIEW GATES. It runs
+AFTER your result is validated and after any Coordinator-owned commit, and
+it is the authority on acceptance. Your own test runs never are.
+
+You are encouraged to run `python -m pytest -q` yourself to find and fix
+more of the remaining integration debt within your authorized scope. Treat
+its output as diagnostic input to improve your candidate, not as a gate you
+must clear. If your sandbox cannot execute it, say so in `summary` and
+proceed: per the agent operating contract, inability to run evidence in your
+own shell is NOT grounds for escalation.
+
+Report `status=completed` when your bounded work for this phase is coherent
+and ready for review, together with a CommitIntent for exactly what you
+changed. A still-red downstream suite is NOT a reason to report `completed`
+falsely, NOR a reason to report `blocked`: the gate's trusted evidence will
+observe it and the Coordinator will route to correction.
+
+Reserve `status=blocked` for when THIS Hop itself needs authority, scope, or
+a capability it does not have -- never for a downstream gate that is not yet
+green.
+----
+
+*No Definition-of-Done schema is recommended.* The required content is prose
+guidance plus correct evidence placement. Introducing a schema here would add
+mechanism where authoring discipline and documentation suffice.
+
+
+== 13. Commission robustness finding
+
+Recorded separately from the immediate P2 repair, because it is a broader
+authoring problem and must not be allowed to block P2.
+
+Multiple independently authored P2 successor Commissions were syntactically
+valid, accepted by the current production loaders, accepted by current
+preflight, and sensible on prose inspection -- yet each configured required
+evidence such that a routine negative acceptance signal terminated the entire
+Run instead of using the declared correction topology.
+
+Two verified observations frame why this recurred:
+
+* *`failed_evidence_route` is absent from the Operator Manual.* The mechanism
+  appears zero times in `docs/wfc_operator_manual.adoc` -- the artifact a
+  Commission author, human or LLM, actually reads -- despite having shipped and
+  being exercised by production tests.
+* *Profile survey:* of the 30 self-development profile lineages in
+  `governance/self-development/`, *29 declare no `failed_evidence_route` at
+  all.* The single exception declares it on its first review gate but *not* on
+  the later gate that actually owns `accept -> complete`, so it does not
+  establish a robust general authoring convention either.
+
+This is the same latency shape already documented elsewhere in this repository
+for empty gate `finding_authority`: a convention absent across an entire
+lineage, never exercised only because the triggering condition had never
+occurred. P2 is simply the first lineage in which required evidence actually
+went red.
+
+=== What is, and is not, statically provable
+
+*The current configuration is not necessarily logically invalid.* With a green
+suite, the current P2 profile completes correctly; and a reviewer can still
+route a semantic `changes_required` to `correction` regardless of evidence. An
+author may also *intentionally* want:
+
+[source,text]
+----
+semantic changes_required -> correction
+evidence failure          -> human escalation
+----
+
+rather than routing evidence failure to correction. A generic preflight rule
+must therefore *not* silently assume that evidence failure means correction.
+
+The real weakness is narrower and is the finding worth persisting:
+
+[source,text]
+----
+The evidence-failure disposition is IMPLICIT, and is therefore easy to omit
+by accident. Omission silently converts a route-bearing phase into a
+one-shot acceptance gate.
+----
+
+Observed harm from that implicitness is concrete, not imaginable: three
+repeated fresh Runs, lost autonomous continuity, repeated operator
+intervention, duplicate Commission authoring, useful model work made
+expensive, and a first independent P2 review never reached. (`P2-STAG-06`)
+
+
+== 14. Deterministic admission candidate
+
+Recorded as a *candidate direction only*. This artifact authorizes no Core,
+schema, or preflight change, and does not implement the rule below.
+
+Preferred direction from the audit:
+
+[source,text]
+----
+Required evidence on a route-bearing phase should eventually require an
+EXPLICIT evidence-failure disposition.
+----
+
+Possible dispositions could include a declared `goto` correction route, or an
+explicit escalation/human-stop declaration. *The key property is EXPLICITNESS,
+not always routing to correction* -- the legitimate "evidence failure escalates
+to a human" workflow of section 13 must remain fully expressible, merely
+stated rather than defaulted into.
+
+Why this direction is attractive:
+
+* *Deterministic* -- decidable from already-admitted declarative facts
+  (phase routes, review descriptor, declared evidence), with no Run history and
+  no new workflow DSL, ontology, or model checker.
+* *Visible before provider invocation* -- it fails fast, before agent cost,
+  semantic work, or the creation of a doomed Run.
+* *Preserves legitimate human-stop workflows* -- it narrows nothing that is
+  currently expressible; it only requires the choice to be authored.
+* *Makes omission difficult or impossible* rather than silently defaulted.
+* Matches the project principle *structural invalidity made unrepresentable;
+  stateful invalidity rejected by trusted logic.* Whether a *specific* route in
+  a *specific* Run's history may legally apply remains entirely the reducer's
+  stateful decision, unchanged.
+
+Admission boundary, if it is ever pursued:
+
+*PREPARE, implemented in the pinned Runtime's `_preflight()`* -- not the
+Harness reimplementing Runtime semantics. The existing preflight already
+performs trusted, mechanical, pre-Run cross-document consistency checks before
+any Commission is authorized to run, and it executes before STATE creation and
+before any provider invocation. The Harness must continue delegating semantic
+admission to the pinned Runtime, so that Runtime-pinned replay semantics are
+preserved.
+
+A lifecycle consequence worth recording: because such a check would live in the
+Runtime, it binds only Runs prepared under a Runtime containing it. Historical
+configurations stay replayable; new unsafe ones are denied. *It therefore
+cannot help the current P2 lineage* -- which is precisely why the documentation
+fix and the profile fix must come first, and why immediate P2 completion must
+not be blocked on it.
+
+Smallest-mechanism discipline: the rule's stop condition is that it rejects
+*only* the missing-declaration shape, never a declared one; never inspects Run
+history; never second-guesses a reducer decision; and never grows toward
+general workflow verification.
+
+
+== 15. Relation to P3.5
+
+The audit's conclusion is deliberately nuanced.
+
+*Same broad family.* Both concern a workflow that advertises progression or
+convergence while the declared capabilities or dispositions required to
+actually exercise that path are absent. Both are statically knowable from the
+WorkItem, WorkflowProfile, and RepositoryPolicy alone. Both belong at a trusted
+preflight seam with new-launch-only enforcement.
+
+*Not the same predicate.* P3.5 addresses a stronger reachability/authority
+unsoundness: a phase can open a blocking Finding and no strictly later phase on
+the forward path possesses the operation needed to dispose of it, so the graph
+could never have reached a legal completion regardless of any Run's history.
+The evidence-failure disposition problem is weaker: it is an *explicitness and
+hazard* issue, because the workflow may still succeed perfectly well when
+evidence is green.
+
+Recommendation: *share the seam, not the rule.* Both can share:
+
+* the trusted PREPARE / pinned-Runtime preflight seam;
+* the new-launch-only lifecycle, preserving historical replayability;
+* the discipline of deciding only over deterministic static facts the engine
+  already admits.
+
+Without forcing a weaker hazard predicate and a stronger unreachability proof
+into one rule. Unification should not be forced where the semantics differ.
+Whether this is folded into P3.5's scope or kept as an earlier independent
+guardrail is a separate decision this artifact does not make.
+
+
+== 16. Durable follow-up recommendations
+
+Recorded, *not executed*. No recommendation here authorizes its own edit.
+
+[cols="1,4",options="header"]
+|===
+|Ref |Recommendation
+
+|A
+|*Operator Manual.* Add explicit guidance for: worker completion versus
+trusted acceptance; gate-owned acceptance evidence; `failed_evidence_route`
+(what it is, that it is gate-only, that it deterministically overrides
+`accept`, and that its absence means `awaiting_human`); evaluator/optimizer
+correction convergence; agent self-tests versus Coordinator-trusted evidence;
+Commission authoring anti-patterns; and a troubleshooting entry for
+`required_evidence_failed_without_route`.
+
+|B
+|*Existing BUG.* Add the current Run as a further reproduction to
+`docs/backlog/BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc`, including
+the sharpening noted in section 8. Do not open a duplicate record.
+
+|C
+|*New narrow BUG / backlog record.* Evidence-failure-disposition authoring
+latency and implicitness, with the section 13 survey as its evidence.
+Documentation-only in character.
+
+|D
+|*Conformance backlog.* Deterministic explicit evidence-failure disposition
+(section 14), scoped near P3.5 per section 15.
+
+|E
+|*Minor P2 correction.* The result-contract selector still carries a P1-era
+docstring asserting that every admitted combination maps to the generic
+contract, which the code beneath it no longer does. Appropriate for a future
+authorized P2 correction Hop.
+
+|F
+|*Run ledger.* Preserve the differing stop semantics of the predecessor Runs
+versus the current Run (section 8), and record that the current Run's
+network/build-isolation diagnosis was falsified (section 7). The ledger should
+not conflate the two stop shapes.
+|===
+
+
+== 17. Model quality conclusion
+
+Assessed from concrete evidence only; neither defending nor blaming the model
+generically.
+
+*This episode does NOT show that WFC requires frontier models for basic
+operation.*
+
+Observed GPT-5.6 Terra contributions across the three Runs:
+
+* produced coherent P2 Core work -- the strict worker/review result-family
+  candidate, in which this audit found no implementation defect;
+* corrected several stale integration fixtures in the first successor Run;
+* corrected Slice4B correctly, minimally, and completely for its file
+  (section 9);
+* made *one* real diagnostic error -- the falsified `test_wfc_op`
+  network/build-isolation explanation (section 7).
+
+Strands that must be attributed elsewhere: Commission authoring, profile
+topology, and trusted-evidence placement were the primary causes (section 6);
+Commission prose was decisive for the current Run's stop shape; admission
+weakness is a Core/documentation gap; and the environment was not a cause.
+
+The honest reading is that *the system made ordinary model mistakes unusually
+expensive.* Each Run permitted exactly one Hop before a routine negative
+acceptance signal terminated it, so every ordinary mistake cost a whole Run, a
+fresh Commission, and operator intervention, instead of being absorbed by the
+correction loop the profile claimed to have.
+
+The one genuine model error was itself partly induced: the Commission demanded
+full-suite proof from an agent whose sandbox cannot perform the networked
+install that the nested fixture requires, then pointed it at a scope
+escalation. Under the same Commission, a stronger model would have faced the
+same forced choice between a false `completed` and a self-defeating `blocked`.
+
+*The honest test of model adequacy has not yet occurred*, because the first
+genuine independent P2 review has never executed.
+
+
+== 18. Recommended next actions
+
+Recorded, *not executed*, and *not authorized* by this artifact. Each step
+below requires its own maintainer decision.
+
+. *Truthfully archive the current stopped Run* --
+  `RUN-6fa0b56e3b844896a55f147f4ee41fea`, `awaiting_human` under mechanical
+  preemption, one Hop of eight charged, no commit, no Finding, no review --
+  without rewriting its historical state.
+. *Preserve the Slice4B change as non-authoritative salvage* (section 9),
+  granting it no correctness or review credit.
+. *Semantically curate the Run ledger*, preserving the distinct stop shapes and
+  the falsified diagnosis (section 16, ref F).
+. *Create one fresh successor Commission* whose only topology changes are:
+  worker `evidence: []`; full-suite `pytest` on the gates;
+  `failed_evidence_route: correction` on both gates; and the corrected
+  agent-facing evidence wording of section 12.
+. *Carry the salvage forward under explicit authority*, so the successor worker
+  starts from it rather than re-deriving it.
+. *Fix the two stale `tests/unit/test_wfc_op.py` fakes* (section 3) inside that
+  authorized successor Run.
+. *Reach the first genuine independent P2 review* -- the outcome all three
+  predecessor Runs failed to reach, and the actual goal.
+. *Only afterward* pursue broader Commission-admission hardening (sections 13
+  through 15).
+
+[IMPORTANT]
+====
+*Immediate P2 completion must NOT be blocked on new Core mechanisms.*
+
+Steps 1 through 7 require no Core, schema, or preflight change, and are
+executable under the currently pinned Runtime. Step 8 is independent hardening
+and must not become a prerequisite for finishing P2.
+====
+
+
+== 19. Stable finding identifiers
+
+Assigned for readability and durable cross-reference. Classified by the kind of
+work each implies, deliberately without severity theater.
+
+[cols="1,3,1",options="header"]
+|===
+|ID |Finding |Class
+
+|`P2-STAG-01`
+|Full-suite acceptance evidence misplaced on the worker `integration` and
+`correction` phases, which structurally cannot declare a failed-evidence route,
+making each worker Hop an accidental one-shot acceptance gate.
+|Immediate P2 correction
+
+|`P2-STAG-02`
+|Review gates omit `failed_evidence_route`, defeating evidence-driven
+correction convergence; the profile advertises a correction loop it cannot
+exercise from an evidence failure.
+|Immediate P2 correction
+
+|`P2-STAG-03`
+|Agent-facing completion prose conflates worker completion with trusted
+acceptance and contradicts the reviewed agent operating contract, steering a
+worker with useful committed-ready work into `blocked` plus escalation.
+|Immediate P2 correction
+
+|`P2-STAG-04`
+|Remaining fixture migration debt: `test_slice4b_git_authority.py` (addressed
+by the uncommitted salvage) plus two stale fakes in `test_wfc_op.py`.
+|Immediate P2 correction
+
+|`P2-STAG-05`
+|The `test_wfc_op` network / build-isolation diagnosis is falsified as the
+explanation of the trusted repository failure; the true cause is stale pre-P2
+fake vocabulary in a nested Runtime carrying P2.
+|Documentation
+
+|`P2-STAG-06`
+|Commission authoring lacks explicit evidence-failure disposition guidance and
+deterministic admission; the disposition is implicit, undocumented in the
+Operator Manual, and absent from 29 of 30 profile lineages.
+|Documentation, then later robustness hardening
+|===
+
+*This audit closes none of these findings.* They are not Run-native Findings,
+carry no Coordinator Finding authority, and belong to no Run's ledger. They are
+review observations recorded for durable reference, to be disposed of by
+separately authorized work.
