@@ -1,0 +1,865 @@
+= Workflow Coordinator Run-Event and Review-Artifact Concept
+:toc:
+:toclevels: 4
+:sectnums:
+
+Status:: NON-NORMATIVE TARGET-CONCEPT DRAFT. AUTHORIZES NOTHING.
+Date:: 2026-10-10
+Scope:: Workflow Coordinator review artifacts, repository-native run evidence, and future Commission ergonomics
+Empirical trigger:: `RUN-98b556cacd9446539e04530406dc3a58`
+
+[IMPORTANT]
+====
+This document records a design direction only. It authorizes no schema, route,
+role, artifact directory, Run mutation, successor Commission, provider call,
+Runtime promotion, Evidence mutation, archive action, or source change.
+
+Open questions are deliberately preserved. The purpose is to conserve the design
+learning from current dogfooding before implementation pressure turns provisional
+choices into accidental architecture.
+====
+
+== 1. Problem statement
+
+The current Workflow Coordinator already separates several authority-bearing
+steps:
+
+[source,text]
+----
+agent semantic result
+-> CommitIntent admission
+-> trusted repository commit
+-> Coordinator-owned trusted evidence
+-> reducer / route application
+----
+
+That separation is valuable. A reviewer may semantically accept a candidate
+while Coordinator-owned evidence still fails afterwards. Therefore a reviewer
+must not claim final Run acceptance before trusted evidence and reduction have
+actually established it.
+
+At the same time, the current durable-artifact contract is still partly
+convention-driven. A profile can require a review artifact, but the system does
+not yet strongly model whether the artifact is derived or explicit, whether it
+must already exist, whether it may be created, whether it is Hop-local or
+Run-local, or whether a clean review must still mutate it.
+
+The result is a mismatch:
+
+* the execution model wants durable review history;
+* Commission authoring can require concrete review filenames;
+* a clean final review may produce `accept` but no commit;
+* the Coordinator can then stop because the required durable artifact is
+  missing, unrepresented, or uncommitted.
+
+The design question is therefore broader than "force one extra commit":
+
+[quote]
+____
+Can WFC make review and lifecycle evidence a predictable, repository-native event
+chain while reducing Commission authoring ceremony and preserving the separation
+between semantic review and Coordinator-owned final acceptance?
+____
+
+== 2. Empirical trigger
+
+The immediate trigger is:
+
+Attempt:: `wfc-evidence-failure-disposition-hardening-integration-closure-20261010-01`
+Run:: `RUN-98b556cacd9446539e04530406dc3a58`
+Baseline:: `277ccd7134503e147bcb73c574053c7e127041eb`
+Final candidate HEAD:: `21515bce888de8b95f9e161440bda73f69521b71`
+Hop budget used:: `4 / 8`
+
+Relevant sequence:
+
+[source,text]
+----
+H001 closure_correction
+  -> candidate/test commit
+
+H002 independent_review
+  -> semantic ACCEPT
+  -> review-artifact commit
+  -> Coordinator-owned pytest FAIL
+  -> correction route
+
+H003 correction
+  -> candidate/test commit
+
+H004 rereview
+  -> semantic ACCEPT
+  -> no new review-artifact commit
+  -> Coordinator-owned pytest FAIL
+  -> mechanical preemption:
+     required durable artifact is missing, unrepresented, or uncommitted
+----
+
+The H004 semantic `accept` was not final acceptance. Trusted evidence remained
+red. The missing durable artifact is therefore a second, separate problem.
+
+== 3. Design principles
+
+=== 3.1 Semantic review is not final gate acceptance
+
+A reviewer can truthfully persist:
+
+[source,text]
+----
+semantic_verdict: accept
+blocking_findings: none
+requested_route: accept
+trusted_evidence_status: pending
+----
+
+The reviewer cannot yet truthfully persist:
+
+[source,text]
+----
+run_status: accepted
+----
+
+Final gate disposition remains Coordinator-owned.
+
+=== 3.2 A meaningful Hop should normally leave a trusted commit
+
+A strong operational default is:
+
+[source,text]
+----
+one meaningful Hop
+-> one trusted commit
+----
+
+Typical mapping:
+
+[source,text]
+----
+worker Hop       -> implementation/test/documentation commit
+review Hop       -> review-event commit
+correction Hop   -> correction commit
+rereview Hop     -> rereview-event commit
+----
+
+A clean review is still a meaningful event and may justify a very small
+artifact-only commit.
+
+This is a preferred default, not yet a universal product invariant.
+
+=== 3.3 Default should be derivable; explicit paths should be overrides
+
+Ordinary review artifacts are mechanically predictable. The Commission should
+not necessarily need to name every review document.
+
+A future default should allow WFC to derive artifact identity from facts it
+already owns:
+
+* Attempt ID;
+* Run ID;
+* Hop ID / event sequence;
+* phase;
+* role;
+* artifact kind.
+
+A consumer with its own documentation structure can override the default.
+
+=== 3.4 Explicit artifact identity should be admitted early
+
+If a Commission explicitly names a target artifact, WFC should validate as much
+as possible before provider execution:
+
+* path is repository-relative;
+* path is inside authorized scope;
+* expected existence or non-existence holds;
+* phase may create or edit it;
+* artifact path does not collide with forbidden governing input;
+* target semantics are compatible with the selected phase.
+
+This reduces late mechanical failures.
+
+=== 3.5 Repository evidence and external Evidence serve different purposes
+
+Consumer repository::
+Human-readable semantic lifecycle and review history tied to Git.
+
+STATE/OPS::
+Execution mechanics and active/retained run state.
+
+Evidence repository::
+Archived raw/detailed evidence, manifests, hashes, and immutable execution
+packages.
+
+The repository-native trail should not duplicate every raw evidence byte.
+
+== 4. Current contract gap
+
+The current model can express roughly:
+
+[source,yaml]
+----
+durable_artifact: required
+----
+
+and a WorkItem can associate a concrete file with a review phase.
+
+That does not strongly express:
+
+* identity source: derived or explicit;
+* existence policy: existing, new, create-or-update;
+* lifecycle: Hop-local, phase-local, WorkItem-local, Run-local;
+* mutation expectation: represented or changed-and-committed;
+* semantics: review verdict or final Run disposition.
+
+This is a partially typed contract with remaining convention-driven behavior.
+
+== 5. Future artifact contract -- illustrative only
+
+Possible future shapes:
+
+[source,yaml]
+----
+artifact:
+  kind: review_event
+  location: derived
+----
+
+[source,yaml]
+----
+artifact:
+  kind: review_document
+  location: explicit
+  path: docs/backlog/FTR-XYZ_review.adoc
+  existence: existing
+----
+
+[source,yaml]
+----
+artifact:
+  kind: review_document
+  location: explicit
+  path: docs/reviews/WI-XYZ/review.adoc
+  existence: create_or_update
+----
+
+No schema above is accepted here.
+
+The important separation is:
+
+[source,text]
+----
+artifact kind
+!= artifact path
+!= artifact lifecycle requirement
+----
+
+== 6. Possible WFC-owned default location
+
+A future WFC default could resemble:
+
+[source,text]
+----
+.wfc/
+  runs/
+    <attempt-id>/
+      events/
+        001-H001-work.adoc
+        002-H002-review.adoc
+        003-H003-correction.adoc
+        004-H004-rereview.adoc
+      run-receipt.adoc
+----
+
+The exact directory is intentionally open.
+
+Candidates include:
+
+* `.wfc/runs/`;
+* `docs/wfc/`;
+* `docs/run-evidence/`;
+* a repository-policy-defined root.
+
+The stronger design direction is:
+
+[quote]
+____
+WFC should be able to derive a safe default repository artifact location without
+requiring every Commission to spell out a review filename.
+____
+
+== 7. Consumer override
+
+A project may already have a natural review location:
+
+[source,text]
+----
+docs/backlog/
+docs/reviews/
+architecture/reviews/
+requirements/reviews/
+----
+
+Likely ergonomics:
+
+[source,text]
+----
+no explicit path
+-> deterministic WFC default
+
+explicit root
+-> deterministic WFC naming below consumer root
+
+explicit concrete artifact
+-> consumer-owned document identity
+----
+
+This would turn today's concrete review path from mandatory ceremony into an
+override for the cases where the project attaches meaning to a particular
+document.
+
+== 8. Review event versus final Run receipt
+
+=== 8.1 Review event
+
+The review event is created *inside* the review Hop and therefore records only
+facts known at that point.
+
+Illustrative:
+
+[source,text]
+----
+event_sequence: 004
+attempt: wfc-example-20261010-01
+run_id: RUN-...
+hop_id: H004
+phase: rereview
+role: independent_reviewer
+
+candidate_head: 21515bc...
+semantic_verdict: accept
+blocking_findings: none
+requested_route: accept
+
+trusted_evidence_status: pending
+
+statement:
+  Semantic rereview accepts the candidate.
+  Final gate disposition remains Coordinator-owned.
+----
+
+That artifact can be committed without claiming a future result.
+
+=== 8.2 Final Run receipt
+
+A final receipt can only be produced after trusted evidence and reduction.
+
+Illustrative:
+
+[source,text]
+----
+attempt: wfc-example-20261010-01
+run_id: RUN-...
+baseline_head: ...
+final_head: ...
+
+events:
+  - 001-H001-work
+  - 002-H002-review
+  - 003-H003-correction
+  - 004-H004-rereview
+
+trusted_evidence:
+  pytest: pass
+
+final_status: completed
+final_route: accept
+----
+
+The distinction is:
+
+[source,text]
+----
+review event:
+"I accept this candidate semantically."
+
+Run receipt:
+"The trusted gate completed."
+----
+
+== 9. Event sequencing
+
+Hop IDs provide useful identity, but a separate monotonically increasing event
+sequence may make the broader lifecycle easier to read.
+
+Illustrative:
+
+[source,text]
+----
+001 prepare
+002 H001 work
+003 H002 review
+004 H003 correction
+005 H004 rereview
+006 completed
+007 archived
+008 runtime-promoted
+----
+
+Two possible scopes remain open.
+
+=== 9.1 Narrow model
+
+Only Hop-produced repository events are materialized.
+
+Advantages:
+
+* simple;
+* naturally aligned with Git commits;
+* no new post-Run mutation mechanism.
+
+=== 9.2 Broad lifecycle model
+
+Selected non-Hop lifecycle events are represented too.
+
+Advantages:
+
+* nearly complete human-readable Run timeline;
+* easy ex-post correlation.
+
+Costs:
+
+* requires explicit authority for Coordinator-owned repository mutations;
+* risks turning bookkeeping into a self-governance channel.
+
+No choice is made here.
+
+== 10. Git history as a parallel projection
+
+Git history and repository event documents could become two projections of the
+same execution history.
+
+[source,text]
+----
+Git:
+
+abc123 H001 implementation
+def456 H002 review
+ghi789 H003 correction
+jkl012 H004 rereview
+mno345 publish completed run receipt
+----
+
+[source,text]
+----
+Artifacts:
+
+001-H001-work.adoc
+002-H002-review.adoc
+003-H003-correction.adoc
+004-H004-rereview.adoc
+run-receipt.adoc
+----
+
+Git remains the trusted acceptance and rollback substrate. The artifacts remain
+the human-readable semantic projection.
+
+== 11. Naming
+
+If events live beneath an Attempt-specific directory, the filenames need not
+repeat the full Attempt identity.
+
+Preferred direction:
+
+[source,text]
+----
+<attempt-id>/
+  events/
+    001-H001-work.adoc
+    002-H002-review.adoc
+----
+
+rather than long filenames embedding the entire Attempt ID repeatedly.
+
+The sequence should be lexically sortable.
+
+Potential filename components:
+
+* event sequence;
+* Hop ID when applicable;
+* short semantic kind.
+
+Exact naming remains open.
+
+== 12. Commission user-interface reduction
+
+The current authoring surface can require explicit declarations equivalent to:
+
+[source,yaml]
+----
+durable_artifacts:
+  independent_review:
+    - docs/backlog/FTR-..._review.adoc
+  rereview:
+    - docs/backlog/FTR-..._review.adoc
+----
+
+A derived-artifact future might allow the ordinary case to omit this.
+
+Conceptually:
+
+[source,text]
+----
+phase is a review gate
++ durable review evidence is required
++ no explicit override exists
+-> derive review-event target deterministically
+----
+
+Only consumer-specific identity would need explicit configuration.
+
+== 13. Admission and typing opportunities
+
+=== 13.1 Derived target
+
+Admission could check:
+
+* artifact root is known;
+* derived path is repository-relative;
+* derived path stays below the allowed root;
+* phase has commit authority for that path;
+* deterministic naming does not collide unexpectedly.
+
+=== 13.2 Explicit existing artifact
+
+Admission could check:
+
+* path exists in the pinned baseline;
+* path is a regular repository file;
+* phase may edit it;
+* path is in authorized scope;
+* artifact identity is not ambiguous.
+
+=== 13.3 Explicit creatable artifact
+
+Admission could check:
+
+* target may be absent;
+* parent/root is authorized;
+* collision semantics are explicit;
+* phase may create and commit it.
+
+=== 13.4 Required mutation semantics
+
+The eventual type system should answer whether `required` means:
+
+A. artifact is represented at final HEAD;
+
+B. current Hop must change and commit an artifact;
+
+C. current semantic decision must gain a new durable representation;
+
+D. semantics vary by artifact kind.
+
+Run B demonstrates that this distinction matters.
+
+== 14. One-Hop / one-commit default
+
+This concept favors restoring a stronger default expectation:
+
+[quote]
+____
+A semantically meaningful Hop should normally produce exactly one trusted commit,
+including clean review and rereview Hops.
+____
+
+Benefits:
+
+* direct Hop-to-Git correlation;
+* durable review history;
+* simpler ex-post reconstruction;
+* fewer "accepted but no artifact" states.
+
+Possible exceptions:
+
+* observation-only phases;
+* mechanically preempted Hops;
+* deliberately read-only supervisory phases;
+* future Coordinator-owned lifecycle phases.
+
+This should not become normative without further evidence.
+
+== 15. Trusted-evidence ordering must remain unchanged
+
+The ordering remains:
+
+[source,text]
+----
+agent semantic result
+-> CommitIntent admission
+-> trusted commit
+-> Coordinator-owned evidence
+-> reducer / route
+----
+
+The review artifact is therefore a pre-evidence semantic record.
+
+A later receipt or lifecycle record is a post-evidence disposition record.
+
+WFC must not weaken this ordering merely to make artifact creation convenient.
+
+== 16. External Evidence relationship
+
+The repository-native event chain should not replace the Evidence repository.
+
+A likely responsibility split:
+
+Consumer repository::
+Semantic lifecycle, review events, optional final receipt, Git-correlated history.
+
+STATE/OPS::
+Operational execution state.
+
+Evidence repository::
+Archived immutable/raw execution package, hashes, manifests, machine evidence.
+
+A final repository receipt referencing the Evidence archive commit creates an
+ordering question:
+
+[source,text]
+----
+repository receipt -> archive
+----
+
+cannot know the archive commit yet, while:
+
+[source,text]
+----
+archive -> repository receipt
+----
+
+means the archived Development state predates that receipt.
+
+This circularity is intentionally unresolved.
+
+Possible future answers:
+
+* receipt omits archive identity;
+* semantic ledger joins the two;
+* a later annotation records archive identity;
+* Level 1 owns post-archive curation.
+
+== 17. Relation to Successor Commission target architecture
+
+The Successor Commission target answers:
+
+[source,text]
+----
+stopped Run
+-> semantic disposition
+-> SuccessorIntent
+-> deterministic Commission
+-> next Run
+----
+
+This concept answers:
+
+[source,text]
+----
+each Run
+-> clear repository-native semantic event trail
+----
+
+Together:
+
+[source,text]
+----
+Run execution
+-> repository event chain
+-> stop/completion
+-> archive
+-> if needed: semantic disposition
+-> successor Commission
+-> next Run
+----
+
+Level 0 must not gain successor-authoring authority merely because better event
+artifacts exist.
+
+== 18. Mechanism Admission
+
+This concept does not justify immediate implementation.
+
+Strong admission signals would be:
+
+* repeated clean reviews failing durable-artifact requirements;
+* repeated manual naming of predictable review paths;
+* repeated difficulty correlating reviews to Attempts/Runs/Hops;
+* repeated need to reconstruct semantic history from STATE/Evidence alone;
+* repeated Commission ceremony that contains no project-specific semantics.
+
+Weak signals:
+
+* one isolated missing review commit;
+* aesthetic preference for `.wfc/`;
+* desire to build a generic event-store abstraction before recurrence.
+
+== 19. Possible staged evolution
+
+=== Stage 0 -- current practice
+
+* explicit review artifact paths;
+* review Hops expected to update/commit them;
+* detailed execution facts in STATE/Evidence.
+
+=== Stage 1 -- strengthen current contract
+
+Potential bounded change:
+
+* clean review/rereview must still update its required artifact;
+* admission validates explicit target identity more strongly;
+* documentation distinguishes semantic verdict from final trusted outcome.
+
+=== Stage 2 -- derived default review artifacts
+
+Potential later change:
+
+* repository policy defines or accepts a default WFC artifact root;
+* review-event paths are derived;
+* ordinary Commission authoring omits filenames;
+* explicit paths remain overrides.
+
+=== Stage 3 -- repository-native Run event chain
+
+Potential later change:
+
+* per-Attempt event directory;
+* sortable event numbering;
+* typed event kinds;
+* correlation to Hop and Git commit.
+
+=== Stage 4 -- terminal Run receipt
+
+Potential later change:
+
+* trusted final disposition gains a repository-native receipt;
+* archive/ledger relationship is explicitly defined.
+
+Each stage requires separate authority.
+
+== 20. Open questions
+
+=== 20.1 Default location
+
+* `.wfc/runs/` or `docs/...`?
+* repository-policy-defined root?
+* opt-in or automatic default?
+
+=== 20.2 Override granularity
+
+* root override only?
+* per-phase override?
+* concrete path override?
+* repository policy versus WorkItem?
+
+=== 20.3 Artifact identity
+
+* Hop-local or phase-local?
+* one file per event or one accumulating review file?
+* may review and rereview append to the same document?
+* when must a file already exist?
+
+=== 20.4 Mutation requirement
+
+* must every review Hop mutate an artifact?
+* can a represented-but-unchanged artifact satisfy durability?
+* should clean `ACCEPT` always create a fresh event?
+
+=== 20.5 Sequence identity
+
+* Hop ID only?
+* separate monotonic event sequence?
+* who allocates non-Hop event numbers?
+
+=== 20.6 Final receipt authority
+
+* Coordinator or Level 1?
+* does Coordinator-owned repository mutation widen current authority?
+* should terminal curation remain external to Level 0?
+
+=== 20.7 Archive ordering
+
+* should receipt know Evidence archive commit?
+* how is circular ordering avoided?
+* is semantic ledger the intended cross-repository join?
+
+=== 20.8 One Hop / one commit
+
+* normative or strong default?
+* which phase kinds are exempt?
+* exactly one commit or at least one?
+
+=== 20.9 Schema evolution
+
+* extend `durable_artifact`?
+* introduce a richer descriptor?
+* separately type identity source and lifecycle semantics?
+* preserve compatibility without ambiguous dual semantics?
+
+== 21. Near-term guidance
+
+Until a dedicated artifact model is accepted:
+
+. Keep explicit review artifacts where the Commission already names them.
+. Review and rereview Hops should update and commit their durable review artifact
+  even for clean semantic `ACCEPT`.
+. Review text should say that final gate disposition remains conditional on
+  Coordinator-owned trusted evidence.
+. Do not claim final Run acceptance before trusted evidence and reduction.
+. Treat missing artifact commits as workflow/profile/agent-contract defects, not
+  as justification to weaken trusted-evidence ordering.
+. Observe recurrence before building a generic event mechanism.
+
+== 22. Design direction in one sentence
+
+[quote]
+____
+WFC should evolve toward a repository-native, deterministically identifiable
+review/event trail whose ordinary location is derived by default, whose
+consumer-specific paths are explicit overrides, and whose review artifacts record
+semantic judgment while a later trusted mechanism records final Run disposition.
+____
+
+== 23. Non-goals
+
+This concept authorizes none of the following:
+
+* `.wfc/` creation;
+* event-store subsystem;
+* new persistence tables;
+* new result schema;
+* reducer-ordering changes;
+* new Coordinator commit authority;
+* automatic FTR mutation;
+* automatic archive backlinks;
+* automatic semantic-ledger curation;
+* Runtime promotion;
+* Evidence mutation;
+* current `test_wfc_op.py` fixture repair;
+* a successor Commission for the stopped Run.
+
+== 24. Traceability
+
+Empirical anchors:
+
+* Attempt `wfc-evidence-failure-disposition-hardening-integration-closure-20261010-01`
+* Run `RUN-98b556cacd9446539e04530406dc3a58`
+* H002 review commit `dc977a234c637cf012e0c5cb816bcc14ef15beb9`
+* H003 correction commit `21515bce888de8b95f9e161440bda73f69521b71`
+* H004 semantic rereview `accept`, followed by Coordinator-owned `pytest` failure
+  and durable-artifact mechanical preemption
+
+Related documents:
+
+* `docs/warm_storage/runbooks/successor_continuation_runbook_2026-10-10.adoc`
+* `docs/warm_storage/concepts/workflow_coordinator_successor_commission_pipeline_target_2026-10-10.adoc`
+* `docs/warm_storage/concepts/workflow_coordinator_level1_architecture_disposition_concept_2026-10-10.adoc`
+* `docs/wfc_operator_manual.adoc`
