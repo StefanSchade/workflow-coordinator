@@ -58,7 +58,7 @@ phases:
     authorized_scope: [PROOF.md]
     authorized_actions: [edit, commit]
     human_gates: []
-    evidence: [local]
+    evidence: []
     review: null
     routes:
       done:
