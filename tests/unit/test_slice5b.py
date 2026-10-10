@@ -292,7 +292,16 @@ def fixture_data() -> dict[str, object]:
 
 
 def fixture_repository(tmp_path: Path, *, data: dict[str, object] | None = None) -> Path:
-    value = data or fixture_data()
+    # The source fixture records the historical Slice-5B topology.  New
+    # launches use the canonical evidence topology: workers may run checks
+    # diagnostically, but required evidence belongs only to gates with an
+    # explicit failure disposition.  Materialize that current launch shape
+    # without migrating the historical fixture itself.
+    value = json.loads(json.dumps(data or fixture_data()))
+    phases = value["profile"]["phases"]
+    phases["investigate"]["evidence"] = []
+    phases["correct"]["evidence"] = []
+    phases["rereview"]["review"]["failed_evidence_route"] = "correct"
     repository = tmp_path / "repo"
     repository.mkdir(parents=True)
     subprocess.run(("git", "init", str(repository)), check=True, capture_output=True)
@@ -514,11 +523,13 @@ def test_integrated_non_dmc_four_hop_convergence_uses_fresh_context_and_truthful
         "review-observation", "fresh-rereview"
     )
     assert len(revalidations) == 3
-    assert runner.observe_calls == ["fake_check"] * 4
+    assert runner.observe_calls == ["fake_check"] * 2
     assert len(evidence) == 4
     assert all(entry["context"] == "fresh" for entry in evidence)
-    assert all(entry["trusted_observations"][0]["provider"] == "fake_check" for entry in evidence)
-    assert all(entry["trusted_observations"][0]["status"] == "pass" for entry in evidence)
+    assert [len(entry["trusted_observations"]) for entry in evidence] == [0, 1, 0, 1]
+    observations = [entry["trusted_observations"][0] for entry in evidence if entry["trusted_observations"]]
+    assert all(observation["provider"] == "fake_check" for observation in observations)
+    assert all(observation["status"] == "pass" for observation in observations)
     persisted = json.loads(
         (state_root / "checkouts" / association.checkout_id / "execution-evidence.json").read_text()
     )
@@ -1229,7 +1240,7 @@ def test_malformed_trusted_observation_hard_stops_before_routing(
     assert vertical.reduction.run.hops[-1].applied_route is None
 
 
-def test_failed_evidence_route_rejects_advisory_and_non_goto_declarations():
+def test_failed_evidence_route_rejects_advisory_and_invalid_dispositions():
     advisory = fixture_data()["profile"]
     advisory["phases"]["review"]["review"]["authority"] = "advisory"
     advisory["phases"]["review"]["review"]["finding_authority"] = []
@@ -1238,7 +1249,7 @@ def test_failed_evidence_route_rejects_advisory_and_non_goto_declarations():
 
     non_goto = fixture_data()["profile"]
     non_goto["phases"]["review"]["routes"]["correct"] = {"effect": "stop"}
-    with pytest.raises(ValidationError, match="must name a goto route"):
+    with pytest.raises(ValidationError, match="must name a goto or await_human route"):
         workflow_profile_from_yaml(yaml.safe_dump(non_goto, sort_keys=False))
 
 
