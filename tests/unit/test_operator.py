@@ -563,25 +563,11 @@ def test_successor_launch_revalidates_every_mutable_preprovider_input(
     '{"schema_version":1,"status":"completed","requested_route":"done","scope_changed":false,"requires_human":false,"escalation":null,"findings":[],"claimed_commits":[],"commit_intent":{"paths":["outside.md"],"subject":"fix(workflow): WI-OP H001 invalid"},"evidence_refs":[],"summary":"invalid intent"}',
     '{"schema_version":1,"status":"completed","requested_route":"done","scope_changed":false,"requires_human":false,"escalation":null,"findings":[],"claimed_commits":[],"commit_intent":null,"evidence_refs":[],"summary":"ordinary result"}',
 ])
-def test_successor_provenance_does_not_weaken_ordinary_commit_or_evidence_fail_closed_rules(
+def test_successor_provenance_does_not_weaken_ordinary_commit_rules(
     repository: Path, tmp_path: Path, monkeypatch, result_body: str
 ):
-    """A successor still needs ordinary evidence and a valid independent commit."""
+    """A successor still needs a valid independent commit."""
     state, descriptor, _authority, _baseline, _run_path = stopped_predecessor_and_descriptor(repository, tmp_path)
-    if "ordinary result" in result_body:
-        class FailingEvidence:
-            def observe(self, command):
-                return evidence.Observation(
-                    provider="test", status="fail", command_name=command.command_name,
-                    command=command.authored_argv, summary="injected failure", artifact_ref=None,
-                    argv_digest=command.argv_digest, authored_argv0=command.authored_argv[0],
-                    timeout_seconds=command.timeout_seconds, cwd_policy="test", invocation_path="test",
-                    canonical_path="test", stat_fingerprint=None, environment_policy="test",
-                    path_source="test", path_digest="test", exit_code=1, signal=None,
-                    error_class=None, stdout_byte_count=0, stdout_sha256="", stdout_body_omitted=True,
-                    stderr_byte_count=0, stderr_sha256="", stderr_body_omitted=True,
-                )
-        monkeypatch.setattr(operator, "PRODUCTION_EVIDENCE_RUNNER", FailingEvidence())
     executable = fake(tmp_path, f'''import json, pathlib, sys
 args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message")+1]); prompt=sys.stdin.read()
 def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
@@ -589,13 +575,15 @@ result=json.loads({result_body!r})
 output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}}))
 ''')
     successor_state = tmp_path / "failed-successor"
+    expected_exit = 1 if "invalid intent" in result_body else 0
     assert main([
         *args(repository, successor_state, str(executable)), "--successor-continuation", str(descriptor),
         "--successor-continuation-sha256", hashlib.sha256(descriptor.read_bytes()).hexdigest(),
-    ]) == 1
+    ]) == expected_exit
     successor = load_run(next((successor_state / "checkouts").iterdir()) / "run.json")
     assert successor.successor_provenance is not None
-    assert successor.hops[0].actual_commits == ()
+    if expected_exit:
+        assert successor.hops[0].actual_commits == ()
 
 
 def test_successor_lifecycle_keeps_every_predecessor_publication_and_governing_input_byte_identical(

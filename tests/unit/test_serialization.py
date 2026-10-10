@@ -360,6 +360,7 @@ def test_failed_evidence_route_accepts_goto_or_await_human_only():
     assert parsed.phases["review"].routes["ask"].effect is RouteEffect.AWAIT_HUMAN
 
     review["review"]["failed_evidence_route"] = "halt"
+    review["routes"]["halt"] = {"effect": "stop"}
     with pytest.raises(ValidationError, match="goto or await_human"):
         workflow_profile_from_yaml(yaml.safe_dump(data, sort_keys=False))
 
