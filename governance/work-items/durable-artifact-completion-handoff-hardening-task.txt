@@ -1,0 +1,507 @@
+Implement a small bounded forward hardening of the existing durable-artifact
+completion handoff. This is a FRESH Commission. It is NOT a resume, retry,
+replay, or reconciliation of any predecessor Run. Loop: implement ->
+independent_review -> {accept: complete, correction: correction}; correction
+-> rereview; rereview -> {accept: complete, correction: correction}. Initial
+phase: implement. No supervisor. No child Run. No nested WFC.
+
+Read in full, before starting any work:
+
+  docs/backlog/BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc, section
+    "S4-002 H004 -- valid adversarial finding, missing durable-artifact
+    effect"
+  docs/wfc_projected_result_contracts_concept_2026-10-07.adoc, section on P4
+    (durable-artifact completion bookkeeping)
+  this WorkItem's own authority_source field in full
+
+This WorkItem's authority_source is the engineering authority behind this
+Commission's scope and prose. Where this task text summarizes it, its own
+exact wording controls. Where either document disagrees with what you
+observe in current source, trust your own fresh inspection and report the
+discrepancy in `summary` rather than silently resolving it.
+
+======================================================================
+WHAT THIS COMMISSION MEANS
+======================================================================
+
+The real self-development Run `RUN-198ad6957b1b4dc7a0d2fe63f9e0e391`
+(WorkItem `WI-WFC-CORRECTION-CONVERGENCE-ESCAPE-IMPLEMENTATION-S4-002`, Hop
+H004) is documented in `docs/backlog/BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc`.
+A `role: independent_reviewer` Hop did materially useful adversarial review
+work and returned `outcome: changes_required`, `commit_intent: null` against
+a phase declaring `durable_artifact: required`. The Coordinator correctly,
+but only late -- inside `vertical.py::_durable_artifact_anomalies`, after
+`validated_result` and before the Hop's disposition is reduced -- flagged
+"required durable artifact is missing, unrepresented, or uncommitted" and
+the Run stopped `awaiting_human`. That specific Run never itself recovered;
+a fresh successor Run eventually completed the work via a cooperative model
+response. This is existing, CORRECT, fail-closed behavior; nothing about
+`_durable_artifact_anomalies`'s authority or disposition is wrong. The gap
+this Commission closes is legibility: the agent was not told, before the
+expensive provider invocation, exactly what satisfies the obligation or
+when it is exempt; and the one diagnostic message produced afterward
+collapses several mechanically distinct causes into one generic string.
+
+A temporary, non-authorizing research note analyzed this problem more
+deeply than is reproduced here. That note is NOT checked into this
+repository and is NOT available to you. It grants you no authority. Its
+final recommendation ("Option E") bundled three changes: (1) prompt/context
+projection of the concrete artifact path(s) and an obligation sentence, (2)
+a NEW early provider-neutral enforcement check inside
+`vertical.py::run_one_hop`, evaluated immediately after `validated_result`
+succeeds and before `trusted_commit`/`observe_hop`, and (3) leaving
+`_durable_artifact_anomalies` and the Codex wire schema unchanged. The
+maintainer reviewed that note and made a final scope decision AFTER it:
+
+  Do NOT add the proposed new early enforcement check in
+  vertical.py::run_one_hop. The existing late durable-artifact enforcement
+  remains the single authoritative enforcement path.
+
+This Commission authorizes only (1), reframed as described below, and a
+bounded version of what was going to be left as "(3) unchanged" --
+specifically, improving the diagnostic granularity of the existing late
+check without adding a second check anywhere. It does not authorize (2) in
+any form, under any name, in any file.
+
+======================================================================
+NO NEW ENFORCEMENT LAYER -- READ THIS BEFORE TOUCHING vertical.py
+======================================================================
+
+`_durable_artifact_anomalies` remains the sole durable-artifact enforcement
+point. It must keep its existing call site inside `run_one_hop` (currently
+immediately before/alongside `_subject_anomalies`, feeding
+`post_acceptance_anomalies`, itself feeding `MechanicalFacts.repository_anomaly`
+and ultimately `reduce_result`'s mechanical-preemption path) and its
+existing position relative to `trusted_commit`/`observe_hop` -- i.e. it
+still runs on the Hop's already-observed Git delta, after any commit
+attempt, never before one. Do not add any new condition, branch, helper
+call, or early return anywhere else in `run_one_hop` (or in
+`adapter.py::validated_result`, or anywhere upstream of the result being
+fully parsed and reduced) that independently decides durable-artifact
+admissibility. A tiny local pure helper is acceptable ONLY if it is used
+exclusively to express `_durable_artifact_anomalies`'s own existing
+mechanics more legibly (e.g. factoring one of its sub-conditions into a
+named boolean for message selection) -- never a second predicate evaluated
+at a second point in the control flow, and never one that changes which
+Hops get preempted or how.
+
+======================================================================
+ITEM 1 -- AGENT-FACING PROMPT/CONTRACT HARDENING
+======================================================================
+
+Goal: for any phase whose admitted facts declare `durable_artifact:
+required`, the agent-facing prompt must (a) carry the concrete declared
+artifact path(s), and (b) carry one Coordinator-composed, phase-specific
+sentence stating the operational obligation plainly enough that the agent
+understands when it must create/update the artifact and truthfully supply a
+CommitIntent naming it, and that blocked/failed/requires_human/
+escalation/scope_changed dispositions must never fabricate one.
+
+Repository truth as of Commission authoring (RE-VERIFY YOURSELF -- do not
+trust this paragraph blindly): the concrete path(s) already ARE projected
+into the agent-facing prompt today, via
+`operator.py::_reconstructed_context`'s `durable_artifacts=<comma-joined
+path(s)>` context line, which is folded into every Hop's `[context]` block
+by `assemble_prompt` (`src/workflow_coordinator/prompt.py`). This is
+exercised by `tests/unit/test_slice5b.py`'s
+`test_unsuccessful_outcomes_do_not_require_artifact_or_route`-adjacent
+fixtures and, most directly, the `assert "durable_artifacts=payload.txt"
+in adapter.requests[0].prompt` / `assert "durable_artifacts=\n" in
+adapter.requests[1].prompt` assertions, and by
+`test_reconstructed_context_encodes_agent_values_and_attributes_outcome`'s
+`sum(line.startswith("durable_artifacts=") for line in lines) == 1`
+assertion. The same function also already projects
+`review_authority=<GATE|ADVISORY>` whenever `phase.review is not None`.
+If your own fresh inspection confirms this is still accurate, do NOT
+re-plumb either fact -- there is no missing parameter to add for the raw
+path or the raw authority value. The real, remaining gap is purely the
+missing natural-language sentence connecting these already-available facts
+into an explicit, unambiguous rule.
+
+Compose that sentence Coordinator-side, derived only from `phase.durable_artifact`
+and `phase.review.authority` (both already in scope wherever you choose to
+compose it), never left for the model to resolve itself across GATE vs
+ADVISORY. Required shape:
+
+* For a phase with `durable_artifact: required` whose review (if any) is
+  not `ADVISORY`, or which has no review at all (a worker phase): state
+  that a route-eligible completing disposition must create/update the
+  named artifact path(s) and supply a CommitIntent naming them, and that
+  blocked/failed/requires_human/escalation/scope_changed dispositions must
+  not supply one.
+* For a phase with `durable_artifact: required` AND `review.authority ==
+  ADVISORY`: do NOT tell the model that `changes_required` needs a
+  CommitIntent at all. `vertical.py`'s existing `permitted_intent`/
+  `review_artifact_commit` mechanics only permit a non-null CommitIntent on
+  `changes_required` when `review.authority is GATE`; telling an ADVISORY
+  phase otherwise would instruct something the Coordinator would then
+  reject, which is exactly the hazard this WorkItem's authority_source
+  names and forbids. Whether an ADVISORY + required + changes_required
+  phase shape is sound at all is an open, separate, future P3.5 question;
+  do not resolve it, do not note it as a defect to fix, and do not widen
+  the sentence's logic to work around it -- simply never emit the
+  contradictory instruction for that composition.
+* For `durable_artifact: optional` or `durable_artifact: none`, do not
+  fabricate any obligation sentence implying a requirement that does not
+  exist.
+
+Placement: use whichever existing per-Hop prompt/context composition site
+already has `phase` (and, if needed, the resolved artifact path tuple) in
+scope -- `src/workflow_coordinator/prompt.py` (`assemble_prompt`, `_header`,
+or the `[workflow_policy]` block) and/or
+`src/workflow_coordinator/operator.py` (`_reconstructed_context`) are both
+in authorized scope for this purpose. Choose the smallest coherent seam
+after inspecting current source; do not introduce a new enum, boolean
+parameter, `AgentExecutionRequest` field, or persisted identity merely to
+carry a fact that a function in the call chain already holds directly.
+
+Explicitly out of scope for this item: `src/workflow_coordinator/resources/agent_operating_contract_v6.txt`,
+and the `CONTRACT_ID`/`CONTRACT_VERSION`/`RESOURCE`/`REVIEWED_SHA256`
+constants in `prompt.py` that pin it. That resource is generic across every
+phase and role and is not where a phase-specific, path-bearing sentence
+belongs; do not bump its version or its pinned hash for this Commission.
+
+======================================================================
+ITEM 2 -- EXISTING DURABLE-ARTIFACT DIAGNOSTIC HARDENING
+======================================================================
+
+Bounded to `src/workflow_coordinator/vertical.py::_durable_artifact_anomalies`
+only. Keep its signature, its call site, its gate condition (which phases/
+outcomes it applies to), and its Run-visible disposition consequences
+(still `mechanical_preemption:...`, still `RunStatus.AWAITING_HUMAN`,
+never `RECONCILE_REQUIRED`) unchanged. Today its first branch returns one
+generic message, "required durable artifact is missing, unrepresented, or
+uncommitted", whenever any of several distinct conditions hold. Replace
+that single generic message with deterministic, mechanically distinguished
+messages for (at least) these causes, wherever distinguishing them is
+straightforward from facts the function already has:
+
+* no CommitIntent was supplied at all for a disposition that reaches this
+  enforcement path (`result.commit_intent is None`);
+* a CommitIntent was supplied but does not name the required artifact
+  path(s) (the required path(s) are not a subset of the CommitIntent's own
+  `paths`);
+* the required artifact path(s) are not actually among the Hop's observed
+  changed/committed paths (no actual commit was made, or the required
+  path(s) are not in the Git delta's changed-path set).
+
+The existing later branch ("required durable artifact is absent or not a
+regular Git-tracked file at end HEAD", the Git-truth check against `end
+HEAD` via `git ls-tree`) is already a distinct cause and must remain
+exactly as authoritative and unchanged in meaning -- it is the only layer
+that can know actual Git ground truth, and this Commission does not modify,
+weaken, or duplicate it.
+
+If your inspection finds a required phase can be reached with an empty
+declared-artifact-path configuration (i.e. `durable_artifacts` is empty
+while `phase.durable_artifact` is `required`), and distinguishing that as
+its own message is equally straightforward and deterministic, you may do
+so; do not build speculative handling for a case your own inspection proves
+unreachable.
+
+Do not invent a taxonomy, enum, or exception hierarchy for these causes --
+plain distinct message strings, chosen by ordinary conditional logic
+reading facts the function already computes, are sufficient and are all
+this item asks for.
+
+======================================================================
+GOVERNING DESIGN DIRECTION (CONTEXT ONLY -- NOT AN AUTHORIZATION)
+======================================================================
+
+The maintainers have separately adopted a forward heuristic favoring
+Wlaschin-style algebraic modeling for NEW/CHANGED contracts: valid semantic
+states expressed as explicit Sum/Product-type variants rather than bags of
+loosely independent optional fields/booleans, treating difficulty
+expressing a rule structurally as a design smell. This is background intent
+for future work. It does NOT authorize rewriting `RoutingResult`,
+`WorkResult`, `ReviewVerdict`, `CommitIntent`, or any other existing
+generic structure in this Commission. If implementing either item above
+reveals that a clean structural expression of a rule would require
+touching code outside this WorkItem's authorized scope, do not chase it --
+implement the bounded version inside scope, note the observation in
+`summary`, and stop there.
+
+======================================================================
+EXPLICITLY WITHHELD
+======================================================================
+
+Any new early `validated_result` or `run_one_hop` durable-artifact
+enforcement layer; any duplicate enforcement predicate beyond a tiny local
+helper strictly necessary to express `_durable_artifact_anomalies`'s own
+existing mechanics without semantic duplication; result-type algebra
+redesign; a `WorkResult`/`ReviewVerdict` Sum-Type refactor; a new
+`ResultContractKind`; Codex/OpenAI provider-schema narrowing; new persisted
+Hop/Run contract dimensions; same-session repair/retry after malformed or
+contract-invalid provider output; P3 Finding authorship/update projection;
+P3.5 Commission/authority graph-conformance implementation; fixing or
+broadening the ADVISORY + required + changes_required composition anomaly;
+P4 canonical CommitIntent/Coordinator-owned effect redesign; P5 provider
+capability/registry cleanup; Claude adapter work; changes to reducer
+authority; weakening or removing the existing final Git/artifact truth
+checks; a generic policy framework, contract-property DSL, provider
+capability abstraction, event system, or new ontology; touching
+`agent_operating_contract_v6.txt` or its pinned identity constants; bulk
+migration of any historical profile; unrelated refactoring; unrelated
+BUG/FTR closure; or a push of any kind.
+
+If trusted evidence reveals a repository defect genuinely unrelated to this
+hardening, this Commission does not authorize silently absorbing or
+opportunistically fixing it -- escalate (`requires_human=true`,
+`escalation.kind=scope`) and preserve truth instead.
+
+======================================================================
+BEHAVIORAL INVARIANTS THIS COMMISSION MUST PRESERVE AND TEST
+======================================================================
+
+* `durable_artifact: required` plus a normal route-eligible completion must
+  not silently succeed without its required artifact representation.
+* `blocked`/`failed` outcomes remain exempt from producing the required
+  artifact where current semantics already say so.
+* Unsuccessful outcomes must not gain new permission to supply
+  CommitIntent.
+* Human escalation and scope-change behavior remains unchanged.
+* A valid required-artifact completion with a correct CommitIntent still
+  proceeds into the existing trusted Git/artifact verification path.
+* Optional/none durable-artifact phases remain unaffected.
+* The Run must not newly end in `RECONCILE_REQUIRED` merely because of this
+  hardening.
+* The existing mechanical artifact verification (the Git-truth branch)
+  remains defense in depth and authoritative for actual Git truth.
+
+======================================================================
+TEST AUTHORITY
+======================================================================
+
+Repository inspection at Commission-authoring time established that this
+behavior is owned by:
+
+  tests/unit/test_slice3_vertical.py  -- `_durable_artifact_anomalies`/
+                                          `run_one_hop` coverage for the
+                                          worker-role completed-outcome case
+  tests/unit/test_slice5b.py          -- the fuller `changes_required`/
+                                          blocked/failed durable-artifact
+                                          matrix, and the `[context]`
+                                          projection assertions, including
+                                          `test_reconstructed_context_encodes_agent_values_and_attributes_outcome`'s
+                                          exact-one-occurrence line-prefix
+                                          assertions
+
+Any new context/prompt line this Commission adds must not break those
+exact-one-occurrence assertions and should be covered by an equivalent new
+assertion if it changes observable prompt/context shape. If item 1's chosen
+seam touches `assemble_prompt`'s own signature, `tests/unit/test_a3_operating_contract.py`
+is also in scope strictly for covering that signature change -- never for
+touching the pinned resource file or its constants. Add focused regression
+tests for each newly distinguished diagnostic message and for the new
+obligation sentence (including the ADVISORY-exemption case and the
+optional/none non-fabrication case); do not pursue broad test churn across
+unrelated modules.
+
+Minimum expected coverage:
+
+Diagnostics: no-CommitIntent, CommitIntent-not-naming-required-path, and
+path-not-actually-changed each produce a distinct message string; the
+existing Git-truth-absent message is unchanged; a valid accepted case
+(correct CommitIntent, path actually committed, regular tracked file at end
+HEAD) remains green with no anomaly.
+
+Prompt/context: a GATE-or-worker phase with `durable_artifact: required`
+carries both the concrete path(s) and the completing-needs-CommitIntent
+obligation sentence; an ADVISORY phase with `durable_artifact: required`
+carries the path(s) but never the changes_required-needs-CommitIntent
+instruction; an `optional`/`none` phase carries no fabricated obligation
+sentence.
+
+======================================================================
+WORKER SCOPE
+======================================================================
+
+Use scope-as-authority, not fragile exact-file prediction. `implement` and
+`correction` authorized scope is exactly:
+
+  src/workflow_coordinator/prompt.py
+  src/workflow_coordinator/operator.py
+  src/workflow_coordinator/vertical.py
+  tests/unit
+  docs/wfc_operator_manual.adoc
+
+No wildcard syntax; no bare repository-wide scope. `independent_review` and
+`rereview` scope is exactly their one durable review artifact:
+
+  docs/backlog/FTR-WFC-DURABLE-ARTIFACT-COMPLETION-HANDOFF-HARDENING_implementation_review_001.adoc
+
+Review phases must not mutate production/tests/docs; worker phases must
+not mutate the review artifact. This Commission does NOT grant: broader
+governance mutation; Runtime mutation; Evidence mutation; Project Memory
+mutation; or any other unrelated repository authority.
+
+======================================================================
+OPERATOR MANUAL UPDATE (BOUNDED, OPTIONAL)
+======================================================================
+
+`docs/wfc_operator_manual.adoc` is in authorized scope. If, after
+implementing items 1 and 2, any existing passage would become inaccurate
+or misleadingly silent about the new obligation sentence or the new
+diagnostic message granularity, add a small, focused update near the
+existing section on trusted evidence/worker completion/correction routing
+(or a short new section, your judgment) documenting exactly what was
+implemented. Do not rewrite unrelated sections. If no existing passage is
+affected, it is acceptable to leave the manual untouched -- do not invent
+documentation obligations beyond keeping existing text accurate.
+
+======================================================================
+REVIEW ARTIFACT
+======================================================================
+
+The review/rereview phases may mutate ONLY the one fresh durable review
+artifact reserved by this Commission,
+
+  docs/backlog/FTR-WFC-DURABLE-ARTIFACT-COMPLETION-HANDOFF-HARDENING_implementation_review_001.adoc
+
+-- a fresh, non-colliding name verified against existing
+`docs/backlog/FTR-WFC-*` history at authoring time. It is reserved, not
+pre-created; the reviewer creates it on first invocation.
+
+======================================================================
+FIRST INDEPENDENT REVIEW -- MUST BE BROAD
+======================================================================
+
+This is the FIRST independent review of this hardening. It must assess the
+COMPLETE candidate, not only the latest diff, with fresh context
+(`context: fresh`). At minimum verify, numbered one through twenty:
+
+ 1. No new early `validated_result`/`run_one_hop` durable-artifact
+    enforcement layer was introduced, under any name, in any file.
+ 2. `_durable_artifact_anomalies` remains the sole enforcement point,
+    invoked at its existing call site, in its existing position relative
+    to `trusted_commit`/`observe_hop`.
+ 3. The only change to `_durable_artifact_anomalies` is message
+    granularity; its gate condition and Run-visible disposition
+    consequences are unchanged.
+ 4. The newly distinguished diagnostic messages are genuinely mechanically
+    distinct causes, not cosmetic rewording of the same condition.
+ 5. The existing Git-truth branch (absent/not-a-regular-tracked-file at end
+    HEAD) remains unchanged in meaning and authority.
+ 6. `durable_artifact: required` plus a normal route-eligible completion
+    still fails closed without a representing CommitIntent (regression).
+ 7. `blocked`/`failed` outcomes remain exempt from the artifact obligation.
+ 8. Unsuccessful outcomes (blocked/failed/requires_human/escalation/
+    scope_changed) gained no new permission to supply CommitIntent.
+ 9. A valid required-artifact completion with a correct CommitIntent still
+    proceeds into the existing trusted Git/artifact verification path.
+10. Optional/none durable-artifact phases remain unaffected.
+11. The Run does not newly end in `RECONCILE_REQUIRED` because of this
+    hardening.
+12. The agent-facing prompt/context carries the concrete declared
+    artifact path(s) for every phase with `durable_artifact: required`.
+13. The agent-facing prompt/context carries a Coordinator-composed
+    obligation sentence derived only from `phase.durable_artifact` and
+    `phase.review.authority`, never a model-self-applied rule.
+14. That sentence never instructs an `ADVISORY`-review phase under
+    `durable_artifact: required` to supply a CommitIntent for
+    `changes_required`.
+15. `optional`/`none` phases carry no fabricated obligation sentence.
+16. `src/workflow_coordinator/resources/agent_operating_contract_v6.txt`,
+    `CONTRACT_VERSION`, `RESOURCE`, and `REVIEWED_SHA256` were not touched.
+17. No new persisted field, `ResultContractKind`, or Codex/OpenAI
+    provider-schema change was introduced.
+18. The ADVISORY + required + changes_required composition anomaly was
+    neither fixed nor broadened -- only avoided as a prompt contradiction.
+19. No P3/P3.5/P4/P5 or unrelated scope creep occurred, and no existing
+    generic structure (`RoutingResult`/`WorkResult`/`ReviewVerdict`/
+    `CommitIntent`) was redesigned.
+20. The complete Coordinator-owned repository pytest evidence passes.
+
+Use the new durable review artifact named above.
+
+======================================================================
+REREVIEW -- DELIBERATELY NARROWER
+======================================================================
+
+Fresh reviewer context but a bounded surface: current-Run Findings opened
+by `independent_review` (or an earlier `rereview` of this same Run), their
+corrections, direct regressions caused by those corrections, and the
+gate's own trusted full pytest evidence. Do not reopen a broad review
+merely because context is fresh. A genuinely new MATERIAL defect supported
+by concrete new evidence may still escape this narrow surface. Unrelated
+newly noticed MINOR observations should not indefinitely reset
+convergence.
+
+======================================================================
+FINDING AUTHORITY
+======================================================================
+
+Both `independent_review` and `rereview` hold `finding_authority: [resolve]`
+only, for any genuine current-Run-local Finding either phase of THIS Run
+itself opens, once independently verified corrected. No `residual`,
+`supersede`, or `reopen` is granted or required. This Run starts with no
+inherited Run-local Finding set and confers no authority over any prior
+Run's Findings.
+
+======================================================================
+P2 RESULT-CONTRACT VOCABULARY
+======================================================================
+
+Runtime is promoted P2. Worker/correction semantics: `WorkResult`, `status:
+completed | blocked`. Reviewer/rereview semantics: `ReviewVerdict`,
+`verdict: accept | changes_required`. Do not instruct a worker to emit
+`outcome`/`accept`/`changes_required`; do not instruct a reviewer to emit
+worker `status`.
+
+======================================================================
+WORKER COMPLETION SEMANTICS
+======================================================================
+
+Worker `status: completed` means the bounded candidate for this phase is
+coherent and ready for its declared next step. It does NOT mean the worker
+has proven all downstream trusted acceptance evidence -- Coordinator-trusted
+evidence runs after the semantic result and after any admitted
+Coordinator-owned commit. Agent-side tests, including a full-suite run in
+the agent's own sandbox, are diagnostic input, never Coordinator-trusted
+evidence. A red agent-side suite is NOT by itself a reason to return
+`blocked`; inability to run the full suite in the agent sandbox is NOT by
+itself a scope escalation. Report diagnostic limitations truthfully in
+`summary`. `blocked` is reserved for a real missing authority, scope,
+prerequisite, or capability needed by THIS Hop -- never for a downstream
+gate that has not run yet.
+
+======================================================================
+ROLE / MODEL STRATEGY
+======================================================================
+
+Use the established economical role strategy unless repository truth gives
+a concrete reason not to:
+
+  implement / correction:        codex_cli, gpt-5.6-terra, medium
+  independent_review / rereview: codex_cli, gpt-5.6-terra, high
+
+This hardening is deliberately small and bounded. Do not escalate to a
+frontier model merely because the underlying problem was researched at
+length.
+
+======================================================================
+HOP BUDGET
+======================================================================
+
+max_autonomous_hops: 8 -- a safety ceiling, not an expected hop count.
+Expected happy path may be only implement -> independent_review ->
+complete. Correction/rereview remain available if actually needed.
+
+======================================================================
+ACCEPTANCE MEANING
+======================================================================
+
+If this Commission completes successfully, acceptance means ONLY that the
+two bounded items above (agent-facing prompt/contract hardening; existing
+durable-artifact diagnostic hardening) have been implemented, independently
+reviewed, and passed trusted repository acceptance evidence. It does NOT
+itself promote Runtime, authorize P3/P3.5/P4/P5, resolve the ADVISORY +
+required + changes_required composition anomaly, push, or migrate any
+historical profile. Any later Runtime promotion remains a separate
+maintainer action.
+
+Where this task text summarizes this WorkItem's authority_source or the two
+referenced documents, their own exact wording controls if they ever appear
+to differ; do not resolve an apparent conflict by inventing a third
+reading -- stop and report it (requires_human=true, escalation.kind=scope)
+instead.
