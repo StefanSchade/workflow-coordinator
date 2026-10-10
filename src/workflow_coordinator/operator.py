@@ -500,6 +500,22 @@ def _reconstructed_context(
         f"current_head={run.current_head}",
         f"durable_artifacts={','.join(durable_artifacts)}",
     ]
+    if phase.durable_artifact.value == "required":
+        paths = ", ".join(durable_artifacts)
+        if phase.review is not None and phase.review.authority.value == "advisory":
+            lines.append(
+                "durable_artifact_obligation="
+                f"For a completed disposition, create or update the declared durable artifact path(s) ({paths}) "
+                "and supply a CommitIntent naming them; blocked, failed, requires_human, escalation, "
+                "and scope_changed dispositions must not supply one."
+            )
+        else:
+            lines.append(
+                "durable_artifact_obligation="
+                f"For a route-eligible completing disposition, create or update the declared durable artifact path(s) ({paths}) "
+                "and supply a CommitIntent naming them; blocked, failed, requires_human, escalation, "
+                "and scope_changed dispositions must not supply one."
+            )
     if phase.review is not None:
         lines.extend(
             (

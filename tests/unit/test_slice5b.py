@@ -26,6 +26,7 @@ from workflow_coordinator.model import (
 from workflow_coordinator.operator import (
     OperatorPreflightError,
     _preflight,
+    _reconstructed_context,
     run_serial_hops,
 )
 from workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
@@ -744,7 +745,7 @@ def test_changes_required_commit_is_limited_to_declared_review_artifact(tmp_path
         agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task", invocation_id="INV-missing",
         durable_artifacts=("review/report.md",),
     )
-    assert "required durable artifact" in (missing.reduction.run.stop_reason or "")
+    assert "required durable artifact has no CommitIntent" in (missing.reduction.run.stop_reason or "")
 
     repository = fixture_repository(tmp_path / "accepted-case")
     baseline = commit_all(repository)
@@ -789,6 +790,43 @@ def _components_for(baseline: str) -> dict[str, PromptComponent]:
         "worker": PromptComponent("worker", "worker", baseline, "worker"),
         "testing": PromptComponent("testing", "testing", baseline, "testing"),
     }
+
+
+@pytest.mark.parametrize(
+    ("review", "durable_artifact", "expect_obligation"),
+    [
+        ("gate", DurableArtifact.REQUIRED, "route-eligible completing disposition"),
+        ("advisory", DurableArtifact.REQUIRED, "For a completed disposition"),
+        (None, DurableArtifact.OPTIONAL, None),
+        (None, DurableArtifact.NONE, None),
+    ],
+)
+def test_reconstructed_context_projects_required_artifact_obligation(
+    tmp_path, review, durable_artifact, expect_obligation
+):
+    repository = fixture_repository(tmp_path)
+    workflow = profile(
+        {
+            "work": replace(
+                phase({"done": route("complete")}, review=review),
+                durable_artifact=durable_artifact,
+                evidence=(),
+            )
+        }
+    )
+    context = _reconstructed_context(
+        run_for(workflow), workflow, repository, ("review/report.md",), ()
+    )[0].content
+
+    assert "durable_artifacts=review/report.md" in context
+    if expect_obligation is None:
+        assert "durable_artifact_obligation=" not in context
+    else:
+        assert expect_obligation in context
+        assert "review/report.md" in context
+        assert "blocked, failed, requires_human, escalation, and scope_changed" in context
+    if review == "advisory":
+        assert "changes_required" not in context
 
 
 def test_reconstructed_context_encodes_agent_values_and_attributes_outcome(tmp_path):
@@ -1033,8 +1071,48 @@ def test_direct_agent_commit_cannot_satisfy_required_artifact(tmp_path):
         invocation_id="INV-DIRECT",
         durable_artifacts=(path,),
     )
-    assert "required durable artifact" in (vertical.reduction.run.stop_reason or "")
+    assert "required durable artifact has no CommitIntent" in (vertical.reduction.run.stop_reason or "")
     assert vertical.reduction.run.status is RunStatus.AWAITING_HUMAN
+
+
+def test_commitintent_named_artifact_must_be_changed_in_trusted_commit(tmp_path):
+    repository = fixture_repository(tmp_path)
+    artifact = "review/report.md"
+    payload = "payload.txt"
+    repository.joinpath(artifact).write_text("before\n")
+    baseline = commit_all(repository)
+    workflow = profile(
+        {
+            "work": replace(
+                phase({"done": route("complete")}),
+                authorized_scope=(artifact, payload),
+                durable_artifact=DurableArtifact.REQUIRED,
+                evidence=(),
+            )
+        }
+    )
+    vertical = run_one_hop(
+        replace(run_for(workflow), current_head=baseline),
+        workflow,
+        repository,
+        ResultAdapter(
+            base_result(
+                "done",
+                commit_intent={
+                    "paths": [artifact, payload],
+                    "subject": "docs(workflow): WI-1 H001 incomplete artifact update",
+                },
+            ),
+            mutate=lambda repo: repo.joinpath(payload).write_text("changed\n"),
+        ),
+        _components_for(baseline),
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="task",
+        invocation_id="INV-UNCHANGED",
+        durable_artifacts=(artifact,),
+    )
+    assert "required durable artifact was not changed in the trusted commit" in (
+        vertical.reduction.run.stop_reason or ""
+    )
 
 
 def test_commitintent_deletion_cannot_satisfy_required_artifact(tmp_path):
@@ -1091,7 +1169,9 @@ def test_required_artifact_subset_does_not_satisfy_multiple_paths(tmp_path):
         invocation_id="INV-SUBSET",
         durable_artifacts=paths,
     )
-    assert "required durable artifact" in (vertical.reduction.run.stop_reason or "")
+    assert "required durable artifact is not named by the CommitIntent" in (
+        vertical.reduction.run.stop_reason or ""
+    )
 
 
 def test_required_artifact_rejects_tracked_symlink_to_external_content(tmp_path):

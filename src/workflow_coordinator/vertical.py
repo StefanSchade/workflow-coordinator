@@ -242,15 +242,14 @@ def _durable_artifact_anomalies(
         or result.outcome.value not in {"completed", "changes_required"}
     ):
         return ()
-    intent_paths = () if result.commit_intent is None else result.commit_intent.paths
-    if (
-        not durable_artifacts
-        or result.commit_intent is None
-        or not delta.actual_commits
-        or any(path not in intent_paths for path in durable_artifacts)
-        or any(path not in delta.changed_paths for path in durable_artifacts)
-    ):
-        return ("required durable artifact is missing, unrepresented, or uncommitted",)
+    if not durable_artifacts:
+        return ("required durable artifact has no declared path",)
+    if result.commit_intent is None:
+        return ("required durable artifact has no CommitIntent",)
+    if any(path not in result.commit_intent.paths for path in durable_artifacts):
+        return ("required durable artifact is not named by the CommitIntent",)
+    if not delta.actual_commits or any(path not in delta.changed_paths for path in durable_artifacts):
+        return ("required durable artifact was not changed in the trusted commit",)
     for path in durable_artifacts:
         completed = subprocess.run(
             ("git", "-C", str(repository), "ls-tree", "-z", delta.end_head, "--", path),

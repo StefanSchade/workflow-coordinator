@@ -570,11 +570,12 @@ def test_durable_artifact_required_charges_post_acceptance_failure(repository):
         components(("worker", 1), ("testing", 1)),
         agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="tiny",
         invocation_id="INV-1",
+        durable_artifacts=("src/change",),
     )
     assert stopped.reduction.run.status.value == "awaiting_human"
     assert stopped.reduction.run.hop_used == len(stopped.reduction.run.hops) == 1
     assert stopped.reduction.run.hops[0].actual_commits
-    assert "required durable artifact" in (stopped.reduction.run.stop_reason or "")
+    assert "required durable artifact has no CommitIntent" in (stopped.reduction.run.stop_reason or "")
     assert stopped.checkpoint["hops"] and stopped.checkpoint["state"]["stop_reason"]
     # The separate fake N=1 test proves `none` has no document obligation.
 
