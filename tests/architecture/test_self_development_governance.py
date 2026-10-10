@@ -12,9 +12,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+import workflow_coordinator.operator as operator_module
 from workflow_coordinator.operator import (
     OperatorPreflightError,
-    _preflight,
+    _preflight as _production_preflight,
     _selected_ids,
     _within_scope,
 )
@@ -27,6 +28,32 @@ from workflow_coordinator.reducer import reduce_result
 from tests.support import charge_hop, phase, profile, result, route, run_for
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _preflight(args):
+    """Inspect archived profiles without treating them as new-launchable.
+
+    The governance fixtures below are historical standalone profiles.  Their
+    worker-owned required evidence is deliberately still readable for archive
+    inspection, but the evidence-disposition hardening makes each one invalid
+    at a new-launch boundary.  Assert that boundary first, then retain the
+    pre-existing structural checks using an inspection-only invocation with
+    just that new-launch admission predicate suppressed.
+    """
+    with pytest.raises(
+        OperatorPreflightError,
+        match="has required evidence but (is not a gate review|no failed_evidence_route)",
+    ):
+        _production_preflight(args)
+
+    original_admission = operator_module._admit_evidence_disposition
+    try:
+        operator_module._admit_evidence_disposition = lambda profile: None
+        return _production_preflight(args)
+    finally:
+        operator_module._admit_evidence_disposition = original_admission
+
+
 GOVERNING_PATHS = (
     "governance/work-items/developer-ergonomics.yaml",
     "governance/self-development/standalone-development-profile.yaml",
@@ -6044,7 +6071,7 @@ def test_production_preflight_rejects_consumed_isolated_state_root(
         OperatorPreflightError,
         match="state root already exists; one-shot operator roots are never overwritten",
     ):
-        _preflight(_preflight_args(repository, expected_head, state_root))
+        _production_preflight(_preflight_args(repository, expected_head, state_root))
 
 
 def test_work_item_mapping_cannot_enlarge_review_phase_authority(
@@ -6071,7 +6098,7 @@ def test_work_item_mapping_cannot_enlarge_review_phase_authority(
         OperatorPreflightError,
         match="durable artifact for phase review is outside WorkItem or phase scope",
     ):
-        _preflight(_preflight_args(repository, expected_head, state_root))
+        _production_preflight(_preflight_args(repository, expected_head, state_root))
 
     assert not state_root.exists()
 
