@@ -1,0 +1,675 @@
+= Workflow Coordinator -- Successor / Commission Pipeline Target Architecture
+:toc:
+:toclevels: 3
+:sectnums:
+
+Status:: *NON-NORMATIVE TARGET-ARCHITECTURE DRAFT. AUTHORIZES NOTHING.*
+Date:: 2026-10-10.
+Scope:: Target state for turning a durable Level-0 stop plus separately supplied semantic authority into a validated successor Commission and a new WFC Run with minimal operator ceremony.
+Implementation authority:: *None.*
+
+[IMPORTANT]
+====
+This document is a target against which current operational experience can be
+compared. It does not authorize a Level-1 implementation, Commission generator,
+new schema, LLM invocation, automatic successor, automatic Runtime promotion,
+automatic ledger mutation, or push.
+====
+
+== 1. Problem statement
+
+The inner WFC execution loop is becoming mechanically routine, but a stopped Run
+that needs separately authorized continuation still requires substantial manual
+work:
+
+[source,text]
+----
+inspect stop
+-> archive predecessor
+-> inspect dirty work
+-> salvage useful candidate
+-> classify stop
+-> decide authority delta
+-> author four governing files
+-> validate them
+-> commit Commission
+-> PREPARE
+-> LAUNCH
+-> archive successor
+-> curate linked semantic ledger
+----
+
+Much of this ceremony is valuable because it makes authority explicit.
+
+The target is therefore *not* to remove the authority boundary. The target is to
+remove repetitive mechanical transcription around that boundary.
+
+== 2. Architectural boundary
+
+=== 2.1 Level 0 -- WFC execution kernel
+
+Level 0 executes one already-admitted Commission.
+
+Responsibilities include:
+
+* finite profile/phase execution;
+* provider invocation under explicit binding;
+* trusted Git authority;
+* trusted evidence;
+* result-contract projection;
+* Finding/review/correction reduction;
+* bounded Hop budget;
+* durable completion or stop.
+
+Level 0 must not manufacture new authority merely because execution cannot
+continue.
+
+=== 2.2 Level 1 -- work/successor orchestration
+
+A future Level 1 may:
+
+* inspect a completed/stopped Level-0 result;
+* classify what kind of work is needed next;
+* obtain semantic authority from maintainer/policy/pre-authorized mechanism;
+* construct a bounded successor intent;
+* compile/render a successor Commission;
+* invoke Level 0 through its public/operator facade;
+* archive and semantically link outcomes;
+* select another authorized WorkItem when policy permits.
+
+Level 1 is not a second implementation/review/correction engine.
+
+=== 2.3 Human / architecture / policy authority
+
+Human or separately governed architecture/policy processes remain the source for
+new material authority when existing rules do not determine the answer.
+
+Examples:
+
+* architecture policy change;
+* new compatibility trade-off;
+* public/API choice;
+* trust/security redesign;
+* unapproved scope expansion;
+* ADR acceptance.
+
+The system may assist in analyzing or drafting these decisions without
+self-authorizing them.
+
+== 3. Target normal flow
+
+Long-term operator-visible target:
+
+[source,text]
+----
+Level-0 Run
+    |
+    +-- completed
+    |      -> archive
+    |      -> ledger/next authorized item
+    |
+    +-- stopped
+           |
+           v
+      classify stop
+           |
+           v
+      SuccessorIntent
+           |
+           v
+      Commission Compiler
+           |
+           v
+      deterministic admission
+           |
+           +-- valid
+           |     -> commit governing inputs
+           |     -> PREPARE
+           |     -> LAUNCH Level-0 successor
+           |
+           +-- mechanically invalid
+           |     -> at most one bounded repair call
+           |     -> admission again
+           |
+           +-- semantic ambiguity / repair exhausted
+                 -> human
+----
+
+The desired operator experience for a common, already-disposed successor is
+approximately:
+
+[source,text]
+----
+one semantic disposition
+-> one small intent
+-> one command
+-> PREPARED
+----
+
+The subsequent LAUNCH remains an explicit operational action unless later
+evidence justifies combining it.
+
+== 4. SuccessorIntent -- semantic input, not a generated Commission
+
+The key simplification is to stop treating the four verbose governing files as
+the primary authoring interface.
+
+A future small semantic intent might contain fields conceptually like:
+
+[source,yaml]
+----
+kind: architecture_disposition
+predecessor:
+  attempt_id: wfc-evidence-failure-disposition-hardening-20261009-01
+  run_id: RUN-c661748adf434e74bcf0e15f2b05ff9f
+  archive_evidence_commit: b076fd714232329c16f77f9c98f527a81797ee41
+
+salvage:
+  development_commit: 02c08ad
+  authority: none
+
+decision:
+  classification: stale_architecture_test
+  rationale: >
+    New-launch admission is intentionally stricter; historical
+    parsing/replay/salvage remains readable.
+  authorized_delta:
+    - tests/architecture/test_self_development_governance.py
+  on_conflict: human
+
+acceptance:
+  independent_review: broad
+  trusted_evidence: [pytest]
+----
+
+This shape is illustrative. No schema is accepted here.
+
+The critical property is that the intent states *why* authority changes, not
+only *what path* is added.
+
+== 5. Commission Compiler Pipeline
+
+The target compiler separates semantic authoring from mechanical projection.
+
+[source,text]
+----
+semantic input
+    |
+    v
+CommissionDraft / SuccessorIntent
+    |
+    v
+deterministic validator
+    |
+    +-- valid
+    |     |
+    |     v
+    | deterministic renderer
+    |     |
+    |     v
+    | four canonical governing files
+    |
+    +-- invalid
+          |
+          +-- normalizable mechanically
+          |      -> deterministic normalization
+          |
+          +-- bounded repairable authoring error
+          |      -> exactly one targeted LLM repair call
+          |      -> deterministic validation again
+          |
+          +-- semantic ambiguity / still invalid
+                 -> human
+----
+
+Target invariant:
+
+[quote]
+____
+Commission generation consumes one LLM call in the normal LLM-assisted case
+and at most one targeted repair call. It is not an autonomous multi-Hop loop.
+____
+
+An even simpler first implementation may use zero LLM calls: maintainer-authored
+`SuccessorIntent` -> deterministic validation/rendering.
+
+== 6. Retry versus repair
+
+Different failure classes should remain conceptually separate.
+
+Generation/transport failure::
+Provider call failed, output truncated, or result syntactically unusable.
+A bounded retry policy may eventually exist, but it is not semantic correction.
+
+Admission failure::
+Draft is parseable but violates deterministic Commission rules. One targeted
+repair call may receive the original draft plus exact validator diagnostics.
+
+Semantic ambiguity::
+The requested authority cannot be derived from available governing facts.
+Do not "try again" hoping for a nicer answer; escalate.
+
+The repair call must remain narrow:
+
+[source,text]
+----
+original draft
++ deterministic validator errors
++ "correct these errors; do not widen intent"
+----
+
+It is not another reviewer/corrector agent loop.
+
+== 7. Deterministic rendering responsibilities
+
+Once a valid intent exists, the renderer should own boilerplate and consistency,
+for example:
+
+* successor WorkItem/profile/policy/task filenames and IDs;
+* predecessor Run/attempt/archive provenance;
+* salvage provenance;
+* explicit "fresh successor, not resume/retry/replay" language;
+* WorkItem scope and policy ceiling projection;
+* phase scope/action consistency;
+* canonical worker -> broad review -> correction -> focused rereview topology
+  where selected by intent;
+* gate-only Coordinator-required evidence;
+* `failed_evidence_route` wiring;
+* durable review-artifact reservation;
+* max-Hop ceiling within policy;
+* standard withheld-authority clauses;
+* standard acceptance semantics;
+* provider-free validation metadata.
+
+The renderer must not invent semantic authority to make the template fit.
+
+== 8. Authority model for successor creation
+
+=== 8.1 Inputs that may be mechanical
+
+Potentially mechanical:
+
+* predecessor IDs/commits/status;
+* archive Evidence commit/destination;
+* dirty-path inventory/salvage commit;
+* known profile topology;
+* policy ceilings;
+* standard review/evidence boilerplate;
+* filename/ID uniqueness;
+* exact path containment;
+* route consistency;
+* schema validation.
+
+=== 8.2 Inputs that require semantic authority
+
+Not mechanical by default:
+
+* whether continuation is desired;
+* what the predecessor stop *means*;
+* whether a failing test is stale or candidate is wrong;
+* whether architecture itself changes;
+* what new scope is legitimate;
+* what compatibility trade-off is accepted;
+* whether a prerequisite/ADR/human process is needed.
+
+=== 8.3 No self-authorized widening
+
+A worker's own statement such as "I need path X" is evidence/recommendation, not
+authority.
+
+A successor intent becomes authority only through a source the stopped worker
+cannot author by itself, e.g.:
+
+* explicit maintainer decision;
+* independently pinned policy;
+* separately pre-authorized transition/gate;
+* future Level-1 authority mechanism accepted by architecture/governance.
+
+== 9. Architecture-sensitive stops
+
+The 2026-10-10 reference case demonstrates why the successor layer needs more
+than `--extra-scope`.
+
+Possible Level-1 classification:
+
+[source,text]
+----
+Level-0 scope/semantic stop
+       |
+       +-- ordinary omitted scope
+       |      -> bounded successor
+       |
+       +-- stale architecture test
+       |      -> architecture-disposition successor
+       |
+       +-- candidate violates architecture
+       |      -> correction successor without test weakening
+       |
+       +-- architecture decision required
+       |      -> architecture analysis / ADR / human
+       |
+       +-- ambiguous
+              -> human
+----
+
+This classification need not initially become a new Level-0 stop taxonomy.
+Level 1 can derive it from existing stop facts plus trusted evidence.
+
+Only repeated need should justify moving a distinction into Level 0.
+
+== 10. Relationship to the Harness
+
+Current Harness:
+
+[source,text]
+----
+PREPARE
+LAUNCH
+STATUS
+ARCHIVE
+----
+
+Target addition is conceptually *before PREPARE*:
+
+[source,text]
+----
+SUCCESSOR INTENT
+      |
+      v
+COMPILE / ADMIT
+      |
+      v
+committed governing inputs
+      |
+      v
+PREPARE
+LAUNCH
+STATUS
+ARCHIVE
+----
+
+Illustrative future UX only:
+
+[source,shell]
+----
+wfc-op successor prepare \
+  --from wfc-evidence-failure-disposition-hardening-20261009-01 \
+  --salvage 02c08ad \
+  --intent successor-intent.yaml
+----
+
+A future higher-level command might combine compilation and PREPARE once the
+boundary is stable, but the distinction should remain explicit internally.
+
+== 11. External Level-0 facade
+
+For higher orchestration, the WFC should increasingly look like a bounded
+service/facade even if implemented locally:
+
+[source,text]
+----
+execute(admitted_commission)
+    -> Completed
+     | AwaitingHuman
+     | AuthorityEscalation
+     | OperationalFailure
+     | BudgetExhausted
+----
+
+Exact public types are not decided here.
+
+The important property is that Level 1 consumes durable Level-0 outcomes rather
+than reimplementing Hop/reducer/Git/evidence mechanics.
+
+A framework such as LangGraph may eventually sit *above* this facade. It should
+not become the authority/reducer implementation inside Level 0.
+
+== 12. Archive and semantic ledger target
+
+Mechanical archive remains per Run.
+
+[source,text]
+----
+archive A
+archive B
+archive C
+----
+
+Semantic curation may operate over the lineage:
+
+[source,text]
+----
+A stopped
+  -> salvage S
+  -> B resolved
+----
+
+Target automation may prepare a ledger proposal from immutable Run/archive
+facts, but semantic ledger mutation should remain separately admitted until
+repeated evidence justifies more delegation.
+
+The system must never retroactively rewrite A as completed because B succeeded.
+
+== 13. Target maturity stages
+
+=== Stage 0 -- current manual reference
+
+* manual stop inspection;
+* manual archive invocation;
+* manual diff inspection;
+* manual salvage commit;
+* manual semantic disposition;
+* manual four-file Commission authoring;
+* provider-free validation;
+* manual Commission commit;
+* Harness PREPARE/LAUNCH/STATUS/ARCHIVE;
+* manual linked ledger curation.
+
+This stage is valuable because it exposes the true information requirements.
+
+=== Stage 1 -- deterministic successor renderer
+
+Prerequisite: repeated Successor cases show stable boilerplate.
+
+Input: maintainer-authored bounded `SuccessorIntent`.
+
+Automation:
+
+* gather predecessor mechanical facts;
+* validate intent;
+* render governing files;
+* run provider-free admission;
+* show exact diff;
+* stop for explicit commit/launch authority.
+
+No LLM required.
+
+=== Stage 2 -- bounded LLM semantic front-end
+
+Prerequisite: Stage-1 intent schema and validator are stable.
+
+Normal:
+
+[source,text]
+----
+ticket/stop facts
+-> one LLM draft
+-> deterministic admission
+-> renderer
+----
+
+Exceptional:
+
+[source,text]
+----
+admission errors
+-> one targeted repair call
+-> admission again
+-> human if still invalid
+----
+
+No evaluator-optimizer loop.
+
+=== Stage 3 -- bounded Level-1 orchestrator
+
+Prerequisite: repeated manual/Stage-1/Stage-2 evidence demonstrates that work
+selection, successor classification, archive/ledger proposal, and Commission
+preparation are sufficiently repetitive and policy-bounded.
+
+Potential flow:
+
+[source,text]
+----
+authorized finite backlog / durable stop
+-> select next bounded action
+-> prepare admitted Commission
+-> invoke Level 0
+-> inspect typed outcome
+-> archive
+-> bounded successor or next authorized item
+----
+
+Start with low ceilings, e.g. one selected WorkItem or one successor per outer
+invocation.
+
+Do not begin with an autonomous "software company".
+
+== 14. Mechanism-admission gates
+
+Before automating a step, ask:
+
+. Has the same manual step occurred enough times to identify stable inputs?
+. Can the decision be validated deterministically?
+. Does automation preserve rather than create authority?
+. Is failure fail-closed before provider invocation or mutation?
+. Could Commission/profile/policy/scope/review/evidence/documentation solve the
+  issue without a new mechanism?
+. Is the added mechanism simpler than the manual error surface it removes?
+
+The target architecture should shrink when experience shows a simpler model is
+sufficient.
+
+== 15. Open questions
+
+=== SuccessorIntent
+
+* What is the smallest stable semantic schema?
+* Should `kind` be free/opaque profile vocabulary initially rather than an enum?
+* How is authority-source provenance represented without creating a policy
+  framework prematurely?
+* Should salvage be optional metadata or a first-class continuation input?
+* How much acceptance topology should be explicit versus rendered from a named
+  bounded template?
+
+=== Commission compiler
+
+* Start with zero LLM calls or one LLM front-end?
+* Which errors are deterministic normalization versus LLM repair?
+* Are transport retries counted inside the "max two calls" invariant?
+* Where should generated governing files live before commit?
+* Should rendering be byte-deterministic for identical intent + repository
+  facts?
+
+=== Authority
+
+* Which future Level-1 decisions may be pre-authorized?
+* How is governing-input authorship mechanically separated from a worker that
+  benefits from broader authority?
+* Can a Level-1 classifier recommend new authority while a separate admission
+  source grants it?
+* When does architecture disposition require ADR/human approval?
+
+=== Run lineage
+
+* Is "successor" purely provenance between separate Runs, or should Level 1 own
+  a durable parent/child lineage record?
+* Should the inner WFC remain unaware of that relationship except for explicit
+  successor provenance?
+* How should salvage commits be represented in lineage without treating them as
+  Run outcomes?
+
+=== Archive / ledger
+
+* Should archive always precede any successor materialization?
+* When is one semantic curation pass over multiple archived Runs preferable to
+  immediate per-Run curation?
+* Can a deterministic ledger proposal be generated without granting mutation
+  authority?
+
+=== Operator UX
+
+* Should `successor prepare` produce files only, or files + Harness PREPARE?
+* What exact human checkpoint should remain before LAUNCH?
+* Which information should be shown to make authority changes obvious without
+  returning to verbose manual ceremony?
+
+== 16. Success criteria for the target architecture
+
+The target is successful when common successor handling becomes:
+
+* low-ceremony for the operator;
+* explicit about semantic authority;
+* deterministic in mechanical projection;
+* provider-free until admitted;
+* independently auditable;
+* unable to widen its own authority;
+* capable of preserving salvage without laundering it into acceptance;
+* capable of keeping Runs/evidence separate while linking their semantic story;
+* materially simpler than a nested WFC/agent loop.
+
+A useful operational metric is:
+
+[quote]
+____
+Operator minutes per accepted WorkItem / resolved stopped Run.
+____
+
+Automation is justified when it removes repetitive operator transcription while
+preserving or strengthening the authority boundary.
+
+== 17. Traceability to observed experience
+
+Primary observed case::
+`RUN-c661748adf434e74bcf0e15f2b05ff9f`
+
+Archive Evidence commit::
+`b076fd714232329c16f77f9c98f527a81797ee41`
+
+Salvage::
+`02c08ad`
+
+Architecture-disposition concept::
+`0240a68`
+
+Current-practice companion::
+`docs/warm_storage/workflow_coordinator/successor_continuation_runbook_2026-10-10.adoc`
+
+Historical broader product-direction context::
+`docs/imported/core-incubator/agent_workflow_coordinator_composable_product_and_nested_loop_concept_2026-09-18.adoc`
+
+This target document narrows the broad historical "optional outer loop" idea
+into one empirically motivated seam: safe successor preparation after a durable
+Level-0 stop.
+
+== 18. Non-goals / not authorized
+
+This document does not authorize:
+
+* implementation of Level 1;
+* a new WFC role, route, stop kind, or persisted field;
+* a `SuccessorIntent` schema;
+* Commission Compiler code;
+* LLM calls for Commission generation;
+* LangGraph;
+* automatic ticket creation;
+* automatic Runtime promotion;
+* automatic push;
+* automatic semantic ledger mutation;
+* automatic architecture-test editing;
+* autonomous ADR acceptance;
+* provider/model routing;
+* general policy-engine construction;
+* arbitrary recursion or nested agent loops.
+
+The next evidence source should be continued use of the current manual runbook
+and comparison of subsequent successor cases against this target.
