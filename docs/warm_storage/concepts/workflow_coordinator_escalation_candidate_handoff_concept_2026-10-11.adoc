@@ -1,0 +1,768 @@
+= Workflow Coordinator -- Escalation / Candidate Handoff Concept
+:toc:
+:toclevels: 3
+:sectnums:
+
+Status:: *NON-AUTHORIZING CONCEPT DRAFT. AUTHORIZES NOTHING.*
+Date:: 2026-10-11.
+Repository:: `workflow-coordinator`.
+Purpose:: Design the intended future handling of the class of event in which
+a legitimate Hop stops because Level 0 discovers that an already-admitted
+Commission rests on an incorrect implementation-boundary assumption, leaves
+useful candidate work, and requires a higher-level architecture/scope
+disposition before work can resume.
+Implementation authority:: *None.*
+Provider invocation authority:: *None.*
+
+[IMPORTANT]
+====
+*NON-AUTHORIZING -- AUTHORIZES NOTHING.*
+
+This document records a design hypothesis and analysis only. It does not
+authorize a new Workflow Coordinator route, role, stop kind, schema field,
+profile, policy, Commission, successor, Run, provider invocation,
+source/test mutation, Runtime promotion, Evidence mutation, governance
+mutation, archive action, or push. It does not reinterpret, resume, or
+retroactively reclassify any historical Run, including
+`RUN-8875175a2ea343adbaf47c105699f91e`.
+
+Illustrative names below (`CandidateSnapshot` as a typed effect, `Slice
+implementation concept`, the escalation ladder) are concept vocabulary, not
+accepted schema, roles, or implementation requirements, unless a passage
+explicitly says the vocabulary is already current manual practice.
+====
+
+== 1. Relationship to existing records
+
+This concept does not supersede or revise:
+
+* `workflow_coordinator_level1_architecture_disposition_concept_2026-10-10.adoc`
+  -- the Level-0/Level-1 boundary hypothesis and the architecture-disposition
+  classification flow (candidate-is-wrong / stale-test / architecture-decision-
+  required). That concept was triggered by an *architecture-test* conflict
+  (`RUN-c661748adf434e74bcf0e15f2b05ff9f`, H003). This concept is triggered by
+  a *complementary but distinct* case: a Commission-boundary/implementation-
+  surface conflict (`RUN-8875175a2ea343adbaf47c105699f91e`, H001), where no
+  architecture test failed at all -- the worker discovered, through ordinary
+  implementation-time source inspection, that a file explicitly withheld from
+  its Commission was nevertheless required for the commissioned execution
+  path.
+* `workflow_coordinator_successor_commission_pipeline_target_2026-10-10.adoc`
+  -- the Level-0/Level-1 architectural split this concept assumes throughout.
+* `workflow_coordinator_run_event_and_review_artifact_concept_2026-10-10.adoc`
+  -- the existing "one meaningful Hop -> one trusted commit" default and the
+  semantic-review-is-not-final-acceptance principle, both load-bearing for
+  how a `CandidateSnapshot` commit must be distinguished from a trusted one
+  (section 4.4).
+* `successor_continuation_runbook_2026-10-10.adoc` (as refined 2026-10-11,
+  commit `c62fdc8`) -- the current, authoritative, manual operating
+  procedure. This concept analyzes a *target* for part of that procedure; it
+  does not change the procedure itself (section 9).
+* `workflow_coordinator_operational_friction_evidence_2026-10-11.adoc` -- the
+  empirical friction record this concept's proposals are tested against
+  (section 6).
+
+New ground this record covers that the above do not: `CandidateSnapshot` as
+a possible first-class Level-0 effect; Git storage/lifecycle questions for
+candidate refs; an explicit escalation-ownership ladder spanning Commission /
+Slice-implementation-concept / Epic-feature-architecture / project-program
+authority; the Slice-implementation-concept layer itself; successor-
+generation and candidate-reuse rules; and the Hop/Run/WorkItem outcome
+distinction for a correctly-escalating stop.
+
+== 2. Worked example: `RUN-8875175a2ea343adbaf47c105699f91e`
+
+Attempt:: `wfc-projected-result-contracts-p3-20261011-03`
+Run:: `RUN-8875175a2ea343adbaf47c105699f91e`
+Trusted baseline / Commission commit:: `d2adf082b23f41fe0ae63b6b92e2c72e98dba414`
+(`chore(self-development): commission P3 finding projection`)
+Hop:: `H001`
+
+Observed sequence:
+
+[source,text]
+----
+admitted Commission (WI-WFC-PROJECTED-RESULT-CONTRACTS-P3)
+  -- adapter.py explicitly withheld from scope
+-> H001 worker begins implementation of the citation/transition split
+  -- fresh source inspection during implementation finds:
+     src/workflow_coordinator/adapter.py:109
+       `if contract_version not in {1, 2}:`
+     the commissioned result_contract_version=3 execution path cannot
+     complete without this file changing
+-> H001 does NOT widen its own scope to include adapter.py
+-> H001 returns a typed scope escalation
+-> useful in-scope changes already exist in the worktree
+  (codex_adapter.py, model.py, reducer.py, serialization.py, tests)
+-> no trusted CommitIntent was produced for the blocked result
+-> worktree remains dirty tracked state
+-> Coordinator separately fail-closes on the dirty worktree
+-> Run stops `awaiting_human`
+----
+
+Repository-verified facts used throughout this document:
+
+* `src/workflow_coordinator/adapter.py:109` today still reads
+  `if contract_version not in {1, 2}:` -- the gate H001 discovered is
+  real, current, and unchanged by this concept.
+* The preserved candidate commit `ccd1d57ee28c666a4724ff512a500639b1c6dc1b`
+  touches exactly `codex_adapter.py`, `model.py`, `reducer.py`,
+  `serialization.py`, and four test files -- it does *not* touch
+  `adapter.py`, confirming the withheld file was in fact left untouched
+  rather than silently widened into.
+* The candidate commit is reachable only via
+  `refs/wfc/candidates/RUN-8875175a2ea343adbaf47c105699f91e/H001` and is not
+  an ancestor of `main`'s current tip.
+* No `CandidateSnapshot` type, effect, or `refs/wfc/candidates/` handling
+  exists anywhere in `src/workflow_coordinator/` today (grep-verified). The
+  entire mechanism described in sections 3-4 below is manual operator
+  practice, not implemented behavior.
+* Predecessor archive Evidence commit: `4b5261a2ecafc03bb9cc2478119bdba522cf7a47`.
+
+The key interpretation, consistent with the task that produced this record,
+is positive: H001's refusal to widen its own authority, combined with its
+return of a typed escalation, is evidence that Level 0 is working correctly
+under an imperfect Commission. The remaining friction is above Level 0.
+
+== 3. OBSERVED / IMPLEMENTED TODAY
+
+* Level 0 executes an admitted Commission and fails closed rather than widening
+  its own `WorkItem` scope. In the P3 case, the authority edge was the
+  Commission's explicit exclusion of `adapter.py`; the
+  `src/workflow_coordinator/adapter.py:109` version gate was the implementation
+  fact that exposed that authorized boundary as insufficient.
+* A blocked/escalated result that produced no trusted `CommitIntent` leaves
+  the worktree dirty; the Coordinator separately and mechanically refuses to
+  proceed on a dirty worktree. This mechanical preemption is a *consequence*
+  of the semantic scope stop, not its cause (runbook section 2, "Observed
+  mechanical stop").
+* Trusted Git mechanics (worker/review/correction commits, `CommitIntent`
+  validation via `git_facts.py`) exist and are Coordinator-owned for
+  *authorized* phases only. No equivalent Coordinator-owned mechanism exists
+  for preserving *un*authorized, blocked dirty state.
+* `refs/wfc/candidates/<run-id>/<hop-id>` exists today only as an ordinary
+  Git ref created by manual operator commands (runbook step 5); it is not a
+  WFC domain type, is not read or written by any code path, and is not
+  indexed anywhere machine-readable.
+* The semantic Run ledger
+  (`workflow-coordinator-run-evidence/project_memory/run_ledger.adoc`) is a
+  manually curated projection, not a Level-1 implementation.
+
+== 4. CURRENT MANUAL PRACTICE
+
+This section restates, at the altitude this concept needs, practice that
+`successor_continuation_runbook_2026-10-10.adoc` already fully specifies.
+That runbook remains authoritative; nothing here changes it.
+
+=== 4.1 Salvage sequence
+
+[source,text]
+----
+inspect stop (Step 1)
+-> optionally record design learning (Step 2)
+-> archive predecessor Evidence (Step 3)
+-> inspect dirty work exactly (Step 4)
+-> preserve as CandidateSnapshot: commit, update-ref, reset --hard (Step 5)
+-> maintainer semantic continuation decision (Step 6)
+-> author fresh successor Commission (Step 7)
+-> provider-free validation (Step 8)
+-> commit Commission separately (Step 9)
+-> PREPARE (Step 10) -> LAUNCH (Step 11)
+-> archive successor (Step 12)
+-> curate semantic ledger (Step 13)
+----
+
+=== 4.2 Governing rule
+
+[quote]
+____
+SALVAGE PRESERVES WORK, NOT AUTHORITY.
+____
+
+=== 4.3 What is already explicit in current practice
+
+* The candidate commit's Git *parent* may legitimately be the maintainer's
+  current Development `HEAD` at salvage time, which is **not** the same
+  fact as the originating Run's trusted baseline. Both must be recorded;
+  neither may be inferred from the other.
+* The candidate must not remain reachable from `main`.
+* Archive (Evidence) and salvage (candidate preservation) are different
+  operations with different purposes and must not be merged.
+* Semantic ledger curation may legitimately wait for the successor to reach
+  a stable disposition, but the ledger still records distinct Run identities.
+
+=== 4.4 What is already explicit from the sibling run-event concept
+
+The run-event concept's "one meaningful Hop -> one trusted commit" default
+(section 3.2 there) and its "semantic review is not final gate acceptance"
+principle (section 3.1 there) both matter here by contrast: a
+`CandidateSnapshot` commit is deliberately *outside* that trusted-commit
+default. It is not a Hop's trusted output; it is a side record of a Hop's
+*untrusted leftover state*. Any future design must keep these two commit
+families visibly distinct (section 5.4 below).
+
+== 5. PROPOSED TARGET SEMANTICS
+
+=== 5.1 Core flow model (hypothesis under test)
+
+[source,text]
+----
+L0 executes admitted authority
+    |
+    | discovers authority-boundary / implementation-boundary conflict
+    v
+typed semantic escalation
+    +
+preserved non-authoritative CandidateSnapshot
+    |
+    v
+L1 classifies the escalation and determines which existing authority
+owns the invalid assumption
+    |
+    +-- Commission boundary only
+    +-- Slice implementation concept
+    +-- Epic / feature architecture concept
+    +-- project/program authority
+    v
+concept/disposition work at the owning level
+    |
+    v
+accepted revised concept / authority
+    |
+    v
+fresh successor Commission
+    |
+    v
+optional reuse/import of predecessor CandidateSnapshot as untrusted work
+    |
+    v
+normal L0 implementation/review/evidence path
+----
+
+This hypothesis survives the P3 worked example as a *description*: every
+arrow above has a concrete P3-case instance (sections 2-4). It is not yet
+validated as a *general* model -- see section 5.6's explicit caution against
+false determinism, and section 8's open questions.
+
+=== 5.2 Hop, Run, and WorkItem outcome are three different altitudes
+
+A Hop that returns `escalation + preserved candidate` should be read as:
+
+* *Hop outcome*: successful completion of that Hop's own bounded
+  responsibility. H001's job was never "make the Commission's withheld-file
+  assumption true." It was "execute within granted authority and report
+  accurately when that is impossible." H001 did exactly that.
+* *Run outcome*: a correct, durable, *non-success* disposition
+  (`awaiting_human` / scope escalation), not an error state and not a crash.
+  The Run did not complete, and should not be described as having
+  completed, but its stop is not a defect either.
+* *WorkItem completion*: still open. The P3 Finding-projection slice is not
+  implemented. This is a longer-lived fact than any single Run's status and
+  is exactly what Level-1 semantic curation (per the level-1 concept's "L0
+  records what happened; L1 interprets what it means for the project") must
+  carry forward across however many Runs the WorkItem eventually takes.
+
+Calling this a "half Hop" or "implementation failure" conflates these three
+altitudes and risks training future operators and agents to treat a correct
+escalation as something to minimize or hide, which is the opposite of the
+positive interpretation this record is asked to preserve.
+
+=== 5.3 CandidateSnapshot: where it belongs and what it must contain
+
+*Should Level 0 mechanically preserve useful authorized dirty work when a
+Hop stops semantically?* Plausibly yes, but only as a narrow, deterministic,
+fail-closed *mechanical* effect, analogous to the Git mechanics L0 already
+owns on the happy path (trusted commits, `CommitIntent` validation). The
+precedent set by the run-event concept's "mechanics below, semantics higher"
+framing supports this: *producing* an immutable, correctly anchored snapshot
+of exactly the attributable changed paths is mechanics; *deciding whether
+the escalation is authorized to continue, what it means, or what successor
+authority follows* remains semantic and stays above Level 0.
+
+*Is `CandidateSnapshot` best modeled as a first-class L0 result/effect?*
+Treat this as a real candidate, not yet a conclusion. In favor: it removes
+runbook Steps 4-5's manual command sequence from the human/assistant
+critical path and replaces it with the same deterministic trigger that
+already causes today's dirty-worktree mechanical preemption. Against: it
+would be the first Level-0 effect that is *not* trusted output of authorized
+work, and every existing Coordinator-owned effect family (worker commit,
+review-artifact commit, correction commit) currently implies "this
+contributed to Run evidence." A `CandidateSnapshot` effect must not quietly
+inherit that implication merely by sharing a mechanism family (see section
+6).
+
+*What exact facts must it contain?* At minimum:
+
+* originating `run_id` and `hop_id`;
+* the Run's trusted baseline (the commit the Run was admitted against --
+  not necessarily the candidate commit's Git parent, see section 4.3);
+* the candidate commit SHA and its dedicated ref;
+* the exact preserved paths (never an unqualified `git add .`-equivalent);
+* trust/authority status, stated explicitly and identically every time:
+  `NONE / UNREVIEWED / NON-AUTHORITATIVE`;
+* the escalation it is attached to (stop kind, failing/withheld path,
+  authorized scope at time of stop) -- the candidate must never exist
+  without a durable escalation record it is anchored to.
+
+*When must L0 refuse preservation?* At minimum:
+
+* when no durable stop/escalation exists -- preservation is never
+  speculative or periodic;
+* when changed paths are not clearly attributable to the current
+  authorized Hop (pre-existing unrelated dirty state, or paths outside the
+  Hop's authorized scope) -- fail closed to "report the dirty worktree as a
+  fact," exactly today's behavior, rather than guess which paths belong to
+  the stop;
+* when attribution itself would require semantic judgment (e.g.,
+  distinguishing the Hop's own edits from a maintainer's concurrent
+  unrelated edits) rather than a mechanical diff against the Hop's own
+  recorded starting tree.
+
+=== 5.4 Git representation
+
+Storage primitive: an immutable commit reachable only through a dedicated
+ref, as current manual practice already does. This concept does not propose
+Git branches as the domain model -- a branch implies an evolving line of
+work that something keeps committing onto, which a `CandidateSnapshot`
+explicitly is not (it is one frozen snapshot; a later salvage of the same
+Hop, if that is even coherent, would be a *new* commit/ref pair, never a
+fast-forward of an existing one).
+
+Domain semantics must not be inferred solely from the ref path string. The
+ref (`refs/wfc/candidates/<run-id>/<hop-id>`) is a *pointer*, while the commit
+is the immutable content/provenance anchor; neither alone is the complete
+`CandidateSnapshot` record. Some provenance facts can be rendered in commit
+body/trailers, but the candidate commit cannot contain its own SHA because that
+SHA is derived from the commit object itself. The complete semantic record is
+therefore better understood as a projection over Git identity/ref facts plus
+recorded Run/Hop, baseline, path, trust, and escalation facts. Current manual
+practice records those facts explicitly; this concept does not yet choose one
+new canonical machine-readable representation for them.
+
+Open lifecycle/garbage-collection questions, deliberately left open:
+
+* Retention: indefinite, or eligible for pruning once a successor's trusted
+  history has reapplied the material and semantic ledger curation has
+  recorded the lineage?
+* Deletion authority: presumably the same mechanical, maintainer-owned
+  authority that already governs Run archival -- not decided here.
+* Visibility: should a generated, read-only projection enumerate live
+  `refs/wfc/candidates/*` with their recorded facts, so an orphaned
+  candidate is discoverable rather than silently forgotten? This would be a
+  *projection*, not a new canonical record (consistent with "generated
+  projections rather than duplicated truth"), but is not designed here.
+
+=== 5.5 Main/trusted-history semantics
+
+Four layers must remain distinct and must not collapse into each other:
+
+. *Trusted baseline* -- the exact commit a given Run/Hop was admitted
+  against; a persisted fact, independent of where Development `HEAD` later
+  moves.
+. *Repository history (`main`)* -- the append-only sequence of
+  maintainer-authored and Level-0-trusted-authority commits. This is
+  accepted truth, not "everything that was ever attempted."
+. *Candidate work* -- content-addressed, immutable, non-authoritative,
+  reachable only outside `main`'s ancestry, self-labeled as non-authoritative
+  in its own commit message.
+. *Accepted implementation state* -- the subset of history that has passed
+  review, trusted evidence, and reduction to a completed/accepted Run
+  outcome, further gated by a separate Runtime-promotion decision.
+
+The P3 case demonstrates the hazard this guards against concretely, not
+hypothetically: the current manual procedure transiently creates the
+preservation commit *at* Development `HEAD` before moving it to the
+dedicated ref and resetting it away from `main` (runbook step 5). That
+transient step is exactly why the ref-plus-reset sequence, rather than a
+bare commit left on `main`, is load-bearing: even briefly, an unreviewed
+candidate sitting on `main` is indistinguishable, to a plain `git log`
+reader, from an accepted Product Increment.
+
+=== 5.6 Escalation ownership ladder
+
+Formalized principle, already stated in the level-1 concept (section 9) for
+the architecture-disposition case specifically, generalized here to the
+whole class of event this record addresses:
+
+[quote]
+____
+Escalate upward until an existing authority can decide. Do not manufacture
+that authority at the lower level.
+____
+
+What makes an escalation resolvable at each level -- offered as *indicative*
+distinguishing conditions, not a deterministic classifier:
+
+Commission level::
+The implementation approach and its governing design record remain correct
+and unchanged; only the Commission's own scope/boundary/topology was
+mis-drawn (a withheld-but-required path, a stale evidence/route pattern).
+Resolved by re-authoring the Commission alone. The friction-evidence
+record's P3 preflight repairs (persona length, worker-evidence-on-non-gate-
+phase) are examples of Commission-level resolution for *mechanical*
+Commission defects; this concept's P3 H001 case is the semantic analogue --
+a withheld file rather than a malformed field -- resolved the same way, at
+the same level, once classified.
+
+Slice implementation-concept level::
+The *local* implementation-boundary assumption inside a slice-scoped design
+record was wrong, but the semantic/algebraic shape that record describes
+remains sound. The P3 design record's `FindingDelta = Citation |
+Transition` shape is the concrete example: sound; its (undocumented, never
+separately stated) assumption that `adapter.py` would not need to change
+was not. See section 5.7.
+
+Epic/feature architecture level::
+The slice-level semantic shape itself is what is wrong or incomplete, or it
+interacts incorrectly with a different Epic-level invariant (e.g. a genuine
+conflict with the P3.5 authority-composition concern the Epic concept
+already reserves separately).
+
+Project/program level::
+The conflict is between two already-accepted Epic-level commitments, or
+requires new material authority or a trade-off no existing accepted record
+settles. This is where classification necessarily exhausts itself and human
+judgment, not a better classifier, is the remaining mechanism (level-1
+concept, section 9).
+
+This concept deliberately does not claim this classification can already be
+performed deterministically from stop facts alone. Today it is, and should
+remain, a maintainer judgment informed by durable facts (failing/withheld
+path, authorized scope, citations to the governing design record at each
+level). A future Level 1 might surface a *candidate* classification from
+those same durable facts, but per the quoted principle above, should not
+auto-resolve without either a pre-authorized deterministic rule or human
+sign-off.
+
+=== 5.7 Slice implementation concepts
+
+The repository already contains an ad hoc instance of this layer:
+`workflow_coordinator_p3_finding_projection_design_2026-10-11.adoc` is
+slice-scoped (P3 only), explicitly "commission-ready," states concrete
+file-level seams (section 8 there), and explicitly separates itself from
+both the Epic concept it sits under (section 6 there: the P3/P3.5/P4
+boundary) and the Commission it recommends (its own status line: "does not
+authorize implementation"). It simply has never been named as a layer.
+
+The P3 case shows the value such a layer would have realized if the
+Commission-boundary conflict had instead been a *local implementation-
+assumption* conflict: the design record's semantic shape (citation vs.
+transition as a structural Sum) remained sound throughout; what would need
+correction in that counterfactual is narrowly the design record's own
+unstated file-surface assumption, not the Epic concept
+(`wfc_projected_result_contracts_concept_2026-10-07.adoc`) that frames P1-P5,
+and not a blind Commission rewrite that would leave no durable record of
+*why* the file surface changed.
+
+Recommendation, non-authorizing: treat "Slice implementation concept" as a
+*recognized pattern* for a kind of document the repository already
+produces, not as a new mandatory governance artifact type with its own
+schema, status vocabulary, or review gate. Its information/authority value
+is narrow and specific -- it is the right-sized object to revise when a
+slice's local implementation-boundary assumption, not its semantic shape or
+the Epic's architecture, is what was wrong. Formalizing it beyond naming the
+existing pattern would risk adding exactly the kind of duplicated-
+specification ceremony the friction-evidence record already flags (sections
+5.1-5.2 there) as a dominant cost, and would conflict with the mechanism-
+admission principle the level-1 concept already states (section 12 there).
+
+=== 5.8 Concept-revision execution
+
+When Level 1 (today: the maintainer) determines an accepted implementation
+concept -- Epic or Slice -- is stale or incomplete, should it commission a
+separate architecture/concept-revision Run before implementation resumes?
+The level-1 concept already sketches this for the architecture-disposition
+case (section 8 there: gather evidence, analyze alternatives, record
+trade-offs, produce an ADR/design draft, approve, then Commission). This
+record generalizes that sketch slightly and adds explicit authority limits:
+
+A concept-revision Run, if one is ever commissioned, may produce *only* a
+revised or superseding design record (a new dated concept/design document,
+or an explicit amendment). It may not:
+
+* mutate source or test files;
+* mutate governance/Commission files beyond committing the revision record
+  itself;
+* promote anything to Runtime;
+* mutate Evidence;
+* accept its own output -- independent review/maintainer acceptance of the
+  revised concept remains a separate act, preserving exactly the
+  independent-review discipline this project already applies to every other
+  WFC output; an "architecture" Run self-accepting its own revision would be
+  a strictly weaker standard than the ordinary worker/reviewer loop, not a
+  stronger one;
+* decide that human sign-off is unnecessary when the revision creates new
+  material authority (the level-1 concept's human-escalation trigger,
+  section 9 there, still applies unchanged).
+
+Whether to ever commission a Run for this versus keep it a direct
+maintainer/assistant authoring act -- as literally happened for every
+concept document cited in this record, including this one -- is left open.
+Today's manual practice remains sufficient and is not disauthorized by this
+section.
+
+=== 5.9 Successor generation
+
+A fresh successor Commission, once disposition is reached at whatever level
+resolved it (section 5.6), must make explicit at least the predecessor facts
+and authority delta the runbook already requires (step 7), restated here at
+this concept's altitude:
+
+* predecessor Run/attempt and Hop identity;
+* predecessor trusted baseline and final trusted commit, if any;
+* predecessor archive Evidence commit;
+* `CandidateSnapshot` commit/ref, if any, and its unchanged trust status;
+* the escalation record that caused the stop;
+* the disposition decision, the authority level that resolved it (section
+  5.6), and a citation to the governing record produced at that level;
+* the explicit authority delta -- what new scope/paths/evidence/route
+  authority the successor grants that the predecessor lacked, and what
+  remains withheld;
+* an explicit statement that the successor is fresh, not resume, retry, or
+  replay.
+
+That last statement matters substantively, not just as boilerplate: a
+"resume" would implicitly treat the predecessor's unreviewed in-progress
+state as if it had been accepted; a "retry" would imply the predecessor's
+authority was sufficient and merely needed repeating; a "replay" would imply
+the predecessor's actions should be mechanically reproduced. None of these
+are true for this class of event -- its defining feature is that the
+predecessor was *correctly* insufficient in authority, so the successor must
+be an independently and explicitly authorized new unit of work, merely
+informed by, never derived from, the predecessor.
+
+=== 5.10 Candidate reuse
+
+`CandidateSnapshot` is work, not authority (section 4.2's governing rule,
+unchanged). A successor may import, reapply, rebase, cherry-pick, or
+otherwise use the candidate commit's tree or diff through ordinary Git
+mechanics. This record does not prescribe which technique is appropriate --
+that is itself an implementation choice for the successor's own authorized
+worker Hop, not a property of the candidate ref.
+
+Rules that do not depend on the technique chosen:
+
+* *No correctness credit.* Review of the successor must independently
+  re-examine every line reused from the candidate exactly as if freshly
+  authored. The candidate never received independent review or trusted
+  evidence; "it already passed a Hop" is not a true statement about it and
+  must never be offered as a reason to narrow review.
+* *New scope must cover reused changes.* The successor's `WorkItem`/
+  Commission scope must explicitly list every path the candidate touches
+  that the successor intends to keep. The candidate ref's existence is not
+  itself scope authority.
+* *Fresh review/evidence is still required*, unconditionally, for the
+  reused material, through the ordinary worker -> independent_review ->
+  (correction/rereview) -> trusted-evidence pipeline.
+* *Divergent baseline.* When the candidate's original trusted baseline
+  differs from the successor's new accepted baseline/concept -- likely,
+  since other work may land on `main` in between -- reconciling the
+  candidate against the new baseline is ordinary implementation work under
+  the successor's own authorized scope, not a special "candidate-import"
+  mechanism. If reconciliation is nontrivial, the successor Commission
+  should anticipate and budget for that effort explicitly rather than
+  assume import is free.
+
+Left open: whether a single candidate could legitimately be referenced by
+more than one authority-level record (e.g., cited by both a Slice-concept
+revision and the Commission that eventually implements it). Not resolved
+here.
+
+== 6. Relationship to P4 / Coordinator-owned effects
+
+`CandidateSnapshot` commits and trusted implementation/review-artifact
+commits share Git *mechanics* -- both are Coordinator-adjacent write effects
+tied to a Run/Hop -- but belong to different *trust* families, and this
+record does not propose merging them.
+
+Trusted implementation, correction, and review-artifact commits are the
+output of *authorized* phases; they are validated by `CommitIntent` rules
+and contribute to trusted Run/Hop evidence and reduction. P4 (per the Epic
+concept's section 12, "Coordinator-owned effects / mechanics") is about
+removing *model-authored restatement* of Coordinator-deterministic facts
+(canonical commit-subject rendering, `work_item_id`/`hop_id` placement, and
+similar) from exactly those trusted commits.
+
+A `CandidateSnapshot` commit, by contrast, preserves deliberately *untrusted*
+state from a *blocked* Hop; it never enters reduction, never receives a
+semantic verdict, and must never be allowed to look, in its own commit
+message or metadata, like a trusted commit that merely wasn't reviewed yet.
+
+This record records only a design *relationship*, not a scope change:
+
+* if `CandidateSnapshot` preservation is ever implemented inside Level 0, it
+  could plausibly reuse whichever canonical, Coordinator-owned
+  subject/metadata-rendering mechanism P4 eventually produces for trusted
+  commits -- same rendering mechanics, applied to a differently-trusted
+  effect kind, with its non-authoritative status still rendered explicitly
+  and unambiguously;
+* this is a plausible future *dependency* to keep in mind when P4 is
+  eventually designed in full, not an instruction to enlarge P4's scope now.
+
+No P4 implementation scope is proposed, enlarged, or decided by this
+section.
+
+== 7. Friction / simplification test
+
+This section tests the proposals above against
+`workflow_coordinator_operational_friction_evidence_2026-10-11.adoc` rather
+than assuming they help.
+
+Does this add a new mandatory governance artifact?::
+No. Slice implementation concepts (section 5.7) name an existing practice;
+they do not introduce a new mandatory type, schema, or review gate.
+`CandidateSnapshot` (section 5.3) formalizes an existing manual Git
+convention; it does not invent a new one.
+
+Does it reduce manual steps?::
+Potentially, if Level 0 ever mechanically owns snapshot creation: this would
+remove runbook Steps 4-5's manual multi-command sequence (inspect dirty
+paths, stage, commit, update-ref, reset --hard) from the human/assistant
+critical path, replacing it with the same deterministic trigger that
+already causes today's dirty-worktree mechanical preemption. Not
+implemented or authorized here (section 9).
+
+Does it reduce specification duplication?::
+Marginally. The escalation-ownership ladder (section 5.6) gives the
+maintainer a named vocabulary to cite directly in a successor Commission's
+authority-source field, rather than re-deriving the classification prose
+each time -- the same shape of improvement the friction record's section
+9.1 ("one canonical semantic source") already asks for, applied narrowly.
+
+Does it worsen the bounded-handoff test?::
+The friction record's section 9.4 asks whether a fresh agent, given the
+repository plus a short handoff, can determine the next action without
+relying on long conversational history. If `CandidateSnapshot` facts
+(section 5.3's required field list) are mechanically recoverable from the
+candidate ref/commit together with the durable Run/escalation record and its
+recorded provenance, a fresh agent should recover the full story without chat
+history. Current manual practice records these facts explicitly; a future
+mechanism should make that projection mechanical without introducing a second
+competing source of truth. That should strengthen the bounded-handoff property,
+not weaken it.
+
+Explicit caution::
+This concept document itself must not become one more mandatory artifact a
+fresh agent has to read in full before taking routine action. Its intended
+shape is a recognized pattern plus a small vocabulary addition (the ladder),
+not a new process gate -- consistent with the friction record's repeated
+finding that duplicated specification and ceremony, not the core
+evaluator/optimizer loop, is the dominant cost (friction record, sections
+5.1, 7, 9.5-9.6).
+
+== 8. Open design questions
+
+Deliberately preserved, not resolved:
+
+. Is `CandidateSnapshot` common enough, across more than the two cases
+  currently in the ledger (`02c08ad`'s predecessor case and
+  `ccd1d57`/P3), to justify a reusable Level-0 effect, or should it remain
+  explicit manual maintainer practice for now?
+. Which exact durable facts about a stop are sufficient for a future
+  Level-1 classifier to *propose* a ladder level (section 5.6) without
+  granting it authority to decide?
+. What is the precise boundary between "ordinary structural/provenance
+  validation" (permitted at Commission level without reopening anything)
+  and "architecture-sensitive conflict" (requiring Slice/Epic-level
+  disposition)? The P3 design record's own section 10 residual question
+  (whether a provenance-shaped check generalizes) is a concrete, smaller
+  instance of this same boundary problem.
+. Should a Slice implementation concept ever be revised through a
+  commissioned Run (section 5.8), or should it remain, as today, a direct
+  maintainer/assistant authoring act indefinitely?
+. What retention/garbage-collection policy should eventually govern
+  `refs/wfc/candidates/*` (section 5.4), and who holds deletion authority?
+. Should a generated, read-only projection of live candidate refs exist, and
+  if so, where does it live without becoming a second canonical record of
+  facts the commit bodies already carry?
+. Can a candidate legitimately be referenced by more than one
+  authority-level disposition record (section 5.10)?
+. At what empirical threshold, if any, would repeated use of this runbook's
+  salvage steps justify moving `CandidateSnapshot` preservation into Level 0
+  rather than continuing as manual practice (mirrors the level-1 concept's
+  own mechanism-admission question, section 14 there)?
+
+== 9. Non-goals / non-authority
+
+This concept does not authorize, and explicitly rules out for now:
+
+* a `CandidateSnapshot` Level-0 effect, route, stop kind, or schema field;
+* any change to `src/workflow_coordinator/adapter.py`, including its
+  `contract_version` gate;
+* any change to `tests/`;
+* any change to `governance/` files, including authoring, repairing, or
+  committing a successor Commission for
+  `WI-WFC-PROJECTED-RESULT-CONTRACTS-P3`;
+* resuming, replaying, or reinterpreting
+  `RUN-8875175a2ea343adbaf47c105699f91e` or any other historical Run;
+* deleting, moving, or garbage-collecting
+  `refs/wfc/candidates/RUN-8875175a2ea343adbaf47c105699f91e/H001` or any
+  other candidate ref;
+* a new `architect`/`escalation-classifier` WorkflowRole or any dynamic
+  scope-widening mechanism;
+* an ADR-acceptance process or policy engine;
+* enlarging P4's (Coordinator-owned effects) implementation scope;
+* a general architecture ontology or escalation-classification engine;
+* Runtime promotion;
+* Evidence or semantic-ledger mutation;
+* push.
+
+All of the above remain separate future decisions, exactly as the sibling
+concept documents this record extends also state for their own scope.
+
+== 10. Incremental implementation implications (descriptive, not authorized)
+
+A plausible incremental path, offered only to show the proposals above are
+not all-or-nothing, and authorizing none of its steps:
+
+. Document the Slice-implementation-concept pattern by name (section 5.7) --
+  pure documentation, no code, no new mechanism.
+. Add a generated, read-only projection of live `refs/wfc/candidates/*` and
+  their recorded facts, for operator visibility only -- tooling, no new
+  authority, no change to candidate semantics.
+. Only after repeated manual use of the runbook's salvage steps, consider a
+  deterministic (non-LLM), narrowly scoped Level-0 "preserve on durable stop
+  with attributable dirty worktree" effect (section 5.3), itself requiring
+  its own explicitly authorized self-development Commission, independent
+  review, and trusted evidence -- exactly like every other WFC capability
+  change to date.
+. Only after that, consider whether any part of Level-1 classification
+  (section 5.6) can be partially mechanized, starting with the narrowest,
+  most-repeated pattern first, never as a single general classifier.
+
+The current manual runbook remains the authoritative operating procedure
+until and unless any such step is separately, explicitly authorized. This
+record does not retroactively reinterpret any historical Run, and none of
+the sequencing above is authorized by this document.
+
+== 11. Related documents
+
+* `successor_continuation_runbook_2026-10-10.adoc` (current authoritative
+  manual operating procedure)
+* `workflow_coordinator_level1_architecture_disposition_concept_2026-10-10.adoc`
+* `workflow_coordinator_operational_friction_evidence_2026-10-11.adoc`
+* `workflow_coordinator_p3_finding_projection_design_2026-10-11.adoc`
+* `workflow_coordinator_run_event_and_review_artifact_concept_2026-10-10.adoc`
+* `workflow_coordinator_successor_commission_pipeline_target_2026-10-10.adoc`
+* `docs/wfc_projected_result_contracts_concept_2026-10-07.adoc` (P4 scope,
+  section 12 there)
+* Run `RUN-8875175a2ea343adbaf47c105699f91e`
+* Candidate `ccd1d57ee28c666a4724ff512a500639b1c6dc1b` /
+  `refs/wfc/candidates/RUN-8875175a2ea343adbaf47c105699f91e/H001`
+
+== 12. Provisional conclusion
+
+The P3 Run is useful evidence of a working Level-0 boundary, not evidence of
+a Level-0 defect: H001 discovered a Commission-boundary error through
+ordinary implementation-time source inspection and escalated rather than
+widening its own authority. The remaining cost is concentrated above Level
+0, in manual salvage mechanics (section 5.3-5.4), manual escalation
+classification (section 5.6), and the absence of a named, reusable
+vocabulary for "this is a local implementation-boundary error, not an
+architecture error" (section 5.7).
+
+None of this is yet strong enough evidence to authorize a redesign. It is
+offered as a hypothesis, tested in section 7 against this project's own
+friction evidence, to be falsified or strengthened by further observed
+cases before any of sections 5, 6, or 10 move from concept to
+implementation.
