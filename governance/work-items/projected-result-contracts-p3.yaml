@@ -1,0 +1,184 @@
+schema_version: 2
+work_item_id: WI-WFC-PROJECTED-RESULT-CONTRACTS-P3
+authority_source: >-
+  Maintainer-authorized bounded WFC self-development implementation
+  Commission for P3 ("Finding authorship/update projection") of the accepted
+  concept docs/wfc_projected_result_contracts_concept_2026-10-07.adoc
+  (section 10, section 17: "P3 Finding authorship/update projection" named
+  NEXT after P2; section 22's open question on the `findings`/
+  `finding_updates` field). That concept is CONCEPT ONLY and authorizes
+  nothing by itself.
+
+  THIS Commission's immediate engineering authority is the accepted,
+  committed design record
+  `docs/warm_storage/concepts/workflow_coordinator_p3_finding_projection_design_2026-10-11.adoc`
+  (commit `e4dbf7d23502b55a730811176073e33483c6a2c9`), status "ACCEPTED
+  DESIGN DIRECTION, COMMISSION-READY." That record is itself explicit
+  (its own sections 8, 14, 15) that it does NOT authorize implementation
+  and that source changes require a separate, explicitly authorized
+  self-development Commission. THIS WorkItem is that Commission. Where this
+  WorkItem or its task text summarizes the design record, the design
+  record's own exact wording controls; where the implementing Run's own
+  fresh source inspection disagrees with a factual claim in either
+  document about what current source does, trust fresh inspection, record
+  the discrepancy in `summary`, and do not widen scope to resolve it unless
+  strictly necessary to implement the bounded scope below.
+
+  P1 ("Projection infrastructure") and P2 ("Strict worker/review result
+  families") are both COMPLETE and promoted to Runtime (see
+  `governance/work-items/projected-result-contracts-p1*.yaml`,
+  `governance/work-items/projected-result-contracts-p2*.yaml`, and their
+  accepted review artifacts). This Commission builds on both unchanged.
+
+  GOVERNING MAINTAINER DECISION (binding, not open for re-litigation; design
+  record section 13, quoted verbatim):
+
+    "A same-state Finding citation is an evidence-only operation and does
+    NOT require `finding_authority`. `finding_authority` continues to gate
+    only state-changing Finding transitions. P3 should make this
+    distinction structural rather than infer it from a generic
+    `ExistingFindingDelta` shape: citation and transition are separate
+    result variants; citation must not carry transition-only fields such as
+    `proposed_state`/`successor_ref` unless structurally required by its
+    own semantics; transition variants remain subject to the existing
+    disposition-authority checks; citation remains subject to ordinary
+    structural/provenance validation, but not disposition authority."
+
+  This Commission implements exactly that decision. It does not revisit
+  whether citation should require `finding_authority` -- it does not, by
+  maintainer decision -- and it does not revisit whether the split should
+  be structural (parse-time) rather than reduce-time -- it must be, by
+  maintainer decision.
+
+  RESIDUAL IMPLEMENTATION QUESTION AND ITS DEFAULT (design record sections
+  6, 10, 12; NOT reopened as a design question by this Commission):
+  whether the existing `ConvergenceRole.CORRECTOR`-only tracked-obligation
+  check (`reducer.py:729-735`, rejecting an existing-Finding delta against a
+  Finding with a live `correction_obligation` only when
+  `convergence_role is CORRECTOR`) should generalize to every
+  `FindingCitation` submitter regardless of convergence role. The default,
+  and the behavior this Commission must deliver unless fresh source
+  inspection during implementation proves it structurally impossible to
+  leave unchanged (e.g. because the citation/transition split itself cannot
+  be expressed without touching that check), is: LEAVE THE EXISTING
+  `CORRECTOR`-ONLY SCOPE OF THAT CHECK UNCHANGED. If the implementing Hop's
+  own fresh source inspection finds a concrete, structural reason this
+  default cannot be preserved while still delivering the maintainer's
+  citation/transition decision, it may deviate only as far as strictly
+  necessary, must record the discrepancy and its reason in `summary`, and
+  must not use this as license to redesign the check's purpose or widen it
+  speculatively beyond what the structural requirement forces. If any doubt
+  remains about whether deviation is truly required, escalate
+  (`requires_human=true`, `escalation.kind=scope`) rather than guess.
+
+  IMPLEMENTATION OBJECTIVE -- bounded to the citation/transition split and
+  its direct, already-accepted consequence (design record sections 4, 7,
+  8, 12):
+
+  1. Split today's single `ExistingFindingDelta` model type
+     (`src/workflow_coordinator/model.py`) into two structural variants: a
+     citation-only shape carrying `finding_id` and `evidence_refs` only
+     (no `proposed_state`, no `successor_ref`, no `new_material_evidence`),
+     and a transition shape carrying `finding_id`, a typed disposition
+     target (resolve / residual / supersede-with-successor /
+     reopen-with-new-material-evidence), and `evidence_refs`, with
+     `successor_ref` living only on the supersede target rather than as a
+     cross-field runtime predicate. Keep `NewFindingDelta`/
+     `FindingAuthoring` exactly as it is today -- new-Finding authorship is
+     unaffected by this Commission.
+  2. Update `src/workflow_coordinator/serialization.py` to parse the new
+     wire shapes and to persist a new `result_contract_version` (`3`) for
+     `WORK_RESULT`/`REVIEW_VERDICT` carrying the split shape, without
+     altering how `result_contract_version` `1`/`2` historical Hops parse.
+  3. Update `src/workflow_coordinator/codex_adapter.py` to project the
+     split shapes in the OpenAI strict `anyOf`, replacing today's single
+     `existing_finding` schema node with two (citation, transition).
+  4. Update `src/workflow_coordinator/reducer.py` to dispatch on the new
+     types directly: a citation never reaches `_may_dispose`/
+     `finding_authority` by construction (the type carries no disposition
+     content to check); a transition keeps exactly today's `_may_dispose`/
+     `_finding_operation` checks, atomicity, and cycle rejection unchanged.
+     This by construction closes the one already-accepted, never-
+     implemented `WI-WFC-GENERATIVE-ECHO-AUDIT-001` finding that a
+     same-state citation of an already-superseded Finding should not have
+     to restate `successor_ref` (design record section 2, section 11):
+     the citation type simply has no such field to restate.
+  5. Preserve every existing authority/atomicity/cycle/obligation-tracking
+     check currently in `reducer.py` unless this Commission's own bounded
+     split structurally requires touching one -- and if so, touch only
+     what is strictly required, per the residual-question default above.
+
+  EXPLICITLY WITHHELD (design record sections 6, 15; restated here as
+  binding non-authorization): any `FindingRef` local/concrete successor
+  typing beyond what is trivially adjacent to the citation/transition
+  split's own diff (optional stretch only, never required, never a reason
+  to enlarge or delay this Commission); any P3.5 Commission/authority
+  graph-conformance design or implementation (`BUG-WFC-SELF-DEVELOPMENT-
+  GATE-FINDING-AUTHORITY`'s ordered-reachability property remains entirely
+  untouched and deferred); any P4 Coordinator-owned-effects/CommitIntent
+  rendering work; any P5 provider-capability/registry cleanup; any Claude
+  adapter work; any change to `src/workflow_coordinator/adapter.py`,
+  `src/workflow_coordinator/prompt.py`, or `vertical.py`'s route-selection
+  logic (the design record's own assessment is that none of these should
+  need to change for this slice -- re-verify this yourself, and if your own
+  inspection finds one of them must change, treat that as a scope
+  discrepancy to report in `summary`, not a license to proceed silently);
+  any change to `tests/architecture/test_self_development_governance.py`;
+  any retrospective migration of historical Runs/Hops; any weakening of any
+  existing fail-closed reducer check; any Runtime promotion; any Evidence
+  mutation; any push.
+
+  BEHAVIORAL INVARIANTS THIS COMMISSION MUST PRESERVE AND TEST: a same-
+  state citation never requires `finding_authority` and can never, by
+  construction, perform a disposition; a state-changing transition remains
+  exactly as gated by `finding_authority`/`_may_dispose` as it is today; the
+  successor_ref-on-same-state-citation requirement is structurally absent,
+  not merely reduce-time-skipped; historical Hops persisted under
+  `result_contract_version` `1`/`2` continue to parse and replay exactly as
+  today; new-Finding authorship (`NewFindingDelta`/`FindingAuthoring`) is
+  unaffected; every existing reducer authority/atomicity/cycle/obligation
+  test continues to pass unweakened; the `ConvergenceRole.CORRECTOR`-only
+  tracked-obligation check's scope is unchanged unless the residual-
+  question default above is proven impossible to preserve.
+
+  Where this WorkItem or its task text summarizes the design record or the
+  governing concept document, their own exact wording controls if they
+  ever appear to differ; do not resolve an apparent conflict by inventing a
+  third reading -- stop and report it (`requires_human=true`,
+  `escalation.kind=scope`) instead.
+profile_ref: governance/self-development/projected-result-contracts-p3-profile.yaml
+repository: workflow-coordinator
+scope:
+  - src/workflow_coordinator/model.py
+  - src/workflow_coordinator/serialization.py
+  - src/workflow_coordinator/codex_adapter.py
+  - src/workflow_coordinator/reducer.py
+  - tests/support.py
+  - tests/unit/test_reducer.py
+  - tests/unit/test_serialization.py
+  - tests/unit/test_codex_adapter_conformance.py
+  - tests/unit/test_slice3_vertical.py
+  - tests/unit/test_slice5b.py
+  - tests/architecture/test_replays.py
+  - docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_007.adoc
+initial_phase: implement
+max_autonomous_hops: 8
+personas:
+  worker: >-
+    senior workflow-systems/Python engineer implementing the
+    maintainer-decided Finding citation/transition structural split:
+    citation carries evidence only and never requires finding_authority;
+    transition keeps today's disposition-authority checks unchanged. No
+    P3.5/P4/P5 scope; no adapter.py/prompt.py/vertical.py route-selection
+    changes.
+  independent_reviewer: >-
+    fresh adversarial reviewer verifying the citation/transition split is
+    genuinely structural (citation cannot carry disposition fields) and
+    that finding_authority gates transitions only, never citation; checks
+    for P3.5/P4/P5 or route-selection scope creep. Holds resolve-only
+    Finding authority for Findings it opens and verifies corrected.
+durable_artifacts:
+  independent_review:
+    - docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_007.adoc
+  rereview:
+    - docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_007.adoc
