@@ -6,7 +6,9 @@
 Status:: ACCEPTED DESIGN DIRECTION, COMMISSION-READY. DOES NOT AUTHORIZE
 IMPLEMENTATION. Source changes require a separate, explicitly authorized
 self-development Commission.
-Date:: Drafted 2026-10-11.
+Date:: Drafted 2026-10-11. Corrected 2026-10-14 after a real P3 Run
+(`RUN-8875175a2ea343adbaf47c105699f91e`) proved one of this record's
+factual scope assumptions false; see section 16.
 Scope:: The Projected Result Contracts roadmap's P3 slice --
 Finding authorship/update projection -- for the `workflow-coordinator`
 engine.
@@ -23,6 +25,21 @@ profile, policy, Run, provider invocation, or push. Implementing any part of
 this design requires a separate, explicitly authorized self-development
 Commission (WorkItem/profile/policy bundle under `governance/`), exactly as
 every prior Projected Result Contracts slice (P1, P2) was implemented.
+====
+
+[CAUTION]
+====
+**2026-10-14 design correction.** Sections 6-8, 10, 12, 14 and 15 of this
+record originally asserted that `src/workflow_coordinator/adapter.py` (and
+`prompt.py`) would not need to change for P3. Fresh source inspection proved
+that assertion false: provider-neutral admission of the new
+`result_contract_version=3` is blocked by coarse version gates in both files,
+evaluated before any result-family parser or projection this slice is allowed
+to touch. Those statements are corrected in place; the evidence, the corrected
+boundary, and the consequences for commissioning are recorded in section 16.
+The first P3 Commission's Run stopped on exactly this discrepancy and was
+right to stop; its preserved candidate is non-authoritative salvage, and a
+fresh successor Commission is required.
 ====
 
 Provenance:: Preceding accepted executable implementation at the time this
@@ -330,6 +347,17 @@ the design question is resolved:
   question (section 10), not a reason to pull P3.5 forward -- it does not
   touch whether authority *compiles* across a graph, only what one
   citation's provenance check covers.
+* **Provider-neutral result-contract admission is P3, not P3.5** (corrected
+  2026-10-14, section 16): admitting the `(kind, version)` pairs this slice
+  itself introduces -- `(WORK_RESULT, 3)` and `(REVIEW_VERDICT, 3)` -- through
+  the provider-neutral execution path is direct compatibility plumbing for
+  P3's own wire contract, in the same family as persisting the new version at
+  all (section 7). It grants no phase any authority, changes no route, and
+  decides nothing about whether a *graph* of phases can legally dispose a
+  Finding -- the only thing P3.5 is about. The seams this requires
+  (`adapter.py`'s `validated_result`, `prompt.py`'s contract-version gate;
+  section 8) are therefore inside P3's boundary, bounded strictly to
+  kind/version admission.
 * **P3.5 (deferred)**: `BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY`'s
   ordered-reachability property over `Phase.routes`/`finding_authority` --
   entirely about whether a *graph* of phases can ever legally dispose a
@@ -369,6 +397,32 @@ the design question is resolved:
   discipline and is already named as an authorized test file in the
   accepted `BUG-WFC-IMMUTABLE-FINDING-ECHO` correction -- the same file
   should be the one P3 extends, not a new replay-test module.
+* **Admission is not free (corrected 2026-10-14, section 16).** A new
+  persisted version is only reachable if the provider-neutral path admits it.
+  Current source gates the contract version *before* the result family is
+  selected, in two places outside the result-family parsers: `adapter.py:109`
+  (`validated_result`: `if contract_version not in {1, 2}`) and
+  `prompt.py:184` (`if selected_contract_version not in {1, 2}`), plus two
+  more inside the already-in-scope `codex_adapter.py` (`:104`, `:307`) and one
+  persisted-identity gate in the already-in-scope `reducer.py:1291`.
+  `vertical.py` selects the `(kind, version)` pair (`:301-303`) and threads it
+  into all of them without any allow-list of its own. Unless admission is
+  widened at these seams, P3's version `3` is unreachable in the real
+  execution path no matter how correct the model/parser/projection changes
+  are.
+* **Admission must stay narrow.** `model.py`'s `result_contract_version()` is
+  already kind-aware (`:636-651`), and `serialization.py` already gates per
+  family -- `_family_result_data` (`:1239`, shared by
+  `work_result_from_data`/`review_verdict_from_data`) and
+  `routing_result_from_data` (`:1163`). P3 introduces a version-3 contract for
+  its two result families only; it does **not** thereby define version-3
+  `GENERIC_ROUTING_RESULT` semantics. Widening every coarse `{1, 2}` gate to
+  `{1, 2, 3}` would hand the generic routing family an unspecified version-3
+  contract by accident. The required shape is kind-aware admission (an
+  explicit kind/version compatibility matrix, or moving the coarse check into
+  the family parsers/projections that already discriminate, or another equally
+  narrow form); the exact shape is an implementation choice for the
+  Commission (section 10), the narrowness is not.
 
 == 8. Minimal implementation seams (illustrative; not authorized by this record)
 
@@ -398,9 +452,26 @@ sharpened by section 13's decision:
   tracked-obligation check (section 2, section 6) should be revisited for
   whether it now belongs on `FindingCitation` generally -- implementation
   decision, not a redesign of the check itself.
-* No change to `adapter.py`, `prompt.py`, `vertical.py`'s route-selection
-  logic, or `tests/architecture/test_self_development_governance.py` should
-  be required -- those are P3.5's boundary, not P3's.
+* `adapter.py` -- **necessary P3 seam (corrected 2026-10-14, section 16).**
+  `validated_result` rejects any contract version outside `{1, 2}` (`:109`)
+  before it selects the result-family parser (`:124-132`), so a version-3
+  `WORK_RESULT`/`REVIEW_VERDICT` cannot be admitted through the
+  provider-neutral path at all. The change is bounded to making that admission
+  kind-aware for the new P3 pairs, leaving version `1`/`2` behaviour
+  byte-identical and keeping the check fail-closed for every unadmitted
+  `(kind, version)` combination -- notably `(GENERIC_ROUTING_RESULT, 3)`,
+  which this slice does not define. Nothing else in this file: no provider
+  redesign, no transport change, no capability work.
+* `prompt.py` -- **necessary P3 seam, same bounded shape.** `:184` raises on
+  any version outside `{1, 2}`, and `vertical.py:311-316` assembles the prompt
+  with the selected version, so a version-3 Hop fails before it ever reaches a
+  provider. Bounded to admitting the new P3 pairs in the same kind-aware,
+  fail-closed way; prompt content and composition are untouched.
+* No change to `vertical.py`'s route-selection logic or
+  `tests/architecture/test_self_development_governance.py` should be required
+  -- those remain P3.5's boundary, not P3's. `vertical.py` already selects and
+  threads the `(kind, version)` pair (`:301-303`, `:315`, `:323`, `:329-333`)
+  and carries no version allow-list to widen.
 
 This section is illustrative design guidance only. None of it is implemented
 or authorized by this record; implementation requires a separate
@@ -434,6 +505,13 @@ self-development Commission.
   old shape; a fresh Hop under version `3` exercises the new shape.
 * Existing reducer authority/atomicity/cycle tests
   (`tests/unit/test_reducer.py`) continue to pass unweakened.
+* A version-3 `WORK_RESULT` and a version-3 `REVIEW_VERDICT` are admitted
+  end-to-end through prompt assembly and `validated_result`, while a version-3
+  `GENERIC_ROUTING_RESULT` is still rejected -- the direct test that admission
+  was widened per kind rather than globally (section 7).
+* Versions `1` and `2` remain admitted and parsed exactly as today for all
+  three kinds, and every other version is still rejected fail-closed at every
+  seam.
 
 == 10. Risks and open questions (narrowed)
 
@@ -467,6 +545,17 @@ strictly smaller:
   one remaining item whose Mechanism Admission evidence is still source-
   inspection-only, not Run-reproduction-backed; the recommended default
   above is sized accordingly.
+* **Admission-seam shape (new, 2026-10-14)**: the *necessity* of changing
+  `adapter.py`/`prompt.py` is settled by section 16 and is Run-reproduction-
+  backed, not merely inspected. The *shape* of the narrow admission rule is
+  not settled: a successor Commission must pick one -- an explicit kind/version
+  compatibility matrix consulted at the provider-neutral seams, or removing
+  the coarse pre-parser gate in favour of the family parsers'/projections' own
+  version checks, or another equally small correct form. Any is acceptable if
+  it leaves versions `1`/`2` unchanged, keeps rejection fail-closed, and does
+  not admit `(GENERIC_ROUTING_RESULT, 3)`. This is scope-sizing, not a
+  reopened design question, and it is the one item a successor Commission
+  should state explicitly rather than leave to the implementing Hop.
 
 == 11. Real-run / repository evidence survey (Mechanism Admission inputs)
 
@@ -505,6 +594,19 @@ than an unenforced-by-type runtime accident. Leave the
 (section 10's recommended default) unless the implementing Hop's own source
 inspection finds a live reason to widen it. Treat `FindingRef` local/concrete
 typing as optional, bundle-only-if-trivial stretch scope (section 4).
+
+**Corrected 2026-10-14 (section 16):** that scope must additionally include
+the bounded provider-neutral admission change in `adapter.py` and `prompt.py`
+(sections 7, 8), without which the slice cannot execute at all. The Commission
+bundle already committed under
+`governance/work-items/projected-result-contracts-p3*` and
+`governance/self-development/projected-result-contracts-p3-*` withheld both
+files and is therefore historically incomplete. It is **not** to be amended in
+place: it is the faithful record of a Commission whose Run correctly stopped.
+A fresh successor Commission, authored against this corrected record, is
+required before P3 implementation is attempted again, and it inherits no
+acceptance and no review credit from the stopped Run or its preserved
+candidate.
 
 An earlier narrower alternative -- closing only the `successor_ref` echo
 without the type split -- was considered and rejected as the recommended
@@ -574,26 +676,161 @@ blocks authoring a Commission for the slice recommended in section 12:
 * Versioning/replay discipline (section 7) follows the existing, already-
   proven persisted-pair pattern and needs no new maintainer decision to
   apply it.
+* The one factual error this record previously carried -- that `adapter.py`
+  (and `prompt.py`) need not change -- is corrected in place (section 16). It
+  required no new maintainer *design* decision, only a correctly scoped
+  successor Commission.
 
 **This document does not itself authorize implementation.** Authoring the
 Commission bundle (WorkItem/profile/policy/task YAML under `governance/`)
 and any subsequent source/test change to `model.py`, `serialization.py`,
-`codex_adapter.py`, or `reducer.py` remain separate, later, explicitly
+`codex_adapter.py`, `reducer.py`, or the bounded admission seams in
+`adapter.py`/`prompt.py` (sections 7, 8) remain separate, later, explicitly
 authorized actions -- exactly as every prior Projected Result Contracts
 slice (P1, P2, and the Finding-echo corrections this record builds on) was
 authorized through its own dedicated self-development Commission, never
 through a concept or design record alone.
+
+**Commission readiness after the 2026-10-14 correction.** The design remains
+commission-ready in substance: nothing in section 16 reopens the maintainer
+decision (section 13), the resolved field shapes (section 4), or the slice's
+recommended scope (section 12). What changed is the authorized seam set, and
+therefore the bundle. The existing P3 Commission is historical and stays
+untouched; a fresh successor Commission must be authored against this
+corrected record, and only that successor -- not this record -- may authorize
+implementation.
 
 == 15. Explicit non-goals
 
 No implementation is performed or authorized by this record. No P3.5
 authority-conformance design or implementation. No P4 CommitIntent/effects
 work. No P5 provider-capability work. No Claude adapter. No retrospective
-migration of historical Runs. No change to `prompt.py`, `adapter.py`, or
-`tests/architecture/test_self_development_governance.py`. No broadening to
+migration of historical Runs. No change to `vertical.py`'s route-selection
+logic or `tests/architecture/test_self_development_governance.py`. The
+`adapter.py`/`prompt.py` change this record now recognises as a necessary P3
+seam (sections 7, 8, 16) is bounded strictly to kind/version admission and
+authorizes no generic provider redesign, no provider-capability or registry
+work, no transport change, no P3.5 authority-composition work, no P4 or P5
+work, and no Claude-adapter work. No broadening to
 "fix all Finding semantics" -- `proposed_state`'s own vocabulary,
 `evidence_refs` union semantics, and `new_material_evidence`'s reopen gate are
 already correctly agent-owned/reducer-checked per the accepted echo-audit
 assessment and are out of scope for any P3 slice. No Commission bundle, no
 Runtime promotion, no Evidence mutation, and no push are authorized by this
 record.
+
+== 16. 2026-10-14 correction: provider-neutral version admission is a P3 seam
+
+=== 16.1 What happened
+
+The first P3 Commission (`WI-WFC-PROJECTED-RESULT-CONTRACTS-P3`:
+`governance/work-items/projected-result-contracts-p3.yaml`, task text
+`governance/work-items/projected-result-contracts-p3-task.txt`,
+profile/policy under
+`governance/self-development/projected-result-contracts-p3-*`) was authored
+from this record and, following this record's own sections 8 and 15,
+explicitly withheld `src/workflow_coordinator/adapter.py` and
+`src/workflow_coordinator/prompt.py` from its `scope` and
+`work_item_scope_ceiling` -- while instructing the implementing Hop to
+re-verify that withholding against fresh source inspection and to report any
+discrepancy as a scope escalation rather than proceed silently.
+
+`RUN-8875175a2ea343adbaf47c105699f91e`, Hop `H001`, did exactly that. It
+stopped with `status=blocked`, `requires_human=true`,
+`escalation.kind=scope`, reporting that `adapter.py`'s `validated_result`
+fail-closes contract version `3` before any in-scope parser, schema, or
+reducer change can take effect, so no version-3 result can be validated or
+reduced in the real execution path.
+
+**The Run was correct.** The discrepancy is this record's, not the worker's:
+section 8's claim that no `adapter.py` change "should be required" was a
+factual assertion about current source, and it was false.
+
+=== 16.2 Repository evidence
+
+* `adapter.py:109` -- `if contract_version not in {1, 2}: raise
+  ResultValidationError(...)`, evaluated *before* the
+  `GENERIC_ROUTING_RESULT`/`WORK_RESULT`/`REVIEW_VERDICT` parser is selected
+  (`:124-132`).
+* `prompt.py:184` -- `if selected_contract_version not in {1, 2}: raise
+  ValueError(...)`, reached earlier still: `vertical.py:301-303` selects the
+  `(kind, version)` pair and `:311-316` assembles the prompt with it, so a
+  version-3 Hop fails before provider dispatch (as
+  `ExecutionNotStartedError`).
+* `codex_adapter.py:104` (`routing_result_openai_schema`) and `:307`
+  (`CodexCliAdapter.execute`) -- the same coarse gate twice more, inside a
+  file the P3 Commission already authorized.
+* `reducer.py:1291` -- `persisted_version not in {1, 2}` on the persisted
+  result-contract identity, likewise already in an authorized file.
+* The per-family gates that *should* carry the narrow rule already exist:
+  `serialization.py:1239` (`_family_result_data`, shared by
+  `work_result_from_data`/`review_verdict_from_data`) and `:1163`
+  (`routing_result_from_data`); and `model.py:636-651`
+  (`result_contract_version(kind, profile, phase, run)`) is already
+  kind-aware, so a version-3 selection can be confined to the two P3
+  families at the point of selection.
+
+=== 16.3 Why this is P3 and not P3.5
+
+P3.5 is the ordered-reachability property over
+`Phase.routes`/`finding_authority` -- whether a *graph* of phases can ever
+legally dispose a Finding it opens (section 6; concept doc section 11).
+Admitting a `(kind, version)` pair that P3 itself introduces decides nothing
+about authority composition: it grants no phase any authority, changes no
+route, and touches no reachability property. It is the same kind of work as
+persisting the new version at all (section 7) -- compatibility plumbing for
+P3's own wire contract, without which the slice is unreachable rather than
+merely unpolished. Classifying it as P3.5 would make P3 unimplementable by
+construction, which is itself proof of the misclassification.
+
+=== 16.4 Bounded shape of the corrected scope
+
+Recognised as necessary P3 scope by this correction (for a successor
+Commission to authorize): admitting `(WORK_RESULT, 3)` and
+`(REVIEW_VERDICT, 3)` through the provider-neutral seams, preserving
+version `1`/`2` behaviour unchanged, keeping every unadmitted combination
+fail-closed, and **not** admitting `(GENERIC_ROUTING_RESULT, 3)` -- P3
+defines no version-3 generic routing contract. The implementation shape is
+open (section 10); its narrowness is not.
+
+Not recognised, not implied, and not authorized by this correction: generic
+provider redesign, provider-capability or registry work (P5), P3.5
+authority-composition work, P4 Coordinator-owned-effects work,
+Claude-adapter work, any transport or route-selection change, and any
+revision of this record's maintainer-settled semantics (section 13).
+
+=== 16.5 Status of the stopped Run and its preserved candidate
+
+The stopped Run is historical evidence. This correction does not mutate,
+re-score, or retroactively reinterpret it. The partially implemented work
+preserved at `refs/wfc/candidates/RUN-8875175a2ea343adbaf47c105699f91e/H001`
+(commit `ccd1d57ee28c666a4724ff512a500639b1c6dc1b`, "preserve stopped-run
+H001 candidate", self-described as non-authoritative salvage) is untrusted
+salvage and evidence of what was attempted. It carries no acceptance, no
+review credit, and no implementation authority; a successor Run inherits
+nothing from it and must re-derive and re-review any line it reuses.
+
+Its own treatment of the version gates illustrates the trap section 7 now
+names: it correctly narrowed admission in `serialization.py` (widening
+`_family_result_data` only, leaving `routing_result_from_data` at `{1, 2}`),
+but widened `routing_result_openai_schema` (`codex_adapter.py:104`) and the
+`CodexCliAdapter` gate (`:307`) to `{1, 2, 3}` wholesale -- which would hand
+`GENERIC_ROUTING_RESULT` a version-3 strict schema this slice never defined.
+Read that as a warning, not as a design.
+
+=== 16.6 Consequence for commissioning
+
+The existing P3 Commission bundle is historical and is **not** amended in
+place. A fresh successor Commission must be authored against this corrected
+record, extending its authorized scope/ceiling to `adapter.py` and
+`prompt.py` with the bounded admission language of section 16.4 -- and to
+whichever tests exercise those seams: `tests/unit/test_slice4.py` and
+`tests/unit/test_a3_operating_contract.py` cover `validated_result` and
+`assemble_prompt` today and are not in the current ceiling, while
+`tests/unit/test_slice3_vertical.py` and
+`tests/unit/test_codex_adapter_conformance.py` already are.
+
+Authoring that Commission is a separate, later, explicitly authorized
+action. This record -- including this correction -- still authorizes no
+implementation, no Commission bundle, no Run, no Runtime promotion, no
+Evidence mutation, and no push.
