@@ -6229,6 +6229,169 @@ def test_projected_result_contracts_p3_002_successor_bundle_passes_production_pr
     assert not state_root.exists()
 
 
+DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_GOVERNING_PATHS = (
+    "governance/work-items/docs-architecture-consolidation-design-001.yaml",
+    "governance/self-development/docs-architecture-consolidation-design-001-profile.yaml",
+    "governance/self-development/docs-architecture-consolidation-design-001-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/docs-architecture-consolidation-design-001-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_SCOPE = (
+    "docs/warm_storage/concepts/workflow_coordinator_documentation_information_architecture_consolidation_2026-10-15.adoc",
+)
+DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_REVIEW_ARTIFACT = (
+    "docs/warm_storage/concepts/workflow_coordinator_documentation_information_architecture_consolidation_2026-10-15_review_001.adoc"
+)
+
+
+def test_docs_architecture_consolidation_design_001_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Run-A governance-authoring-only commission: preflight-only proof.
+
+    This bundle commissions ONE independently reviewed documentation/
+    backlog/information-architecture design plus its Run-B migration plan
+    for the standalone repository, comparing empirically against the
+    read-only reference repository core. It must parse, stay within
+    policy/profile authority, use the bootstrap-safe four-phase topology
+    (design -> independent_review -> {accept, correction} -> correction ->
+    rereview -> {accept, correction}) with max_autonomous_hops == 6, and
+    hold no mutation authority over src/workflow_coordinator/**,
+    governance/ beyond its own bundle, workflow-coordinator-runtime, the
+    workflow-coordinator-run-evidence repository, canonical Project Memory,
+    docs/backlog/**, any other docs/*.adoc file, or the core reference
+    repository: its only authorized scope is the new design artifact and
+    its single dedicated durable review artifact.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "docs-architecture-consolidation-design-001"
+
+    assert not state_root.exists()
+    result = _production_preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    design = profile.phases["design"]
+    review = profile.phases["independent_review"]
+    correction = profile.phases["correction"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = (
+        *DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_SCOPE,
+        DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_REVIEW_ARTIFACT,
+    )
+
+    assert work_item.work_item_id == "WI-WFC-DOCS-ARCHITECTURE-CONSOLIDATION-DESIGN-001"
+    assert work_item.initial_phase == "design"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 6
+    assert profile.profile_id == "docs-architecture-consolidation-design-001"
+    assert policy.policy_id == "workflow-coordinator-docs-architecture-consolidation-design-001"
+    assert tuple(profile.phases) == ("design", "independent_review", "correction", "rereview")
+
+    # WorkItem.scope is exactly the new design artifact plus its single
+    # dedicated durable review artifact -- the smallest ceiling Run A needs.
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    for withheld in (
+        "src",
+        "src/workflow_coordinator",
+        "src/workflow_coordinator/model.py",
+        "governance",
+        "workflow-coordinator-runtime",
+        "workflow-coordinator-run-evidence",
+        "project_memory/canonical",
+        "docs/backlog",
+        "docs/backlog/README.adoc",
+        "docs/self-development.adoc",
+        "docs/architecture.md",
+        "core",
+        "tests/architecture/test_self_development_governance.py",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+    for path in DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_SCOPE:
+        assert _within_scope(path, work_item.scope)
+
+    # design/correction share the exact single-path design scope;
+    # independent_review and rereview are independently scoped to the
+    # single dedicated durable review artifact alone -- no phase's
+    # authorized_scope grants both.
+    assert (
+        design.authorized_scope
+        == correction.authorized_scope
+        == DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_SCOPE
+    )
+    assert review.authorized_scope == rereview.authorized_scope == (
+        DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_REVIEW_ARTIFACT,
+    )
+    assert set(DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_SCOPE).isdisjoint(review.authorized_scope)
+    assert DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_REVIEW_ARTIFACT not in design.authorized_scope
+    assert DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_REVIEW_ARTIFACT not in correction.authorized_scope
+
+    assert durable_artifacts == {
+        "independent_review": (DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_REVIEW_ARTIFACT,),
+        "rereview": (DOCS_ARCHITECTURE_CONSOLIDATION_DESIGN_001_REVIEW_ARTIFACT,),
+    }
+    assert review.durable_artifact.value == rereview.durable_artifact.value == "required"
+    assert design.durable_artifact.value == correction.durable_artifact.value == "none"
+    assert design.evidence == correction.evidence == ()
+    assert review.evidence == rereview.evidence == ("pytest",)
+    assert review.authorized_actions == rereview.authorized_actions == ("review", "edit", "commit")
+    assert design.authorized_actions == correction.authorized_actions == ("edit", "commit")
+
+    # Topology: design -> independent_review -> {accept: complete,
+    # correction} -> correction -> rereview -> {accept: complete,
+    # correction}. No implementation phase and no mutation authority over
+    # production source anywhere in this bundle.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "design": (("independent_review", "goto", "independent_review"),),
+        "independent_review": (
+            ("accept", "complete", None),
+            ("correction", "goto", "correction"),
+        ),
+        "correction": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correction", "goto", "correction"),
+        ),
+    }
+    assert review.role == rereview.role == "independent_reviewer"
+    assert design.role == correction.role == "worker"
+    assert review.review.finding_authority == rereview.review.finding_authority == ("resolve",)
+    assert review.review.failed_evidence_route == rereview.review.failed_evidence_route == "correction"
+
+    # Role/persona separation: distinct fresh independent-review persona,
+    # never the design/correction persona.
+    assert work_item.personas[WorkflowRole.WORKER] != (
+        work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+    )
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-run-evidence", policy.work_item_scope_ceiling)
+    assert not _within_scope("project_memory/canonical", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    # Admission happened entirely through provider-free preflight: no
+    # provider/executable was ever invoked, and the state root the launch
+    # would eventually use was never created by this process.
+    assert not state_root.exists()
+
+
 def _immutable_finding_echo_fix_bootstrap_profile():
     """Reproduce the commissioned profile's review/rereview shape exactly.
 
