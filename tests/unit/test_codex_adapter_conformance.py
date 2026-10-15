@@ -96,6 +96,54 @@ def test_result_v2_projection_is_strict_closed_and_null_only_for_later_slice_rec
         assert result["properties"][field]["anyOf"][1]["additionalProperties"] is False
 
 
+def test_v3_projection_is_available_only_to_work_and_review_families():
+    worker = structured_result_envelope_openai_schema(
+        _invocation(), 3, ResultContractKind.WORK_RESULT
+    )
+    review = structured_result_envelope_openai_schema(
+        _invocation(), 3, ResultContractKind.REVIEW_VERDICT
+    )
+    for schema in (worker, review):
+        assert_openai_strict_schema(schema)
+        findings = schema["properties"]["result"]["properties"]["findings"]["items"]["anyOf"]
+        new_finding, citation, transition = findings
+        assert "local_ref" in new_finding["properties"]
+        assert set(citation["required"]) == {"finding_id", "evidence_refs"}
+        assert set(transition["properties"]) == {"finding_id", "target", "evidence_refs"}
+    with pytest.raises(OpenAIStrictSchemaError, match="unsupported"):
+        structured_result_envelope_openai_schema(
+            _invocation(), 3, ResultContractKind.GENERIC_ROUTING_RESULT
+        )
+
+
+def test_codex_execute_admits_only_the_v3_family_pairs(tmp_path: Path):
+    executable = tmp_path / "fake-codex"
+    executable.write_text("#!/usr/bin/env python3\npass\n")
+    executable.chmod(0o755)
+    adapter = CodexCliAdapter(
+        tmp_path, model="explicit-model", reasoning_effort="high", executable=str(executable)
+    )
+    request = AgentExecutionRequest(
+        _invocation(), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5,
+        contract_version=3, result_contract_kind=ResultContractKind.WORK_RESULT,
+    )
+    adapter.execute(request)
+    emitted = json.loads(
+        (tmp_path / "structured-result.schema.json").read_text(encoding="utf-8")
+    )
+    assert emitted == structured_result_envelope_openai_schema(
+        request.invocation, 3, ResultContractKind.WORK_RESULT
+    )
+    with pytest.raises(RuntimeError, match="unsupported result contract version"):
+        adapter.execute(
+            AgentExecutionRequest(
+                _invocation(), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5,
+                contract_version=3,
+                result_contract_kind=ResultContractKind.GENERIC_ROUTING_RESULT,
+            )
+        )
+
+
 def test_contract_version_selector_defaults_to_v1_and_rejects_mixed_envelopes():
     invocation = _invocation()
     result_v2 = {

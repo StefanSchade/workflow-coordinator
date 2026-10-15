@@ -9,7 +9,13 @@ from importlib import resources
 from typing import Mapping
 
 from .adapter import Invocation
-from .model import ConvergenceRole, Phase, ResultContractKind, Run
+from .model import (
+    ConvergenceRole,
+    Phase,
+    ResultContractKind,
+    Run,
+    admits_result_contract_version,
+)
 
 COMPONENT_LIMIT_BYTES = 65_536
 CONTEXT_LIMIT_BYTES = 196_608
@@ -179,9 +185,15 @@ def assemble_prompt(
     selected: list[dict[str, object]] = []
     omissions: list[dict[str, object]] = []
     selected_contract_version = (
-        2 if run.schema_version == 3 else 1
+        3
+        if run.schema_version == 3
+        and result_contract_kind in {
+            ResultContractKind.WORK_RESULT,
+            ResultContractKind.REVIEW_VERDICT,
+        }
+        else 2 if run.schema_version == 3 else 1
     ) if contract_version is None else contract_version
-    if selected_contract_version not in {1, 2}:
+    if not admits_result_contract_version(result_contract_kind, selected_contract_version):
         raise ValueError("unsupported structured-result contract version")
     blocks = [
         _header(

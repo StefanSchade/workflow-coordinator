@@ -28,6 +28,8 @@ from .serialization import (
     ESCALATION_REQUIRED_KEYS,
     COMMIT_INTENT_REQUIRED_KEYS,
     EXISTING_FINDING_DELTA_KEYS,
+    FINDING_CITATION_KEYS,
+    FINDING_TRANSITION_KEYS,
     NEW_FINDING_DELTA_KEYS,
     NEW_FINDING_DELTA_V2_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
@@ -41,6 +43,7 @@ from .model import (
     FindingState,
     Outcome,
     ResultContractKind,
+    admits_result_contract_version,
     StrategyAssessmentResult,
     StrategyRevisionKind,
 )
@@ -101,7 +104,12 @@ def _bounded(value: str, limit: int = 16_384) -> str:
 
 def routing_result_openai_schema(contract_version: int = 1) -> dict[str, Any]:
     """Project canonical RoutingResult facts into the Codex strict dialect."""
-    if contract_version not in {1, 2}:
+    return _result_openai_schema(contract_version, permit_v3=False)
+
+
+def _result_openai_schema(contract_version: int, *, permit_v3: bool) -> dict[str, Any]:
+    """Build the shared result projection for one already-admitted family."""
+    if contract_version not in ({1, 2, 3} if permit_v3 else {1, 2}):
         raise OpenAIStrictSchemaError("unsupported RoutingResult contract version")
     string_array = {"type": "array", "items": {"type": "string"}}
     new_finding = {
@@ -121,7 +129,7 @@ def routing_result_openai_schema(contract_version: int = 1) -> dict[str, Any]:
     }
 
 
-    if contract_version == 2:
+    if contract_version in {2, 3}:
         new_finding["properties"]["local_ref"] = {"type": ["string", "null"]}
     existing_finding = {
         "type": "object", "additionalProperties": False, "required": list(EXISTING_FINDING_DELTA_KEYS),
@@ -132,7 +140,43 @@ def routing_result_openai_schema(contract_version: int = 1) -> dict[str, Any]:
             "new_material_evidence": {"type": "boolean"},
         },
     }
-    finding = {"anyOf": [new_finding, existing_finding]}
+    if contract_version == 3:
+        citation = {
+            "type": "object", "additionalProperties": False,
+            "required": list(FINDING_CITATION_KEYS),
+            "properties": {
+                "finding_id": {"type": "string"}, "evidence_refs": string_array,
+            },
+        }
+
+        def target(properties: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "type": "object", "additionalProperties": False,
+                "required": list(properties), "properties": properties,
+            }
+
+        transition = {
+            "type": "object", "additionalProperties": False,
+            "required": list(FINDING_TRANSITION_KEYS),
+            "properties": {
+                "finding_id": {"type": "string"}, "evidence_refs": string_array,
+                "target": {"anyOf": [
+                    target({"state": {"type": "string", "enum": [FindingState.RESOLVED.value]}}),
+                    target({"state": {"type": "string", "enum": [FindingState.RESIDUAL.value]}}),
+                    target({
+                        "state": {"type": "string", "enum": [FindingState.SUPERSEDED.value]},
+                        "successor_ref": {"type": "string"},
+                    }),
+                    target({
+                        "state": {"type": "string", "enum": [FindingState.OPEN.value]},
+                        "new_material_evidence": {"type": "boolean"},
+                    }),
+                ]},
+            },
+        }
+        finding = {"anyOf": [new_finding, citation, transition]}
+    else:
+        finding = {"anyOf": [new_finding, existing_finding]}
     escalation = {
         "type": "object", "additionalProperties": False, "required": list(ESCALATION_REQUIRED_KEYS),
         "properties": {"kind": {"type": "string", "enum": list(ESCALATION_KINDS)}, "question": {"type": "string"}},
@@ -151,7 +195,7 @@ def routing_result_openai_schema(contract_version: int = 1) -> dict[str, Any]:
             "commit_intent": {"anyOf": [{"type": "null"}, commit_intent]},
             "evidence_refs": string_array, "summary": {"type": "string"},
         }
-    if contract_version == 2:
+    if contract_version in {2, 3}:
         coverage_claim = {
             "type": "object", "additionalProperties": False,
             "required": ["finding_id", "disposition", "evidence_refs"],
@@ -223,7 +267,9 @@ def projected_result_openai_schema(kind: ResultContractKind, contract_version: i
         return routing_result_openai_schema(contract_version)
     if kind not in {ResultContractKind.WORK_RESULT, ResultContractKind.REVIEW_VERDICT}:
         raise OpenAIStrictSchemaError(f"unsupported result contract kind: {kind}")
-    schema = copy.deepcopy(routing_result_openai_schema(contract_version))
+    if not admits_result_contract_version(kind, contract_version):
+        raise OpenAIStrictSchemaError("unsupported result contract version")
+    schema = copy.deepcopy(_result_openai_schema(contract_version, permit_v3=True))
     result = schema["properties"]
     required = schema["required"]
     result.pop("outcome")
@@ -304,7 +350,9 @@ class CodexCliAdapter:
             raise CodexCliError(f"unsupported result contract kind: {request.result_contract_kind}")
         if request.timeout_seconds <= 0:
             raise CodexCliError("timeout must be positive")
-        if request.contract_version not in {1, 2}:
+        if not admits_result_contract_version(
+            request.result_contract_kind, request.contract_version
+        ):
             raise CodexCliError("unsupported result contract version")
         try:
             schema = self.result_directory / "structured-result.schema.json"

@@ -312,6 +312,52 @@ class ExistingFindingDelta:
 
 
 @dataclass(frozen=True)
+class FindingCitation:
+    """Evidence-only reference to an existing Coordinator-owned Finding."""
+
+    finding_id: str
+    evidence_refs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResolveFinding:
+    """The resolved disposition target."""
+
+
+@dataclass(frozen=True)
+class ResidualFinding:
+    """The residual disposition target."""
+
+
+@dataclass(frozen=True)
+class SupersedeFinding:
+    """The superseded disposition target and its required successor."""
+
+    successor_ref: str
+
+
+@dataclass(frozen=True)
+class ReopenFinding:
+    """The reopened disposition target and its provenance assertion."""
+
+    new_material_evidence: bool
+
+
+FindingTransitionTarget = (
+    ResolveFinding | ResidualFinding | SupersedeFinding | ReopenFinding
+)
+
+
+@dataclass(frozen=True)
+class FindingTransition:
+    """A state-changing proposal about an existing Finding."""
+
+    finding_id: str
+    target: FindingTransitionTarget
+    evidence_refs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class NewFindingDelta:
     """An agent-authored proposal for a new Finding."""
 
@@ -325,7 +371,9 @@ class NewFindingDelta:
     local_ref: str | None = None
 
 
-FindingDeltaValue = ExistingFindingDelta | NewFindingDelta
+FindingDeltaValue = (
+    ExistingFindingDelta | FindingCitation | FindingTransition | NewFindingDelta
+)
 
 
 @dataclass(frozen=True)
@@ -644,11 +692,22 @@ def result_contract_version(
         ResultContractKind.REVIEW_VERDICT,
     }:
         raise ValueError(f"unsupported result contract kind: {kind}")
+    if kind in {ResultContractKind.WORK_RESULT, ResultContractKind.REVIEW_VERDICT}:
+        return 3 if profile.schema_version == 3 else 1
     return (
         2
         if profile.schema_version == 3
         or phase.convergence_role is not ConvergenceRole.NONE
         else 1
+    )
+
+
+def admits_result_contract_version(kind: ResultContractKind, version: int) -> bool:
+    """Return whether P3 defines a wire contract for this kind/version pair."""
+
+    return version in {1, 2} or (
+        version == 3
+        and kind in {ResultContractKind.WORK_RESULT, ResultContractKind.REVIEW_VERDICT}
     )
 
 

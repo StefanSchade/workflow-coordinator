@@ -14,15 +14,21 @@ from .model import (
     CoverageDisposition,
     Finding,
     FindingAuthority,
+    FindingCitation,
     ExistingFindingDelta,
     FindingDeltaValue,
     FindingState,
     HopSummary,
     MechanicalFacts,
     NewFindingDelta,
+    FindingTransition,
     Outcome,
     Reduction,
     ReviewAuthority,
+    ReopenFinding,
+    ResidualFinding,
+    ResolveFinding,
+    SupersedeFinding,
     Route,
     RouteEffect,
     RoutingResult,
@@ -36,6 +42,7 @@ from .model import (
     TrustedQualificationIndex,
     WorkflowProfile,
     WorkResult,
+    admits_result_contract_version,
     result_contract_version,
     select_result_contract,
 )
@@ -535,6 +542,15 @@ def _apply_finding_deltas(
             authority=authority,
             permitted_gate_operations=permitted_gate_operations,
         )
+    if result_schema_version == 3:
+        return _apply_v3_finding_deltas(
+            run,
+            deltas,
+            hop_id=hop_id,
+            authority=authority,
+            permitted_gate_operations=permitted_gate_operations,
+            convergence_role=convergence_role,
+        )
     if result_schema_version != 2:
         raise ReductionError("unsupported result schema version")
     return _apply_v2_finding_deltas(
@@ -880,6 +896,249 @@ def _apply_v2_finding_deltas(
             seen.add(cursor)
             cursor = edges[cursor]
 
+    return replace(run, findings=tuple(prospective)), tuple(changed_ids)
+
+
+def _apply_v3_finding_deltas(
+    run: Run,
+    deltas: tuple[FindingDeltaValue, ...],
+    *,
+    hop_id: str,
+    authority: FindingAuthority,
+    permitted_gate_operations: tuple[str, ...],
+    convergence_role: ConvergenceRole,
+) -> tuple[Run, tuple[str, ...]]:
+    """Apply v3's structural citation/transition Finding transaction."""
+
+    if authority is FindingAuthority.SUPERVISOR and deltas:
+        raise ReductionError("supervisor cannot authoritatively change Finding state")
+    if convergence_role in {
+        ConvergenceRole.DIAGNOSIS,
+        ConvergenceRole.REFRAME,
+        ConvergenceRole.STRATEGY_GATE,
+    }:
+        if deltas:
+            raise ReductionError(f"{convergence_role.value} result cannot mutate Findings")
+        return run, ()
+
+    originals = {finding.finding_id: finding for finding in run.findings}
+    local_refs: dict[str, NewFindingDelta] = {}
+    existing_delta_ids: set[str] = set()
+
+    # Pass 1: validate proposal-local facts and authority without allocating IDs.
+    for delta in deltas:
+        if isinstance(delta, NewFindingDelta):
+            if delta.successor_ref is not None and delta.successor_ref.startswith("local:"):
+                raise ReductionError(
+                    "local successor references are valid only on existing-Finding deltas"
+                )
+            if delta.local_ref is not None:
+                if re.fullmatch(r"N[1-9][0-9]*", delta.local_ref) is None:
+                    raise ReductionError("local_ref must match N[1-9][0-9]*")
+                if delta.local_ref in local_refs:
+                    raise ReductionError(f"duplicate local_ref: {delta.local_ref}")
+                local_refs[delta.local_ref] = delta
+            if delta.proposed_state is FindingState.OPEN and delta.blocking:
+                if convergence_role is not ConvergenceRole.EVALUATOR:
+                    raise ReductionError(
+                        "only an evaluator may create an open blocking Finding in result v2"
+                    )
+            operation = _finding_operation(None, delta.proposed_state)
+            if operation is not None and not _may_dispose(
+                authority, operation, permitted_gate_operations
+            ):
+                raise ReductionError(
+                    f"{authority.value} cannot create Finding as {delta.proposed_state.value}"
+                )
+            if delta.proposed_state is FindingState.RESIDUAL and delta.blocking:
+                raise ReductionError("residual Finding must be non-blocking")
+            if delta.proposed_state is FindingState.SUPERSEDED and not delta.successor_ref:
+                raise ReductionError("superseded Finding requires successor_ref")
+            if (
+                delta.proposed_state is not FindingState.SUPERSEDED
+                and delta.successor_ref is not None
+            ):
+                raise ReductionError("successor_ref is valid only for supersession")
+            continue
+
+        if not isinstance(delta, (FindingCitation, FindingTransition)):
+            raise ReductionError("existing Finding must use a v3 citation or transition")
+        if delta.finding_id in existing_delta_ids:
+            raise ReductionError(f"duplicate Finding delta: {delta.finding_id}")
+        existing_delta_ids.add(delta.finding_id)
+        previous = originals.get(delta.finding_id)
+        if previous is None:
+            raise ReductionError(f"unknown Finding ID: {delta.finding_id}")
+        if (
+            convergence_role is ConvergenceRole.CORRECTOR
+            and previous.correction_obligation is not None
+        ):
+            raise ReductionError(
+                "corrector must use coverage_claims rather than a tracked Finding delta"
+            )
+        if isinstance(delta, FindingCitation):
+            continue
+
+        target = delta.target
+        if isinstance(target, ResolveFinding):
+            proposed_state, operation = FindingState.RESOLVED, "resolve"
+        elif isinstance(target, ResidualFinding):
+            proposed_state, operation = FindingState.RESIDUAL, "residual"
+        elif isinstance(target, SupersedeFinding):
+            proposed_state, operation = FindingState.SUPERSEDED, "supersede"
+        elif isinstance(target, ReopenFinding):
+            proposed_state, operation = FindingState.OPEN, "reopen"
+            if convergence_role is ConvergenceRole.EVALUATOR:
+                raise ReductionError("evaluator result v2 cannot reopen a Finding")
+            if not target.new_material_evidence:
+                raise ReductionError("resolved Finding reopening requires new material evidence")
+        else:
+            raise ReductionError("unknown Finding transition target")
+        if _finding_operation(previous.state, proposed_state) != operation:
+            raise ReductionError(
+                f"invalid Finding transition: {previous.state.value} -> {proposed_state.value}"
+            )
+        if not _may_dispose(authority, operation, permitted_gate_operations):
+            raise ReductionError(f"{authority.value} cannot perform Finding operation {operation}")
+
+    # Pass 2: allocate prospective concrete IDs in result order.
+    allocated: dict[int, str] = {}
+    local_to_concrete: dict[str, str] = {}
+    reserved = list(run.findings)
+    for index, delta in enumerate(deltas):
+        if not isinstance(delta, NewFindingDelta):
+            continue
+        finding_id = _next_finding_id(tuple(reserved))
+        allocated[index] = finding_id
+        if delta.local_ref is not None:
+            local_to_concrete[delta.local_ref] = finding_id
+        obligation = (
+            CorrectionObligation(CorrectionObligationOwner.GATE, hop_id)
+            if delta.proposed_state is FindingState.OPEN and delta.blocking
+            else None
+        )
+        reserved.append(
+            Finding(
+                finding_id=finding_id,
+                invariant=delta.invariant,
+                blocking=delta.blocking,
+                state=delta.proposed_state,
+                introduced_by_hop=hop_id,
+                changed_by_hop=hop_id,
+                evidence_refs=delta.evidence_refs,
+                disposition=f"{authority.value}: {delta.proposed_state.value}",
+                successor_ref=delta.successor_ref,
+                correction_obligation=obligation,
+            )
+        )
+
+    def resolved_successor(raw: str | None) -> str | None:
+        if raw is None:
+            return None
+        if raw.startswith("local:"):
+            concrete = local_to_concrete.get(raw.removeprefix("local:"))
+            if concrete is None:
+                raise ReductionError(f"unknown local successor reference: {raw}")
+            target = next(item for item in reserved if item.finding_id == concrete)
+            if (
+                target.state is not FindingState.OPEN
+                or not target.blocking
+                or target.correction_obligation is None
+            ):
+                raise ReductionError(
+                    "local successor must target a same-result open blocking tracked obligation"
+                )
+            return concrete
+        if raw not in originals:
+            raise ReductionError(f"unknown concrete successor Finding ID: {raw}")
+        return raw
+
+    # Pass 3: resolve successors and build the complete prospective ledger.
+    prospective = list(run.findings)
+    by_id = {finding.finding_id: index for index, finding in enumerate(prospective)}
+    changed_ids: list[str] = []
+    for index, delta in enumerate(deltas):
+        if isinstance(delta, NewFindingDelta):
+            finding_id = allocated[index]
+            staged = next(item for item in reserved if item.finding_id == finding_id)
+            prospective.append(
+                replace(staged, successor_ref=resolved_successor(delta.successor_ref))
+            )
+            by_id[finding_id] = len(prospective) - 1
+            changed_ids.append(finding_id)
+            continue
+
+        previous = prospective[by_id[delta.finding_id]]
+        appended = tuple(
+            reference
+            for reference in dict.fromkeys(delta.evidence_refs)
+            if reference not in previous.evidence_refs
+        )
+        if isinstance(delta, FindingCitation):
+            if not appended:
+                continue
+            prospective[by_id[delta.finding_id]] = replace(
+                previous,
+                changed_by_hop=hop_id,
+                evidence_refs=(*previous.evidence_refs, *appended),
+            )
+            changed_ids.append(delta.finding_id)
+            continue
+
+        target = delta.target
+        if isinstance(target, ResolveFinding):
+            state, successor_ref = FindingState.RESOLVED, None
+        elif isinstance(target, ResidualFinding):
+            state, successor_ref = FindingState.RESIDUAL, None
+        elif isinstance(target, SupersedeFinding):
+            state = FindingState.SUPERSEDED
+            successor_ref = resolved_successor(target.successor_ref)
+        else:
+            state, successor_ref = FindingState.OPEN, None
+        prospective[by_id[delta.finding_id]] = replace(
+            previous,
+            blocking=False if state is FindingState.RESIDUAL else previous.blocking,
+            state=state,
+            changed_by_hop=hop_id,
+            evidence_refs=(*previous.evidence_refs, *appended),
+            disposition=f"{authority.value}: {state.value}",
+            successor_ref=successor_ref,
+        )
+        changed_ids.append(delta.finding_id)
+
+    prospective_by_id = {finding.finding_id: finding for finding in prospective}
+    for finding in prospective:
+        if (
+            finding.state is FindingState.OPEN
+            and finding.blocking
+            and finding.correction_obligation is None
+        ):
+            raise ReductionError(
+                f"open blocking Finding {finding.finding_id} is not a tracked obligation"
+            )
+        if finding.successor_ref is not None:
+            successor = prospective_by_id.get(finding.successor_ref)
+            if successor is None:
+                raise ReductionError(f"unknown successor Finding ID: {finding.successor_ref}")
+            if (
+                finding.correction_obligation is not None
+                and successor.correction_obligation is None
+            ):
+                raise ReductionError("tracked obligation successor must also be tracked")
+
+    edges = {
+        finding.finding_id: finding.successor_ref
+        for finding in prospective
+        if finding.successor_ref is not None
+    }
+    for start in edges:
+        seen: set[str] = set()
+        cursor: str | None = start
+        while cursor in edges:
+            if cursor in seen:
+                raise ReductionError("Finding supersession graph contains a cycle")
+            seen.add(cursor)
+            cursor = edges[cursor]
     return replace(run, findings=tuple(prospective)), tuple(changed_ids)
 
 
@@ -1288,7 +1547,10 @@ def reduce_result(
     if (persisted_kind is None) != (persisted_version is None):
         result_state_error = "persisted result contract identity is incomplete"
     elif persisted_kind is not None:
-        if persisted_kind not in set(ResultContractKind) or persisted_version not in {1, 2}:
+        if (
+            persisted_kind not in set(ResultContractKind)
+            or not admits_result_contract_version(persisted_kind, persisted_version)
+        ):
             result_state_error = "persisted result contract identity is unsupported"
         else:
             expected_result_version = persisted_version
@@ -1304,7 +1566,12 @@ def reduce_result(
         else ResultContractKind.REVIEW_VERDICT if isinstance(result, ReviewVerdict)
         else ResultContractKind.GENERIC_ROUTING_RESULT
     )
-    if result_state_error is None and persisted_kind is not None and actual_kind is not persisted_kind:
+    if (
+        result_state_error is None
+        and not admits_result_contract_version(actual_kind, result.schema_version)
+    ):
+        result_state_error = "result contract identity is unsupported"
+    elif result_state_error is None and persisted_kind is not None and actual_kind is not persisted_kind:
         result_state_error = "result semantic family does not match persisted contract identity"
     elif result_state_error is None and persisted_kind is None and actual_kind is not ResultContractKind.GENERIC_ROUTING_RESULT:
         result_state_error = "unpersisted result semantic family is unsupported"

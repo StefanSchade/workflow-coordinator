@@ -93,6 +93,22 @@ def work_envelope_v2(**changes):
     return json.dumps(envelope_data)
 
 
+def work_envelope_v3(**changes):
+    envelope_data = json.loads(envelope(**changes))
+    envelope_data["schema_version"] = 3
+    result = envelope_data["result"]
+    result["schema_version"] = 3
+    return json.dumps(envelope_data)
+
+
+def review_envelope_v3(**changes):
+    envelope_data = json.loads(work_envelope_v3(**changes))
+    result = envelope_data["result"]
+    result.pop("status")
+    result["verdict"] = "accept"
+    return json.dumps(envelope_data)
+
+
 def components(*items: tuple[str, int]) -> dict[str, PromptComponent]:
     return {name: PromptComponent(name, f"docs/{name}.txt", "PIN", "x" * size) for name, size in items}
 
@@ -335,6 +351,70 @@ def test_result_validation_uses_distinct_existing_finding_wire_form():
         validated_result(envelope(findings=[{**existing, "invariant": "replacement"}]), expected, result_contract_kind=ResultContractKind.WORK_RESULT)
 
 
+def test_v3_work_result_admission_is_kind_aware_in_adapter_and_prompt():
+    expected = type("Expected", (), {"run_id": "RUN-1", "hop_id": "H001", "invocation_id": "INV-1"})()
+    citation = {"finding_id": "F001", "evidence_refs": ["inspection"]}
+    assert validated_result(
+        work_envelope_v3(findings=[citation]),
+        expected,
+        3,
+        ResultContractKind.WORK_RESULT,
+    ).schema_version == 3
+    assert validated_result(
+        review_envelope_v3(),
+        expected,
+        3,
+        ResultContractKind.REVIEW_VERDICT,
+    ).schema_version == 3
+    with pytest.raises(ResultValidationError, match="unsupported structured result contract version"):
+        validated_result(work_envelope_v3(), expected, 3)
+
+    workflow = profile({"work": phase({"done": route("complete")})}, schema_version=3)
+    current = workflow.phases["work"]
+    package = assemble_prompt(
+        run_for(workflow, run_schema_version=3),
+        current,
+        components(("worker", 1), ("testing", 1)),
+        invocation=invocation(),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona",
+        task_payload="task",
+        result_contract_kind=ResultContractKind.WORK_RESULT,
+        contract_version=3,
+    )
+    assert "output_contract=work-result_v3" in package.text
+    review_workflow = profile({
+        "review": phase(
+            {"accept": route("complete")},
+            role="independent_reviewer",
+            review="gate",
+        ),
+    }, schema_version=3)
+    review_package = assemble_prompt(
+        run_for(review_workflow, run_schema_version=3),
+        review_workflow.phases["review"],
+        components(("independent_reviewer", 1), ("testing", 1)),
+        invocation=invocation(),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona",
+        task_payload="task",
+        result_contract_kind=ResultContractKind.REVIEW_VERDICT,
+        contract_version=3,
+    )
+    assert "output_contract=review-verdict_v3" in review_package.text
+    with pytest.raises(ValueError, match="unsupported structured-result contract version"):
+        assemble_prompt(
+            run_for(workflow, run_schema_version=3),
+            current,
+            components(("worker", 1), ("testing", 1)),
+            invocation=invocation(),
+            agent_operating_contract=load_agent_operating_contract(),
+            persona="fixture persona",
+            task_payload="task",
+            contract_version=3,
+        )
+
+
 @pytest.fixture
 def repository(tmp_path: Path) -> Path:
     subprocess.run(("git", "init", str(tmp_path / "repo")), check=True, capture_output=True)
@@ -425,7 +505,7 @@ def test_profile_v3_later_role_names_dispatch_live_result_v2_with_null_placehold
     assert adapter.request.result_contract_kind is ResultContractKind.GENERIC_ROUTING_RESULT
 
 
-def test_profile_v3_none_role_dispatches_the_closed_result_v2_contract(repository):
+def test_profile_v3_none_role_dispatches_the_closed_work_result_v3_contract(repository):
     workflow = convergence_routing_profile()
     workflow = replace(
         workflow,
@@ -445,7 +525,7 @@ def test_profile_v3_none_role_dispatches_the_closed_result_v2_contract(repositor
         current_head=head,
         baseline_head=head,
     )
-    adapter = CapturingAdapter(work_envelope_v2())
+    adapter = CapturingAdapter(work_envelope_v3(requested_route="halt"))
     completed = run_one_hop(
         run,
         workflow,
@@ -459,15 +539,17 @@ def test_profile_v3_none_role_dispatches_the_closed_result_v2_contract(repositor
     )
     assert completed.reduction.run.status.value == "stopped"
     assert adapter.request is not None
-    assert adapter.request.contract_version == 2
+    assert adapter.request.contract_version == 3
     assert adapter.request.result_contract_kind is ResultContractKind.WORK_RESULT
-    assert "output_contract=work-result_v2" in adapter.request.prompt
+    assert "output_contract=work-result_v3" in adapter.request.prompt
 
 
 def test_result_contract_selection_is_phase_fact_based_and_preserves_convergence_generic():
     fixtures = (
         (profile({"work": phase({"done": route("complete")})}), 2, 1),
         (profile({"review": phase({"accept": route("complete")}, role="independent_reviewer", review="gate")}), 2, 1),
+        (profile({"work": phase({"done": route("complete")})}, schema_version=3), 3, 3),
+        (profile({"review": phase({"accept": route("complete")}, role="independent_reviewer", review="gate")}, schema_version=3), 3, 3),
         (convergence_fixture_profile(), 3, 2),
         (convergence_routing_profile(), 3, 2),
     )

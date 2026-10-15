@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .model import ResultContractKind, ResultValue
+from .model import ResultContractKind, ResultValue, admits_result_contract_version
 from .serialization import ValidationError, review_verdict_from_data, routing_result_from_data, work_result_from_data
 
 
@@ -106,7 +106,7 @@ def validated_result(
     raw: str, expected: Invocation, contract_version: int = 1,
     result_contract_kind: ResultContractKind = ResultContractKind.GENERIC_ROUTING_RESULT,
 ) -> ResultValue:
-    if contract_version not in {1, 2}:
+    if not admits_result_contract_version(result_contract_kind, contract_version):
         raise ResultValidationError("unsupported structured result contract version")
     try:
         envelope = json.loads(raw)

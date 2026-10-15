@@ -19,6 +19,8 @@ from workflow_coordinator.model import (
     DiagnosisReport,
     Escalation,
     ExistingFindingDelta,
+    FindingCitation,
+    FindingTransition,
     Finding,
     FindingAuthority,
     FindingState,
@@ -34,6 +36,10 @@ from workflow_coordinator.model import (
     StrategyRevisionKind,
     TrustedQualificationIndex,
     WorkflowRole,
+    WorkResult,
+    WorkStatus,
+    ResolveFinding,
+    SupersedeFinding,
 )
 from workflow_coordinator.reducer import (
     ReductionError,
@@ -251,6 +257,43 @@ def test_existing_finding_derives_immutable_and_carried_forward_ledger_values():
         ExistingFindingDelta(
             "F001", FindingState.RESOLVED, ("evidence-1",), invariant="attempted rewrite"
         )
+
+
+def test_v3_citation_is_evidence_only_and_transition_remains_authority_gated():
+    workflow = gate_profile()
+    run, _ = charge_hop(run_for(workflow))
+    run = apply_finding_deltas(
+        run,
+        (new_delta("open", blocking=False), new_delta("open", blocking=False, evidence="second")),
+        hop_id="H001",
+        authority=FindingAuthority.AGENT,
+    )
+    superseded = apply_finding_deltas(
+        run,
+        (FindingTransition("F001", SupersedeFinding("F002"), ("supersede",)),),
+        hop_id="H001",
+        authority=FindingAuthority.HUMAN,
+        result_schema_version=3,
+    )
+    cited = apply_finding_deltas(
+        superseded,
+        (FindingCitation("F001", ("later evidence",)),),
+        hop_id="H002",
+        authority=FindingAuthority.AGENT,
+        result_schema_version=3,
+    )
+    assert cited.findings[0].successor_ref == "F002"
+    assert cited.findings[0].evidence_refs[-1] == "later evidence"
+    with pytest.raises(ReductionError, match="agent cannot perform Finding operation resolve"):
+        apply_finding_deltas(
+            run,
+            (FindingTransition("F001", ResolveFinding(), ("attempt",)),),
+            hop_id="H002",
+            authority=FindingAuthority.AGENT,
+            result_schema_version=3,
+        )
+    with pytest.raises(TypeError, match="proposed_state"):
+        FindingCitation("F001", (), proposed_state=FindingState.OPEN)
 
 
 @pytest.mark.parametrize(
@@ -2286,7 +2329,7 @@ def test_replay_rejects_forged_strategy_authority_and_unapplied_or_inactive_trig
         validate_convergence_route_history(inactive, workflow, qualification)
 
 
-def test_profile_v3_none_role_uses_result_v2_and_keeps_findings_informational():
+def test_profile_v3_none_role_uses_work_result_v3_and_keeps_findings_informational():
     workflow = convergence_routing_profile()
     workflow = replace(
         workflow,
@@ -2298,11 +2341,23 @@ def test_profile_v3_none_role_uses_result_v2_and_keeps_findings_informational():
     run, hop_id = charge_hop(
         run_for(workflow, initial_phase="observe", run_schema_version=3)
     )
+    run = replace(
+        run,
+        hops=(replace(
+            run.hops[-1],
+            result_contract_kind=ResultContractKind.WORK_RESULT,
+            result_contract_version=3,
+        ),),
+    )
     accepted = reduce_result(
         run,
-        result(
-            "halt",
-            schema_version=2,
+        WorkResult(
+            schema_version=3,
+            status=WorkStatus.COMPLETED,
+            requested_route="halt",
+            scope_changed=False,
+            requires_human=False,
+            escalation=None,
             findings=(
                 new_delta(
                     "open",
@@ -2310,6 +2365,10 @@ def test_profile_v3_none_role_uses_result_v2_and_keeps_findings_informational():
                     invariant="An informational observation remains recorded.",
                 ),
             ),
+            claimed_commits=(),
+            commit_intent=None,
+            evidence_refs=(),
+            summary="done",
         ),
         workflow,
         hop_id=hop_id,
@@ -2324,7 +2383,7 @@ def test_profile_v3_none_role_uses_result_v2_and_keeps_findings_informational():
         workflow,
         hop_id=hop_id,
     )
-    assert "unsupported result schema version" in (
+    assert "result semantic family does not match persisted contract identity" in (
         legacy_contract.run.stop_reason or ""
     )
 

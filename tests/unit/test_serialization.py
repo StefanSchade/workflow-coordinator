@@ -6,6 +6,8 @@ import yaml
 
 from workflow_coordinator.model import (
     ConvergenceRole,
+    FindingCitation,
+    FindingTransition,
     FindingState,
     DurableArtifact,
     Hop,
@@ -17,6 +19,7 @@ from workflow_coordinator.model import (
     SemanticStop,
     SuccessorProvenance,
     WorkflowRole,
+    SupersedeFinding,
     new_run,
 )
 from workflow_coordinator.reducer import reduce_result
@@ -240,6 +243,14 @@ def valid_result_v2_data(**changes):
         strategy_revision=None,
         strategy_assessment=None,
     )
+    data.update(changes)
+    return data
+
+
+def valid_work_result_v3_data(**changes):
+    data = valid_result_data(schema_version=3)
+    data.pop("outcome")
+    data["status"] = "completed"
     data.update(changes)
     return data
 
@@ -796,6 +807,37 @@ def test_result_v2_local_ref_is_new_finding_only_and_v1_rejects_it():
     }
     with pytest.raises(ValidationError, match="unknown fields"):
         routing_result_from_data(valid_result_v2_data(findings=[existing]))
+
+
+def test_work_result_v3_parses_structural_citations_and_transitions_only():
+    citation = {"finding_id": "F001", "evidence_refs": ["inspection"]}
+    transition = {
+        "finding_id": "F002",
+        "target": {"state": "superseded", "successor_ref": "F003"},
+        "evidence_refs": ["review"],
+    }
+    parsed = work_result_from_data(
+        valid_work_result_v3_data(findings=[citation, transition])
+    )
+    assert isinstance(parsed.findings[0], FindingCitation)
+    assert isinstance(parsed.findings[1], FindingTransition)
+    assert isinstance(parsed.findings[1].target, SupersedeFinding)
+    assert parsed.findings[1].target.successor_ref == "F003"
+    for forbidden in ("proposed_state", "successor_ref", "new_material_evidence"):
+        with pytest.raises(ValidationError, match="unknown fields"):
+            work_result_from_data(
+                valid_work_result_v3_data(findings=[{**citation, forbidden: "x"}])
+            )
+    with pytest.raises(ValidationError, match="unknown fields"):
+        work_result_from_data(
+            valid_work_result_v3_data(
+                findings=[{
+                    "finding_id": "F002",
+                    "target": {"state": "resolved", "successor_ref": "F003"},
+                    "evidence_refs": ["review"],
+                }]
+            )
+        )
 
 
 def test_profile_v2_shape_stays_closed_and_cannot_select_convergence_role():

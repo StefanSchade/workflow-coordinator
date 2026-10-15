@@ -39,11 +39,18 @@ from .model import (
     ExecutionEvidenceRunIdentity,
     ExecutionBinding,
     Escalation,
+    FindingCitation,
+    FindingTransition,
+    FindingTransitionTarget,
     ExistingFindingDelta,
     Finding,
     FindingDeltaValue,
     FindingState,
     NewFindingDelta,
+    ReopenFinding,
+    ResidualFinding,
+    ResolveFinding,
+    SupersedeFinding,
     HopSummary,
     LegacyExecutionEvidenceDocument,
     Observation,
@@ -136,6 +143,12 @@ EXISTING_FINDING_DELTA_KEYS = (
     *EXISTING_FINDING_DELTA_REQUIRED_KEYS,
     *EXISTING_FINDING_DELTA_OPTIONAL_KEYS,
 )
+FINDING_CITATION_KEYS = ("finding_id", "evidence_refs")
+FINDING_TRANSITION_KEYS = ("finding_id", "target", "evidence_refs")
+RESOLVE_TARGET_KEYS = ("state",)
+RESIDUAL_TARGET_KEYS = ("state",)
+SUPERSEDE_TARGET_KEYS = ("state", "successor_ref")
+REOPEN_TARGET_KEYS = ("state", "new_material_evidence")
 # Compatibility name for consumers describing the new-Finding branch.
 FINDING_DELTA_KEYS = NEW_FINDING_DELTA_KEYS
 COMMIT_INTENT_REQUIRED_KEYS = ("paths", "subject")
@@ -1022,6 +1035,47 @@ def _finding_delta_for_version(
 ) -> FindingDeltaValue:
     raw = _mapping(value, context=context)
     finding_id = _optional_string(raw.get("finding_id"), context=f"{context}.finding_id")
+    if result_version == 3 and finding_id is not None:
+        if "target" not in raw:
+            data = _fields(raw, context=context, required=set(FINDING_CITATION_KEYS))
+            return FindingCitation(
+                finding_id=_string(data["finding_id"], context=f"{context}.finding_id"),
+                evidence_refs=_strings(data["evidence_refs"], context=f"{context}.evidence_refs"),
+            )
+        data = _fields(raw, context=context, required=set(FINDING_TRANSITION_KEYS))
+        target_raw = _mapping(data["target"], context=f"{context}.target")
+        state = _string(target_raw.get("state"), context=f"{context}.target.state")
+        target: FindingTransitionTarget
+        if state == FindingState.RESOLVED.value:
+            _fields(target_raw, context=f"{context}.target", required=set(RESOLVE_TARGET_KEYS))
+            target = ResolveFinding()
+        elif state == FindingState.RESIDUAL.value:
+            _fields(target_raw, context=f"{context}.target", required=set(RESIDUAL_TARGET_KEYS))
+            target = ResidualFinding()
+        elif state == FindingState.SUPERSEDED.value:
+            target_data = _fields(
+                target_raw, context=f"{context}.target", required=set(SUPERSEDE_TARGET_KEYS)
+            )
+            target = SupersedeFinding(
+                _string(target_data["successor_ref"], context=f"{context}.target.successor_ref")
+            )
+        elif state == FindingState.OPEN.value:
+            target_data = _fields(
+                target_raw, context=f"{context}.target", required=set(REOPEN_TARGET_KEYS)
+            )
+            target = ReopenFinding(
+                _boolean(
+                    target_data["new_material_evidence"],
+                    context=f"{context}.target.new_material_evidence",
+                )
+            )
+        else:
+            raise ValidationError(f"{context}.target.state is not an admitted transition")
+        return FindingTransition(
+            finding_id=_string(data["finding_id"], context=f"{context}.finding_id"),
+            target=target,
+            evidence_refs=_strings(data["evidence_refs"], context=f"{context}.evidence_refs"),
+        )
     if finding_id is not None:
         data = _fields(
             raw,
@@ -1047,7 +1101,7 @@ def _finding_delta_for_version(
         raw,
         context=context,
         required=set(NEW_FINDING_DELTA_REQUIRED_KEYS),
-        optional=set(NEW_FINDING_DELTA_OPTIONAL_KEYS) | ({"local_ref"} if result_version == 2 else set()),
+        optional=set(NEW_FINDING_DELTA_OPTIONAL_KEYS) | ({"local_ref"} if result_version in {2, 3} else set()),
     )
     return NewFindingDelta(
         finding_id=finding_id,
@@ -1236,7 +1290,7 @@ def routing_result_from_data(value: Any) -> RoutingResult:
 def _family_result_data(value: Any, *, field: str, values: set[str], context: str) -> tuple[dict[str, Any], int, Escalation | None]:
     raw = _mapping(value, context=context)
     version = _integer(raw.get("schema_version"), context=f"{context}.schema_version")
-    if version not in {1, 2}:
+    if version not in {1, 2, 3}:
         raise ValidationError(f"{context}.schema_version has unsupported version: {version}")
     required = {
         "schema_version", field, "requested_route", "scope_changed", "requires_human",
