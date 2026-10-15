@@ -6103,6 +6103,132 @@ def test_work_item_mapping_cannot_enlarge_review_phase_authority(
     assert not state_root.exists()
 
 
+PROJECTED_RESULT_CONTRACTS_P3_002_GOVERNING_PATHS = (
+    "governance/work-items/projected-result-contracts-p3-002.yaml",
+    "governance/self-development/projected-result-contracts-p3-002-profile.yaml",
+    "governance/self-development/projected-result-contracts-p3-002-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/projected-result-contracts-p3-002-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+PROJECTED_RESULT_CONTRACTS_P3_002_IMPLEMENTATION_SCOPE = (
+    "src/workflow_coordinator/model.py",
+    "src/workflow_coordinator/serialization.py",
+    "src/workflow_coordinator/adapter.py",
+    "src/workflow_coordinator/codex_adapter.py",
+    "src/workflow_coordinator/prompt.py",
+    "src/workflow_coordinator/reducer.py",
+    "tests/support.py",
+    "tests/unit/test_reducer.py",
+    "tests/unit/test_serialization.py",
+    "tests/unit/test_codex_adapter_conformance.py",
+    "tests/unit/test_slice3_vertical.py",
+    "tests/unit/test_slice5b.py",
+    "tests/unit/test_slice4.py",
+    "tests/unit/test_a3_operating_contract.py",
+    "tests/architecture/test_replays.py",
+)
+PROJECTED_RESULT_CONTRACTS_P3_002_REVIEW_ARTIFACT = (
+    "docs/backlog/FTR-WFC-PROJECTED-RESULT-CONTRACTS_implementation_review_008.adoc"
+)
+
+
+def test_projected_result_contracts_p3_002_successor_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """The accepted P3 correction has a fresh, narrow, runnable successor.
+
+    The stopped predecessor P3 Run is historical and its preserved H001 ref
+    is untrusted salvage.  This test proves only the new bundle's provider-free
+    launch admission and exact authority boundary; it neither launches a Run
+    nor evaluates the candidate salvage.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=PROJECTED_RESULT_CONTRACTS_P3_002_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "projected-result-contracts-p3-002"
+
+    assert not state_root.exists()
+    result = _production_preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=PROJECTED_RESULT_CONTRACTS_P3_002_GOVERNING_PATHS,
+    ))
+    texts = result[4]
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    implement = profile.phases["implement"]
+    review = profile.phases["independent_review"]
+    correction = profile.phases["correction"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = (
+        *PROJECTED_RESULT_CONTRACTS_P3_002_IMPLEMENTATION_SCOPE,
+        PROJECTED_RESULT_CONTRACTS_P3_002_REVIEW_ARTIFACT,
+    )
+    assert work_item.work_item_id == "WI-WFC-PROJECTED-RESULT-CONTRACTS-P3-002"
+    assert profile.profile_id == "projected-result-contracts-p3-002"
+    assert policy.policy_id == "workflow-coordinator-projected-result-contracts-p3-002"
+    assert work_item.initial_phase == "implement"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 8
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    assert tuple(profile.phases) == (
+        "implement", "independent_review", "correction", "rereview",
+    )
+    assert implement.authorized_scope == correction.authorized_scope == (
+        PROJECTED_RESULT_CONTRACTS_P3_002_IMPLEMENTATION_SCOPE
+    )
+    assert review.authorized_scope == rereview.authorized_scope == (
+        PROJECTED_RESULT_CONTRACTS_P3_002_REVIEW_ARTIFACT,
+    )
+    assert durable_artifacts == {
+        "independent_review": (PROJECTED_RESULT_CONTRACTS_P3_002_REVIEW_ARTIFACT,),
+        "rereview": (PROJECTED_RESULT_CONTRACTS_P3_002_REVIEW_ARTIFACT,),
+    }
+
+    # The accepted correction admits only the two P3 result families at v3.
+    # The two newly necessary provider-neutral seams and their direct test
+    # homes are present; generic routing, route selection, governance tests,
+    # and all later roadmap work remain outside the implementation authority.
+    for required in (
+        "src/workflow_coordinator/adapter.py",
+        "src/workflow_coordinator/prompt.py",
+        "tests/unit/test_slice4.py",
+        "tests/unit/test_a3_operating_contract.py",
+    ):
+        assert required in PROJECTED_RESULT_CONTRACTS_P3_002_IMPLEMENTATION_SCOPE
+    for withheld in (
+        "src/workflow_coordinator/vertical.py",
+        "tests/architecture/test_self_development_governance.py",
+        "governance",
+        "workflow-coordinator-runtime",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+
+    assert review.review.finding_authority == rereview.review.finding_authority == ("resolve",)
+    assert review.review.failed_evidence_route == rereview.review.failed_evidence_route == "correction"
+    assert tuple(result[13]) == ("pytest",)
+
+    task_text = texts["task"]
+    for required_text in (
+        "RUN-8875175a2ea343adbaf47c105699f91e",
+        "refs/wfc/candidates/RUN-8875175a2ea343adbaf47c105699f91e/H001",
+        "UNTRUSTED SALVAGE",
+        "(GENERIC_ROUTING_RESULT, 3)",
+        "P3.5",
+        "pairless replay regression",
+    ):
+        assert required_text in task_text
+    assert "A -- CORRECTIONS ACCEPTED" in work_item.authority_source
+    assert "no authority, acceptance, review" in work_item.authority_source
+    assert not state_root.exists()
+
+
 def _immutable_finding_echo_fix_bootstrap_profile():
     """Reproduce the commissioned profile's review/rereview shape exactly.
 
