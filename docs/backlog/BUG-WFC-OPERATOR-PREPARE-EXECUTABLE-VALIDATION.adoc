@@ -1,0 +1,225 @@
+= BUG-WFC-OPERATOR-PREPARE-EXECUTABLE-VALIDATION -- Harness `prepare` Declares PREPARED Without Validating an Explicitly Supplied Local Executable
+
+Type:: bug -- operator-harness preparation-validation gap (not a Coordinator
+fail-closed defect, not a P3/Commission/provider-model defect)
+Status:: open (documentation only; no correction authorized by this record)
+Date:: 2026-10-15
+Classification:: operator friction -- a deterministic, cheaply testable local
+prerequisite is deferred from `wfc-op prepare` to `wfc-op launch`, so a
+harness-prepared attempt can read PREPARED and still be guaranteed to fail
+Discovery:: attempt `wfc-projected-result-contracts-p3-002-20261015-01`
+
+== Observed behavior
+
+On 2026-10-15, `wfc-op prepare` was invoked for attempt
+`wfc-projected-result-contracts-p3-002-20261015-01` (STATE
+`/home/stefan/wfc-state/wfc-projected-result-contracts-p3-002-20261015-01`,
+OPS `/home/stefan/wfc-ops/wfc-projected-result-contracts-p3-002-20261015-01`)
+with an explicitly supplied local executable path:
+
+----
+--executable /usr/local/bin/codex
+----
+
+`/usr/local/bin/codex` did not exist at that time; the old root-installed
+Codex CLI had been deliberately removed earlier the same day, and the
+maintainer's intended current installation was the unrelated path
+`/home/stefan/.nvm/versions/node/v22.23.2/bin/codex` (`codex-cli 0.162.1`).
+
+`cmd_prepare` (`scripts/wfc_op.py:616-704`) nonetheless completed normally:
+it wrote `preparation-pins.txt` recording `executable=/usr/local/bin/codex`
+(`write_preparation_pins`, `scripts/wfc_op.py:414-446`), materialized
+`launch.sh` invoking that same literal path (`write_launch_sh`,
+`scripts/wfc_op.py:449-490`), and printed `PREPARED / NOT LAUNCHED`. The
+canonical provider-free preflight seam it runs first
+(`run_canonical_preflight_seam`, `scripts/wfc_op.py:384-405`, invoking the
+pinned Runtime's own `operator._preflight()`) also raised nothing: the
+supplied `--executable` string is threaded through `_preflight()`
+(`src/workflow_coordinator/operator.py:281` onward) only as opaque text
+recorded into binding evidence (`_binding_evidence`,
+`src/workflow_coordinator/operator.py:587-592`); `_preflight()` never stats,
+resolves, or probes it.
+
+The subsequently launched attempt failed immediately and safely:
+
+----
+OPERATOR ERROR: local pre-acceptance executable launch failure
+LAUNCH RETURN CODE: 1
+----
+
+Persisted status facts: `operator_status: failed`,
+`operator_error: local pre-acceptance executable launch failure`,
+`run_status: ready`, `hop_used: 0`, `final_head:
+9d060d0228e179b1bebba6f3fba5d941b0ea2913`, `worktree_clean: true`. STATE
+contained only pre-provider/operator records (`checkout-association.json`,
+`operator-plan.json`, `operator-summary.json`); no provider invocation was
+accepted, no Hop was consumed, and the Development worktree stayed clean.
+A subsequent retry prepared with the real NVM executable completed
+normally, confirming this was specifically an executable/preparation
+problem rather than a P3/Commission/provider-model failure.
+
+This is exactly the mechanism `CodexCliAdapter.execute` already guards
+against: `subprocess.Popen` against a nonexistent `self.executable` raises
+`OSError`, caught and converted to `CodexCliError("local pre-acceptance
+executable launch failure")` (`src/workflow_coordinator/codex_adapter.py:
+357-372`), before any provider acceptance or Hop charge.
+
+== Why this is operator friction / a preparation defect
+
+Fail-closed launch behavior is correct and is not the defect: a genuinely
+unusable local executable must never be silently tolerated, and none of the
+facts above describe an unsafe acceptance. The defect is one stage earlier:
+`prepare` already has, and already uses, the identical validation pattern
+for a different local executable. `prepare_runtime_environment`
+(`scripts/wfc_op.py:270-285`) builds the pinned Runtime's venv and then
+explicitly runs `<runtime-env>/bin/wfc --help`, raising `HarnessRefusal` if
+that fails -- precisely so a dead Runtime binary is never reported as
+PREPARED. The Operator Harness v0 design
+(`docs/wfc_operator_harness_v0_concept_2026-10-06.adoc`, "7. `prepare`
+semantics") names this as an existing obligation: "verify executable
+resolution (`<runtime-env>/bin/wfc --help`; never bare `wfc`)".
+
+No equivalent verification exists for the explicitly supplied `--executable`
+value that identifies the *provider* CLI. That value is accepted as opaque
+text, pinned into `preparation-pins.txt`, baked into `launch.sh`, and
+declared PREPARED, even though whether it can be launched at all is exactly
+as cheaply and deterministically knowable at `prepare` time as the Runtime
+`wfc --help` check already is. The operator is told PREPARED / NOT LAUNCHED
+-- ordinarily a statement that only launch-time provider/Run behavior
+remains uncertain -- when in this case the local launch was already
+guaranteed to fail for a reason `prepare` could have observed directly.
+
+== Smallest plausible correction boundary
+
+The smallest correction is bounded to `wfc-op prepare`'s own preparation
+sequence (`scripts/wfc_op.py`, around `cmd_prepare`,
+`prepare_runtime_environment`, or a new sibling helper called from
+`cmd_prepare`), mirroring the existing `prepare_runtime_environment` pattern:
+before (or alongside) the canonical preflight seam, deterministically check
+that the explicitly supplied `args.executable` is a usable local executable,
+and raise `HarnessRefusal` rather than proceeding to PREPARED if it is not.
+
+Repository inspection found no existing test anywhere in
+`tests/unit/test_wfc_op.py` or `tests/unit/test_operator.py` that supplies a
+nonexistent or non-executable `--executable` to `prepare`; every existing
+executable-related test fixture installs a real, callable fake script first
+(`fake(...)` / `malformed_fake(...)` helpers in `tests/unit/test_operator.py`
+and `tests/unit/test_wfc_op.py`). This is a genuine, currently uncovered gap,
+not a regression of an existing guarantee.
+
+What "usable" should mean narrowly for this correction -- at minimum,
+resolvable to an existing, executable local file, consistent with how
+`CodexCliAdapter.argv` (`src/workflow_coordinator/codex_adapter.py:338-344`)
+later hands the identical string to `subprocess.Popen` without a shell (so a
+bare name is resolved via `PATH`-style lookup, while a path containing a
+separator is used literally) -- is left to the implementer closest to that
+code, not prescribed here beyond this record's non-scope below.
+
+== Non-scope
+
+This record does not authorize, and a future correction under it must not
+introduce:
+
+* a provider registry or provider compatibility matrix;
+* automatic CLI upgrades or automatic version selection;
+* model routing;
+* moving executable paths into Commission/WorkItem semantics;
+* Claude or any other additional provider support;
+* a generalized adapter redesign;
+* login/authentication management;
+* checking for, or warning about, the newest available Codex version;
+* treating execution bindings (`--executable`, or any pinned execution
+  binding) as semantic/Commission authority; or
+* resolving the wider Level-0/Level-1 execution-binding architecture.
+
+Capturing or displaying `<executable> --version` (or similar diagnostic
+output) is a plausible adjacent future enhancement but is explicitly not
+part of the invariant recorded here, and must not be used to enlarge this
+BUG's scope.
+
+This record does not characterize `CodexCliAdapter`'s existing
+pre-acceptance launch-failure handling as defective; that behavior is
+correct and must be preserved unchanged. This record also does not claim
+WFC's historical use of an older root-installed Codex CLI was itself a
+defect; that is separate, already-recorded context
+(`SIG-ACT-WFC-CODEX-EXECUTABLE-PIN-STALENESS`), not this BUG's subject.
+
+This record authorizes no change to `src/workflow_coordinator/` (beyond
+whatever a future, separately authorized correction Commission scopes),
+no change to `workflow-coordinator-runtime`, no change to the
+`workflow-coordinator-run-evidence` repository, no change to Project
+Memory, and no WFC Run, provider invocation, or push.
+
+== Acceptance criteria
+
+A future correction, authorized by a separate Commission/WorkItem, must
+demonstrate at minimum:
+
+* An attempt prepared with an explicitly supplied local executable that does
+  not exist, or that exists but is not a usable local executable, is refused
+  by `wfc-op prepare` itself -- `prepare` exits non-zero via `HarnessRefusal`
+  (or an equivalent fail-closed Harness refusal) and never prints
+  `PREPARED / NOT LAUNCHED` -- without invoking a provider and without
+  creating STATE.
+* Normal preparation with a usable local executable (the existing passing
+  behavior exercised throughout `tests/unit/test_wfc_op.py` and
+  `tests/unit/test_operator.py`) remains unchanged and continues to reach
+  `PREPARED / NOT LAUNCHED` and a working `launch`.
+* `CodexCliAdapter`'s own pre-acceptance launch-failure handling
+  (`src/workflow_coordinator/codex_adapter.py:357-372`) remains unchanged and
+  still fails closed, as a defense-in-depth backstop, for any path that
+  reaches `launch` regardless of this correction.
+* New focused test coverage exercises the refusal directly (a nonexistent
+  `--executable` path supplied to `prepare`), since no such coverage
+  presently exists.
+
+== Evidence pointers
+
+* Durable attempt facts (primary reproduction evidence): STATE
+  `/home/stefan/wfc-state/wfc-projected-result-contracts-p3-002-20261015-01`
+  and OPS
+  `/home/stefan/wfc-ops/wfc-projected-result-contracts-p3-002-20261015-01`
+  for attempt `wfc-projected-result-contracts-p3-002-20261015-01`
+  (`RUN-3fb823e5e0de4abdb0e237fc6e46e418`), including
+  `preparation-pins.txt` (`executable=/usr/local/bin/codex`),
+  `checkout-association.json`, `operator-plan.json`, and
+  `operator-summary.json`.
+* `scripts/wfc_op.py`: `cmd_prepare` (lines 616-704),
+  `prepare_runtime_environment` (lines 270-285, the existing analogous
+  Runtime-executable check this BUG asks a correction to mirror),
+  `write_preparation_pins` (lines 414-446), `write_launch_sh` (lines
+  449-490), `run_canonical_preflight_seam` (lines 384-405).
+* `src/workflow_coordinator/operator.py`: `_preflight` (from line 281) and
+  `_binding_evidence` (lines 587-592), showing `--executable` is recorded
+  but never resolved or probed during preflight.
+* `src/workflow_coordinator/codex_adapter.py`: `CodexCliAdapter.argv` (lines
+  338-344) and `CodexCliAdapter.execute` (lines 346-372), showing the
+  pre-acceptance `OSError` -> `CodexCliError("local pre-acceptance
+  executable launch failure")` path that fails closed at launch and
+  consumes no Hop.
+* `docs/wfc_operator_harness_v0_concept_2026-10-06.adoc`, section "7.
+  `prepare` semantics", documenting the existing Runtime
+  executable-resolution verification obligation this BUG observes has no
+  provider-executable counterpart.
+* Project Memory: `project_memory/canonical/concern_events.json`, entry
+  `SIG-ACT-WFC-CODEX-EXECUTABLE-PIN-STALENESS`, already recording this same
+  incident's facts and explicitly noting "the executable-validation gap
+  itself is left unfixed here for a separate follow-up task" -- this BUG is
+  that follow-up task's backlog record. Project Memory is read-only context
+  for this BUG, not implementation authority, and is not modified by this
+  record.
+* Test inventory confirming the coverage gap: `tests/unit/test_wfc_op.py`
+  and `tests/unit/test_operator.py`, every `--executable`-supplying test
+  fixture (`fake(...)`, `malformed_fake(...)`) installs a real, invocable
+  script; none supplies a nonexistent or non-executable path to `prepare`.
+
+== Lifecycle
+
+This BUG is *open*. This record documents the observed gap only. It
+authorizes no implementation, no test change, no Project Memory change, no
+Runtime change, no Evidence-repository change, and no WFC Run. A future
+correction requires its own separately authorized maintainer Commission/
+WorkItem, scoped at minimum to `scripts/wfc_op.py` and its focused tests,
+subject to the non-scope above. Committing this documentation record does
+not itself commission, prepare, or launch any Run, and does not invoke any
+provider.
