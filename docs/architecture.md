@@ -1,6 +1,8 @@
 # Architecture
 
-`workflow_coordinator` is a small `src`-layout Python package. Its operator owns
+`workflow_coordinator` is a small `src`-layout Python package. Today its modules
+are flat under `src/workflow_coordinator/*.py`; that is observed current state,
+not a canonized future package organization. Its operator owns
 deterministic admission, serial workflow progression, Git observation and
 bounded mechanical commits, evidence execution, persistence, and stop routing.
 The provider-neutral execution port separates those semantics from the Codex
