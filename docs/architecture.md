@@ -30,3 +30,5 @@ is claimed.
 The [standalone authority index](README.adoc) is the authoritative
 classification of current authority, provenance, historical material, and
 planning evidence. This architecture document does not duplicate that index.
+For active unimplemented work, use the
+[active-work manifest](backlog/_open.adoc), not historical concepts or reviews.

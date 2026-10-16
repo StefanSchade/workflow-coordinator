@@ -29,4 +29,5 @@ transformation invariant and writes neither canonical JSON nor the workbook;
 The [standalone authority index](docs/README.adoc) is the authoritative
 classification of current documentation, executable surfaces, provenance,
 history, and planning evidence. Start there before maintaining or operating the
-project.
+project. The compact [task router](docs/ai_info/_ai_info.adoc) provides the
+normal current-reading path for a specific task.
