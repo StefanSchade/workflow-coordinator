@@ -6496,3 +6496,224 @@ def test_bootstrap_rereview_changes_required_correct_route_is_also_legal_with_em
     assert reduction.run.status is RunStatus.READY
     assert reduction.route_key == "correct"
     assert reduction.run.findings == ()
+
+
+DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_GOVERNING_PATHS = (
+    "governance/work-items/docs-architecture-consolidation-migration-001.yaml",
+    "governance/self-development/docs-architecture-consolidation-migration-001-profile.yaml",
+    "governance/self-development/docs-architecture-consolidation-migration-001-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/docs-architecture-consolidation-migration-001-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_SCOPE = (
+    "README.md",
+    "docs/README.adoc",
+    "docs/architecture.md",
+    "docs/run-preparation.adoc",
+    "docs/self-development.adoc",
+    "docs/run-recovery-and-salvage.adoc",
+    "docs/wfc_operator_manual.adoc",
+    "docs/wfc_projected_result_contracts_concept_2026-10-07.adoc",
+    "docs/wfc_projected_result_contracts_concept_2026-10-07_review_001.adoc",
+    "docs/wfc_projected_result_contracts_concept_2026-10-07_review_002.adoc",
+    "docs/semantic_backtracking_vs_lifecycle_forward_motion_concept_2026-10-02.adoc",
+    "docs/spreadsheet_handling_adoption_note_2026-09-25.adoc",
+    "docs/product_boundary_and_higher_order_orchestration_concept_2026-09-25.adoc",
+    "docs/product_boundary_and_higher_order_orchestration_concept_2026-09-25_review_001.adoc",
+    "docs/product_boundary_and_higher_order_orchestration_concept_2026-09-25_review_002.adoc",
+    "docs/wfc_evidence_failure_disposition_hardening_design_2026-10-09.adoc",
+    "docs/wfc_operator_experience_and_prompt_composition_direction_2026-09-28.adoc",
+    "docs/wfc_operator_harness_v0_concept_2026-10-06.adoc",
+    "docs/wfc_operator_run_interface_legibility_evidence_2026-10-03.adoc",
+    "docs/wfc_p2_stagnation_audit_2026-10-09.adoc",
+    "docs/ai_info/_ai_info.adoc",
+    "docs/backlog",
+    "docs/warm_storage/concepts",
+    "docs/cold_storage",
+    "project_memory/canonical/decisions.json",
+)
+DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_REVIEW_ARTIFACT = (
+    "docs/cold_storage/concepts/reviews/"
+    "workflow_coordinator_docs_architecture_consolidation_migration_implementation_review_001.adoc"
+)
+
+
+def test_docs_architecture_consolidation_migration_001_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Run-B governance-authoring-only commission: preflight-only proof.
+
+    This bundle commissions ONE independently reviewed IMPLEMENTATION of
+    the migration plan Run A accepted at design revision f15d65b (closed
+    under the independent closure review at 80ac584). It must parse, stay
+    within policy/profile authority, use the four-phase topology
+    (implementation -> independent_review -> {accept, correction} ->
+    correction -> rereview -> {accept, correction}) with
+    max_autonomous_hops == 8, and hold write authority over only: the
+    explicitly retained current root/reference documents named in the
+    accepted manifest; the new docs/ai_info/_ai_info.adoc navigation
+    surface; the two source directories the accepted manifest governs in
+    their entirety (docs/backlog and docs/warm_storage/concepts); the
+    entirely new docs/cold_storage destination tree; and the single
+    narrow project_memory/canonical/decisions.json source_path exception.
+    It must never hold authority over src/workflow_coordinator/**,
+    governance/ beyond its own bundle, Runtime, the Evidence repository,
+    canonical Project Memory beyond that one narrow file, or the
+    reference repository.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "docs-architecture-consolidation-migration-001"
+
+    assert not state_root.exists()
+    result = _production_preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    implementation = profile.phases["implementation"]
+    review = profile.phases["independent_review"]
+    correction = profile.phases["correction"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_SCOPE
+
+    assert work_item.work_item_id == "WI-WFC-DOCS-ARCHITECTURE-CONSOLIDATION-MIGRATION-001"
+    assert work_item.initial_phase == "implementation"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 8
+    assert work_item.max_autonomous_hops <= COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS
+    assert profile.profile_id == "docs-architecture-consolidation-migration-001"
+    assert policy.policy_id == "workflow-coordinator-docs-architecture-consolidation-migration-001"
+    assert tuple(profile.phases) == (
+        "implementation", "independent_review", "correction", "rereview",
+    )
+
+    # WorkItem.scope is exactly the accepted manifest's path/family set --
+    # explicit root/reference files, the two directories the manifest
+    # governs in their entirety, the new navigation surface, the new cold
+    # destination tree, and the one narrow Project Memory exception.
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    for withheld in (
+        "src",
+        "src/workflow_coordinator",
+        "src/workflow_coordinator/model.py",
+        "governance",
+        "workflow-coordinator-runtime",
+        "workflow-coordinator-run-evidence",
+        "core",
+        "tests/architecture/test_self_development_governance.py",
+        "docs/imported/core-incubator",
+        "docs/provenance",
+        "docs/warm_storage/runbooks",
+        "docs/project_memory.adoc",
+        "project_memory/canonical",
+        "project_memory/canonical/concerns.json",
+        "project_memory/canonical/concern_events.json",
+        "project_memory/canonical/concern_event_xrefs.json",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+        assert not _within_scope(withheld, policy.work_item_scope_ceiling)
+    for path in DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_SCOPE:
+        assert _within_scope(path, work_item.scope)
+
+    # The narrow Project Memory exception is the exact decisions.json file,
+    # never the whole canonical/ table.
+    assert "project_memory/canonical/decisions.json" in work_item.scope
+
+    # Both the controlling plan's initial warm path and its terminal cold
+    # path fall within the migration's granted scope, as do representative
+    # backlog/cold-storage destinations and the dedicated Run-B review
+    # artifact -- none of these are listed literally, they are covered by
+    # the docs/backlog, docs/warm_storage/concepts, and docs/cold_storage
+    # path-family entries.
+    for covered in (
+        "docs/warm_storage/concepts/workflow_coordinator_documentation_information_architecture_consolidation_2026-10-15.adoc",
+        "docs/cold_storage/concepts/history/workflow_coordinator_documentation_information_architecture_consolidation_2026-10-15.adoc",
+        "docs/cold_storage/README.adoc",
+        "docs/cold_storage/backlog/done/BUG-WFC-CURRENT-HOP-FUTURE-PHASE-AUTHORITY.adoc",
+        "docs/backlog/_open.adoc",
+        "docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc",
+        "docs/backlog/wfc_reviews/WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-001/review.adoc",
+        DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_REVIEW_ARTIFACT,
+    ):
+        assert _within_scope(covered, work_item.scope)
+
+    # implementation/correction share the exact migration scope;
+    # independent_review and rereview are independently scoped to the
+    # single dedicated durable review artifact alone -- no phase's
+    # authorized_scope grants both.
+    assert (
+        implementation.authorized_scope
+        == correction.authorized_scope
+        == DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_SCOPE
+    )
+    assert review.authorized_scope == rereview.authorized_scope == (
+        DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_REVIEW_ARTIFACT,
+    )
+    assert set(DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_SCOPE).isdisjoint(review.authorized_scope)
+    assert DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_REVIEW_ARTIFACT not in implementation.authorized_scope
+    assert DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_REVIEW_ARTIFACT not in correction.authorized_scope
+
+    assert durable_artifacts == {
+        "independent_review": (DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_REVIEW_ARTIFACT,),
+        "rereview": (DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_REVIEW_ARTIFACT,),
+    }
+    assert review.durable_artifact.value == rereview.durable_artifact.value == "required"
+    assert implementation.durable_artifact.value == correction.durable_artifact.value == "none"
+    assert implementation.evidence == correction.evidence == ()
+    assert review.evidence == rereview.evidence == ("pytest",)
+    assert review.authorized_actions == rereview.authorized_actions == ("review", "edit", "commit")
+    assert implementation.authorized_actions == correction.authorized_actions == ("edit", "commit")
+
+    # Topology: implementation -> independent_review -> {accept: complete,
+    # correction} -> correction -> rereview -> {accept: complete,
+    # correction}. No design phase, no supervisor phase, and no mutation
+    # authority over production source anywhere in this bundle.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "implementation": (("independent_review", "goto", "independent_review"),),
+        "independent_review": (
+            ("accept", "complete", None),
+            ("correction", "goto", "correction"),
+        ),
+        "correction": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correction", "goto", "correction"),
+        ),
+    }
+    assert review.role == rereview.role == "independent_reviewer"
+    assert implementation.role == correction.role == "worker"
+    assert review.review.finding_authority == rereview.review.finding_authority == ("resolve",)
+    assert review.review.failed_evidence_route == rereview.review.failed_evidence_route == "correction"
+
+    # Role/persona separation: distinct fresh independent-review persona,
+    # never the implementation/correction persona.
+    assert work_item.personas[WorkflowRole.WORKER] != (
+        work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+    )
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-run-evidence", policy.work_item_scope_ceiling)
+    assert not _within_scope("project_memory/canonical", policy.work_item_scope_ceiling)
+    assert _within_scope("project_memory/canonical/decisions.json", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    # Admission happened entirely through provider-free preflight: no
+    # provider/executable was ever invoked, and the state root the launch
+    # would eventually use was never created by this process.
+    assert not state_root.exists()
