@@ -6717,3 +6717,223 @@ def test_docs_architecture_consolidation_migration_001_bundle_passes_production_
     # provider/executable was ever invoked, and the state root the launch
     # would eventually use was never created by this process.
     assert not state_root.exists()
+
+
+DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_GOVERNING_PATHS = (
+    "governance/work-items/docs-architecture-consolidation-migration-002.yaml",
+    "governance/self-development/docs-architecture-consolidation-migration-002-profile.yaml",
+    "governance/self-development/docs-architecture-consolidation-migration-002-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/docs-architecture-consolidation-migration-002-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_SCOPE = (
+    DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_SCOPE[:-1]
+    + (
+        "docs/project_memory.adoc",
+        "docs/warm_storage/runbooks/successor_continuation_runbook_2026-10-10.adoc",
+        DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_SCOPE[-1],
+    )
+)
+DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_REVIEW_ARTIFACT = (
+    DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_REVIEW_ARTIFACT
+)
+
+
+def test_docs_architecture_consolidation_migration_002_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Fresh-successor Run-B002 governance-authoring-only commission: preflight-only proof.
+
+    This bundle is the fresh successor to predecessor MIGRATION-001's blocked
+    Hop H001: it carries the same accepted Run-A manifest authority (design
+    revision f15d65b, closed under 80ac584) and the same four-phase topology
+    with max_autonomous_hops == 8, plus exactly two newly granted narrow
+    repair paths (docs/project_memory.adoc and the one named runbook file)
+    that the predecessor WorkItem correctly did not authorize. It must never
+    hold authority over src/workflow_coordinator/**, governance/ beyond its
+    own bundle, Runtime, the Evidence repository, canonical Project Memory
+    beyond the one narrow decisions.json file, the reference repository, or
+    any part of docs/warm_storage/runbooks/** beyond the one named file.
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "docs-architecture-consolidation-migration-002"
+
+    assert not state_root.exists()
+    result = _production_preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    implementation = profile.phases["implementation"]
+    review = profile.phases["independent_review"]
+    correction = profile.phases["correction"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_SCOPE
+
+    assert work_item.work_item_id == "WI-WFC-DOCS-ARCHITECTURE-CONSOLIDATION-MIGRATION-002"
+    assert work_item.initial_phase == "implementation"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 8
+    assert work_item.max_autonomous_hops <= COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS
+    assert profile.profile_id == "docs-architecture-consolidation-migration-002"
+    assert policy.policy_id == "workflow-coordinator-docs-architecture-consolidation-migration-002"
+    assert tuple(profile.phases) == (
+        "implementation", "independent_review", "correction", "rereview",
+    )
+
+    # WorkItem.scope is exactly the predecessor's accepted-manifest scope
+    # plus the two newly granted repair paths -- all predecessor migration
+    # scope remains available, and nothing else is added.
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    assert set(DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_SCOPE) < set(exact_scope)
+    assert set(exact_scope) - set(DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_SCOPE) == {
+        "docs/project_memory.adoc",
+        "docs/warm_storage/runbooks/successor_continuation_runbook_2026-10-10.adoc",
+    }
+    for withheld in (
+        "src",
+        "src/workflow_coordinator",
+        "src/workflow_coordinator/model.py",
+        "governance",
+        "workflow-coordinator-runtime",
+        "workflow-coordinator-run-evidence",
+        "core",
+        "tests/architecture/test_self_development_governance.py",
+        "docs/imported/core-incubator",
+        "docs/provenance",
+        "project_memory/canonical",
+        "project_memory/canonical/concerns.json",
+        "project_memory/canonical/concern_events.json",
+        "project_memory/canonical/concern_event_xrefs.json",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+        assert not _within_scope(withheld, policy.work_item_scope_ceiling)
+    for path in DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_SCOPE:
+        assert _within_scope(path, work_item.scope)
+
+    # The two newly granted paths are present and exact-file-scoped: no
+    # broader docs/warm_storage/runbooks/** authority is introduced by
+    # granting the single named runbook file.
+    assert "docs/project_memory.adoc" in work_item.scope
+    assert (
+        "docs/warm_storage/runbooks/successor_continuation_runbook_2026-10-10.adoc"
+        in work_item.scope
+    )
+    assert _within_scope("docs/project_memory.adoc", work_item.scope)
+    assert _within_scope(
+        "docs/warm_storage/runbooks/successor_continuation_runbook_2026-10-10.adoc",
+        work_item.scope,
+    )
+    assert not _within_scope("docs/warm_storage/runbooks", work_item.scope)
+    assert not _within_scope(
+        "docs/warm_storage/runbooks/some_other_runbook.adoc", work_item.scope
+    )
+
+    # The narrow Project Memory exception is still the exact decisions.json
+    # file, never the whole canonical/ table, and never docs/project_memory.adoc
+    # treated as a semantic-editing grant beyond narrow link retargeting
+    # (that boundary is enforced by authority_source/task text, not by scope
+    # shape, since scope shape cannot distinguish "retarget a link" from
+    # "rewrite the file").
+    assert "project_memory/canonical/decisions.json" in work_item.scope
+
+    # Both the controlling plan's possible paths and representative
+    # backlog/cold-storage destinations and the dedicated review artifact
+    # remain covered, exactly as for the predecessor.
+    for covered in (
+        "docs/warm_storage/concepts/workflow_coordinator_documentation_information_architecture_consolidation_2026-10-15.adoc",
+        "docs/cold_storage/concepts/history/workflow_coordinator_documentation_information_architecture_consolidation_2026-10-15.adoc",
+        "docs/cold_storage/README.adoc",
+        "docs/cold_storage/backlog/done/BUG-WFC-CURRENT-HOP-FUTURE-PHASE-AUTHORITY.adoc",
+        "docs/backlog/_open.adoc",
+        "docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc",
+        "docs/backlog/wfc_reviews/WI-WFC-DEVELOPER-ERGONOMICS-REVIEW-001/review.adoc",
+        DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_REVIEW_ARTIFACT,
+    ):
+        assert _within_scope(covered, work_item.scope)
+
+    # implementation/correction share the exact migration scope;
+    # independent_review and rereview are independently scoped to the single
+    # dedicated durable review artifact alone -- the same artifact path the
+    # predecessor's bundle named, since predecessor H001 never populated it.
+    assert (
+        implementation.authorized_scope
+        == correction.authorized_scope
+        == DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_SCOPE
+    )
+    assert review.authorized_scope == rereview.authorized_scope == (
+        DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_REVIEW_ARTIFACT,
+    )
+    assert set(DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_SCOPE).isdisjoint(review.authorized_scope)
+    assert DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_REVIEW_ARTIFACT not in implementation.authorized_scope
+    assert DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_REVIEW_ARTIFACT not in correction.authorized_scope
+
+    assert durable_artifacts == {
+        "independent_review": (DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_REVIEW_ARTIFACT,),
+        "rereview": (DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_002_REVIEW_ARTIFACT,),
+    }
+    assert review.durable_artifact.value == rereview.durable_artifact.value == "required"
+    assert implementation.durable_artifact.value == correction.durable_artifact.value == "none"
+    assert implementation.evidence == correction.evidence == ()
+    assert review.evidence == rereview.evidence == ("pytest",)
+    assert review.authorized_actions == rereview.authorized_actions == ("review", "edit", "commit")
+    assert implementation.authorized_actions == correction.authorized_actions == ("edit", "commit")
+
+    # Topology: implementation -> independent_review -> {accept: complete,
+    # correction} -> correction -> rereview -> {accept: complete,
+    # correction}. No design phase, no supervisor phase, no mutation
+    # authority over production source anywhere in this bundle.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "implementation": (("independent_review", "goto", "independent_review"),),
+        "independent_review": (
+            ("accept", "complete", None),
+            ("correction", "goto", "correction"),
+        ),
+        "correction": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correction", "goto", "correction"),
+        ),
+    }
+    assert review.role == rereview.role == "independent_reviewer"
+    assert implementation.role == correction.role == "worker"
+    assert review.review.finding_authority == rereview.review.finding_authority == ("resolve",)
+    assert review.review.failed_evidence_route == rereview.review.failed_evidence_route == "correction"
+
+    # Role/persona separation: distinct fresh independent-review persona,
+    # never the implementation/correction persona.
+    assert work_item.personas[WorkflowRole.WORKER] != (
+        work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+    )
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-run-evidence", policy.work_item_scope_ceiling)
+    assert not _within_scope("project_memory/canonical", policy.work_item_scope_ceiling)
+    assert _within_scope("project_memory/canonical/decisions.json", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    # Admission happened entirely through provider-free preflight: no
+    # provider/executable was ever invoked, and the state root the launch
+    # would eventually use was never created by this process.
+    assert not state_root.exists()
+
+    # This successor bundle is strictly additive over the predecessor's own
+    # governing files: the predecessor bundle itself is never mutated.
+    for predecessor_path in DOCS_ARCHITECTURE_CONSOLIDATION_MIGRATION_001_GOVERNING_PATHS:
+        assert (PROJECT_ROOT / predecessor_path).exists()
