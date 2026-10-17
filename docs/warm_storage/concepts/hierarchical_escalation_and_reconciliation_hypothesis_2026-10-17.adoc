@@ -1,0 +1,114 @@
+= Hierarchical Escalation and Reconciliation -- Working Hypothesis
+:toc:
+:toclevels: 2
+
+Status:: *NON-NORMATIVE WORKING HYPOTHESIS -- NOT REVIEWED OR ACCEPTED.*
+Date:: 2026-10-17.
+Suggested repository location:: `docs/warm_storage/concepts/hierarchical_escalation_and_reconciliation_hypothesis_2026-10-17.adoc`.
+Scope:: A possible future mechanism for authority escalation and controlled continuation across nested, governed WorkItem/Run levels.
+
+[IMPORTANT]
+====
+This document preserves a hypothesis for later exploration. It is *not* a target architecture, ADR, FTR, backlog item, approved product direction, or implementation authorization. It creates no current WFC schema, runtime, profile, validation, provider, budget, or parent/child requirement. Its examples are illustrative. Existing accepted contracts remain authoritative. In particular, current WFC human-stop and prerequisite behavior is unchanged.
+====
+
+== 1. Why record this hypothesis?
+
+A future autonomous project might have several nested levels: project or milestone coordination, project phases with human stakeholder reviews, backlog-item execution, design and implementation slices, and individual agent Hops. There may be more or fewer levels depending on the work. A single active execution path resembles a call stack, but completed and sibling work also creates cross-branch dependencies.
+
+A child can discover a problem that it cannot decide within its delegated authority. Such a problem need not go immediately to a human: a parent may have sufficient authority to decide without changing commitments to its own parent. After a decision, simply resuming the deepest child may be unsafe because intermediate plans and assumptions may need reconciliation.
+
+The working hypothesis is that *upward authority resolution followed by downward reconciliation* could be a reusable, governed mechanism across orchestration levels.
+
+== 2. Illustrative shape
+
+[source,text]
+----
+Project / stakeholder governance                         (level N)
+  `-- implementation phase                             (level N-1)
+        `-- backlog item 17                             (level N-2)
+              `-- implementation design                 (level N-3)
+                    `-- slice 3 / agent execution        (level 0)
+
+                           problem discovered
+                                  |
+                     escalate to nearest parent
+                                  |
+                     can this level decide within
+                     delegated authority AND its
+                     commitments to higher levels?
+                         /                 \
+                       yes                 no
+                        |                   |
+                  decide here        escalate upward
+                        |
+                 reconcile downward
+                        |
+              only then resume affected child
+----
+
+The level numbers are illustrative, not a chosen data model. The first parent that is authorized to decide may resolve the request; human authority remains necessary for decisions reserved to a human or not delegable within the hierarchy.
+
+== 3. Upward direction: finding the decision owner
+
+A child reports an *authority/decision request* and enough context to describe the issue, alternatives, affected assumptions, and why it cannot decide locally. This is conceptually distinct from a WFC Finding about an implementation defect; future schema choices are not made here.
+
+At each parent level, the conceptual test is:
+
+* Does the level actually possess delegated authority for this decision?
+* Can it decide without violating or revising its obligations/commitments to higher levels and trusted policy?
+* Can it establish sufficient evidence and context to make the decision responsibly?
+
+If all hold, the request can be resolved at that level. Otherwise, it goes higher (or ends at a governed human/authority boundary). Merely preserving outward deliverables must not manufacture authority that was never delegated. An agent's recommendation is never its own approval.
+
+== 4. Downward direction: controlled reconciliation
+
+A parent decision may change assumptions, task descriptions, acceptance criteria, designs, or authorized scope for lower levels. Before launching the next child Hop, affected levels need to reconcile their current state with the decision.
+
+Possible outcomes at each level include:
+
+* *Unchanged/valid:* The new decision does not invalidate this level's current contract, plan, or evidence; pass it downward.
+* *Replan/adapt:* The change affects this level; revise or re-authorize the required inputs, then propagate the resulting changes downward.
+* *Cannot continue:* New authority, prerequisite, evidence, or human input is needed; remain stopped rather than silently resuming.
+
+Some checks may be mechanical; others need semantic review or a new governed Hop. A previously successful child result is not automatically still valid under changed parent assumptions. Nor is every earlier result automatically invalid.
+
+A change may also affect *sibling or already completed child Runs*. Reconciliation may therefore need a dependency/impact view beyond the one currently active parent/child stack. The exact invalidation model is open.
+
+== 5. Relationship to WFC and an orchestration engine
+
+* Today's WFC is a bounded inner execution loop with explicit Run/Hop/Finding state, a profile, routes, a reducer, and mechanical authority checks. Its current escalations stop at its present human/authorization boundary.
+* A future orchestration layer (possibly implemented using LangGraph) could schedule nested Runs and coordinate suspended/waiting children, but its choice of library must not be mistaken for authority enforcement.
+* A future inter-level authority/decision/reconciliation protocol may need deterministic reducer-like semantics of its own. It is *not established* that the current `reduce_result()` should be reused unchanged, generalized, or moved to a shared core.
+* Parent/child Runs should remain independently identifiable and observable, in line with existing non-normative nested-loop exploration. Parent authority must not grow by launching a child; child capabilities must be explicitly bounded.
+
+This hypothesis does not change P3.5. Static finding-authority reachability within a profile and cross-Run escalation/reconciliation are different problems. A future handoff mechanism must preserve that distinction.
+
+== 6. Open questions; no decisions implied
+
+* What exactly constitutes an inter-level commitment or contract? Should it be immutable/versioned, and what constitutes a legitimate amendment?
+* What evidence lets an intermediate level decide autonomously without silently changing promises to its parent?
+* Which parent/child states and correlations are needed to make interruption, retries, and reconciliation crash-safe and auditable?
+* How is the affected set of descendants, siblings, and completed dependent work determined without building an unconstrained general graph engine?
+* Which reconciliation checks are mechanical and which require a fresh semantic Hop or human approval?
+* Can inner-discovered prerequisites and upward decision requests share a protocol, or are they fundamentally different?
+* Should Level-1 use WFC's current reducer, an extracted common semantic kernel, or a separate constrained reducer? What concrete use case and tests would distinguish these options?
+* When, if ever, does an orchestration engine such as LangGraph help, rather than merely adding a dependency?
+
+== 7. Suggested future falsification scenarios
+
+Before accepting an architecture, try at least these counterexamples:
+
+. A leaf asks for a decision; its immediate parent can decide within delegated authority and without changing upper commitments. Escalation stops there, and the leaf eventually resumes safely.
+. A parent lacks authority; the question propagates to an authorized ancestor or human without allowing an intervening agent to approve itself.
+. A parent changes the design; one descendant remains valid, another must replan, and an already completed sibling requires revalidation.
+. A decision is made, but reconciliation is interrupted. Restart must not cause duplicate child dispatch or accidentally resume under stale inputs.
+. A decision leaves high-level commitments unchanged but changes a lower-level authorization envelope. Work must not resume until the new envelope is admitted.
+
+== 8. Relationship to existing material and lifecycle
+
+Related historical/non-normative context:: `docs/imported/core-incubator/agent_workflow_coordinator_composable_product_and_nested_loop_concept_2026-09-18.adoc` (outer-loop composition; distinct parent/child Runs; narrowing authority; future-only status).
+
+This note adds a *specific hypothesis about bidirectional escalation and reconciliation*; it does not replace the existing concept, settle its open questions, or promote it to an accepted decision.
+
+Revisit only when real multi-level orchestration is being designed or a concrete cross-level failure requires it. Until then, no implementation slice, schema change, Project Memory authority fact, or active backlog work follows from this document.
