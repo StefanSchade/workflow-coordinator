@@ -1,0 +1,1080 @@
+= WFC P3.5 -- Finding-Authority Reachability -- Design Contract
+:toc:
+:toclevels: 3
+
+Status:: *DRAFT -- PENDING INDEPENDENT REVIEW. NOT ACCEPTED. AUTHORIZES NOTHING.*
+This document is a bounded design contract for an implementation Commission
+that has not yet been authorized. It does not implement the validator, does
+not modify production source or tests, does not modify any workflow profile,
+Commission, policy, or runtime data, and does not close
+`BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY`.
+Date:: 2026-10-18
+Governing records:: link:../../wfc_projected_result_contracts_concept_2026-10-07.adoc[Projected / Phase-Specific Result Contracts -- Concept] §§4, 11, 17, 19, 20, 22
+(the current definition source for P3.5); link:../../backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc[BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY]
+(the concrete motivating defect); link:../../backlog/_open.adoc[the active-work manifest]
+(current P3.5 status: NOW, "select and commission P3.5 after this
+consolidation"); link:workflow_coordinator_mvp_repository_consolidation_and_level1_transition_concept_2026-10-12.adoc[MVP / Level-1 transition concept] §4.2
+(P3.5 disposition, Front Door dependency).
+Non-normative context:: link:hierarchical_escalation_and_reconciliation_hypothesis_2026-10-17.adoc[Hierarchical Escalation and Reconciliation -- Working Hypothesis]
+explicitly states (§5) that it "does not change P3.5" and that static
+finding-authority reachability and cross-Run escalation/reconciliation are
+different problems. This document treats that hypothesis as granting no
+authority to broaden P3.5, per its own governing task.
+
+[IMPORTANT]
+====
+This document creates no WorkItem, Profile, Policy, Commission, or Run. It
+authorizes no implementation, no Runtime promotion, and no closure of the
+governing BUG. It is scoped exactly to WFC P3.5 as defined in
+`wfc_projected_result_contracts_concept_2026-10-07.adoc` §11: a static,
+provider-free, pre-Run composition check over `Phase.routes` and
+`Phase.review.finding_authority`. It is explicitly *not* a reopening of P1-P3
+(provider-neutral `WORK_RESULT`/`REVIEW_VERDICT` admission, result-contract
+transport, or provider adapters), not a workflow DSL, not a generic model
+checker, and not a decision about hierarchical escalation.
+====
+
+== 1. Purpose, authority/status, scope and non-goals
+
+=== 1.1 Purpose
+
+Define a bounded, independently-reviewable design for a static, deterministic,
+provider-free conformance check that rejects a Commission/Profile whose
+declared phase graph can produce an open, blocking Finding with no legally
+reachable later disposition before a `complete`-equivalent route, *before*
+any Run is created and before any provider is invoked. This is the composition-level
+"ordered reachability" property named in
+`wfc_projected_result_contracts_concept_2026-10-07.adoc` §11 (hereafter "the
+Concept doc").
+
+=== 1.2 Authority and status
+
+*DRAFT -- PENDING INDEPENDENT REVIEW.* This document is itself not
+authority for an implementation Commission; it is the artifact that an
+implementation Commission, once separately authorized, should be able to
+specify from almost mechanically. Where this document's recommendation
+differs from the Concept doc's literal text, both are recorded (§2, §3, §10)
+and a reasoned recommendation is given; neither this document nor its
+recommendation silently overrides the Concept doc, which remains the current
+authority on P3.5's existence, motivation, and boundary until a maintainer
+accepts a revision.
+
+=== 1.3 Scope
+
+In scope:
+
+* A schema addition making Finding-creation capability explicit, per phase
+  (Concept doc §11's own target property requires reasoning about "every
+  phase `P_open` capable of producing a new, open, blocking Finding"; today
+  no profile field names this set explicitly -- see §2).
+* A static ordered-reachability algorithm over the existing declarative
+  `Phase.routes` / `Phase.review.finding_authority` / `ReviewDescriptor.authority`
+  facts, operating on an already-parsed `WorkflowProfile`.
+* A narrow, additive `Route`-level clean-route guard
+  (`require_no_open_blocking_findings`), its runtime semantics, and its
+  relationship to the static algorithm.
+* Compatibility and migration treatment for existing schema-version-2 and
+  schema-version-3 profiles, including the eight self-development lineages
+  the Concept doc §19 names as required to flip from
+  `..._bundle_passes_production_preflight` to
+  `..._bundle_fails_production_preflight`.
+* Integration point: a pure validation pass invoked from
+  `operator._preflight`, analogous to its existing trusted cross-document
+  checks.
+
+Out of scope (restated from the governing task and Concept doc §20, not
+loosened here):
+
+* Redesigning `WORK_RESULT`/`REVIEW_VERDICT` admission, result-contract
+  transport, or provider adapters (P1-P3's own territory).
+* A Finding-*kind* taxonomy (flagged by the governing task as a plausible
+  post-MVP extension, not introduced here).
+* A workflow DSL, generic liveness/termination checker, or formal verifier.
+* Closing `BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY` (its own
+  follow-up directions -- profile audit, admission-test strengthening,
+  least-privilege grants, a regression fixture -- remain that record's own
+  scope; this document is the permanent engine-level generalization the BUG's
+  own text names as a separate act).
+* Hierarchical escalation, nested Runs, or any human-disposition mechanism
+  that does not exist in the engine today (§2.4, §10).
+* Rejecting a profile merely because a `max_autonomous_hops` budget could be
+  exhausted before `complete` is reached (Concept doc intent; restated as
+  Design Decision E, §3.4).
+* A stronger "no dead end at all" / full liveness property beyond the
+  disposition-reachability property the Concept doc actually defines
+  (§4.7 explains why this is a deliberate boundary, not an oversight).
+
+=== 1.4 Non-goals, restated precisely
+
+This document does not claim to prove a Commission *will* complete, *will*
+terminate, or is free of every unproductive topology. It proves exactly one
+thing: that no statically-knowable forward path exists from a
+Finding-opening phase to a completion-equivalent route that skips every
+legally reachable disposition. Section 4.7 names the exact strength and
+limits of that claim.
+
+== 2. Current implemented behavior and the precise P3.5 gap
+
+This section cites exact current source so the gap is falsifiable, not
+asserted.
+
+=== 2.1 Finding-creation is not governed by any explicit capability declaration today
+
+`Phase` (`src/workflow_coordinator/model.py:242-258`) has no field naming
+whether that phase may create a new Finding. `ReviewDescriptor.finding_authority`
+(`model.py:230`) is parsed and validated (`serialization.py:568-579`) against
+exactly `{resolve, residual, supersede, reopen}` -- the four *disposition*
+operations on an *existing* Finding. Nothing in `ReviewDescriptor` or `Phase`
+constrains *creation* of a new Finding.
+
+The reducer confirms this is not merely undocumented but actually
+unenforced for the common case. `_finding_operation(None, proposed)`
+(`reducer.py:470-486`) maps creating a Finding directly into `OPEN` state to
+operation `None`; `_apply_legacy_finding_deltas` (`reducer.py:566-671`,
+result-schema v1 -- the contract every ordinary, non-convergence phase in a
+schema-version-2 profile dispatches) only consults `_may_dispose` when
+`operation is not None` (`reducer.py:591-596`). A new Finding created with
+`proposed_state: open` therefore bypasses the authority check entirely,
+regardless of the phase's `review` descriptor, regardless of whether `review`
+is even present, and regardless of `FindingAuthority` (`AGENT`, `GATE`, or
+otherwise). *A plain `worker` phase with no `review:` block at all can create
+a new open, blocking Finding today*, exactly as freely as an `independent_reviewer`
+gate can. This is the literal engine behavior underneath the governing task's
+instruction not to assume any built-in phase category is inherently
+Finding-free, and not to infer creation capability from role, phase name,
+review status, or `finding_authority`'s presence: the current engine already
+does not make that inference either -- it simply does not check at all for
+this path.
+
+The two newer result-schema paths narrow this, but only for phases that
+dispatch them, and only incompletely:
+
+* Result-schema v2 (`_apply_v2_finding_deltas`, `reducer.py:674-900`)
+  restricts creating an `OPEN`+blocking Finding to `convergence_role is
+  ConvergenceRole.EVALUATOR` (`reducer.py:717-721`): `"only an evaluator may
+  create an open blocking Finding in result v2"`.
+* Result-schema v3 (`_validate_convergence_records_before_apply`,
+  `reducer.py:1266-1294`) forbids an *ordinary* (`convergence_role is NONE`)
+  phase in a schema-version-3 Run from creating an *untracked* open blocker
+  (`reducer.py:1285-1293`): `"Run v3 ordinary phase cannot create an untracked
+  open blocker"`. A *tracked* (convergence-obligation) Finding is a different,
+  narrower mechanism (Slice-4 correction-convergence), out of this
+  document's scope.
+
+Neither narrower rule is keyed to an explicit, authored, per-phase
+declaration; both are side effects of `convergence_role`, which exists for
+an unrelated purpose (Slice-4 correction-convergence escape), not for
+Finding-authority composition. This is exactly the shape the governing task
+asks to be replaced: an *explicit* profile-authored capability, not an
+inference from a field that means something else.
+
+=== 2.2 Finding-disposition is governed by `finding_authority`, correctly, already
+
+`_may_dispose` (`reducer.py:489-498`): `HUMAN` may always dispose; `GATE` may
+dispose only an operation present in `permitted_gate_operations` (which
+`reduce_result` sets to `phase.review.finding_authority` for a
+`ReviewAuthority.GATE` phase, `reducer.py:1698-1700`); every other authority,
+including `AGENT`, may dispose nothing. `serialization._review`
+(`serialization.py:576-579`) additionally forbids an `ADVISORY` review from
+declaring any `finding_authority` at all, structurally. This part of the
+contract is sound, already tested (`tests/unit/test_reducer.py`), and is
+*not* altered by this design: P3.5 consumes `finding_authority`, it does not
+redefine it.
+
+=== 2.3 The runtime completion guard is sound and global, and stays exactly as it is
+
+`_has_open_blocker` (`reducer.py:1145-1149`) checks `state is OPEN and
+blocking` across *every* Finding on the Run, independent of phase.
+`_apply_route` (`reducer.py:1152-1188`) consults it only for
+`RouteEffect.COMPLETE` (`reducer.py:1166-1168`): if any blocker is open, the
+Run stops `awaiting_human` with reason
+`completion_blocked_by_open_blocking_findings` instead of completing. This
+guard is Design Decision E's "authoritative, unchanged" boundary (§3.4): P3.5
+adds a *static, pre-Run* check that a legal disposition path exists; it does
+not touch, duplicate, or weaken this *runtime, per-Run* check, which remains
+the final word on any specific Run's actual history.
+
+=== 2.4 Today, nothing in the engine lets a human or an external authority actually dispose a Run-native Finding
+
+This is the fact that most sharply bounds what "explicit human/authority
+handoff" can mean in this design (§4.7, §7 example 8). `FindingAuthority.HUMAN`
+exists in the model (`model.py:51-56`) and `_may_dispose` honors it
+unconditionally (`reducer.py:494-495`) -- but grepping every call site in
+`src/workflow_coordinator/*.py` shows `reduce_result` only ever constructs
+`FindingAuthority.AGENT` or `FindingAuthority.GATE` (`reducer.py:1693-1703`).
+No production code path ever invokes `apply_finding_deltas` with
+`authority=FindingAuthority.HUMAN`. `confirm_supervisor_route`
+(`reducer.py:1872-1896`) explicitly states "no Finding mutation is accepted
+here." `authorize_prerequisite` / `require_reconcile` / `resume_after_reconcile`
+(`reducer.py:1899-1979`) suspend, reconcile, and resume a Run but never touch
+`run.findings`, and resumption returns to the *same* `run.phase` it stopped
+in -- it does not skip forward past the phase that lacked disposition
+authority. The BUG record's own evidence corroborates this precisely: S3-002's
+Run ended `awaiting_human` with `F001`/`F002`/`F003` permanently open, and the
+only available remedy on record was authoring a *fresh successor Commission*
+(a new Run under a corrected profile), never a manual Finding disposition on
+the same Run.
+
+Consequence for this design: an `AWAIT_HUMAN` or `SUSPEND_FOR_PREREQUISITE`
+route, as implemented today, is never itself a disposition mechanism. It
+stops the Run; it does not grant anyone the power to resolve, residualize, or
+supersede the Finding that triggered the stop. §4 and §7 (example 8) treat
+these routes accordingly: they are not graph edges toward completion, and
+they must never be credited as satisfying the reachability property.
+
+=== 2.5 The Concept doc's own candidate-set definition is a known under-approximation, inherited knowingly here
+
+Concept doc §11 defines the candidate "`P_open`" set as "any phase with a
+`review` descriptor whose `authority`/`blocking_policy` admit opening one."
+Per §2.1 above, this is narrower than the true engine behavior for legacy
+(result-schema v1) dispatch, under which a phase *without* any `review`
+descriptor can also create an open blocking Finding. This document does not
+silently correct the Concept doc's definition; §3.1 and §6 explain exactly
+where the gap is closed (new, explicit, per-phase declaration at a new
+profile schema version) and where it is knowingly retained as a documented,
+bounded limitation for already-accepted schema-version-2/3 profiles that
+predate the new field (§4.3, §6.1).
+
+=== 2.6 Precise gap statement
+
+P3.5's job, as the Concept doc already states it, is a composition-level
+static check: whether the individually-valid Finding-authoring and
+Finding-disposing capabilities declared across a profile's phases *compose*
+into a graph that can mechanically complete without leaving a blocking
+Finding stranded. Today:
+
+* No profile field says, explicitly, which phases may create a Finding at
+  all (§2.1) -- Design Decision A below closes this, additively, at a new
+  schema version.
+* No static check exists at all for ordered reachability of disposition
+  relative to a Finding's opening phase; only the runtime, per-Run guard
+  exists (§2.3), which is sound but necessarily reactive -- it only tells you
+  *after* a Run has already consumed Hops and provider cost that no legal
+  route exists.
+* No narrow route-level guard exists to require Finding-cleanliness at a
+  point that is not itself `complete` (Design Decision C).
+
+== 3. Proposed schema and formal semantics
+
+=== 3.1 Direction A -- explicit per-phase Finding-creation capability
+
+Add a new, required, boolean `Phase` field, illustratively named
+`may_open_findings`, deliberately placed on `Phase` itself (not nested inside
+`ReviewDescriptor`), because §2.1 already shows that today's actual
+Finding-creation capability is *not* coupled to `review`'s presence: a plain
+worker phase can create a Finding today, and an advisory- or gate-reviewed
+phase need not actually be expected to. Coupling the new field to `review`
+would reintroduce exactly the inference the governing task forbids ("Do not
+infer capability from role, phase name, review status, or presence of
+`finding_authority`").
+
+[source,yaml]
+----
+phases:
+  independent_review:
+    role: independent_reviewer
+    may_open_findings: true     # illustrative field name, not normative syntax
+    review:
+      authority: gate
+      finding_authority: []     # disposition authority is independent (§3.1.2)
+    routes: { ... }
+  correct:
+    role: worker
+    may_open_findings: false
+    routes: { ... }
+----
+
+No Finding-kind taxonomy is introduced (per the governing task's explicit
+deferral): this is a single boolean capability, not a typed vocabulary of
+Finding categories. A phase that cannot open a *new* Finding may still carry
+forward Findings already open in the Run -- that is not a separate
+capability flag; it falls out of §2.3's global, phase-independent completion
+guard and the ordinary Finding-disposition mechanism (§3.1.2), neither of
+which is scoped per-phase to "Findings this phase introduced."
+
+==== 3.1.1 Why this must be a new, required field at a new schema version, not an optional field with a default on existing versions
+
+`workflow_profile_from_yaml` (`serialization.py:667-675`) already hard-rejects
+any `profile.schema_version` other than `{2, 3}`. Adding a *required* field to
+`Phase` is necessarily a breaking schema change for every phase in every
+existing profile -- consistent with the governing task's explicit instruction
+not to "silently assign a default that changes meaning." Concretely:
+
+* Defaulting the new field to `true` for every phase that omits it would
+  silently grant every existing phase in every existing profile unrestricted
+  Finding-creation capability -- the status quo for legacy dispatch (§2.1),
+  but now *asserted as an authored fact* rather than left as an engine
+  side-effect, which misrepresents authorial intent for profiles that never
+  considered the question.
+* Defaulting to `false` would silently *revoke* Finding-creation capability
+  from every phase that relies on it today (including every
+  `independent_reviewer` gate in every accepted self-development lineage),
+  which is a behavior change disguised as a default, and the opposite error.
+
+Recommendation: introduce profile `schema_version: 4`. Schema v4 carries every
+structural rule schema v3 already carries (the full Slice-4 convergence
+cross-validation in `workflow_profile_from_yaml`, `serialization.py:837-976`,
+is orthogonal and unaffected), *plus* a new required `may_open_findings:
+bool` on every `Phase`. `workflow_profile_from_yaml` must require it when (and
+only when) `profile.schema_version == 4`, with no fallback default -- a
+profile author bumping to v4 must explicitly decide, phase by phase. Schema
+versions 2 and 3 are not retroactively required to add the field; §6
+explains how P3.5's reachability check still applies to them.
+
+==== 3.1.2 Relationship to `finding_authority`: independent axes, restated
+
+Per Design Decision A's own framing and §2.2: whether a phase may *author* a
+new Finding (`may_open_findings`) and whether a phase may *disposition* an
+existing Finding (`review.finding_authority`) are independent declarations,
+exactly as `review.authority` (gate-vs-advisory route authority) and
+`review.finding_authority` (disposition authority) are already independent
+today (the BUG record's own stated invariant, `BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc`
+lines 118-124). A phase can have `may_open_findings: true` and empty
+`finding_authority` (it can report new defects but never close any); a phase
+can have `may_open_findings: false` and non-empty `finding_authority` (it
+exists purely to disposition Findings opened earlier, e.g. a dedicated
+closure gate); neither combination is incoherent, and the structural parser
+must not reject either.
+
+=== 3.2 Direction C -- narrow clean-route guard
+
+Add an additive, optional `Route` field, `require_no_open_blocking_findings:
+bool = False`, parsed in `serialization._route` (`serialization.py:601-622`)
+with the same effect-specific validity discipline already used for `target`
+and `question` there: valid only when `route.effect is RouteEffect.GOTO`
+(rejecting it on `COMPLETE`, `AWAIT_HUMAN`, `SUSPEND_FOR_PREREQUISITE`, or
+`STOP`, exactly mirroring the existing `target`-requires-`GOTO` /
+`question`-requires-`AWAIT_HUMAN` rules at `serialization.py:612-617`).
+
+[source,yaml]
+----
+routes:
+  accept:
+    effect: goto
+    target: post_review_wrapup
+    require_no_open_blocking_findings: true   # illustrative, not prescribed syntax
+----
+
+Semantics, precisely: `_apply_route`'s `GOTO` branch
+(`reducer.py:1153-1165`) gains a guard parallel to the existing `COMPLETE`
+branch's `_has_open_blocker` check (`reducer.py:1166-1168`). Evaluation
+happens *after* `_apply_finding_deltas` has already applied this Hop's own
+Finding deltas (`reduce_result`, `reducer.py:1713-1721`), so a phase that
+disposes a Finding in the very Hop that requests this route is correctly
+admitted -- the guard reads post-delta state, exactly as the task specifies
+("after valid Finding deltas have been reduced"). If the Run still has an
+open blocking Finding at that point, the route is *not* applied: the Hop does
+not advance to `target`; the Run instead stops `awaiting_human` with a new,
+analogous stop reason (e.g. `route_blocked_by_open_blocking_findings`),
+leaving `run.phase` unchanged -- exactly the same fail-closed shape
+`completion_blocked_by_open_blocking_findings` already has for `COMPLETE`. No
+provider is re-invoked; no Run state beyond the stop fields is mutated.
+
+This is a precondition, not an assertion of success: it says nothing about
+*which* Findings were resolved or by whom, and does not grant, infer, or
+substitute for `finding_authority`. A route guarded this way with no open
+blocker simply advances normally, identically to an unguarded `GOTO` today.
+Nonblocking open Findings (`blocking: False`, e.g. `RESIDUAL`) never trip this
+guard, exactly as they never trip `_has_open_blocker` today.
+
+Because the default (`False`) is behaviorally identical to every existing
+route's unannotated behavior today, this field needs no new schema version
+and is safe to add to schema versions 2, 3, and the proposed 4 uniformly --
+unlike Direction A's field (§3.1.1), where every available default silently
+changes meaning. This asymmetry is the precise reason the two fields are
+versioned differently, and it is worth stating as a general principle for
+future additive profile fields: *a field is safely defaultable only when its
+default reproduces today's actual behavior for every phase that does not
+mention it; a field whose "natural" default would assert a new fact about
+authorial intent is not.*
+
+=== 3.3 No new Finding-lifecycle operations, no new authority values
+
+This design adds no fifth disposition operation alongside `resolve`,
+`residual`, `supersede`, `reopen`, and introduces no new `FindingAuthority`
+member. `FindingState`, `FindingAuthority`, `ReviewAuthority`, and the
+`{resolve, residual, supersede, reopen}` closed set are unchanged.
+
+=== 3.4 Design Decision E -- budget orthogonality, restated as a constraint on §4
+
+`max_autonomous_hops` / `WorkItem.max_autonomous_hops` /
+`Run.hop_limit`/`hop_remaining` govern autonomy cost, enforced at
+`operator._preflight` (`operator.py:368-371`, the hard
+`COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS` ceiling) and at Hop-dispatch time
+(`reducer.py:1807-1820`, `AWAITING_HUMAN_BUDGET`). §4's reachability graph
+must never consult `hop_limit`, cycle counts, or any budget fact: a profile
+whose only disposing path happens to be three Hops away is exactly as valid,
+under this design, as one whose disposing path is one Hop away, even though
+a tightly-budgeted `WorkItem` might exhaust its Hops before actually reaching
+it at runtime. That is a legitimate, separate, runtime interruption (handled
+already, unchanged, by `AWAITING_HUMAN_BUDGET`), not a structural profile
+defect. §4's algorithm is therefore defined purely over the profile graph,
+with no reference to any `WorkItem` or `Run` field.
+
+== 4. Static validation algorithm
+
+=== 4.1 Inputs
+
+The algorithm is a pure function of one already-parsed `WorkflowProfile`
+(`model.py:266-273`) -- specifically, of each `Phase`'s `review`
+(`ReviewDescriptor | None`) and `routes` (`Mapping[str, Route]`), plus (for
+schema v4 profiles) the new `may_open_findings` field. It requires no `Run`,
+no `WorkItem`, no provider, and no filesystem or network access beyond the
+already-parsed in-memory profile. It is deterministic and side-effect-free.
+
+=== 4.2 Graph model
+
+Nodes are the profile's phases (`profile.phases.keys()`). Edges are exactly
+the `GOTO`-effect routes with `require_no_open_blocking_findings` unset or
+`False`:
+
+[source,text]
+----
+UnguardedEdges = {
+    (phase_key, route.target)
+    for phase_key, phase in profile.phases.items()
+    for route in phase.routes.values()
+    if route.effect is RouteEffect.GOTO
+    and not route.require_no_open_blocking_findings
+}
+----
+
+`COMPLETE`, `AWAIT_HUMAN`, `SUSPEND_FOR_PREREQUISITE`, and `STOP` routes are
+never edges: none of them advance `run.phase` to a different phase that can
+run a further Hop in the same Run (§2.3, §2.4). A `GOTO` route whose target is
+the same phase (a self-loop, e.g. an ordinary "ask again" route) is a normal
+edge; nothing about the algorithm special-cases self-loops, which is exactly
+how the Concept doc's own worked example ("unless a route loops back to it
+... after the Finding was opened") is satisfied without extra machinery.
+
+A `GOTO` route *with* `require_no_open_blocking_findings: true` is
+deliberately *not* an `UnguardedEdges` member (§4.3 explains why, and why it
+is folded into `checkpoint` instead): by construction (§3.2), it can never be
+successfully traversed while a blocking Finding remains open, so it never
+carries an undisposed Finding forward to its target.
+
+=== 4.3 Per-phase predicates
+
+`disposer(phase)`:: `True` iff `phase.review is not None and
+phase.review.authority is ReviewAuthority.GATE and
+bool({"resolve", "residual", "supersede"} & set(phase.review.finding_authority))`.
+`reopen` is deliberately excluded: `reopen` transitions `RESOLVED -> OPEN`
+(`reducer.py:483`), the *opposite* direction from closing a blocker, and
+granting only `reopen` can never by itself satisfy the reachability property
+(Design Decision D, restated precisely in code terms).
+
+`checkpoint(phase)`:: `True` iff `phase` has any route with `effect is
+RouteEffect.COMPLETE`, *or* any `GOTO` route with
+`require_no_open_blocking_findings: True`. Both kinds of route can only be
+successfully taken while no blocking Finding is open (§2.3, §3.2); treating
+them uniformly is the natural generalization the Concept doc's Design
+Decision C anticipates ("a future workflow might need to perform authorized
+post-success actions after final review but before terminal completion"):
+a guarded intermediate `GOTO` is, for reachability purposes, exactly as much
+a "clean checkpoint" as `complete` is, and a profile that can only reach one
+without disposing is exactly as structurally defective as one that can only
+reach `complete` undisposed.
+
+`creates_blocking(phase)`:: for a schema-v4 profile, exactly
+`phase.may_open_findings` (precise, authored, not inferred). For a
+schema-v2/v3 profile (no such field exists), `phase.review is not None`
+(the Concept doc §11's own literal candidate-set definition, retained here
+deliberately for migration reasons spelled out in full in §6.1; §2.5 already
+records that this under-approximates the true engine behavior for a
+review-less worker phase, and §6.1 explains why widening it to "every phase,
+unconditionally" would instead *over*-reject many currently-accepted
+profiles that have nothing to do with the motivating defect).
+
+=== 4.4 Fixpoint: which phases can reach a checkpoint without passing a disposer
+
+Define `danger(phase)` over the induced graph (`UnguardedEdges` only):
+
+[source,text]
+----
+danger(phase):
+    if disposer(phase):
+        return False                      # absorbing: reaching a disposer
+                                           # (even on a later revisit of the
+                                           # SAME phase via a cycle) always
+                                           # satisfies the requirement from
+                                           # here onward
+    if checkpoint(phase):
+        return True                       # reaches a clean-only gate while
+                                           # still undisposed
+    return any(danger(successor)
+               for (phase, successor) in UnguardedEdges)
+----
+
+This is a standard reachability fixpoint: compute it via backward BFS/DFS
+from every `checkpoint`-true, `disposer`-false phase, following
+`UnguardedEdges` in reverse, *never entering* a `disposer`-true phase (a
+disposer absorbs/terminates the backward search along that branch, exactly
+as a visited-and-safe node would in ordinary reachability). This is `O(phases
++ routes)`, decidable, and terminates on any graph, cyclic or not, because it
+is a monotone least-fixpoint over a finite node set.
+
+Supervisor-gated `GOTO` routes (`route.supervisor: True`) are ordinary
+`UnguardedEdges` members unless also `require_no_open_blocking_findings`:
+the supervisor confirmation step (`confirm_supervisor_route`,
+`reducer.py:1872-1896`) explicitly performs no Finding mutation, so it cannot
+be credited as a disposition, and a cautious supervisor's judgment is
+precisely the thing S3-002 already showed is not a substitute for a
+structural guarantee -- the whole motivation for this document.
+
+=== 4.5 Decision rule
+
+A profile is **INVALID -- rejected before any provider invocation** iff:
+
+[source,text]
+----
+exists phase p such that:
+    creates_blocking(p) is True
+    and exists (p, successor) in UnguardedEdges
+    and danger(successor) is True
+----
+
+Note precisely what is *not* checked: `danger(p)` itself, at distance zero,
+is never queried. The requirement is "strictly reachable after `P_open`"
+(Concept doc §11's own wording); a phase's *own* Hop cannot dispose the very
+Finding that Hop just created (the Finding's `finding_id` is not allocated
+until that Hop's deltas are applied, so no `ExistingFindingDelta` within the
+same result can reference it -- confirmed by the two-pass allocate-after-validate
+structure of `_apply_v2_finding_deltas`, `reducer.py:772-789`). A phase
+`p` whose *only* route is `accept: {effect: complete}`, requested in the same
+Hop that opens the Finding, is therefore not flagged by this algorithm as a
+*profile-level* defect -- it is already, fully, and cheaply caught by the
+existing, unchanged runtime guard (§2.3) on the very same Hop, at the lowest
+possible cost (one Hop, not a multi-Hop S3-002-shaped waste). Scoping the
+static check to "strictly after" rather than "at or after" is a deliberate
+choice, not an oversight (§4.7 names it explicitly as a boundary).
+
+=== 4.6 Where `require_no_open_blocking_findings` interacts with `danger` propagation
+
+A guarded `GOTO` edge is excluded from `UnguardedEdges` (§4.2) and therefore
+never propagates `danger` forward to its target: an undisposed Finding can
+never actually arrive at the target through that edge (the guard stops it at
+the source phase first, §3.2), so there is nothing to propagate. It
+contributes only via `checkpoint` (§4.3), marking its *own* phase dangerous
+if that phase is not itself a disposer. This asymmetry -- checkpoint but not
+edge -- is required for correctness, not merely a simplification: treating a
+guarded edge as an ordinary propagating edge would cause the algorithm to
+over-reject profiles that use the guard exactly as intended (§7 example 6),
+since it would incorrectly assume an undisposed Finding can reach beyond the
+guard.
+
+=== 4.7 Strength and limitations, stated precisely
+
+*What this proves:* for every phase capable (per §4.3's applicable
+definition) of opening a new blocking Finding, every statically enumerable
+forward path through `GOTO` routes to a `complete`-or-equivalent checkpoint
+passes through at least one phase holding `resolve`, `residual`, or
+`supersede` authority, strictly after the opening phase.
+
+*What this does not prove, by design:*
+
+* It does not prove the Commission *will* complete, or complete quickly, or
+  within its Hop budget (§3.4) -- only that *if* it reaches a checkpoint, a
+  legal disposition path existed somewhere before it.
+* It does not prove termination or general liveness. A profile whose only
+  forward routes from a Finding-opening phase are `AWAIT_HUMAN` /
+  `SUSPEND_FOR_PREREQUISITE` / `STOP` -- i.e. a profile that can *never* reach
+  any checkpoint at all -- is **not** rejected by this algorithm: the
+  decision rule's antecedent ("may reach a complete/accept-gated route")
+  is vacuously false. This is a deliberate, named boundary, not an
+  oversight: the governing task explicitly instructs examining "the original
+  P3.5 requirement before deciding whether a stronger no-dead-end condition
+  is justified" and not silently expanding it; the Concept doc explicitly
+  disclaims "full formal verification of workflow semantics" and "a generic
+  workflow DSL, ontology, or generic compiler." A profile that can never
+  reach completion at all is a different (real, but out-of-scope) defect
+  category -- general workflow usefulness/liveness -- not a Finding-authority
+  composition defect. §7 example 8 and §10 record this explicitly as an
+  open question for independent review, not a silent resolution.
+* It does not verify that a `supersede` disposition's successor Finding is
+  itself eventually closed. `supersede` legally closes the *named* Finding
+  (removing it from `_has_open_blocker`'s `OPEN`-state set), but
+  `successor_ref` may point to a different, freshly agent-authored Finding
+  that is itself `OPEN` and `blocking` -- a fact the static validator cannot
+  know in advance, because it depends on what a future agent actually
+  authors inside a specific Hop, not on any profile-level declaration. §7
+  example 7 states this limitation explicitly rather than asserting
+  certainty the design does not have. The runtime completion guard (§2.3,
+  unchanged) remains the backstop for exactly this case.
+* For schema-v2/v3 profiles, `creates_blocking` is the Concept doc's own
+  review-presence proxy (§4.3), which under-approximates true engine
+  Finding-creation capability for a review-less worker phase (§2.1, §2.5).
+  A legacy worker phase that silently opens a blocking Finding with no
+  `review` descriptor at all is not covered by the static check; it remains
+  protected only by the unchanged runtime guard. §6.1 explains why widening
+  this proxy for legacy profiles is not recommended, and why the new,
+  explicit, precise field (§3.1) is the actual fix, available to any profile
+  that migrates to schema v4.
+
+== 5. Runtime enforcement and preflight integration
+
+=== 5.1 Location of the pure validator
+
+Recommendation: a new, small, pure module (illustratively
+`src/workflow_coordinator/profile_conformance.py`) exposing one function,
+e.g. `validate_finding_reachability(profile: WorkflowProfile) -> None`,
+raising a new, minimal exception (e.g. `ProfileConformanceError`) on
+violation, with a diagnostic message naming the offending `P_open` phase key,
+the specific successor phase at which `danger` was first true, and that
+successor's own `checkpoint`/`disposer` facts (so a maintainer can see
+*which* phase needed, and lacked, `finding_authority`, mirroring the BUG
+record's own diagnostic clarity). This keeps P3.5:
+
+* Separate from `serialization._review`/`workflow_profile_from_yaml`'s
+  per-field *structural* validation (which checks one phase's/route's local
+  shape, not cross-phase composition) -- consistent with the Concept doc's
+  "structural vs. stateful vs. composition" three-way distinction (§4 there).
+* Separate from `reducer.py`'s *stateful* per-Run authority (which this
+  design explicitly never touches, per §2.2, §2.3).
+* Unit-testable directly against a bare `WorkflowProfile` fixture, with no
+  `Run`, no `WorkItem`, no filesystem, and no provider -- satisfying the
+  governing task's "pure, deterministic, provider-free" requirement exactly.
+
+Integration: `operator._preflight` (`operator.py:281` onward) already
+performs exactly this class of trusted, mechanical, pre-Run cross-document
+check -- repository identity, `WorkItem.personas` vs. profile roles
+(`operator.py:326-340`), execution-binding roles vs. profile roles
+(`operator.py:341-354`) -- all *after* `workflow_profile_from_yaml` has
+already parsed and structurally validated the profile
+(`operator.py:316-323`). Recommendation: call
+`validate_finding_reachability(profile)` immediately after that parse
+succeeds (right after `operator.py:318`), inside the same
+`try/except ValidationError` shape already used there, catching the new
+`ProfileConformanceError` and re-raising as `OperatorPreflightError`
+exactly as `ValidationError` already is
+(`operator.py:322-323`). This keeps P3.5 inside the one existing trusted
+preflight boundary rather than adding a second, parallel one, and keeps it
+a hard precondition of Commission admission: `_preflight` runs once, before
+any Run is created, before any provider is invoked, and before any Run-state
+mutation.
+
+=== 5.2 Route-guard runtime evaluation order and failure behavior
+
+Restated precisely from §3.2, in `reduce_result`'s existing call sequence
+(`reducer.py:1693-1836`): the guard is evaluated inside `_apply_route`
+(`reducer.py:1152` onward), after `_apply_finding_deltas` has already applied
+this Hop's own deltas (`reducer.py:1713-1721`) and after any convergence-record
+bookkeeping (`reducer.py:1727-1736`), at the same point `_apply_route` is
+already called today (`reducer.py:1835`). Failure yields `_stop_for_human`
+(`reducer.py:409-422`, the same helper `COMPLETE`'s guard already uses) with a
+distinct stop reason, leaving `run.phase` unchanged, `run.status` set to
+`AWAITING_HUMAN`, and no further Hop dispatched. No provider is invoked as
+part of evaluating or failing this guard; it is a pure function of
+already-applied Run state.
+
+=== 5.3 Runtime behavior when a phase attempts to create a Finding it is not declared to create
+
+For a schema-v4 profile only (§3.1, §6.2): add one check, parallel in shape
+to the existing per-result-schema creation checks (§2.1's v2/v3 examples,
+`reducer.py:717-721`, `:1285-1293`), inside the relevant
+`_apply_*_finding_deltas` function: if a `NewFindingDelta`/`FindingDeltaValue`
+with `finding_id is None` is present in `result.findings` and the dispatching
+`phase.may_open_findings` is `False`, raise `ReductionError` with a message
+naming the phase and the forbidden creation attempt, exactly as every other
+`ReductionError` in this file already is caught by `reduce_result`'s
+surrounding `try/except` (`reducer.py:1724-1725`) and converted to
+`_stop_for_human(run, f"mechanical_preemption:invalid_finding_delta:{error}")`.
+This is fail-closed, truthful, and costs exactly the one Hop that attempted
+the forbidden creation -- consistent with every other mechanical-preemption
+path already in this function. It is deliberately *not* a silent drop of the
+Finding and *not* a silent downgrade to non-blocking: an agent that attempts
+this has misunderstood its own authority, and the existing mechanical-preemption
+convention (truthful stop, not silent correction) is preserved.
+
+For schema-v2/v3 profiles, this check does not apply (no `may_open_findings`
+field exists to consult); their Finding-creation behavior is unchanged by
+this design (§6.1).
+
+=== 5.4 Fail-closed guarantee restated
+
+Per the governing task's explicit instruction: a failed P3.5 preflight check
+must never cause provider invocation or unexpected Run-state mutation. Both
+new checks (§5.1's preflight pass, §5.3's reducer-level creation check) are
+pure, synchronous, raise-before-mutate, and occur strictly before (§5.1) or
+instead of (§5.3) any provider dispatch or Run-state advance. Neither
+introduces a new asynchronous path, a new persisted side effect on failure,
+or a new retry.
+
+== 6. Compatibility and migration
+
+=== 6.1 Schema-version-2 and -3 profiles: unaffected structurally, newly subject to the reachability check
+
+No existing `.yaml` profile needs to change shape to remain parseable:
+`workflow_profile_from_yaml` continues to accept `schema_version in {2, 3}`
+unchanged, `may_open_findings` is never required for them, and
+`require_no_open_blocking_findings` is purely additive and absent today, so
+every existing `Route` continues to parse to the same effective value
+(`False`) it has today. What *does* change is that `_preflight` now also runs
+`validate_finding_reachability`, newly, against these profiles, using the
+`creates_blocking(phase) := phase.review is not None` proxy (§4.3).
+
+This is a deliberate, narrow widening of the engine's conservatism, not a
+general one: using the maximally conservative `creates_blocking(phase) :=
+True` for *every* phase (reviewed or not) was considered and rejected,
+because it would flag many currently-accepted self-development profiles that
+have nothing to do with the motivating defect -- any profile with a plain
+`worker` phase (no `review:` block) followed by a gate review with empty
+`finding_authority` that the Commission never actually expects to exercise
+disposition on would be incorrectly rejected, since the worker would be
+treated as a false `P_open`. The review-presence proxy, matching the Concept
+doc's own literal §11 definition, avoids this: it flags exactly the shape the
+BUG record documents (a `review`/`rereview` gate that opens a Finding with no
+later `finding_authority`-bearing phase on its forward path), without
+over-rejecting profiles whose only Finding-capable phases already carry
+adequate downstream disposition. §4.7 and §2.5 already record the known,
+accepted residual gap this proxy leaves (a review-less worker that silently
+opens a Finding is not statically covered) as an explicit, bounded
+limitation, closed for any profile that migrates to schema v4.
+
+Per Concept doc §19, this is expected, intended behavior change for exactly
+the eight self-development lineages sharing the motivating shape
+(`correction-convergence-escape-implementation-{s1-001,s1-002,s1-003,
+s2-001,s2-002,s2-003,s3-001,s3-002}-profile.yaml`), whose
+`test_self_development_governance.py`
+`..._bundle_passes_production_preflight` assertions the Concept doc itself
+already names as expected to flip to
+`..._bundle_fails_production_preflight` as part of P3.5's own bounded
+implementation (§8 restates this as the primary acceptance test).
+
+=== 6.2 Schema-version-4 profiles: explicit, precise, required declaration
+
+A profile authored or migrated to `schema_version: 4` must declare
+`may_open_findings` on every phase, with no default. `creates_blocking` for
+such a profile is then exactly `phase.may_open_findings` -- precise, not a
+proxy -- closing the §2.5/§4.7 gap entirely for that profile. Migrating an
+existing accepted profile from v2/v3 to v4 is itself ordinary governed work
+(a documentation/profile-authoring change under its own Commission), not
+something this design performs or requires; nothing in this design compels
+any existing profile to migrate.
+
+=== 6.3 The four compatibility promises, restated precisely for this design
+
+Concept doc §19 names four distinct promises that "every currently accepted
+self-development Commission/profile must continue to pass" must not
+conflate. Restated against this design's actual mechanism:
+
+. *Historical artifact remains parseable* -- preserved: no structural parse
+  rule changes for schema v2/v3; `validate_finding_reachability` runs only at
+  `_preflight`, never inside `workflow_profile_from_yaml` or any historical
+  Run-parsing path.
+. *Historical Run remains truthfully replayable* -- preserved: this design
+  touches no replay path, no `Hop`/`HopSummary` field, and no persisted Run
+  history; `_preflight` runs once, before a Run exists, never during replay.
+. *Old profile remains usable as a regression fixture* -- preserved, with the
+  same caveat the Concept doc itself already states: the fixture document is
+  unchanged, but its governing test's *assertion* changes for the eight named
+  lineages (promise 4, next).
+. *Profile remains admissible for a NEW launch under current preflight* --
+  deliberately and correctly revoked for exactly the eight named lineages
+  (§6.1); preserved for every other currently accepted profile, because the
+  review-presence proxy (§4.3, §6.1) was chosen specifically to avoid
+  collateral rejection of profiles outside that shape.
+
+== 7. Positive/negative examples and acceptance criteria
+
+Each example states the profile shape, the resulting `danger`/decision-rule
+evaluation, and the verdict. Phase names are illustrative; "G" marks a
+`GOTO` edge, "C" a `COMPLETE` route, bracketed authority marks disposer
+status.
+
+=== Example 1 -- a phase that cannot create Findings, followed by ordinary completion
+
+`worker [may_open_findings:false] --G--> complete_gate [review:gate,
+finding_authority:[]] --C-->`.
+
+`creates_blocking(worker)` is `False` (schema v4, explicit). No `P_open`
+candidate exists. *Accepted*, vacuously: the decision rule's existential
+clause is never satisfied.
+
+Under schema v2/v3 (no explicit field, `worker` has no `review` block):
+`creates_blocking(worker) := worker.review is not None = False` by the same
+proxy. *Accepted* identically, for the same underlying reason, via the
+legacy proxy rather than an explicit declaration.
+
+=== Example 2 -- a Finding-producing phase with a legal downstream resolution gate
+
+`review [may_open_findings:true, review:gate, finding_authority:[]]
+--G--> correct [may_open_findings:false] --G--> rereview [review:gate,
+finding_authority:[resolve]] --G(accept)--> complete_gate --C-->`,
+plus `rereview --G(changes_required)--> correct`.
+
+`disposer(rereview)=True`. `danger(rereview)=False` (absorbing).
+`danger(correct)` = `checkpoint(correct)[False]` or `danger(rereview)[False]`
+= `False`. `review`'s only successor is `correct`, `danger(correct)=False`.
+*Accepted.* This is the P1-Assurance-Closure shape the Concept doc §2 already
+names as the one available ad hoc fix; this design generalizes it into a
+static guarantee instead of a per-Commission accident.
+
+=== Example 3 -- a Finding-producing phase whose only completion path lacks legal disposition
+
+The motivating S3-002 shape, restated exactly: `review [may_open_findings:true,
+review:gate, finding_authority:[]] --G(correct)--> correct
+[may_open_findings:false] --G--> rereview [review:gate,
+finding_authority:[]] --G(accept)--> complete_gate --C-->`.
+
+`disposer(rereview)=False`. `checkpoint(rereview)=True` (its `accept` route
+goes to a phase whose own route is `complete` -- or, equivalently, if
+`rereview`'s `accept` route is itself `{effect: complete}` directly,
+`checkpoint(rereview)=True` the same way). `danger(rereview)=True`.
+`danger(correct) = False or danger(rereview)[True] = True`. `review`'s
+successor `correct` has `danger=True`. *Rejected*, with the diagnostic naming
+`review` as the opening phase, `rereview` as the phase where `danger` first
+holds, and `rereview.review.finding_authority == ()` as the missing
+authority. This is exactly the shape the eight named self-development
+lineages (§6.1) must newly fail.
+
+=== Example 4 -- a correction/rereview cycle with a legitimate exit
+
+Same as Example 2, but with an added escape: `rereview
+--G(still_failing)--> escalation_gate [review:gate,
+finding_authority:[residual]] --G--> complete_gate --C-->`, where
+`escalation_gate` can residualize (clear `blocking`) a Finding that correction
+could not close. `disposer(escalation_gate)=True` (`residual` is in the
+closing set). Every path from `review` still passes through either
+`rereview` (disposer) or `escalation_gate` (disposer) before any checkpoint.
+*Accepted.*
+
+=== Example 5 -- an earlier Finding carried through later phases that cannot create new ones
+
+`evaluator [may_open_findings:true, ...]` opens `F001`; the forward path
+passes through three ordinary phases with `may_open_findings:false` and no
+`review` block at all, then reaches a `closure_gate [review:gate,
+finding_authority:[resolve]]` before `complete`. The three intervening
+phases contribute nothing to `disposer`/`checkpoint` and are simply
+transparent to the fixpoint (`danger` propagates through them unchanged).
+`danger(closure_gate)=False` (disposer, absorbing). *Accepted.* No special
+handling was needed for "carrying a Finding forward through non-creating
+phases" -- it falls directly out of the general graph propagation (§4.4),
+exactly as the design intends; this example demonstrates that, it does not
+require new machinery.
+
+=== Example 6 -- clean-route guard correctly admitting and rejecting transitions
+
+Not a preflight-time (`validate_finding_reachability`) example -- a
+*runtime* (`_apply_route`) example, per §3.2/§5.2. Profile: `rereview
+[review:gate, finding_authority:[resolve]] --G(accept, guard:true)-->
+post_review_wrapup --G--> complete_gate --C-->`.
+
+*Admit:* Hop at `rereview` disposes the open Finding (`resolve`) and requests
+`accept`; post-delta, `_has_open_blocker` is `False`; the guard passes; the
+Run advances to `post_review_wrapup`.
+
+*Reject:* a later Run where `rereview`'s own Hop requests `accept` without
+having disposed the Finding (e.g. a fresh `F009` was opened by an earlier
+Hop and is still open); post-delta, `_has_open_blocker` is `True`; the guard
+fails; the Run stops `awaiting_human` with the new guard-specific stop
+reason, `run.phase` unchanged, no advance to `post_review_wrapup`.
+
+At preflight time, this profile is independently checked by
+`validate_finding_reachability`: `disposer(rereview)=True`, so
+`danger(rereview)=False` regardless of the guarded route on it; the guarded
+route itself contributes `checkpoint(post_review_wrapup)` only if
+`post_review_wrapup` is not itself reached safely via `rereview`'s
+disposer-absorption -- which it is. *Accepted* at preflight; both runtime
+outcomes above are legal within an accepted profile, because the guard is a
+per-Hop precondition, not a profile-level defect signal.
+
+=== Example 7 -- a `supersede` scenario where the successor remains open and blocking
+
+`review [may_open_findings:true]` opens `F001`; `closure_gate [review:gate,
+finding_authority:[supersede]]` is reachable after it with no other
+disposer on the path; `closure_gate` disposes `F001` via `supersede`,
+`successor_ref` pointing to a freshly agent-authored `F002` that is itself
+`OPEN` and `blocking`.
+
+Statically: `disposer(closure_gate)=True` (`supersede` is in the closing
+set). `danger(closure_gate)=False`. `review`'s path to `closure_gate` is
+*accepted* by `validate_finding_reachability`, because the property checked
+is "a legal disposition operation is reachable for the Finding `review`
+opened," which `supersede` is, and the validator has no profile-level fact
+about what `successor_ref` will point to or whether that pointee will itself
+be disposed.
+
+This cannot be decided statically, and this design does not claim otherwise:
+whether `F002` is itself ever disposed depends on what a specific future Hop
+actually authors, not on any declared profile fact. At runtime, if no later
+Hop disposes `F002` either, `_has_open_blocker` (unchanged, §2.3) correctly
+stops the Run `awaiting_human` when `complete_gate`'s route is attempted --
+exactly the existing, sound, reactive backstop this design explicitly leaves
+in place for cases outside its static reach (§4.7).
+
+=== Example 8 -- an explicit authority handoff versus an invalid terminal dead end
+
+`review [may_open_findings:true]` opens `F001`; its only forward route is
+`AWAIT_HUMAN` (no `GOTO` route exists at all from any phase reachable after
+`review`).
+
+Per §2.4, no runtime mechanism today lets a human dispose `F001` and resume
+this Run past `review` toward completion: `AWAIT_HUMAN` is not a graph edge
+(§4.2), contributes no `UnguardedEdges` entry, and is never credited as a
+disposition. `review`'s successor set (via `UnguardedEdges`) is therefore
+empty. The decision rule (§4.5) requires `exists (p, successor) in
+UnguardedEdges` with `danger(successor)`; with no `UnguardedEdges` leaving
+`review`'s forward reach, the existential is never satisfied. *Accepted* by
+this algorithm -- but only vacuously, because the profile can never reach any
+checkpoint at all, not because a legitimate handoff was verified.
+
+This is the precise, named boundary from §4.7: a profile that can *never*
+reach completion is a different defect (general liveness/usefulness) that
+this design does not check and should not be expanded to check without a
+separate, explicitly authorized decision (§10). The distinction this example
+is required to draw is exactly this: *today, there is no such thing as a
+legitimate, engine-enforced "authority handoff" route for Finding disposition
+-- `AWAIT_HUMAN`/`SUSPEND_FOR_PREREQUISITE` are stops, not disposition
+grants* (§2.4). Any profile relying on one to "eventually" resolve a Finding
+is relying on a mechanism that does not exist; this design does not validate
+that reliance one way or the other, and flags it here as a question for
+independent review (§10) rather than silently deciding it.
+
+== 8. Test strategy
+
+All tests below are deterministic and provider-free, exercising
+`validate_finding_reachability` (and, separately, the two small runtime
+additions) directly against in-memory `WorkflowProfile`/`Route`/`Phase`
+fixtures or already-existing profile YAML text -- no provider invocation, no
+Run construction, no filesystem beyond reading fixture YAML.
+
+* *Primary regression (required by Concept doc §19):* the eight named
+  self-development profile fixtures' existing
+  `..._bundle_passes_production_preflight` tests in
+  `tests/architecture/test_self_development_governance.py` are updated to
+  `..._bundle_fails_production_preflight`, asserting `OperatorPreflightError`
+  (wrapping the new `ProfileConformanceError`) is raised, and that the error
+  message names the opening phase and the first phase at which `danger` held.
+* *Non-regression:* every other currently-accepted profile fixture's
+  existing `..._bundle_passes_production_preflight` test continues to pass
+  unchanged -- run as-is, with no fixture or assertion edited, proving the
+  review-presence proxy (§6.1) does not collaterally reject profiles outside
+  the motivating shape.
+* *Unit tests for `validate_finding_reachability`* directly against minimal
+  `WorkflowProfile` fixtures (not full governance bundles), covering: each of
+  the eight worked examples in §7 (1-5, 7, 8 as preflight-level cases) with
+  the stated expected accept/reject outcome; a cyclic topology where the
+  disposing phase is reached only via a loop back through `P_open` itself
+  (the Concept doc's own cited exception); a profile with multiple
+  independent `P_open` candidates where only one lacks downstream
+  disposition (asserting the diagnostic names the correct one); and a
+  profile where `disposer` is correctly `False` for a `reopen`-only
+  `finding_authority` (Design Decision D).
+* *Unit tests for the clean-route guard* (§3.2, §5.2) directly against
+  `reducer.reduce_result`/`_apply_route`: admits a `GOTO` with the guard set
+  when `_has_open_blocker` is false post-delta; rejects (stops
+  `awaiting_human`, `run.phase` unchanged) when true; confirms a nonblocking
+  (`RESIDUAL`) open Finding never trips the guard; confirms the guard field
+  is rejected by `serialization._route` on any non-`GOTO` effect.
+* *Unit tests for schema-v4 Finding-creation enforcement* (§5.3): a phase
+  with `may_open_findings: false` attempting a `NewFindingDelta` is rejected
+  with a truthful `mechanical_preemption:invalid_finding_delta:*` stop, no
+  Finding is added to `run.findings`, and no provider is re-invoked; a phase
+  with `may_open_findings: true` is unaffected; a schema-v2/v3 profile's
+  existing Finding-creation behavior (§2.1) is unchanged byte-for-byte by
+  this addition.
+* *Schema/versioning tests*: `workflow_profile_from_yaml` rejects a
+  schema-v4 profile missing `may_open_findings` on any phase; accepts a
+  schema-v2/v3 profile unchanged (no `may_open_findings` required, no
+  `require_no_open_blocking_findings` required); accepts a schema-v2/v3
+  profile that *does* add `require_no_open_blocking_findings` to a route
+  without bumping `schema_version`.
+
+== 9. Documentation updates required for the eventual implementation
+
+Not written here, per the governing task's explicit instruction; its content
+must be grounded in the completed implementation, not this design. Recorded
+here only as a concrete follow-up requirement for whichever Commission
+implements P3.5:
+
+An operator/developer guide, separate from this design document, must be
+produced once P3.5 (and, ideally, the schema-v4 migration path) is
+implemented, explaining:
+
+* `WorkItem`, `WorkflowProfile`/`Phase`, `Route`, `RouteEffect`, `Run`, `Hop`,
+  and `Finding`: which fields are authored (by a profile/Commission author),
+  produced (by an agent invocation), validated (structurally, by
+  `serialization.py`, and now also compositionally, by
+  `profile_conformance.py`), consumed (by `reducer.py`), and persisted (on
+  `Run`/`Hop`/`HopSummary`).
+* The execution sequence from an agent's `RoutingResult`/`WorkResult`/
+  `ReviewVerdict` through `reduce_result` to an applied `Route`, now
+  including where the new creation-capability check and the new route guard
+  sit in that sequence (§5.1-§5.3).
+* `Run` and `Finding` lifecycles, including the now-explicit distinction
+  between Finding-creation authority and Finding-disposition authority
+  (§3.1.2), and the completion guard's unchanged role (§2.3).
+* How to design and validate a profile against P3.5 specifically: how to
+  read a `ProfileConformanceError` diagnostic, how to choose
+  `may_open_findings` per phase, how to place a `require_no_open_blocking_findings`
+  guard, and worked positive/negative examples drawn from real,
+  implemented fixtures (not the illustrative ones in this design document).
+
+Recommended diagram support, in versioned textual form (PlantUML or
+equivalent), to be produced alongside that guide, not here:
+
+* A sequence diagram: agent invocation -> `RoutingResult`/`WorkResult`/
+  `ReviewVerdict` -> `reduce_result` -> `_apply_finding_deltas` ->
+  `_apply_route` -> applied `Route`/stop.
+* A state diagram for `Run.status` (`READY`, `RUNNING`,
+  `AWAITING_SUPERVISOR`, `AWAITING_HUMAN`, `AWAITING_HUMAN_BUDGET`,
+  `SUSPENDED`, `RECONCILE_REQUIRED`, `COMPLETED`, `STOPPED`), annotated with
+  which transitions the new route guard can trigger.
+* A state diagram for `Finding.state` (`OPEN`, `RESOLVED`, `RESIDUAL`,
+  `SUPERSEDED`, plus the `reopen` back-edge), annotated with which
+  `FindingAuthority`/`finding_authority` values legally trigger each edge.
+* An activity diagram for `validate_finding_reachability`'s fixpoint (§4.4),
+  suitable for a reviewer who has not read this design document's prose.
+
+== 10. Remaining decisions, risks and questions for independent review
+
+. *Legacy proxy precision (§4.3, §6.1).* This design recommends
+  `creates_blocking(phase) := phase.review is not None` for schema-v2/v3
+  profiles, matching the Concept doc's own literal definition, specifically
+  to avoid over-rejecting unrelated currently-accepted profiles. This leaves
+  a known, named gap (a review-less worker that silently opens a blocking
+  Finding is not statically covered for legacy profiles). An implementer
+  should confirm, by actually running the proxy against every currently
+  accepted self-development profile (not merely inspecting the eight named
+  ones), that no profile outside the named eight is collaterally rejected,
+  before relying on this document's claim in §6.1.
+. *Field naming.* `may_open_findings` and
+  `require_no_open_blocking_findings` are illustrative, chosen for clarity
+  against existing field names (`finding_authority`, `authorized_actions`),
+  not normative. An implementation Commission should choose final names
+  after source inspection, consistent with the Concept doc's own repeated
+  practice of leaving exact field names to implementation (e.g. its own §12
+  on `CommitIntent`).
+. *Schema version number.* This design recommends profile `schema_version:
+  4`, the next integer after the existing closed set `{2, 3}`. No other
+  schema-v4-worthy change is proposed or implied by this design; if some
+  other, unrelated profile-schema change is independently in flight, the
+  version-number choice may need coordination, not duplication.
+. *Diagnostic surfacing.* This design specifies what a
+  `ProfileConformanceError` diagnostic must *name* (§5.1) but not its exact
+  machine-readable shape (string, structured object, multiple violations
+  batched vs. fail-fast on first). Left to implementation; the Concept doc's
+  own `_preflight` precedent currently fails fast on first `ValidationError`,
+  which this design's recommendation (§5.1) deliberately mirrors rather than
+  introducing a new batched-diagnostics convention.
+. *Whether a stronger "can never complete at all" check belongs anywhere.*
+  §4.7 and §7 example 8 name this explicitly as out of scope for P3.5 itself.
+  Whether some *other*, separately authorized, separately scoped check
+  should someday exist for pure liveness (a profile with no path to
+  `complete` at all, regardless of Findings) is a genuinely open question
+  this document does not resolve and recommends not folding into P3.5's own
+  acceptance criteria, to avoid exactly the scope-creep the governing task
+  warns against.
+. *Interaction with a future human-disposition mechanism.* §2.4 establishes
+  that no such mechanism exists today. If one is ever built (the
+  non-normative hierarchical-escalation hypothesis explicitly disclaims
+  deciding this, §5 there), this design's graph model (§4.2) would need a
+  new, separately authorized edge/checkpoint kind for it; this document
+  takes no position on what that kind should look like, consistent with the
+  governing task's instruction that the escalation hypothesis grants no
+  authority to broaden P3.5 here.
+. *Front Door dependency.* The MVP/Level-1 transition concept (§4.2, §4.4
+  there) names P3.5's composition check as a dependency of "Front Door Step
+  2." This design does not assess or resolve that dependency's exact
+  shape; it only produces the composition check the dependency presumably
+  consumes.
