@@ -1,0 +1,507 @@
+= WFC Requested-Route Schema Correction -- Independent Implementation Review 001
+:toc:
+:toclevels: 3
+:sectnums:
+
+Status:: *ACCEPT.* No material defect found; the correction is safe for
+subsequent controlled Runtime promotion.
+Date:: 2026-10-19.
+Reviewed commit:: `3baaf5d12e2a35435e904e0d5aac11eddb8d2763`
+("fix(wfc): enumerate requested_route in the dispatched provider schema").
+Parent baseline:: `6102a13d65a973c2bf8425f1bff21c2acdf24598`.
+Governing incident:: H001 forensic report
+`workflow-coordinator-run-evidence/forensics/self-development/wfc-p35-finding-reachability-design-review-20261018-01/h001_forensic_report_2026-10-19.adoc`
+(Run `RUN-38d04873e4834f6784b3b716979dfd1e`, H001
+`INV-ee49d251013d41389602f11ab29e4dee`).
+Maintainer design decision reviewed against:: strict route-enum schema
+correction; *not* a relaxation of canonical validation or reducer semantics
+(forensic R7 primary, first alternative rejected).
+Review mode:: independent, fresh-context, adversarial. The implementer's
+commit message and test summary were treated as claims to falsify, not as
+evidence.
+
+[IMPORTANT]
+====
+The `O<n>` identifiers below are stable local identifiers of this review
+record. They are non-blocking observations, not WFC Current-Run Findings, and
+this review creates no WFC Finding. No material finding was recorded, so no
+`F<n>` identifier exists.
+
+Out of scope by instruction and respected here: P3.5 design content, model
+selection, Harness redesign, generalized routing architecture, unrelated
+cleanup, and the two independent workstreams the forensic report separated out
+(setuptools/build isolation, forensic R7.3; provider-diagnostic preservation,
+forensic R7.2). Observations O2, O3 and O5 touch the *consequences* of those
+workstreams for this commit only, and do not reopen them.
+====
+
+== 1. Verdict
+
+*A -- ACCEPT.*
+
+The observed provider-schema/canonical-validator mismatch is closed at the
+boundary the maintainer selected, verified end to end through a real dispatch
+and not merely at the schema-helper level. The route projection is sound: the
+dispatched enum is a subset of the route set the reducer honours in every
+dispatch-reachable Run state, it excludes no legitimate route, and it continues
+to imply no reducer authorization. The empty-route-set refusal is genuine
+pre-dispatch safety, not merely provider non-invocation: no Hop is charged, no
+dispatch marker is retained, and no `reconcile_required` arises. All supported
+result-contract families and versions, every in-tree `AgentExecutionRequest`
+construction site, the retained Codex smoke entry point, and provider-neutral
+canonical validation are preserved.
+
+Six non-blocking observations are recorded in <<observations>>. Two of them
+(O1, O2) are residuals of the root-cause *class* that the selected correction
+shape deliberately does not close; one (O4) is a test-adequacy defect in the
+added regression suite, not in the implementation.
+
+== 2. Scope and method
+
+Reviewed surface: commit `3baaf5d` only -- `adapter.py`, `codex_adapter.py`,
+`codex_adapter_smoke.py`, `slice4.py`, `vertical.py`, and the three touched
+unit-test modules. Adjacent unchanged surfaces (`reducer.py`, `prompt.py`,
+`serialization.py`, `persistence.py`, `operator.py`) were read as *context* for
+the invariants the commit claims, and `git diff 6102a13 3baaf5d` confirms none
+of them changed.
+
+Evidence base, all deterministic and local:
+
+* `git show`/`git diff` at both commits.
+* The repository test suite at `3baaf5d` (`.venv/bin/python -m pytest`),
+  and `ruff check .`.
+* Six independent probes written by this review and executed in two
+  *disposable detached `git worktree` checkouts* under the session scratchpad
+  (one at `3baaf5d`, one at `6102a13`), so that pre- and post-fix behaviour
+  could be compared without touching the working tree. Both worktrees were
+  removed afterwards (<<attestation>>).
+
+No provider was invoked, no WFC-managed Run was executed, and no Operations or
+State artifact was read or written. The probes use the repository's own fake
+`codex` executables, exactly as `tests/unit/test_slice4.py` does.
+
+No implementation code and no repository test was modified by this review.
+
+== 3. What the commit actually changes
+
+. `AgentExecutionRequest` gains `permitted_routes: tuple[str, ...] = ()`
+  (`src/workflow_coordinator/adapter.py:53-57`).
+. `_result_openai_schema` requires a non-empty `permitted_routes` and projects
+  `requested_route` as `{"type": "string", "enum": [...]}`
+  (`src/workflow_coordinator/codex_adapter.py:112-121`, `:200`); the three
+  wrappers `routing_result_openai_schema`, `projected_result_openai_schema`
+  and `structured_result_envelope_openai_schema` thread it through
+  (`:105-108`, `:272-284`, `:304-331`).
+. `CodexCliAdapter.execute` refuses an empty route set with `CodexCliError`
+  *before* the schema file is written and before `subprocess.Popen`
+  (`:372-375`).
+. `run_one_hop` supplies `permitted_routes=permitted_route_keys(run, profile)`
+  (`src/workflow_coordinator/vertical.py:321-330`).
+. `slice4.invoke_codex` gains a required keyword-only `permitted_routes`
+  (`src/workflow_coordinator/slice4.py:138-157`); the smoke harness passes
+  `("done",)` (`src/workflow_coordinator/codex_adapter_smoke.py:152`).
+
+No routing logic, canonical validator, or reducer semantics changed. That
+matches the maintainer's selected correction shape.
+
+== 4. Objective 1 -- root-cause closure
+
+=== 4.1 The dispatched schema, not the helper
+
+Probe *E1* drives `run_real_one_hop` with a fake provider and then reads the
+`structured-result.schema.json` actually written into the checkout state root
+for a `REVIEW_VERDICT` dispatch of a GATE review phase whose routes are
+`accept`/`correction`:
+
+[source,text]
+----
+ENUM: {'enum': ['accept', 'correction'], 'type': 'string'}
+----
+
+The same probe against the parent commit emits `{'type': 'string'}`. The
+correction is therefore present in the dispatched bytes, not only in the
+schema-builder fixtures.
+
+=== 4.2 The incident shape now reaches its intended stop
+
+Probe *E2* reproduces the H001 shape end to end -- GATE review phase,
+`verdict: changes_required`, `requires_human: true`,
+`escalation.kind: prerequisite` -- but with a valid enumerated
+`requested_route`:
+
+[source,text]
+----
+STATUS: RunStatus.AWAITING_HUMAN
+STOP:   mechanical_preemption:human_authority:prerequisite
+SEMANTIC: SemanticStop(kind='prerequisite', question='...', source_hop_id='H001')
+HOPS: 1   dispatch.json retained: False
+----
+
+This is the outcome the forensic report establishes as correct, reached through
+the real dispatch, validation and reduction path rather than by calling
+`reduce_result` directly.
+
+=== 4.3 Can the empty-route incident recur?
+
+Probe *E3* (control) emits the preserved incident byte pattern
+(`requested_route: ""`) from a non-compliant provider. It still fails:
+
+[source,text]
+----
+STATUS: RunStatus.RECONCILE_REQUIRED
+HOPS:   [('H001', 'uncertain_dispatch', 'uncertain')]   ANOMALIES: ()
+----
+
+This is correct and intended under the selected design: the archived bytes
+remain invalid, and the correction prevents a *compliant* provider from being
+*permitted* to emit them. It also fixes the residual risk precisely: the trap
+is narrowed to provider non-compliance rather than eliminated, and when it
+fires it still records no diagnostic (see O3, and forensic R7.2, out of scope).
+
+One supported dispatch path can still admit the exact incident byte: a profile
+whose route *key* is blank. See O1 -- it is a pre-existing authoring-surface
+gap, identical before and after this commit, and therefore not a regression of
+`3baaf5d`.
+
+== 5. Objective 2 -- route projection correctness
+
+`reducer.permitted_route_keys(run, profile)` is the authoritative source the
+reducer itself would use, and it is already the source of
+`next_permitted_route_keys` in `checkpoint_projection`
+(`src/workflow_coordinator/persistence.py:433`). Its branches were compared
+against what `reduce_result` honours after the result returns:
+
+[cols="2,3,3,2",options="header"]
+|===
+|Run state at dispatch |`permitted_route_keys` |Reducer-honoured set at reduce time |Assessment
+
+|`ready` (the only state `slice4.dispatch_eligible` admits, and the only state
+`operator.run_serial_hops` loops on)
+|all `phase.routes` keys, minus the evaluator escape route
+|`phase.routes.get(result.requested_route)` -- i.e. all keys, with the
+evaluator escape route separately preempted as
+`mechanical_preemption:reserved_route`
+|Correct. The one exclusion is a route the reducer would refuse anyway.
+
+|`running`
+|same as `ready`
+|same
+|Correct (verified by probe *E6*).
+
+|`awaiting_supervisor`
+|supervisor routes only (empty for every committed profile)
+|unreachable: `reduce_result` requires `run.status is RUNNING`
+|Not dispatch-reachable; fails closed if ever reached.
+
+|paused/terminal (`awaiting_human`, `awaiting_human_budget`,
+`reconcile_required`, `suspended`, `completed`, `stopped`)
+|empty
+|unreachable
+|Not dispatch-reachable; fails closed.
+
+|`_profile_phase` error (pinned profile identity changed, v3 profile with a
+non-v3 Run, unsupported schema pair)
+|empty
+|`mechanical_preemption:<error>` -> `awaiting_human`
+|Behaviour change; see O5. Not reachable through the operator CLI.
+|===
+
+Specific hazards checked:
+
+Current phase versus post-result state::
+The phase used for the enum is `profile.phases[run.phase]` at dispatch, and
+`run.phase` cannot change before `reduce_result` (the phase moves only inside
+`_apply_route`, after route resolution). The enum therefore cannot describe a
+stale phase.
+
+Routes guarded by Findings or evidence changed in the current Hop::
+These guards all run *after* route lookup and either preempt or override the
+agent's choice: `changes_required` + `RouteEffect.COMPLETE`, advisory-review
+completion, `_apply_finding_deltas` failures,
+`_validate_convergence_records_before_apply`, open-blocker completion, and the
+`required_evidence_failed` override that replaces `route_key` with
+`phase.review.failed_evidence_route`. None of them *adds* a route that the
+enum omits, so no legitimate request is excluded. The enum is therefore a
+necessary and not a sufficient condition -- schema admission still implies no
+reducer authorization, which is the correct relationship.
+
+Review, correction and rereview phases::
+Probe *E1* covers a GATE review phase; probe *E6* covers a v3 convergence
+`evaluator` phase with an explicit escape route. In the evaluator case the
+dispatched enum is `['accept', 'correct']` while `phase.routes` is
+`('accept', 'correct', 'diagnose')`: the reserved escape `diagnose` is excluded
+by the schema exactly as `prompt._header` already excludes it from the
+advertised `permitted_routes`. The coordinator-derived convergence escape is
+applied by the reducer (`route_reason = "convergence_escape:..."`), never
+requested by the agent, so nothing is lost.
+
+Human escalation, where the reducer ignores `requested_route`::
+`reduce_result` returns the human-authority stop before route resolution, so
+the forced enum value is semantically inert -- confirmed by probe *E2*. One
+audit-legibility consequence is recorded as O6.
+
+== 6. Objective 3 -- pre-dispatch and failure accounting
+
+Traced lifecycle, `slice4.run_real_one_hop` -> `vertical.run_one_hop` ->
+`CodexCliAdapter.execute`:
+
+. `dispatch_eligible` (status `ready`, budget available).
+. `preflight_hop`; `write_run_snapshot`; *`write_dispatch_marker`*.
+. `run_one_hop`: phase, contract selection, `preflight_hop`, prompt assembly.
+. `adapter.execute(AgentExecutionRequest(..., permitted_routes=...))`:
+  contract -> kind -> timeout -> version -> *route-set* checks, all before
+  `atomic_write_json(schema, ...)` and before `subprocess.Popen`.
+. provider; `validated_result`; trusted commit; evidence; `record_hop`;
+  `reduce_result`; checkpoint; marker unlink.
+
+The Hop is charged by `record_hop` only after the provider returned, and
+`CodexCliError` subclasses `ExecutionNotStartedError`, which
+`run_real_one_hop` handles by `dispatch_path.unlink(missing_ok=True)` followed
+by `Slice4Error` -- the pre-existing "proven not started" path, not the
+`except Exception -> recover_uncertain` path.
+
+Probe *E5* exercises the only in-tree route to an empty projection (pinned
+profile identity drift) through `run_real_one_hop`, with a fake provider that
+writes a sentinel file if entered:
+
+[source,text]
+----
+PERMITTED: ()   STATUS: RunStatus.READY
+RAISED: Slice4Error current phase has no permitted routes; refusing to dispatch an unroutable invocation
+PROVIDER ENTERED: False
+MARKER RETAINED: False
+RUN SNAPSHOT: ready        CHECKPOINT: False
+----
+
+So this is complete pre-dispatch safety, not merely provider non-invocation:
+no Hop charge, no retained marker, no `uncertain_dispatch`, no
+`reconcile_required`, and the persisted Run is unchanged. The adapter-level
+test additionally pins that no schema file is written.
+
+== 7. Objective 4 -- contract and compatibility preservation
+
+* `GENERIC_ROUTING_RESULT` v1/v2, `WORK_RESULT` v1/v2/v3 and `REVIEW_VERDICT`
+  v1/v2/v3 all receive the identical corrected projection; the version and
+  family admission checks still *precede* the new route check in both
+  `_result_openai_schema` and `CodexCliAdapter.execute`, so unsupported
+  kind/version combinations keep their existing error identity (pinned by the
+  retained `test_v3_projection_is_available_only_to_work_and_review_families`
+  and `test_codex_execute_admits_only_the_v3_family_pairs`).
+* `assert_openai_strict_schema` already admits `enum` (`_STRICT_KEYS`), and the
+  retained conformance tests run it over the corrected schema.
+* Every `AgentExecutionRequest` construction site in `src/` is updated
+  (`vertical.py:324`, `slice4.py:154`, `codex_adapter_smoke.py:146`); those are
+  also the only three `adapter.execute(` call sites in the package. The new
+  field is appended with a default, so existing positional construction is
+  source-compatible.
+* The smoke entry point stays coherent: its prompt asks for
+  `requested_route done` and it now dispatches `permitted_routes=("done",)`.
+* `invoke_codex` gains a *required* keyword-only parameter. Searched the whole
+  `/home/stefan/repos/spreadsheet-handling` tree: no consumer outside this
+  repository imports `workflow_coordinator` (`wfc/` is an independent older
+  checkout of this same project, `workflow-coordinator-runtime/` is the pinned
+  Runtime checkout). No external call site breaks.
+* Provider-neutral canonical validation is untouched: `validated_result` and
+  the three `*_from_data` parsers are byte-identical to the parent, so the
+  preserved incident bytes remain invalid, as the maintainer required.
+* Finding authority and escalation semantics are untouched (`reducer.py` and
+  `serialization.py` unchanged).
+* No previously valid workflow is broken by the new required input: the only
+  state in which the projection is empty while the Run is dispatch-eligible is
+  profile-identity drift, which `operator.main` cannot produce (it builds a
+  fresh `new_run` from the resolved profile into a fresh state root).
+
+== 8. Objective 5 -- test adequacy
+
+Honest coverage of what the commit changes:
+
+[cols="4,2,3",options="header"]
+|===
+|Added test |Falsifies the fix? |Note
+
+|`test_real_dispatch_schema_requested_route_tracks_the_live_phase_routes`
+|*Yes*
+|Fails on the parent (emits `{"type": "string"}`). This is the load-bearing
+regression guard and it is a real end-to-end dispatch.
+
+|`test_requested_route_is_projected_as_the_exact_permitted_route_enum`
+|Yes
+|Helper-level, but genuinely new behaviour.
+
+|`test_every_result_family_projects_the_same_corrected_requested_route_enum`
+|Yes
+|Closes forensic R8.4 (all three families).
+
+|`test_schema_builder_fails_closed_on_an_empty_permitted_route_set`
+|Yes
+|Helper-level.
+
+|`test_codex_execute_fails_closed_before_any_provider_invocation_when_unroutable`
+|Yes
+|Also asserts no schema file is written.
+
+|`test_review_verdict_prerequisite_escalation_with_enumerated_route_reaches_awaiting_human`
+|*No*
+|Reducer-only. Verified to pass unchanged against `6102a13` (probe *E4*).
+
+|`test_work_result_family_still_reaches_its_declared_route`
+|*No*
+|Reducer-only; same.
+|===
+
+Probe *E4*: both new `test_reducer.py` cases were copied into the parent
+worktree and executed against the parent source (`AgentExecutionRequest` there
+has no `permitted_routes` field, confirmed in-run) -- `2 passed`. `reducer.py`
+is not in the commit's diff, so this is expected: these two tests assert
+behaviour the commit did not change. They are useful characterization tests but
+they are not regression guards, and the commit message overstates them (O4).
+
+Gaps, in descending value (none of them blocking):
+
+. No end-to-end test of the H001-style prerequisite escalation through a real
+  dispatch. Probe *E2* is exactly that test, it passes, and it would have
+  guarded the pre-reducer boundary (`validated_result` ->
+  `ExecutionResultValidationError` -> `recover_uncertain`) where the incident
+  actually occurred. Recommended addition.
+. No test that the enum is derived for a *review*/`rereview` phase end to end
+  (the one wired test uses a worker phase and a `WORK_RESULT`), and none for
+  the reserved evaluator escape route (probes *E1* and *E6*).
+. No test of the empty-route refusal through `run_real_one_hop`, i.e. of the
+  Hop-charge, dispatch-marker and checkpoint accounting (probe *E5*). The
+  adapter-level test proves only provider non-entry.
+. No guard that the two independent "permitted routes" projections --
+  `prompt._header` and `reducer.permitted_route_keys` -- agree (O5).
+. No negative test that a blank route key is refused (O1), which is the one
+  remaining way the incident byte reaches the enum.
+
+== 9. Non-blocking observations
+[[observations]]
+
+O1 -- a blank profile route key still admits `""` into the enum::
+`serialization._mapping` constrains route keys only to "string" (unlike
+`policy.evidence_commands`, which is regex-constrained), so a profile with a
+route key of `""` loads. The dispatched enum then contains `""`, which
+canonical validation rejects unconditionally -- the exact H001 trap.
+Reproduced offline: `workflow_profile_from_yaml` with `"": {effect: complete}`
+loads, `permitted_route_keys` returns `('', 'done')`, the projection emits
+`{"type": "string", "enum": ["", "done"]}`, and `validated_result` then reports
+`routing result.requested_route must be a non-empty string`. This is *not* a
+regression of `3baaf5d` (the parent admitted `""` even more broadly, through
+the unconstrained string) and such a profile is independently broken, because
+`reducer` uses `phase.routes.get(phase.escape_route or "")` as a `None`
+sentinel. It is nevertheless the one supported dispatch path on which the new
+boundary guarantee does not hold. Smallest correction, if desired later:
+reject blank route keys in `_result_openai_schema` beside the existing empty-set
+check, or constrain route keys at profile admission.
+
+O2 -- the root-cause *class* is closed for one field only::
+Every other free-text string in the dispatched schema is still
+`{"type": "string"}` while canonical `_string` rejects blank values:
+`summary`, `escalation.question`, `invariant`, `successor_ref`, `local_ref`,
+`claimed_commits` items, `evidence_refs` items, `commit_intent.subject` and
+`commit_intent.paths` items. Demonstrated with `summary: ""` from a compliant
+provider: `RECONCILE_REQUIRED` with a charged `uncertain_dispatch` Hop -- the
+same accounting failure as H001 on a different field. This is inherent to the
+selected shape, not a defect of it: the strict subset in
+`codex_adapter._STRICT_KEYS` (and OpenAI Structured Outputs itself) cannot
+express a minimum length, and the two general mitigations are the ones the
+maintainer excluded (relaxing canonical validation) or deferred (diagnostic
+preservation, forensic R7.2). Recorded so the residual is explicit.
+
+O3 -- the preserved incident bytes remain permanently unreplayable::
+Forensic R8.3 asked for a regression fixture built from the preserved
+`result-message.json` bytes, reducing to `awaiting_human` with
+`semantic_stop(kind="prerequisite")`. Under the chosen correction shape that
+fixture is unsatisfiable by construction, and the commit substituted a
+semantically equivalent one. That substitution is sound, but it should be
+recorded against R8.3 rather than treated as satisfying it, and probe *E3*
+shows the recurrence path (non-compliant provider) still produces
+`reconcile_required` with an empty `anomalies` tuple.
+
+O4 -- the commit message overstates its regression coverage::
+The message claims the tests cover "a semantically equivalent prerequisite
+escalation ... now reaches awaiting_human with its prerequisite semantic stop
+(never reconcile_required)". The two tests that make that claim are reducer-only
+and pass unchanged on the parent (probe *E4*). The claim is true of the system;
+it is not established by those tests.
+
+O5 -- the empty-projection refusal replaces a durable mechanical preemption::
+For the only in-tree state that empties the projection (pinned profile identity
+drift, or a v3 profile against a non-v3 Run), the parent charged one Hop and
+reduced to `awaiting_human` with
+`stop_reason = mechanical_preemption:pinned profile identity changed` and the
+durable anomaly `('pinned profile identity changed',)` (verified on the parent
+worktree). `3baaf5d` instead raises
+`Slice4Error: current phase has no permitted routes` with no Hop, no anomaly
+and no checkpoint. On balance this is safer -- no Hop charge and no provider
+cost for an already-doomed Run -- and it is unreachable through
+`operator.main`. Two costs remain: the message misattributes the cause, and the
+durable diagnostic is lost. Also note that `prompt._header` and
+`reducer.permitted_route_keys` are now two independent projections of the same
+concept that agree only for `ready`/`running`; nothing pins that agreement.
+
+O6 -- an escalating Hop now durably records a disposition route it did not intend::
+`_with_hop_decision` records `hop.requested_route = result.requested_route` on
+every reduction, including human-authority preemption. Under a strict enum, an
+escalating reviewer must name a real route (for the P3.5 profile, `accept` or
+`correction`), so the audit record of an escalation Hop now reads as a
+disposition request. No mechanical consumer is misled -- the convergence
+route-history validators only inspect Hops carrying a strategy record or
+`route_reason`, and `_with_convergence_records` runs after the escalation
+return, so a preempted Hop carries neither. This is an audit-legibility
+consequence of the stricter schema, not an authority defect.
+
+Minor, not tracked as an observation: `AgentExecutionRequest.permitted_routes`
+defaults to `()`, which is safe only because the one strict-schema adapter
+fails closed on it; the field comment states that obligation for future
+adapters. And section 5 of
+`docs/wfc_projected_result_contracts_concept_2026-10-07.adoc` still says the
+adapter supplies "ONE schema per version, covering every phase/role", which is
+now false (the schema is phase-derived). That document is a dated, unclassified
+concept snapshot and no current authority surface contradicts the code.
+
+== 10. Test and lint evidence
+
+At `3baaf5d`, in the repository `.venv` (Python 3.13.5):
+
+* `python -m pytest` -- `765 passed in 127.60s`, exit code 0 (test items
+  across `tests/unit` and `tests/architecture`).
+* `python -m pytest tests/unit/test_codex_adapter_conformance.py
+  tests/unit/test_reducer.py tests/unit/test_slice4.py` -- exit code 0.
+* `python -m ruff check .` -- "All checks passed!".
+
+Review probes (scratchpad only, never added to `tests/`):
+
+[cols="1,4,2",options="header"]
+|===
+|ID |Probe |Result
+
+|E1 |Dispatched `structured-result.schema.json` for a real GATE review dispatch
+|enum `['accept','correction']` at `3baaf5d`; `{"type":"string"}` at `6102a13`
+
+|E2 |H001 prerequisite escalation with an enumerated route, end to end
+|`awaiting_human` + `mechanical_preemption:human_authority:prerequisite`
+
+|E3 |Preserved incident bytes (`requested_route: ""`), non-compliant provider
+|`reconcile_required`, `uncertain_dispatch`, `anomalies == ()`
+
+|E4 |The two added `test_reducer.py` cases against the parent source
+|`2 passed` -- they do not falsify the fix
+
+|E5 |Empty projection through `run_real_one_hop`
+|`Slice4Error`; provider not entered; marker removed; no Hop; no checkpoint
+
+|E6 |`permitted_route_keys` versus `prompt._header` for an evaluator phase, and
+across Run statuses
+|identical for `ready`/`running`; escape route reserved out of both
+|===
+
+== 11. Attestation
+[[attestation]]
+
+This review modified no implementation code, no repository test, and no Run,
+Operations or State artifact. It invoked no provider and executed no
+WFC-managed Run. Its only working-tree write is this document. The two
+disposable `git worktree` checkouts used for the parent/child comparison were
+created under the session scratchpad and removed afterwards; `git worktree
+list` shows only the primary checkout.
