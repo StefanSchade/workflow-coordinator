@@ -26,6 +26,8 @@ from workflow_coordinator.model import (
     FindingState,
     MechanicalFacts,
     ResultContractKind,
+    ReviewDisposition,
+    ReviewVerdict,
     Run,
     RunStatus,
     Route,
@@ -416,6 +418,83 @@ def test_prerequisite_requires_human_and_uses_common_reconcile_resume():
     resumed = resume_after_reconcile(returned, workflow, current_head="child-head")
     assert resumed.status is RunStatus.READY
     assert resumed.reconcile_reason == "prerequisite_return"
+
+
+def test_review_verdict_prerequisite_escalation_with_enumerated_route_reaches_awaiting_human():
+    """Regression for WFC H001: a correlated REVIEW_VERDICT result carrying a
+    prerequisite escalation and a *valid, enumerated* requested_route must stop
+    awaiting_human with its prerequisite semantic stop -- it must never be
+    rejected by canonical validation into reconcile_required, because the
+    reducer never reads requested_route once requires_human/escalation fire
+    (reducer.py:1651 precedes route resolution at :1679)."""
+    workflow = profile(
+        {"review": phase(
+            {"accept": route("complete"), "correction": route("goto", "review")},
+            role="independent_reviewer", review="gate",
+        )}
+    )
+    run, hop_id = charge_hop(run_for(workflow, budget=3, initial_phase="review"))
+    run = replace(
+        run,
+        hops=(
+            *run.hops[:-1],
+            replace(
+                run.hops[-1],
+                result_contract_kind=ResultContractKind.REVIEW_VERDICT,
+                result_contract_version=1,
+            ),
+        ),
+    )
+    verdict = ReviewVerdict(
+        schema_version=1,
+        verdict=ReviewDisposition.CHANGES_REQUIRED,
+        requested_route="accept",
+        scope_changed=False,
+        requires_human=True,
+        escalation=Escalation("prerequisite", "Is the Coordinator-trusted suite green?"),
+        findings=(),
+        claimed_commits=(),
+        commit_intent=None,
+        evidence_refs=("tests",),
+        summary="agent-local suite could not establish a Coordinator-trusted result",
+    )
+    stopped = reduce_result(run, verdict, workflow, hop_id=hop_id).run
+    assert stopped.status is RunStatus.AWAITING_HUMAN
+    assert stopped.semantic_stop is not None
+    assert stopped.semantic_stop.kind == "prerequisite"
+    assert stopped.stop_reason == "mechanical_preemption:human_authority:prerequisite"
+
+
+def test_work_result_family_still_reaches_its_declared_route():
+    """An ordinary, non-escalating WORK_RESULT result is unaffected by the fix."""
+    workflow = profile({"work": phase({"done": route("complete")})})
+    run, hop_id = charge_hop(run_for(workflow, budget=3))
+    run = replace(
+        run,
+        hops=(
+            *run.hops[:-1],
+            replace(
+                run.hops[-1],
+                result_contract_kind=ResultContractKind.WORK_RESULT,
+                result_contract_version=1,
+            ),
+        ),
+    )
+    work_result = WorkResult(
+        schema_version=1,
+        status=WorkStatus.COMPLETED,
+        requested_route="done",
+        scope_changed=False,
+        requires_human=False,
+        escalation=None,
+        findings=(),
+        claimed_commits=(),
+        commit_intent=None,
+        evidence_refs=("tests",),
+        summary="ordinary completion",
+    )
+    completed = reduce_result(run, work_result, workflow, hop_id=hop_id).run
+    assert completed.status is RunStatus.COMPLETED
 
 
 def test_reconcile_rejects_stale_reality_and_unresolved_anomaly():

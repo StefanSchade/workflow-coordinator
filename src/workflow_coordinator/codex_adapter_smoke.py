@@ -149,6 +149,7 @@ def run_smoke(
                 repository=workspace,
                 result_contract=ROUTING_RESULT_ENVELOPE_CONTRACT,
                 timeout_seconds=timeout_seconds,
+                permitted_routes=("done",),
             )
         )
     except ExecutionNotStartedError as error:

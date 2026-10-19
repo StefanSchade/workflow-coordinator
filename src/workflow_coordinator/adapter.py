@@ -50,6 +50,11 @@ class AgentExecutionRequest:
     timeout_seconds: float
     contract_version: int = 1
     result_contract_kind: ResultContractKind = ResultContractKind.GENERIC_ROUTING_RESULT
+    # Current-phase route keys a strict-schema adapter may admit for
+    # ``requested_route``; empty is only meaningful to adapters that do not
+    # project such a schema (a strict-schema adapter must fail closed on empty,
+    # never treat it as unconstrained).
+    permitted_routes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -138,7 +138,7 @@ def checkout_state_root(state_root: Path, association: CheckoutAssociation) -> P
 def invoke_codex(
     *, repository: Path, state_root: Path, association: CheckoutAssociation,
     prompt: str, expected: Invocation, timeout_seconds: float,
-    model: str, reasoning_effort: str, executable: str = "codex",
+    model: str, reasoning_effort: str, permitted_routes: tuple[str, ...], executable: str = "codex",
 ) -> AgentExecutionOutcome:
     """Compatibility wrapper for the concrete Codex execution port."""
     _require_external_state_root(state_root, repository)
@@ -151,7 +151,10 @@ def invoke_codex(
             reasoning_effort=reasoning_effort,
             executable=executable,
         ).execute(
-            AgentExecutionRequest(expected, prompt, repository, ROUTING_RESULT_ENVELOPE_CONTRACT, timeout_seconds)
+            AgentExecutionRequest(
+                expected, prompt, repository, ROUTING_RESULT_ENVELOPE_CONTRACT, timeout_seconds,
+                permitted_routes=permitted_routes,
+            )
         )
     except CodexCliError as error:
         raise Slice4Error(str(error)) from error

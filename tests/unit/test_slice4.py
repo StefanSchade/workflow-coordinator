@@ -75,6 +75,9 @@ def _fake(tmp_path: Path, body: str) -> Path:
     return executable
 
 
+_PERMITTED_ROUTES = ("done",)
+
+
 def _expected() -> Invocation:
     return Invocation("RUN-1", "H001", "INV-1")
 
@@ -163,7 +166,7 @@ def _known_good_envelope(result_contract_kind=ResultContractKind.GENERIC_ROUTING
 
 
 def test_codex_projection_makes_every_object_strict_and_complete():
-    schema = structured_result_envelope_openai_schema(_expected())
+    schema = structured_result_envelope_openai_schema(_expected(), permitted_routes=_PERMITTED_ROUTES)
     result = schema["properties"]["result"]
     escalation = result["properties"]["escalation"]["anyOf"][1]
     finding = result["properties"]["findings"]["items"]
@@ -176,12 +179,14 @@ def test_codex_projection_makes_every_object_strict_and_complete():
 
 
 def test_codex_projection_tracks_routing_result_validator_contract():
-    result = structured_result_envelope_openai_schema(_expected())["properties"]["result"]
+    result = structured_result_envelope_openai_schema(
+        _expected(), permitted_routes=_PERMITTED_ROUTES
+    )["properties"]["result"]
     assert set(result["required"]) == set(ROUTING_RESULT_REQUIRED_KEYS)
 
 
 def test_codex_projection_tracks_complete_finding_delta_contract():
-    schema = structured_result_envelope_openai_schema(_expected())
+    schema = structured_result_envelope_openai_schema(_expected(), permitted_routes=_PERMITTED_ROUTES)
     finding = schema["properties"]["result"]["properties"]["findings"]["items"]
     new_finding, existing_finding = finding["anyOf"]
     assert set(new_finding["required"]) == set(NEW_FINDING_DELTA_KEYS)
@@ -209,15 +214,18 @@ def test_invoke_codex_writes_the_canonical_structured_result_schema(repository, 
     state = tmp_path / "external"
     association = register_checkout(state, repository)
     executable = _fake(tmp_path, "pass\n")
-    invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
+    invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", permitted_routes=_PERMITTED_ROUTES, executable=str(executable))
     emitted = json.loads((state / "checkouts" / association.checkout_id / "structured-result.schema.json").read_text())
-    assert emitted == structured_result_envelope_openai_schema(_expected())
+    assert emitted == structured_result_envelope_openai_schema(_expected(), permitted_routes=_PERMITTED_ROUTES)
 
 
 def test_known_good_envelope_passes_adapter_validation_and_provider_schema():
     envelope = _known_good_envelope()
     assert validated_result(json.dumps(envelope), _expected()).summary == "done"
-    _assert_matches_schema(envelope, structured_result_envelope_openai_schema(_expected()))
+    _assert_matches_schema(
+        envelope,
+        structured_result_envelope_openai_schema(_expected(), permitted_routes=_PERMITTED_ROUTES),
+    )
 
 
 def test_state_root_nesting_is_rejected_before_any_trusted_write(repository, tmp_path):
@@ -257,7 +265,7 @@ def test_nonempty_invalid_result_is_not_established(repository, tmp_path, payloa
     state = tmp_path / "external"
     association = register_checkout(state, repository)
     executable = _fake(tmp_path, "import pathlib,sys\np=pathlib.Path(sys.argv[sys.argv.index('--output-last-message')+1]); p.write_text(" + repr(payload) + ")\n")
-    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
+    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", permitted_routes=_PERMITTED_ROUTES, executable=str(executable))
     assert outcome.candidate_result == payload
 
 
@@ -265,7 +273,7 @@ def test_nonzero_without_result_is_uncertain(repository, tmp_path):
     state = tmp_path / "external"
     association = register_checkout(state, repository)
     executable = _fake(tmp_path, "import sys\nsys.exit(7)\n")
-    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
+    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", permitted_routes=_PERMITTED_ROUTES, executable=str(executable))
     assert outcome.returncode == 7 and outcome.candidate_result is None
 
 
@@ -296,6 +304,28 @@ output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001
     for option in ("--output-schema", "--output-last-message"):
         assert Path(argv[argv.index(option) + 1]).is_relative_to(state.resolve())
     assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
+
+
+def test_real_dispatch_schema_requested_route_tracks_the_live_phase_routes(repository, tmp_path):
+    """H001 correction, wired end to end: the schema actually written for a real
+    dispatch enumerates exactly the current phase's permitted routes, not a
+    fixture-only property of ``structured_result_envelope_openai_schema``."""
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    script = '''import json, pathlib, sys
+args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message")+1])
+output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001","invocation_id":"INV-1","result":{"schema_version":1,"status":"completed","requested_route":"accept","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":[],"summary":"done"}}))
+'''
+    executable = _fake(tmp_path, script)
+    workflow = profile({"work": phase({"accept": route("complete"), "correction": route("goto", "work")})})
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+    result = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
+    assert result.reduction.run.status.value == "completed"
+    emitted = json.loads((state / "checkouts" / association.checkout_id / "structured-result.schema.json").read_text())
+    assert emitted["properties"]["result"]["properties"]["requested_route"] == {
+        "type": "string", "enum": ["accept", "correction"],
+    }
 
 
 def test_completed_pair_marker_is_reconciled_idempotently_without_redispatch(
@@ -818,7 +848,7 @@ def test_timeout_kills_process_group_descendant(repository, tmp_path):
     association = register_checkout(state, repository)
     child_pid = tmp_path / "descendant.pid"
     executable = _fake(tmp_path, f"import subprocess,time\np=subprocess.Popen(('sleep','30'))\nopen({str(child_pid)!r},'w').write(str(p.pid))\ntime.sleep(30)\n")
-    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=0.1, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
+    outcome = invoke_codex(repository=repository, state_root=state, association=association, prompt="x", expected=_expected(), timeout_seconds=0.1, model="explicit-test-model", reasoning_effort="high", permitted_routes=_PERMITTED_ROUTES, executable=str(executable))
     assert outcome.timed_out
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:

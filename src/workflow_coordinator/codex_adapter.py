@@ -102,15 +102,23 @@ def _bounded(value: str, limit: int = 16_384) -> str:
     return value[-limit:]
 
 
-def routing_result_openai_schema(contract_version: int = 1) -> dict[str, Any]:
+def routing_result_openai_schema(
+    contract_version: int = 1, *, permitted_routes: tuple[str, ...]
+) -> dict[str, Any]:
     """Project canonical RoutingResult facts into the Codex strict dialect."""
-    return _result_openai_schema(contract_version, permit_v3=False)
+    return _result_openai_schema(contract_version, permit_v3=False, permitted_routes=permitted_routes)
 
 
-def _result_openai_schema(contract_version: int, *, permit_v3: bool) -> dict[str, Any]:
+def _result_openai_schema(
+    contract_version: int, *, permit_v3: bool, permitted_routes: tuple[str, ...]
+) -> dict[str, Any]:
     """Build the shared result projection for one already-admitted family."""
     if contract_version not in ({1, 2, 3} if permit_v3 else {1, 2}):
         raise OpenAIStrictSchemaError("unsupported RoutingResult contract version")
+    if not permitted_routes:
+        raise OpenAIStrictSchemaError(
+            "requested_route enum requires at least one current-phase permitted route"
+        )
     string_array = {"type": "array", "items": {"type": "string"}}
     new_finding = {
         "type": "object", "additionalProperties": False,
@@ -189,7 +197,7 @@ def _result_openai_schema(contract_version: int, *, permit_v3: bool) -> dict[str
     properties = {
             "schema_version": {"type": "integer", "enum": [contract_version]},
             "outcome": {"type": "string", "enum": [outcome.value for outcome in Outcome]},
-            "requested_route": {"type": "string"}, "scope_changed": {"type": "boolean"},
+            "requested_route": {"type": "string", "enum": list(permitted_routes)}, "scope_changed": {"type": "boolean"},
             "requires_human": {"type": "boolean"}, "escalation": {"anyOf": [{"type": "null"}, escalation]},
             "findings": {"type": "array", "items": finding}, "claimed_commits": string_array,
             "commit_intent": {"anyOf": [{"type": "null"}, commit_intent]},
@@ -261,15 +269,19 @@ def _result_openai_schema(contract_version: int, *, permit_v3: bool) -> dict[str
     }
 
 
-def projected_result_openai_schema(kind: ResultContractKind, contract_version: int) -> dict[str, Any]:
+def projected_result_openai_schema(
+    kind: ResultContractKind, contract_version: int, *, permitted_routes: tuple[str, ...]
+) -> dict[str, Any]:
     """Project one selected semantic family without widening it to RoutingResult."""
     if kind is ResultContractKind.GENERIC_ROUTING_RESULT:
-        return routing_result_openai_schema(contract_version)
+        return routing_result_openai_schema(contract_version, permitted_routes=permitted_routes)
     if kind not in {ResultContractKind.WORK_RESULT, ResultContractKind.REVIEW_VERDICT}:
         raise OpenAIStrictSchemaError(f"unsupported result contract kind: {kind}")
     if not admits_result_contract_version(kind, contract_version):
         raise OpenAIStrictSchemaError("unsupported result contract version")
-    schema = copy.deepcopy(_result_openai_schema(contract_version, permit_v3=True))
+    schema = copy.deepcopy(
+        _result_openai_schema(contract_version, permit_v3=True, permitted_routes=permitted_routes)
+    )
     result = schema["properties"]
     required = schema["required"]
     result.pop("outcome")
@@ -292,6 +304,7 @@ def projected_result_openai_schema(kind: ResultContractKind, contract_version: i
 def structured_result_envelope_openai_schema(
     invocation: Invocation, contract_version: int = 1,
     result_contract_kind: ResultContractKind = ResultContractKind.GENERIC_ROUTING_RESULT,
+    *, permitted_routes: tuple[str, ...],
 ) -> dict[str, Any]:
     """Return the exact strict schema supplied by ``CodexCliAdapter``.
 
@@ -311,7 +324,9 @@ def structured_result_envelope_openai_schema(
             "schema_version": {"type": "integer", "enum": [contract_version]},
             "run_id": dispatched(invocation.run_id), "hop_id": dispatched(invocation.hop_id),
             "invocation_id": dispatched(invocation.invocation_id),
-            "result": projected_result_openai_schema(result_contract_kind, contract_version),
+            "result": projected_result_openai_schema(
+                result_contract_kind, contract_version, permitted_routes=permitted_routes
+            ),
         },
     }
 
@@ -354,13 +369,18 @@ class CodexCliAdapter:
             request.result_contract_kind, request.contract_version
         ):
             raise CodexCliError("unsupported result contract version")
+        if not request.permitted_routes:
+            raise CodexCliError(
+                "current phase has no permitted routes; refusing to dispatch an unroutable invocation"
+            )
         try:
             schema = self.result_directory / "structured-result.schema.json"
             result = self.result_directory / "result-message.json"
             atomic_write_json(
                 schema,
                 structured_result_envelope_openai_schema(
-                    request.invocation, request.contract_version, request.result_contract_kind
+                    request.invocation, request.contract_version, request.result_contract_kind,
+                    permitted_routes=request.permitted_routes,
                 ),
             )
             atomic_write_text(result, "")

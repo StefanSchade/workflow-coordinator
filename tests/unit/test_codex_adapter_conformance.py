@@ -30,13 +30,18 @@ from workflow_coordinator.serialization import (
 )
 
 
+_PERMITTED_ROUTES = ("accept", "correction")
+
+
 def _invocation(run_id: str = "RUN-A", hop_id: str = "H003", invocation_id: str = "INV-X") -> Invocation:
     return Invocation(run_id, hop_id, invocation_id)
 
 
 def _envelope_schema(invocation: Invocation | None = None) -> dict:
     """The projection is invocation-specific, so every schema test dispatches one."""
-    return structured_result_envelope_openai_schema(invocation or _invocation())
+    return structured_result_envelope_openai_schema(
+        invocation or _invocation(), permitted_routes=_PERMITTED_ROUTES
+    )
 
 
 def test_exact_codex_projection_conforms_to_supported_openai_strict_subset():
@@ -83,7 +88,7 @@ def test_projection_derives_from_canonical_semantic_contract_facts():
 
 
 def test_result_v2_projection_is_strict_closed_and_null_only_for_later_slice_records():
-    schema = structured_result_envelope_openai_schema(_invocation(), 2)
+    schema = structured_result_envelope_openai_schema(_invocation(), 2, permitted_routes=_PERMITTED_ROUTES)
     assert_openai_strict_schema(schema)
     assert schema["properties"]["schema_version"]["enum"] == [2]
     result = schema["properties"]["result"]
@@ -98,10 +103,10 @@ def test_result_v2_projection_is_strict_closed_and_null_only_for_later_slice_rec
 
 def test_v3_projection_is_available_only_to_work_and_review_families():
     worker = structured_result_envelope_openai_schema(
-        _invocation(), 3, ResultContractKind.WORK_RESULT
+        _invocation(), 3, ResultContractKind.WORK_RESULT, permitted_routes=_PERMITTED_ROUTES
     )
     review = structured_result_envelope_openai_schema(
-        _invocation(), 3, ResultContractKind.REVIEW_VERDICT
+        _invocation(), 3, ResultContractKind.REVIEW_VERDICT, permitted_routes=_PERMITTED_ROUTES
     )
     for schema in (worker, review):
         assert_openai_strict_schema(schema)
@@ -112,7 +117,8 @@ def test_v3_projection_is_available_only_to_work_and_review_families():
         assert set(transition["properties"]) == {"finding_id", "target", "evidence_refs"}
     with pytest.raises(OpenAIStrictSchemaError, match="unsupported"):
         structured_result_envelope_openai_schema(
-            _invocation(), 3, ResultContractKind.GENERIC_ROUTING_RESULT
+            _invocation(), 3, ResultContractKind.GENERIC_ROUTING_RESULT,
+            permitted_routes=_PERMITTED_ROUTES,
         )
 
 
@@ -126,13 +132,14 @@ def test_codex_execute_admits_only_the_v3_family_pairs(tmp_path: Path):
     request = AgentExecutionRequest(
         _invocation(), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5,
         contract_version=3, result_contract_kind=ResultContractKind.WORK_RESULT,
+        permitted_routes=_PERMITTED_ROUTES,
     )
     adapter.execute(request)
     emitted = json.loads(
         (tmp_path / "structured-result.schema.json").read_text(encoding="utf-8")
     )
     assert emitted == structured_result_envelope_openai_schema(
-        request.invocation, 3, ResultContractKind.WORK_RESULT
+        request.invocation, 3, ResultContractKind.WORK_RESULT, permitted_routes=_PERMITTED_ROUTES
     )
     with pytest.raises(RuntimeError, match="unsupported result contract version"):
         adapter.execute(
@@ -140,6 +147,7 @@ def test_codex_execute_admits_only_the_v3_family_pairs(tmp_path: Path):
                 _invocation(), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5,
                 contract_version=3,
                 result_contract_kind=ResultContractKind.GENERIC_ROUTING_RESULT,
+                permitted_routes=_PERMITTED_ROUTES,
             )
         )
 
@@ -195,18 +203,22 @@ def test_codex_execute_uses_the_generic_kind_for_both_legacy_versions(
         _invocation(), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5,
         contract_version=contract_version,
         result_contract_kind=ResultContractKind.GENERIC_ROUTING_RESULT,
+        permitted_routes=_PERMITTED_ROUTES,
     )
     adapter.execute(request)
     emitted = json.loads(
         (tmp_path / "structured-result.schema.json").read_text(encoding="utf-8")
     )
     assert emitted == structured_result_envelope_openai_schema(
-        request.invocation, contract_version
+        request.invocation, contract_version, permitted_routes=_PERMITTED_ROUTES
     )
 
 
 def test_codex_argv_is_adapter_owned_and_request_is_provider_neutral(tmp_path: Path):
-    request = AgentExecutionRequest(Invocation("RUN", "H001", "INV"), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 1)
+    request = AgentExecutionRequest(
+        Invocation("RUN", "H001", "INV"), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 1,
+        permitted_routes=_PERMITTED_ROUTES,
+    )
     adapter = CodexCliAdapter(
         tmp_path, model="explicit-model", reasoning_effort="high", executable="fake-codex"
     )
@@ -228,10 +240,10 @@ def test_adapter_rejects_an_unsupported_result_contract_before_launch(tmp_path: 
 
 def test_projected_worker_and_review_schemas_have_disjoint_vocabulary():
     worker = structured_result_envelope_openai_schema(
-        _invocation(), 1, ResultContractKind.WORK_RESULT
+        _invocation(), 1, ResultContractKind.WORK_RESULT, permitted_routes=_PERMITTED_ROUTES
     )["properties"]["result"]
     review = structured_result_envelope_openai_schema(
-        _invocation(), 1, ResultContractKind.REVIEW_VERDICT
+        _invocation(), 1, ResultContractKind.REVIEW_VERDICT, permitted_routes=_PERMITTED_ROUTES
     )["properties"]["result"]
     assert "outcome" not in worker["properties"]
     assert worker["properties"]["status"]["enum"] == ["completed", "blocked"]
@@ -301,13 +313,16 @@ def test_execute_writes_the_schema_derived_from_the_exact_dispatched_invocation(
     executable.write_text("#!/usr/bin/env python3\npass\n")
     executable.chmod(0o755)
     invocation = _invocation("RUN-WIRED", "H007", "INV-WIRED")
-    request = AgentExecutionRequest(invocation, "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5)
+    request = AgentExecutionRequest(
+        invocation, "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5,
+        permitted_routes=_PERMITTED_ROUTES,
+    )
     adapter = CodexCliAdapter(tmp_path, model="explicit-model", reasoning_effort="high", executable=str(executable))
 
     adapter.execute(request)
 
     emitted = json.loads((tmp_path / "structured-result.schema.json").read_text(encoding="utf-8"))
-    assert emitted == structured_result_envelope_openai_schema(invocation)
+    assert emitted == structured_result_envelope_openai_schema(invocation, permitted_routes=_PERMITTED_ROUTES)
     assert emitted["properties"]["run_id"]["enum"] == ["RUN-WIRED"]
 
 
@@ -326,7 +341,10 @@ def test_execute_never_repairs_a_divergent_returned_identity(tmp_path: Path):
     )
     executable.chmod(0o755)
     invocation = _invocation("RUN-WIRED", "H007", "INV-WIRED")
-    request = AgentExecutionRequest(invocation, "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5)
+    request = AgentExecutionRequest(
+        invocation, "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5,
+        permitted_routes=_PERMITTED_ROUTES,
+    )
     adapter = CodexCliAdapter(tmp_path, model="explicit-model", reasoning_effort="high", executable=str(executable))
 
     outcome = adapter.execute(request)
@@ -334,3 +352,56 @@ def test_execute_never_repairs_a_divergent_returned_identity(tmp_path: Path):
     assert json.loads(outcome.candidate_result)["run_id"] == "RUN-WIRED,"
     with pytest.raises(ResultValidationError, match="does not correlate"):
         validated_result(outcome.candidate_result, invocation)
+
+
+def test_requested_route_is_projected_as_the_exact_permitted_route_enum():
+    """H001 correction: ``requested_route`` must enumerate current-phase routes,
+    never an unconstrained string an agent could satisfy with ``""``."""
+    schema = structured_result_envelope_openai_schema(
+        _invocation(), permitted_routes=("accept", "correction")
+    )
+    requested_route_schema = schema["properties"]["result"]["properties"]["requested_route"]
+    assert requested_route_schema == {"type": "string", "enum": ["accept", "correction"]}
+    assert "" not in requested_route_schema["enum"]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        ResultContractKind.GENERIC_ROUTING_RESULT,
+        ResultContractKind.WORK_RESULT,
+        ResultContractKind.REVIEW_VERDICT,
+    ],
+)
+def test_every_result_family_projects_the_same_corrected_requested_route_enum(kind):
+    schema = structured_result_envelope_openai_schema(
+        _invocation(), 1, kind, permitted_routes=_PERMITTED_ROUTES
+    )
+    assert schema["properties"]["result"]["properties"]["requested_route"] == {
+        "type": "string", "enum": list(_PERMITTED_ROUTES),
+    }
+
+
+def test_schema_builder_fails_closed_on_an_empty_permitted_route_set():
+    """Item 6: an incoherent (empty) permitted-route set must refuse to build a
+    schema rather than inventing a route or falling back to an unconstrained
+    string (which is exactly how the original defect admitted ``""``)."""
+    with pytest.raises(
+        OpenAIStrictSchemaError, match="requires at least one current-phase permitted route"
+    ):
+        structured_result_envelope_openai_schema(_invocation(), permitted_routes=())
+
+
+def test_codex_execute_fails_closed_before_any_provider_invocation_when_unroutable(tmp_path: Path):
+    executable = tmp_path / "must-not-run"
+    adapter = CodexCliAdapter(
+        tmp_path, model="explicit-model", reasoning_effort="high", executable=str(executable)
+    )
+    request = AgentExecutionRequest(
+        _invocation(), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5,
+        permitted_routes=(),
+    )
+    with pytest.raises(RuntimeError, match="no permitted routes"):
+        adapter.execute(request)
+    assert not (tmp_path / "structured-result.schema.json").exists()
+    assert not executable.exists()

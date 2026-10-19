@@ -69,6 +69,7 @@ from .prompt import (
 from .reducer import (
     Reduction,
     derive_convergence_facts,
+    permitted_route_keys,
     reduce_result,
     validate_convergence_route_history,
 )
@@ -317,11 +318,15 @@ def run_one_hop(
         )
     except Exception as error:
         raise ExecutionNotStartedError(str(error)) from error
+    # Reuses the one canonical projection of "routes this Hop may request"
+    # (also the source of ``next_permitted_route_keys``), so the dispatched
+    # provider schema can never diverge from what the reducer would honor.
     outcome = adapter.execute(AgentExecutionRequest(
         invocation, prompt.text, repository,
         ROUTING_RESULT_ENVELOPE_CONTRACT, execution_timeout_seconds,
         contract_version=selected_result_contract_version,
         result_contract_kind=selected_result_contract,
+        permitted_routes=permitted_route_keys(run, profile),
     ))
     if outcome.candidate_result is None:
         raise ExecutionResultValidationError(outcome, "agent execution produced no candidate structured result")
