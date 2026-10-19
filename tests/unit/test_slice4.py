@@ -328,6 +328,82 @@ output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001
     }
 
 
+def test_real_dispatch_review_verdict_prerequisite_escalation_reaches_awaiting_human(
+    repository, tmp_path
+):
+    """Closes review observation O4 with the end-to-end H001 shape: a GATE
+    review phase dispatches a REVIEW_VERDICT schema enumerating its own
+    accept/correction routes; a compliant fake provider returns a correlated
+    prerequisite escalation naming an enumerated route; canonical validation
+    admits those bytes and the Coordinator reduces them to awaiting_human with
+    the prerequisite semantic stop.  Unlike the reducer-only cases, this
+    traverses the pre-reducer boundary where the incident actually occurred
+    (``validated_result`` -> ``ExecutionResultValidationError`` ->
+    ``recover_uncertain``), so an uncertain_dispatch charge or
+    reconcile_required would fail it."""
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    script = '''import json, pathlib, sys
+args=sys.argv[1:]; output=pathlib.Path(args[args.index("--output-last-message")+1])
+output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001","invocation_id":"INV-1","result":{"schema_version":1,"verdict":"changes_required","requested_route":"accept","scope_changed":False,"requires_human":True,"escalation":{"kind":"prerequisite","question":"Is the Coordinator-trusted suite green?"},"findings":[],"claimed_commits":[],"commit_intent":None,"evidence_refs":["agent-local pytest"],"summary":"prerequisite unresolved before any route request"}}))
+'''
+    executable = _fake(tmp_path, script)
+    workflow = profile({"review": phase(
+        {"accept": route("complete"), "correction": route("goto", "review")},
+        role="independent_reviewer", review="gate",
+    )})
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=2), current_head=head, baseline_head=head)
+
+    stopped = run_real_one_hop(
+        run,
+        workflow,
+        repository,
+        {
+            **_components(),
+            "independent_reviewer": PromptComponent(
+                "independent_reviewer", "reviewer.txt", "PIN", "reviewer"
+            ),
+        },
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture independent reviewer",
+        task_payload="fixture",
+        invocation_id="INV-1",
+        timeout_seconds=2,
+        model="explicit-test-model",
+        reasoning_effort="high",
+        executable=str(executable),
+    )
+
+    run_root = state / "checkouts" / association.checkout_id
+    emitted = json.loads((run_root / "structured-result.schema.json").read_text())
+    dispatched_result = emitted["properties"]["result"]["properties"]
+    assert dispatched_result["requested_route"] == {
+        "type": "string", "enum": ["accept", "correction"],
+    }
+    assert "verdict" in dispatched_result and "status" not in dispatched_result
+
+    assert stopped.vertical is not None
+    assert stopped.run.status.value == "awaiting_human"
+    assert stopped.run.stop_reason == "mechanical_preemption:human_authority:prerequisite"
+    assert stopped.run.semantic_stop is not None
+    assert stopped.run.semantic_stop.kind == "prerequisite"
+    assert stopped.run.semantic_stop.source_hop_id == "H001"
+    assert stopped.run.semantic_stop.question == "Is the Coordinator-trusted suite green?"
+    assert stopped.run.anomalies == ()
+    hop = stopped.run.hops[-1]
+    assert (hop.hop_id, hop.role, hop.outcome) == (
+        "H001", "independent_reviewer", "changes_required",
+    )
+    assert hop.result_contract_kind is ResultContractKind.REVIEW_VERDICT
+    assert hop.requested_route == "accept" and hop.applied_route is None
+    assert stopped.checkpoint["state"]["status"] == "awaiting_human"
+    assert not (run_root / "dispatch.json").exists()
+    assert load_run(run_root / "run.json").status.value == "awaiting_human"
+
+
 def test_completed_pair_marker_is_reconciled_idempotently_without_redispatch(
     repository, tmp_path
 ):
