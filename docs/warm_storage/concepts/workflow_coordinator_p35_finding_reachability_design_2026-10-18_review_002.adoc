@@ -1,0 +1,534 @@
+= P3.5 Finding Reachability Design -- Independent Review 002
+:toc:
+:toclevels: 3
+
+Status:: *CHANGES REQUIRED -- DESIGN NOT ACCEPTED.*
+Date:: 2026-10-19
+WorkItem:: `WI-WFC-P35-FINDING-REACHABILITY-DESIGN-REVIEW-002`
+Run / Hop:: `RUN-554ae793e21d461281bcc1fe74956ee4` / `H001`
+Invocation:: `INV-69cf89a2748842a19bb7da79b4381f8e`
+Phase:: `independent_review`
+Review baseline:: `2735e98b2befbdfb712225b77d3b04017d34e68c`
+Candidate:: link:workflow_coordinator_p35_finding_reachability_design_2026-10-18.adoc[2026-10-18 P3.5 design], unchanged from `fa308c3a2201ea0ad98801963038f1a98b50a206`; Git blob `e31a49781b838152aa8ed623e5b7180bded92689`.
+Disposition:: `changes_required`, requested route `correction`.
+
+This is this Run's first independent review. It neither resumes nor relies
+on the predecessor Run's archive or forensic report. Only this dedicated
+review artifact was changed. No design correction or implementation was
+performed in this Hop. The identifiers below are durable design-review
+requirements under the Commission's convention, not WFC Current-Run
+Finding IDs. The structured result carries an empty `findings` list.
+
+== H001 disposition and open identifiers
+
+Acceptance is blocked by three MATERIAL defects: the origin-checkpoint hole
+in the decision rule, the incorrect compatibility/test contract, and the
+inconsistent schema-v4 migration/lineage contract. One IMPORTANT explanatory
+defect is also recorded.
+
+[cols="1,1,1,4",options="header"]
+|===
+|Identifier |Severity |Disposition |One-line summary
+|P35DR-001 |MATERIAL |OPEN |The decision rule omits checkpoints at the opening invocation and misclassifies the resulting supersession risk as statically unknowable.
+|P35DR-002 |MATERIAL |OPEN |The exactly-eight compatibility promise and proposed fixture test changes contradict current profiles and admission tests.
+|P35DR-003 |MATERIAL |OPEN |Schema v4 inherits mandatory convergence topology without defining a coherent ordinary-profile migration and Run/result lineage.
+|P35DR-004 |IMPORTANT |OPEN |Worked predicates, diagnostics, and the claimed necessity proof for guard-edge exclusion disagree with the formal definitions.
+|===
+
+Every currently open identifier is listed above. P35DR-001, P35DR-002, and
+P35DR-003 must be corrected before acceptance. P35DR-004 does not by itself
+block acceptance if explicitly deferred with reasoning. No identifier is
+closed by this review.
+
+== P35DR-001 -- Opening-phase checkpoints escape the ordered property
+
+Severity:: MATERIAL
+State:: OPEN
+Design locations:: §§1.4, 4.2--4.7, 7 example 7, 8; especially §4.5, lines 530--549.
+Governing evidence:: Projected-result-contracts concept §11 requires a disposer strictly after the opening invocation on each relevant forward path; it does not exempt a completion attempt made by that invocation.
+
+=== Minimal false acceptance
+
+One phase suffices, using the design's own notation:
+
+[source,text]
+----
+p [review:gate, finding_authority:[]] --C-->
+----
+
+This is a legacy schema-v2 shape. The corresponding proposed-v4 annotation
+is `may_open_findings:true`. Here `creates_blocking(p)=True`,
+`checkpoint(p)=True`, `disposer(p)=False`, and `danger(p)=True`, but there
+are no `UnguardedEdges`. Section 4.5 therefore ACCEPTS. A Hop at `p` can
+open a blocker and request completion; there is no later disposing phase
+at all. Existing `reduce_result` stops it with
+`completion_blocked_by_open_blocking_findings` and leaves the blocker open
+(`reducer.py:1145-1168`, `:1713-1725`, `:1835`). A local invocation of the
+unmodified reducer confirmed exactly that stop.
+
+The draft acknowledges this acceptance, but its justification reverses the
+ordered requirement: excluding the opening invocation as a *disposer* does
+not exclude its outgoing completion route as a *checkpoint*. A runtime
+backstop and a one-Hop cost do not establish the promised static property.
+The motivating multi-Hop failure is also protected by the same backstop;
+using that protection to waive this case weakens the claimed invariant.
+
+There is an analogous guarded case:
+
+[source,text]
+----
+p [may_open_findings:true, review:gate, finding_authority:[]]
+  --G(guard:true)--> q [may_open_findings:false] --C-->
+----
+
+`p` is a checkpoint, but its sole outgoing edge is excluded. The rule
+again ACCEPTS, although a newly opened blocker cannot pass that checkpoint
+and has no legal disposal path. Section 4.6's protection of carried
+Findings does not cover this newly opened Finding at the guard's source.
+
+=== Supersession is a further instance, not an undecidability result
+
+[source,text]
+----
+p [may_open_findings:true, review:gate, finding_authority:[]]
+  --G--> s [may_open_findings:true, review:gate,
+             finding_authority:[supersede]] --C-->
+----
+
+The rule accepts: `danger(s)=False`, and `s` has no unguarded successor.
+If `s` supersedes the earlier Finding with a fresh open blocking successor,
+completion stops. What the future agent will actually author is unknown,
+but the *possibility* of a new blocker at `s` is explicitly declared and
+the absence of a later disposer is statically decidable. If instead
+`s.may_open_findings=False`, §5.3 must reject creating that successor.
+Supersession itself is a legal disposition of the original Finding; the
+fresh successor is a separate opening obligation. The static rule must
+consider each eligible opening phase, including a disposing phase that
+can also create Findings. This needs no Finding-kind taxonomy and no
+general liveness analysis.
+
+Even without fixing the origin-checkpoint hole, a third phase `q` with no
+authority and a completion route after `s` makes the draft's *existing*
+rule reject from `s`, provided `s` is declared capable of opening Findings.
+Thus the categorical assertion in §7 example 7 that no profile fact can
+address the successor risk is already contradicted by the rule itself.
+Unknown actual execution is not static undecidability of capability
+composition.
+
+=== Minimal required correction
+
+Correct the rule and its strength statement so the opening invocation's
+own clean checkpoint is considered without crediting that invocation's
+disposition authority for its newly opened Finding. Retain credit for an
+actual later revisit of the phase. Do not simply query `danger(p)`, because
+its disposer-absorption would still erase an origin that is also a
+disposer. Correct the supersession discussion and add explicit origin
+completion, origin guarded-route, and successor-creation cases to the test
+contract. State and reconcile the compatibility consequences under
+P35DR-002; do not silently weaken the governing ordered property or presume
+an unimplemented result/route restriction.
+
+== P35DR-002 -- Compatibility and fixture expectations are not established
+
+Severity:: MATERIAL
+State:: OPEN
+Design locations:: §§4.3, 6.1--6.3, 8, 10 item 1.
+Evidence:: All 42 `governance/self-development/*profile.yaml` files parsed using current `workflow_profile_from_yaml`; every one is schema v2. Their review authority and routes were inspected. No schema-v3 self-development fixture exists in this set.
+
+=== Concrete additional rejection set under the rule as drafted
+
+All eight explicitly named fixtures fail the proposed isolated check, as
+intended: implementation S1-001/002/003, S2-001/002/003, and S3-001/002 in
+the `correction-convergence-escape` family. This conclusion follows from
+their parsed graphs, including continuation profiles with only a correction
+phase and a looping rereview.
+
+The following *eleven additional profiles* also fail that same check.
+Paths in this list are relative to `governance/self-development/`:
+
+* `correction-convergence-escape-design-001-profile.yaml`
+* `correction-convergence-escape-design-revision-001-profile.yaml`
+* `correction-convergence-escape-design-revision-001-continuation-001-profile.yaml`
+* `finding-delta-compatibility-shim-fix-profile.yaml`
+* `immutable-finding-echo-profile.yaml`
+* `projected-result-contracts-p1-profile.yaml`
+* `scope-escalation-continuation-design-profile.yaml`
+* `scope-escalation-continuation-implementation-profile.yaml`
+* `scope-escalation-continuation-implementation-002-profile.yaml`
+* `scope-escalation-continuation-implementation-003-profile.yaml`
+* `scope-escalation-continuation-implementation-004-profile.yaml`
+
+These are not speculative worker-only candidates. Each has a reviewed
+gate with empty disposition authority on a correction/rereview loop:
+
+[source,text]
+----
+r [review:gate, finding_authority:[]] --G--> c [no review]
+c --G--> r' [review:gate, finding_authority:[]] --C-->
+r' --G--> c
+----
+
+In continuation profiles, `r` is `r'`. In all cases `danger(r')=True`,
+`danger(c)=True`, and the opening reviewed phase's edge to `c` satisfies
+§4.5's rejection rule. In particular, the P1 original profile is already
+the concept's *second motivating failure*, so treating the eight named
+fixtures as exhaustive is inconsistent even with that provenance.
+
+The remaining 23 profiles pass the check *as drafted*. Representative
+reasoning:
+
+[cols="3,5",options="header"]
+|===
+|Profile filename |Reason under §§4.3--4.5
+|`standalone-development-profile.yaml` |`review` goes directly to a resolve-capable `rereview` or through `correct` to it; `rereview` loops through `correct` back to itself. All queried successors are absorbed before an undisposed checkpoint.
+|`projected-result-contracts-p1-assurance-closure-profile.yaml` |`independent_review -> correction -> rereview[resolve]`; later revisits to `rereview` own resolve. Its immediate completion is omitted by the present rule, the P35DR-001 caveat.
+|`correction-convergence-escape-implementation-s3-003-profile.yaml` |`rereview[resolve] -> correct -> rereview[resolve]`; the later visit qualifies. Same pattern for S4-003/004/005.
+|`correction-convergence-escape-implementation-s4-001-profile.yaml` and `-s4-002-profile.yaml` |Both review gates have resolve; every correction path reaches a disposer. The plain implementation phase is not a legacy candidate.
+|`projected-result-contracts-p2-integration-completion-profile.yaml`, `projected-result-contracts-p3-002-profile.yaml` |Resolve-capable independent review and rereview, linked through a nonreview correction; same absorption argument.
+|`docs-architecture-consolidation-design-001-profile.yaml`, both consolidation migration profiles, and this WorkItem's `p35-finding-reachability-design-review-002-profile.yaml` |Resolve-capable review/rereview; the same correction-loop proof applies. No claim here resolves P35DR-001's direct-checkpoint compatibility conflict.
+|===
+
+=== Current production admission differs from historical fixture inspection
+
+It would be inaccurate to call the eleven cases *newly rejected by current
+production preflight*. They already fail a different current admission
+predicate. `operator._admit_evidence_disposition` (`operator.py:123-135`,
+called at `:451`) rejects required evidence on a nongate phase and required
+evidence on a gate lacking `failed_evidence_route`.
+
+`tests/architecture/test_self_development_governance.py:31-54` defines a
+local `_preflight` wrapper that first *requires* this production rejection,
+then disables just that evidence-admission predicate for historical fixture
+inspection. The old test names ending in
+`bundle_passes_production_preflight` are therefore not evidence of current
+new-launch admissibility. Examples include the immutable-Finding-echo and
+scope-escalation tests, as well as the eight named fixtures. Newer tests,
+such as consolidation design at `:6249` and this WorkItem's test at `:7122`,
+call `_production_preflight` directly.
+
+A local call to the existing evidence-admission predicate found 12 of the
+42 profiles passing that predicate; all 12 also have safe correction-loop
+successors under the rule as drafted. This is only that predicate, not a
+claim that full preflight was executed for all bundles. Accordingly the
+observed check-result split is 19 reject / 23 accept; the observed evidence-
+admission split is 30 reject / 12 accept. These are different facts.
+
+The concept §19 explicitly includes the eight lineages but requires
+rejection for *any* profile matching the invalid shape. It does not
+promise that these eight are an exhaustive inventory. The design's
+exactly-eight assertions and its §8 instruction to leave every other test
+unchanged cannot both hold for the current historical-inspection wrapper:
+adding the new check before the suppressed evidence predicate will also
+reject additional historically inspected bundles.
+
+=== Schema-v3 precision also needs an honest boundary
+
+The proxy can over-approximate as well as under-approximate creation.
+Current schema-v3 ordinary phases cannot create an open blocking Finding,
+even if they have a review descriptor (`reducer.py:1285-1293`). A concrete
+structurally parsed counterexample was built locally from the existing
+`tests/unit/test_serialization.py::profile_v3_data` fixture:
+
+[source,text]
+----
+observe [convergence_role:none, review:gate, finding_authority:[]]
+  --G--> finish [convergence_role:none, review:null] --C-->
+
+plus the fixture's required five-role convergence component
+(evaluate, correct, diagnose, reframe, strategy), with evaluate's accept
+route removed so this separate component has no completion checkpoint.
+----
+
+The reviewed ordinary `observe` is a proxy candidate, `finish` is dangerous,
+so the draft rejects. Yet no legal execution can open a blocker in that
+ordinary component. The existing runtime validation explicitly rejected a
+synthetic opening attempt with `Run v3 ordinary phase cannot create an
+untracked open blocker`. The separate convergence component has no path
+into the ordinary component and no checkpoint, so it satisfies the draft's
+explicit vacuous boundary and introduces no separate checkpoint violation.
+This is a safe profile under the bounded composition property,
+over-flagged by the proxy, not an observed schema-v3 self-development
+fixture regression. Conservative legacy policy may deliberately reject
+such a shape, but must say so rather than characterize the proxy as precise
+apart from review-less workers.
+
+=== Minimal required correction
+
+Replace the exhaustive-eight and untouched-other-tests claims with an
+evidence-based compatibility contract. Preserve parseability, historical
+replay, and fixture usefulness separately from current launch admission.
+Name the additional affected fixtures, account for existing evidence-
+admission rejections and the inspection wrapper, and specify how the future
+P3.5 regression tests independently exercise the new predicate without
+erasing the prior evidence-admission assertion. State the schema-v3
+over-approximation or bound the proxy using the actual admitted creation
+semantics. Reassess the inventory after P35DR-001 is corrected. No profile
+changes, broader authority grants, or test changes are authorized in this
+design-review Run.
+
+== P35DR-003 -- Schema-v4 inheritance has an unresolved semantic branch
+
+Severity:: MATERIAL
+State:: OPEN
+Design locations:: §§3.1.1--3.1.2, 5.3, 6.2, 7, 8, 10 item 3.
+Evidence:: `serialization.py:667-709`, `:724-746`, `:837-976`; `model.py:684-702`, `:853-885`; `reducer.py:450-454`, `:717-721`, `:1266-1294`.
+
+Section 3.1.1 says v4 carries *every* v3 structural rule, including full
+convergence cross-validation. Those rules require a `convergence` block,
+per-phase convergence roles, and all five of corrector, evaluator,
+diagnosis, reframe, and strategy gate. They impose specific topology and
+authority requirements. They are not optional orthogonal checks on an
+otherwise ordinary profile.
+
+Consequently a v2 ordinary review/correction profile cannot migrate merely
+by declaring `may_open_findings` per phase as §6.2 suggests. Nor can the
+ordinary small v4 graphs in §7 satisfy the stated inherited rules. They
+would need unrelated convergence machinery. This is a semantic migration
+decision, not a field-name or next-integer choice.
+
+The draft also leaves the associated execution lineage unspecified:
+
+* `new_run` selects Run schema 3 only for profile schema exactly 3; otherwise
+  it selects Run schema 2 (`model.py:869`).
+* `result_contract_version` selects the ordinary typed result version 3
+  only for profile schema exactly 3; other ordinary profiles use version 1
+  (`model.py:684-702`).
+* `_profile_phase` currently admits only profile versions 2/3 and couples
+  v3 to Run v3 (`reducer.py:450-454`).
+* Convergence phases and ordinary phases have different creation
+  restrictions and bookkeeping. Granting `may_open_findings:true` does not
+  by itself remove these restrictions; treating it as an override would
+  change existing convergence semantics, contrary to the stated boundary.
+
+Simply adding 4 to a parser's version set does not choose between the
+ordinary legacy lineage and the convergence lineage. Replacing all
+`== 3` tests with `>= 3` would force the latter and retain evaluator-only
+blocking creation, contradicting the claimed general migration of plain
+Finding-creating worker phases. Keeping those predicates unchanged while
+inheriting v3 parsing would instead pair convergence declarations with the
+wrong Run/result semantics. Either implementation could be inferred from
+the present text.
+
+=== Minimal required correction
+
+Specify a coherent v4 structural and execution contract: whether and how an
+ordinary v2 profile can opt into explicit creation declarations without
+adopting convergence; when existing convergence constraints apply; the
+profile-to-Run/result-version mapping using existing result families; and
+the intersection of `may_open_findings` with existing role/lineage creation
+restrictions. Make every proposed-v4 worked example state all required
+capability flags and its relevant mode. Preserve old version semantics and
+P1-P3 transport/selection architecture; do not introduce new result
+families, rewrite convergence, or require unrelated topology as an
+unstated migration cost. These choices are prerequisites for an
+implementable design, even though the final field spelling and numeric
+version assignment can remain implementation details.
+
+== P35DR-004 -- Worked explanations do not follow the predicates
+
+Severity:: IMPORTANT
+State:: OPEN
+Design locations:: §§4.6, 5.1, 7 examples 1--3 and 6, 8.
+
+Concrete discrepancies:
+
+* Example 3 says `checkpoint(rereview)=True` because an unguarded `GOTO`
+  leads to `complete_gate`. Section 4.3 defines that predicate locally;
+  this makes `danger(rereview)=True` by propagation, not
+  `checkpoint(rereview)=True`.
+* Example 6 says the guarded route contributes
+  `checkpoint(post_review_wrapup)` conditionally on safe arrival. It
+  contributes `checkpoint(rereview)`, unconditionally, at the source.
+  `post_review_wrapup` has only an unguarded `GOTO`, so is not a checkpoint.
+* Example 1 says no candidate exists despite its `complete_gate` having a
+  review descriptor under the legacy proxy. It is a candidate, merely one
+  with no successor checked by §4.5. Example 2 likewise needs an explicit
+  v4 noncreating annotation on `rereview` if its unguarded successor is a
+  nondisposing completion phase; under the legacy proxy that rereview is
+  another origin and the rule rejects from it.
+* Section 5.1's required diagnostic names the immediate dangerous successor
+  and its local predicates. In example 3 that successor is `correct`, not
+  the later `rereview` named by the example. A nondisposing intermediary
+  with a further dangerous successor need not itself be a checkpoint or
+  the phase to which disposition authority should be granted.
+
+Excluding guarded edges is a faithful way to model carrying an *undisposed*
+Finding. However §4.6's stronger claim that retaining those edges must
+over-reject example 6 is not demonstrated. Its disposer absorbs danger
+regardless of the guard. More generally, adding guarded edges to the
+fixpoint does not change `danger`: every nondisposing guarded source is
+already a checkpoint seed, and every disposing source is already
+absorbing. The special first-edge decision can differ, but that is exactly
+the origin-checkpoint hole in P35DR-001, not proof that a carried Finding
+requires a different dangerous-node set. The current asymmetry is sound
+for carried Findings; the claimed necessity proof and its supporting
+example are not.
+
+Minimal correction:: Recompute the examples from the actual local predicates, distinguish candidate/absorption/propagation/origin checks, make diagnostics deterministic with a consistent witness location or path, and replace the unsupported necessity assertion with the exact modeling argument. This can be addressed alongside the MATERIAL corrections without redesigning the algorithm.
+
+== Other required review assessments
+
+=== Graph fixpoint, cycles, and human stops
+
+For its stated induced graph and predicates, the backward least-fixpoint
+is finite, monotone, and computable in `O(phases + routes)` with adjacency
+lists. Disposer absorption correctly excludes `reopen`; gate status and
+one of resolve/residual/supersede are necessary under the current
+disposition rules. This is a capability-path check, not proof that the
+agent will exercise its authority.
+
+The ordered *revisit* case works:
+
+[source,text]
+----
+p [may_open_findings:true, review:gate, finding_authority:[resolve]]
+  --G(again)--> p
+----
+
+`p` may additionally have a completion route, but the path being assessed
+here is the one through a later invocation. The successor is `p`, now a
+later visit; `danger(p)=False` properly credits its resolve capability for
+the *earlier* Finding. A local existing-reducer diagnostic opened a
+Finding on a self-loop, then resolved it and completed on the next
+invocation. The invalid direct-completion alternative is separately
+P35DR-001; it does not justify rejecting all revisits or counting budgets.
+
+Example 8's no-checkpoint boundary is deliberate and appropriate. A graph
+whose only forward exits are `AWAIT_HUMAN`, prerequisite suspension, or
+`STOP` has no completion-path obligation of the bounded kind under review.
+The draft truthfully gives it vacuous acceptance, not verified human
+disposition. `confirm_supervisor_route` performs no Finding mutation
+(`reducer.py:1872-1896`); prerequisite authorization/reconciliation/resume
+do not dispose Findings (`:1899-1979`). No production caller grants
+`FindingAuthority.HUMAN` to `apply_finding_deltas`. A stronger general
+termination/usefulness check is not required here. This boundary differs
+from P35DR-001, which has an actual declared clean checkpoint.
+
+=== Authority independence, defaults, and enforcement
+
+Creation and disposition are independent today for the ordinary legacy
+path. `_finding_operation(None, OPEN)` returns no disposition operation;
+`_apply_legacy_finding_deltas` consequently permits a new open Finding even
+for an unreviewed worker. `_may_dispose` independently enforces the gate's
+operation tuple. Advisory review cannot declare disposition authority
+(`serialization.py:568-579`). Result-v2 and result-v3 convergence paths
+impose additional restrictions; the independence claim must be read with
+those restrictions, not as a universal capability override.
+
+Requiring an explicit declaration at a new profile schema is a defensible
+authoring decision. Default false would revoke existing legacy opening
+behavior, including the motivating review gates. Default true would retain
+that behavior for legacy phases, but would not establish that every author
+affirmatively intended every phase to create Findings. Correction phases
+commissioned for bounded artifact edits and empty-Finding design-review
+loops illustrate the difference between engine permission and intended
+use. The source cannot prove an omitted boolean's authorial intent; the
+draft should describe mandatory explicit authorship as a governance choice,
+not prove that default true changes the legacy engine's behavior. Nor would
+default true override current v3 restrictions if the change is additive.
+The new schema's existence is reasonable; its unresolved semantics are
+P35DR-003.
+
+Section 5.3's proposed rejection is fail-closed *for the Finding
+transaction* if all deltas are screened before publication. The current
+helpers return immutable replacement Runs and errors are caught against
+the pretransaction Run, yielding
+`mechanical_preemption:invalid_finding_delta:*` (`reducer.py:1713-1725`).
+Preserve atomicity even with a legal existing-Finding delta preceding a
+forbidden creation, and cover all existing result variants. The stop is
+truthful; no silent dropping or blocking downgrade is proposed.
+
+Two source/explanation qualifications do not require engine fixes here:
+
+* Several design line numbers are stale (for example the model's
+  ExistingFindingDelta and NewFindingDelta declarations are now at
+  `model.py:304` and `:361`), but the named disposition,
+  parsing, routing and preflight functions generally support the cited
+  mechanisms. The existing ordinary phase dispatch uses typed
+  `WORK_RESULT`/`REVIEW_VERDICT` v1 as well as the legacy reduction path;
+  referring to that path as a generic contract everywhere is imprecise.
+* Section 4.5's blanket assertion that the reducer cannot reference a newly
+  allocated Finding within the same result is true of the later
+  validate-before-allocation paths, but not of legacy sequential
+  application: a synthetic new delta followed by an existing delta naming
+  the guessed `F001` resolved in a local direct helper diagnostic. Such
+  guessing violates the projected invocation identity contract and is not
+  a legitimate disposing path. Narrow the source claim rather than treating
+  this reducer accident as authorized behavior or changing source here.
+
+Section 5.4's literal assertion of no persisted side effect on reducer
+failure also overstates the convention: the invocation/Hop has already
+occurred and a stop is recorded. The useful guarantee is no publication of
+the rejected Finding transaction and no route advance; preflight failure,
+unlike reducer preemption, occurs before a Run/provider exists.
+
+=== Scope assessment
+
+The proposed pure preflight pass is a reasonable composition-validation
+seam: `_preflight` parses the pinned profile at `operator.py:318`, converts
+parse errors at `:322-323`, and already checks role/persona and binding
+coherence after parsing. The draft leaves stateful disposition and the
+global runtime completion guard authoritative. Its new capability and
+clean-route annotations are bounded extensions examined by this
+Commission, not a Finding-kind taxonomy.
+
+The document does not propose reopening P1-P3 result admission/transport or
+provider adapters, introducing a general workflow DSL/model checker,
+deciding nested Runs, or closing the governing BUG. Its statement that the
+hierarchical-escalation hypothesis supplies no authority is correct against
+that hypothesis's §5. P35DR-003 must be corrected within those boundaries;
+calling forced convergence inheritance orthogonal would not make it so.
+The active-work manifest still places P3.5 at NOW and P4/P5 at LATER/WATCH;
+prior documentation consolidation did not implement or authorize P3.5.
+
+=== Assessment of every §10 open item
+
+The task refers to six items; the committed design actually has *seven*,
+including Front Door dependency. All seven are assessed here.
+
+[cols="2,5",options="header"]
+|===
+|Design item |Disposition at design acceptance
+|1. Legacy proxy precision |Cannot remain an implementation-time prerequisite behind unconditional compatibility promises. The local inventory falsifies exactly-eight; the v3 example shows an additional precision limit. Resolve the policy/test contract now under P35DR-002, then update it for P35DR-001.
+|2. Field naming |May remain open. Semantic ownership, boolean meaning and applicability matter; final spelling can be chosen by the implementation Commission.
+|3. Schema version number |The literal next integer may remain subject to coordination. Structural inheritance and Run/result-lineage mapping cannot remain open; those are P35DR-003, not numbering trivia.
+|4. Diagnostic surfacing |String versus object and batching versus fail-fast may remain implementation choices. The witness named must agree with the actual graph rule and examples; P35DR-004 records that inconsistency.
+|5. Stronger no-completion check |Appropriate to defer outside P3.5. Vacuous no-checkpoint acceptance is explicit and does not credit nonexistent human-disposition authority. An actual checkpoint at the opening phase is not this liveness case.
+|6. Future human-disposition mechanism |Appropriate to defer. Model its existing absence truthfully; decide new edges/authority only if separately commissioned later.
+|7. Front Door dependency |Appropriate to leave its external integration shape open. This design must deliver the accepted bounded composition contract; it need not design Front Door Step 2.
+|===
+
+== Agent-local diagnostics and Coordinator-owned evidence
+
+No full-suite result is claimed. The Coordinator independently owns the
+policy command `python -m pytest -q` and its gate/routing. No local result
+below is Coordinator-trusted evidence and none substitutes for that gate.
+
+Local diagnostics completed successfully, without installing dependencies:
+
+* Current-parser topology inventory of all 42 self-development profiles,
+  plus separate calls to the existing evidence-admission predicate. The
+  19/23 proposed-check split was derived from the displayed graphs and
+  the written rule; no P3.5 validator was implemented or installed.
+* Existing reducer probes: direct opening/completion stopped with an open
+  blocker; self-loop followed by resolution completed; direct legacy helper
+  accepted a guessed same-result ID (explicitly not an authorized invocation
+  operation). A structurally parsed synthetic v3 ordinary review was
+  forbidden to open an untracked blocker.
+* `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B -m pytest -q -p no:cacheprovider tests/unit/test_reducer.py -k 'finding_lifecycle_requires_gate_or_human_authority or finding_ids_are_allocated or reopen_requires_authority or residual_and_superseded_states or new_finding_creation_uses_explicit_authority_operation or supervisor_has_no_finding_disposition_surface'` -- 8 selected cases passed.
+* `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B -m pytest -q -p no:cacheprovider tests/unit/test_serialization.py -k 'profile_v3_loads_closed_convergence_grammar_and_routes or profile_v3_fail_closed_cases'` -- 15 selected cases passed.
+
+The governing concept, BUG, draft design, this WorkItem's four-file bundle,
+relevant architecture-test admission pattern, current cited source, and
+the hypothesis's scope disclaimer were examined. Production/test source,
+profiles, policies, governing records, Project Memory, Runtime and Evidence
+were not changed. No WFC launch or Git ownership mutation was performed.
+
+== Required next disposition
+
+Request `correction` for the bounded design-document amendments described
+above. The correction phase must provide per-identifier coverage for all
+four open identifiers. A later authorized independent rereview must append
+its disposition here, preserve this history, and accept only after every
+MATERIAL requirement is legitimately closed. This review grants no P3.5
+implementation authority and does not close the governing BUG.
