@@ -488,17 +488,27 @@ reach `complete` undisposed.
 
 `creates_blocking(phase)`:: for a schema-v4 profile, exactly
 `phase.may_open_findings` (precise, authored, not inferred). For schema v2,
-use the Concept doc's historical review-presence proxy,
-`phase.review is not None`; this is an acknowledged under-approximation of
-the legacy reducer's actual permission for an unreviewed worker (§2.5).
-For schema v3, do *not* use review presence as a proxy: use the existing
-result-v3 legality predicate for an untracked open blocker (the applicable
-convergence evaluator path, not an ordinary phase merely carrying a review
-descriptor). This avoids claiming that a v3 ordinary review phase can open
-what `reducer.py:1285-1293` forbids. The eventual implementation must expose
-that already-existing predicate as a small shared, pure helper rather than
-duplicate it inconsistently. This is a bounded compatibility adapter, not a
-new Finding taxonomy or an override of convergence rules.
+use the deliberately narrow legacy compatibility sentinel:
+`phase.review is not None`, `phase.review.authority is GATE`, and
+`finding_authority` contains none of `resolve`, `residual`, or `supersede`.
+This is *not* a claim about the legacy reducer's actual permission: a legacy
+worker, or a resolve-capable gate, can still submit a new open blocker (§2.1).
+It is the bounded migration adapter that detects the Concept's specified
+empty-disposition topology while preserving new-launch compatibility for
+legacy profiles whose review gates already hold a closing operation. The
+residual false-negative is recorded in §6.1; precise enforcement requires an
+explicit v4 declaration.
+
+For schema v3, candidates are exactly phases whose
+`convergence_role is EVALUATOR`. An evaluator dispatches generic result v2,
+and its new blocking Finding is a *tracked* correction obligation
+(`_apply_v2_finding_deltas`, `reducer.py:717-789`); that tracked creation is
+still a creation event for the ordered property. An ordinary v3 phase cannot
+create an untracked blocker (`reducer.py:1285-1293`), and corrector,
+diagnosis, reframe, and strategy-gate phases do not create a new blocker.
+This includes existing capability without changing its tracking, convergence,
+or result-version mechanics. The implementation should expose these role
+facts through a small shared pure helper rather than duplicate them.
 
 === 4.4 Fixpoint: which phases can reach a checkpoint without passing a disposer
 
@@ -615,13 +625,13 @@ at least one phase holding `resolve`, `residual`, or `supersede` authority.
   create the successor has a later legal disposition path. The runtime guard
   (§2.3) remains the backstop for malformed or dynamically unexpected result
   content, not a waiver of this static obligation.
-* For schema v2, `creates_blocking` is the Concept doc's review-presence
-  proxy (§4.3), which under-approximates true legacy engine capability for a
-  review-less worker. That legacy worker is not covered by the static check
-  and remains protected only by the unchanged runtime guard. Schema v3 uses
-  its actual legality predicate instead; schema v4's explicit field is the
-  precise ordinary-profile solution. §6.1 explains these bounded migration
-  choices.
+* For schema v2, `creates_blocking` is the deliberately narrow
+  empty-disposition compatibility sentinel (§4.3). It under-approximates true
+  legacy engine capability for both a review-less worker and a
+  resolve-capable gate; those cases remain protected only by the unchanged
+  runtime guard. Schema v3 includes its actual evaluator creation capability;
+  schema v4's explicit field is the precise ordinary-profile solution. §6.1
+  explains these bounded migration choices.
 
 == 5. Runtime enforcement and preflight integration
 
@@ -631,11 +641,13 @@ Recommendation: a new, small, pure module (illustratively
 `src/workflow_coordinator/profile_conformance.py`) exposing one function,
 e.g. `validate_finding_reachability(profile: WorkflowProfile) -> None`,
 raising a new, minimal exception (e.g. `ProfileConformanceError`) on
-violation, with a diagnostic message naming the offending `P_open` phase key,
-the specific successor phase at which `danger` was first true, and that
-successor's own `checkpoint`/`disposer` facts (so a maintainer can see
-*which* phase needed, and lacked, `finding_authority`, mirroring the BUG
-record's own diagnostic clarity). This keeps P3.5:
+violation. An origin-checkpoint violation names `P_open`, its offending local
+route/checkpoint kind, and explicitly says that same-invocation authority
+cannot cure it. A propagation violation names `P_open`, its immediate
+dangerous successor, and a deterministic witness path to the first
+checkpoint (with relevant checkpoint/disposer facts). It must not imply that
+the immediate successor, rather than a later phase on that path, is the only
+phase to which authority could be granted. This keeps P3.5:
 
 * Separate from `serialization._review`/`workflow_profile_from_yaml`'s
   per-field *structural* validation (which checks one phase's/route's local
@@ -725,23 +737,24 @@ unchanged, `may_open_findings` is never required for them, and
 every existing `Route` continues to parse to the same effective value
 (`False`) it has today. What *does* change is that `_preflight` now also runs
 `validate_finding_reachability`, newly, against these profiles, using the
-version-specific compatibility predicates in §4.3 (the historical
-review-presence proxy for v2 and actual v3 result legality for v3).
+version-specific compatibility predicates in §4.3 (the v2 empty-disposition
+sentinel and the v3 evaluator rule).
 
-This is a deliberate, narrow widening of the engine's conservatism, not a
-general one: using the maximally conservative `creates_blocking(phase) :=
-True` for *every* phase (reviewed or not) was considered and rejected,
-because it would flag many currently-accepted self-development profiles that
-have nothing to do with the motivating defect -- any profile with a plain
-`worker` phase (no `review:` block) followed by a gate review with empty
-`finding_authority` that the Commission never actually expects to exercise
-disposition on would be incorrectly rejected, since the worker would be
-treated as a false `P_open`. The review-presence proxy, matching the Concept
-doc's literal §11 definition, is a bounded v2 migration rule, not a precision
-claim: it can omit a review-less legacy worker and can conservatively select a
-reviewed phase. The v3 adapter avoids that latter error for ordinary phases by
-following existing reducer legality. §4.7 records the residual v2 limitation;
-v4 closes it for profiles that opt into explicit declarations.
+The corrected origin arm was applied to all 42 current self-development
+schema-v2 profiles. The earlier `review is not None` proxy rejects all 42:
+each has a reviewed phase with a local `COMPLETE` route. That result is not a
+viable migration contract, because it also rejects known-good closure profiles
+solely by treating a resolve-capable legacy gate as an unspecified creator.
+The empty-disposition sentinel instead yields the established 19 rejection /
+23 acceptance inventory. The existing, separate evidence-admission predicate
+admits 12 and rejects 30; neither count claims full preflight. The accepted
+23 retain new-launch admission under this deliberately bounded compatibility
+rule. That is not proof that a resolve-capable v2 gate cannot create and
+immediately strand a new blocker: it is the documented legacy blind spot.
+Full ordered-property enforcement requires a separately commissioned v4
+migration that marks a completion gate `may_open_findings: false` or routes
+its creation-capable phase to a later disposer. No profile migration is
+performed or authorized here.
 
 The Concept names eight self-development lineages as mandatory regression
 examples
@@ -773,9 +786,9 @@ production evidence-admission predicate. A changed historical assertion must
 not be presented as a newly launch-admissible bundle becoming rejected. The
 implementation must retain that existing evidence-admission assertion and
 test reachability independently, before the bypassed predicate. It must
-compute and record the final inventory from the corrected origin rule rather
-than promise that every unlisted fixture remains unchanged. No profile is
-changed by this design.
+assert the established 19/23 v2 reachability inventory, rather than defer its
+semantic outcome or promise that every unlisted fixture remains unchanged. No
+profile is changed by this design.
 
 === 6.2 Schema-version-4 profiles: explicit, precise, required declaration
 
@@ -808,39 +821,42 @@ conflate. Restated against this design's actual mechanism:
   evidence-admission assertion and adds an independent reachability assertion
   for the evidenced inventory in §6.1.
 . *Profile remains admissible for a NEW launch under current preflight* --
-  changed only when the corrected validator rejects it. The eight named
-  lineages are mandatory examples; the eleven additional historical fixtures
-  are already non-admissible for a separate evidence reason. No exhaustive
-  preservation or rejection claim is made until implementation reruns the
-  corrected predicate across the accepted-profile inventory.
+  changed only when the corrected validator rejects it. The established v2
+  inventory is 19 rejections (the eight mandatory lineages plus eleven
+  additional historical fixtures) and 23 acceptances. The eleven additional
+  fixtures are already non-admissible for a separate evidence reason. The
+  implementation verifies this established predicate/result contract; it does
+  not decide that material compatibility policy afresh.
 
 == 7. Positive/negative examples and acceptance criteria
 
 Each example states the profile shape, the resulting `danger`/decision-rule
-evaluation, and the verdict. Phase names are illustrative; "G" marks a
-`GOTO` edge, "C" a `COMPLETE` route, bracketed authority marks disposer
-status.
+evaluation, and the verdict. Unless explicitly marked schema v2 or schema
+v3, each is schema v4 and every phase's `may_open_findings` value is shown
+or stated false. Phase names are illustrative; "G" marks a `GOTO` edge,
+"C" a `COMPLETE` route, bracketed authority marks disposer status.
 
 === Example 1 -- a phase that cannot create Findings, followed by ordinary completion
 
-`worker [may_open_findings:false] --G--> complete_gate [review:gate,
-finding_authority:[]] --C-->`.
+`worker [may_open_findings:false] --G--> complete_gate
+[may_open_findings:false, review:gate, finding_authority:[]] --C-->`.
 
 `creates_blocking(worker)` is `False` (schema v4, explicit). No `P_open`
 candidate exists. *Accepted*, vacuously: the decision rule's existential
 clause is never satisfied.
 
-Under schema v2, `worker` has no `review` block, so the legacy proxy yields
-`creates_blocking(worker) = False`; it is accepted with the stated bounded
-legacy limitation. Under schema v3, an ordinary worker cannot legally create
-an untracked open blocker, so the actual-legality predicate likewise accepts
-this component.
+Under schema v2, `worker` has no `review` block but `complete_gate` is an
+empty-disposition reviewed candidate with a local checkpoint, so this profile
+is rejected. This positive example is deliberately v4, not a v2 claim. Under
+schema v3, neither ordinary phase is an evaluator candidate, so the component
+is accepted.
 
 === Example 2 -- a Finding-producing phase with a legal downstream resolution gate
 
 `review [may_open_findings:true, review:gate, finding_authority:[]]
 --G--> correct [may_open_findings:false] --G--> rereview [may_open_findings:false, review:gate,
-finding_authority:[resolve]] --G(accept)--> complete_gate --C-->`,
+finding_authority:[resolve]] --G(accept)--> complete_gate
+[may_open_findings:false] --C-->`,
 plus `rereview --G(changes_required)--> correct`.
 
 `disposer(rereview)=True`. `danger(rereview)=False` (absorbing), and neither
@@ -853,10 +869,11 @@ static guarantee instead of a per-Commission accident.
 
 === Example 3 -- a Finding-producing phase whose only completion path lacks legal disposition
 
-The motivating S3-002 shape, restated exactly: `review [may_open_findings:true,
-review:gate, finding_authority:[]] --G(correct)--> correct
-[may_open_findings:false] --G--> rereview [review:gate,
-finding_authority:[]] --G(accept)--> complete_gate --C-->`.
+The motivating S3-002 shape, expressed as v4: `review
+[may_open_findings:true, review:gate, finding_authority:[]] --G(correct)-->
+correct [may_open_findings:false] --G--> rereview
+[may_open_findings:false, review:gate, finding_authority:[]] --G(accept)-->
+complete_gate [may_open_findings:false] --C-->`.
 
 `disposer(rereview)=False`. `complete_gate`, not `rereview`, is the local
 checkpoint: it has the `COMPLETE` route. Therefore `danger(complete_gate)=True`,
@@ -869,8 +886,9 @@ first checkpoint and neither intervening phase has disposition authority.
 === Example 4 -- a correction/rereview cycle with a legitimate exit
 
 Same as Example 2, but with an added escape: `rereview
---G(still_failing)--> escalation_gate [review:gate,
-finding_authority:[residual]] --G--> complete_gate --C-->`, where
+--G(still_failing)--> escalation_gate [may_open_findings:false, review:gate,
+finding_authority:[residual]] --G--> complete_gate
+[may_open_findings:false] --C-->`, where
 `escalation_gate` can residualize (clear `blocking`) a Finding that correction
 could not close. `disposer(escalation_gate)=True` (`residual` is in the
 closing set). Every path from `review` still passes through either
@@ -879,10 +897,12 @@ closing set). Every path from `review` still passes through either
 
 === Example 5 -- an earlier Finding carried through later phases that cannot create new ones
 
-`evaluator [may_open_findings:true, ...]` opens `F001`; the forward path
+`evaluator [may_open_findings:true, ...]` (an ordinary v4 phase name, not a
+v3 convergence role) opens `F001`; the forward path
 passes through three ordinary phases with `may_open_findings:false` and no
-`review` block at all, then reaches a `closure_gate [review:gate,
-finding_authority:[resolve]]` before `complete`. The three intervening
+`review` block at all, then reaches a `closure_gate [may_open_findings:false,
+review:gate, finding_authority:[resolve]]` before `complete_gate
+[may_open_findings:false] --C-->`. The three intervening
 phases contribute nothing to `disposer`/`checkpoint` and are simply
 transparent to the fixpoint (`danger` propagates through them unchanged).
 `danger(closure_gate)=False` (disposer, absorbing). *Accepted.* No special
@@ -895,8 +915,9 @@ require new machinery.
 
 Not a preflight-time (`validate_finding_reachability`) example -- a
 *runtime* (`_apply_route`) example, per §3.2/§5.2. Profile: `rereview
-[review:gate, finding_authority:[resolve]] --G(accept, guard:true)-->
-post_review_wrapup --G--> complete_gate --C-->`.
+[may_open_findings:false, review:gate, finding_authority:[resolve]]
+--G(accept, guard:true)--> post_review_wrapup [may_open_findings:false]
+--G--> complete_gate [may_open_findings:false] --C-->`.
 
 *Admit:* Hop at `rereview` disposes the open Finding (`resolve`) and requests
 `accept`; post-delta, `_has_open_blocker` is `False`; the guard passes; the
@@ -982,10 +1003,14 @@ Run construction, no filesystem beyond reading fixture YAML.
   Each asserted rejection names the opening phase and a deterministic witness
   (origin checkpoint or immediate dangerous successor/path).
 * *Inventory non-regression:* run the corrected version-specific predicate
-  across every self-development fixture and record its result. Preserve the
-  existing production-preflight expectations unless the corrected predicate
-  itself changes them; do not assume an unlisted fixture passes merely from
-  its name or its previous wrapper test.
+  across every self-development fixture and assert the established v2 19
+  rejection / 23 acceptance inventory. Preserve the existing
+  production-preflight expectations unless the corrected predicate itself
+  changes them; do not assume an unlisted fixture passes merely from its name
+  or previous wrapper test. Add a minimal schema-v3 evaluator fixture and the
+  standard v3 fixture: both are candidates because evaluator creation is
+  tracked; the standard fixture is rejected by its evaluator's local
+  origin checkpoint even though that evaluator has closing authority.
 * *Unit tests for `validate_finding_reachability`* directly against minimal
   `WorkflowProfile` fixtures (not full governance bundles), covering: each of
   the eight worked examples in §7 (1-5, 7, 8 as preflight-level cases) with
@@ -1067,12 +1092,12 @@ equivalent), to be produced alongside that guide, not here:
 
 == 10. Remaining decisions, risks and questions for independent review
 
-. *Legacy compatibility precision (§4.3, §6.1).* Schema v2 retains the
-  Concept's review-presence proxy and its explicit review-less-worker gap;
-  schema v3 uses existing legality rather than that proxy. The implementation
-  must execute the corrected predicate over the full fixture inventory and
-  record all results. This is an acceptance-test obligation, not an assertion
-  that the eight named fixtures are exhaustive.
+. *Legacy compatibility precision (§4.3, §6.1).* Schema v2 uses the explicit
+  empty-disposition sentinel, retaining review-less-worker and
+  resolve-capable-gate blind spots; schema v3 includes tracked evaluator
+  creation. The established v2 inventory is 19 reject / 23 accept. This is a
+  conscious compatibility boundary, not an unresolved implementation choice;
+  v4 migration is the path to full precision.
 . *Field naming.* `may_open_findings` and
   `require_no_open_blocking_findings` are illustrative, chosen for clarity
   against existing field names (`finding_authority`, `authorized_actions`),
