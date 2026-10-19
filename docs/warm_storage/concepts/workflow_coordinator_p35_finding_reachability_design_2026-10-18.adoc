@@ -311,15 +311,26 @@ not to "silently assign a default that changes meaning." Concretely:
   `independent_reviewer` gate in every accepted self-development lineage),
   which is a behavior change disguised as a default, and the opposite error.
 
-Recommendation: introduce profile `schema_version: 4`. Schema v4 carries every
-structural rule schema v3 already carries (the full Slice-4 convergence
-cross-validation in `workflow_profile_from_yaml`, `serialization.py:837-976`,
-is orthogonal and unaffected), *plus* a new required `may_open_findings:
-bool` on every `Phase`. `workflow_profile_from_yaml` must require it when (and
-only when) `profile.schema_version == 4`, with no fallback default -- a
-profile author bumping to v4 must explicitly decide, phase by phase. Schema
-versions 2 and 3 are not retroactively required to add the field; §6
-explains how P3.5's reachability check still applies to them.
+Recommendation: introduce profile `schema_version: 4` as the *ordinary,
+explicit-creation lineage*: it extends schema v2's ordinary profile grammar,
+not schema v3's Slice-4 convergence grammar. Thus a v4 profile has no
+`convergence` block, all phases have `convergence_role: NONE`, creates a Run
+schema version 2, and uses the existing ordinary result-contract family
+(version 1). It adds one required `may_open_findings: bool` on every `Phase`.
+`workflow_profile_from_yaml` must require it when (and only when)
+`profile.schema_version == 4`, with no fallback default -- an author bumping
+to v4 must explicitly decide phase by phase.
+
+Schema v3 remains the closed Slice-4 convergence lineage: its required
+convergence block, five-role topology, Run schema 3, and result versions are
+unchanged. It is not silently migrated to v4 and `may_open_findings` does not
+override its evaluator/tracked-obligation restrictions. A future Commission
+may separately design an explicit-creation extension for convergence
+profiles; that is not implied here. This deliberate lineage split lets an
+ordinary v2 review/correction profile opt into explicit capability without
+acquiring unrelated convergence machinery, while preserving every old v2/v3
+parse and execution meaning. §6 states the corresponding migration and
+legacy-validation policy.
 
 ==== 3.1.2 Relationship to `finding_authority`: independent axes, restated
 
@@ -476,14 +487,18 @@ without disposing is exactly as structurally defective as one that can only
 reach `complete` undisposed.
 
 `creates_blocking(phase)`:: for a schema-v4 profile, exactly
-`phase.may_open_findings` (precise, authored, not inferred). For a
-schema-v2/v3 profile (no such field exists), `phase.review is not None`
-(the Concept doc §11's own literal candidate-set definition, retained here
-deliberately for migration reasons spelled out in full in §6.1; §2.5 already
-records that this under-approximates the true engine behavior for a
-review-less worker phase, and §6.1 explains why widening it to "every phase,
-unconditionally" would instead *over*-reject many currently-accepted
-profiles that have nothing to do with the motivating defect).
+`phase.may_open_findings` (precise, authored, not inferred). For schema v2,
+use the Concept doc's historical review-presence proxy,
+`phase.review is not None`; this is an acknowledged under-approximation of
+the legacy reducer's actual permission for an unreviewed worker (§2.5).
+For schema v3, do *not* use review presence as a proxy: use the existing
+result-v3 legality predicate for an untracked open blocker (the applicable
+convergence evaluator path, not an ordinary phase merely carrying a review
+descriptor). This avoids claiming that a v3 ordinary review phase can open
+what `reducer.py:1285-1293` forbids. The eventual implementation must expose
+that already-existing predicate as a small shared, pure helper rather than
+duplicate it inconsistently. This is a bounded compatibility adapter, not a
+new Finding taxonomy or an override of convergence rules.
 
 === 4.4 Fixpoint: which phases can reach a checkpoint without passing a disposer
 
@@ -523,52 +538,53 @@ structural guarantee -- the whole motivation for this document.
 
 === 4.5 Decision rule
 
-A profile is **INVALID -- rejected before any provider invocation** iff:
+A profile is **INVALID -- rejected before any provider invocation** iff,
+for any opening phase `p`, either its opening Hop itself has a clean
+checkpoint, or an undisposed Finding can proceed through an unguarded later
+invocation to danger:
 
 [source,text]
 ----
 exists phase p such that:
     creates_blocking(p) is True
-    and exists (p, successor) in UnguardedEdges
-    and danger(successor) is True
+    and (
+        checkpoint(p) is True
+        or exists (p, successor) in UnguardedEdges
+           such that danger(successor) is True
+    )
 ----
 
-Note precisely what is *not* checked: `danger(p)` itself, at distance zero,
-is never queried. The requirement is "strictly reachable after `P_open`"
-(Concept doc §11's own wording); a phase's *own* Hop cannot dispose the very
-Finding that Hop just created (the Finding's `finding_id` is not allocated
-until that Hop's deltas are applied, so no `ExistingFindingDelta` within the
-same result can reference it -- confirmed by the two-pass allocate-after-validate
-structure of `_apply_v2_finding_deltas`, `reducer.py:772-789`). A phase
-`p` whose *only* route is `accept: {effect: complete}`, requested in the same
-Hop that opens the Finding, is therefore not flagged by this algorithm as a
-*profile-level* defect -- it is already, fully, and cheaply caught by the
-existing, unchanged runtime guard (§2.3) on the very same Hop, at the lowest
-possible cost (one Hop, not a multi-Hop S3-002-shaped waste). Scoping the
-static check to "strictly after" rather than "at or after" is a deliberate
-choice, not an oversight (§4.7 names it explicitly as a boundary).
+The first arm is deliberately an origin check, not `danger(p)`: a Finding
+opened in `p` is present before `p`'s requested route is applied, so `p`'s
+own `COMPLETE` or guarded `GOTO` cannot credit `p`'s disposition authority
+for that newly opened Finding. The second arm is strictly-after reachability:
+it evaluates a successor invocation, where a later visit to `p` may properly
+be absorbed by `disposer(p)`. This distinguishes an invalid direct completion
+from the Concept doc's valid self-loop/revisit exception without consulting a
+Hop budget. The reducer's transaction semantics must reject a same-result
+attempt to manufacture and dispose a newly allocated Finding as an
+unauthorized substitute for this ordered rule; P3.5 does not rely on any
+incidental legacy ID-guessing behavior.
 
 === 4.6 Where `require_no_open_blocking_findings` interacts with `danger` propagation
 
-A guarded `GOTO` edge is excluded from `UnguardedEdges` (§4.2) and therefore
-never propagates `danger` forward to its target: an undisposed Finding can
-never actually arrive at the target through that edge (the guard stops it at
-the source phase first, §3.2), so there is nothing to propagate. It
-contributes only via `checkpoint` (§4.3), marking its *own* phase dangerous
-if that phase is not itself a disposer. This asymmetry -- checkpoint but not
-edge -- is required for correctness, not merely a simplification: treating a
-guarded edge as an ordinary propagating edge would cause the algorithm to
-over-reject profiles that use the guard exactly as intended (§7 example 6),
-since it would incorrectly assume an undisposed Finding can reach beyond the
-guard.
+A guarded `GOTO` edge is excluded from `UnguardedEdges` (§4.2): an
+undisposed Finding cannot arrive at its target through that edge, because the
+guard stops at the source (§3.2). It nevertheless makes that *source* a
+`checkpoint`; this also catches an opening Finding produced by that same
+source Hop under §4.5's first arm. The asymmetry models carried Findings
+without inventing a false edge beyond the guard. It is not a claim that
+including guarded edges would change every fixpoint result; the relevant
+semantic distinction is the source-side clean precondition and the separate
+origin check.
 
 === 4.7 Strength and limitations, stated precisely
 
 *What this proves:* for every phase capable (per §4.3's applicable
-definition) of opening a new blocking Finding, every statically enumerable
-forward path through `GOTO` routes to a `complete`-or-equivalent checkpoint
-passes through at least one phase holding `resolve`, `residual`, or
-`supersede` authority, strictly after the opening phase.
+definition) of opening a new blocking Finding, its opening Hop cannot itself
+cross a clean checkpoint, and every statically enumerable forward path through
+`GOTO` routes to a later `complete`-or-equivalent checkpoint passes through
+at least one phase holding `resolve`, `residual`, or `supersede` authority.
 
 *What this does not prove, by design:*
 
@@ -590,25 +606,22 @@ passes through at least one phase holding `resolve`, `residual`, or
   category -- general workflow usefulness/liveness -- not a Finding-authority
   composition defect. §7 example 8 and §10 record this explicitly as an
   open question for independent review, not a silent resolution.
-* It does not verify that a `supersede` disposition's successor Finding is
-  itself eventually closed. `supersede` legally closes the *named* Finding
-  (removing it from `_has_open_blocker`'s `OPEN`-state set), but
-  `successor_ref` may point to a different, freshly agent-authored Finding
-  that is itself `OPEN` and `blocking` -- a fact the static validator cannot
-  know in advance, because it depends on what a future agent actually
-  authors inside a specific Hop, not on any profile-level declaration. §7
-  example 7 states this limitation explicitly rather than asserting
-  certainty the design does not have. The runtime completion guard (§2.3,
-  unchanged) remains the backstop for exactly this case.
-* For schema-v2/v3 profiles, `creates_blocking` is the Concept doc's own
-  review-presence proxy (§4.3), which under-approximates true engine
-  Finding-creation capability for a review-less worker phase (§2.1, §2.5).
-  A legacy worker phase that silently opens a blocking Finding with no
-  `review` descriptor at all is not covered by the static check; it remains
-  protected only by the unchanged runtime guard. §6.1 explains why widening
-  this proxy for legacy profiles is not recommended, and why the new,
-  explicit, precise field (§3.1) is the actual fix, available to any profile
-  that migrates to schema v4.
+* It does not verify the *identity* selected by a future `supersede` result.
+  But a successor that is newly open and blocking is a new creation event,
+  not an unknowable exemption: the phase capable of authoring it is itself a
+  `creates_blocking` origin and is checked independently, including by the
+  origin-checkpoint rule. The validator need not predict whether an agent
+  will choose supersession; it verifies that every declared capability to
+  create the successor has a later legal disposition path. The runtime guard
+  (§2.3) remains the backstop for malformed or dynamically unexpected result
+  content, not a waiver of this static obligation.
+* For schema v2, `creates_blocking` is the Concept doc's review-presence
+  proxy (§4.3), which under-approximates true legacy engine capability for a
+  review-less worker. That legacy worker is not covered by the static check
+  and remains protected only by the unchanged runtime guard. Schema v3 uses
+  its actual legality predicate instead; schema v4's explicit field is the
+  precise ordinary-profile solution. §6.1 explains these bounded migration
+  choices.
 
 == 5. Runtime enforcement and preflight integration
 
@@ -696,8 +709,10 @@ must never cause provider invocation or unexpected Run-state mutation. Both
 new checks (§5.1's preflight pass, §5.3's reducer-level creation check) are
 pure, synchronous, raise-before-mutate, and occur strictly before (§5.1) or
 instead of (§5.3) any provider dispatch or Run-state advance. Neither
-introduces a new asynchronous path, a new persisted side effect on failure,
-or a new retry.
+introduces a new asynchronous path, a new Finding transaction or route
+advance on failure, or a new retry. A reducer preemption still records the
+ordinary stopped invocation; the guarantee is that the rejected transaction
+is not published and the Run does not advance.
 
 == 6. Compatibility and migration
 
@@ -710,7 +725,8 @@ unchanged, `may_open_findings` is never required for them, and
 every existing `Route` continues to parse to the same effective value
 (`False`) it has today. What *does* change is that `_preflight` now also runs
 `validate_finding_reachability`, newly, against these profiles, using the
-`creates_blocking(phase) := phase.review is not None` proxy (§4.3).
+version-specific compatibility predicates in §4.3 (the historical
+review-presence proxy for v2 and actual v3 result legality for v3).
 
 This is a deliberate, narrow widening of the engine's conservatism, not a
 general one: using the maximally conservative `creates_blocking(phase) :=
@@ -721,35 +737,58 @@ have nothing to do with the motivating defect -- any profile with a plain
 `finding_authority` that the Commission never actually expects to exercise
 disposition on would be incorrectly rejected, since the worker would be
 treated as a false `P_open`. The review-presence proxy, matching the Concept
-doc's own literal §11 definition, avoids this: it flags exactly the shape the
-BUG record documents (a `review`/`rereview` gate that opens a Finding with no
-later `finding_authority`-bearing phase on its forward path), without
-over-rejecting profiles whose only Finding-capable phases already carry
-adequate downstream disposition. §4.7 and §2.5 already record the known,
-accepted residual gap this proxy leaves (a review-less worker that silently
-opens a Finding is not statically covered) as an explicit, bounded
-limitation, closed for any profile that migrates to schema v4.
+doc's literal §11 definition, is a bounded v2 migration rule, not a precision
+claim: it can omit a review-less legacy worker and can conservatively select a
+reviewed phase. The v3 adapter avoids that latter error for ordinary phases by
+following existing reducer legality. §4.7 records the residual v2 limitation;
+v4 closes it for profiles that opt into explicit declarations.
 
-Per Concept doc §19, this is expected, intended behavior change for exactly
-the eight self-development lineages sharing the motivating shape
+The Concept names eight self-development lineages as mandatory regression
+examples
 (`correction-convergence-escape-implementation-{s1-001,s1-002,s1-003,
 s2-001,s2-002,s2-003,s3-001,s3-002}-profile.yaml`), whose
 `test_self_development_governance.py`
 `..._bundle_passes_production_preflight` assertions the Concept doc itself
 already names as expected to flip to
-`..._bundle_fails_production_preflight` as part of P3.5's own bounded
-implementation (§8 restates this as the primary acceptance test).
+`..._bundle_fails_production_preflight` as part of P3.5's bounded
+implementation. They are not an exhaustive inventory. This design review
+identified these additional historical-inspection fixtures whose topology
+must be included in the implementation inventory:
+
+* `correction-convergence-escape-design-001-profile.yaml`
+* `correction-convergence-escape-design-revision-001-profile.yaml`
+* `correction-convergence-escape-design-revision-001-continuation-001-profile.yaml`
+* `finding-delta-compatibility-shim-fix-profile.yaml`
+* `immutable-finding-echo-profile.yaml`
+* `projected-result-contracts-p1-profile.yaml`
+* `scope-escalation-continuation-design-profile.yaml`
+* `scope-escalation-continuation-implementation-profile.yaml`
+* `scope-escalation-continuation-implementation-002-profile.yaml`
+* `scope-escalation-continuation-implementation-003-profile.yaml`
+* `scope-escalation-continuation-implementation-004-profile.yaml`
+
+Those eleven, like the named eight, are historically inspected through the
+architecture test's evidence-admission bypass: they already fail the current
+production evidence-admission predicate. A changed historical assertion must
+not be presented as a newly launch-admissible bundle becoming rejected. The
+implementation must retain that existing evidence-admission assertion and
+test reachability independently, before the bypassed predicate. It must
+compute and record the final inventory from the corrected origin rule rather
+than promise that every unlisted fixture remains unchanged. No profile is
+changed by this design.
 
 === 6.2 Schema-version-4 profiles: explicit, precise, required declaration
 
-A profile authored or migrated to `schema_version: 4` must declare
+A profile authored or migrated from ordinary schema v2 to `schema_version: 4`
+must declare
 `may_open_findings` on every phase, with no default. `creates_blocking` for
 such a profile is then exactly `phase.may_open_findings` -- precise, not a
-proxy -- closing the §2.5/§4.7 gap entirely for that profile. Migrating an
-existing accepted profile from v2/v3 to v4 is itself ordinary governed work
-(a documentation/profile-authoring change under its own Commission), not
-something this design performs or requires; nothing in this design compels
-any existing profile to migrate.
+proxy -- closing the §2.5/§4.7 gap entirely for that ordinary profile. Per
+§3.1.1, v4 retains v2's ordinary execution lineage (Run v2/result v1) and
+does not accept a v3 convergence grammar. Migrating an existing accepted v2
+profile is governed work under its own Commission; a v3 profile remains v3
+until separately designed migration work exists. Nothing here compels either
+migration.
 
 === 6.3 The four compatibility promises, restated precisely for this design
 
@@ -764,15 +803,16 @@ conflate. Restated against this design's actual mechanism:
 . *Historical Run remains truthfully replayable* -- preserved: this design
   touches no replay path, no `Hop`/`HopSummary` field, and no persisted Run
   history; `_preflight` runs once, before a Run exists, never during replay.
-. *Old profile remains usable as a regression fixture* -- preserved, with the
-  same caveat the Concept doc itself already states: the fixture document is
-  unchanged, but its governing test's *assertion* changes for the eight named
-  lineages (promise 4, next).
+. *Old profile remains usable as a regression fixture* -- preserved: fixture
+  documents are unchanged, while the historical-inspection test keeps its
+  evidence-admission assertion and adds an independent reachability assertion
+  for the evidenced inventory in §6.1.
 . *Profile remains admissible for a NEW launch under current preflight* --
-  deliberately and correctly revoked for exactly the eight named lineages
-  (§6.1); preserved for every other currently accepted profile, because the
-  review-presence proxy (§4.3, §6.1) was chosen specifically to avoid
-  collateral rejection of profiles outside that shape.
+  changed only when the corrected validator rejects it. The eight named
+  lineages are mandatory examples; the eleven additional historical fixtures
+  are already non-admissible for a separate evidence reason. No exhaustive
+  preservation or rejection claim is made until implementation reruns the
+  corrected predicate across the accepted-profile inventory.
 
 == 7. Positive/negative examples and acceptance criteria
 
@@ -790,19 +830,21 @@ finding_authority:[]] --C-->`.
 candidate exists. *Accepted*, vacuously: the decision rule's existential
 clause is never satisfied.
 
-Under schema v2/v3 (no explicit field, `worker` has no `review` block):
-`creates_blocking(worker) := worker.review is not None = False` by the same
-proxy. *Accepted* identically, for the same underlying reason, via the
-legacy proxy rather than an explicit declaration.
+Under schema v2, `worker` has no `review` block, so the legacy proxy yields
+`creates_blocking(worker) = False`; it is accepted with the stated bounded
+legacy limitation. Under schema v3, an ordinary worker cannot legally create
+an untracked open blocker, so the actual-legality predicate likewise accepts
+this component.
 
 === Example 2 -- a Finding-producing phase with a legal downstream resolution gate
 
 `review [may_open_findings:true, review:gate, finding_authority:[]]
---G--> correct [may_open_findings:false] --G--> rereview [review:gate,
+--G--> correct [may_open_findings:false] --G--> rereview [may_open_findings:false, review:gate,
 finding_authority:[resolve]] --G(accept)--> complete_gate --C-->`,
 plus `rereview --G(changes_required)--> correct`.
 
-`disposer(rereview)=True`. `danger(rereview)=False` (absorbing).
+`disposer(rereview)=True`. `danger(rereview)=False` (absorbing), and neither
+`review` nor `rereview` is itself a checkpoint.
 `danger(correct)` = `checkpoint(correct)[False]` or `danger(rereview)[False]`
 = `False`. `review`'s only successor is `correct`, `danger(correct)=False`.
 *Accepted.* This is the P1-Assurance-Closure shape the Concept doc §2 already
@@ -816,16 +858,13 @@ review:gate, finding_authority:[]] --G(correct)--> correct
 [may_open_findings:false] --G--> rereview [review:gate,
 finding_authority:[]] --G(accept)--> complete_gate --C-->`.
 
-`disposer(rereview)=False`. `checkpoint(rereview)=True` (its `accept` route
-goes to a phase whose own route is `complete` -- or, equivalently, if
-`rereview`'s `accept` route is itself `{effect: complete}` directly,
-`checkpoint(rereview)=True` the same way). `danger(rereview)=True`.
-`danger(correct) = False or danger(rereview)[True] = True`. `review`'s
-successor `correct` has `danger=True`. *Rejected*, with the diagnostic naming
-`review` as the opening phase, `rereview` as the phase where `danger` first
-holds, and `rereview.review.finding_authority == ()` as the missing
-authority. This is exactly the shape the eight named self-development
-lineages (§6.1) must newly fail.
+`disposer(rereview)=False`. `complete_gate`, not `rereview`, is the local
+checkpoint: it has the `COMPLETE` route. Therefore `danger(complete_gate)=True`,
+then `danger(rereview)=True` and `danger(correct)=True` by propagation.
+`review`'s successor `correct` has `danger=True`. *Rejected*, with a
+deterministic witness path `review -> correct -> rereview -> complete_gate`;
+the immediate dangerous successor is `correct`, while `complete_gate` is the
+first checkpoint and neither intervening phase has disposition authority.
 
 === Example 4 -- a correction/rereview cycle with a legitimate exit
 
@@ -870,37 +909,33 @@ fails; the Run stops `awaiting_human` with the new guard-specific stop
 reason, `run.phase` unchanged, no advance to `post_review_wrapup`.
 
 At preflight time, this profile is independently checked by
-`validate_finding_reachability`: `disposer(rereview)=True`, so
-`danger(rereview)=False` regardless of the guarded route on it; the guarded
-route itself contributes `checkpoint(post_review_wrapup)` only if
-`post_review_wrapup` is not itself reached safely via `rereview`'s
-disposer-absorption -- which it is. *Accepted* at preflight; both runtime
+`validate_finding_reachability`: the guarded route makes
+`checkpoint(rereview)=True`, but `rereview` is a disposer and so
+`danger(rereview)=False`; `post_review_wrapup` has no checkpoint merely by
+having an unguarded `GOTO`. For a v4 profile `rereview` is annotated
+`may_open_findings:false`, so the source-side origin check does not apply.
+*Accepted* at preflight; both runtime
 outcomes above are legal within an accepted profile, because the guard is a
 per-Hop precondition, not a profile-level defect signal.
 
 === Example 7 -- a `supersede` scenario where the successor remains open and blocking
 
-`review [may_open_findings:true]` opens `F001`; `closure_gate [review:gate,
-finding_authority:[supersede]]` is reachable after it with no other
-disposer on the path; `closure_gate` disposes `F001` via `supersede`,
-`successor_ref` pointing to a freshly agent-authored `F002` that is itself
-`OPEN` and `blocking`.
+`review [may_open_findings:true]` opens `F001`; `closure_gate
+[may_open_findings:true, review:gate, finding_authority:[supersede]]` is
+reachable after it and can supersede `F001` with a freshly authored open,
+blocking `F002`. If `closure_gate` has a `COMPLETE` route (or guarded
+`GOTO`), §4.5 rejects the profile at `closure_gate`'s origin checkpoint even
+though it is a disposer: its authority can close the earlier `F001`, not the
+new `F002` created in that same Hop. If it instead has an unguarded route to
+a later checkpoint, the ordinary successor/danger arm requires a later
+disposer for its creation capability.
 
-Statically: `disposer(closure_gate)=True` (`supersede` is in the closing
-set). `danger(closure_gate)=False`. `review`'s path to `closure_gate` is
-*accepted* by `validate_finding_reachability`, because the property checked
-is "a legal disposition operation is reachable for the Finding `review`
-opened," which `supersede` is, and the validator has no profile-level fact
-about what `successor_ref` will point to or whether that pointee will itself
-be disposed.
-
-This cannot be decided statically, and this design does not claim otherwise:
-whether `F002` is itself ever disposed depends on what a specific future Hop
-actually authors, not on any declared profile fact. At runtime, if no later
-Hop disposes `F002` either, `_has_open_blocker` (unchanged, §2.3) correctly
-stops the Run `awaiting_human` when `complete_gate`'s route is attempted --
-exactly the existing, sound, reactive backstop this design explicitly leaves
-in place for cases outside its static reach (§4.7).
+The validator does not predict whether a particular result will choose
+`supersede` or which existing Finding it will name. That dynamic identity is
+not statically knowable; the separate, declared capability to create `F002`
+is. Thus supersession does not create an undecidable escape from P3.5. At
+runtime the unchanged completion guard remains the backstop for an actual
+malformed or unsupported result.
 
 === Example 8 -- an explicit authority handoff versus an invalid terminal dead end
 
@@ -912,11 +947,10 @@ Per §2.4, no runtime mechanism today lets a human dispose `F001` and resume
 this Run past `review` toward completion: `AWAIT_HUMAN` is not a graph edge
 (§4.2), contributes no `UnguardedEdges` entry, and is never credited as a
 disposition. `review`'s successor set (via `UnguardedEdges`) is therefore
-empty. The decision rule (§4.5) requires `exists (p, successor) in
-UnguardedEdges` with `danger(successor)`; with no `UnguardedEdges` leaving
-`review`'s forward reach, the existential is never satisfied. *Accepted* by
-this algorithm -- but only vacuously, because the profile can never reach any
-checkpoint at all, not because a legitimate handoff was verified.
+empty, and `checkpoint(review)` is false. Both arms of the decision rule
+(§4.5) are therefore false. *Accepted* by this algorithm -- but only
+vacuously, because the profile can never reach any checkpoint at all, not
+because a legitimate handoff was verified.
 
 This is the precise, named boundary from §4.7: a profile that can *never*
 reach completion is a different defect (general liveness/usefulness) that
@@ -938,22 +972,25 @@ additions) directly against in-memory `WorkflowProfile`/`Route`/`Phase`
 fixtures or already-existing profile YAML text -- no provider invocation, no
 Run construction, no filesystem beyond reading fixture YAML.
 
-* *Primary regression (required by Concept doc §19):* the eight named
-  self-development profile fixtures' existing
-  `..._bundle_passes_production_preflight` tests in
-  `tests/architecture/test_self_development_governance.py` are updated to
-  `..._bundle_fails_production_preflight`, asserting `OperatorPreflightError`
-  (wrapping the new `ProfileConformanceError`) is raised, and that the error
-  message names the opening phase and the first phase at which `danger` held.
-* *Non-regression:* every other currently-accepted profile fixture's
-  existing `..._bundle_passes_production_preflight` test continues to pass
-  unchanged -- run as-is, with no fixture or assertion edited, proving the
-  review-presence proxy (§6.1) does not collaterally reject profiles outside
-  the motivating shape.
+* *Historical-fixture regression (required by Concept doc §19):* retain each
+  existing evidence-admission assertion in
+  `tests/architecture/test_self_development_governance.py`; add a separately
+  invoked reachability assertion for the eight named fixtures and the eleven
+  additional fixtures enumerated in §6.1. Where the historical wrapper
+  bypasses evidence admission, the assertion must say that explicitly rather
+  than rename a test as though it described current production admission.
+  Each asserted rejection names the opening phase and a deterministic witness
+  (origin checkpoint or immediate dangerous successor/path).
+* *Inventory non-regression:* run the corrected version-specific predicate
+  across every self-development fixture and record its result. Preserve the
+  existing production-preflight expectations unless the corrected predicate
+  itself changes them; do not assume an unlisted fixture passes merely from
+  its name or its previous wrapper test.
 * *Unit tests for `validate_finding_reachability`* directly against minimal
   `WorkflowProfile` fixtures (not full governance bundles), covering: each of
   the eight worked examples in §7 (1-5, 7, 8 as preflight-level cases) with
-  the stated expected accept/reject outcome; a cyclic topology where the
+  the stated expected accept/reject outcome; an opening phase with a direct
+  `COMPLETE` route; an opening phase with a guarded `GOTO`; a cyclic topology where the
   disposing phase is reached only via a loop back through `P_open` itself
   (the Concept doc's own cited exception); a profile with multiple
   independent `P_open` candidates where only one lacks downstream
@@ -975,7 +1012,9 @@ Run construction, no filesystem beyond reading fixture YAML.
   this addition.
 * *Schema/versioning tests*: `workflow_profile_from_yaml` rejects a
   schema-v4 profile missing `may_open_findings` on any phase; accepts a
-  schema-v2/v3 profile unchanged (no `may_open_findings` required, no
+  v4 ordinary profile without a v3 convergence block and maps it to Run v2 /
+  ordinary result v1; rejects a v4 profile attempting v3 convergence grammar;
+  accepts a schema-v2/v3 profile unchanged (no `may_open_findings` required, no
   `require_no_open_blocking_findings` required); accepts a schema-v2/v3
   profile that *does* add `require_no_open_blocking_findings` to a route
   without bumping `schema_version`.
@@ -1028,16 +1067,12 @@ equivalent), to be produced alongside that guide, not here:
 
 == 10. Remaining decisions, risks and questions for independent review
 
-. *Legacy proxy precision (§4.3, §6.1).* This design recommends
-  `creates_blocking(phase) := phase.review is not None` for schema-v2/v3
-  profiles, matching the Concept doc's own literal definition, specifically
-  to avoid over-rejecting unrelated currently-accepted profiles. This leaves
-  a known, named gap (a review-less worker that silently opens a blocking
-  Finding is not statically covered for legacy profiles). An implementer
-  should confirm, by actually running the proxy against every currently
-  accepted self-development profile (not merely inspecting the eight named
-  ones), that no profile outside the named eight is collaterally rejected,
-  before relying on this document's claim in §6.1.
+. *Legacy compatibility precision (§4.3, §6.1).* Schema v2 retains the
+  Concept's review-presence proxy and its explicit review-less-worker gap;
+  schema v3 uses existing legality rather than that proxy. The implementation
+  must execute the corrected predicate over the full fixture inventory and
+  record all results. This is an acceptance-test obligation, not an assertion
+  that the eight named fixtures are exhaustive.
 . *Field naming.* `may_open_findings` and
   `require_no_open_blocking_findings` are illustrative, chosen for clarity
   against existing field names (`finding_authority`, `authorized_actions`),
@@ -1045,11 +1080,11 @@ equivalent), to be produced alongside that guide, not here:
   after source inspection, consistent with the Concept doc's own repeated
   practice of leaving exact field names to implementation (e.g. its own §12
   on `CommitIntent`).
-. *Schema version number.* This design recommends profile `schema_version:
-  4`, the next integer after the existing closed set `{2, 3}`. No other
-  schema-v4-worthy change is proposed or implied by this design; if some
-  other, unrelated profile-schema change is independently in flight, the
-  version-number choice may need coordination, not duplication.
+. *Schema version number.* This design assigns v4 to the ordinary explicit
+  creation lineage and specifies its v2 Run/result mapping (§3.1.1). If an
+  unrelated schema change is independently in flight, only the numeric label
+  needs coordination; it must preserve this lineage distinction rather than
+  inherit schema v3 convergence accidentally.
 . *Diagnostic surfacing.* This design specifies what a
   `ProfileConformanceError` diagnostic must *name* (§5.1) but not its exact
   machine-readable shape (string, structured object, multiple violations
