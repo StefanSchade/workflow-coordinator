@@ -1,0 +1,290 @@
+Independently review, and if necessary correct and rereview, the
+already-drafted P3.5 design document
+docs/warm_storage/concepts/workflow_coordinator_p35_finding_reachability_design_2026-10-18.adoc
+(committed fa308c3a2201ea0ad98801963038f1a98b50a206, status "DRAFT -- PENDING
+INDEPENDENT REVIEW. NOT ACCEPTED. AUTHORIZES NOTHING."). This Run performs
+exactly that review/correction/rereview loop. It does NOT implement P3.5,
+does NOT author a new design, and does NOT modify the governing concept or
+BUG. Loop: independent_review -> {accept: complete, correction}; correction
+-> rereview; rereview -> {accept: complete, correction}. Initial phase:
+independent_review. No supervisor. No child Run. No nested WFC.
+
+An `accept` disposition at `independent_review` or `rereview` makes the
+current design artifact this Commission's accepted output. It does not
+itself authorize P3.5 implementation: a later implementation WorkItem/Run
+still requires its own separate, explicit maintainer Commission.
+
+======================================================================
+THIS IS A FRESH SUCCESSOR RUN -- READ BEFORE WRITING ANYTHING
+======================================================================
+
+A prior Commission (`WI-WFC-P35-FINDING-REACHABILITY-DESIGN-REVIEW`, Run
+`RUN-38d04873e4834f6784b3b716979dfd1e`) attempted this same review and
+stopped at its first Hop in `reconcile_required`, with no completed review,
+no recorded Finding, and no design disposition. That Run, its archive, and
+its forensic report are immutable historical records in the Evidence
+repository and are not inputs you read, resume, retry, or reinterpret. You
+are not continuing that Run. You are performing an independent first review
+of the design document under a new WorkItem identity, with fresh context.
+
+For your own understanding of why a fresh successor was necessary (not as
+something to act on), in one paragraph: that Run's stop was caused by a
+provider-schema defect in the Coordinator -- the dispatched strict schema
+allowed an empty `requested_route` string, which the canonical validator
+then rejected even though the reducer never reads `requested_route` once a
+`requires_human`/escalation result fires -- compounded by the task text of
+that time inviting the agent to treat its own local, sandboxed test attempt
+as if it settled whether the Coordinator's trusted evidence gate would pass.
+The schema defect is already fixed in Development (commits `3baaf5d`,
+`3fdbd07`, `bf1be33`, all at or before this Run's baseline). The evidence
+wording is fixed below, in this task. Neither is something this Run needs to
+re-diagnose, verify, or re-fix; they are preconditions already satisfied.
+
+======================================================================
+BACKGROUND -- READ BEFORE WRITING ANYTHING
+======================================================================
+
+Read, in full where present:
+
+ 1. docs/wfc_projected_result_contracts_concept_2026-10-07.adoc, in full,
+    with particular attention to §4 (structural/stateful/composition
+    distinction), §11 (P3.5's own definition, including the "P_open" set and
+    the ordered-reachability property), §17 (roadmap table), §19 (the four
+    compatibility promises and the eight named lineages), §20 (explicit
+    non-goals), and §22 (open questions).
+ 2. docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc, in
+    full -- the concrete motivating defect: a self-development rereview gate
+    commissioned with a disposition-bearing purpose but `finding_authority:
+    []`, leaving Findings F001-F003 permanently open and the Run
+    `awaiting_human`.
+ 3. docs/backlog/_open.adoc, enough to confirm P3.5's current status and its
+    relationship to P4/P5 and the prior consolidation.
+ 4. The complete design document under review,
+    docs/warm_storage/concepts/workflow_coordinator_p35_finding_reachability_design_2026-10-18.adoc,
+    in full. Do not review only a summary or only the sections you expect to
+    disagree with.
+ 5. Current source cited by the design: `src/workflow_coordinator/model.py`
+    (`Phase`, `ReviewDescriptor`, `Route`, `RouteEffect`, `FindingState`,
+    `FindingAuthority`), `src/workflow_coordinator/serialization.py`
+    (`workflow_profile_from_yaml`, `_review`, `_route`),
+    `src/workflow_coordinator/reducer.py` (`_may_dispose`,
+    `_apply_finding_deltas`, `_apply_v2_finding_deltas`,
+    `_validate_convergence_records_before_apply`, `_has_open_blocker`,
+    `_apply_route`, `reduce_result`), and `src/workflow_coordinator/operator.py`
+    (`_preflight`, in particular where it already performs trusted
+    cross-document checks after `workflow_profile_from_yaml` succeeds). Read
+    enough of each to verify the design's own citations are accurate, not
+    merely to take them on faith.
+ 6. The eight self-development profile fixtures the design names as required
+    to flip from `..._bundle_passes_production_preflight` to
+    `..._bundle_fails_production_preflight`
+    (`correction-convergence-escape-implementation-{s1-001,s1-002,s1-003,
+    s2-001,s2-002,s2-003,s3-001,s3-002}-profile.yaml`), and a representative
+    sample of other currently-accepted self-development profiles not in that
+    set, enough to assess the design's compatibility claim in §6.1/§10 item 1.
+ 7. `tests/architecture/test_self_development_governance.py`, enough to
+    understand the current admission-test fixture pattern this design's own
+    §8 test strategy builds on.
+ 8. governance/self-development/ and governance/work-items/ bundles for this
+    WorkItem itself (profile, policy, work-item, task), already following
+    established Commission-authoring conventions; this bundle is not itself
+    a template to redesign.
+
+Do repository archaeology as needed to verify a specific claim, but do not
+modify production source, tests, any existing profile/Commission/policy, the
+governing concept or BUG, or any file outside this WorkItem's own two-file
+authorized scope (the design artifact, in `correction` only; the dedicated
+review artifact, in `independent_review`/`rereview` only). This explicitly
+includes the predecessor Commission's own four-file bundle
+(`governance/work-items/p35-finding-reachability-design-review.yaml` and its
+profile/policy/task siblings): read it if useful for convention, never edit
+it.
+
+======================================================================
+INDEPENDENT_REVIEW (phase `independent_review`, first phase of this Run)
+======================================================================
+
+Independently and adversarially attempt to falsify the design, with fresh
+context. At minimum:
+
+A. GRAPH ALGORITHM (design §4). Verify the `disposer`, `checkpoint`, and
+   `creates_blocking` predicates and the `danger` backward-reachability
+   fixpoint are each correctly specified and that the decision rule (§4.5)
+   correctly implements "strictly reachable after the opening phase, not at
+   or before it." Attempt to construct a minimal counterexample profile (as
+   few phases as needed, expressed the way §7's own worked examples are) that
+   the algorithm as specified would either (a) incorrectly ACCEPT -- a real
+   dead end the algorithm misses -- or (b) incorrectly REJECT -- a safe
+   profile the algorithm over-flags. Pay particular attention to: cycles
+   where the only disposer is reached by revisiting the same phase (§4.4's
+   own cited exception); guarded routes
+   (`require_no_open_blocking_findings`) and whether §4.6's claimed
+   checkpoint-but-not-edge asymmetry is actually sound; a `supersede`
+   disposition whose successor Finding is itself left open (§4.7, example 7)
+   -- confirm the design is correct that this is genuinely undecidable
+   statically, not merely asserted as such; and the `AWAIT_HUMAN`/
+   `SUSPEND_FOR_PREREQUISITE` vacuous-acceptance boundary (§4.7, example 8) --
+   confirm this is a deliberate, correctly-scoped boundary and not a gap the
+   design mischaracterizes.
+B. AUTHORITY SEMANTICS (design §3, §5.3). Verify the claimed independence of
+   `may_open_findings` (Finding-creation capability) from
+   `review.finding_authority` (Finding-disposition capability) against
+   current reducer/serialization behavior (§2 of the design cites exact line
+   ranges -- check they are accurate). Verify the no-safe-default rationale
+   for requiring a new schema version (§3.1.1) is sound: would EITHER a
+   default-true OR a default-false actually misrepresent authorial intent
+   for some currently-accepted profile, as claimed? Verify §5.3's proposed
+   runtime enforcement (rejecting an unauthorized Finding-creation attempt)
+   is genuinely fail-closed and matches the existing mechanical-preemption
+   convention it claims to mirror.
+C. COMPATIBILITY AND MIGRATION (design §6, §10 item 1). The design's own §10
+   flags, as unconfirmed, that no schema-v2/v3 profile OUTSIDE the eight
+   named lineages would be collaterally rejected by the proposed
+   `creates_blocking(phase) := phase.review is not None` proxy. Actually
+   check this claim against a representative set of currently-accepted
+   self-development profiles (not only the eight named ones) by reasoning
+   through each profile's phase graph under the proxy and the decision rule.
+   Report concretely whether the claim holds, and if any profile outside the
+   eight would newly fail, name it precisely.
+D. SCOPE (design §1.3, §10). Confirm the design does not reopen P1-P3
+   (`WORK_RESULT`/`REVIEW_VERDICT` admission, result-contract transport,
+   provider adapters), does not introduce a Finding-kind taxonomy, does not
+   become a general workflow DSL/liveness/termination checker, does not
+   decide hierarchical escalation or nested Runs, and does not close
+   BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY. Confirm the design
+   accurately treats the non-normative hierarchical-escalation hypothesis
+   (`hierarchical_escalation_and_reconciliation_hypothesis_2026-10-17.adoc`)
+   as granting it no authority to broaden P3.5.
+E. OPEN QUESTIONS (design §10). For each of the six listed items, assess
+   whether leaving it open (rather than resolving it now) is appropriate for
+   a design document at this stage, or whether any of them is actually a
+   precondition for the design to be soundly implementable at all.
+
+Record the review in the required durable artifact
+docs/warm_storage/concepts/workflow_coordinator_p35_finding_reachability_design_2026-10-18_review_002.adoc.
+If requesting correction, assign every MATERIAL blocking problem a stable
+identifier (`P35DR-001`, `P35DR-002`, ...) naming the underlying defect, with
+a one-line summary, a severity (`MATERIAL` -- blocks acceptance;
+`IMPORTANT` -- should be addressed, does not itself block if explicitly
+deferred with stated reasoning; `MINOR` -- non-blocking observation), the
+concrete evidence or counterexample supporting it, and the minimal required
+correction. List every open identifier explicitly in the artifact.
+
+If the design is sound, request `route: accept`. If correction is needed,
+record every MATERIAL (and, at your discretion, IMPORTANT/MINOR) problem
+under its stable `P35DRxxx` identifier in the durable review artifact and
+request `route: correction` with `outcome: changes_required` and an empty
+`findings` list -- do not create a WFC Current-Run Finding merely to carry
+an ordinary design defect, consistent with this repository's established
+design-review Commission convention (see
+`docs-architecture-consolidation-design-001`'s own bundle). Do not invent a
+shadow finding system, and do not silently fall back to manual prompting if
+this routing ever appears unavailable -- stop and report instead.
+
+======================================================================
+CORRECTION (phase `correction`, only if `independent_review` or `rereview`
+requested it)
+======================================================================
+
+Address every open MATERIAL problem recorded in the durable review artifact
+(IMPORTANT/MINOR items may be addressed opportunistically but do not, by
+themselves, block requesting rereview). Preserve the design's intended P3.5
+scope and the architecture it describes; do not implement anything; do not
+touch the governing concept, the BUG, any other file, or the review artifact
+itself. Remain within the exact same single design-document scope as the
+artifact under review.
+
+Before requesting `rereview`, provide explicit per-identifier coverage for
+every `P35DRxxx` identifier still open from the latest review history: the
+identifier; a disposition of `addressed`, `blocked`, or `escalation`; what
+change was made (or why none could be made); and a concrete artifact section
+reference. Your own `addressed` claim does not close a requirement -- only
+the independent reviewer's next disposition does. Do not disposition any WFC
+Finding merely because the correction succeeded; this Run creates none by
+default.
+
+======================================================================
+REREVIEW (phase `rereview`, only if `correction` ran)
+======================================================================
+
+Independently verify the corrected design with fresh context. `rereview` has
+durable-artifact authority over exactly the dedicated review artifact:
+preserve the earlier review history there and durably append this Hop's
+fresh disposition, including an explicit disposition (closed/addressed,
+still open, or superseded by a clearly identified successor requirement) for
+every `P35DRxxx` identifier carried from the prior review, under the same
+identifier. Do not mutate the design artifact itself from `rereview` -- only
+the review artifact.
+
+Bound this pass to the identifiers already recorded and to direct correction
+regressions; do not reopen the full adversarial discovery pass merely
+because context is fresh. A genuinely new MATERIAL defect supported by
+concrete new evidence may still be raised and may reopen the loop.
+
+Accept only when every MATERIAL identifier is legitimately dispositioned;
+otherwise route back to `correction` the same way `independent_review`
+would, again with `outcome: changes_required`, `route: correction`, an empty
+`findings` list, and every still-open identifier explicitly listed. The
+independent reviewer remains the sole semantic acceptance authority
+throughout.
+
+======================================================================
+EVIDENCE (every phase) -- AGENT-LOCAL DIAGNOSTICS VS COORDINATOR-OWNED
+TRUSTED EVIDENCE
+======================================================================
+
+This WorkItem authorizes no production/test source change, so the
+repository's trusted pytest suite is expected to remain green before and
+after every Hop. That expectation is enforced by the Coordinator, not by
+you:
+
+ * The Coordinator-owned evidence gate is declared in this WorkItem's own
+   policy (`evidence_commands.pytest`) and wired into `independent_review`
+   and `rereview` (`evidence: [pytest]`, `failed_evidence_route:
+   correction`). The Coordinator resolves, fingerprints, and executes that
+   exact command itself, separately from your own work, and mechanically
+   routes to `correction` if it fails. You do not need to reproduce,
+   independently establish, or pre-empt that outcome before requesting a
+   route, and you must not treat achieving a green suite yourself as a
+   precondition for writing or completing your design review.
+ * You may still run tests in your own shell as exploratory, optional
+   diagnostics -- for example to sanity-check a specific claim about current
+   source behavior cited by the design. If you do, and your attempt is
+   blocked by something specific to your own sandbox (dependency
+   installation requiring network access, a missing build tool, or similar),
+   report that truthfully in your review artifact as exactly what it is: an
+   agent-local observation about your own shell, not a statement about the
+   repository's trusted suite and not a Coordinator evidence result. Do not
+   label it, or anything derived from it, as Coordinator-trusted evidence,
+   and do not let it block you from examining the design and recording your
+   disposition. A blocked agent-local diagnostic is not, by itself, a
+   reviewable defect in the design, a reason to request `correction`, and
+   not a reason to stop and escalate instead of completing the review.
+ * If the Coordinator's own trusted evidence does in fact fail, the existing
+   `failed_evidence_route: correction` routing already handles it
+   mechanically; this is unchanged by this Run and nothing you do needs to
+   special-case it.
+
+======================================================================
+OUT OF SCOPE for every phase of this WorkItem
+======================================================================
+
+Implementation of P3.5, in any form; any change to
+src/workflow_coordinator/** or tests/**; any change to any existing workflow
+profile, Commission, or policy other than this WorkItem's own four-file
+bundle, including the predecessor Commission's own bundle
+(`governance/work-items/p35-finding-reachability-design-review.yaml` and its
+profile/policy/task siblings); any change to
+docs/wfc_projected_result_contracts_concept_2026-10-07.adoc or
+docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc or any
+other backlog record; any change to project_memory/ or Project Memory in any
+form; any change to workflow-coordinator-runtime or
+workflow-coordinator-run-evidence, including the predecessor Run's archive
+and forensic report there; a Finding-kind taxonomy, LangGraph, hierarchical
+orchestration, or general workflow liveness/termination checking; closure of
+the governing BUG; any change to the generic Coordinator or to the package-
+installation fixture that blocked the predecessor's agent-local diagnostics
+(`tests/unit/test_wfc_op.py`'s `prepared`/`completed_run` fixtures or the
+Harness's `pip_install` build-isolation behavior); push; Runtime promotion;
+and unrelated cleanup. No phase of this WorkItem carries push, Runtime-
+promotion, Evidence-mutation, Project-Memory-edit, or WFC-launch authority.

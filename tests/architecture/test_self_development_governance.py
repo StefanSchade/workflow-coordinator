@@ -7103,3 +7103,198 @@ def test_p35_finding_reachability_design_review_bundle_passes_production_preflig
     # The design artifact under review already exists at this exact
     # commissioning HEAD -- this Run reviews it, it does not author it.
     assert (PROJECT_ROOT / P35_FINDING_REACHABILITY_DESIGN_REVIEW_SCOPE[0]).exists()
+
+
+P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_GOVERNING_PATHS = (
+    "governance/work-items/p35-finding-reachability-design-review-002.yaml",
+    "governance/self-development/p35-finding-reachability-design-review-002-profile.yaml",
+    "governance/self-development/p35-finding-reachability-design-review-002-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/p35-finding-reachability-design-review-002-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT = (
+    "docs/warm_storage/concepts/workflow_coordinator_p35_finding_reachability_design_2026-10-18_review_002.adoc"
+)
+
+
+def test_p35_finding_reachability_design_review_002_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Fresh successor to the predecessor Commission's own preflight proof.
+
+    `WI-WFC-P35-FINDING-REACHABILITY-DESIGN-REVIEW` (the predecessor) stopped
+    at H001 with `reconcile_required` and produced no completed review. This
+    bundle is an independent, freshly-identified successor -- not a resume --
+    commissioning the same review/correction/rereview loop over the same
+    unmodified design artifact, through a new WorkItem id, a new profile id,
+    a new policy id, and its own dedicated `_review_002` durable artifact.
+    It must parse, stay within policy/profile authority, use the
+    bootstrap-safe three-phase topology (independent_review ->
+    {accept, correction}; correction -> rereview; rereview ->
+    {accept, correction}) with max_autonomous_hops == 5, and hold no
+    mutation authority over src/workflow_coordinator/**, tests/**,
+    governance/ beyond its own bundle (explicitly including the predecessor
+    bundle, which must remain byte-for-byte present and unmodified),
+    workflow-coordinator-runtime, the workflow-coordinator-run-evidence
+    repository (including the predecessor's archived Run and forensic
+    report), canonical Project Memory, docs/backlog/**, the governing concept
+    document, or any other docs/*.adoc file: its only authorized scope is
+    the existing design artifact (correction only) and its own single
+    dedicated durable review artifact (independent_review and rereview
+    only).
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "p35-finding-reachability-design-review-002"
+
+    assert not state_root.exists()
+    result = _production_preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    review = profile.phases["independent_review"]
+    correction = profile.phases["correction"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = (
+        *P35_FINDING_REACHABILITY_DESIGN_REVIEW_SCOPE,
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT,
+    )
+
+    assert work_item.work_item_id == "WI-WFC-P35-FINDING-REACHABILITY-DESIGN-REVIEW-002"
+    assert work_item.initial_phase == "independent_review"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 5
+    assert work_item.max_autonomous_hops <= COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS
+    assert profile.profile_id == "p35-finding-reachability-design-review-002"
+    assert policy.policy_id == "workflow-coordinator-p35-finding-reachability-design-review-002"
+    assert tuple(profile.phases) == ("independent_review", "correction", "rereview")
+
+    # This successor's own scope is exactly the existing design artifact
+    # plus its own single dedicated durable review artifact -- never the
+    # predecessor's (never-written) review artifact.
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    assert P35_FINDING_REACHABILITY_DESIGN_REVIEW_REVIEW_ARTIFACT not in work_item.scope
+    for withheld in (
+        "src",
+        "src/workflow_coordinator",
+        "src/workflow_coordinator/model.py",
+        "tests",
+        "tests/architecture/test_self_development_governance.py",
+        "governance",
+        "governance/work-items/p35-finding-reachability-design-review.yaml",
+        "governance/self-development/p35-finding-reachability-design-review-profile.yaml",
+        "governance/self-development/p35-finding-reachability-design-review-policy.yaml",
+        "workflow-coordinator-runtime",
+        "workflow-coordinator-run-evidence",
+        "project_memory",
+        "project_memory/canonical",
+        "docs/backlog",
+        "docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc",
+        "docs/wfc_projected_result_contracts_concept_2026-10-07.adoc",
+        "docs/self-development.adoc",
+        "docs/architecture.md",
+        "core",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+    for path in P35_FINDING_REACHABILITY_DESIGN_REVIEW_SCOPE:
+        assert _within_scope(path, work_item.scope)
+
+    # independent_review and correction and rereview: correction alone is
+    # scoped to the existing design artifact; independent_review and
+    # rereview are independently scoped to this successor's own single
+    # dedicated durable review artifact -- no phase's authorized_scope
+    # grants both, and none grants the predecessor's artifact path.
+    assert correction.authorized_scope == P35_FINDING_REACHABILITY_DESIGN_REVIEW_SCOPE
+    assert review.authorized_scope == rereview.authorized_scope == (
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT,
+    )
+    assert set(P35_FINDING_REACHABILITY_DESIGN_REVIEW_SCOPE).isdisjoint(review.authorized_scope)
+    assert P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT not in correction.authorized_scope
+    assert P35_FINDING_REACHABILITY_DESIGN_REVIEW_REVIEW_ARTIFACT not in review.authorized_scope
+
+    assert durable_artifacts == {
+        "independent_review": (P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT,),
+        "rereview": (P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT,),
+    }
+    assert review.durable_artifact.value == rereview.durable_artifact.value == "required"
+    assert correction.durable_artifact.value == "none"
+    assert correction.evidence == ()
+    assert review.evidence == rereview.evidence == ("pytest",)
+    assert review.authorized_actions == rereview.authorized_actions == ("review", "edit", "commit")
+    assert correction.authorized_actions == ("edit", "commit")
+
+    # Topology: independent_review -> {accept: complete, correction} ->
+    # correction -> rereview -> {accept: complete, correction}. No initial
+    # design-authoring phase and no mutation authority over production
+    # source anywhere in this bundle.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "independent_review": (
+            ("accept", "complete", None),
+            ("correction", "goto", "correction"),
+        ),
+        "correction": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correction", "goto", "correction"),
+        ),
+    }
+    assert review.role == rereview.role == "independent_reviewer"
+    assert correction.role == "worker"
+    assert review.review.finding_authority == rereview.review.finding_authority == ("resolve",)
+    assert review.review.failed_evidence_route == rereview.review.failed_evidence_route == "correction"
+
+    # Role/persona separation: distinct fresh independent-review persona,
+    # never the correction persona.
+    assert work_item.personas[WorkflowRole.WORKER] != (
+        work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+    )
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-run-evidence", policy.work_item_scope_ceiling)
+    assert not _within_scope("project_memory/canonical", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    # Admission happened entirely through provider-free preflight: no
+    # provider/executable was ever invoked, and the state root the launch
+    # would eventually use was never created by this process.
+    assert not state_root.exists()
+
+    # The design artifact under review already exists at this exact
+    # commissioning HEAD -- this Run reviews it, it does not author it.
+    assert (PROJECT_ROOT / P35_FINDING_REACHABILITY_DESIGN_REVIEW_SCOPE[0]).exists()
+
+    # This successor bundle is strictly additive: the predecessor's own
+    # four-file governing bundle (WorkItem, profile, policy, task -- not the
+    # shared components/prompts scaffolding both bundles legitimately read)
+    # remains present and is never one of this successor's own
+    # WorkItem-specific governing paths.
+    predecessor_own_paths = tuple(
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)
+    )
+    successor_own_paths = tuple(
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)
+    )
+    for predecessor_path in predecessor_own_paths:
+        assert (PROJECT_ROOT / predecessor_path).exists()
+        assert predecessor_path not in successor_own_paths
+
+    # The predecessor's own review artifact was never written (that Run
+    # stopped before independent_review ever completed) and this successor
+    # does not create it either -- only its own `_review_002` artifact.
+    assert not (PROJECT_ROOT / P35_FINDING_REACHABILITY_DESIGN_REVIEW_REVIEW_ARTIFACT).exists()
