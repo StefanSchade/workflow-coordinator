@@ -488,16 +488,25 @@ reach `complete` undisposed.
 
 `creates_blocking(phase)`:: for a schema-v4 profile, exactly
 `phase.may_open_findings` (precise, authored, not inferred). For schema v2,
-use the deliberately narrow legacy compatibility sentinel:
-`phase.review is not None`, `phase.review.authority is GATE`, and
-`finding_authority` contains none of `resolve`, `residual`, or `supersede`.
-This is *not* a claim about the legacy reducer's actual permission: a legacy
-worker, or a resolve-capable gate, can still submit a new open blocker (§2.1).
-It is the bounded migration adapter that detects the Concept's specified
-empty-disposition topology while preserving new-launch compatibility for
-legacy profiles whose review gates already hold a closing operation. The
-residual false-negative is recorded in §6.1; precise enforcement requires an
-explicit v4 declaration.
+the governing legacy candidate is a reviewed phase whose `blocking_policy`
+admits a blocking Finding: `phase.review is not None and
+phase.review.blocking_policy == "blocking_only"`. This predicate is
+intentionally independent of both `review.authority` and
+`finding_authority`. The current parser admits only `blocking_only` for a
+review descriptor (§2.1), so all existing reviewed phases are candidates.
+
+That is not an inference that a reviewed phase is the *only* legacy creator:
+the result-v1 reducer lets a review-less worker create an `OPEN` blocker too
+(§2.1). Rather, it preserves the Concept §11 `P_open` reviewed-opener set
+while documenting that remaining review-less-worker under-approximation until
+an explicit v4 declaration exists. Crucially, a closing tuple is no evidence
+of non-creation: `_finding_operation(None, OPEN)` returns `None`, and
+`_apply_legacy_finding_deltas` calls `_may_dispose` only when that operation
+is not `None` (§2.1). A resolve-, residual-, or supersede-capable reviewed
+phase can therefore open a blocking Finding in its Hop; its own authority
+cannot dispose that new Finding concurrently, and only a strictly later
+invocation may satisfy §4.5. No schema-v2 compatibility adapter may exclude
+that phase merely because it holds a closing operation.
 
 For schema v3, candidates are exactly phases whose
 `convergence_role is EVALUATOR`. An evaluator dispatches generic result v2,
@@ -625,13 +634,15 @@ at least one phase holding `resolve`, `residual`, or `supersede` authority.
   create the successor has a later legal disposition path. The runtime guard
   (§2.3) remains the backstop for malformed or dynamically unexpected result
   content, not a waiver of this static obligation.
-* For schema v2, `creates_blocking` is the deliberately narrow
-  empty-disposition compatibility sentinel (§4.3). It under-approximates true
-  legacy engine capability for both a review-less worker and a
-  resolve-capable gate; those cases remain protected only by the unchanged
-  runtime guard. Schema v3 includes its actual evaluator creation capability;
-  schema v4's explicit field is the precise ordinary-profile solution. §6.1
-  explains these bounded migration choices.
+* For schema v2, `creates_blocking` preserves every reviewed
+  `blocking_only` opener, regardless of closing authority (§4.3). It still
+  under-approximates true legacy engine capability for a review-less worker;
+  that non-governing legacy shape remains protected only by the unchanged
+  runtime guard until explicit v4 creation declarations are adopted. Schema
+  v3 includes its actual evaluator creation capability; schema v4's explicit
+  field is the precise ordinary-profile solution. §6.1 explains the resulting
+  compatibility consequences rather than treating them as an exception to the
+  ordered property.
 
 == 5. Runtime enforcement and preflight integration
 
@@ -737,24 +748,33 @@ unchanged, `may_open_findings` is never required for them, and
 every existing `Route` continues to parse to the same effective value
 (`False`) it has today. What *does* change is that `_preflight` now also runs
 `validate_finding_reachability`, newly, against these profiles, using the
-version-specific compatibility predicates in §4.3 (the v2 empty-disposition
-sentinel and the v3 evaluator rule).
+version-specific compatibility predicates in §4.3 (the v2 reviewed-opener
+predicate and the v3 evaluator rule).
 
-The corrected origin arm was applied to all 42 current self-development
-schema-v2 profiles. The earlier `review is not None` proxy rejects all 42:
-each has a reviewed phase with a local `COMPLETE` route. That result is not a
-viable migration contract, because it also rejects known-good closure profiles
-solely by treating a resolve-capable legacy gate as an unspecified creator.
-The empty-disposition sentinel instead yields the established 19 rejection /
-23 acceptance inventory. The existing, separate evidence-admission predicate
-admits 12 and rejects 30; neither count claims full preflight. The accepted
-23 retain new-launch admission under this deliberately bounded compatibility
-rule. That is not proof that a resolve-capable v2 gate cannot create and
-immediately strand a new blocker: it is the documented legacy blind spot.
-Full ordered-property enforcement requires a separately commissioned v4
-migration that marks a completion gate `may_open_findings: false` or routes
-its creation-capable phase to a later disposer. No profile migration is
-performed or authorized here.
+The corrected origin arm and the corrected v2 predicate were applied to all
+43 current self-development schema-v2 profiles. All 43 are rejected: each
+has a reviewed `blocking_only` phase with a local `COMPLETE` route. The
+separate evidence-admission predicate admits 13 and rejects 30; neither count
+claims full preflight. This is an unavoidable result of applying the Concept
+§11 ordered property to the legacy behavior actually admitted by the reducer:
+an opener's own `resolve`/`residual`/`supersede` grant cannot satisfy the
+strict-after requirement. The former 19-rejection/23-acceptance split was an
+inventory for the unsound empty-disposition sentinel, not a compatibility
+contract that P3.5 may preserve.
+
+This has a real new-launch compatibility consequence. Concept §19 preserves
+parsing, replay, and fixture use for every existing profile, but revokes
+new-launch admission for a structurally invalid topology. Its listed
+empty-authority correction/rereview shape is an explicit required instance,
+not an exemption for another profile that independently violates §11 by
+allowing its reviewed opener to create and immediately encounter a checkpoint.
+Accordingly, the 43 profiles' historical artifacts and replay behavior stay
+unchanged, while an implementation must change their preflight assertions to
+rejection unless a separately commissioned profile migration makes each
+checkpoint phase explicitly noncreating or provides a later disposer. No
+profile migration is performed or authorized here. The remaining
+review-less-worker false negative is the only legacy creation limitation of
+this v2 adapter; v4 is the precise solution for ordinary profiles.
 
 The Concept names eight self-development lineages as mandatory regression
 examples
@@ -786,9 +806,9 @@ production evidence-admission predicate. A changed historical assertion must
 not be presented as a newly launch-admissible bundle becoming rejected. The
 implementation must retain that existing evidence-admission assertion and
 test reachability independently, before the bypassed predicate. It must
-assert the established 19/23 v2 reachability inventory, rather than defer its
-semantic outcome or promise that every unlisted fixture remains unchanged. No
-profile is changed by this design.
+assert the established 43-rejection/0-acceptance v2 reachability inventory,
+rather than defer its semantic outcome or preserve the unsound 19/23 sentinel
+inventory. No profile is changed by this design.
 
 === 6.2 Schema-version-4 profiles: explicit, precise, required declaration
 
@@ -821,12 +841,16 @@ conflate. Restated against this design's actual mechanism:
   evidence-admission assertion and adds an independent reachability assertion
   for the evidenced inventory in §6.1.
 . *Profile remains admissible for a NEW launch under current preflight* --
-  changed only when the corrected validator rejects it. The established v2
-  inventory is 19 rejections (the eight mandatory lineages plus eleven
-  additional historical fixtures) and 23 acceptances. The eleven additional
-  fixtures are already non-admissible for a separate evidence reason. The
-  implementation verifies this established predicate/result contract; it does
-  not decide that material compatibility policy afresh.
+  deliberately revoked for every profile that the ordered predicate rejects.
+  The established v2 inventory is 43 rejections and 0 acceptances: every
+  current self-development v2 profile has a reviewed `blocking_only` local
+  completion checkpoint. The 13/30 evidence-admission split is separate and
+  does not narrow this composition result. The Concept's four-promise
+  distinction preserves historical parsing, replay, and fixture use, not a
+  false new-launch admission obtained by treating an opener's same-Hop
+  closing authority as a later disposer. The implementation verifies this
+  established predicate/result contract; it does not decide that material
+  compatibility policy afresh.
 
 == 7. Positive/negative examples and acceptance criteria
 
@@ -1003,11 +1027,12 @@ Run construction, no filesystem beyond reading fixture YAML.
   Each asserted rejection names the opening phase and a deterministic witness
   (origin checkpoint or immediate dangerous successor/path).
 * *Inventory non-regression:* run the corrected version-specific predicate
-  across every self-development fixture and assert the established v2 19
-  rejection / 23 acceptance inventory. Preserve the existing
-  production-preflight expectations unless the corrected predicate itself
-  changes them; do not assume an unlisted fixture passes merely from its name
-  or previous wrapper test. Add a minimal schema-v3 evaluator fixture and the
+  across every self-development fixture and assert the established v2 43
+  rejection / 0 acceptance inventory. Update each affected current
+  production-preflight expectation to a reachability rejection while retaining
+  the distinct historical evidence-admission assertions; do not assume a
+  resolve-capable reviewed gate passes merely from its closing tuple or prior
+  wrapper test. Add a minimal schema-v3 evaluator fixture and the
   standard v3 fixture: both are candidates because evaluator creation is
   tracked; the standard fixture is rejected by its evaluator's local
   origin checkpoint even though that evaluator has closing authority.
@@ -1092,12 +1117,13 @@ equivalent), to be produced alongside that guide, not here:
 
 == 10. Remaining decisions, risks and questions for independent review
 
-. *Legacy compatibility precision (§4.3, §6.1).* Schema v2 uses the explicit
-  empty-disposition sentinel, retaining review-less-worker and
-  resolve-capable-gate blind spots; schema v3 includes tracked evaluator
-  creation. The established v2 inventory is 19 reject / 23 accept. This is a
-  conscious compatibility boundary, not an unresolved implementation choice;
-  v4 migration is the path to full precision.
+. *Legacy compatibility precision (§4.3, §6.1).* Schema v2 preserves the
+  governing reviewed `blocking_only` opener set regardless of closing
+  authority, retaining only the review-less-worker blind spot; schema v3
+  includes tracked evaluator creation. The established v2 inventory is 43
+  reject / 0 accept. This is a deliberate application of the governing
+  ordered property, not an unresolved implementation choice; v4 migration is
+  the path to full precision.
 . *Field naming.* `may_open_findings` and
   `require_no_open_blocking_findings` are illustrative, chosen for clarity
   against existing field names (`finding_authority`, `authorized_actions`),
