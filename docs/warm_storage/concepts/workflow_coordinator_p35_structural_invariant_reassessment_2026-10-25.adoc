@@ -1,109 +1,216 @@
-= WFC P3.5 -- Structural-Invariant Reassessment
+= P3.5 structural-invariant reassessment
+:toc:
+:sectnums:
 
-Status:: *SCAFFOLDED AT COMMISSIONING TIME -- NO RUN HAS YET EXECUTED. EMPTY
-BEYOND THIS PREFACE. NOT AUTHORED. AUTHORIZES NOTHING.*
-WorkItem:: `WI-WFC-P35-STRUCTURAL-INVARIANT-REASSESSMENT-001`
-Date (scaffolded):: 2026-10-25
-Governing records:: link:../../wfc_projected_result_contracts_concept_2026-10-07.adoc[Projected
-/ Phase-Specific Result Contracts -- Concept] §§4, 11, 17, 19, 20, 22;
-link:../../backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc[BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY];
-link:workflow_coordinator_p35_finding_reachability_design_2026-10-18.adoc[the
-accepted P3.5 design], as corrected by H001 (Development commit `6807d56`);
-link:workflow_coordinator_p35_finding_reachability_design_2026-10-18_review_003.adoc[its
-accepted review] (H002, Development commit `b3dbbd9`);
-link:workflow_coordinator_level0_mvp_planning_decisions_2026-10-21.adoc[2026-10-21
-Level-0 MVP planning decisions] §2 (the pending-decision framing this
-Commission answers).
+== Commission conclusion and reader's map
 
-[IMPORTANT]
-====
-This file is commissioning-time scaffolding only. It creates no
-architecture decision, authorizes no implementation, profile migration,
-Runtime promotion, or BUG closure, and does not amend the already-accepted
-P3.5 design document, the governing Concept document, or any existing
-workflow profile. The content below this preface is written entirely by
-this WorkItem's own `assessment`/`correction` phases as its Run executes;
-at commissioning time it is empty except for this preface and the
-structural outline it is seeded with, so a fresh agent has a template
-rather than a blank page.
+This independent reassessment reaches conclusion *iii*: defer the accepted
+ordered-reachability admission check for Level 0, retain the current runtime
+completion guard, and use the bounded convention in <<d8>>. This affects only
+the proposed new-launch admission check; it does not change the guard, Finding
+rules, profiles, BUG disposition, or accepted design record.
 
-An `accept` disposition recorded in this Commission's companion review
-artifact
-(link:workflow_coordinator_p35_structural_invariant_reassessment_2026-10-25_review.adoc[`_review.adoc`])
-makes this document's final state this Commission's accepted
-recommendation for maintainer disposition of the pending P3.5 architecture
-decision. It is a recommendation, not automatic authority to amend the
-accepted P3.5 design, close the governing BUG, migrate any profile, or
-promote Runtime.
-====
+The conclusion is not that empty disposition authority is harmless. It creates
+a recoverability/usability risk after an actual blocker is opened, not a route
+to incorrect completion. The 43/0 result is therefore disproportionate at
+Level 0 for a capability-only predictor with deliberate false positives.
 
-== 1. Purpose and scope
+* Determinations 1--4: <<d1>>, <<d2>>, <<d3>>, <<d4>>.
+* Determinations 5--8: <<d5>>, <<d6>>, <<d7>>, <<d8>>.
+* Authorized versus actual opening: <<capability-history>>.
 
-(To be authored by `assessment`.) States precisely what question this
-reassessment answers (the pending architecture decision named in the
-governing 2026-10-21 planning decisions §2) and what it does not decide
-(P3.5 implementation, profile migration execution, a Finding-kind
-taxonomy, hierarchical escalation).
+== Evidence and method
 
-== 2. The eight required determinations
+This report read the required Concept, BUG, accepted design/review, Level-0
+decision, backlog row, current source, and representative governance profiles.
+Every engine-behavior claim below cites current source, rather than design
+prose. Line numbers refer to base 079b508665bc3e3ad58a0ce74448905475f4b067.
 
-(To be authored by `assessment`, per the governing task text in full.)
+The concrete vocabulary separates states, authorities, and routes:
+FindingState includes open, resolved, residual, and superseded;
+FindingAuthority includes gate and human; and RouteEffect includes complete
+and await_human (src/workflow_coordinator/model.py:44-55,118-124). A
+ReviewDescriptor separately holds gate authority and permitted Finding
+operations (model.py:222-231).
 
-=== 2.1 The failure class P3.5 is intended to prevent
+[[d1]]
+== 1. Actual failure class
 
-(pending)
+P3.5 targets a structural *recoverability mismatch*: a profile gives an
+invocation capability to create a blocking Finding while every
+post-invocation path toward completion lacks authority to dispose it. If that
+capability is exercised, completion is unavailable and current mechanisms
+supply no automatic authority handoff. The S3-002 BUG is one instance.
 
-=== 2.2 Existing runtime-guard coverage and residual risk
+This is not a completion-safety failure. _finding_operation maps open to
+resolved/residual/superseded operations, and _may_dispose permits them only
+to human authority or a gate allowed that operation
+(src/workflow_coordinator/reducer.py:470-498). It is also not general
+liveness: loops and never-completing profiles may fail to make progress for
+unrelated reasons.
 
-(pending)
+[[d2]]
+== 2. Runtime completion guard and remaining risk
 
-=== 2.3 Safety invariant, admission-time liveness/usability check, or both
+The guard is global and history-sensitive. _has_open_blocker is true exactly
+for a persisted Finding that is both OPEN and blocking
+(reducer.py:1145-1149). _apply_route permits goto, but on every COMPLETE tests
+the predicate and instead stops for completion_blocked_by_open_blocking_findings
+(reducer.py:1152-1174). Thus no admitted Run can complete with an actual open
+blocking Finding, regardless of which phase opened it.
 
-(pending)
+What remains is recoverability: the guard permits the Run to proceed until
+completion is attempted, then stops it; it does not supply a disposer.
+await_human stops, prerequisite authorization only changes a Run to SUSPENDED,
+and reconciliation merely restores READY after checks
+(reducer.py:1175-1182,1899-1988). The remaining harm is stranded work, human
+intervention, and spent Hops/provider cost--not silent completion.
 
-=== 2.4 Necessity of the strict-after disposition rule
+[[d3]]
+== 3. Safety or admission-time usability
 
-(pending)
+P3.5 is an admission-time usability/recoverability check, not an additional
+completion-safety invariant. The proposed checker sees a capability; the
+guard sees actual run.findings. The guard covers the unsafe terminal state
+that P3.5 might otherwise be presumed to prevent. A rejection predicts a
+possible bad operational episode, not an unsafe admitted Run.
 
-=== 2.5 Why all 43 inventoried profiles fail -- representative profiles and minimal counterexamples
+It has a safety-adjacent architectural benefit: it makes an autonomous-closure
+promise honest before resources are spent. That may justify it post-MVP, but
+does not make corpus-wide breaking admission a Level-0 MUST-HAVE while the
+dynamic backstop is live.
 
-(pending)
+[[d4]]
+== 4. Strict-after rule: necessary cases and overreach
 
-=== 2.6 Whether a narrower sound invariant is possible
+Strict-after is necessary for the H005/H002 shapes when the desired property
+is autonomous recovery. Case A: review may open a blocker and has resolve,
+but its accept route is complete; concurrent authority cannot perform a later
+invocation. Case B: an opener goes to a later completing phase with no
+disposition authority and carries the blocker unchanged. Counting opener
+authority as later authority would accept both stranded topologies. The
+reducer stops Case B at completion as <<d2>> demonstrates.
 
-(pending)
+It is not necessary in every rejection for completion safety. In Case A,
+history H0 has no Finding and completes correctly; H1 opens one and stops,
+rather than completing incorrectly. Strict-after is necessary only for the
+stronger universal guarantee that every capability-allowed opening history
+has an autonomous later disposition.
 
-=== 2.7 Whether retaining the design and migrating profiles is justified
+[[capability-history]]
+== A. Capability is not history
 
-(pending)
+Schema-v2 gate capability is review.authority: gate with
+blocking_policy: blocking_only; the parser requires the latter and parses
+finding_authority separately (serialization.py:548-598). Proposed v4
+may_open_findings would also be a declaration, not a Finding. A Finding
+appears only when a correlated result delta is accepted; in result v2 an open
+blocking Finding additionally requires evaluator role (reducer.py:702-735).
 
-=== 2.8 Whether P3.5 can be reduced for the Level-0 MVP
+Concrete counterexample: a one-phase gate has accept: complete, may open, and
+no resolver. H0 returns accept with no Finding: the guard is false and
+completion is proper. H1 returns the same route with an open blocker: it is
+persisted and the guard stops completion. Static P3.5 rejects both from the
+same declarations; the dynamic guard distinguishes them. Thus static checking
+cannot substitute for the dynamic guard; it can only complement it by
+rejecting possible H1s and necessarily rejecting harmless H0s.
 
-(pending)
+[[d5]]
+== 5. The 43/0 inventory, checked against YAML
 
-== 3. Authorized-to-open versus actually-opened
+Two actual schema-v2 profiles independently show the claimed predicate shape.
 
-(To be authored by `assessment`, per the governing task text item A: the
-distinction between a reviewer's declared capability to open a blocking
-Finding and a specific Run's history of actually opening one, and what
-follows for whether a static, pre-Run check can substitute for, or must
-instead complement, the dynamic runtime completion guard.)
+governance/self-development/correction-convergence-escape-implementation-s3-002-profile.yaml
+defines review as a blocking-only gate with no finding_authority and
+accept: {effect: complete}. It is the minimal opener-capable,
+direct-completion, no-strict-after-disposer shape. Its correct/rereview cycle
+cannot rescue a Finding when accept is selected.
 
-== 4. Source grounding
+governance/self-development/correction-convergence-escape-implementation-s1-001-profile.yaml
+has the same shape: its review is a blocking-only gate,
+finding_authority: [], and accept: complete; correct and rereview exist only
+on the other route. Applying accepted-design sections 4.3/4.5 predicates finds
+an opener candidate and no reachable strict-after disposer on its terminal
+path. These are YAML facts, not reliance on design section 6.1.
 
-(To be authored by `assessment`, per the governing task text item B: exact
-file/function citations for every engine-behavior claim, distinguished from
-claims inherited uncritically from the design document's own citations.)
+The design-review-003 profile confirms breadth: its rereview has
+finding_authority: [resolve] but accept: complete; concurrent authority is
+insufficient under strict-after. Samples cannot establish cardinality alone;
+the separately read inventory and Level-0 decision record state 43/0. They
+establish the mechanism in actual members.
 
-== 5. Conclusion
+[[d6]]
+== 6. Is a narrower sound invariant possible?
 
-(To be authored by `assessment`, per the governing task text item C: one of
-retain-and-migrate, narrow-and-respecify, reduce-or-defer-for-Level-0, or a
-stated combination, naming exactly which parts of the accepted design each
-component affects.)
+Yes, if sound means sound for actual completion safety:
 
-== 6. Determination-to-section index
+____
+For every application of a COMPLETE route, reject completion iff the Run's
+persisted Findings contain an open blocking Finding.
+____
 
-(To be authored by `assessment`: a one-line pointer from each of the eight
-determinations above to the document section that addresses it, per the
-governing task text's pre-`review` requirement.)
+That is exactly the existing _has_open_blocker/_apply_route invariant. It
+admits all 43 and does not reintroduce H005/H002 *unsafe completion*: a real
+blocker prevents COMPLETED.
+
+No narrower *static capability-only* invariant can both admit these profiles
+and retain the accepted stronger autonomous-recovery guarantee. H0 and H1 in
+<<capability-history>> have identical topology/declarations but opposite
+answers under a predictor of whether a blocker will be opened. A validator
+admitting H0's profile admits H1's; rejecting H1 rejects H0. This follows from
+the reducer's information boundary, not a proposal for taxonomy or liveness.
+
+[[d7]]
+== 7. Retain design plus migrate?
+
+Retaining the design unchanged and migrating profiles is justified only if the
+stronger autonomous-recoverability guarantee is deliberately worth 43
+potential migrations/schema-v4 adoption. Its benefit is avoiding a possible
+post-opening stop and making a commissioning promise pre-Run. It is not
+avoiding incorrect completion, already blocked by the reducer.
+
+The known cost is revocation of new-launch admission for all 43 current
+profiles followed by profile redesign. The Level-0 decision record expressly
+presumes neither compatibility nor breaking change. No demonstrated safety
+defect outweighs this cost at the Level-0 milestone. Retention is a coherent
+post-MVP policy choice, not the recommended default.
+
+[[d8]]
+== 8. Level-0 reduction and bounded convention
+
+Defer P3.5's static ordered-reachability admission check for Level 0. Retain
+the dynamic guard unchanged. Until later separately authorized work, use this
+bounded operating convention:
+
+* A gate that opens a blocking Finding routes for correction or human handling,
+  not successful completion.
+* A Run stopped with completion_blocked_by_open_blocking_findings is not
+  treated as completed or silently resumed.
+* A commissioning that requires autonomous disposition documents a later
+  authorized disposer as a review criterion, rather than using a universal
+  admission validator.
+
+This neither claims liveness, authorizes human disposition, adds an
+authority-handoff route, nor changes profiles. It leaves an accepted risk--a
+Run can stop after a real blocker--bounded by fail-closed completion. Given
+<<d1>>-<<d4>>, that is acceptable at Level 0 and avoids migration solely to
+predict a history that may never occur.
+
+== Current structural-validation boundary
+
+The parser validates profile versions/required fields, review grammar, and
+route shape (src/workflow_coordinator/serialization.py:548-622,667-686).
+Operator preflight pins/parses inputs and checks clean head, roles, actions,
+and scopes (src/workflow_coordinator/operator.py:281-367). None computes
+ordered Finding-disposition reachability. This is an implementation gap, not
+proof of unsafe admission: reduce_result applies correlation and mechanical
+preemption before Finding/route authority (reducer.py:1520-1588), and the
+terminal guard is decisive.
+
+== Recommendation for maintainer disposition
+
+Choose conclusion iii for Level 0: do not implement the accepted P3.5 static
+admission rule yet; retain its design/counterexamples as a post-MVP option;
+and use <<d8>>. Reassess if real Level-0 operations show that post-opening
+stops justify the 43-profile burden. This does not close the BUG: gate and
+disposition authority remain independent.
