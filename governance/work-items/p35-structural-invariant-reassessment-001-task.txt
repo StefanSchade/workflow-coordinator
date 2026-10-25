@@ -1,0 +1,368 @@
+Produce an independent architecture reassessment of P3.5 Finding-Authority
+Reachability's accepted static ordered-reachability invariant, then
+independently, adversarially review it, correct it against recorded
+Findings, and rereview the correction, until the independent reviewer
+accepts or this Run's Hop budget is exhausted. Loop: assessment -> review;
+review -> {accept: complete, correction}; correction -> rereview; rereview
+-> {accept: complete, correction}. Initial phase: assessment. No supervisor.
+No child Run. No nested WFC.
+
+An `accept` disposition at `review` or `rereview` makes the current
+assessment document this Commission's accepted recommendation for
+maintainer disposition of the pending P3.5 architecture decision. It does
+NOT itself amend the already-accepted P3.5 design document, close
+BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY, migrate any profile,
+implement anything, or promote Runtime. The maintainer separately chooses
+the next P3.5 action after reading this Commission's accepted output.
+
+======================================================================
+THIS IS A FRESH COMMISSION -- READ BEFORE WRITING ANYTHING
+======================================================================
+
+Unlike the predecessor P3.5 design-review lineage
+(WI-WFC-P35-FINDING-REACHABILITY-DESIGN-REVIEW, -002, -003), this WorkItem
+does not correct or extend the accepted design document itself. It
+produces an entirely separate, independent reassessment of whether that
+accepted design is the right architecture for Level 0 at all, given the
+consequence its own acceptance review recorded: under the accepted rule,
+*all 43* currently inventoried schema-v2 self-development profiles are
+rejected (43 rejections / 0 acceptances). This is a maintainer-flagged
+pending architecture decision
+(docs/warm_storage/concepts/workflow_coordinator_level0_mvp_planning_decisions_2026-10-21.adoc
+§2), not a request to implement, migrate, or further correct the design.
+
+No outcome is predetermined. The design may be judged exactly right, judged
+too strict and narrowable, judged correct but reducible for Level-0, or
+judged overbuilt relative to what the runtime completion guard already
+provides. Preserving the 43 existing profiles as they stand is not, by
+itself, a goal of this Commission; nor is preserving the accepted design as
+it stands. Ground every judgment in evidence -- source citations, concrete
+counterexamples, actual reducer behavior -- not in preference for either
+outcome.
+
+======================================================================
+BACKGROUND -- READ BEFORE WRITING ANYTHING
+======================================================================
+
+Read, in full where present:
+
+ 1. docs/wfc_projected_result_contracts_concept_2026-10-07.adoc §§4, 11, 17,
+    19, 20, 22. §11 is P3.5's own current definition: its target property
+    (ordered reachability, not path membership), its two motivating failure
+    instances (the S3-002 BUG and P1's own self-reproduction of the same
+    shape), and its explicit boundary against full liveness/formal
+    verification. §4 is the structural/stateful/composition three-way
+    distinction P3.5 claims as its category. §17 is the P2-P5 sequencing
+    and why Commission/authority conformance is named a *distinct* failure
+    class from projected-result typing and from Coordinator-owned effects.
+    §22 records the still-open question of exactly where the P3.5 check
+    should live.
+ 2. docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc, in
+    full -- the concrete motivating defect: a `rereview` gate whose stated
+    purpose was disposition, commissioned with `finding_authority: []`,
+    unable to close three real Run-native Findings; the "Historical
+    evidence" section showing the same empty-authority convention was latent
+    (never exercised) across the entire predecessor S1/S2/S3-001 lineage;
+    and the "Root cause and invariant" section's precise statement that gate
+    authority and Finding-disposition authority are independent, and that a
+    review/rereview commissioning pattern with `finding_authority: []` is
+    valid only when that phase is not expected to disposition Run-native
+    Findings.
+ 3. The accepted design document,
+    docs/warm_storage/concepts/workflow_coordinator_p35_finding_reachability_design_2026-10-18.adoc,
+    in full. Read with particular attention to:
+      - §2 (current implemented behavior, the precise gap, and especially
+        §2.3's statement that the runtime completion guard --
+        `_has_open_blocker`/`_apply_route` -- is "sound and global" and
+        stays exactly as it is; and §2.4's statement that nothing in the
+        engine today lets a human or external authority actually dispose a
+        Run-native Finding, so `AWAIT_HUMAN`/`SUSPEND_FOR_PREREQUISITE` are
+        stops, never disposition grants);
+      - §3-4 (the proposed schema, the static algorithm, and §4.7's own
+        precise statement of what the algorithm does and does not prove,
+        including the deliberate boundary that a profile that can *never*
+        reach completion at all is accepted vacuously -- a different defect
+        category the design does not address);
+      - §6 (compatibility/migration) and specifically §6.1's statement that
+        the 43-rejection/0-acceptance result is "an unavoidable result of
+        applying the Concept §11 ordered property to the legacy behavior
+        actually admitted by the reducer," and the four distinct
+        compatibility promises in §6.3 (three preserved, one -- new-launch
+        admission -- deliberately revoked for all 43);
+      - §7 (worked examples, especially example 8's explicit flag that "no
+        such thing as a legitimate, engine-enforced authority handoff route"
+        exists today, and that this is left as an open question for
+        independent review, not silently resolved);
+      - §10 (remaining decisions, risks, questions for independent review --
+        especially items 1 and 4-6, which this reassessment's own
+        determinations 6-8 directly bear on).
+ 4. The design's accepted independent review,
+    docs/warm_storage/concepts/workflow_coordinator_p35_finding_reachability_design_2026-10-18_review_003.adoc,
+    in full, especially its H002 acceptance section and its two carried-
+    forward H005 counterexamples (one-phase closing-authority direct-
+    completion case; two-phase carried-undisposed-Finding case). These are
+    the design's own falsification record; use them as calibration for what
+    "a concrete, minimal counterexample" looks like in this repository's own
+    convention, not as material to re-litigate.
+ 5. docs/warm_storage/concepts/workflow_coordinator_level0_mvp_planning_decisions_2026-10-21.adoc
+    §2, in full -- the maintainer's own framing of this exact pending
+    decision, including its explicit instructions not to assume migration is
+    required and not to demand backward compatibility for its own sake
+    either.
+ 6. docs/backlog/_open.adoc, the P3.5 row of the "Projected-result-contract
+    roadmap family" table -- current backlog status (read-only; this
+    Commission does not edit it).
+ 7. Current source. Read enough of each to verify any claim you make about
+    engine behavior from the source itself, not merely from the design
+    document's or BUG's own citations:
+      - src/workflow_coordinator/model.py: `Phase`, `Route`, `RouteEffect`,
+        `ReviewDescriptor`, `ReviewAuthority`, `FindingState`,
+        `FindingAuthority`, `ConvergenceRole`, `WorkItem.max_autonomous_hops`,
+        `COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS`.
+      - src/workflow_coordinator/serialization.py: `workflow_profile_from_yaml`,
+        `_review`, `_route` -- what is and is not structurally validated
+        today, independent of P3.5.
+      - src/workflow_coordinator/reducer.py: `_finding_operation`,
+        `_may_dispose`, `_apply_legacy_finding_deltas`,
+        `_apply_v2_finding_deltas`, `_validate_convergence_records_before_apply`,
+        `_has_open_blocker`, `_apply_route`, `reduce_result`,
+        `confirm_supervisor_route`, `authorize_prerequisite`,
+        `require_reconcile`, `resume_after_reconcile`. These are the
+        definitive source of what the runtime completion guard actually
+        does, what "disposing a Finding" actually requires, and what, if
+        anything, can resume a Run past a phase that lacked disposition
+        authority.
+      - src/workflow_coordinator/operator.py: `_preflight` -- the existing
+        trusted, mechanical, pre-Run cross-document check boundary P3.5
+        would extend, and what it checks today without P3.5.
+ 8. governance/self-development/ and governance/work-items/ for this
+    WorkItem's own bundle (profile, policy, work-item, task) and for a
+    representative sample of the inventoried self-development profiles
+    (e.g. the eight Concept-§19-named correction-convergence-escape
+    lineages and the design review's own bundle) -- read enough to construct
+    or verify concrete representative profiles and minimal counterexamples
+    for determination 5 below, rather than relying solely on the design
+    document's own characterization of them.
+
+Do repository archaeology as needed to verify a specific claim, but do not
+modify production source, tests (other than this WorkItem's own
+commissioning-validation test, which is not part of any Hop of this Run),
+any existing workflow profile, Commission, or policy (including every
+inventoried self-development profile, the accepted design document, and
+both its review artifacts), the governing concept, the BUG, the backlog, or
+any file outside this WorkItem's own two-document authorized scope (the
+assessment document, in `assessment`/`correction` only; this WorkItem's own
+dedicated review artifact, in `review`/`rereview` only).
+
+======================================================================
+ASSESSMENT (phase `assessment`, first phase of this Run)
+======================================================================
+
+Author
+docs/warm_storage/concepts/workflow_coordinator_p35_structural_invariant_reassessment_2026-10-25.adoc
+as a durable, evidence-based architecture reassessment. At minimum, address
+each of the following eight determinations explicitly, each grounded in
+cited source and/or a concrete, minimal, worked example -- not merely a
+restatement of the design document's or Concept doc's own prose:
+
+ 1. The actual failure class P3.5 is intended to prevent. State it
+    precisely, distinguishing it from the runtime completion guard's own
+    failure class (determination 2) and from general workflow liveness
+    (the design's own named non-goal, §4.7/§7 example 8).
+ 2. What the existing runtime completion guard
+    (`_has_open_blocker`/`_apply_route`, reducer.py) already prevents at
+    Run time, and precisely what risk, if any, remains uncovered by it once
+    a Run is already admitted. Ground this in the guard's actual code path,
+    not merely the design document's characterization of it.
+ 3. Whether P3.5 is a safety invariant (preventing a Run from reaching an
+    unsafe/incorrect state), an admission-time liveness/usability check
+    (preventing a Run from wasting Hops and provider cost on a structurally
+    doomed topology, given §3.4's deliberate exclusion of any `COMPLETE`-
+    equivalent state that the *runtime* guard would not itself also already
+    stop), or a combination of both -- and what follows for Level-0 MVP
+    priority from whichever answer the evidence supports.
+ 4. Whether the current strict-after disposition rule (a disposer must be
+    reachable strictly *after* the opening invocation; an opener's own
+    concurrent closing authority never satisfies it, per design §4.5's
+    origin-check arm and the H005/H002 counterexamples) is necessary in
+    every case the rule currently rejects, or only in some -- distinguish
+    these with concrete cases rather than asserting one answer for the rule
+    as a whole.
+ 5. Why all 43 inventoried schema-v2 profiles fail, using at least two
+    concrete representative profiles (drawn from actual governance/
+    self-development/*.yaml files, named precisely) and the minimal
+    counterexample shape each instantiates. Do not rely solely on the
+    design document's own §6.1 characterization; verify at least one
+    profile's rejection directly against its actual YAML and the §4.3/§4.5
+    predicates.
+ 6. Whether a narrower sound invariant is possible -- one that would admit
+    at least some of the 43 currently-rejected profiles without
+    reintroducing the exact falsified shape H005/H002 closed (an opener's
+    own concurrent authority satisfying the rule, or an undisposed Finding
+    silently carried to completion). If no narrower sound invariant is
+    possible, say so explicitly and show why, rather than leaving the
+    question open by omission.
+ 7. Whether retaining the current design exactly as accepted, and
+    separately commissioning profile migration for some or all of the 43,
+    is justified -- weighed explicitly against the cost (43 profiles
+    potentially needing migration or schema-v4 adoption) and the benefit
+    (what determination 1-4 established is actually at stake).
+ 8. Whether P3.5 can be reduced for the Level-0 MVP specifically -- e.g.
+    narrowed scope, deferred to post-MVP, replaced by a documented operating
+    convention, or some other reduction -- without leaving an unacceptable
+    defect, where "unacceptable" is judged against determinations 1-4, not
+    against convenience alone.
+
+Additionally, and explicitly:
+
+ A. Test the distinction between a reviewer being *authorized* to open a
+    blocking Finding (a declared capability: `review.authority: gate` with
+    `blocking_policy: blocking_only`, or, in the design's own schema-v4
+    proposal, `may_open_findings: true`) and that reviewer *actually opening*
+    one in a specific Run's history. State explicitly what each of P3.5 (a
+    static, pre-Run, capability-only check) and the runtime completion guard
+    (a dynamic, per-Run, actual-history check) can and cannot see about this
+    distinction, and what follows for whether a static check can ever fully
+    substitute for -- or must instead complement -- the dynamic guard.
+ B. For every claim about engine behavior, cite the exact current source
+    (file and function/line) rather than the design document's or BUG's own
+    citation of it; where you cannot independently verify a cited behavior,
+    say so explicitly rather than treating the citation as established by
+    its mere presence in an accepted document.
+ C. State explicitly whether your reassessment's conclusion is: (i) retain
+    the accepted design and commission profile migration separately; (ii)
+    narrow the invariant and re-specify it precisely; (iii) reduce or defer
+    P3.5 for Level-0 under a stated, bounded operating convention; or (iv)
+    some combination, naming exactly which parts of the design each
+    component of your conclusion affects. A reassessment that reaches no
+    stated conclusion does not satisfy this WorkItem's purpose.
+ D. Do not implement anything, migrate any profile, or edit the governing
+    concept, the BUG, the backlog, or either existing P3.5 design/review
+    document. This phase has no durable-artifact authority and does not
+    touch the review artifact.
+
+Before requesting `review`, provide an explicit summary in your assessment
+document's own text (not merely in the commit message) stating which of the
+four conclusion shapes in item C you reached, and a one-line pointer to the
+document section supporting each of the eight determinations above.
+
+======================================================================
+REVIEW (phase `review`, first independent pass)
+======================================================================
+
+Independently, adversarially verify the assessment with fresh context.
+Specifically:
+
+ * Does the assessment address all eight determinations and items A-C,
+   each grounded in cited source or a concrete worked example, not merely
+   restated design/Concept-doc prose?
+ * Is determination 5's representative-profile claim independently
+   verifiable against the actual YAML cited? Check at least one yourself.
+ * Does item A's authorized-vs-actually-opened distinction hold up under a
+   concrete counterexample of your own construction, analogous in rigor to
+   the design's own H005/H002 counterexamples?
+ * Is the stated conclusion (item C) actually supported by the evidence
+   presented, or does it assert an outcome the eight determinations do not
+   establish?
+ * Does the assessment avoid silently expanding scope into implementation,
+   profile migration, a Finding-kind taxonomy, a workflow DSL, or a
+   decision about hierarchical escalation -- all of which remain out of
+   scope for this reassessment exactly as they are out of scope for P3.5
+   itself (Concept §11's own non-goals)?
+
+Open a Run-native blocking Finding for each genuine defect found, using this
+profile's `finding_authority: [resolve]` to close any Finding you yourself
+later verify corrected. Record each Finding durably, under a stable
+identifier of your own choosing following this repository's convention
+(e.g. `P35SIR-001`, `P35SIR-002`, ...), in
+docs/warm_storage/concepts/workflow_coordinator_p35_structural_invariant_reassessment_2026-10-25_review.adoc
+-- this is the first Hop to write that file; create it following the
+structure of
+docs/warm_storage/concepts/workflow_coordinator_p35_finding_reachability_design_2026-10-18_review_003.adoc
+(a disposition table per identifier, an `== H<nnn> review` section per Hop)
+as a structural precedent for layout, not for its specific carried-forward
+content, which does not apply here (this is a first, not a successor,
+review). Do not mutate the assessment document itself from this phase --
+only this review artifact.
+
+Accept (`route: accept`) only when no material Finding remains open.
+Otherwise request `route: correction` with `outcome: changes_required`,
+naming every open identifier and its precise remaining defect.
+
+======================================================================
+CORRECTION (phase `correction`, every time `review`/`rereview` requests it)
+======================================================================
+
+Address every open identifier named in the review artifact's most recent
+Hop section, in the assessment document only. For each: state the
+identifier; a disposition of `addressed`, `blocked`, or `escalation`; the
+precise change made (or why none could be made); and a concrete section
+reference in the assessment document. Do not drop or silently narrow a
+previously-named open identifier while fixing only the latest one named --
+carry every still-open identifier forward explicitly, exactly as this
+repository's own BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER record warns
+against. Do not touch the review artifact from this phase.
+
+======================================================================
+REREVIEW (phase `rereview`, every time `correction` runs)
+======================================================================
+
+Fresh independent context. Directly falsify the correction's own coverage
+claim against each open identifier -- re-derive or reconstruct the
+counterexample/defect yourself, as `review`'s own Finding recorded it,
+rather than accepting the correction's claim at face value. Append your
+disposition to the same review artifact, preserving every earlier Hop's
+section and giving each identifier an explicit disposition under its same
+stable identifier. Do not reopen an identifier already closed by an earlier
+Hop of this same Run absent genuinely new material evidence found in this
+pass. Accept only when no material Finding remains open; otherwise request
+`route: correction` again, naming the precise remaining defect. Do not
+mutate the assessment document from this phase -- only the review artifact.
+
+======================================================================
+EVIDENCE (every phase) -- AGENT-LOCAL DIAGNOSTICS VS COORDINATOR-OWNED
+TRUSTED EVIDENCE
+======================================================================
+
+This WorkItem authorizes no production/test source change, so the
+repository's trusted pytest suite is expected to remain green before and
+after every Hop. That expectation is enforced by the Coordinator, not by
+you:
+
+ * The Coordinator-owned evidence gate is declared in this WorkItem's own
+   policy (`evidence_commands.pytest`) and wired into `review` and
+   `rereview` (`evidence: [pytest]`, `failed_evidence_route: correction`).
+   The Coordinator resolves, fingerprints, and executes that exact command
+   itself, separately from your own work, and mechanically routes to
+   `correction` if it fails. You do not need to reproduce, independently
+   establish, or pre-empt that outcome before requesting a route.
+ * You may still run tests or targeted reducer/operator probes in your own
+   shell as exploratory, optional diagnostics -- for example to verify a
+   specific claim about current source behavior for determinations 2, 4, or
+   item A. Report any such probe truthfully as an agent-local observation,
+   never as Coordinator-trusted evidence.
+ * If the Coordinator's own trusted evidence does in fact fail, the
+   existing `failed_evidence_route: correction` routing already handles it
+   mechanically; this is unchanged by this Run.
+
+======================================================================
+OUT OF SCOPE for every phase of this WorkItem
+======================================================================
+
+Implementation of P3.5, in any form; migration, edit, or re-authoring of
+any existing workflow profile, Commission, or policy (including any of the
+43 inventoried self-development profiles, the accepted design document, and
+either of its existing review artifacts); any change to
+src/workflow_coordinator/** or tests/** (other than this WorkItem's own
+commissioning-validation test, added at commissioning time, not by any Hop
+of this Run); any change to docs/wfc_projected_result_contracts_concept_2026-10-07.adoc,
+docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc,
+docs/backlog/_open.adoc, or any other backlog record; any change to
+project_memory/ or Project Memory in any form; any change to
+workflow-coordinator-runtime or workflow-coordinator-run-evidence; a
+Finding-kind taxonomy, LangGraph, hierarchical orchestration, or general
+workflow liveness/termination checking; closure of the governing BUG; any
+change to the generic Coordinator; push; Runtime promotion; WFC launch; and
+unrelated cleanup. No phase of this WorkItem carries push, Runtime-
+promotion, Evidence-mutation, Project-Memory-edit, backlog-edit, or
+WFC-launch authority.
