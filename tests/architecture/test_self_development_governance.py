@@ -7729,3 +7729,241 @@ def test_p35_structural_invariant_reassessment_001_bundle_passes_production_pref
     # ever completed -- and this independent reassessment Commission does
     # not create it either.
     assert not (PROJECT_ROOT / P35_FINDING_REACHABILITY_DESIGN_REVIEW_REVIEW_ARTIFACT).exists()
+
+
+P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_GOVERNING_PATHS = (
+    "governance/work-items/p35-requirements-archaeology-reassessment-001.yaml",
+    "governance/self-development/p35-requirements-archaeology-reassessment-001-profile.yaml",
+    "governance/self-development/p35-requirements-archaeology-reassessment-001-policy.yaml",
+    "governance/self-development/components.yaml",
+    "governance/work-items/p35-requirements-archaeology-reassessment-001-task.txt",
+    "governance/self-development/prompts/worker.txt",
+    "governance/self-development/prompts/reviewer.txt",
+)
+P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_ASSESSMENT_DOC = (
+    "docs/warm_storage/concepts/workflow_coordinator_p35_requirements_archaeology_reassessment_2026-10-26.adoc"
+)
+P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_REVIEW_DOC = (
+    "docs/warm_storage/concepts/workflow_coordinator_p35_requirements_archaeology_reassessment_2026-10-26_review.adoc"
+)
+
+
+def test_p35_requirements_archaeology_reassessment_001_bundle_passes_production_preflight(
+    tmp_path: Path,
+    preflight_python_path: None,
+):
+    """Independent requirements-archaeology Commission, separate from both the
+    design lineage and the prior structural-invariant reassessment.
+
+    `WI-WFC-P35-REQUIREMENTS-ARCHAEOLOGY-REASSESSMENT-001` does not correct or
+    continue `WI-WFC-P35-STRUCTURAL-INVARIANT-REASSESSMENT-001` (accepted at
+    H004, Development commit `fab606e`), which answered a different question
+    (is the accepted universal-path invariant, as stated, the right
+    architecture for Level 0). This WorkItem asks a prior, independent
+    question: is that universal-path characterization itself the originally
+    intended requirement, or an escalation introduced during the design's own
+    review history -- traced via Git archaeology against the governing
+    Concept §11, its revision history, the motivating BUG, the design-review
+    lineage, and the prior reassessment, all treated as read-only inputs. It
+    authors two brand-new durable documents (a requirements-archaeology
+    reassessment and its own independent-review/Finding-disposition-history
+    artifact, both pre-scaffolded at commissioning time) under the same
+    four-phase topology as its predecessor
+    (`assessment -> review -> {accept, correction}`;
+    `correction -> rereview -> {accept, correction}`) with
+    `max_autonomous_hops == 16` (within `COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS`,
+    via this WorkItem's own dedicated policy, never the shared
+    `governance/self-development/repository-policy.yaml`), and holds no
+    mutation authority over src/workflow_coordinator/**, tests/**,
+    governance/ beyond its own bundle (explicitly including the entire P3.5
+    design-review lineage and the prior structural-invariant reassessment's
+    own bundle and artifacts, which must remain byte-for-byte present and
+    unmodified), workflow-coordinator-runtime,
+    workflow-coordinator-run-evidence, canonical Project Memory,
+    docs/backlog/**, the governing concept document, or any other
+    docs/*.adoc file: its only authorized scope is its own two new
+    documents, each split precisely between the worker phases (assessment
+    document only) and the reviewer phases (review artifact only).
+    """
+
+    repository, expected_head = _materialize_bundle(
+        tmp_path,
+        governing_paths=P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_GOVERNING_PATHS,
+    )
+    state_root = tmp_path / "external-state" / "p35-requirements-archaeology-reassessment-001"
+
+    assert not state_root.exists()
+    result = _production_preflight(_preflight_args(
+        repository,
+        expected_head,
+        state_root,
+        governing_paths=P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_GOVERNING_PATHS,
+    ))
+    work_item, profile, policy = result[5:8]
+    durable_artifacts = result[9]
+    assessment = profile.phases["assessment"]
+    review = profile.phases["review"]
+    correction = profile.phases["correction"]
+    rereview = profile.phases["rereview"]
+
+    exact_scope = (
+        P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_ASSESSMENT_DOC,
+        P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_REVIEW_DOC,
+    )
+
+    assert work_item.work_item_id == "WI-WFC-P35-REQUIREMENTS-ARCHAEOLOGY-REASSESSMENT-001"
+    assert work_item.initial_phase == "assessment"
+    assert work_item.max_autonomous_hops == policy.max_autonomous_hops == 16
+    assert work_item.max_autonomous_hops <= COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS
+    assert profile.profile_id == "p35-requirements-archaeology-reassessment-001"
+    assert policy.policy_id == "workflow-coordinator-p35-requirements-archaeology-reassessment-001"
+    assert tuple(profile.phases) == ("assessment", "review", "correction", "rereview")
+
+    # This Commission's own scope is exactly its own two new documents --
+    # never the accepted design document, either of its review artifacts, or
+    # the prior reassessment's own documents.
+    assert work_item.scope == policy.work_item_scope_ceiling == exact_scope
+    for withheld in (
+        "src",
+        "src/workflow_coordinator",
+        "src/workflow_coordinator/model.py",
+        "src/workflow_coordinator/reducer.py",
+        "src/workflow_coordinator/operator.py",
+        "tests",
+        "tests/architecture/test_self_development_governance.py",
+        "governance",
+        "governance/self-development/repository-policy.yaml",
+        "governance/work-items/p35-finding-reachability-design-review.yaml",
+        "governance/work-items/p35-finding-reachability-design-review-002.yaml",
+        "governance/work-items/p35-finding-reachability-design-review-003.yaml",
+        "governance/self-development/p35-finding-reachability-design-review-profile.yaml",
+        "governance/self-development/p35-finding-reachability-design-review-002-profile.yaml",
+        "governance/self-development/p35-finding-reachability-design-review-003-profile.yaml",
+        "governance/work-items/p35-structural-invariant-reassessment-001.yaml",
+        "governance/self-development/p35-structural-invariant-reassessment-001-profile.yaml",
+        "governance/self-development/p35-structural-invariant-reassessment-001-policy.yaml",
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_SCOPE[0],
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_REVIEW_ARTIFACT,
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT,
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_REVIEW_ARTIFACT,
+        P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_ASSESSMENT_DOC,
+        P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_REVIEW_DOC,
+        "workflow-coordinator-runtime",
+        "workflow-coordinator-run-evidence",
+        "project_memory",
+        "project_memory/canonical",
+        "docs/backlog",
+        "docs/backlog/_open.adoc",
+        "docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc",
+        "docs/wfc_projected_result_contracts_concept_2026-10-07.adoc",
+        "docs/warm_storage/concepts/workflow_coordinator_level0_mvp_planning_decisions_2026-10-21.adoc",
+        "docs/self-development.adoc",
+        "docs/architecture.md",
+        "core",
+    ):
+        assert not _within_scope(withheld, work_item.scope)
+    for path in exact_scope:
+        assert _within_scope(path, work_item.scope)
+
+    # assessment/correction (worker) are scoped only to the reassessment
+    # document; review/rereview (independent_reviewer) are scoped only to
+    # the review artifact -- the reviewer never directly edits the
+    # assessment document, and the worker never touches the review
+    # artifact.
+    assert assessment.authorized_scope == correction.authorized_scope == (
+        P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_ASSESSMENT_DOC,
+    )
+    assert review.authorized_scope == rereview.authorized_scope == (
+        P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_REVIEW_DOC,
+    )
+    assert set(assessment.authorized_scope).isdisjoint(review.authorized_scope)
+
+    assert durable_artifacts == {
+        "review": (P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_REVIEW_DOC,),
+        "rereview": (P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_REVIEW_DOC,),
+    }
+    assert assessment.durable_artifact.value == "none"
+    assert correction.durable_artifact.value == "none"
+    assert review.durable_artifact.value == "required"
+    assert rereview.durable_artifact.value == "required"
+    assert assessment.evidence == correction.evidence == ()
+    assert review.evidence == rereview.evidence == ("pytest",)
+    assert assessment.authorized_actions == correction.authorized_actions == ("edit", "commit")
+    assert review.authorized_actions == rereview.authorized_actions == ("review", "edit", "commit")
+
+    # Topology: assessment -> review -> {accept: complete, correction};
+    # correction -> rereview -> {accept: complete, correction}. No
+    # mutation authority over production source anywhere in this bundle.
+    assert {
+        phase_key: tuple((key, route.effect.value, route.target) for key, route in value.routes.items())
+        for phase_key, value in profile.phases.items()
+    } == {
+        "assessment": (("review", "goto", "review"),),
+        "review": (
+            ("accept", "complete", None),
+            ("correction", "goto", "correction"),
+        ),
+        "correction": (("rereview", "goto", "rereview"),),
+        "rereview": (
+            ("accept", "complete", None),
+            ("correction", "goto", "correction"),
+        ),
+    }
+    assert assessment.role == correction.role == "worker"
+    assert review.role == rereview.role == "independent_reviewer"
+    assert review.review.finding_authority == rereview.review.finding_authority == ("resolve",)
+    assert review.review.failed_evidence_route == rereview.review.failed_evidence_route == "correction"
+
+    # Role/persona separation: distinct fresh independent-review persona,
+    # never the assessment/correction persona.
+    assert work_item.personas[WorkflowRole.WORKER] != (
+        work_item.personas[WorkflowRole.INDEPENDENT_REVIEWER]
+    )
+
+    assert policy.governance_paths == ("governance",)
+    assert not _within_scope("src", policy.work_item_scope_ceiling)
+    assert not _within_scope("governance", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-runtime", policy.work_item_scope_ceiling)
+    assert not _within_scope("workflow-coordinator-run-evidence", policy.work_item_scope_ceiling)
+    assert not _within_scope("project_memory/canonical", policy.work_item_scope_ceiling)
+    assert tuple(result[13]) == ("pytest",)
+
+    # Admission happened entirely through provider-free preflight: no
+    # provider/executable was ever invoked, and the state root the launch
+    # would eventually use was never created by this process.
+    assert not state_root.exists()
+
+    # Both of this Commission's own documents are pre-scaffolded at
+    # commissioning time: this reassessment has no predecessor disposition
+    # to carry forward, so a fresh agent is given a structural template for
+    # both documents rather than a blank page for either.
+    assert (PROJECT_ROOT / P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_ASSESSMENT_DOC).exists()
+    assert (PROJECT_ROOT / P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_REVIEW_DOC).exists()
+
+    # This bundle is fully independent of the entire P3.5 design-review
+    # lineage and of the prior structural-invariant reassessment: every one
+    # of those lineages' own governing files and review artifacts remains
+    # present and byte-for-byte untouched, and none of them is one of this
+    # bundle's own governing paths.
+    prior_lineage_paths = (
+        *(P35_FINDING_REACHABILITY_DESIGN_REVIEW_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)),
+        *(P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)),
+        *(P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)),
+        *(P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)),
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_SCOPE[0],
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT,
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_REVIEW_ARTIFACT,
+        P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_ASSESSMENT_DOC,
+        P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_REVIEW_DOC,
+    )
+    successor_own_paths = tuple(
+        P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)
+    )
+    for lineage_path in prior_lineage_paths:
+        assert (PROJECT_ROOT / lineage_path).exists()
+        assert lineage_path not in successor_own_paths
+
+    # The original (non-numbered) design-review Run's own review artifact
+    # was never written, and this requirements-archaeology Commission does
+    # not create it either.
+    assert not (PROJECT_ROOT / P35_FINDING_REACHABILITY_DESIGN_REVIEW_REVIEW_ARTIFACT).exists()
