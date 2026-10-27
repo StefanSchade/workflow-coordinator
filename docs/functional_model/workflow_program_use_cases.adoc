@@ -1,0 +1,140 @@
+= WFC Functional Model -- Workflow Program Use Cases
+:toc:
+:toclevels: 2
+
+Status:: WORKING DRAFT / DISCUSSION RECORD -- not an accepted product contract.
+As-of:: 2026-10-27 (expanded maintainer discussion)
+Purpose:: Preserve the maintainer's use-case intent separately from the current YAML implementation and historical Commissions.
+Authority:: Non-authorizing. Does not replace `docs/README.adoc`, backlog, accepted FTRs or runtime contracts.
+
+== 1. User-facing purpose
+
+A maintainer commissions a bounded task, chooses a suitable reusable workflow program, authorizes the task and its limits, and starts a Run. The workflow program specifies the process; the Commission must not accidentally redefine it through copied YAML. The interpreter carries out the declared process and enforces its contracts. Independent assessment, repair, evidence, human stops, and auditability remain first-class features.
+
+The near-term product problem is Commission authoring friction and unexpected differences in workflow programs; it is not a demand for a generalized workflow platform or a redesign of the already working reducer.
+
+Workflow flexibility is an intended capability, not an accident to eliminate. The product goal is to preserve the ability to define specialized processes *without* letting ordinary Commission authoring silently rewrite process guarantees, generate incompatible one-offs, or make every Run expensive to reason about.
+
+== 2. Candidate workflow programs and test scenarios
+
+The examples are *scenarios to preserve and analyze*, not a claim that each is already a supported, distinct reusable YAML program.
+
+=== UC-01 -- Standard review loop
+
+Approximate logical flow (loops omitted):
+
+[source,text]
+----
+Implement -> Independent Review -> Correct -> Focused Rereview -> Complete
+----
+
+Requirements:
+
+* The reviewer can raise blocking issues.
+* An authorized later phase can disposition outstanding Findings.
+* A clean outcome can complete without performing a needless correction.
+* A failed review can return for correction and rereview, possibly repeatedly.
+* A Run cannot complete with an open blocking Finding.
+
+Known current evidence:: Present and dogfooded in Commission-specific schema-v2 profiles. Profile reuse across arbitrary new Commissions is not yet proven.
+
+=== UC-02 -- Staged adversarial review with economical correction loop
+
+[source,text]
+----
+Implement (economical model)
+  -> Broad adversarial review (frontier model)
+  -> Correct / focused rereview loop (economical model[s])
+  -> Fresh broad adversarial review (frontier model)
+  -> Complete, or return to correction / further review
+----
+
+The inexpensive focused rereview checks disposition of the *known* Finding set. The later broad review is a *new* attempt to discover missed issues and may therefore open new Findings. A final broad review must not be characterized as a phase from which no new issues can emerge.
+
+Model choices (e.g., Terra High/Medium and Sol High) are illustrative commercial bindings, not the definition of the workflow program. Model selection, role separation, independence and cost accounting are separate concerns. Today, model binding by workflow role may be too coarse for this variant; verify during design.
+
+Open historical question:: Did a similar final review appear or disappear in historical Commissions due to copied/modified profiles rather than a deliberate product version change? Verify against profile history and the Run Ledger.
+
+=== UC-03 -- Convergence-failure escape
+
+[source,text]
+----
+Correction <-> Rereview (repeated without progress)
+  -> Diagnose recurring failure / root cause
+  -> Revise strategy
+  -> Authorized strategy review / resume
+----
+
+A new attack example need not imply an entirely new conceptual Finding. It may show that a narrow fix repaired one manifestation without addressing the common underlying invariant. The workflow must be able to recognize stagnation and change abstraction level instead of merely iterating the same response.
+
+Existing evidence:: `FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE` and accepted implementation slices 1-4 establish substantial runtime work. A reusable, actively dogfooded self-development schema-v3 program is not thereby proven. Check phase/route/result semantics against code and fixtures before claiming end-to-end product availability.
+
+=== UC-04 -- Elevated-privilege work and compulsory defensive review
+
+[source,text]
+----
+Ordinary work -> Explicitly authorized elevation -> Privileged work
+  -> Mandatory defensive security review -> Ordinary continuation / completion
+----
+
+Sensitive surfaces include CI/CD scripts, Git hooks, tooling executed at another trust level and selected critical tests. Ordinary agents may be prevented from modifying them through OS-level controls; an elevated step requires authorization outside the mere choice of a phase. Once an elevated change occurs, no successful completion path may bypass the defensive review. This is a legitimate all-successful-path assurance condition, unlike a demand that every Finding-bearing route pass a later fixer.
+
+Source:: `docs/backlog/FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW.adoc`; not a deployed capability.
+
+=== UC-05 -- Protected context / local inference
+
+A data-sensitive assignment may require a phase whose model executes only within an approved environment, possibly self-hosted inference. Protected sources must not be leaked to providers or artifacts outside their trust boundary. Trust is enforced by execution and information-access controls, not simply by declaring `trusted_model` in YAML. Working-tree Git access and derived content/export paths require explicit analysis; hiding directories by mounts alone is insufficient.
+
+Status:: Candidate architectural use case. No claim that such a product workflow or full containment exists today.
+
+=== UC-06 -- Simple task
+
+[source,text]
+----
+Work -> Complete
+----
+
+A bounded single-agent task with no mandatory independent review, for cases in which WFC becomes the ordinary controlled gateway to LLM execution. This is a different workflow guarantee, not an invitation for a Commission to disable a required review in UC-01 or UC-04.
+
+== 3. Cross-cutting functional requirements
+
+* A Commission specifies its task, scope, authorization and the reusable program to execute.
+* Programs define mandatory phase relationships and safety/quality obligations; different Commissions can reuse the same reviewed program.
+* Program choice and runtime execution remain pinned and reproducible for an existing Run.
+* No silent elevation of action or information-access authority via a YAML setting.
+* Incorrect or inconsistent agent results are rejected/stopped rather than repaired into a new semantic answer by the reducer. Document the existing narrowly specified *mechanical* override exceptions separately.
+* Strongly prefer a pre-dispatch bounded result contract when it can make invalid outputs unrepresentable; retain trusted post-result checks for state-dependent conditions.
+* Preserve independent review and the distinction between focused disposition of known Findings and a new broad search for new Findings.
+* A Run with open blocking Findings must not advance irreversibly into a no-repair branch. A clean-only branch must be guarded by proven cleanliness.
+* Keep user-visible diagnostic and recovery cost reasonable; no unsafe automatic retry of an uncertain provider execution.
+
+== 4. Governance, program variants and future deployment scenarios
+
+Functional requirements to investigate, not yet a product feature or syntax:
+
+* *Known standard program:* A Commission can select a reviewed, immutable program revision, supplying only declared task-specific bindings; it cannot remove required reviews or guards.
+* *Bounded variation:* A program may expose narrowly typed and reviewed configuration parameters, such as accepted model/cost/budget classes. The allowed parameter space must preserve the program's claimed guarantees. A parameter that changes phase topology may instead require a distinct program revision or variant.
+* *Special-purpose program:* A maintainer or authorized higher-level caller can propose a new declarative workflow as a separate artifact. Creating/proposing it must never constitute admission, authorization or permission to execute it.
+* *Deployment policy:* A future installation may expose only an approved catalogue (for example, a regulated-development pack) or permit independently approved consumer programs. Package installation/availability and permission for a particular Commission/Run remain separate decisions.
+* *Guarantee preservation:* Governance-required process guarantees are mandatory floors. A Commission's configuration cannot weaken them; an explicitly exceptional program would require a separately authorized exception path, not a boolean override.
+* *Auditability:* Pin the exact program revision, effective bindings and applicable governance rules for each Run, including experimental/one-off programs.
+
+The words "standard", "parameterized" and "custom" describe prospective authoring/admission classes. **They are not currently implemented WFC operating modes.** A future workflow pack should initially be treated as a declarative package/manifest, *not* a permission to load third-party Python into the trusted interpreter.
+
+== 5. Level 1 deliberately unresolved
+
+The maintainer considered recursive, self-similar WFC reducer loops: a review loop inside a backlog-selection loop inside higher-level project preparation. Later work suggested the outer orchestration may be categorically different and could use, for example, LangGraph. Both remain hypotheses. No commitment is made to recursive WFC, LangGraph, program-authoring by Level 1, or a specific integration API. The only current boundary requirement is that any future caller must not silently weaken Level-0 workflow guarantees or confer execution authority by creating a Commission.
+
+== 6. Product non-goals for this step
+
+No immediate universal workflow DSL, profile migration, expanded orchestrator kernel, speculative Level-1 planner, or rollout of all six example programs. First verify the profile corpus, implement one reusable real-life program, and measure reduced Commission authoring burden.
+
+== 7. Sources and open questions
+
+* `docs/warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc`
+* `docs/warm_storage/concepts/workflow_coordinator_commissioning_service_concept_2026-10-11.adoc`
+* `docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc`
+* `docs/backlog/FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW.adoc`
+* External run-evidence repository: `workflow-coordinator-run-evidence/project_memory/run_ledger.adoc` (selected historical runs, not exhaustive code history; path corrected -- this file does not exist under this repository's own `project_memory/`, see e.g. `docs/warm_storage/concepts/workflow_coordinator_operational_friction_evidence_2026-10-11.adoc:80`)
+
+Open: actual final-review chronology; actual v3 profile launches; model-binding granularity; boundary between program invariants and per-Commission binding values.

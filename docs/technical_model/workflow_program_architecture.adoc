@@ -1,0 +1,190 @@
+= WFC Technical Model -- Interpreter, Workflow Programs, Commission Bindings
+:toc:
+:toclevels: 2
+
+Status:: WORKING DRAFT; current observations and target hypotheses, not a replacement for accepted contracts.
+As-of:: 2026-10-27 (expanded maintainer discussion)
+Purpose:: Describe current mechanics, desired ownership boundaries and options that remain to be designed.
+
+== 1. As-is: confirmed from current source
+
+=== 1.1 Interpreter (Python)
+
+`src/workflow_coordinator/` currently contains `model.py`, `serialization.py`, `reducer.py`, `operator.py`, `vertical.py`, adapter modules and supporting services. The reducer interprets declared phases/routes, validates authorized deltas and enforces global completion blockers. The canonical result contracts and OpenAI strict projection live in provider-neutral/adapter boundaries rather than in a Commission-authored schema file.
+
+=== 1.2 Current workflow profile
+
+Current `WorkflowProfile` holds `schema_version`, `profile_id`, `revision`, `phases`, and optional `convergence`. `Phase` contains role, component selectors, durable-artifact requirement, authorized scope/actions, evidence, review descriptor and routes. `Route` has `effect`, optional `target` and `question`, and `supervisor`; there is currently no `require_no_open_blocking_findings` field in the source model.
+
+The profile corpus under `governance/self-development/` demonstrates the drift: many self-development Commissions each have copied profile YAML carrying both genuine workflow semantics and their own scope, review purpose, evidence configuration and permissions. The actual number of reusable semantics-equivalent programs is **not established** by simply counting graph shapes.
+
+=== 1.3 Current Commission and authority
+
+Existing consumers own their governing WorkItems, profile files and policies under the current `docs/architecture.md`. An admitted WorkItem and profile are pinned for a Run; the policy is the independent ceiling for authorized behavior. The planned move toward product-owned reusable workflow programs is a **target change**, not an already implemented product feature. Maintain all existing signing/pinning/replay/evidence and maintainer-authorization boundaries.
+
+== 2. Target architecture (proposed, intentionally small)
+
+[source,text]
+----
+    Future installed/approved program catalogue (optional deployment concept)
+                  | offers permitted program revisions
+                  v
+    Commission: task + program identity + typed bindings + authorization
+                  | program and commission separately admitted
+                  v
+    Pinned declarative YAML program: flow + mandatory guarantees
+                  |
+                  v
+    Trusted interpreter: admission + typed dispatch + reducer + evidence
+                  |
+                  v
+                  Persisted Run and archive
+
+    Independent Policy and deployment rules constrain effective authority.
+    Program availability != Commission permission != explicit Run authorization.
+    Program catalogue/packaging, plugins, overrides and admission rules are
+    NOT implemented or selected architectures.
+----
+
+This schematic is about responsibilities, not a final disk layout. Program packaging, selection syntax, binding grammar, immutable pin, ownership, migrations and compatibility are undecided.
+
+=== 2.1 Binding invariants to preserve
+
+* A Commission selects a *specific reviewed program revision*. In-flight and archived Run semantics never silently change when a program evolves.
+* A Commission supplies concrete task parameters, repository-relative scopes, evidence/material targets and requested provider bindings only through approved slots.
+* A parameter cannot remove required gates, bypass mandatory defensive review, widen permissions, or grant access to a protected inference context.
+* The trusted boundary derives effective capabilities as an intersection/composition of applicable ceilings; never treat phase names, provider selection, or path strings as permissions.
+* Program reuse must not weaken reviewer independence, Finding identity or evidence provenance.
+* No historical profile bulk migration is a prerequisite. First prove one newly commissioned instance with one reusable program.
+
+=== 2.2 Possible deployment / governance arrangements (not selected)
+
+* The WFC distribution might ship reviewed standard program YAML.
+* An installation could choose an approved special-purpose catalogue, potentially including separately reviewed consumer-maintained programs.
+* A program may declare typed, bounded parameters. Only validated values that preserve mandatory guarantees are admissible; a free-form `override` that mutates the phase graph would reintroduce Commission-scoped profile drift.
+* A novel one-off program is a separately reviewed candidate, **not** a Commission setting. Its exact immutable content would need to be pinned with the Run, regardless of whether it is reusable.
+* A future packaging mechanism should not be assumed to allow arbitrary Python plugin execution inside the trusted WFC interpreter. Deployment policy, execution authorization and program-package installation are separate trust boundaries.
+
+None of the above requires a new catalogue service or plugin framework for the first Front Door slice. Use the profile archaeology to identify where genuine safe variation already exists and where product-level distinct programs are necessary.
+
+=== 2.3 Level-1 placement intentionally undecided
+
+A higher level might compose multiple bounded Level-0 Runs, use recursively similar reducer machinery, use LangGraph, or apply a different orchestration model. Current evidence is insufficient to choose. Do not build a Level-1 recursive graph engine, integration API or special program-authoring rights as a prerequisite for Front Door. Preserve only the Level-0 authority/immutability interface needed by *any* future caller.
+
+== 3. Routing safety: four layers, not one catch-all validator
+
+[cols="1,3,3",options="header"]
+|===
+|Layer |What can be checked |Cannot prove by itself
+
+|Program/admission (before Run)
+|Graph shape; route targets; declared role/phase capabilities; mandatory review barriers; legal disposer reachability against an abstract state model
+|Future agent judgment, future actual Finding mutations, whether a reviewer finds new defects
+
+|Typed dispatch (before each Hop)
+|Current-phase route enum, projected WorkResult/ReviewVerdict family, known identity and, where sound, already-determined state restrictions
+|A future post-Hop state that depends on unknown Finding deltas from that same Hop
+
+|Semantic acceptance (when result arrives)
+|Correlated identity, declared operations, legal Finding lifecycle, actual Git/evidence/authorization facts
+|A legitimate replacement route the agent did not select
+
+|Route reduction (after lawful deltas)
+|`COMPLETE` cleanliness today; proposed `GOTO` cleanliness as future P3.5 option; safe stop rather than invented semantic routing
+|Progress/convergence/quality beyond stated contracts
+|===
+
+=== 3.1 Illustrative historical P3.5 route guard
+
+[source,yaml]
+----
+# DESIGN EXAMPLE ONLY -- unsupported in current runtime.
+phases:
+  review:
+    routes:
+      enter_audit_trail:
+        effect: goto
+        target: audit_trail
+        require_no_open_blocking_findings: true
+----
+
+Location and ownership:: Under the target separation this is a *workflow program* route guarantee; the Commission cannot opt it out. The interpreter enforces the condition after lawful same-Hop Finding deltas. This is not a WorkItem binding, a Model prompt, or a source of authority.
+
+Existing source facts:: `src/workflow_coordinator/model.py:Route` has no such field. `src/workflow_coordinator/reducer.py:_apply_route` currently checks blocker-cleanliness on `COMPLETE`, not on ordinary `GOTO`. The historical P3.5 design proposes it for `GOTO` and specifies stop-without-advance behavior. The design is deferred and subject to explicit revision.
+
+=== 3.2 Ahead-of-time design alternatives
+
+Problem:: Projected `requested_route` is already an enum of declared phase routes. But in a review Hop with Finding mutations, whether an exit route is legal can depend on the *same* result. A static enum of all phase routes cannot express all those dependencies automatically.
+
+Options to assess through minimal executable counterexamples:
+
+. Derive narrower permitted-route sets from *known pre-Hop persisted state* where the phase cannot legally change the relevant property. Do not discard a route that is enabled by valid same-Hop Finding disposition.
+. Refine the result algebra into typed per-outcome variants (e.g., accepted-clean vs changes-required), and project them to the provider's supported strict dialect. Avoid accidental claims that a string `status=clean` proves persisted Finding cleanliness.
+. Split finding/result production and next-route selection when a genuinely post-commit state is necessary; quantify the extra Hop and cost.
+. Keep the simple guarded `GOTO` for dynamic enforcement, potentially with an earlier dispatch restriction when it is sound.
+
+The existing strict OpenAI schema subset supports `anyOf`, fixed object keys and enum members, but not general unrestricted dependent validation. Regardless of projection, the trusted reducer must check real persisted Finding identity/state/authority. Choosing among these options is a deferred design decision, not a reason to expand the reducer now.
+
+=== 3.3 Liveness / 'no dead ends' question
+
+The owner intent is not to impose "a disposer on every topological path." A clean-only audit/documentation branch is legitimate. The target is to avoid *entering* that branch with unresolved blockers and no legitimate repair continuation. Two concerns must be separated:
+
+* Global completion safety (`OPEN && blocking` forbids `COMPLETE`) -- implemented.
+* Admission-time repair availability and clean-only branch entry -- requirements under P3.5 reconsideration.
+
+The exact candidate-requirement wording and its caution against conflating it with the maintainer's narrower 2026-10-26 existential P3.5 direction are owned by the semantic model (`../semantic_model/workflow_execution_semantics.adoc`, "The P3.5 problem, without ambiguous quantifiers"); this technical view does not restate that wording, only the layer boundary it falls on. The quantifiers, treatment of human stops, self-loops, carried Findings and proof boundary require explicit review there. Do not present this as the already-accepted P3.5 design.
+
+== 4. Program catalogue scenarios to verify with current profile inventory
+
+[cols="2,3,3",options="header"]
+|===
+|Program scenario |Distinct topology / mandatory semantics |Implementation evidence
+
+|Standard review loop
+|Independent review, correction/rereview with blocker lifecycle, clean completion
+|Current schema-v2 self-development profiles; duplicated by Commission
+
+|Staged adversarial review
+|Broad independent initial review, economical focused correction loop, fresh broad final review; potentially phase-specific model bindings
+|Historic variants need Git/Run-Ledger reconstruction; no stable reusable product program yet proven
+
+|Convergence escape
+|When repeated repairs stagnate, a bounded diagnosis/strategy path rather than endless repeated local fixes
+|Slices 1-4 accepted; v3 models/typed convergence records and tests present; actual consumer adoption verify
+
+|Elevated privilege + defensive review
+|Authorized elevated writes followed on *every successful continuation* by mandatory defensive review
+|Existing future FTR; not a deployed sandbox/phase stack
+
+|Protected-context program
+|Restricted information and egress, approved inference provider, auditable trust boundary
+|Scenario/architecture only; no complete enforcement claim
+
+|Simple task
+|Single bounded agent work phase, no mandatory independent review
+|Proposed scenario only
+|===
+
+== 5. Additional evidence questions for the profile archaeology
+
+. Which apparent Commission-level alterations to `routes`, `phases`, review barriers and `finding_authority` are genuine program variants, and which are task bindings accidentally placed in a copied profile?
+. Which candidate bindings can vary without affecting topology or guarantees? Which proposed switches (e.g., final adversarial review) inherently change the flow and therefore need a separately reviewed program variant?
+. Can one real Commission use a reviewed reusable profile revision without a new profile copy and without relaxing effective policy?
+. What is the smallest evidence needed to treat a consumer-maintained special-purpose profile as executable, without inventing a deployment plugin platform now?
+. For Level 1, collect requirements only; do not infer a recursive reducer or LangGraph choice from the existence of nested work.
+
+== 6. Read-only archaeology evidence checklist
+
+. All Profile/ProfileRevision/WorkItem references, including historical and test-only uses.
+. Normalized graph topology without automatically inferring semantic equivalence.
+. Separately compare review purposes, findings/gate semantics, capability/role boundaries, evidence obligations and authorized scopes.
+. Reconstruct *effective* authority when applicable Policy and WorkItem are known; keep the three sources distinct.
+. Compare final adversarial-review variants through commits and archived Run evidence; distinguish phase semantic change from simple reviewer prompt change.
+. Verify convergence v3 implementation, acceptance tests, profile adoption and actually executed routes separately.
+. Produce cited counterexamples to unsafe merging; do not implement anything during this census.
+
+== 7. Integration and owner decisions
+
+First documentation consolidation; then read-only archaeology; then reviewed binding contract; then *one* concrete new Commission using a reusable standard program; then assess measured ergonomic benefit. No kernel refactor, no automatic mass conversion, no new P3.5 validator before the boundary stabilizes.
+
+Controlling references remain `docs/README.adoc`, `docs/architecture.md`, the applicable backlog/FTRs, and `docs/warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc`. This draft changes none of them.

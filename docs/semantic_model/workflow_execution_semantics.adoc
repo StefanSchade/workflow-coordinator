@@ -1,0 +1,130 @@
+= WFC Semantic Model -- Program, Run, Finding, and Route
+:toc:
+:toclevels: 2
+
+Status:: WORKING DRAFT / DISCUSSION RECORD -- no new accepted semantics.
+As-of:: 2026-10-27 (expanded maintainer discussion)
+Purpose:: Shared vocabulary and proposed invariants. Explicitly distinguish observed runtime behavior, historical design, and undecided future requirements.
+
+== 1. Core concepts
+
+Interpreter:: The trusted Python engine that gives workflow operations their meaning; applies finding/evidence/authority constraints and transitions to Run state. Not a hard-coded business review process.
+Workflow program / profile:: Declarative YAML description of phases, routes, review obligations, and mandatory process guarantees, interpreted by the engine. *Target:* versioned, reviewed and explicitly admitted programs, reusable across Commissions and potentially maintained by WFC or an authorized consumer. A future deployment might curate a particular catalogue. *Today:* profiles are consumer-owned and commonly copied per Commission; package/catalogue admission is not implemented.
+Commission:: A concrete bounded assignment, including WorkItem/task information, choice of a program, binding parameters and explicitly admitted authorization. Ordinary Commission authoring must not alter the chosen program's process or mandatory guarantees; authoring a *new candidate program* is a separate action and does not admit it.
+Policy:: The independent source of action/scope ceilings and permission. A program requests/requires capabilities but cannot grant them to itself. Today's RepoPolicy and admitted WorkItem/Profile compose into the effective limits.
+Phase:: One program state within which an agent invocation with an admitted role, operations and result contract may occur.
+Route:: A named phase-local requested outcome whose effect is interpreted as e.g. `GOTO`, `COMPLETE` or an explicit stop/escalation. `requested_route` is the agent's reported choice, not unconditionally the applied route.
+Hop:: One bounded invocation and its durable processing. A Hop may add or disposition Findings according to its result contract and authority.
+Finding:: A tracked violation/issue with identity and lifecycle. Its `blocking` property is independent of its lifecycle `state`. Evidence, coverage/disposition and convergence records must not be flattened into a simplistic per-Hop string list.
+Disposition:: A permitted, supported change to a Finding's lifecycle (e.g., resolve, residual, supersede), distinct from changing the actual work product. Permission to disposition is not permission to assert the task is genuinely repaired.
+Clean with respect to completion:: No Finding currently satisfies `(state == OPEN and blocking == true)` after legally admitted Finding deltas. This does not mean no findings, no nonblocking concerns or no residual risks.
+
+== 2. The three different senses of verification
+
+*Static admission:* Evaluate configuration and state-dependent structural properties that can be known before starting a Run (or before dispatching a particular Hop). This checks declared capabilities and permissible continuations, not the agent's future route selection.
+*Projected result typing:* Before a Hop, derive the permitted output schema/route keys for that particular invocation. It can prevent certain malformed or categorically unauthorized requested routes from being produced, when the condition is already known.
+*Runtime reduction:* Once an actual Hop result exists, correlate identity, validate typed fields and authorized semantic operations, apply lawful Finding deltas, then check route preconditions against resulting state. Fail closed instead of inventing a substitute semantic answer.
+
+Important distinction:: A runtime safety check after a result is not a failure of the typing approach. If the relevant fact *can change during that very Hop*, its final value is not known before the Hop. Dependent/branch-specific result contracts might reject more combinations in the schema, but semantic validation of actual Finding identities, effects and authority cannot simply be omitted.
+
+== 3. The P3.5 problem, without ambiguous quantifiers
+
+Business problem:: A workflow can arrive, with an open blocking Finding, at a branch that offers no legal way to disposition it. The engine prevents successful completion, but cannot produce the missing workflow capability after the fact.
+
+Incorrect simplification:: "Every path following every Finding-opening phase must contain another disposition phase." This ignores conditional, clean outcomes of review and can make ordinary review-to-completion flows invalid. Appending a so-called final review does not fix the reasoning because an actual review can itself open new Findings.
+
+Also insufficient:: Looking only at phases that can *create* Findings. A phase may carry previously open Findings forward. The relevant question concerns post-Hop states in which a blocker may still be open.
+
+Candidate requirement for later explicit design:
+
+* For every legally reachable Run state with an open blocking Finding, at least one legal onward opportunity to disposition the Finding must remain, unless an explicitly authorized human stop/abort is itself the intended outcome (this exception and its precise meaning remain to be decided).
+* A transition into a region with no later disposition possibility must be conditionally legal only if the post-Hop state is clean of open blocking Findings.
+* A successful `COMPLETE` is legal only in the clean state. This guard is already implemented.
+* The reducer may *reject* an invalid requested route. It need not invent a different route.
+
+**Caution:** The candidate wording above may be stronger than the narrower existential rule selected in the maintainer's 2026-10-26 P3.5 disposition. Treat it as a requirements question and counterexample, not an already accepted amendment to the historical P3.5 design.
+
+== 4. Example: repair branch and clean-only audit branch
+
+[source,text]
+----
+              Review
+              /    \
+  issues remain    no open blocking Finding
+            /        \
+      Correction   Audit Trail
+          |             |
+       Rereview       Complete
+          |
+         ...
+----
+
+Both branches can belong to the same program. The `Audit Trail` branch has no repair opportunity, but is legitimate when the post-Hop Finding state is clean. Its entry condition is a *state-based guard*, not a prediction of agent intent.
+
+== 5. What the proposed route guard means
+
+Illustrative, **not yet supported** YAML:
+
+[source,yaml]
+----
+routes:
+  accept:
+    effect: goto
+    target: audit_trail
+    require_no_open_blocking_findings: true
+----
+
+Ownership in the intended architecture:: A mandatory property of a route in the *workflow program*, not a convenience toggle chosen by the concrete Commission. The trusted Python interpreter enforces the rule. A Commission must not weaken it through binding.
+
+Status:: Proposed in `workflow_coordinator_p35_finding_reachability_design_2026-10-18.adoc`, not implemented in today's `Route`, route parser or `_apply_route`. The original design restricted this particular guard to `GOTO`, since `COMPLETE` is already guarded globally. No one is authorized to use this YAML as working production syntax yet.
+
+Semantics in that design:: After this Hop's legal Finding deltas are reduced, test the actual Run state. If any open blocking Finding remains, do not take the `GOTO`; stop in the declared fail-closed way, without silently choosing a new route or performing an extra provider invocation.
+
+== 6. Ahead-of-time typing: question to investigate, not answered by naming a guard
+
+Existing strength:: The projected result contract can restrict `requested_route` to the phase's enumerated route keys. This is before the LLM emits its result. It does not imply that every enumerated route's state-based precondition is true after the Hop.
+
+Possible approaches for investigation:
+
+* *Before-dispatch filtered enum:* Omit an exit route if, based on the persisted pre-Hop state and declared phase capabilities, it cannot legally become available during this Hop. Do not accidentally forbid legitimate same-Hop disposition.
+* *Result sum types:* Distinguish a clean-accept result from a needs-correction result, each with narrowly typed Fields and different allowed routes. Evaluate feasibility against the provider's actual supported strict-schema dialect and existing canonical result families. A result claiming "clean" cannot alone override persisted open blockers.
+* *Separate decision step:* Advance into a post-review routing phase only after the Finding state is committed and known. This may improve type precision but adds a Hop/latency/cost; not an automatic recommendation.
+* *Minimal dynamic guard:* Keep a single Hop and check an explicit route precondition against post-delta state. Simple, fail-closed, but it detects an inconsistent choice only after the provider has returned.
+
+**No approach is selected here.** Prefer proving the smallest effective contract for the normal workflow rather than introducing new phases solely for formal elegance.
+
+== 7. Program variants, typed bindings and governance
+
+Proposed future distinction (not an implemented enum, package format, or authorization model):
+
+* *Reviewed standard program:* A stable executable workflow definition and its mandatory guarantees. Multiple Commissions select the same pinned revision.
+* *Reviewed parameterized program:* A program with explicitly declared, typed variation points and verified constraints. A binding is lawful only if *every allowed value* preserves its claimed guarantees and deployment-level mandatory policy. Merely exposing a generic override field does not make a change safe.
+* *Candidate specialized program:* A separately created declarative definition that needs a review/admission decision before it is selectable. It may be one-off without becoming an automatically trusted part of the WFC distribution.
+
+Do not conflate a *parameter override of a default within an approved type* with *overriding a mandatory program guarantee*. The former may be permitted; the latter needs a separately authorized policy/program change (if allowed at all).
+
+`Program available in deployment` is not the same as `program permitted for this Commission` and neither is the same as `Run authorized to execute`. The eventual admission mechanism and who may approve consumer-supplied programs remain open.
+
+Workflow safety is not equivalent to counting phases. For a mandatory defensive review after privileged mutation, the guaranteed sequencing must survive every authorized parameter value and every legally successful completion route. Such a guarantee belongs to a reviewed program/deployment contract, not a Commission prompt.
+
+== 8. Level-1 boundary: open research question
+
+No present architecture decision requires Level 1 to be another WFC reducer, a recursive composition of WFC reducers, a LangGraph graph, or a specific planner. Treat those as competing hypotheses requiring real use cases and evidence. WFC Level 0 exposes a bounded execution service to a future caller; that caller must not be able to authorize itself, alter pinned programs during a Run, or bypass mandatory Level-0 guarantees. No Level-1 programming model is selected here.
+
+== 9. Historical/contemporary scope boundaries
+
+* Current reducer enforces `COMPLETE` rejection when any Finding is both `OPEN` and blocking.
+* Current `GOTO` path does not have the proposed clean-route guard.
+* Review `finding_authority` is distinct from creation capability and from review authority; do not infer creation/disposition capability merely from a phase name or the presence of a ReviewDescriptor.
+* P3.5 implementation is deferred pending profile/Commission separation. The accepted old every-path P3.5 design must not be silently rewritten; it would need explicit reviewed amendment.
+* Mandatory defensive review after privileged work, unlike P3.5 disposition opportunity, may legitimately have a universal successful-path requirement.
+
+== 10. Source pointers
+
+* `src/workflow_coordinator/model.py` (`Route`, `WorkflowProfile`, `Finding`)
+* `src/workflow_coordinator/reducer.py` (`_has_open_blocker`, `_apply_route`, Finding deltas)
+* `src/workflow_coordinator/codex_adapter.py` (projected strict `requested_route` schema)
+* `docs/warm_storage/concepts/workflow_coordinator_p35_finding_reachability_design_2026-10-18.adoc` (historical accepted design)
+* `docs/warm_storage/concepts/workflow_coordinator_p35_structural_invariant_reassessment_2026-10-25.adoc`
+* `docs/warm_storage/concepts/workflow_coordinator_p35_requirements_archaeology_reassessment_2026-10-26.adoc`
+* `docs/warm_storage/concepts/workflow_coordinator_p35_semantic_requirement_escalation_case_2026-10-25.adoc`
