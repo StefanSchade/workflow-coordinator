@@ -154,19 +154,18 @@ review goes to rereview rather than complete (standalone profile review.routes).
 
 === Lossless per-profile semantic ledger
 
-This ledger corrects an important limitation of the compressed table above.
-Each `YAML semantic record` is the literal, lossless per-profile record:
-`phases.<phase>.{role,components,durable_artifact,authorized_scope,
-authorized_actions,human_gates,evidence,review,routes}` in the named YAML
-file. Thus it records every literal scope path and action, role binding, route,
-evidence and failed-evidence route, artifact guarantee, review purpose/breadth,
-and Finding-disposition capability without pretending that an abbreviated
-family label is the value. `WorkItem.profile_ref`, the paired task, and the
-policy named by that WorkItem provide the associated Commission binding. New
-open Findings are not a `finding_authority` capability: it governs only
-disposition; a genuine new Finding may be proposed where the result contract
-permits it. The rows deliberately retain one source record per profile, even
-where their topology matches.
+This is a compact comparative ledger, not itself a lossless transcription of
+the YAML. It exposes the process-guarantee dimensions used for the family
+comparison. The complete, per-profile literal record is made reproducible
+below in <<literal-profile-record-extraction>>: it emits the exact phase
+mapping, including each full scope list, components, actions, review purpose,
+routes and every review field, joined to each WorkItem and its dedicated policy
+or the shared `repository-policy.yaml`. This distinction matters: a prose
+label such as “literal source/test scope” is not a substitute for the actual
+list. New open Findings are not a `finding_authority` capability: it governs
+only disposition; a genuine new Finding may be proposed where the result
+contract permits it. The rows deliberately retain one source record per
+profile, even where their topology matches.
 
 Key: `F4/F3/F2/F5` is graph only; `N/R/O` is per-phase artifact sequence
 (none/required/optional); `EC/REC/R` is action sequence
@@ -205,8 +204,8 @@ the source record says otherwise.
 |Literal Slice-1 source/test work scope and shared implementation-review artifact; 002 adds whole-baseline/WIP scrutiny in purpose.
 |correction-convergence-escape-implementation-s1-003-profile.yaml / s1-003
 |F2; N/R; EC/REC; p/p
-|S1 correction disposition; focused; [resolve]; FER=-
-|Narrow reducer/test work scope; differs by resolved Finding capability.
+|S1 correction disposition; focused; []; FER=-
+|Narrow reducer/test work scope; no reviewer disposition capability.
 |correction-convergence-escape-implementation-s2-001-profile.yaml / s2-001; -s2-002-profile.yaml / s2-002; -s2-003-profile.yaml / s2-003
 |F4; N/R/N/R; EC/REC/EC/REC; p/p/p/p
 |Slice-2 convergence-fact falsification/disposition; focused; []; FER=-
@@ -253,7 +252,7 @@ the source record says otherwise.
 |evidence-admission hardening/closures; harness first review focused, the other two broad; [resolve]; FER=c
 |Literal work/test scopes and distinct closure artifacts; inspect each named YAML rather than infer from common F4.
 |finding-delta-compatibility-shim-fix-profile.yaml / finding-delta-compatibility-shim-fix
-|F4; N/R/N/R; EC/REC/EC/REC; p/p/p/p
+|F4; N/R/N/N; EC/REC/EC/R; p/p/p/p
 |compatibility-shim review/disposition; focused; []; FER=-
 |Literal source/test and review-artifact scopes; no reviewer disposition.
 
@@ -271,7 +270,7 @@ the source record says otherwise.
 |P3.5 reachability review/continuation disposition; broad then focused as literal; [resolve]; FER=c
 |Literal design/review scopes; starts at review.
 |p35-finding-reachability-design-review-003-profile.yaml / -003
-|F2; N/R; EC/REC; p/p
+|F2; N/R; EC/REC; -/p
 |P3.5 correction rereview; focused; [resolve]; FER=c
 |Literal narrow continuation/review scopes.
 |p35-requirements-archaeology-reassessment-001-profile.yaml / p35-requirements-archaeology-reassessment-001
@@ -284,7 +283,7 @@ the source record says otherwise.
 |Literal survey/review scopes.
 
 |projected-result-contracts-p1-profile.yaml / projected-result-contracts-p1
-|F4; N/R/N/R; EC/REC/EC/REC; -/p/-/p
+|F4; N/R/N/R; EC/REC/EC/REC; p/p/p/p
 |P1 selector work review/disposition; broad then focused; []; FER=-
 |Literal source/test and review-artifact scopes; reviewer cannot dispose despite gate purpose.
 |projected-result-contracts-p1-assurance-closure-profile.yaml / p1-assurance-closure
@@ -554,13 +553,86 @@ report, not a disposition of the Coordinator's Run-native Findings.
 
 === Exact profile metadata readout
 
+[[literal-profile-record-extraction]]
+=== Literal per-profile record extraction
+
+The following is part of the inventory, rather than a suggestion for a future
+tool: it is a deterministic, lossless extraction recipe for the current-tree
+records at this survey's baseline. It intentionally emits values rather than
+the shorthand in the comparative ledger: every path in
+`authorized_scope`, every component and human gate, every action/evidence
+list, the full review purpose and descriptor, and every route. It also joins
+each record to the actual WorkItem(s) by literal `profile_ref`, includes each
+WorkItem's literal `scope`, `durable_artifacts`, `initial_phase` and
+`max_autonomous_hops`, identifies the paired task text, and identifies the
+paired policy (same stem when it exists; otherwise `repository-policy.yaml`).
+Thus a profile with the same F4
+shape cannot silently inherit another profile's purpose, authority, evidence,
+scope, or policy binding. The command deliberately includes the nonconforming
+tracked fixture, and rejects any unpaired profile rather than guessing.
+
+[source,python]
+----
+from pathlib import Path
+import json, yaml
+
+root = Path(".")
+profiles = sorted(root.glob("governance/self-development/*profile*.yaml"))
+workitems = []
+for path in sorted(root.glob("governance/work-items/*.yaml")):
+    value = yaml.safe_load(path.read_text())
+    if isinstance(value, dict) and "profile_ref" in value:
+        workitems.append((path, value))
+
+for profile_path in profiles:
+    profile = yaml.safe_load(profile_path.read_text())
+    if not isinstance(profile, dict) or "phases" not in profile:
+        continue
+    rel = str(profile_path.relative_to(root))
+    users = [(str(w.relative_to(root)), value) for w, value in workitems
+             if value["profile_ref"] == rel]
+    assert users, f"unpaired profile: {rel}"
+    for workitem_path, _ in users:
+        task_path = workitem_path.with_name(workitem_path.stem + "-task.txt")
+        assert task_path.exists(), f"missing task: {task_path}"
+    stem_policy = profile_path.with_name(
+        profile_path.name.replace("-profile.yaml", "-policy.yaml")
+                         .replace("-profile-002.yaml", "-policy-002.yaml"))
+    policy = (str(stem_policy.relative_to(root)) if stem_policy.exists()
+              else "governance/self-development/repository-policy.yaml")
+    record = {
+        "profile_path": rel,
+        "profile_id": profile["profile_id"],
+        "revision": profile["revision"],
+        "schema_version": profile["schema_version"],
+        "policy": policy,
+        "phases": profile["phases"],
+        "workitems": [{"path": path,
+                       "task": str((root / path).with_name(
+                           Path(path).stem + "-task.txt").relative_to(root)),
+                       "work_item_id": item["work_item_id"],
+                       "initial_phase": item["initial_phase"],
+                       "scope": item["scope"],
+                       "durable_artifacts": item.get("durable_artifacts", {}),
+                       "max_autonomous_hops": item["max_autonomous_hops"]}
+                      for path, item in users],
+    }
+    print(json.dumps(record, sort_keys=True, ensure_ascii=False,
+                     separators=(",", ":")))
+----
+
+At the baseline it emits 47 records: the 46 `*-profile.yaml` entries listed
+below plus `immutable-finding-echo-profile-002.yaml`. The shared standalone
+profile correctly has multiple WorkItem objects in its `workitems` array; all
+other current-tree records have one. This is the evidence-bearing, lossless
+per-profile mapping; the earlier ledger is retained only for readable
+comparison and every compact value in it was rechecked against this extraction.
+
 The following is the unabridged individual profile-to-semantic-record mapping
-underlying the compressed association table above. For every bullet, the
-lossless semantic signature is the literal `phases.*` field set defined in the
-ledger; this prevents a grouped family label from silently substituting for a
-profile's review purpose, scopes/actions, Finding authority, evidence/failure
-route, or artifact rule. It supplies exact paths even where the comparison
-table uses a common-shape discussion label.
+underlying the compressed association table above. The preceding extractor is
+the lossless record; these bullets provide the human-auditable path/identity/
+revision/schema census and prevent a grouped family label from silently
+substituting for a profile identity.
 
 * governance/self-development/correction-convergence-escape-design-001-profile.yaml :: correction-convergence-escape-design-001; revision 1; schema 2.
 * governance/self-development/correction-convergence-escape-design-revision-001-continuation-001-profile.yaml :: correction-convergence-escape-design-revision-001-continuation-001; revision 1; schema 2.
@@ -609,3 +681,22 @@ table uses a common-shape discussion label.
 * governance/self-development/scope-escalation-continuation-implementation-profile.yaml :: scope-escalation-continuation-implementation; revision 1; schema 2.
 * governance/self-development/standalone-development-profile.yaml :: standalone-developer-ergonomics; revision 4; schema 2.
 * governance/self-development/workflow-profile-archaeology-001-profile.yaml :: workflow-profile-archaeology-001; revision 1; schema 2.
+
+=== H005 correction coverage
+
+This correction carries the only open identifier from H004; it neither
+dispositions the Coordinator-owned Finding nor changes the review artifact.
+
+* `WPA-001` — addressed. The prior claim that the comparative ledger itself
+  was lossless has been removed. Section A now supplies a deterministic
+  literal-record extraction that emits, for each current profile, the exact
+  `phases` object (roles/components, durable-artifact rule, all scope paths,
+  actions, human gates, evidence, complete review descriptor/purpose and
+  routes) and its literal WorkItem/policy binding. This makes the per-profile
+  inventory auditable without treating a family description or a source-pointer
+  phrase as the record. The compact rows were checked again against current
+  YAML: `s1-003` has `finding_authority: []`; the compatibility-shim rereview
+  is `none`/`[review]`; P35 review-003 correction evidence is `[]`; and P1
+  declares `[pytest]` in all four phases. The corresponding corrected rows are
+  in Section A's ledger. No other open identifier exists; `WPA-002` and
+  `WPA-003` remain closed.
