@@ -1,0 +1,110 @@
+= BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION -- Review 001
+
+Independent adversarial review of candidate
+`3bdae013b400fc743592b383f75bc58995f7a7df` against baseline
+`e5deb0ba91158b87fb5a6efdb632f1d143b7edc2` for
+`WI-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION-FIX-001`.
+
+== Verdict
+
+*CHANGES REQUIRED.*
+
+* Blocking implementation defects: 0
+* Blocking test-completeness defects: 1
+* Requested route: `correct`
+
+The bounded production change preserves the intended trust boundary in every
+path inspected, but the commissioned acceptance-test matrix is not fully
+implemented. Acceptance requires executable regression coverage of the
+durable boundary, not only a source-level argument that the plumbing should
+work.
+
+== Scope and boundary checks
+
+The baseline-to-candidate diff contains exactly these four authorized paths:
+
+* `src/workflow_coordinator/operator.py`
+* `src/workflow_coordinator/slice4.py`
+* `tests/unit/test_operator.py`
+* `tests/unit/test_slice4.py`
+
+No out-of-scope implementation, governance, archive-repository, retry,
+recovery, resume, or provider-taxonomy change is present. `RealHopRun` adds
+`outcome_error` as its final defaulted field, so the existing four-argument
+positional constructions remain valid.
+
+Direct inspection of
+`../workflow-coordinator-run-evidence/scripts/archive_run.py` confirms that
+`invocation-diagnostics/<invocation-id>.json` is absent from
+`RUN_ROOT_ALLOW`, `CHECKOUT_ALLOW`, `OPS_ROOT_ALLOW`, and
+`OPS_SUBDIR_ALLOW`. The archiver only checks allow-listed files directly at
+the Run root or checkout root and does not recursively sweep this new checkout
+subdirectory.
+
+An independently retained fake-adapter failure fixture was read back from
+disk after operator completion. Its local diagnostic artifact contained the
+exact Run/Hop/Invocation identity, return code, candidate-presence flag,
+adapter diagnostics, validation message, and bounded stdout/stderr tails. The
+matching `operator-summary.json` and `execution-evidence.json` contained only
+the short diagnostics list and the relative artifact pointer; neither raw
+tail appeared in either allow-listed record. The Run remained
+`reconcile_required`, with stop reason
+`reconcile_requires_explicit_resume`, the existing human question, and one
+provider execution.
+
+No provider-side cause is inferred from any captured text. The two cited
+historical incidents remain unexplained.
+
+== Blocking defect
+
+=== The required durable invalid-result and persisted-shape coverage is incomplete
+
+The Commission's acceptance matrix requires an invalid structured result with
+a specific validation error to prove that the message is recoverable from
+*durable state*. The new
+`test_validation_failure_retains_its_message_in_real_hop_run` only asserts
+`RealHopRun.outcome_error` in memory. No operator-level test drives that case
+through `run_serial_hops`, reads the diagnostic JSON back from disk, and
+asserts that the validation message and correlated artifact pointer survive
+in the persisted operator records while raw stdout/stderr remain excluded.
+
+The new tests also stop short of several expressly required persistence
+assertions:
+
+* the successful CLI-path test checks the new fields only in
+  `operator-summary.json`, not in the persisted
+  `execution-evidence.json` row;
+* the failure tests assert the unchanged status and stop reason but do not
+  assert the unchanged `human_question` required by matrix item 6; and
+* the multi-Hop test exercises `run_serial_hops` and its execution-evidence
+  pointer, but never constructs or reads `operator-summary.json`, so it does
+  not prove that the real summary wiring selects H002's invocation rather
+  than H001's.
+
+Required correction: extend the authorized unit tests with an operator-level
+invalid-structured-result case that reads durable files after completion, and
+strengthen the existing success, fail-closed, and multi-Hop cases to assert
+the persisted execution-evidence shape, unchanged human question, and H002
+correlation in both the summary and execution evidence. Fake adapters only;
+no production redesign is requested.
+
+== Validation
+
+* `.venv/bin/python -m pytest -q tests/unit/test_operator.py
+  tests/unit/test_slice4.py` -- pass.
+* `.venv/bin/python -m pytest -q` -- complete repository suite pass.
+* `.venv/bin/python -m ruff check .` -- pass.
+* `make format-check PYTHON=.venv/bin/python` -- pass.
+* `git diff --check
+  e5deb0ba91158b87fb5a6efdb632f1d143b7edc2..3bdae013b400fc743592b383f75bc58995f7a7df`
+  -- pass.
+
+The ambient `pytest` executable was unavailable, so the repository virtual
+environment was used for the independent checks. These agent-side checks are
+exploratory review evidence and are not represented as Coordinator-owned
+trusted evidence.
+
+== Current-Run Findings
+
+None. This ordinary implementation-review defect is recorded only in this
+durable review artifact and does not create a WFC Current-Run Finding.
