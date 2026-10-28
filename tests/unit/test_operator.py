@@ -1564,6 +1564,10 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     assert plan["evidence"]["selected_commands"] == []
     assert summary["schema_version"] == 2
     assert summary["run_status"] == "completed" and summary["hop_used"] == 1 and summary["worktree_clean"] is True
+    assert summary["provider"]["diagnostics"] == []
+    assert summary["provider"]["diagnostics_artifact"] is None
+    run_root = next((state / "checkouts").iterdir())
+    assert not (run_root / "invocation-diagnostics").exists()
     assert len(summary["commits"]) == 1 and summary["changed_paths"] == ["PROOF.md"]
     attempt = summary["execution_evidence"][0]
     assert attempt["workflow_role"] == "worker"
@@ -1692,6 +1696,113 @@ pathlib.Path(sys.argv[sys.argv.index("--output-last-message") + 1]).write_text("
     assert main(args(repository, state, str(executable))) == 1
     summary = json.loads((state / "operator-summary.json").read_text())
     assert counter.read_text() == "1" and summary["run_status"] == "reconcile_required" and summary["hop_used"] == 1
+
+
+def test_failed_invocation_persists_bounded_local_diagnostics_without_archive_leak(
+    repository: Path, tmp_path: Path,
+):
+    counter = tmp_path / "counter"
+    stdout_tail = "provider stdout diagnostic"
+    stderr_tail = "provider stderr diagnostic"
+    executable = fake(
+        tmp_path,
+        f'''import pathlib, sys
+pathlib.Path({str(counter)!r}).write_text(str(int(pathlib.Path({str(counter)!r}).read_text()) + 1) if pathlib.Path({str(counter)!r}).exists() else "1")
+print({stdout_tail!r})
+print({stderr_tail!r}, file=sys.stderr)
+sys.exit(1)
+''',
+    )
+    state = tmp_path / "state"
+
+    assert main(args(repository, state, str(executable))) == 1
+
+    summary_path = state / "operator-summary.json"
+    summary = json.loads(summary_path.read_text())
+    run_root = next((state / "checkouts").iterdir())
+    pointer = summary["provider"]["diagnostics_artifact"]
+    assert pointer == f"invocation-diagnostics/{summary['invocation_id']}.json"
+    diagnostic = json.loads((run_root / pointer).read_text())
+    assert diagnostic == {
+        "trust_class": "untrusted_operational_diagnostic",
+        "evidence_authority": "none",
+        "run_id": summary["run_id"],
+        "hop_id": "H001",
+        "invocation_id": summary["invocation_id"],
+        "returncode": 1,
+        "timed_out": False,
+        "candidate_result_present": False,
+        "diagnostics": [
+            "Codex CLI exited 1",
+            "agent execution produced no candidate structured result",
+        ],
+        "stdout_tail": f"{stdout_tail}\n",
+        "stderr_tail": f"{stderr_tail}\n",
+    }
+    assert summary["provider"]["diagnostics"] == diagnostic["diagnostics"]
+    assert stdout_tail not in summary_path.read_text()
+    assert stderr_tail not in summary_path.read_text()
+    evidence_path = run_root / "execution-evidence.json"
+    assert not evidence_path.exists() or (
+        stdout_tail not in evidence_path.read_text()
+        and stderr_tail not in evidence_path.read_text()
+    )
+    assert counter.read_text() == "1"
+    assert summary["run_status"] == "reconcile_required"
+    assert summary["stop_reason"] == "reconcile_requires_explicit_resume"
+
+
+def test_multihop_failure_points_to_the_second_invocation_diagnostic(
+    repository: Path, tmp_path: Path,
+):
+    class SecondHopFails:
+        def __init__(self):
+            self.requests = []
+
+        def execute(self, request):
+            self.requests.append(request)
+            if request.invocation.hop_id == "H002":
+                return AgentExecutionOutcome(
+                    None, 1, False, "second stdout", "second stderr", ("adapter exit 1",)
+                )
+            envelope = {
+                "schema_version": 1,
+                "run_id": request.invocation.run_id,
+                "hop_id": request.invocation.hop_id,
+                "invocation_id": request.invocation.invocation_id,
+                "result": _base_result("verify"),
+            }
+            return AgentExecutionOutcome(json.dumps(envelope), 0, False, "", "")
+
+    adapter = SecondHopFails()
+    workflow, run, state, association, components = _two_hop_serial_fixture(
+        repository, tmp_path, adapter
+    )
+    final, evidence_rows = run_serial_hops(
+        run, workflow, repository, components,
+        state_root=state, association=association,
+        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
+        governing={}, timeout_seconds=1, personas=TWO_ROLE_PERSONAS,
+        executable="local", adapter=adapter,
+    )
+
+    run_root = state / "checkouts" / association.checkout_id
+    failed = evidence_rows[-1]
+    pointer = failed["diagnostics_artifact"]
+    diagnostic = json.loads((run_root / pointer).read_text())
+    assert len(adapter.requests) == 2
+    assert final.status.value == "reconcile_required"
+    assert final.stop_reason == "reconcile_requires_explicit_resume"
+    assert failed["hop_id"] == diagnostic["hop_id"] == "H002"
+    assert failed["invocation_id"] == diagnostic["invocation_id"] == adapter.requests[-1].invocation.invocation_id
+    assert diagnostic["stdout_tail"] == "second stdout"
+    assert diagnostic["stderr_tail"] == "second stderr"
+    assert failed["diagnostics"] == [
+        "adapter exit 1",
+        "agent execution produced no candidate structured result",
+    ]
+    evidence_text = (run_root / "execution-evidence.json").read_text()
+    assert "second stdout" not in evidence_text and "second stderr" not in evidence_text
 
 
 def test_post_provider_summary_failure_is_attempt_failure_with_evidence(repository: Path, tmp_path: Path, monkeypatch):
@@ -1838,7 +1949,7 @@ bindings:
 
     monkeypatch.setattr(operator.CodexCliAdapter, "execute", execute)
 
-    def mutate_source_after_h001(observed_run, _invocation_id, _outcome):
+    def mutate_source_after_h001(observed_run, _invocation_id, _outcome, _outcome_error):
         if observed_run.hop_used == 1:
             binding_source.write_text(
                 """schema_version: 1
@@ -2138,7 +2249,7 @@ def test_dirty_worktree_between_hops_stops_after_h001(repository: Path, tmp_path
     adapter = _TwoHopAdapter(repository)
     workflow, run, state, association, components = _two_hop_serial_fixture(repository, tmp_path, adapter)
 
-    def dirty_after_h001(observed, _invocation_id, _outcome):
+    def dirty_after_h001(observed, _invocation_id, _outcome, _outcome_error):
         if observed.hop_used == 1:
             repository.joinpath("untracked-between-hops").write_text("dirty\n")
 

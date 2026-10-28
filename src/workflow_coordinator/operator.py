@@ -637,6 +637,8 @@ def _legacy_execution_evidence(
     binding: dict[str, object],
     timeout_seconds: float,
     observations: tuple[object, ...] = (),
+    outcome_error: str | None = None,
+    diagnostics_artifact: str | None = None,
 ) -> dict[str, object]:
     """Preserve schema-3 audit output for non-convergence Run versions."""
 
@@ -654,12 +656,90 @@ def _legacy_execution_evidence(
         "returncode": outcome.returncode,
         "timed_out": outcome.timed_out,
         "candidate_result_present": outcome.candidate_result is not None,
+        "diagnostics": _outcome_diagnostics(outcome, outcome_error),
+        "diagnostics_artifact": diagnostics_artifact,
         "outcome": hop.outcome,
         "base_head": hop.base_head,
         "end_head": hop.end_head,
         "actual_commits": list(hop.actual_commits),
         "trusted_observations": [observation_to_data(item) for item in observations],
     }
+
+
+_INVOCATION_DIAGNOSTIC_TRUST = {
+    "trust_class": "untrusted_operational_diagnostic",
+    "evidence_authority": "none",
+}
+
+
+def _outcome_diagnostics(outcome, outcome_error: str | None = None) -> list[str]:
+    diagnostics = list(outcome.diagnostics)
+    if outcome_error is not None:
+        diagnostics.append(outcome_error)
+    return diagnostics
+
+
+def _invocation_diagnostics_relative_path(invocation_id: str) -> str:
+    return f"invocation-diagnostics/{invocation_id}.json"
+
+
+def _write_invocation_diagnostics(
+    run_root: Path,
+    *,
+    run_id: str,
+    hop_id: str,
+    invocation_id: str,
+    outcome,
+    outcome_error: str | None,
+) -> str | None:
+    """Best-effort local-only provider telemetry for one failed invocation."""
+    relative_path = _invocation_diagnostics_relative_path(invocation_id)
+    path = run_root / relative_path
+    try:
+        if path.is_file():
+            return relative_path
+        if path.exists():
+            return None
+        atomic_write_json(
+            path,
+            {
+                **_INVOCATION_DIAGNOSTIC_TRUST,
+                "run_id": run_id,
+                "hop_id": hop_id,
+                "invocation_id": invocation_id,
+                "returncode": outcome.returncode,
+                "timed_out": outcome.timed_out,
+                "candidate_result_present": outcome.candidate_result is not None,
+                "diagnostics": _outcome_diagnostics(outcome, outcome_error),
+                "stdout_tail": outcome.stdout,
+                "stderr_tail": outcome.stderr,
+            },
+        )
+    except Exception:
+        return None
+    return relative_path
+
+
+def _diagnostics_artifact_if_present(
+    run_root: Path | None,
+    *,
+    invocation_id: str | None,
+    outcome,
+    run,
+) -> str | None:
+    """Return a pointer only when the best-effort local artifact was published."""
+    if (
+        run_root is None
+        or invocation_id is None
+        or outcome is None
+        or run.status is not RunStatus.RECONCILE_REQUIRED
+    ):
+        return None
+    relative_path = _invocation_diagnostics_relative_path(invocation_id)
+    try:
+        return relative_path if (run_root / relative_path).is_file() else None
+    except OSError:
+        return None
 
 
 def run_serial_hops(
@@ -672,7 +752,7 @@ def run_serial_hops(
     durable_artifacts_by_phase: dict[str, tuple[str, ...]] | None = None,
     evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
     evidence_commands: dict[str, PreparedEvidenceCommand] | None = None,
-    progress: Callable[[object, str, object | None], None] | None = None,
+    progress: Callable[[object, str, object | None, str | None], None] | None = None,
     initial_context_items: tuple[ContextItem, ...] = (),
 ):
     """Run the finite Slice-5B serial loop without reserving a future Hop."""
@@ -828,6 +908,16 @@ def run_serial_hops(
             execution_binding=binding,
         )
         run = hop_run.run
+        diagnostics_artifact = None
+        if hop_run.vertical is None and hop_run.outcome is not None:
+            diagnostics_artifact = _write_invocation_diagnostics(
+                run_root,
+                run_id=run.run_id,
+                hop_id=run.hops[-1].hop_id,
+                invocation_id=invocation_id,
+                outcome=hop_run.outcome,
+                outcome_error=hop_run.outcome_error,
+            )
         if hop_run.vertical is not None or run.status is not RunStatus.RECONCILE_REQUIRED:
             current_evidence_json = (
                 execution_evidence_path.read_text(encoding="utf-8")
@@ -849,7 +939,7 @@ def run_serial_hops(
                 ),
             )
         if progress is not None:
-            progress(run, invocation_id, hop_run.outcome)
+            progress(run, invocation_id, hop_run.outcome, hop_run.outcome_error)
         if hop_run.outcome is not None and run.hops:
             observations = (
                 hop_run.vertical.observations if hop_run.vertical is not None else ()
@@ -879,6 +969,8 @@ def run_serial_hops(
                         binding=binding,
                         timeout_seconds=timeout_seconds,
                         observations=observations,
+                        outcome_error=hop_run.outcome_error,
+                        diagnostics_artifact=diagnostics_artifact,
                     )
                 )
                 atomic_write_json(
@@ -896,6 +988,8 @@ def _summary(
     *,
     execution_evidence: list[dict[str, object]] | None = None,
     convergence_projection: dict[str, object] | None = None,
+    outcome_error: str | None = None,
+    diagnostics_artifact: str | None = None,
 ) -> dict[str, object]:
     facts = observe_repository(repository)
     commits = []
@@ -905,6 +999,8 @@ def _summary(
     provider = None if outcome is None else {
         "returncode": outcome.returncode, "timed_out": outcome.timed_out,
         "candidate_result_present": outcome.candidate_result is not None,
+        "diagnostics": _outcome_diagnostics(outcome, outcome_error),
+        "diagnostics_artifact": diagnostics_artifact,
     }
     hop_evidence = execution_evidence or []
     hops = []
@@ -941,12 +1037,15 @@ def _summary(
 
 def _best_effort_failure_summary(
     repository: Path, run, *, invocation_id: str, checkout_id: str | None,
-    outcome=None, error: Exception,
+    outcome=None, error: Exception, outcome_error: str | None = None,
+    diagnostics_artifact: str | None = None,
 ) -> dict[str, object]:
     """Record only operator-known facts when an attempt cannot finish normally."""
     provider = None if outcome is None else {
         "returncode": outcome.returncode, "timed_out": outcome.timed_out,
         "candidate_result_present": outcome.candidate_result is not None,
+        "diagnostics": _outcome_diagnostics(outcome, outcome_error),
+        "diagnostics_artifact": diagnostics_artifact,
     }
     summary: dict[str, object] = {
         "schema_version": 2, "work_item_id": run.work_item_id, "run_id": run.run_id,
@@ -973,14 +1072,17 @@ def _best_effort_failure_summary(
 
 
 def _write_failure_summary(state_root: Path, repository: Path, run, *, invocation_id: str,
-                           checkout_id: str | None, outcome, error: Exception) -> None:
+                           checkout_id: str | None, outcome, error: Exception,
+                           outcome_error: str | None = None,
+                           diagnostics_artifact: str | None = None) -> None:
     """Never obscure the attempt failure with an evidence-writing failure."""
     try:
         atomic_write_json(
             state_root / "operator-summary.json",
             _best_effort_failure_summary(
                 repository, run, invocation_id=invocation_id, checkout_id=checkout_id,
-                outcome=outcome, error=error,
+                outcome=outcome, error=error, outcome_error=outcome_error,
+                diagnostics_artifact=diagnostics_artifact,
             ),
         )
     except Exception:
@@ -1675,12 +1777,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     latest_run = run
     latest_invocation_id: str | None = None
     latest_outcome = None
+    latest_outcome_error: str | None = None
 
-    def remember_progress(observed_run, invocation_id: str, outcome) -> None:
-        nonlocal latest_run, latest_invocation_id, latest_outcome
+    def remember_progress(observed_run, invocation_id: str, outcome, outcome_error) -> None:
+        nonlocal latest_run, latest_invocation_id, latest_outcome, latest_outcome_error
         latest_run = observed_run
         latest_invocation_id = invocation_id
         latest_outcome = outcome
+        latest_outcome_error = outcome_error
 
     try:
         association = register_checkout(state_root, repository)
@@ -1703,14 +1807,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 checkout_state_root(state_root, association) / "checkpoint.json"
             ).read_text(encoding="utf-8")
         )
+        diagnostics_artifact = _diagnostics_artifact_if_present(
+            checkout_state_root(state_root, association),
+            invocation_id=latest_invocation_id,
+            outcome=latest_outcome,
+            run=latest_run,
+        )
         summary = _summary(
             repository,
             final_run,
-            None,
+            latest_outcome,
             execution_evidence=execution_evidence,
             convergence_projection=checkpoint_data.get("convergence"),
+            outcome_error=latest_outcome_error,
+            diagnostics_artifact=diagnostics_artifact,
         )
-        summary["invocation_id"] = execution_evidence[-1]["invocation_id"] if execution_evidence else None
+        summary["invocation_id"] = (
+            execution_evidence[-1]["invocation_id"]
+            if execution_evidence else latest_invocation_id
+        )
         summary["checkout_id"] = association.checkout_id
         atomic_write_json(state_root / "operator-summary.json", summary)
         print(f"STATE ROOT: {state_root}\nRUN ROOT: {state_root / 'checkouts' / association.checkout_id}\nSUMMARY: {state_root / 'operator-summary.json'}")
@@ -1723,11 +1838,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0 if final_run.status.value == "completed" and facts.clean and not facts.unresolved_submodules else 1
     except Exception as error:
+        diagnostics_artifact = _diagnostics_artifact_if_present(
+            (
+                None
+                if association is None
+                else checkout_state_root(state_root, association)
+            ),
+            invocation_id=latest_invocation_id,
+            outcome=latest_outcome,
+            run=latest_run,
+        )
         _write_failure_summary(
             state_root, repository, latest_run,
             invocation_id=latest_invocation_id or "not_dispatched",
             checkout_id=None if association is None else association.checkout_id,
             outcome=latest_outcome, error=error,
+            outcome_error=latest_outcome_error,
+            diagnostics_artifact=diagnostics_artifact,
         )
         print(f"OPERATOR ERROR: {error}", file=sys.stderr)
         return 1

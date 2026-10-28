@@ -306,6 +306,42 @@ output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001
     assert not (state / "checkouts" / association.checkout_id / "dispatch.json").exists()
 
 
+def test_validation_failure_retains_its_message_in_real_hop_run(repository, tmp_path):
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    workflow = profile({"work": phase({"done": route("complete")})})
+    head = subprocess.run(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+
+    class InvalidResultAdapter:
+        def execute(self, _request):
+            return AgentExecutionOutcome("{", 0, False, "bounded stdout", "bounded stderr")
+
+    recovered = run_real_one_hop(
+        run,
+        workflow,
+        repository,
+        _components(),
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture persona",
+        task_payload="fixture",
+        invocation_id="INV-invalid",
+        timeout_seconds=2,
+        adapter=InvalidResultAdapter(),
+    )
+
+    assert recovered.vertical is None
+    assert recovered.outcome is not None
+    assert recovered.outcome_error == "truncated or invalid structured result"
+
+
 def test_real_dispatch_schema_requested_route_tracks_the_live_phase_routes(repository, tmp_path):
     """H001 correction, wired end to end: the schema actually written for a real
     dispatch enumerates exactly the current phase's permitted routes, not a

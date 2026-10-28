@@ -60,6 +60,7 @@ class RealHopRun:
     run: Run
     checkpoint: dict[str, object]
     outcome: AgentExecutionOutcome | None
+    outcome_error: str | None = None
 
     @property
     def reduction(self):
@@ -328,7 +329,10 @@ def run_real_one_hop(
         if validate_checkout(state_root, repository) != association:
             raise Slice4Error("provided checkout association does not match trusted state")
 
-    def recover_uncertain(outcome: AgentExecutionOutcome | None) -> RealHopRun:
+    def recover_uncertain(
+        outcome: AgentExecutionOutcome | None,
+        outcome_error: str | None = None,
+    ) -> RealHopRun:
         """Retain dispatch authority unless execution was proven absent."""
         delta = observe_hop(
             repository, base_head=run.current_head,
@@ -347,7 +351,7 @@ def run_real_one_hop(
         )
         write_run_snapshot(run_root / "run.json", recovered)
         atomic_write_json(run_root / "checkpoint.json", checkpoint)
-        return RealHopRun(None, recovered, checkpoint, outcome)
+        return RealHopRun(None, recovered, checkpoint, outcome, outcome_error)
 
     def publish_staged(attempt):
         nonlocal marker
@@ -384,7 +388,7 @@ def run_real_one_hop(
             publish_staged_attempt=publish_staged,
         )
     except ExecutionResultValidationError as error:
-        return recover_uncertain(error.outcome)
+        return recover_uncertain(error.outcome, str(error))
     except CodexCliError as error:
         dispatch_path.unlink(missing_ok=True)
         raise Slice4Error(str(error)) from error
