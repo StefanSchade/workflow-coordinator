@@ -1,0 +1,333 @@
+Implement, independently review, and (if needed) correct the smallest useful
+end-to-end vertical slice of Front Door Basic: the direct@v1 reusable
+workflow program and its Commission Intent / Compiler contract, exactly as
+accepted in
+docs/warm_storage/concepts/workflow_coordinator_front_door_commission_contract_design_2026-10-28.adoc
+(the "design"), whose two stable blocking identifiers FDC001 and FDC002 are
+CLOSED per the independent rereview in
+docs/warm_storage/concepts/workflow_coordinator_front_door_commission_contract_design_2026-10-28_review_002.adoc.
+Use the corrected design exactly as it stands; do not re-derive it from the
+superseded review_001 state. Read the design's sections 1-6 and 9 in full
+before writing any code -- this task text summarizes the binding literal
+requirements but is not a substitute for the design's own tables.
+
+GOAL: a user or agent can supply a valid Commission Intent, select the
+closed direct@v1 program, and obtain deterministic, inspectable ordinary WFC
+governing artifacts (WorkItem, profile, policy, task) that pass existing
+provider-free admission (operator.py::_preflight) unchanged -- all without
+any LLM/provider call.
+
+DO NOT implement Robust-v1, a general workflow DSL, a generalized
+Commission-authoring framework, historical profile migration, P3.5, a second
+orchestration engine, or any new authority mechanism. DO NOT modify
+operator.py, model.py, serialization.py, reducer.py, vertical.py, slice4.py,
+persistence.py, evidence.py, adapter.py, codex_adapter.py, git_facts.py,
+prompt.py, or proof_harness.py -- the rendering/CLI code must import and
+reuse operator.py's existing `_preflight`/`OperatorPreflightError` and (if
+useful for byte-identity comparison or git plumbing) git_facts.py's existing
+repository-observation helpers, strictly unchanged and strictly as a library
+dependency. If you discover a genuine need to change any of those files to
+satisfy a requirement below without duplicating logic, STOP and request a
+typed scope escalation (the existing scope-escalation mechanism) describing
+exactly what minimal change is needed and why reuse is impossible; do not
+work around it by re-implementing the equivalent check yourself. DO NOT wire
+this Commission's work into the full multi-repository Harness envelope
+(scripts/wfc_op.py's existing `prepare`/`launch`/`status`/`archive` commands
+and their Development/Runtime/Evidence pinning, venv construction, and
+`run_canonical_preflight_seam`) -- that machinery is unchanged and remains
+the existing hand-authored Commission path for actually launching any Run,
+including a future real direct@v1 Run. DO NOT add a new permanent
+Commission-specific test function to
+tests/architecture/test_self_development_governance.py (see
+docs/warm_storage/concepts/workflow_coordinator_front_door_stage1_commission_test_burden_finding_2026-10-25.adoc);
+verify this Commission's own governance bundle passes provider-free
+production preflight out-of-band instead (see EVIDENCE below). DO NOT commit
+any new "example" Commission bundle under governance/work-items or
+governance/self-development that purports to be a real authorized
+direct@v1 Commission -- the acceptance proof is automated tests using
+disposable temporary Git checkouts, not a second permanent governance
+bundle.
+
+IMPLEMENTATION (phase `implement`):
+
+1. New module `src/workflow_coordinator/commissioning.py`, a non-authoritative
+   parser/renderer. It must not be imported by reducer.py and must not alter
+   operator.py::_preflight's admission semantics. It provides at least:
+   - `commission_intent_from_yaml(text) -> CommissionIntent`: parse and
+     validate a Commission Intent against exactly the field contract in
+     design section 3's table and the forbidden-parameter list in section
+     2.1. Reject (do not silently drop or widen) any forbidden field: phase
+     or route declarations, route effects, initial-phase overrides,
+     WorkflowRole creation, phase actions, gate descriptors/breadth/context,
+     `finding_authority`, evidence command argv/timeout,
+     `failed_evidence_route`, program components, policy governance paths, a
+     model/adapter/binding, or a switch that omits a program-required
+     review. Define `CommissionIntent` and any other new data shapes
+     locally in this module (not in model.py).
+   - `render_commission(intent, *, repository, ...) -> RenderedCommission`
+     (exact signature your choice): perform exactly the deterministic
+     projection steps in design section 4.1 -- resolve program/policy-basis/
+     component-manifest at their pinned `source_commit`s; verify roles,
+     evidence-profile identifier, artifact keys, hop bound, A1-normalized
+     paths, and scope against the selected closed program and policy basis
+     (reject rather than add a fallback; narrow, never widen); render the
+     WorkItem, WorkflowProfile, RepositoryPolicy, and task text using the
+     *existing* schemas consumed by `work_item_from_yaml`,
+     `workflow_profile_from_yaml`, and `repository_policy_from_yaml`
+     (serialization.py, unchanged); reference the existing component
+     manifest unchanged. For direct@v1 specifically, the rendered profile
+     must be byte-for-byte equivalent (modulo the Intent's own `scope` S and
+     evidence selection E) to the literal record in design section 5.1:
+     phase `implement` is role `worker`/`[worker]`, no artifact,
+     `authorized_scope: S`, `[edit, commit]`, no evidence, `review: null`,
+     only `verify: {effect: goto, target: verification}`; phase
+     `verification` is role `worker`/`[worker]`, no artifact,
+     `authorized_scope: S`, `[review]`, evidence `E` (`[]` for `none`,
+     `[task-check]` for `task-check-v1`), review descriptor exactly
+     `purpose: deterministic task-check disposition only; no semantic
+     review`, `breadth: verification`, `authority: gate`, `context: fresh`,
+     `blocking_policy: blocking_only`, `trigger: profile_selected`,
+     `exit: declared_route`, `finding_authority: []`,
+     `failed_evidence_route: correction`, and only
+     `accept: {effect: complete}` / `correction: {effect: goto, target:
+     implement}`. Every phase has `human_gates: []`, `components.modifiers:
+     []`, `components.repository_policy: []`.
+   - `verify_render_manifest(...)`: emit the non-authoritative render
+     manifest described in design section 4.1 item 4 (source identities,
+     target paths, and a digest for every governing input and selected
+     component) and implement the equivalence procedure in design section
+     4.3 steps 1-4: given an observed clean repository HEAD `H`, read the
+     Intent and proposed governing blobs from tree `H`; resolve the
+     program/policy/component-manifest/selected-component source objects at
+     their Intent-pinned `source_commit`s (reject missing, ambiguous, or
+     mismatched objects before considering the rendered tree); rerun the
+     projector into a fresh temporary output from only the Intent blob and
+     those pinned source objects; byte-compare the projected WorkItem,
+     profile, policy, task, and render manifest against the blobs at `H`,
+     and byte-compare the unchanged component manifest and every component
+     selected by the projected profile against their declared pinned
+     source blobs. The manifest itself must never contain the observed
+     bundle HEAD `H` -- `H` is an input to the check, not a tracked field
+     (this is the FDC001 fix; do not reintroduce the self-referential
+     commit field the corrected design removed).
+   - Only after every comparison in the step above succeeds, delegate to
+     the real `operator._preflight()` (import it; do not reimplement any of
+     its checks) with that same `expected_head=H` and the same five paths
+     (work_item, profile, policy, components, task), using a disposable
+     temporary `--state-root` that you create and the caller is responsible
+     for cleaning up (or that you clean up yourself if that is simpler and
+     documented). `_preflight` independently requires clean `HEAD == H` and
+     retains every current A1, role, artifact, action, evidence, and
+     Finding-admission predicate -- you are not weakening or duplicating
+     any of them.
+
+2. Catalogue entry `governance/workflow-programs/direct/v1.yaml` and
+   immutable policy basis `governance/policy-bases/repository-standard-v1.yaml`
+   are ALREADY COMMITTED, hand-authored governance, delivered together with
+   this WorkItem -- NOT something this phase creates or edits. This is a
+   structural consequence, not a style choice: `operator.py::_admit_a1`
+   unconditionally rejects any WorkItem/profile `authorized_scope` that
+   overlaps repository policy `governance_paths` (`governance`), so no
+   WFC Run phase, including this one, can ever be authorized to write
+   anywhere under `governance/`; these two files are maintained exactly
+   like `governance/self-development/components.yaml` and
+   `governance/self-development/repository-policy.yaml` already are. Read
+   them; do not attempt to create, move, or edit them from `implement` or
+   `correct` (that authorized_scope does not include `governance/` at all,
+   so any such attempt is itself rejected by `_preflight`). If their
+   content turns out to be genuinely insufficient for `render_commission`
+   to do its job, STOP and request a scope escalation describing exactly
+   what the fixture is missing -- a maintainer may then author a new
+   revision; do not work around it by inventing a second, Run-writable
+   copy of program/policy-basis data.
+
+   The catalogue entry's actual schema (read it) encodes the literal
+   direct@v1 phase graph from design section 5.1 with exactly two string
+   sentinel slots, `scope: S` and `evidence: E`, on the `implement` and
+   `verification` phases respectively; `evidence_profiles.none.evidence`
+   is `[]` and `evidence_profiles.task-check-v1.evidence` is
+   `[task-check]`. `render_commission` must substitute `S` with the
+   Intent's A1-normalized `scope` and `E` with the list named by the
+   Intent's selected `evidence_profile`, and must otherwise copy every
+   other field of the catalogue's phase records unchanged into the
+   rendered profile.
+
+   The policy basis is an ordinary `RepositoryPolicy` (schema_version 3)
+   naming `task-check` (argv `python -m pytest -q`, 900s timeout) as its
+   one evidence command, with a broad `work_item_scope_ceiling` of
+   `[src, tests, scripts, docs]` that the compiler must narrow to the
+   Intent's own requested `scope` when rendering the WorkItem-specific
+   policy (never pass the basis's own broad ceiling through unnarrowed).
+
+3. Component manifest reuse: direct@v1 uses only the `worker` role in both
+   its phases, so the existing
+   `governance/self-development/components.yaml` (which already defines
+   `worker`) is reused unchanged as the program's fixed component manifest.
+   Do not create a new component manifest for this slice.
+
+4. CLI seam in `scripts/wfc_op.py` (the file the design names explicitly),
+   adding a new `commission` subcommand group alongside the existing
+   `prepare`/`launch`/`status`/`archive` commands, without touching those
+   existing commands or `run_canonical_preflight_seam`:
+   - `commission render --intent <path> [--out-dir <dir>] [--check]`:
+     deterministic projection only (design section 4.1). Writes the
+     rendered WorkItem/profile/policy/task and the render manifest to
+     ordinary working-tree files; makes no provider call and no admission
+     decision. With `--check`, additionally prints the compact render
+     report required by design section 3.3: the full Intent digest;
+     program and policy ID/revision/source commits; rendered paths and
+     SHA-256 digests; task path and digest; literal `authority_source`;
+     requested scope and every effective phase scope; effective actions,
+     evidence commands, gate breadth/purpose/Finding authority; required
+     artifacts; selected component paths/digests; and the user-supplied
+     persona text -- each fact labeled `user`, `program`, `policy`, or
+     `runtime at PREPARE`, never presented as user authority when it is
+     derived.
+   - `commission check --intent <path> --repository <path> --expected-head
+     <sha>`: runs `verify_render_manifest`'s full equivalence-then-
+     `_preflight` procedure (design section 4.3) against the named
+     repository at the named clean HEAD, using the rendered bundle already
+     committed there. Exits non-zero and prints a clear refusal on any
+     equivalence mismatch, missing/ambiguous/mismatched source object, or
+     `_preflight` rejection; exits zero only when every comparison and the
+     real `_preflight` both succeed. This command is deliberately
+     independent of the full multi-repository Harness `prepare` envelope
+     (no Runtime/Evidence pinning, no venv construction) -- it is
+     preview/verification tooling usable in the current Development/
+     evidence environment, not a replacement for the maintainer's existing
+     authorized PREPARE/LAUNCH act.
+   Exact flag names and output formatting beyond the content listed above
+   are your implementation choice; keep them consistent with this file's
+   existing `argparse` style.
+
+REVIEW (phase `review`):
+
+- Independently attempt to falsify the implementation. In particular:
+  * Confirm the rendered direct@v1 bundle matches design section 5.1
+    field-for-field for at least one `none` and one `task-check-v1`
+    evidence-profile Intent, over more than one requested `scope`.
+  * Confirm no forbidden Intent field (design section 2.1) can reach the
+    rendered profile/policy/WorkItem -- construct at least one Intent that
+    attempts each of: widening scope or actions beyond the resolved
+    program/policy, omitting a program-required artifact mapping, adding a
+    role, altering Finding authority, deleting the failed-evidence route,
+    and selecting an undefined evidence-profile value; each must be
+    rejected before any `_preflight` call, let alone a provider call.
+  * Confirm `verify_render_manifest` actually re-derives the projection from
+    the pinned Intent and source objects rather than trusting a digest
+    list: a hand edit to a rendered file, and separately a hand edit paired
+    with a matching manifest-digest edit, must both fail the equivalence
+    check.
+  * Confirm the render manifest never contains the observed bundle HEAD
+    `H` (no self-referential commit field).
+  * Confirm `commission check` only succeeds after both the equivalence
+    procedure and the real, unmodified `operator._preflight()` succeed, and
+    that no admission predicate in operator.py was duplicated, weakened, or
+    bypassed.
+  * Confirm `scripts/wfc_op.py`'s existing `prepare`/`launch`/`status`/
+    `archive` commands and `run_canonical_preflight_seam` are byte-for-byte
+    unchanged in behavior for a hand-authored bundle (the existing
+    hand-authored Commission workflow is preserved).
+  * Confirm no file outside this WorkItem's exact scope was touched, and
+    that no new permanent test function was added to
+    tests/architecture/test_self_development_governance.py.
+- Record the review in the required durable artifact
+  docs/warm_storage/concepts/workflow_coordinator_front_door_direct_v1_implementation_2026-10-28_review_001.adoc.
+- If the implementation is sound, request `route: accept`. If correction is
+  needed, record the concrete blocking problem in the durable review
+  artifact and request `route: correct` with `outcome: changes_required`
+  and an empty `findings` list -- do not create a WFC Current-Run Finding
+  merely to carry an ordinary implementation defect.
+
+CORRECTION (phase `correct`, only if `review` or `rereview` requested it):
+
+- Address only the concrete problem(s) recorded in the durable review
+  artifact.
+- Remain within the exact same scope as `implement`.
+- Do not disposition any WFC Finding merely because the correction
+  succeeded; this Run creates none.
+
+REREVIEW (phase `rereview`, only if `correct` ran):
+
+- Independently verify the corrected repository state with fresh context,
+  using the same falsification checklist as `review` above.
+- Accept only if current repository truth merits it; otherwise route back
+  to `correct` the same way `review` would, again with `outcome:
+  changes_required`, `route: correct`, and an empty `findings` list.
+- `rereview`'s durable-artifact authority is `none`: do not mutate the
+  review artifact or the implementation from `rereview`; only observe and
+  route.
+
+ACCEPTANCE TEST MATRIX (phase `implement`/`correct`; provider-free, using
+disposable temporary Git checkouts -- never a real LLM/provider
+invocation):
+
+Add tests to `tests/unit/test_commissioning.py` and
+`tests/unit/test_wfc_op.py` covering at least the design section 6 minimum
+test set:
+
+1. Deterministic render: the same direct@v1 Intent and pinned source
+   commits produce byte-identical governing-input and manifest digests
+   across repeated renders.
+2. Round trip/admission: a direct@v1 Intent -> rendered WorkItem/profile/
+   policy/task plus the unchanged component manifest, materialized into a
+   temporary Git checkout -> real `operator._preflight()` acceptance (a
+   realistic direct@v1 example genuinely prepared through existing WFC
+   admission machinery, with a fake/no-op evidence runner so no real
+   provider or shell evidence command needs to succeed -- never a real
+   Codex/LLM invocation).
+3. Negative counterexamples (see REVIEW above): each forbidden widening or
+   omission fails the Intent-level check or `render_commission`, before any
+   `_preflight` call.
+4. PREPARE/provenance tampering: a program/policy/component source-object
+   mismatch, a hand edit to a rendered file after render, and a hand edit
+   paired with a matching manifest-digest edit each fail
+   `verify_render_manifest`'s mandatory rerender-and-byte-compare at the
+   observed clean HEAD, before `_preflight` ever runs.
+5. Literal-program rendering: `task-check-v1` places `task-check` only on
+   the `verification` phase; `none` renders no evidence; every direct@v1
+   phase/route/review/action/artifact value equals the design section 5.1
+   record exactly; an Intent cannot add a route, action, component,
+   artifact rule, Finding operation, evidence placement, or failure route.
+6. Forbidden task-supplied workflow semantics cannot override the closed
+   program: an Intent that attempts to supply a phase key, route, action,
+   review descriptor, or Finding-authority value is rejected (restates
+   item 3 as an explicit named acceptance check).
+7. CLI: `commission render` (with and without `--check`) and `commission
+   check` each produce the behavior specified above, exercised as
+   subprocess or in-process CLI invocations against a temporary Git
+   checkout; `commission check` rejects both a tampered rendered artifact
+   and a tampered source pin.
+
+Do not assert, in any test or in the review artifact, that an untested
+property (e.g. Robust-v1 behavior, or a provider-side guarantee) holds.
+
+EVIDENCE (every phase that edits or corrects):
+
+- The complete repository `pytest` suite must be green, along with any
+  existing appropriate lint/static checks this repository uses, before
+  requesting any route out of `implement` or `correct`.
+- Separately, before this Commission's own bundle is launched, the
+  maintainer runs provider-free production preflight against this
+  WorkItem/profile/policy bundle out-of-band (as the operator-diagnostic-
+  propagation-fix Commission did) rather than adding a new permanent test
+  function to tests/architecture/test_self_development_governance.py.
+
+Out of scope for every phase of this WorkItem: Robust-v1 and any Robust
+fixture or test; a general workflow DSL or Commission-authoring framework;
+historical profile migration; P3.5 implementation; any change to
+operator.py, model.py, serialization.py, reducer.py, vertical.py,
+slice4.py, persistence.py, evidence.py, adapter.py, codex_adapter.py,
+git_facts.py, prompt.py, or proof_harness.py; any change to
+scripts/wfc_op.py's existing `prepare`/`launch`/`status`/`archive` commands
+or `run_canonical_preflight_seam`; any new permanent test function in
+tests/architecture/test_self_development_governance.py; any new "example"
+Commission bundle committed under governance/work-items or
+governance/self-development claiming real authorization; any edit to any
+file under `governance/` whatsoever, including the already-committed
+`governance/workflow-programs/direct/v1.yaml` and
+`governance/policy-bases/repository-standard-v1.yaml` (read-only fixtures
+for this Run -- see IMPLEMENTATION item 2); `workflow-coordinator-runtime`
+or `workflow-coordinator-run-evidence`. No phase of this WorkItem carries
+push, Runtime-promotion, Evidence-mutation, or WFC-launch authority; all
+remain maintainer-owned and are not exercised by this Run.
