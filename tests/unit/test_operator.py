@@ -1578,6 +1578,11 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
         "fixture-worker",
         "medium",
     )
+    persisted_attempt = json.loads(
+        (run_root / "execution-evidence.json").read_text(encoding="utf-8")
+    )["attempts"][0]
+    assert persisted_attempt["diagnostics"] == []
+    assert persisted_attempt["diagnostics_artifact"] is None
     assert git(repository, "status", "--porcelain") == ""
 
 
@@ -1750,59 +1755,163 @@ sys.exit(1)
     assert counter.read_text() == "1"
     assert summary["run_status"] == "reconcile_required"
     assert summary["stop_reason"] == "reconcile_requires_explicit_resume"
+    assert summary["human_question"] == (
+        "Validate current reality and explicitly authorize resume."
+    )
+
+
+def test_invalid_structured_result_persists_validation_diagnostics(
+    repository: Path, tmp_path: Path,
+):
+    counter = tmp_path / "counter"
+    stdout_tail = "invalid-result stdout"
+    stderr_tail = "invalid-result stderr"
+    executable = fake(
+        tmp_path,
+        f'''import pathlib, sys
+counter=pathlib.Path({str(counter)!r})
+counter.write_text(str(int(counter.read_text()) + 1) if counter.exists() else "1")
+print({stdout_tail!r})
+print({stderr_tail!r}, file=sys.stderr)
+pathlib.Path(sys.argv[sys.argv.index("--output-last-message") + 1]).write_text("{{")
+''',
+    )
+    state = tmp_path / "state"
+
+    assert main(args(repository, state, str(executable))) == 1
+
+    summary_path = state / "operator-summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    run_root = next((state / "checkouts").iterdir())
+    evidence_path = run_root / "execution-evidence.json"
+    persisted_attempt = json.loads(evidence_path.read_text(encoding="utf-8"))["attempts"][0]
+    pointer = summary["provider"]["diagnostics_artifact"]
+    diagnostic = json.loads((run_root / pointer).read_text(encoding="utf-8"))
+
+    assert counter.read_text() == "1"
+    assert summary["run_status"] == "reconcile_required"
+    assert summary["stop_reason"] == "reconcile_requires_explicit_resume"
+    assert summary["human_question"] == (
+        "Validate current reality and explicitly authorize resume."
+    )
+    assert pointer == f"invocation-diagnostics/{summary['invocation_id']}.json"
+    assert diagnostic["run_id"] == summary["run_id"]
+    assert diagnostic["hop_id"] == persisted_attempt["hop_id"] == "H001"
+    assert diagnostic["invocation_id"] == persisted_attempt["invocation_id"] == summary["invocation_id"]
+    assert diagnostic["returncode"] == 0
+    assert diagnostic["candidate_result_present"] is True
+    assert diagnostic["diagnostics"] == ["truncated or invalid structured result"]
+    assert summary["provider"]["diagnostics"] == persisted_attempt["diagnostics"] == diagnostic["diagnostics"]
+    assert persisted_attempt["diagnostics_artifact"] == pointer
+    assert diagnostic["stdout_tail"] == f"{stdout_tail}\n"
+    assert diagnostic["stderr_tail"] == f"{stderr_tail}\n"
+    for text in (summary_path.read_text(), evidence_path.read_text()):
+        assert stdout_tail not in text
+        assert stderr_tail not in text
 
 
 def test_multihop_failure_points_to_the_second_invocation_diagnostic(
     repository: Path, tmp_path: Path,
 ):
-    class SecondHopFails:
-        def __init__(self):
-            self.requests = []
-
-        def execute(self, request):
-            self.requests.append(request)
-            if request.invocation.hop_id == "H002":
-                return AgentExecutionOutcome(
-                    None, 1, False, "second stdout", "second stderr", ("adapter exit 1",)
-                )
-            envelope = {
-                "schema_version": 1,
-                "run_id": request.invocation.run_id,
-                "hop_id": request.invocation.hop_id,
-                "invocation_id": request.invocation.invocation_id,
-                "result": _base_result("verify"),
-            }
-            return AgentExecutionOutcome(json.dumps(envelope), 0, False, "", "")
-
-    adapter = SecondHopFails()
-    workflow, run, state, association, components = _two_hop_serial_fixture(
-        repository, tmp_path, adapter
+    (repository / "work.yml").write_text(
+        (repository / "work.yml").read_text()
+        .replace("initial_phase: work", "initial_phase: prepare")
+        .replace("max_autonomous_hops: 1", "max_autonomous_hops: 2")
+        .replace("  worker: fixture worker", "  worker: fixture worker\n  independent_reviewer: fixture reviewer")
     )
-    final, evidence_rows = run_serial_hops(
-        run, workflow, repository, components,
-        state_root=state, association=association,
-        agent_operating_contract=load_agent_operating_contract(), task_payload="task",
-        governing={}, timeout_seconds=1, personas=TWO_ROLE_PERSONAS,
-        executable="local", adapter=adapter,
+    (repository / "policy.yml").write_text(
+        (repository / "policy.yml").read_text().replace("max_autonomous_hops: 5", "max_autonomous_hops: 2")
     )
+    (repository / "profile.yml").write_text(
+        """schema_version: 2
+profile_id: fixture
+revision: "1"
+phases:
+  prepare:
+    role: worker
+    components:
+      role: [worker]
+      modifiers: []
+      repository_policy: []
+    durable_artifact: none
+    authorized_scope: [PROOF.md]
+    authorized_actions: [edit, commit]
+    human_gates: []
+    evidence: []
+    review: null
+    routes:
+      verify:
+        effect: goto
+        target: verify
+  verify:
+    role: independent_reviewer
+    components:
+      role: [worker]
+      modifiers: []
+      repository_policy: []
+    durable_artifact: none
+    authorized_scope: [PROOF.md]
+    authorized_actions: [edit, commit]
+    human_gates: []
+    evidence: []
+    review: null
+    routes:
+      done:
+        effect: complete
+"""
+    )
+    commit(repository, "test: configure two-hop invocation diagnostic")
+    counter = tmp_path / "counter"
+    stdout_tail = "second stdout"
+    stderr_tail = "second stderr"
+    executable = fake(
+        tmp_path,
+        f'''import json, pathlib, sys
+args=sys.argv[1:]; repo=pathlib.Path(args[args.index("--cd") + 1]); output=pathlib.Path(args[args.index("--output-last-message") + 1]); prompt=sys.stdin.read()
+counter=pathlib.Path({str(counter)!r})
+counter.write_text(str(int(counter.read_text()) + 1) if counter.exists() else "1")
+def fact(name): return prompt.split(name + "=", 1)[1].split("\\n", 1)[0]
+if fact("hop_id") == "H002":
+    print({stdout_tail!r})
+    print({stderr_tail!r}, file=sys.stderr)
+    sys.exit(1)
+repo.joinpath("PROOF.md").write_text("after\\n")
+result={{"schema_version":1,"status":"completed","requested_route":"verify","scope_changed":False,"requires_human":False,"escalation":None,"findings":[],"claimed_commits":[],"commit_intent":{{"paths":["PROOF.md"],"subject":"docs(workflow): WI-OP H001 fixture"}},"evidence_refs":[],"summary":"prepared"}}
+output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_id":fact("hop_id"),"invocation_id":fact("invocation_id"),"result":result}}))
+''',
+    )
+    state = tmp_path / "state"
 
-    run_root = state / "checkouts" / association.checkout_id
-    failed = evidence_rows[-1]
+    assert main(args(repository, state, str(executable))) == 1
+
+    summary = json.loads((state / "operator-summary.json").read_text(encoding="utf-8"))
+    run_root = next((state / "checkouts").iterdir())
+    persisted_attempts = json.loads(
+        (run_root / "execution-evidence.json").read_text(encoding="utf-8")
+    )["attempts"]
+    failed = persisted_attempts[-1]
     pointer = failed["diagnostics_artifact"]
     diagnostic = json.loads((run_root / pointer).read_text())
-    assert len(adapter.requests) == 2
-    assert final.status.value == "reconcile_required"
-    assert final.stop_reason == "reconcile_requires_explicit_resume"
+    assert counter.read_text() == "2"
+    assert summary["run_status"] == "reconcile_required"
+    assert summary["stop_reason"] == "reconcile_requires_explicit_resume"
+    assert summary["human_question"] == (
+        "Validate current reality and explicitly authorize resume."
+    )
     assert failed["hop_id"] == diagnostic["hop_id"] == "H002"
-    assert failed["invocation_id"] == diagnostic["invocation_id"] == adapter.requests[-1].invocation.invocation_id
-    assert diagnostic["stdout_tail"] == "second stdout"
-    assert diagnostic["stderr_tail"] == "second stderr"
+    assert failed["invocation_id"] == diagnostic["invocation_id"] == summary["invocation_id"]
+    assert summary["provider"]["diagnostics_artifact"] == pointer
+    assert summary["provider"]["diagnostics"] == failed["diagnostics"]
+    assert diagnostic["stdout_tail"] == f"{stdout_tail}\n"
+    assert diagnostic["stderr_tail"] == f"{stderr_tail}\n"
     assert failed["diagnostics"] == [
-        "adapter exit 1",
+        "Codex CLI exited 1",
         "agent execution produced no candidate structured result",
     ]
     evidence_text = (run_root / "execution-evidence.json").read_text()
-    assert "second stdout" not in evidence_text and "second stderr" not in evidence_text
+    summary_text = (state / "operator-summary.json").read_text()
+    assert stdout_tail not in evidence_text and stderr_tail not in evidence_text
+    assert stdout_tail not in summary_text and stderr_tail not in summary_text
 
 
 def test_post_provider_summary_failure_is_attempt_failure_with_evidence(repository: Path, tmp_path: Path, monkeypatch):
