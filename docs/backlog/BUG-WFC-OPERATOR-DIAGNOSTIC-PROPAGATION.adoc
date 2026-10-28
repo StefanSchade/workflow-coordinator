@@ -1,0 +1,256 @@
+= BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION -- Captured Provider Transport Diagnostics Are Discarded Before Reaching Any Durable Operator-Visible Record
+
+Type:: bug -- operator diagnostic-legibility defect (FD-04)
+Status:: open (correction commissioned as `WI-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION-FIX-001`;
+not yet implemented, reviewed, or accepted)
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Next action:: Execute the already commissioned bounded correction and its independent review.
+Not authorized here:: Any claim about the provider-side root cause of either
+cited incident, any retry/recovery/resume mechanism, any new provider-error
+taxonomy, or any Front Door implementation.
+Date:: 2026-10-28.
+Classification:: operator dogfooding finding, recorded as FD-04 in
+`docs/warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc`
+§§7-8 ("Operator dogfooding requirements" / "Operational diagnostic concern:
+the unexplained 2026-10-26 provider failure").
+Discovery:: maintainer inspection of two `reconcile_required` Run Attempts
+and the matching `src/workflow_coordinator/operator.py` /
+`src/workflow_coordinator/slice4.py` source, following FD-04 §8's own
+code-level finding.
+
+== What this is not
+
+This record does not characterize the Runtime/Hop/Evidence authority model,
+the fail-closed `reconcile_required` outcome itself, or `DEC-WFC-013`'s
+"salvage preserves work, not authority" principle as defective. A failed
+provider invocation correctly produces an uncertain Hop and a Run that stops
+for explicit maintainer resume; that mechanism is sound and is not touched
+by this record. This record is narrowly about what diagnostic information
+survives into durable, inspectable operator state once that stop happens.
+
+This record does not establish, and does not authorize anyone to assert, a
+provider-side root cause for either cited incident. The actual cause of the
+Codex CLI `exit 1` / no-candidate failures below is unknown and out of
+scope; only the *propagation gap* that prevented investigating it is in
+scope.
+
+== Observed current behavior
+
+Two real Run Attempts ended `reconcile_required` after an agent CLI
+invocation returned a nonzero exit code with no structured candidate
+result, and in both cases the maintainer could not determine more than
+"some invocation failed" from durable local state:
+
+* `wfc-p35-requirements-archaeology-reassessment-001-2026-10-26-01`
+  (`workflow-coordinator-run-evidence/archive/unclassified/...`), invocation
+  `INV-9e55b2d0931943c69e84fa710a24e091`, `returncode=1`, `timed_out=false`,
+  `candidate_result_present=false`.
+* `wfc-front-door-contract-design-001-20261028-01`
+  (`workflow-coordinator-run-evidence/archive/unclassified/...`), Hop H003,
+  invocation `INV-4e0c0e5c4d3343eb9b519df54eeea7c4`, same shape.
+
+Direct inspection of both archived `run/operator-summary.json` files and
+their matching `run/checkouts/<uuid>/execution-evidence.json` files shows
+exactly why: the per-Hop legacy evidence row does carry `returncode` and
+`timed_out`, but every other diagnostic fact the transport layer already
+captured is absent, and the top-level `operator-summary.json["provider"]`
+field is simply `null` in both incidents.
+
+Three concrete code-level facts, confirmed by direct inspection, explain
+this:
+
+. `src/workflow_coordinator/codex_adapter.py`'s `CodexCliAdapter.execute()`
+  already captures bounded `stdout`/`stderr` (`_bounded()`, 16,384-character
+  tail) and a short adapter-owned `diagnostics` tuple (e.g. `"Codex CLI
+  exited 1"`) onto `AgentExecutionOutcome`
+  (`src/workflow_coordinator/codex_adapter.py:404-408`). Capture is not the
+  gap.
+. `src/workflow_coordinator/operator.py` builds the only three
+  operator-visible/persisted records of a Hop's provider facts --
+  `_legacy_execution_evidence()` (`operator.py:629-662`), `_summary()`'s
+  `provider` dict (`operator.py:905-908`), and
+  `_best_effort_failure_summary()`'s `provider` dict
+  (`operator.py:947-950`) -- and each pulls only `outcome.returncode`,
+  `outcome.timed_out`, and `outcome.candidate_result is not None`.
+  `outcome.stdout`, `outcome.stderr`, and `outcome.diagnostics` are read
+  nowhere in `operator.py`; they are discarded at exactly these three
+  sites. (This is the same gap FD-04 §8.2 already names from static
+  inspection; this record adds the two live-incident confirmations and the
+  two further wiring defects below, found while tracing why
+  `operator-summary.json["provider"]` was `null` rather than merely
+  thin.)
+. Two further, more specific wiring defects compound the above for exactly
+  the documented incident shape (a `reconcile_required` stop reached by
+  ordinary return from `run_serial_hops()`, not by an exception):
+  .. `operator.py`'s real CLI entry point calls
+     `_summary(repository, final_run, None, ...)` with a hardcoded `None`
+     third argument (`operator.py:1706`) on every normal-completion path --
+     including `reconcile_required` -- even though the real captured
+     `AgentExecutionOutcome` for the failing invocation is already available
+     in-memory as `latest_outcome` (via the `remember_progress` callback,
+     `operator.py:1679-1683`). This is why `provider` is unconditionally
+     `null` in both archived incidents even though the legacy per-Hop
+     evidence row already has `returncode`/`timed_out`.
+  .. A semantic structured-result validation failure
+     (`ExecutionResultValidationError`, raised by
+     `src/workflow_coordinator/vertical.py` when the candidate result is
+     absent or fails schema validation) carries its specific validation
+     message as the exception's own `str()`, but
+     `src/workflow_coordinator/slice4.py`'s catch site
+     (`except ExecutionResultValidationError as error: return
+     recover_uncertain(error.outcome)`, `slice4.py:386`) keeps only
+     `error.outcome` and discards `str(error)`. `RealHopRun`
+     (`slice4.py:56-63`) has no field to carry it. This means requirement
+     (2) below -- distinguishing "no candidate" from "candidate present but
+     invalid" -- is not determinable from `outcome` alone for the
+     structured-result-validation case, independent of the stdout/stderr
+     propagation gap.
+
+== Why it is undesirable
+
+A maintainer inspecting a `reconcile_required` Run after the terminal
+session that launched it has ended has no durable way to tell, from local
+Run state alone:
+
+* which known execution-failure class occurred (nonzero exit vs. timeout
+  vs. missing candidate vs. structured-result validation error vs. some
+  other local pre-launch failure already surfaced as `operator_error`);
+* the actual exit code (present in the legacy evidence row, but not in the
+  top-level summary `provider` field that both incidents' operators
+  actually consulted first); or
+* any bounded diagnostic text the provider process itself already emitted
+  on `stdout`/`stderr`, which the adapter already captured and bounded but
+  which never reaches any durable record.
+
+This is exactly the gap recorded as FD-04 in
+`workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc`
+§§7-8, which explicitly defers the design to "a separately authorized
+design Commission" (§8.2) and explicitly declines to authorize any
+`codex_adapter.py`/`operator.py` change itself (§9). This record is that
+authorization, bounded to propagation only.
+
+== Desired correction (commissioned below, not separately re-litigated here)
+
+Propagate the already-captured, already-bounded transport diagnostics from
+`AgentExecutionOutcome` (and the discarded structured-result validation
+message) into durable, operator-visible, correctly-correlated records,
+while preserving the trusted-evidence/untrusted-telemetry boundary
+(`DEC-WFC-006`) and keeping any newly-exposed raw provider output out of the
+normal Git Evidence archive's fixed copy allow-list
+(`workflow-coordinator-run-evidence/scripts/archive_run.py`'s
+`CHECKOUT_ALLOW`/`RUN_ROOT_ALLOW`, which already does not, and must
+continue to not, name any new diagnostic artifact this correction adds).
+No automatic retry, recovery, or same-Run resume; no provider-side
+root-cause classification; no new adapter framework.
+
+== Non-scope
+
+This record does not authorize:
+
+* any claim about why either cited provider invocation actually failed;
+* any change to `src/workflow_coordinator/codex_adapter.py` (the capture
+  and bounding mechanism there is already correct and sufficient; see
+  Evidence/provenance below) or to its argv/sandbox/provider-selection
+  behavior;
+* any change to `src/workflow_coordinator/vertical.py`, `reducer.py`,
+  `model.py`, or any Run/Hop/Finding/Evidence trust/authority semantics;
+* any automatic retry, recovery, or successor-Run mechanism (`DEC-WFC-013`
+  and `DEC-WFC-014` govern those unchanged);
+* any change to `workflow-coordinator-run-evidence` (including its archive
+  allow-lists) or to any Front Door material;
+* a generalized provider-error taxonomy beyond the known local execution
+  outcomes the adapter already distinguishes (`returncode`, `timed_out`,
+  `candidate_result_present`, structured-result validation failure);
+* a WorkItem, profile, policy, or WFC Run of any kind; or
+* a push.
+
+== Commission: WI-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION-FIX-001
+
+The maintainer commissions a fresh bounded WFC self-development dogfood
+correction, `WI-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION-FIX-001`, implementing
+exactly the "Desired correction" above and nothing more, using its own
+dedicated governing bundle --
+`governance/work-items/operator-diagnostic-propagation-fix.yaml`,
+`governance/work-items/operator-diagnostic-propagation-fix-task.txt`,
+`governance/self-development/operator-diagnostic-propagation-fix-profile.yaml`,
+`governance/self-development/operator-diagnostic-propagation-fix-policy.yaml`
+-- reusing `governance/self-development/components.yaml` unchanged, with the
+same bounded bootstrap-safe topology (`implement -> review -> {accept,
+correct} -> correct -> rereview -> {accept, correct}`) used by the
+`WI-WFC-FINDING-DELTA-COMPATIBILITY-SHIM-FIX-001` precedent. WorkItem scope
+and the policy's `work_item_scope_ceiling` are exactly:
+
+* `src/workflow_coordinator/operator.py`
+* `src/workflow_coordinator/slice4.py`
+* `tests/unit/test_operator.py`
+* `tests/unit/test_slice4.py`
+* `docs/backlog/BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION_review_001.adoc`
+  (the fresh durable review artifact this Commission's `review` phase
+  produces)
+
+`max_autonomous_hops: 6`, affording one bounded correct/rereview cycle:
+
+[source,text]
+----
+H1 implement
+H2 review
+H3 correct   (if required)
+H4 rereview
+H5 correct   (if required)
+H6 rereview
+----
+
+No implementation has been made by this commission: no Run has been
+launched, no provider has been invoked, and no execution bindings, state
+root, or OPS directory exist yet. Preparing execution bindings, a state
+root, and a deterministic launcher, and then launching the Run, remain
+separate, later, maintainer-owned steps.
+
+== Evidence / provenance
+
+* Current repository truth: `src/workflow_coordinator/codex_adapter.py:101`
+  (`_bounded()`), `:404-408` (`AgentExecutionOutcome` construction);
+  `src/workflow_coordinator/operator.py:629-662`
+  (`_legacy_execution_evidence`), `:665-888` (`run_serial_hops`, in
+  particular the `progress` callback at `:852` and the schema-version-gated
+  evidence-append block at `:853-887`), `:891-939` (`_summary`), `:942-972`
+  (`_best_effort_failure_summary`), `:975-987` (`_write_failure_summary`),
+  `:1679-1683` (`remember_progress`), `:1685-1733` (the real CLI
+  try/except); `src/workflow_coordinator/slice4.py:56-63` (`RealHopRun`),
+  `:331-350` (`recover_uncertain`), `:386` (the
+  `ExecutionResultValidationError` catch site discarding `str(error)`).
+* Cited design/evidence record:
+  `docs/warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc`
+  §§7-8 (FD-04 and its candidate requirement).
+* Incident evidence (separate `workflow-coordinator-run-evidence`
+  repository, read-only for this record):
+  `archive/unclassified/wfc-p35-requirements-archaeology-reassessment-001-2026-10-26-01/run/operator-summary.json`
+  and its matching
+  `run/checkouts/3a7daf92-b334-4387-90fa-3c6188fdabd4/execution-evidence.json`;
+  `archive/unclassified/wfc-front-door-contract-design-001-20261028-01/run/operator-summary.json`
+  and its matching
+  `run/checkouts/a43e3120-d723-49a0-9c42-a69cc6d998e2/execution-evidence.json`.
+* Archive allow-list confirming the placement constraint:
+  `workflow-coordinator-run-evidence/scripts/archive_run.py:29-48`
+  (`RUN_ROOT_ALLOW`, `CHECKOUT_ALLOW`), neither of which names any new
+  diagnostic artifact filename; this correction must not add one to either
+  list, and must not rename an existing allow-listed file.
+* Reusable precedent for the bounded topology and governing-bundle shape:
+  `docs/backlog/BUG-WFC-FINDING-DELTA-COMPATIBILITY-SHIM.adoc`, Commission
+  `WI-WFC-FINDING-DELTA-COMPATIBILITY-SHIM-FIX-001`.
+* Precedent for the untrusted/trusted labeling convention this correction's
+  new diagnostic artifact must reuse: `src/workflow_coordinator/operator.py`
+  `_SALVAGE_TRUST` (`trust_class: "untrusted_salvage"`, `evidence_authority:
+  "none"`, ...).
+
+== Lifecycle
+
+This BUG is *open*. The maintainer has commissioned a bounded correction,
+`WI-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION-FIX-001` (see "Commission" above),
+to propagate already-captured transport diagnostics into durable,
+correctly-correlated, operator-visible state without weakening the
+trusted-evidence boundary or widening the Git Evidence archive's contents.
+No implementation has been made and no Run has been launched by this
+record: only the WorkItem, its dedicated profile/policy, and its task text
+exist so far. Only an accepted review of that WorkItem's implementation may
+close this BUG.

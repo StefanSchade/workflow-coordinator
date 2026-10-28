@@ -1,0 +1,266 @@
+Implement, independently review, and (if needed) correct the bounded
+propagation correction authorized by
+docs/backlog/BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION.adoc, "Desired
+correction". This closes the FD-04 gap recorded in
+docs/warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc
+§§7-8: a provider invocation that fails (nonzero exit, timeout, missing
+candidate result, or structured-result validation failure) must leave the
+maintainer able to determine, from durable local state alone, which
+Run/Hop/Invocation failed, which of those known failure classes occurred,
+the actual exit code, and where to inspect the already-captured bounded
+diagnostic text -- without inventing a provider-side root cause, without
+adding retry/recovery/resume, and without widening what the separate Git
+Evidence archive repository (workflow-coordinator-run-evidence) copies.
+
+DO NOT invent or assert a root cause for either cited incident
+(wfc-p35-requirements-archaeology-reassessment-001-2026-10-26-01,
+wfc-front-door-contract-design-001-20261028-01). Both remain unexplained;
+this WorkItem only fixes why they could not be investigated.
+
+IMPLEMENTATION (phase `implement`):
+
+1. In `src/workflow_coordinator/slice4.py`, thread the discarded structured-
+   result validation message alongside the already-threaded
+   `AgentExecutionOutcome`:
+   - Add one new field to `RealHopRun` (`slice4.py:56-63`), e.g.
+     `outcome_error: str | None = None` (last field, defaulted, so every
+     existing positional `RealHopRun(...)` construction in this file keeps
+     working unchanged).
+   - At the `except ExecutionResultValidationError as error:` catch site
+     (`slice4.py:386`), capture `str(error)` and pass it through
+     `recover_uncertain` into the returned `RealHopRun`, so a validation
+     failure's specific message (e.g. "agent execution produced no
+     candidate structured result", or whatever `ResultValidationError`
+     reports for an invalid structured result) survives this boundary.
+     `recover_uncertain`'s existing `outcome` parameter and its other three
+     call sites (`slice4.py` dispatch-marker-recovery paths, which pass
+     `outcome=None`) are otherwise unaffected; they simply have no error
+     message to pass either.
+   - Do not change `AgentExecutionOutcome`, `ExecutionResultValidationError`,
+     or anything in `vertical.py`: the message already exists at the
+     `slice4.py:386` catch site via `str(error)`; this step only stops
+     discarding it one line later.
+
+2. In `src/workflow_coordinator/operator.py`, add one small, clearly-labeled
+   local-only diagnostic artifact, written exactly once per failed
+   invocation, at the point `run_serial_hops()` (`operator.py:665-888`)
+   already learns a Hop did not complete normally -- i.e. where
+   `hop_run.vertical is None and hop_run.outcome is not None` (this
+   condition is true for every one of: nonzero exit, timeout, missing
+   candidate, and structured-result validation failure; it is false for
+   ordinary successful completion and for the unrelated generic-exception
+   recovery path where no outcome exists to show). At that point `run_root`,
+   `run.run_id`, the just-recorded failing Hop's `hop_id`
+   (`run.hops[-1].hop_id` after `run = hop_run.run`), and the loop's local
+   `invocation_id` are all already in scope -- no new parameters need to
+   flow in from outside `run_serial_hops`.
+
+   - New small helper, e.g. `_write_invocation_diagnostics(run_root, *,
+     run_id, hop_id, invocation_id, outcome, outcome_error)`, using the
+     already-imported `atomic_write_json` (reuse; do not add a new
+     persistence mechanism). Write it to a NEW subdirectory under the
+     per-checkout `run_root`, e.g.
+     `run_root / "invocation-diagnostics" / f"{invocation_id}.json"` --
+     deliberately a fresh filename/directory, not `execution-evidence.json`,
+     `operator-summary.json`, `checkpoint.json`, `run.json`, or
+     `result-message.json`, because those exact filenames are the Git
+     Evidence archive's fixed copy allow-list
+     (`workflow-coordinator-run-evidence/scripts/archive_run.py`
+     `RUN_ROOT_ALLOW`/`CHECKOUT_ALLOW`) and a new filename under a new
+     subdirectory is therefore NOT swept into that archive by the existing
+     allow-list mechanism. Do not modify
+     `workflow-coordinator-run-evidence` or its allow-lists; staying outside
+     them is the point.
+   - Content: an explicit untrusted-telemetry label reusing the existing
+     `_SALVAGE_TRUST`-style convention already in `operator.py` (e.g.
+     `trust_class: "untrusted_operational_diagnostic"`,
+     `evidence_authority: "none"`), plus `run_id`, `hop_id`,
+     `invocation_id`, `returncode`, `timed_out`,
+     `candidate_result_present` (`outcome.candidate_result is not None`),
+     `diagnostics` (the adapter's own short `outcome.diagnostics` tuple,
+     plus `outcome_error` appended if present), `stdout_tail`
+     (`outcome.stdout`), `stderr_tail` (`outcome.stderr`). `stdout`/`stderr`
+     are already bounded to the last 16,384 characters by
+     `codex_adapter.py`'s existing `_bounded()`; do not re-bound, re-size,
+     or redact them further, and do not attempt any new secret-scrubbing
+     framework.
+   - This file is write-once-per-failed-invocation, best-effort in the same
+     spirit as `_write_failure_summary` (do not let a failure to write this
+     diagnostic artifact mask or replace the real attempt failure), but it
+     IS expected to succeed in the ordinary case; do not swallow a write
+     error silently without at least being consistent with how
+     `_write_failure_summary` already handles this trade-off nearby.
+
+3. Extend exactly the three existing sites FD-04 §8.2 and the BUG record
+   name -- and no others -- to carry a short, safe, already-bounded
+   diagnostics summary plus a pointer to the artifact from step 2, so a
+   maintainer reading any one of these three records knows there is more
+   to inspect and exactly where:
+   - `_legacy_execution_evidence()` (`operator.py:629-662`): add
+     `"diagnostics"` (list(outcome.diagnostics), plus the validation
+     message if present) and a pointer field (e.g.
+     `"diagnostics_artifact"`, the path from step 2 relative to `run_root`,
+     or `null` when the Hop succeeded ordinarily). Only this short list and
+     pointer go here -- NOT `stdout`/`stderr` themselves. This dict's
+     fields are part of `execution-evidence.json`, which IS on the Evidence
+     archive's `CHECKOUT_ALLOW` list; keep it free of raw provider output.
+   - `_summary()`'s `provider` dict (`operator.py:905-908`): same two
+     fields, same constraint (this feeds `operator-summary.json`, also
+     allow-listed).
+   - `_best_effort_failure_summary()`'s `provider` dict
+     (`operator.py:947-950`): same two fields, same constraint.
+   - All three must remain exactly unchanged in shape for the ordinary
+     successful-completion case (empty/absent-equivalent `diagnostics`,
+     `null` `diagnostics_artifact`) -- this is the "successful ordinary
+     execution remains unchanged" acceptance requirement.
+
+4. Fix the two wiring defects that otherwise make step 3 inert for the
+   documented incident shape (a `reconcile_required` stop reached by
+   ordinary return, not by an exception):
+   - `operator.py`'s real CLI entry point currently calls
+     `_summary(repository, final_run, None, ...)` with a hardcoded `None`
+     (`operator.py:1706`) even though the real captured outcome for the
+     last attempted invocation is already available as `latest_outcome`
+     (populated by `remember_progress`, `operator.py:1679-1683`). Pass
+     `latest_outcome` (and, if you threaded it through `remember_progress`'s
+     signature in step 1/2 plumbing, the matching error message) instead of
+     the hardcoded `None`.
+   - `summary["invocation_id"] = execution_evidence[-1]["invocation_id"] if
+     execution_evidence else None` (`operator.py:1713`) must fall back to
+     `latest_invocation_id` instead of `None` when `execution_evidence` is
+     empty, so the top-level correlation field is never `None` while a real
+     invocation was in fact attempted.
+   - `remember_progress`'s signature and the `progress(...)` call inside
+     `run_serial_hops` (`operator.py:852`) may need one additional
+     parameter to carry the validation-error message from step 1 through to
+     the real CLI entry point's `_summary()`/`_best_effort_failure_summary()`
+     calls; keep this the minimum plumbing needed and do not restructure
+     `run_serial_hops`'s return shape otherwise.
+
+5. Do not touch `src/workflow_coordinator/codex_adapter.py`,
+   `src/workflow_coordinator/vertical.py`, `reducer.py`, `model.py`, or any
+   file under `workflow-coordinator-run-evidence`. Do not add any new
+   persistence module, logging subsystem, or provider-error taxonomy beyond
+   the four failure classes already distinguishable today (nonzero exit,
+   timeout, missing candidate, structured-result validation failure). Do
+   not add automatic retry, recovery, or successor-Run behavior; a failed
+   invocation must still leave the Run in exactly the same fail-closed
+   `reconcile_required` state it does today, with the same
+   `stop_reason`/`human_question`, unchanged.
+
+REVIEW (phase `review`):
+
+- Independently attempt to falsify the implementation. In particular:
+  * Confirm the new local diagnostic artifact's filename/directory is NOT
+    named by `RUN_ROOT_ALLOW`, `CHECKOUT_ALLOW`, or `OPS_ROOT_ALLOW`/
+    `OPS_SUBDIR_ALLOW` in
+    `workflow-coordinator-run-evidence/scripts/archive_run.py` (read that
+    file to check; do not assume) -- if it is, the raw provider stdout/
+    stderr tail would be swept into the Git Evidence archive, which this
+    correction must not cause.
+  * Confirm `operator-summary.json` and `execution-evidence.json` (the two
+    files that ARE allow-listed) never receive raw `stdout`/`stderr` text,
+    only the short adapter-owned `diagnostics` list/validation message and
+    the artifact pointer.
+  * Confirm correlation: for a constructed failing invocation, the written
+    diagnostic artifact's `run_id`/`hop_id`/`invocation_id` match the
+    failing Hop's identity exactly, and the pointer field in
+    `operator-summary.json`/`execution-evidence.json` names that same
+    artifact.
+  * Confirm the ordinary successful-completion path produces byte-for-byte
+    equivalent `operator-summary.json`/`execution-evidence.json` shape to
+    before this correction, aside from the new always-present
+    `diagnostics: []` / `diagnostics_artifact: null`-equivalent fields.
+  * Confirm no retry, recovery, or resume behavior was added: a failing
+    invocation must still stop the Run at `reconcile_required` exactly as
+    before, requiring explicit maintainer resume.
+  * Confirm `RealHopRun`'s new field has a default and does not break any
+    existing positional construction in `slice4.py`.
+- Verify the correction stays exactly within the five authorized paths and
+  does not touch `codex_adapter.py`, `vertical.py`, `reducer.py`,
+  `model.py`, `workflow-coordinator-run-evidence`, any file under
+  `governance/` other than this Commission's own bundle, or
+  `tests/architecture/test_self_development_governance.py`.
+- Record the review in the required durable artifact
+  `docs/backlog/BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION_review_001.adoc`.
+- If the implementation is sound, request `route: accept`. If correction is
+  needed, record the concrete blocking problem in the durable review
+  artifact and request `route: correct` with `outcome: changes_required`
+  and an empty `findings` list -- do not create a WFC Current-Run Finding
+  merely to carry an ordinary implementation defect.
+
+CORRECTION (phase `correct`, only if `review` or `rereview` requested it):
+
+- Address only the concrete problem(s) recorded in the durable review
+  artifact.
+- Remain within the exact same scope as `implement`.
+- Do not disposition any WFC Finding merely because the correction
+  succeeded; this Run creates none.
+
+REREVIEW (phase `rereview`, only if `correct` ran):
+
+- Independently verify the corrected repository state with fresh context,
+  using the same falsification checklist as `review` above.
+- Accept only if current repository truth merits it; otherwise route back
+  to `correct` the same way `review` would, again with `outcome:
+  changes_required`, `route: correct`, and an empty `findings` list.
+- `rereview`'s durable-artifact authority is `none`: do not mutate the
+  review artifact or the implementation from `rereview`; only observe and
+  route.
+
+ACCEPTANCE TEST MATRIX (phase `implement`/`correct`, using fake adapters --
+never a real Codex invocation):
+
+Add tests to `tests/unit/test_operator.py` (and `tests/unit/test_slice4.py`
+for the `RealHopRun`/`recover_uncertain` plumbing specifically) covering at
+least:
+
+1. Nonzero exit with diagnostic stderr -- the diagnostic artifact's
+   `stderr_tail` carries it; `operator-summary.json`/
+   `execution-evidence.json` do not.
+2. Nonzero exit with diagnostic stdout -- same, for `stdout_tail`.
+3. Exit 1 with no candidate result (the documented incident shape) --
+   `returncode`, `diagnostics`, and the artifact pointer are all present
+   and correlated to the correct `run_id`/`hop_id`/`invocation_id`; the Run
+   still ends `reconcile_required` with no retry.
+4. Invalid structured result with a specific validation error -- the
+   validation message (not just `returncode=0`) is recoverable from durable
+   state; do not assert this proves a provider-side root cause, only that
+   the validation error text itself is preserved and inspectable.
+5. Successful ordinary execution -- `operator-summary.json`/
+   `execution-evidence.json` shape is unchanged except for the new
+   always-empty/`null` diagnostics fields; no diagnostic artifact file is
+   written.
+6. Failed invocation still results in `reconcile_required` with no
+   automatic retry -- assert the Run's `status`/`stop_reason`/
+   `human_question` are identical to today's behavior.
+7. Diagnostics remain inspectable after the invocation completes -- read
+   the diagnostic artifact back from disk in the test, independent of any
+   in-memory state, proving it is a durable file, not merely an in-process
+   value.
+8. The diagnostic is correlated with the correct Invocation and is not
+   silently discarded by operator/persistence handling -- construct a
+   multi-Hop scenario (e.g. a successful H001 followed by a failing H002,
+   mirroring the real `wfc-front-door-contract-design-001-20261028-01`
+   incident shape) and assert the artifact and the pointer both name H002's
+   invocation, not H001's.
+
+Do not assert, in any test or in the review artifact, that these
+diagnostics establish a provider-side root cause where the available data
+does not support that conclusion.
+
+EVIDENCE (every phase that edits or corrects):
+
+- The complete repository pytest suite must be green, along with any
+  existing appropriate lint/static checks this repository uses, before
+  requesting any route out of `implement` or `correct`.
+
+Out of scope for every phase of this WorkItem: any change to
+`src/workflow_coordinator/codex_adapter.py`, `vertical.py`, `reducer.py`,
+`model.py`, `adapter.py`, `prompt.py`, `serialization.py`, the Agent
+Operating Contract, `tests/architecture/test_self_development_governance.py`,
+any file under `governance/` other than this Commission's own four-file
+bundle, `workflow-coordinator-runtime`, the `workflow-coordinator-run-evidence`
+repository (including its archive allow-lists), or any frozen historical
+Run/Attempt state of either cited incident. No phase of this WorkItem
+carries push or Runtime-promotion authority; both remain maintainer-owned.
