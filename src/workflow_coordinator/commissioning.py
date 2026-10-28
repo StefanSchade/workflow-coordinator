@@ -263,6 +263,29 @@ def _direct_template() -> dict[str, Any]:
     }
 
 
+def _repository_standard_v1_record(policy: Any) -> bool:
+    """Return whether a parsed basis is the one immutable Direct-v1 basis.
+
+    Identity alone is deliberately insufficient: every policy field below is a
+    closed input to Direct-v1.  The render may narrow only the work-item scope
+    ceiling, after this source record has been verified in full.
+    """
+
+    return (
+        policy.schema_version == 3
+        and policy.policy_id == "repository-standard"
+        and policy.revision == "v1"
+        and policy.scope == ("workflow-coordinator",)
+        and policy.governance_paths == ("governance",)
+        and policy.work_item_scope_ceiling == ("src", "tests", "scripts", "docs")
+        and policy.max_autonomous_hops == 10
+        and policy.actions == ("edit", "commit", "review")
+        and set(policy.evidence_commands) == {"task-check"}
+        and policy.evidence_commands["task-check"].argv == ("python", "-m", "pytest", "-q")
+        and policy.evidence_commands["task-check"].timeout_seconds == 900
+    )
+
+
 def _load_sources(intent: CommissionIntent, repository: Path) -> tuple[dict[str, Any], dict[str, Any], str, str, str]:
     if (intent.program.id, intent.program.revision) != ("direct", "v1"):
         raise CommissionError("only the closed direct@v1 program is supported")
@@ -285,11 +308,8 @@ def _load_sources(intent: CommissionIntent, repository: Path) -> tuple[dict[str,
         manifest = component_manifest_from_yaml(components_text)
     except ValidationError as error:
         raise CommissionError(str(error)) from error
-    if (policy.policy_id, policy.revision) != ("repository-standard", "v1"):
-        raise CommissionError("pinned policy basis identity does not match Intent")
-    command = policy.evidence_commands.get("task-check")
-    if command is None or command.argv != ("python", "-m", "pytest", "-q") or command.timeout_seconds != 900:
-        raise CommissionError("direct@v1 requires the policy basis's exact task-check command")
+    if not _repository_standard_v1_record(policy):
+        raise CommissionError("pinned policy basis does not equal the immutable repository-standard@v1 record")
     if "worker" not in manifest:
         raise CommissionError("fixed component manifest does not define worker")
     return program, {"policy": policy, "manifest": manifest}, program_text, policy_text, components_text
@@ -350,7 +370,7 @@ def render_commission(intent: CommissionIntent, *, repository: Path | str, targe
     }
     item_data = {
         "schema_version": 2, "work_item_id": intent.work_item_id, "authority_source": intent.authority_source,
-        "profile_ref": paths["profile"], "repository": repository.name, "scope": list(intent.scope),
+        "profile_ref": paths["profile"], "repository": policy.scope[0], "scope": list(intent.scope),
         "initial_phase": "implement", "max_autonomous_hops": intent.max_autonomous_hops,
         "personas": dict(intent.personas),
         "profile_labels": ["program_id=direct", "program_revision=v1", f"program_source_commit={intent.program.source_commit}"],

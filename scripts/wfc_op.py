@@ -92,6 +92,9 @@ def _commission_report(rendered) -> str:
 
     intent = rendered.intent
     sources = rendered.manifest["sources"]
+    yaml = __import__("yaml")
+    profile = yaml.safe_load(rendered.texts[rendered.paths["profile"]])
+    policy = yaml.safe_load(rendered.texts[rendered.paths["policy"]])
     lines = [
         f"user authority_source: {intent.authority_source}",
         f"user intent_sha256: {rendered.manifest['intent']['sha256']}",
@@ -100,12 +103,20 @@ def _commission_report(rendered) -> str:
         f"user requested_scope: {', '.join(intent.scope)}",
         "runtime at PREPARE: expected clean bundle HEAD is checked by commission check, not recorded here",
     ]
-    for phase, data in __import__("yaml").safe_load(rendered.texts[rendered.paths["profile"]])["phases"].items():
+    selected_evidence = set()
+    for phase, data in profile["phases"].items():
         review = data["review"] or {}
         lines.append(f"program phase {phase} scope: {', '.join(data['authorized_scope'])}")
         lines.append(f"program phase {phase} actions: {', '.join(data['authorized_actions'])}")
         lines.append(f"program phase {phase} evidence: {', '.join(data['evidence']) or '(none)'}")
+        selected_evidence.update(data["evidence"])
         lines.append(f"program phase {phase} gate breadth/purpose/Finding authority: {review.get('breadth', '(none)')} / {review.get('purpose', '(none)')} / {review.get('finding_authority', [])}")
+    for name in sorted(selected_evidence):
+        command = policy["evidence_commands"][name]
+        lines.append(
+            f"policy evidence_command {name}: argv={' '.join(command['argv'])} "
+            f"timeout_seconds={command['timeout_seconds']}"
+        )
     lines.append("program required_artifacts: none")
     for entry in sources["selected_components"]:
         lines.append(f"program selected_component {entry['id']}: {entry['path']} sha256={entry['sha256']}")

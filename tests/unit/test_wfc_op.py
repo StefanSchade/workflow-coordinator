@@ -1296,6 +1296,7 @@ def test_commission_render_and_check_are_provider_free_cli_seams(tmp_path: Path)
 
     repository = tmp_path / "commission-repository"
     _clone_local(REPO_ROOT, repository)
+    commission_env = {**os.environ, "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")}
     source_head = git(repository, "rev-parse", "HEAD")
     intent = repository / "governance/commissions/cli-test/intent.yaml"
     intent.parent.mkdir(parents=True)
@@ -1321,12 +1322,23 @@ components_ref: {{path: governance/self-development/components.yaml, source_comm
 """,
         encoding="utf-8",
     )
+    plain = subprocess.run(
+        (
+            sys.executable, str(WFC_OP), "commission", "render", "--intent", str(intent),
+            "--out-dir", "governance/commissions/cli-plain",
+        ),
+        cwd=repository, text=True, capture_output=True, env=commission_env,
+    )
+    assert plain.returncode == 0, plain.stderr
+    assert "authority_source:" not in plain.stdout
+    intent.write_text(intent.read_text(encoding="utf-8").replace("evidence_profile: none", "evidence_profile: task-check-v1"), encoding="utf-8")
     rendered = subprocess.run(
         (sys.executable, str(WFC_OP), "commission", "render", "--intent", str(intent), "--check"),
-        cwd=repository, text=True, capture_output=True,
+        cwd=repository, text=True, capture_output=True, env=commission_env,
     )
     assert rendered.returncode == 0, rendered.stderr
     assert "user authority_source:" in rendered.stdout
+    assert "policy evidence_command task-check: argv=python -m pytest -q timeout_seconds=900" in rendered.stdout
     git(repository, "add", ".")
     git(repository, "commit", "--quiet", "-m", "test: committed CLI Commission projection")
     checked = subprocess.run(
@@ -1334,7 +1346,37 @@ components_ref: {{path: governance/self-development/components.yaml, source_comm
             sys.executable, str(WFC_OP), "commission", "check", "--intent", str(intent),
             "--repository", str(repository), "--expected-head", git(repository, "rev-parse", "HEAD"),
         ),
-        text=True, capture_output=True,
+        text=True, capture_output=True, env=commission_env,
     )
     assert checked.returncode == 0, checked.stderr
     assert "COMMISSION CHECK OK" in checked.stdout
+
+    # The command must refuse before admission if the committed bundle is not
+    # the projection, even when the expected head itself is clean.
+    profile = repository / "governance/commissions/cli-test/profile.yaml"
+    profile.write_text(profile.read_text(encoding="utf-8") + "# hand edit\n", encoding="utf-8")
+    git(repository, "add", ".")
+    git(repository, "commit", "--quiet", "-m", "test: tamper CLI rendered projection")
+    tampered = subprocess.run(
+        (sys.executable, str(WFC_OP), "commission", "check", "--intent", str(intent), "--repository", str(repository), "--expected-head", git(repository, "rev-parse", "HEAD")),
+        text=True, capture_output=True, env=commission_env,
+    )
+    assert tampered.returncode == 2
+    assert "projection equivalence mismatch" in tampered.stderr
+
+    # A pin to a same-path but changed catalogue object is equally refused;
+    # this reaches source validation before rendered-tree comparison.
+    program = repository / "governance/workflow-programs/direct/v1.yaml"
+    program.write_text(program.read_text(encoding="utf-8").replace("authorized_actions: [review]", "authorized_actions: [edit, review]"), encoding="utf-8")
+    git(repository, "add", str(program.relative_to(repository)))
+    git(repository, "commit", "--quiet", "-m", "test: changed pinned direct source")
+    changed_source = git(repository, "rev-parse", "HEAD")
+    intent.write_text(intent.read_text(encoding="utf-8").replace(f"source_commit: {source_head}", f"source_commit: {changed_source}", 1), encoding="utf-8")
+    git(repository, "add", str(intent.relative_to(repository)))
+    git(repository, "commit", "--quiet", "-m", "test: pin changed source")
+    changed_pin = subprocess.run(
+        (sys.executable, str(WFC_OP), "commission", "check", "--intent", str(intent), "--repository", str(repository), "--expected-head", git(repository, "rev-parse", "HEAD")),
+        text=True, capture_output=True, env=commission_env,
+    )
+    assert changed_pin.returncode == 2
+    assert "closed direct@v1 literal record" in changed_pin.stderr

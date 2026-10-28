@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import workflow_coordinator.commissioning as commissioning
 from workflow_coordinator.commissioning import CommissionError, commission_intent_from_yaml, render_commission, verify_render_manifest
 
 
@@ -73,16 +74,37 @@ def test_direct_render_is_deterministic_and_literal_for_both_evidence_profiles(r
     checked = render_commission(commission_intent_from_yaml(intent_text(head, evidence="task-check-v1", scope="tests")), repository=repository)
 
     assert none.texts == again.texts
-    assert "evidence: []" in none.texts[none.paths["profile"]]
-    assert yaml.safe_load(none.texts[none.paths["profile"]])["phases"]["verification"]["evidence"] == []
-    assert yaml.safe_load(checked.texts[checked.paths["profile"]])["phases"]["verification"]["evidence"] == ["task-check"]
-    assert "failed_evidence_route: correction" in checked.texts[checked.paths["profile"]]
+    def expected(scope: list[str], evidence: list[str]) -> dict:
+        return {
+            "implement": {"role": "worker", "components": {"role": ["worker"], "modifiers": [], "repository_policy": []}, "durable_artifact": "none", "authorized_scope": scope, "authorized_actions": ["edit", "commit"], "human_gates": [], "evidence": [], "review": None, "routes": {"verify": {"effect": "goto", "target": "verification"}}},
+            "verification": {"role": "worker", "components": {"role": ["worker"], "modifiers": [], "repository_policy": []}, "durable_artifact": "none", "authorized_scope": scope, "authorized_actions": ["review"], "human_gates": [], "evidence": evidence, "review": {"purpose": "deterministic task-check disposition only; no semantic review", "breadth": "verification", "authority": "gate", "context": "fresh", "blocking_policy": "blocking_only", "trigger": "profile_selected", "exit": "declared_route", "finding_authority": [], "failed_evidence_route": "correction"}, "routes": {"accept": {"effect": "complete"}, "correction": {"effect": "goto", "target": "implement"}}},
+        }
+
+    assert yaml.safe_load(none.texts[none.paths["profile"]])["phases"] == expected(["src"], [])
+    assert yaml.safe_load(checked.texts[checked.paths["profile"]])["phases"] == expected(["tests"], ["task-check"])
     assert "independent_reviewer" not in checked.texts[checked.paths["profile"]]
+
+
+def test_render_uses_pinned_logical_repository_not_checkout_name(repository: Path, tmp_path: Path) -> None:
+    """The same pins must render byte-identically in a differently named clone."""
+
+    head = git(repository, "rev-parse", "HEAD")
+    first = render_commission(commission_intent_from_yaml(intent_text(head)), repository=repository)
+    renamed = tmp_path / "renamed-checkout"
+    subprocess.run(("git", "clone", "--local", "--no-hardlinks", "--quiet", str(repository), str(renamed)), check=True)
+    second = render_commission(commission_intent_from_yaml(intent_text(head)), repository=renamed)
+
+    assert first.texts == second.texts
+    assert yaml.safe_load(first.texts[first.paths["work_item"]])["repository"] == "workflow-coordinator"
 
 
 def test_intent_rejects_forbidden_workflow_semantics_before_render(repository: Path) -> None:
     head = git(repository, "rev-parse", "HEAD")
-    for forbidden in ("routes: {}", "finding_authority: [resolve]", "phase: implement", "model: x"):
+    for forbidden in (
+        "routes: {}", "route_effects: {}", "initial_phase: implement", "phase: implement",
+        "actions: [edit]", "review: {}", "finding_authority: [resolve]", "failed_evidence_route: accept",
+        "components: {}", "governance_paths: [x]", "model: x", "adapter: x", "evidence_commands: {}",
+    ):
         with pytest.raises(CommissionError, match="forbidden"):
             commission_intent_from_yaml(intent_text(head) + forbidden + "\n")
     altered = intent_text(head).replace("evidence_profile: none", "evidence_profile: undefined")
@@ -91,6 +113,27 @@ def test_intent_rejects_forbidden_workflow_semantics_before_render(repository: P
     extra_role = intent_text(head).replace("  worker: Bounded worker persona.", "  worker: Bounded worker persona.\n  independent_reviewer: forbidden")
     with pytest.raises(CommissionError, match="forbidden"):
         commission_intent_from_yaml(extra_role)
+    for altered, match in (
+        (intent_text(head, scope="governance"), "exceeds"),
+        (intent_text(head, scope="outside"), "exceeds"),
+        (intent_text(head).replace("durable_artifacts: {}", "durable_artifacts: {implement: [src/x]" + "}"), "forbidden"),
+    ):
+        with pytest.raises(CommissionError, match=match):
+            render_commission(commission_intent_from_yaml(altered), repository=repository)
+
+
+def test_full_immutable_policy_record_is_verified_before_render(repository: Path) -> None:
+    """A same-id/revision policy with another field changed is not a basis pin."""
+
+    original = git(repository, "rev-parse", "HEAD")
+    policy_path = repository / "governance/policy-bases/repository-standard-v1.yaml"
+    policy_path.write_text(policy_path.read_text(encoding="utf-8").replace("max_autonomous_hops: 10", "max_autonomous_hops: 9"), encoding="utf-8")
+    git(repository, "add", str(policy_path.relative_to(repository)))
+    git(repository, "commit", "-m", "test: mutate same revision policy")
+    mutated = git(repository, "rev-parse", "HEAD")
+    altered = intent_text(original).replace(f"policy_basis: {{id: repository-standard, revision: v1, source_commit: {original}}}", f"policy_basis: {{id: repository-standard, revision: v1, source_commit: {mutated}}}")
+    with pytest.raises(CommissionError, match="immutable repository-standard@v1"):
+        render_commission(commission_intent_from_yaml(altered), repository=repository)
 
 
 def test_equivalence_rerenders_then_delegates_to_real_preflight(
@@ -100,12 +143,15 @@ def test_equivalence_rerenders_then_delegates_to_real_preflight(
     intent_path, expected_head = materialize(repository, evidence="task-check-v1")
     verify_render_manifest(intent_path, repository=repository, expected_head=expected_head)
 
+    calls = []
+    monkeypatch.setattr(commissioning, "_preflight", lambda *_args, **_kwargs: calls.append(True))
     profile = repository / "governance/commissions/commission-test/profile.yaml"
     profile.write_text(profile.read_text(encoding="utf-8") + "# hand edit\n", encoding="utf-8")
     git(repository, "add", ".")
     git(repository, "commit", "-m", "test: tamper rendered profile")
     with pytest.raises(CommissionError, match="projection equivalence mismatch"):
         verify_render_manifest(intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"))
+    assert calls == [], "equivalence failures must occur before preflight"
 
     manifest = repository / "governance/commissions/commission-test/render-manifest.json"
     manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
@@ -117,3 +163,17 @@ def test_equivalence_rerenders_then_delegates_to_real_preflight(
     git(repository, "commit", "-m", "test: tamper matching manifest digest")
     with pytest.raises(CommissionError, match="projection equivalence mismatch"):
         verify_render_manifest(intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"))
+    assert calls == [], "matching a manifest digest cannot bypass rerender comparison"
+
+
+def test_component_tampering_refuses_before_preflight(repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    intent_path, expected_head = materialize(repository)
+    worker = repository / "governance/self-development/prompts/worker.txt"
+    worker.write_text(worker.read_text(encoding="utf-8") + "\nhand edit\n", encoding="utf-8")
+    git(repository, "add", str(worker.relative_to(repository)))
+    git(repository, "commit", "-m", "test: tamper component source reuse")
+    calls = []
+    monkeypatch.setattr(commissioning, "_preflight", lambda *_args, **_kwargs: calls.append(True))
+    with pytest.raises(CommissionError, match="reused component differs"):
+        verify_render_manifest(intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"))
+    assert calls == []
