@@ -100,7 +100,8 @@ render manifest.  The rendered profile contains the complete closed semantics,
 so an old committed Commission remains inspectable and executable according to
 its admitted files even after a later program revision exists.  A same-path,
 silently changed catalogue entry is invalid by catalogue convention and by the
-manifest digest check; it is not a versioning mechanism.
+PREPARE-time projection-equivalence check in <<pinning-hand-edits-and-launch>>;
+it is not a versioning mechanism.
 
 === 2.1 Parameter boundary
 
@@ -207,8 +208,10 @@ at the stated commit.
 |===
 
 `source_commit` fields are source provenance at render time, not a claim that
-that commit authorizes a Run.  The resulting bundle commit is separately named
-in the render manifest and PREPARE record.
+that commit authorizes a Run.  The observed clean bundle HEAD is a PREPARE and
+launch pin, not a value a tracked render manifest can truthfully contain; the
+PREPARE-time equivalence procedure is specified in
+<<pinning-hand-edits-and-launch>>.
 
 === 3.1 Direct-v1 example
 
@@ -237,13 +240,15 @@ durable_artifacts: {}
 components_ref: {path: governance/components.yaml, source_commit: "<40-char manifest SHA>"}
 ----
 
-Direct-v1 renders one worker phase with the program's fixed routes and no
-independent review, no gate evidence, and no durable review artifact.  It does
-not turn the absence of review into an Intent choice: selecting `direct@v1` is
-the visible, reviewable semantic decision.  Task-specific deterministic checks
-remain explicit task acceptance or an authorized later Direct revision; they
-are not silently represented as worker `evidence`, which current admission
-correctly disallows for a non-gate phase.
+Direct-v1 renders the program's fixed worker-and-verification shape.  It has no
+independent LLM review and no durable review artifact.  When the Intent selects
+`task-check-v1`, its required deterministic evidence is on the program's
+verification *gate*, never on the worker phase; the literal record is in
+<<direct-v1-literal-record>>.  Selecting `none` is allowed only for a task
+whose acceptance needs no required deterministic check.  That narrower
+selection proves an unreviewed, unchecked Direct task -- it does *not* claim
+that a task requiring checks satisfies `DEC-WFC-022` merely because its
+acceptance prose mentions them.
 
 === 3.2 Robust-v1 example
 
@@ -268,7 +273,7 @@ scope: [src/parser, tests/test_parser.py]
 personas:
   worker: Parser maintainer; make the smallest behaviorally complete change.
   independent_reviewer: Independent adversarial parser reviewer.
-evidence_profile: python-pytest-v1
+evidence_profile: task-check-v1
 policy_basis: {id: repository-standard, revision: v1, source_commit: "<40-char policy SHA>"}
 max_autonomous_hops: 8
 durable_artifacts:
@@ -278,7 +283,7 @@ components_ref: {path: governance/components.yaml, source_commit: "<40-char mani
 ----
 
 The compiler derives the profile's phase names, all action lists, gate
-descriptors, component IDs, `pytest` command reference, and
+descriptors, component IDs, the `task-check` command reference, and
 `failed_evidence_route: correction` from `robust@v1` and its policy basis.
 The user did not get fields for those controls.  The artifact keys are checked
 against the program's required keys; their values are concrete bindings.
@@ -324,8 +329,9 @@ deterministic steps:
    acceptance prose.  It references the existing component manifest unchanged.
 . Emit a non-authoritative render manifest: Intent/program/policy/component
    source identities, target bundle paths, and a digest for every governing
-   input and selected component.  It is an equivalence witness, not a sixth
-   input that grants authority.
+   input and selected component.  It records render facts for inspection; it
+   is neither a commit-identity container nor, by itself, a proof that the
+   committed tree is the projection.
 
 The compiler has no provider call, no model selection, no capability resolver,
 and no authority decision.  Its allowed output is finite because Direct-v1 and
@@ -337,11 +343,13 @@ widen it.
 
 The compiler must validate the rendered bundle *using the current provider-free
 admission path before any agent invocation*.  It does not reimplement that
-path.  In the normal Front Door path, `commission render --check` verifies
-projection equivalence after commit, then PREPARE invokes the pinned Runtime's
-`operator._preflight()` against that exact clean commit, as the operator manual
-section 7 already requires.  A failure leaves PREPARED/LAUNCHED state absent and
-is corrected/re-rendered before a maintainer may authorize launch.
+path.  `commission render --check` is useful preview validation, but the
+Commission-Intent PREPARE path itself repeats the byte-for-byte projection
+equivalence check at the observed clean HEAD immediately before it delegates to
+the pinned Runtime's `operator._preflight()`.  The exact order and comparison
+set are specified in <<pinning-hand-edits-and-launch>>.  A failure leaves
+PREPARED/LAUNCHED state absent and is corrected/re-rendered before a maintainer
+may authorize launch.
 
 The following short Robust trace states why rendering cannot weaken an existing
 predicate:
@@ -383,58 +391,174 @@ This does not replace any reducer completion guard, Finding rule, or future
 P3.5 reachability rule.  It merely ensures a selected program is rendered as
 that program.
 
+[[pinning-hand-edits-and-launch]]
 === 4.3 Pinning, hand edits, and launch
 
 The render transaction is: render to ordinary working-tree files -> inspect
 report and `git diff` -> commit the Intent, manifest, and governing bundle ->
-run `commission render --check` at that commit -> separately authorize
-PREPARE -> run the existing provider-free `_preflight` -> inspect
-`PREPARED / NOT LAUNCHED` -> separately LAUNCH.  The Commission-specific
-PREPARE wrapper compares the manifest's commit and governing/component digests
-with the committed tree before it delegates to normal PREPARE.  Normal
-PREPARE then pins that same expected HEAD and `_preflight` reads each input by
-that tree object; Level 0 already rechecks governing digests between Hops.
+optionally run `commission render --check` at that commit -> separately
+authorize PREPARE.  The following is the mandatory Commission-Intent branch of
+PREPARE; it is a check, not a new authority decision:
 
-A manual edit after rendering invalidates the manifest.  The Commission-Intent
-path therefore refuses it until it is re-rendered, committed, reviewed and
-validated.  If a maintainer deliberately uses ordinary WFC PREPARE without the
-Intent wrapper, the edited bundle remains a hand-authored Commission subject to
-current admission and separate authorization; it must not be represented as a
-validated projection of the stale Intent.  This preserves the existing
-non-exclusive, hand-authored path and does not create a hidden authority gate.
+. The wrapper obtains the normal PREPARE `expected_head` `H`, observes that the
+  selected checkout is clean at exactly `H`, and reads the Intent and every
+  proposed governing blob from tree `H`.  `H` is an input to the operation and
+  is deliberately absent from the tracked manifest.
+. From the Intent blob at `H`, it resolves the program, policy, and component
+  manifest at their literal pinned source commits.  It rejects a missing,
+  ambiguous, or mismatched source object before considering the rendered tree.
+. It runs the deterministic projector into a fresh temporary output using only
+  that Intent blob and those pinned source objects.  It byte-compares the
+  projected WorkItem, profile, policy, task, and render manifest with the blobs
+  at their declared paths in tree `H`.  It also byte-compares the unchanged
+  component manifest and every component selected by the projected profile at
+  `H` with their declared pinned source blobs.  Thus the full five inputs read
+  by `_preflight` (WorkItem, profile, policy, components, task), including its
+  selected component inputs, are the exact projection/bound reuse at `H`.
+. Only after every comparison succeeds does it delegate to the canonical
+  `_preflight` with that same `expected_head=H` and the same five paths.
+  `_preflight` independently requires clean `HEAD == H`, reads those inputs by
+  the tree object, and retains all current A1, role, artifact, action, evidence
+  and Finding-admission predicates.
+
+PREPARE records and materializes the normal launch artifact with the same
+Development head `H`; LAUNCH revalidates its prepared identities and executes
+that already materialized artifact, whose canonical invocation also carries
+`--expected-head H`.  Consequently a later HEAD/input/artifact drift refuses
+launch rather than turning a successful projection check for `H` into authority
+for another tree.  Level 0 continues to recheck governing digests between Hops.
+
+A hand edit after rendering -- including a hand edit that updates matching
+manifest digests -- fails step 3 unless the edited tree is itself the exact
+rerender from the pinned Intent and sources.  It must then be committed,
+reviewed, and pass this PREPARE check at its own observed `H`.  If a maintainer
+deliberately uses ordinary WFC PREPARE without this wrapper, the edited bundle
+remains a hand-authored Commission subject to current admission and separate
+authorization; it must not be represented as a validated projection of the
+Intent.  This preserves the existing non-exclusive hand-authored path and does
+not create a hidden authority gate.
 
 == 5. Closed reusable-program compatibility
 
-=== 5.1 Direct-v1
+The following two records are the entire v1 program grammar.  They are literal
+rendering constants, not sketches for a catalogue entry.  In the tables,
+`S` is the Intent's normalized `scope`; `A(broad_review)` and
+`A(focused_review)` are the corresponding required durable-artifact paths,
+each required to be inside `S`; and `E` is the one policy-basis command named
+`task-check`.
 
-`direct@v1` is one bounded worker phase and its existing-result-contract
-terminal/escalation behavior.  It has one role, no independent-review gate, no
-required gate evidence and no review artifact.  Its program semantics are the
-absence of an independent review, not a parameter which turns review off in
-another program.  It is deliberately the likely first vertical exercise.
+`direct@v1` permits exactly two evidence-profile values: `none`, which maps to
+`E = []`, and `task-check-v1`, which maps to `E = [task-check]`.  The selected
+immutable policy basis must define `task-check` with its exact argv and timeout;
+the Intent cannot supply either.  `robust@v1` permits exactly
+`task-check-v1`, hence `E = [task-check]`.  These are finite enumerations, not
+a policy-command selector.  A desired evidence shape outside them requires a
+new immutable program revision, not an Intent option.
 
-=== 5.2 Robust-v1 and its renewal constraint
+Every phase has `human_gates: []`, `components.modifiers: []`, and
+`components.repository_policy: []`.  The component IDs, action lists, scopes,
+artifact rules, review descriptors, evidence placement, and route keys below
+are exact.  The compiler has no fill-in slot for any of them.
 
-`robust@v1` has only this closed logical graph (phase labels are program-owned):
+[[direct-v1-literal-record]]
+=== 5.1 Direct-v1 literal record
 
-[source,text]
-----
-implement (WORK) -> broad_review (GATE, broad)
-  clean accept                              -> COMPLETE
-  correction / failed required evidence     -> correct (WORK)
-correct                                     -> focused_review (GATE, focused)
-focused_review: correction                  -> correct
-focused_review: findings closed             -> broad_review
-broad_review after correction: accept       -> COMPLETE
-----
+`direct@v1` is the bounded worker program with no independent LLM review.  Its
+verification gate is a Coordinator-required deterministic-evidence gate, not
+an independent semantic review; it uses the `worker` role and `[worker]`
+component, never `independent_reviewer` or `[reviewer]`.  It therefore meets
+the Direct target's checked form without placing required evidence on a
+non-gate phase, which `_admit_evidence_disposition` rejects.
+
+[cols="1,1,2,3,4",options="header"]
+|===
+|Phase |Role and components |Artifact and scope binding |Actions and evidence |Review descriptor and literal routes
+
+|`implement`
+|`worker`; `role: [worker]`
+|`none`; `authorized_scope: S`
+|`[edit, commit]`; `[]`
+|`review: null`; `verify: {effect: goto, target: verification}`.
+
+|`verification`
+|`worker`; `role: [worker]`
+|`none`; `authorized_scope: S` (read/check only because no `edit` action)
+|`[review]`; `E` -- therefore `[]` for `none` and `[task-check]` for
+`task-check-v1`
+|`purpose: deterministic task-check disposition only; no semantic review`,
+`breadth: verification`, `authority: gate`, `context: fresh`,
+`blocking_policy: blocking_only`, `trigger: profile_selected`,
+`exit: declared_route`, `finding_authority: []`,
+`failed_evidence_route: correction`; `accept: {effect: complete}` and
+`correction: {effect: goto, target: implement}`.
+|===
+
+Thus a required Direct check has exactly one legal placement and one repair
+route.  With `none`, the same closed topology has no required evidence to fail;
+it makes only the narrower no-required-check claim stated in section 3.1, not a
+claim that unrun checks passed.
+
+=== 5.2 Robust-v1 literal record and renewal constraint
+
+`robust@v1` has only the following closed record:
+
+[cols="1,1,2,3,4",options="header"]
+|===
+|Phase |Role and components |Artifact and scope binding |Actions and evidence |Review descriptor and literal routes
+
+|`implement`
+|`worker`; `role: [worker]`
+|`none`; `authorized_scope: S`
+|`[edit, commit]`; `[]`
+|`review: null`; `broad_review: {effect: goto, target: broad_review}`.
+
+|`broad_review`
+|`independent_reviewer`; `role: [reviewer]`
+|`durable_artifact: required`; binding `A(broad_review)`;
+`authorized_scope: [A(broad_review)]`
+|`[review, edit, commit]`; `E = [task-check]`
+|`purpose: independent adversarial full-scope review of the rendered
+Commission`, `breadth: broad`, `authority: gate`, `context: fresh`,
+`blocking_policy: blocking_only`, `trigger: profile_selected`,
+`exit: declared_route`, `finding_authority: [resolve]`,
+`failed_evidence_route: correction`; `accept: {effect: complete}` and
+`correction: {effect: goto, target: correct}`.
+
+|`correct`
+|`worker`; `role: [worker]`
+|`none`; `authorized_scope: S`
+|`[edit, commit]`; `[]`
+|`review: null`; `focused_review: {effect: goto, target: focused_review}`.
+
+|`focused_review`
+|`independent_reviewer`; `role: [reviewer]`
+|`durable_artifact: required`; binding `A(focused_review)`;
+`authorized_scope: [A(focused_review)]`
+|`[review, edit, commit]`; `E = [task-check]`
+|`purpose: independent focused verification of correction and disposition of
+the prior broad/focused Findings`, `breadth: focused`, `authority: gate`,
+`context: fresh`, `blocking_policy: blocking_only`,
+`trigger: profile_selected`, `exit: declared_route`,
+`finding_authority: [resolve]`, `failed_evidence_route: correction`;
+`correction: {effect: goto, target: correct}` and
+`renew_broad_review: {effect: goto, target: broad_review}`.
+|===
+
+The exact `[resolve]` on *both* Robust gates is intentional.  A broad gate may
+resolve the Findings it opens; the focused gate may resolve the Findings it
+verifies before taking `renew_broad_review`.  Neither gate may residualize,
+supersede, or reopen, and no Intent can alter that authority.  Failed required
+evidence at either gate always takes its literal `correction` route; it cannot
+complete or renew the broad review.
 
 The missing grammar element is named the *renewed-broad-review route
 constraint*.  It is a derived, non-removable program constraint: after any
 transition to `correct`, a focused review may not complete; its sole successful
-closed-Finding transition is `goto broad_review`, and only the broad gate may
-reach COMPLETE.  Re-entering `broad_review` is a fresh broad review because its
-existing descriptor has `context: fresh`; it is not a relabelled focused check.
-The route maps are emitted from the program, never supplied by an Intent.
+closed-Finding transition is `renew_broad_review: goto broad_review`, and only
+the broad gate's `accept` route may reach COMPLETE.  Re-entering
+`broad_review` is a fresh broad review because its descriptor has
+`context: fresh`; it is not a relabelled focused check.  The route maps above
+are emitted from the program, never supplied by an Intent.
 
 This is the one additional grammar primitive needed beyond the accepted
 base-pattern-plus-modifiers hypothesis: a fixed gate-to-gate renewal edge with
@@ -489,8 +613,15 @@ The minimum test set is:
   required artifact, add a role, alter Finding authority, delete a
   failed-evidence route, or select undefined evidence; each fails before a
   provider call;
-* provenance: program/policy/component source digest mismatch and a hand edit
-  after render fail `commission check`; and
+* PREPARE provenance: program/policy/component source-object mismatch, a hand
+  edit after render, and a hand edit plus a matching manifest edit each fail
+  the mandatory temporary rerender and byte comparison at the observed clean
+  HEAD before `_preflight`; and
+* literal-program rendering: Direct's `task-check-v1` places `task-check` only
+  on `verification`, Direct's `none` renders no evidence, and every Direct or
+  Robust phase/route/review/action/artifact value equals the section 5 record;
+  an Intent cannot add a route, action, component, artifact rule, Finding
+  operation, evidence placement, or failure route; and
 * Robust template tests, written only in its later Commission: a clean first
   broad review may complete, but every route trace containing `correct` must
   pass `focused_review -> broad_review` before COMPLETE; no Intent field can
@@ -539,9 +670,11 @@ consumer-local paths exactly as illustrated, and their final file naming/layout.
 The invariant is immutable ID/revision plus Git pin, not this illustrative path.
 . The final human CLI wording and JSON schema encoding; they must preserve the
 field model and no second semantic interface may emerge.
-. The exact Direct-v1 policy basis/evidence menu for the first real consumer;
-the first Commission must establish it without turning task acceptance into
-opaque command selection.
+. Which eligible immutable policy basis first supplies the literal
+   `task-check` command for a real consumer.  Its argv/timeout remain policy
+   mechanics, while `task-check-v1` and its required placement are already
+   fixed by the two v1 program records; a first Commission cannot turn task
+   acceptance into opaque command selection.
 . Whether future assurance modifiers are safe, and the trusted derivation of
 defensive review or model eligibility.  Neither is needed by Direct/Robust-v1.
 . Whether Robust can be rendered and verified as stated with a finite template
@@ -557,3 +690,26 @@ duplicated scope/process declarations and provider-free preparation refusals,
 while preserving explicit inspection of task, authority, program revision and
 bindings.  If it does not, later renderer expansion should stop rather than be
 justified as a platform build.
+
+== 9. Correction coverage for review 001
+
+This section reports the bounded correction against the two still-open stable
+identifiers in
+`workflow_coordinator_front_door_commission_contract_design_2026-10-28_review_001.adoc`.
+It is not a review disposition: fresh independent rereview alone decides
+whether either identifier closes.
+
+`FDC001`:: *addressed* in sections 4.1--4.3.  The self-referential
+manifest-commit assertion is removed.  The Commission-Intent PREPARE branch
+now observes one clean `H`, reconstructs the projection from the Intent plus
+pinned program/policy/component sources, byte-compares all rendered and reused
+admitted inputs at `H`, and only then delegates to canonical `_preflight` with
+that same `H`; the normal prepared launch artifact binds LAUNCH to it.
+
+`FDC002`:: *addressed* in sections 3.1--3.2 and 5.1--5.2.  The two finite v1
+records now state every phase role/component, artifact and scope binding,
+actions, evidence placement, descriptor (including Finding authority and
+failed-evidence route), and literal route/effect.  Direct's required check is
+on its gate, not a worker phase; its `none` selection is explicitly narrower.
+Robust's two gates have the exact resolve-only authority needed for its
+focused-to-renewed-broad path.
