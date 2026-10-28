@@ -1,0 +1,188 @@
+= Independent review 001 -- Front Door direct@v1 implementation
+:toc:
+:toclevels: 3
+:sectnums:
+
+Status:: CHANGES REQUIRED.
+WorkItem:: `WI-WFC-FRONT-DOOR-DIRECT-V1-IMPLEMENTATION-002`.
+Run:: `RUN-c358b544417c4a33a0d040a0d8c38656`.
+Reviewed candidate:: commit `05d53cd50aa5fc5327430dcad0ee209a073b8f8d`.
+Reviewed implementation range::
+`f67019b0c546158e6be47407ca7d4ad57775bc64..05d53cd50aa5fc5327430dcad0ee209a073b8f8d`.
+Review phase:: Independent review, H002.
+Date:: 2026-10-28.
+
+== 1. Disposition
+
+Outcome:: `changes_required`
+Route:: `correct`
+
+The candidate gets the central trust boundary right: it renders the literal
+two-phase Direct profile, reprojects committed inputs before comparing bytes,
+compares reused component inputs with their pins, and calls the unchanged
+`operator._preflight` only after those comparisons.  A rendered-file edit and
+an edit accompanied by a matching manifest-digest edit are both refused.  The
+manifest contains source commits but no observed bundle-HEAD field, and the
+existing Harness commands and canonical preflight seam were not changed.
+
+Four blocking implementation gaps remain.  The projection depends on the
+checkout directory name, the immutable policy basis is only partially
+verified, the required render report omits the effective command definition,
+and the committed acceptance tests do not cover the task's minimum matrix.
+
+These are ordinary implementation-review blockers, not WFC Current-Run
+Findings.  This review creates no Finding-ledger delta.
+
+== 2. Review method
+
+The review read the accepted design sections 1--6 and 9, the two read-only
+governance fixtures, the complete candidate diff, the existing serialization
+schemas, and `operator.py::_preflight`, `_admit_a1`, and
+`_admit_evidence_disposition`.  It compared both evidence-profile renders with
+the section 5.1 literal record, inspected every Intent-owned field boundary,
+walked source resolution and equivalence ordering, and ran focused tests and
+adversarial render probes in disposable local checkouts.
+
+The committed commissioning and CLI tests pass in the review environment.
+The complete `test_wfc_op.py` diagnostic was not usable as route evidence in
+this shell because its pre-existing Harness fixtures create isolated virtual
+environments and attempted a network fetch of `setuptools>=68`; the resulting
+failures are environmental.  Coordinator-owned `pytest` remains the trusted
+evidence named by the WorkItem.
+
+== 3. Blocking requirements
+
+=== B1 -- derive the WorkItem repository from pinned policy identity, not the checkout basename
+
+Invariant:: Rendering must be a deterministic projection of the Intent and
+the pinned program/policy/component source objects.  `WorkItem.repository` is
+a logical identity admitted by `RepositoryPolicy.scope`; it is not the local
+filesystem directory name.
+
+`render_commission` currently emits `repository: repository.name`
+(`commissioning.py`, line 353).  A disposable probe rendered the same Intent
+and the same source commits once in this checkout and once in a clone named
+`renamed-checkout`.  The WorkItems contained `workflow-coordinator` and
+`renamed-checkout` respectively, and both the WorkItem bytes and render
+manifest bytes differed.  The second value is also outside the pinned basis's
+`scope: [workflow-coordinator]`; `_preflight` happens not to call `new_run`, so
+the candidate's round-trip test does not expose that later logical-identity
+failure.
+
+Correction requirement:: deterministically select and validate the logical
+repository identity from the pinned policy basis (for this basis,
+`workflow-coordinator`) and add a renamed-checkout regression proving byte-
+identical projection and a WorkItem repository contained in policy scope.
+
+=== B2 -- verify the complete immutable policy-basis record
+
+Invariant:: `repository-standard@v1` is an immutable closed source.  A pin to a
+same-ID/revision but changed object must be refused before rendering; the only
+per-Commission policy change is narrowing `work_item_scope_ceiling` to the
+Intent scope.
+
+The program object is checked against a complete literal record, but the
+policy object is accepted after checking only ID/revision and the one
+`task-check` command (`commissioning.py`, lines 283--292).  Rendering then
+copies every other basis field, including repository scope, governance paths,
+hop ceiling, actions, and all evidence commands (lines 344--350).  Therefore a
+historical or locally introduced source object with the same identity and
+correct `task-check`, but widened actions/scope, changed governance paths, a
+higher hop ceiling, or an extra command, is treated as
+`repository-standard@v1` and projected.  That defeats the immutable-basis
+check and lets a user-selected source pin change fields the Intent is
+forbidden to author.
+
+Correction requirement:: validate the entire supported policy-basis semantic
+record before using it, then test a same-ID/revision source-object mutation
+which preserves `task-check` but changes another basis field.  It must fail
+before any rendered-tree comparison or `_preflight` call.
+
+=== B3 -- make the `--check` report show the effective evidence command
+
+Invariant:: Design section 3.3 and the task require the render report to show
+effective evidence commands with their `policy` provenance, so a maintainer
+can inspect what will actually run rather than only the program's command
+reference.
+
+`_commission_report` prints each phase's evidence-name list, labelled
+`program`, but never prints the selected policy command's argv or timeout
+(`scripts/wfc_op.py`, lines 103--117).  For `task-check-v1`, the report thus
+shows `task-check` but omits `python -m pytest -q` and `900` seconds.  The
+committed CLI test uses the `none` profile and asserts only that the authority
+label is present, so this omission is not exercised.
+
+Correction requirement:: report every effective selected command definition,
+including argv and timeout, as a `policy` fact; add a `task-check-v1` CLI
+assertion for those values and their provenance label.
+
+=== B4 -- implement the mandated minimum acceptance-test matrix
+
+Invariant:: The acceptance matrix is a required deliverable, not optional
+future hardening.  It must make each closed-program and equivalence property
+independently falsifiable.
+
+The candidate adds three commissioning tests and one CLI test.  Important
+required cases are absent:
+
+* exact field-for-field equality of both rendered phase records, rather than
+  assertions for only evidence placement, one failure route, and absence of a
+  reviewer;
+* widening/omission attempts for scope, actions, artifact mapping, review
+  descriptor, components, failure route, and each other named forbidden
+  semantic class;
+* policy and component source-object mismatch/tampering cases;
+* proof that equivalence failures occur before `_preflight` is called;
+* `commission render` without `--check`; and
+* CLI refusal for a tampered rendered artifact and a tampered source pin.
+
+The missing policy-source case would have caught B2, and a render in differently
+named checkouts would have caught B1.  Correction must add the section 6/task
+matrix without adding a permanent self-development-governance test or invoking
+a provider.
+
+== 4. Passed falsification checks
+
+[cols="2,5",options="header"]
+|===
+|Invariant |Review result
+
+|Direct literal profile
+|Pass by source comparison and render inspection.  Both phases use `worker`
+and `[worker]`; scope is the sole `S` substitution; only verification receives
+`E`; actions, artifacts, components, review fields, and routes match design
+section 5.1.
+
+|Forbidden top-level semantics
+|Pass for the implemented closed mapping boundary.  Unknown top-level and
+nested mapping fields are rejected, extra personas are rejected, Direct
+artifact mappings must be empty, and undefined evidence profiles fail before
+preflight.  B4 records the missing regression breadth.
+
+|Equivalence is non-self-referential
+|Pass.  `verify_render_manifest` reads the Intent from tree `H`, rerenders from
+its pinned sources, compares all five rendered outputs including the manifest,
+then compares the component manifest and selected worker component against
+their pinned blobs.  The manifest has no bundle-head field.
+
+|Canonical admission delegation
+|Pass.  Only after comparisons succeed does the code call imported
+`operator._preflight` with the same expected head and the WorkItem, profile,
+policy, components, and task paths.  No predicate from `operator.py` was copied
+or weakened, and no provider is invoked.
+
+|Existing Harness behavior and scope
+|Pass by diff inspection.  The prior four commands and
+`run_canonical_preflight_seam` have no changed lines; the candidate changes
+only the four declared implementation paths.  No governance fixture, kernel
+module, architecture governance test, Robust artifact, or permanent example
+Commission bundle was changed or added.
+|===
+
+== 5. Required correction boundary
+
+Correction is bounded to B1--B4 and the WorkItem's existing implementation
+scope.  It does not require changing `operator.py`, any other excluded kernel
+module, either read-only governance fixture, the existing Harness commands, or
+the architecture governance test.  Rereview should repeat the full
+falsification checklist against fresh repository truth.
