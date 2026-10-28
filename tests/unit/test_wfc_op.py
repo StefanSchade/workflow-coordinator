@@ -1289,3 +1289,52 @@ def test_optional_real_canonical_wrapper_archives_a_real_completed_attempt(tmp_p
     dest = evidence / "archive" / "unclassified" / attempt
     manifest = json.loads((dest / "manifest.json").read_text())
     assert manifest["attempt_id"] == attempt
+
+
+def test_commission_render_and_check_are_provider_free_cli_seams(tmp_path: Path):
+    """The new group is intentionally independent of Harness PREPARE/LAUNCH."""
+
+    repository = tmp_path / "commission-repository"
+    _clone_local(REPO_ROOT, repository)
+    source_head = git(repository, "rev-parse", "HEAD")
+    intent = repository / "governance/commissions/cli-test/intent.yaml"
+    intent.parent.mkdir(parents=True)
+    intent.write_text(
+        f"""schema_version: 1
+commission_id: cli-test
+work_item_id: WI-CLI-TEST
+authority_source: Maintainer authorizes this CLI projection test.
+program: {{id: direct, revision: v1, source_commit: {source_head}}}
+task:
+  title: CLI test
+  body: Render through the CLI.
+  acceptance: The bundle is projected and checked provider-free.
+  withheld_authority: No other path is authorized.
+  escalation_default: Use a typed scope escalation.
+scope: [src]
+personas: {{worker: bounded worker}}
+evidence_profile: none
+policy_basis: {{id: repository-standard, revision: v1, source_commit: {source_head}}}
+max_autonomous_hops: 1
+durable_artifacts: {{}}
+components_ref: {{path: governance/self-development/components.yaml, source_commit: {source_head}}}
+""",
+        encoding="utf-8",
+    )
+    rendered = subprocess.run(
+        (sys.executable, str(WFC_OP), "commission", "render", "--intent", str(intent), "--check"),
+        cwd=repository, text=True, capture_output=True,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert "user authority_source:" in rendered.stdout
+    git(repository, "add", ".")
+    git(repository, "commit", "--quiet", "-m", "test: committed CLI Commission projection")
+    checked = subprocess.run(
+        (
+            sys.executable, str(WFC_OP), "commission", "check", "--intent", str(intent),
+            "--repository", str(repository), "--expected-head", git(repository, "rev-parse", "HEAD"),
+        ),
+        text=True, capture_output=True,
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert "COMMISSION CHECK OK" in checked.stdout

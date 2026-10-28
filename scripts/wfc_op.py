@@ -64,6 +64,93 @@ class HarnessRefusal(RuntimeError):
     """A named, fail-closed Harness precondition or revalidation failure."""
 
 
+# ------------------------------------------------------------ Commission seam
+
+def _commissioning_api():
+    """Load the optional source-tree compiler only for the new command group.
+
+    Existing Harness commands remain stdlib-only when this script is invoked
+    directly from a checkout, as their historical subprocess tests require.
+    """
+
+    source_root = str(Path(__file__).resolve().parents[1] / "src")
+    if source_root not in sys.path:
+        sys.path.insert(0, source_root)
+    from workflow_coordinator.commissioning import (  # pylint: disable=import-outside-toplevel
+        CommissionError, commission_intent_from_yaml, render_commission, verify_render_manifest,
+    )
+    return CommissionError, commission_intent_from_yaml, render_commission, verify_render_manifest
+
+def _commission_target_dir(value: str | None, commission_id: str) -> str:
+    """Keep rendered governing paths repository-relative and inspectable."""
+
+    return value or f"governance/commissions/{commission_id}"
+
+
+def _commission_report(rendered) -> str:
+    """Compact provenance-labelled preview; this is not an authorization act."""
+
+    intent = rendered.intent
+    sources = rendered.manifest["sources"]
+    lines = [
+        f"user authority_source: {intent.authority_source}",
+        f"user intent_sha256: {rendered.manifest['intent']['sha256']}",
+        f"program id/revision/source_commit: {intent.program.id}/{intent.program.revision}/{intent.program.source_commit}",
+        f"policy id/revision/source_commit: {intent.policy_basis.id}/{intent.policy_basis.revision}/{intent.policy_basis.source_commit}",
+        f"user requested_scope: {', '.join(intent.scope)}",
+        "runtime at PREPARE: expected clean bundle HEAD is checked by commission check, not recorded here",
+    ]
+    for phase, data in __import__("yaml").safe_load(rendered.texts[rendered.paths["profile"]])["phases"].items():
+        review = data["review"] or {}
+        lines.append(f"program phase {phase} scope: {', '.join(data['authorized_scope'])}")
+        lines.append(f"program phase {phase} actions: {', '.join(data['authorized_actions'])}")
+        lines.append(f"program phase {phase} evidence: {', '.join(data['evidence']) or '(none)'}")
+        lines.append(f"program phase {phase} gate breadth/purpose/Finding authority: {review.get('breadth', '(none)')} / {review.get('purpose', '(none)')} / {review.get('finding_authority', [])}")
+    lines.append("program required_artifacts: none")
+    for entry in sources["selected_components"]:
+        lines.append(f"program selected_component {entry['id']}: {entry['path']} sha256={entry['sha256']}")
+    for role, persona in intent.personas.items():
+        lines.append(f"user persona {role}: {persona}")
+    for name, path in rendered.paths.items():
+        digest = __import__("hashlib").sha256(rendered.texts[path].encode("utf-8")).hexdigest()
+        lines.append(f"program rendered_{name}: {path} sha256={digest}")
+    return "\n".join(lines)
+
+
+def cmd_commission_render(args: argparse.Namespace) -> int:
+    repository = Path.cwd().resolve()
+    CommissionError, commission_intent_from_yaml, render_commission, _ = _commissioning_api()
+    try:
+        intent = commission_intent_from_yaml(Path(args.intent).read_text(encoding="utf-8"))
+        target_dir = _commission_target_dir(args.out_dir, intent.commission_id)
+        rendered = render_commission(intent, repository=repository, target_dir=target_dir)
+        rendered.write_to(repository)
+    except (OSError, CommissionError) as error:
+        raise HarnessRefusal(str(error)) from error
+    print(f"RENDERED COMMISSION: {intent.commission_id}")
+    for path in rendered.paths.values():
+        print(path)
+    if args.check:
+        print(_commission_report(rendered))
+    return 0
+
+
+def cmd_commission_check(args: argparse.Namespace) -> int:
+    repository = Path(args.repository).resolve()
+    CommissionError, commission_intent_from_yaml, _, verify_render_manifest = _commissioning_api()
+    try:
+        intent_path = str(Path(args.intent).resolve().relative_to(repository))
+        intent = commission_intent_from_yaml((repository / intent_path).read_text(encoding="utf-8"))
+        rendered = verify_render_manifest(
+            intent_path, repository=repository, expected_head=args.expected_head,
+            target_dir=_commission_target_dir(args.out_dir, intent.commission_id),
+        )
+    except (OSError, ValueError, CommissionError) as error:
+        raise HarnessRefusal(f"Commission check refused: {error}") from error
+    print(f"COMMISSION CHECK OK: {rendered.intent.commission_id} at {args.expected_head}")
+    return 0
+
+
 # --------------------------------------------------------------- attempt id
 
 ATTEMPT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -1082,6 +1169,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="invoke only the canonical wrapper's dry-run plan; perform no real archive",
     )
 
+    commission = sub.add_parser(
+        "commission",
+        help="non-authoritative closed-program rendering and provider-free projection checking",
+    )
+    commission_sub = commission.add_subparsers(dest="commission_command", required=True)
+    commission_render = commission_sub.add_parser("render", help="render a direct@v1 Commission bundle")
+    commission_render.add_argument("--intent", required=True, help="Commission Intent YAML")
+    commission_render.add_argument("--out-dir", help="repository-relative rendered bundle directory")
+    commission_render.add_argument("--check", action="store_true", help="print the provenance-labelled render report")
+    commission_check = commission_sub.add_parser(
+        "check", help="rerender committed inputs, compare bytes, then call canonical operator preflight",
+    )
+    commission_check.add_argument("--intent", required=True, help="tracked Commission Intent YAML")
+    commission_check.add_argument("--repository", required=True, help="repository containing the committed bundle")
+    commission_check.add_argument("--expected-head", required=True, help="clean 40-character bundle HEAD")
+    commission_check.add_argument("--out-dir", help="repository-relative rendered bundle directory")
+
     return parser
 
 
@@ -1097,6 +1201,11 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_status(args)
         if args.command == "archive":
             return cmd_archive(args)
+        if args.command == "commission":
+            if args.commission_command == "render":
+                return cmd_commission_render(args)
+            if args.commission_command == "check":
+                return cmd_commission_check(args)
         parser.error("unknown command")
         return 2
     except HarnessRefusal as error:
