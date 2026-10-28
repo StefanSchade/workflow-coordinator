@@ -15,7 +15,7 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
@@ -24,6 +24,7 @@ from yaml.constructor import ConstructorError
 from .operator import OperatorPreflightError, _preflight
 from .serialization import (
     ValidationError,
+    a1_path_shape,
     component_manifest_from_yaml,
     repository_policy_from_yaml,
     workflow_profile_from_yaml,
@@ -154,11 +155,12 @@ def _text(value: Any, *, context: str) -> str:
 
 def _path(value: Any, *, context: str) -> str:
     text = _text(value, context=context)
-    parsed = PurePosixPath(text)
-    if text != text.strip() or "\\" in text or parsed.is_absolute() or any(part in {"", ".", ".."} for part in parsed.parts):
+    # Rendering must reject exactly the malformed paths that canonical
+    # admission rejects; otherwise it could emit a bundle guaranteed to fail
+    # later preflight.  Keep that shape predicate in serialization as the
+    # single library definition rather than reproducing a near-match here.
+    if not a1_path_shape(text):
         raise CommissionError(f"{context} must be an A1-normalized repository-relative path")
-    if parsed.as_posix() != text:
-        raise CommissionError(f"{context} is ambiguous after normalization")
     return text
 
 

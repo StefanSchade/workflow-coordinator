@@ -122,6 +122,34 @@ def test_intent_rejects_forbidden_workflow_semantics_before_render(repository: P
             render_commission(commission_intent_from_yaml(altered), repository=repository)
 
 
+@pytest.mark.parametrize("malformed", ("src*", "src?", "src[generated]", "src/", "src//nested"))
+def test_intent_rejects_non_a1_scope_paths_before_render(repository: Path, malformed: str) -> None:
+    """The compiler shares canonical A1 shape validation with admission."""
+
+    head = git(repository, "rev-parse", "HEAD")
+    text = intent_text(head).replace("scope: [src]", f'scope: ["{malformed}"]')
+    with pytest.raises(CommissionError, match="A1-normalized"):
+        commission_intent_from_yaml(text)
+
+
+@pytest.mark.parametrize("malformed", ("governance/commissions/render*", "governance/commissions/render?", "governance/commissions/render[x]"))
+def test_render_rejects_non_a1_target_directory(repository: Path, malformed: str) -> None:
+    """A target path cannot bypass the same canonical A1 boundary."""
+
+    head = git(repository, "rev-parse", "HEAD")
+    with pytest.raises(CommissionError, match="A1-normalized"):
+        render_commission(commission_intent_from_yaml(intent_text(head)), repository=repository, target_dir=malformed)
+
+
+def test_render_rejects_a_non_a1_default_target_from_commission_id(repository: Path) -> None:
+    """The derived target receives the same check when ``--out-dir`` is absent."""
+
+    head = git(repository, "rev-parse", "HEAD")
+    malformed = intent_text(head).replace("commission_id: commission-test", "commission_id: commission*")
+    with pytest.raises(CommissionError, match="A1-normalized"):
+        render_commission(commission_intent_from_yaml(malformed), repository=repository)
+
+
 def test_full_immutable_policy_record_is_verified_before_render(repository: Path) -> None:
     """A same-id/revision policy with another field changed is not a basis pin."""
 
