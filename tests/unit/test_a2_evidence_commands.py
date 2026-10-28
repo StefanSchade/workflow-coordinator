@@ -120,12 +120,30 @@ def test_duplicate_command_key_is_rejected():
         repository_policy_from_yaml(duplicate)
 
 
-@pytest.mark.parametrize("name", ["", "Upper", "9start", "with-dash", "a" * 65, "ok\nname"])
+@pytest.mark.parametrize("name", ["", "Upper", "9start", "a" * 65, "ok\nname"])
 def test_command_name_requires_full_match(name):
     data = policy_data()
     data["evidence_commands"] = {name: {"argv": ["git"], "timeout_seconds": 1}}
     with pytest.raises(ValidationError, match="command name must match"):
         load_policy(data)
+
+
+def test_hyphenated_command_name_task_check_is_accepted_and_selectable(tmp_path):
+    data = policy_data()
+    data["evidence_commands"] = {
+        "task-check": {"argv": ["git", "--version"], "timeout_seconds": 10}
+    }
+    policy = load_policy(data)
+    assert policy.evidence_commands["task-check"] == EvidenceCommand(
+        ("git", "--version"), 10
+    )
+    workflow = profile(
+        {"one": replace(phase({"done": route("complete")}), evidence=("task-check",))}
+    )
+    assert _selected_evidence_names(workflow, policy) == ("task-check",)
+    assert prepare_evidence_commands(
+        ("task-check",), policy.evidence_commands, tmp_path
+    )[0].command_name == "task-check"
 
 
 @pytest.mark.parametrize(

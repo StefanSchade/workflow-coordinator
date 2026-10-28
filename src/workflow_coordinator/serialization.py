@@ -293,10 +293,10 @@ def _evidence_commands(value: Any) -> dict[str, EvidenceCommand]:
     raw = _mapping(value, context="policy.evidence_commands")
     commands: dict[str, EvidenceCommand] = {}
     for name, raw_command in raw.items():
-        if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name) is None:
+        if re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name) is None:
             raise ValidationError(
                 "policy.evidence_commands command name must match "
-                "[a-z][a-z0-9_]{0,63}: " + repr(name)
+                "[a-z][a-z0-9_-]{0,63}: " + repr(name)
             )
         context = f"policy.evidence_commands.{name}"
         command = _fields(
