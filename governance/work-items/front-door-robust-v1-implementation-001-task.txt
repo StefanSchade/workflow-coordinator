@@ -1,0 +1,343 @@
+Implement, independently review, and (if needed) correct the smallest useful
+extension of the Front Door Basic Commission Intent / Compiler machinery
+that adds the closed robust@v1 reusable workflow program, exactly as
+accepted in
+docs/warm_storage/concepts/workflow_coordinator_front_door_commission_contract_design_2026-10-28.adoc
+(the "design"), section 5.2, and exactly as already committed in the
+separately authorized, hand-authored maintainer catalogue entry
+governance/workflow-programs/robust/v1.yaml (the "catalogue entry"). Read
+the design's sections 1-6, 8, and 9 in full, and the catalogue entry in
+full, before writing any code -- this task text summarizes the binding
+literal requirements but is not a substitute for either document's own
+tables and prose.
+
+GOAL: a user or agent can supply a valid robust@v1 Commission Intent
+(worker + independent_reviewer personas, exactly the task-check-v1
+evidence profile, both required durable-artifact phase bindings) and
+obtain deterministic, inspectable ordinary WFC governing artifacts
+(WorkItem, profile, policy, task) that pass existing provider-free
+admission (operator.py::_preflight) unchanged -- all without any
+LLM/provider call -- while direct@v1 remains byte-for-byte unaffected.
+
+DO NOT implement a general workflow DSL, a generalized Commission-authoring
+framework, a P3.5 profile-reachability validator, historical profile
+migration, a second orchestration engine, or any new authority mechanism.
+DO NOT modify operator.py, model.py, serialization.py, reducer.py,
+vertical.py, slice4.py, persistence.py, evidence.py, adapter.py,
+codex_adapter.py, git_facts.py, prompt.py, or proof_harness.py -- the
+rendering/CLI code must import and reuse operator.py's existing
+`_preflight`/`OperatorPreflightError`, strictly unchanged and strictly as a
+library dependency. If you discover a genuine need to change any of those
+files, or a genuine need for a general reachability validator, to satisfy
+a requirement below without duplicating logic, STOP and request a typed
+scope escalation describing exactly what minimal change is needed and why
+reuse is impossible; do not work around it by re-implementing the
+equivalent check yourself or by weakening a test. DO NOT edit, move, or
+create any file under `governance/` -- this WorkItem's and this profile's
+`authorized_scope` deliberately exclude `governance/` entirely (see
+IMPLEMENTATION item 2 below for why). DO NOT wire this Commission's work
+into the full multi-repository Harness envelope (scripts/wfc_op.py's
+existing `prepare`/`launch`/`status`/`archive` commands and their
+Development/Runtime/Evidence pinning, venv construction, and
+`run_canonical_preflight_seam`) -- that machinery is unchanged. DO NOT add
+a new permanent Commission-specific test function to
+tests/architecture/test_self_development_governance.py (see
+docs/warm_storage/concepts/workflow_coordinator_front_door_stage1_commission_test_burden_finding_2026-10-25.adoc);
+verify this Commission's own governance bundle passes provider-free
+production preflight out-of-band instead (see EVIDENCE below). DO NOT
+commit any new "example" Commission bundle under governance/work-items or
+governance/self-development that purports to be a real authorized
+robust@v1 Commission -- the acceptance proof is automated tests using
+disposable temporary Git checkouts, not a second permanent governance
+bundle. DO NOT change direct@v1's behavior, its catalogue entry, or its
+existing tests in any way beyond what is strictly necessary to share code
+(for example a narrow, behavior-preserving helper extraction); every
+existing direct@v1 test must remain green, byte-for-byte, exactly as
+before this Commission.
+
+IMPLEMENTATION (phase `implement`):
+
+1. Extend `src/workflow_coordinator/commissioning.py` to support `program:
+   {id: robust, revision: v1, ...}` alongside the existing `direct@v1`
+   support, without altering direct@v1's rendering, validation, or public
+   call shape:
+   - `commission_intent_from_yaml` must accept a robust@v1 Intent whose
+     `personas` mapping contains exactly the two keys `worker` and
+     `independent_reviewer` (reject any Intent that omits either key,
+     that supplies extra keys, or that supplies only `worker` the way
+     direct@v1 Intents do), and must otherwise keep validating exactly
+     the field contract in design section 3's table and the forbidden-
+     parameter list in section 2.1 (unchanged for both programs).
+   - `render_commission` must, for `program.id == "robust"`, resolve the
+     catalogue entry and policy basis at their pinned `source_commit`s,
+     verify the pinned catalogue text equals the committed
+     governance/workflow-programs/robust/v1.yaml literal record exactly
+     (the same structural-equality discipline direct@v1's
+     `_load_sources`/`_direct_template` already use -- read that existing
+     code before writing the robust equivalent; do not duplicate the
+     comparison logic, factor out only what is genuinely shared), verify
+     `intent.evidence_profile == "task-check-v1"` (robust@v1 defines no
+     `none` profile -- reject any other value), verify `intent.personas`
+     against the catalogue's declared roles, and render the WorkItem,
+     WorkflowProfile, RepositoryPolicy, and task text using the existing
+     schemas (serialization.py, unchanged), reusing the existing component
+     manifest unchanged (both `worker` and `reviewer` entries in
+     governance/self-development/components.yaml already exist and need
+     no change).
+     For robust@v1 specifically, the rendered profile must be byte-for-byte
+     equivalent (modulo the Intent's own `scope` S, its two durable-
+     artifact path lists A(broad_review)/A(focused_review), and its single
+     evidence selection E = [task-check]) to the literal record in design
+     section 5.2 and in the catalogue entry: `implement` is role
+     `worker`/`[worker]`, no artifact, `authorized_scope: S`,
+     `[edit, commit]`, no evidence, `review: null`, only
+     `broad_review: {effect: goto, target: broad_review}`; `broad_review`
+     is role `independent_reviewer`/`[reviewer]`, artifact `required`
+     bound to `A(broad_review)`, `authorized_scope: [A(broad_review)]`
+     (never the full `S`), `[review, edit, commit]`, evidence
+     `[task-check]`, review descriptor exactly `purpose: "independent
+     adversarial full-scope review of the rendered Commission"`,
+     `breadth: broad`, `authority: gate`, `context: fresh`,
+     `blocking_policy: blocking_only`, `trigger: profile_selected`,
+     `exit: declared_route`, `finding_authority: [resolve]`,
+     `failed_evidence_route: correction`, and only
+     `accept: {effect: complete}` / `correction: {effect: goto, target:
+     correct}`; `correct` mirrors `implement`'s shape but with only
+     `focused_review: {effect: goto, target: focused_review}`;
+     `focused_review` mirrors `broad_review`'s shape, bound to
+     `A(focused_review)`, with review `breadth: focused` and purpose
+     exactly `"independent focused verification of correction and
+     disposition of the prior broad/focused Findings"`, and routes exactly
+     `correction: {effect: goto, target: correct}` and
+     `renew_broad_review: {effect: goto, target: broad_review}` -- no
+     `accept`/`complete` route anywhere on `focused_review`. The artifact
+     paths required for the two review-artifact keys come from the
+     Intent's `durable_artifacts.broad_review` and
+     `durable_artifacts.focused_review`; reject an Intent missing either
+     key, supplying an empty list, or supplying a path outside `S`.
+   - `verify_render_manifest`'s existing equivalence-then-`_preflight`
+     procedure (design section 4.3) must work unchanged for a robust@v1
+     bundle: it is program-agnostic by construction (it re-derives the
+     projection from the pinned Intent and source objects and byte-
+     compares every rendered/reused file), so it should need no
+     program-specific branching beyond whatever `render_commission`
+     already needed. If it does need a change, keep that change minimal
+     and justify it in the review artifact.
+
+2. Catalogue entry `governance/workflow-programs/robust/v1.yaml` is
+   ALREADY COMMITTED, hand-authored governance, delivered together with
+   this WorkItem -- NOT something this phase creates or edits, for exactly
+   the same structural reason direct@v1's catalogue entry and the
+   `repository-standard-v1.yaml` policy basis are read-only for every
+   Commission: `operator.py::_admit_a1` unconditionally rejects any
+   WorkItem/profile `authorized_scope` that overlaps repository policy
+   `governance_paths` (`governance`), so no WFC Run phase, including this
+   one, can ever be authorized to write anywhere under `governance/`.
+   Read the catalogue entry's own "source" field in full: it documents
+   both substitution sentinels (`scope: S`, `scope: A` + `artifact_key`)
+   and the structural renewed-broad-review argument. If its content turns
+   out to be genuinely insufficient for `render_commission` to do its job,
+   STOP and request a scope escalation describing exactly what is
+   missing -- a maintainer may then author a new catalogue revision; do
+   not work around it by inventing a second, Run-writable copy of program
+   data, and do not edit the catalogue entry yourself.
+
+   The immutable policy basis `governance/policy-bases/repository-standard-v1.yaml`
+   is unchanged and is reused exactly as direct@v1 already reuses it: its
+   one evidence command `task-check` (argv `python -m pytest -q`, 900s
+   timeout) and its broad `work_item_scope_ceiling` of
+   `[src, tests, scripts, docs]`, which the compiler must still narrow to
+   the Intent's own requested `scope` when rendering the WorkItem-specific
+   policy, exactly as direct@v1 already does. Do not propose or require a
+   new policy basis; if you find repository-standard@v1 genuinely
+   insufficient for robust@v1 (for example its `max_autonomous_hops`
+   ceiling of 10, or its `actions` list), STOP and request a scope
+   escalation naming the exact gap instead of authoring a new basis
+   yourself.
+
+3. Component manifest reuse: robust@v1 uses the `worker` role for
+   `implement`/`correct` and the `independent_reviewer` role (component id
+   `reviewer`) for `broad_review`/`focused_review`; both entries already
+   exist unchanged in `governance/self-development/components.yaml`
+   (direct@v1 already uses `worker`; `reviewer` is already defined but
+   unused by any program before this Commission). Do not create a new
+   component manifest and do not add, rename, or edit any entry in the
+   existing one.
+
+4. CLI seam in `scripts/wfc_op.py`: the existing `commission render` and
+   `commission check` subcommands must work unchanged for a robust@v1
+   Intent, since they already delegate to `commission_intent_from_yaml`,
+   `render_commission`, and `verify_render_manifest`. If the existing
+   `--check` render-report helper (`_commission_report`) needs a small,
+   genuinely necessary extension to remain accurate for robust@v1's two
+   gate phases and two artifact keys (for example to label which required
+   artifact belongs to which phase), make that extension narrow and
+   additive; do not restructure the report format or change its labelling
+   discipline (every fact still labelled `user`, `program`, `policy`, or
+   `runtime at PREPARE`). Do not add a new top-level CLI command; the
+   existing `commission render`/`commission check` surface is the whole
+   seam for both programs.
+
+REVIEW (phase `review`):
+
+- Independently attempt to falsify the implementation. In particular:
+  * `CommissionIntent` accepts a robust@v1 Intent carrying exactly
+    `worker` and `independent_reviewer` personas, and rejects a robust@v1
+    Intent that: omits `independent_reviewer`, adds a third persona key,
+    or supplies only `worker` (the direct@v1 shape).
+  * The rendered robust@v1 bundle matches the catalogue entry and design
+    section 5.2 field-for-field, for at least one realistic Intent with
+    more than one requested `scope` and two distinct durable-artifact
+    paths.
+  * The renewed-broad-review constraint is proven, not assumed: construct
+    a route trace `implement -> broad_review (accept)` and confirm it may
+    complete on a first clean broad review; separately construct a trace
+    `implement -> broad_review (correction) -> correct -> focused_review`
+    and confirm the rendered profile gives `focused_review` no route that
+    completes the Run -- its only routes are `correction` (back to
+    `correct`) and `renew_broad_review` (back to `broad_review`) -- and
+    that only a subsequent `broad_review.accept` can complete. Confirm
+    this holds for at least one trace with two correction cycles.
+  * No CommissionIntent field, alternative route key, or tampered rendered
+    file can add an `accept`/`complete` route to `focused_review`, remove
+    `renew_broad_review`, or otherwise let a corrected Run skip the
+    renewed broad review; each attempt must fail before any `_preflight`
+    call.
+  * No forbidden Intent field (design section 2.1) can reach the rendered
+    profile/policy/WorkItem for robust@v1, mirroring the existing direct@v1
+    negative-test coverage: widening scope or actions beyond the resolved
+    program/policy, omitting either required artifact mapping, adding or
+    removing a role, altering Finding authority, deleting a failed-
+    evidence route, or selecting an undefined evidence-profile value (for
+    robust@v1, anything other than `task-check-v1`, including `none`).
+  * `verify_render_manifest` re-derives the robust@v1 projection from the
+    pinned Intent and source objects rather than trusting a digest list,
+    exactly as it already does for direct@v1: a hand edit to a rendered
+    robust@v1 file, and separately a hand edit paired with a matching
+    manifest-digest edit, must both fail the equivalence check.
+  * `commission check` only succeeds after both the equivalence procedure
+    and the real, unmodified `operator._preflight()` succeed for a
+    robust@v1 bundle, and no admission predicate in operator.py was
+    duplicated, weakened, or bypassed.
+  * The complete existing direct@v1 test suite (`tests/unit/test_commissioning.py`
+    and `tests/unit/test_wfc_op.py`'s existing direct@v1 cases) still
+    passes unchanged, and direct@v1's rendered output for a fixed Intent
+    is byte-for-byte identical to before this Commission.
+  * `governance/workflow-programs/robust/v1.yaml`,
+    `governance/policy-bases/repository-standard-v1.yaml`, and
+    `governance/self-development/components.yaml` were not edited, moved,
+    or renamed, and no file outside this WorkItem's exact scope was
+    touched.
+  * No new permanent test function was added to
+    `tests/architecture/test_self_development_governance.py`, and no new
+    operator.py/model.py/serialization.py/reducer.py change, general
+    workflow DSL, or P3.5-style reachability validator was introduced.
+- Record the review in the required durable artifact
+  docs/warm_storage/concepts/workflow_coordinator_front_door_robust_v1_implementation_2026-10-29_review_001.adoc.
+- If the implementation is sound, request `route: accept`. If correction is
+  needed, record the concrete blocking problem in the durable review
+  artifact and request `route: correct` with `outcome: changes_required`
+  and an empty `findings` list -- do not create a WFC Current-Run Finding
+  merely to carry an ordinary implementation defect.
+
+CORRECTION (phase `correct`, only if `review` or `rereview` requested it):
+
+- Address only the concrete problem(s) recorded in the durable review
+  artifact.
+- Remain within the exact same scope as `implement`.
+- Do not disposition any WFC Finding merely because the correction
+  succeeded; this Run creates none.
+
+REREVIEW (phase `rereview`, only if `correct` ran):
+
+- Independently verify the corrected repository state with fresh context,
+  using the same falsification checklist as `review` above.
+- Accept only if current repository truth merits it; otherwise route back
+  to `correct` the same way `review` would, again with `outcome:
+  changes_required`, `route: correct`, and an empty `findings` list.
+- `rereview`'s durable-artifact authority is `none`: do not mutate the
+  review artifact or the implementation from `rereview`; only observe and
+  route.
+
+ACCEPTANCE TEST MATRIX (phase `implement`/`correct`; provider-free, using
+disposable temporary Git checkouts -- never a real LLM/provider
+invocation):
+
+Add tests to `tests/unit/test_commissioning.py` and
+`tests/unit/test_wfc_op.py` covering at least:
+
+1. CommissionIntent role acceptance: a robust@v1 Intent with exactly
+   `{worker, independent_reviewer}` personas is accepted; one with only
+   `worker`, one with an added third role, and one with
+   `independent_reviewer` only are each rejected.
+2. Deterministic render: the same robust@v1 Intent and pinned source
+   commits produce byte-identical governing-input and manifest digests
+   across repeated renders.
+3. Round trip/admission: a robust@v1 Intent -> rendered WorkItem/profile/
+   policy/task plus the unchanged component manifest, materialized into a
+   temporary Git checkout -> real `operator._preflight()` acceptance, with
+   a fake/no-op evidence runner so no real provider or shell evidence
+   command needs to succeed.
+4. Literal-program rendering: every robust@v1 phase/route/review/action/
+   artifact value equals the design section 5.2 record and the catalogue
+   entry exactly, for at least two distinct requested scopes and two
+   distinct durable-artifact path pairs.
+5. Renewed-broad-review positive/negative proof (see REVIEW above): a
+   clean first `broad_review.accept` completes; a trace through `correct`
+   must pass through a fresh `broad_review` before completion; no rendered
+   route ever places `{effect: complete}` on `focused_review`; an attempt
+   to tamper a rendered profile to add such a route fails
+   `verify_render_manifest`'s equivalence check before any `_preflight`
+   call.
+6. Negative counterexamples (restates REVIEW's falsification list as
+   explicit named acceptance checks): each forbidden widening, omission,
+   wrong evidence-profile selection, or persona mismatch is rejected before
+   any `_preflight` call.
+7. PREPARE/provenance tampering for robust@v1, mirroring the existing
+   direct@v1 coverage: a program/policy/component source-object mismatch,
+   a hand edit to a rendered file after render, and a hand edit paired
+   with a matching manifest-digest edit each fail
+   `verify_render_manifest`'s mandatory rerender-and-byte-compare at the
+   observed clean HEAD, before `_preflight` ever runs.
+8. CLI: `commission render` (with and without `--check`) and
+   `commission check` each produce the correct behavior for a robust@v1
+   bundle, exercised as subprocess or in-process CLI invocations against a
+   temporary Git checkout.
+9. Direct-v1 regression: the complete existing direct@v1 test set remains
+   green and its rendered output for a fixed Intent is unchanged.
+
+Do not assert, in any test or in the review artifact, that an untested
+property (e.g. a provider-side guarantee, or any property of a future
+third program) holds.
+
+EVIDENCE (every phase that edits or corrects):
+
+- The complete repository `pytest` suite must be green, along with any
+  existing appropriate lint/static checks this repository uses, before
+  requesting any route out of `implement` or `correct`.
+- Separately, before this Commission's own bundle is launched, the
+  maintainer runs provider-free production preflight against this
+  WorkItem/profile/policy bundle out-of-band rather than adding a new
+  permanent test function to
+  tests/architecture/test_self_development_governance.py.
+
+Out of scope for every phase of this WorkItem: a general workflow DSL or
+Commission-authoring framework; a P3.5 reachability validator; historical
+profile migration; any change to operator.py, model.py, serialization.py,
+reducer.py, vertical.py, slice4.py, persistence.py, evidence.py,
+adapter.py, codex_adapter.py, git_facts.py, prompt.py, or proof_harness.py;
+any change to scripts/wfc_op.py's existing `prepare`/`launch`/`status`/
+`archive` commands or `run_canonical_preflight_seam`; any change to
+direct@v1's rendered output or existing tests; any new permanent test
+function in tests/architecture/test_self_development_governance.py; any
+new "example" Commission bundle committed under governance/work-items or
+governance/self-development claiming real authorization; any edit to any
+file under `governance/` whatsoever, including the already-committed
+`governance/workflow-programs/robust/v1.yaml`,
+`governance/workflow-programs/direct/v1.yaml`,
+`governance/policy-bases/repository-standard-v1.yaml`, and
+`governance/self-development/components.yaml` (read-only fixtures for this
+Run -- see IMPLEMENTATION item 2); `workflow-coordinator-runtime` or
+`workflow-coordinator-run-evidence`. No phase of this WorkItem carries
+push, Runtime-promotion, Evidence-mutation, or WFC-launch authority; all
+remain maintainer-owned and are not exercised by this Run.
