@@ -76,6 +76,26 @@ components_ref: {{path: governance/self-development/components.yaml, source_comm
 '''
 
 
+def robust_expected_phases(
+    scope: list[str], broad_paths: list[str], focused_paths: list[str],
+) -> dict:
+    """The closed robust@v1 record after its three permitted substitutions."""
+
+    return {
+        "implement": {"role": "worker", "components": {"role": ["worker"], "modifiers": [], "repository_policy": []}, "durable_artifact": "none", "authorized_actions": ["edit", "commit"], "human_gates": [], "evidence": [], "review": None, "routes": {"broad_review": {"effect": "goto", "target": "broad_review"}}, "authorized_scope": scope},
+        "broad_review": {"role": "independent_reviewer", "components": {"role": ["reviewer"], "modifiers": [], "repository_policy": []}, "durable_artifact": "required", "authorized_actions": ["review", "edit", "commit"], "human_gates": [], "evidence": ["task-check"], "review": {"purpose": "independent adversarial full-scope review of the rendered Commission", "breadth": "broad", "authority": "gate", "context": "fresh", "blocking_policy": "blocking_only", "trigger": "profile_selected", "exit": "declared_route", "finding_authority": ["resolve"], "failed_evidence_route": "correction"}, "routes": {"accept": {"effect": "complete"}, "correction": {"effect": "goto", "target": "correct"}}, "authorized_scope": broad_paths},
+        "correct": {"role": "worker", "components": {"role": ["worker"], "modifiers": [], "repository_policy": []}, "durable_artifact": "none", "authorized_actions": ["edit", "commit"], "human_gates": [], "evidence": [], "review": None, "routes": {"focused_review": {"effect": "goto", "target": "focused_review"}}, "authorized_scope": scope},
+        "focused_review": {"role": "independent_reviewer", "components": {"role": ["reviewer"], "modifiers": [], "repository_policy": []}, "durable_artifact": "required", "authorized_actions": ["review", "edit", "commit"], "human_gates": [], "evidence": ["task-check"], "review": {"purpose": "independent focused verification of correction and disposition of the prior broad/focused Findings", "breadth": "focused", "authority": "gate", "context": "fresh", "blocking_policy": "blocking_only", "trigger": "profile_selected", "exit": "declared_route", "finding_authority": ["resolve"], "failed_evidence_route": "correction"}, "routes": {"correction": {"effect": "goto", "target": "correct"}, "renew_broad_review": {"effect": "goto", "target": "broad_review"}}, "authorized_scope": focused_paths},
+    }
+
+
+class NoOpEvidenceRunner:
+    """Provider-free execution seam: preflight must not execute evidence."""
+
+    def observe(self, _command):  # pragma: no cover - preflight never observes
+        raise AssertionError("Commission preflight must not run evidence")
+
+
 @pytest.fixture
 def repository(tmp_path: Path) -> Path:
     clone = tmp_path / "repository"
@@ -142,12 +162,7 @@ def test_robust_render_is_literal_deterministic_and_admits(repository: Path, mon
     profile = yaml.safe_load(rendered.texts[rendered.paths["profile"]])["phases"]
     broad_paths = ["docs/reviews/robust-broad.adoc"]
     focused_paths = ["docs/reviews/robust-focused.adoc"]
-    assert profile == {
-        "implement": {"role": "worker", "components": {"role": ["worker"], "modifiers": [], "repository_policy": []}, "durable_artifact": "none", "authorized_actions": ["edit", "commit"], "human_gates": [], "evidence": [], "review": None, "routes": {"broad_review": {"effect": "goto", "target": "broad_review"}}, "authorized_scope": ["src", "tests", "docs"]},
-        "broad_review": {"role": "independent_reviewer", "components": {"role": ["reviewer"], "modifiers": [], "repository_policy": []}, "durable_artifact": "required", "authorized_actions": ["review", "edit", "commit"], "human_gates": [], "evidence": ["task-check"], "review": {"purpose": "independent adversarial full-scope review of the rendered Commission", "breadth": "broad", "authority": "gate", "context": "fresh", "blocking_policy": "blocking_only", "trigger": "profile_selected", "exit": "declared_route", "finding_authority": ["resolve"], "failed_evidence_route": "correction"}, "routes": {"accept": {"effect": "complete"}, "correction": {"effect": "goto", "target": "correct"}}, "authorized_scope": broad_paths},
-        "correct": {"role": "worker", "components": {"role": ["worker"], "modifiers": [], "repository_policy": []}, "durable_artifact": "none", "authorized_actions": ["edit", "commit"], "human_gates": [], "evidence": [], "review": None, "routes": {"focused_review": {"effect": "goto", "target": "focused_review"}}, "authorized_scope": ["src", "tests", "docs"]},
-        "focused_review": {"role": "independent_reviewer", "components": {"role": ["reviewer"], "modifiers": [], "repository_policy": []}, "durable_artifact": "required", "authorized_actions": ["review", "edit", "commit"], "human_gates": [], "evidence": ["task-check"], "review": {"purpose": "independent focused verification of correction and disposition of the prior broad/focused Findings", "breadth": "focused", "authority": "gate", "context": "fresh", "blocking_policy": "blocking_only", "trigger": "profile_selected", "exit": "declared_route", "finding_authority": ["resolve"], "failed_evidence_route": "correction"}, "routes": {"correction": {"effect": "goto", "target": "correct"}, "renew_broad_review": {"effect": "goto", "target": "broad_review"}}, "authorized_scope": focused_paths},
-    }
+    assert profile == robust_expected_phases(["src", "tests", "docs"], broad_paths, focused_paths)
     item = yaml.safe_load(rendered.texts[rendered.paths["work_item"]])
     assert item["durable_artifacts"] == {"broad_review": broad_paths, "focused_review": focused_paths}
     assert [entry["id"] for entry in rendered.manifest["sources"]["selected_components"]] == ["worker", "reviewer"]
@@ -158,7 +173,10 @@ def test_robust_render_is_literal_deterministic_and_admits(repository: Path, mon
     rendered.write_to(repository)
     git(repository, "add", ".")
     git(repository, "commit", "-m", "test: materialize robust Commission projection")
-    verify_render_manifest(intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"))
+    verify_render_manifest(
+        intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"),
+        evidence_runner=NoOpEvidenceRunner(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -181,10 +199,9 @@ def test_robust_slot_bindings_follow_each_distinct_intent(
         repository=repository,
     )
     phases = yaml.safe_load(rendered.texts[rendered.paths["profile"]])["phases"]
-    assert phases["implement"]["authorized_scope"] == scope.split(", ")
-    assert phases["correct"]["authorized_scope"] == scope.split(", ")
-    assert phases["broad_review"]["authorized_scope"] == [broad_artifact]
-    assert phases["focused_review"]["authorized_scope"] == [focused_artifact]
+    assert phases == robust_expected_phases(
+        scope.split(", "), [broad_artifact], [focused_artifact],
+    )
 
 
 def test_robust_renewal_trace_requires_a_new_broad_review(repository: Path) -> None:
@@ -215,6 +232,8 @@ def test_robust_rejects_invalid_artifacts_evidence_and_tampered_completion_befor
     head = git(repository, "rev-parse", "HEAD")
     for altered, match in (
         (robust_intent_text(head).replace("evidence_profile: task-check-v1", "evidence_profile: none"), "undefined"),
+        (robust_intent_text(head).replace("evidence_profile: task-check-v1", "evidence_profile: other-v1"), "undefined"),
+        (robust_intent_text(head).replace("  broad_review: [docs/reviews/robust-broad.adoc]\n", ""), "durable-artifact"),
         (robust_intent_text(head).replace("  focused_review: [docs/reviews/robust-focused.adoc]\n", ""), "durable-artifact"),
         (robust_intent_text(head).replace("docs/reviews/robust-focused.adoc", "outside/focused.adoc"), "contained"),
     ):
@@ -236,6 +255,18 @@ def test_robust_rejects_invalid_artifacts_evidence_and_tampered_completion_befor
     git(repository, "commit", "-m", "test: tamper robust focused completion")
     calls = []
     monkeypatch.setattr(commissioning, "_preflight", lambda *_args, **_kwargs: calls.append(True))
+    with pytest.raises(CommissionError, match="projection equivalence mismatch"):
+        verify_render_manifest(intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"))
+    assert calls == []
+
+    # Restore the literal projection, then prove a missing renewal route is
+    # independently refused before the delegated preflight can run.
+    profile_path.write_text(rendered.texts[rendered.paths["profile"]], encoding="utf-8")
+    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    del profile["phases"]["focused_review"]["routes"]["renew_broad_review"]
+    profile_path.write_text(yaml.safe_dump(profile, sort_keys=False), encoding="utf-8")
+    git(repository, "add", ".")
+    git(repository, "commit", "-m", "test: tamper robust renewal route")
     with pytest.raises(CommissionError, match="projection equivalence mismatch"):
         verify_render_manifest(intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"))
     assert calls == []
@@ -264,6 +295,44 @@ def test_robust_rejects_a_pinned_same_path_catalogue_change(repository: Path) ->
     altered = robust_intent_text(original).replace(f"source_commit: {original}", f"source_commit: {changed}", 1)
     with pytest.raises(CommissionError, match="closed robust@v1 literal record"):
         render_commission(commission_intent_from_yaml(altered), repository=repository)
+
+
+def test_robust_refuses_mutated_policy_and_component_provenance_before_preflight(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Robust pins policy records and selected component objects independently."""
+
+    original = git(repository, "rev-parse", "HEAD")
+    policy_path = repository / "governance/policy-bases/repository-standard-v1.yaml"
+    policy_path.write_text(
+        policy_path.read_text(encoding="utf-8").replace("max_autonomous_hops: 10", "max_autonomous_hops: 9"),
+        encoding="utf-8",
+    )
+    git(repository, "add", str(policy_path.relative_to(repository)))
+    git(repository, "commit", "-m", "test: mutate robust policy source")
+    altered_policy_pin = robust_intent_text(original).replace(
+        f"policy_basis: {{id: repository-standard, revision: v1, source_commit: {original}}}",
+        f"policy_basis: {{id: repository-standard, revision: v1, source_commit: {git(repository, 'rev-parse', 'HEAD')}}}",
+    )
+    with pytest.raises(CommissionError, match="immutable repository-standard@v1"):
+        render_commission(commission_intent_from_yaml(altered_policy_pin), repository=repository)
+
+    intent_path = "governance/commissions/robust-commission-test/intent.yaml"
+    (repository / intent_path).parent.mkdir(parents=True)
+    (repository / intent_path).write_text(robust_intent_text(original), encoding="utf-8")
+    rendered = render_commission(commission_intent_from_yaml(robust_intent_text(original)), repository=repository)
+    rendered.write_to(repository)
+    git(repository, "add", ".")
+    git(repository, "commit", "-m", "test: materialize robust Commission projection")
+    reviewer = repository / "governance/self-development/prompts/reviewer.txt"
+    reviewer.write_text(reviewer.read_text(encoding="utf-8") + "\nhand edit\n", encoding="utf-8")
+    git(repository, "add", str(reviewer.relative_to(repository)))
+    git(repository, "commit", "-m", "test: tamper robust reviewer component")
+    calls = []
+    monkeypatch.setattr(commissioning, "_preflight", lambda *_args, **_kwargs: calls.append(True))
+    with pytest.raises(CommissionError, match="reused component differs"):
+        verify_render_manifest(intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"))
+    assert calls == []
 
 
 def test_render_uses_pinned_logical_repository_not_checkout_name(repository: Path, tmp_path: Path) -> None:

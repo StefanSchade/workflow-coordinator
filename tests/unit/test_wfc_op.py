@@ -1415,6 +1415,15 @@ components_ref: {{path: governance/self-development/components.yaml, source_comm
 """,
         encoding="utf-8",
     )
+    plain = subprocess.run(
+        (
+            sys.executable, str(WFC_OP), "commission", "render", "--intent", str(intent),
+            "--out-dir", "governance/commissions/robust-cli-plain",
+        ),
+        cwd=repository, text=True, capture_output=True, env=commission_env,
+    )
+    assert plain.returncode == 0, plain.stderr
+    assert "authority_source:" not in plain.stdout
     rendered = subprocess.run(
         (sys.executable, str(WFC_OP), "commission", "render", "--intent", str(intent), "--check"),
         cwd=repository, text=True, capture_output=True, env=commission_env,
