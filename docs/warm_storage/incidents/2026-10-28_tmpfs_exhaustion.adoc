@@ -1,0 +1,239 @@
+= Incident Investigation Report -- `/tmp` tmpfs Exhaustion (2026-10-28/29)
+:toc:
+:toclevels: 2
+:sectnums:
+
+Status:: INCIDENT INVESTIGATION REPORT. Factual record of an observed
+operational incident and its immediate diagnosis. Non-authorizing: it
+authorizes no implementation, no root-cause attribution beyond what was
+directly observed, and no BUG closure. It is not a design document and not a
+Commission.
+Date:: Incident observed and diagnosed 2026-10-28/29-2026; this report
+written 2026-10-29.
+Scope:: The `/tmp` tmpfs exhaustion that interrupted Run
+`RUN-c358b544417c4a33a0d040a0d8c38656`
+(`WI-WFC-FRONT-DOOR-DIRECT-V1-IMPLEMENTATION-002`), and the preliminary
+forensic baseline captured in response. It does not establish the retention
+cause of the accumulated `pytest` temporary files, and it does not authorize
+or perform any cleanup, repair, or correction.
+
+== 1. Summary
+
+`/tmp` -- a 5.7 GiB `tmpfs` -- was completely full while the root filesystem
+(`/`, `/dev/sda1`, 468 GB) had over 400 GB free. `/tmp/pytest-of-stefan`
+accounted for the full 5.7 GiB across 528,603 files, concentrated in six
+`pytest` session directories (216, 222, 227, 228, 229, 230). Inode usage on
+the `/tmp` tmpfs stood at 607,722 of 1,048,576 (58%). The exhaustion
+interrupted the Front Door Direct-v1 successor Run mid-flight at its sixth,
+final Hop, after five productive Hops had already reached a trusted
+implementation commit. The Run did not complete; it stopped
+`reconcile_required`. The maintainer captured a preliminary forensic
+baseline and, as an immediate operational measure, remounted `/tmp` at 12
+GiB. No cleanup of the `pytest` directories and no repair of the Run state
+have been performed. The underlying retention cause is not established by
+this report.
+
+== 2. Observations (directly established)
+
+These facts are drawn from direct inspection of the live filesystem, the
+preserved forensic baseline
+(`~/wfc-diagnostics/tmp-pressure-20261029/evidence/baseline.txt`), and the
+Run's own persisted Harness/Coordinator state
+(`~/wfc-state/wfc-front-door-direct-v1-implementation-002-20261028-01/`).
+
+=== 2.1 Filesystem state
+
+* `/tmp` is mounted as a `tmpfs` of `size=5935004k` (5.7 GiB),
+  `nr_inodes=1048576`.
+* At capture time, `/tmp` was `100%` full (`5.7G Used`, `4.0K Avail`).
+* `/` (`/dev/sda1`, 468 GB total) had 418 GB free (`6%` used) -- the
+  exhaustion was specific to the `/tmp` tmpfs, not to disk space generally.
+* Inode usage on `/tmp`: `607722` used of `1048576` (`58%`) -- inode
+  exhaustion was not reached, but a majority of the tmpfs's inode budget was
+  already consumed by the same material occupying its byte budget.
+
+=== 2.2 Composition of `/tmp` usage
+
+* `/tmp/pytest-of-stefan` alone accounted for `5.7G` -- effectively all of
+  the full tmpfs.
+* That total was distributed across six `pytest` session directories:
+  `pytest-216` (685M), `pytest-222` (1.3G), `pytest-227` (504M), `pytest-228`
+  (1.4G), `pytest-229` (1.4G), `pytest-230` (510M).
+* The combined file count under `/tmp/pytest-of-stefan` was `528603` files.
+* Recurring test-environment and repository-copy material is visible under
+  these session directories (for example repeated virtualenv-shaped and
+  repository-checkout-shaped trees), consistent with `pytest` fixtures that
+  materialize a fresh environment or repository copy per test or per
+  session. The exact fixture(s) responsible, their individual contribution
+  to the 5.7 GiB/528,603-file total, and why six sessions' worth of material
+  survived concurrently rather than being cleaned up, are not established by
+  this report (see §4).
+
+=== 2.3 The interrupted Run
+
+* The Front Door Direct-v1 successor Commission,
+  `WI-WFC-FRONT-DOOR-DIRECT-V1-IMPLEMENTATION-002`
+  (attempt `wfc-front-door-direct-v1-implementation-002-20261028-01`, Run
+  `RUN-c358b544417c4a33a0d040a0d8c38656`), ran five productive Hops from
+  baseline `f67019b` to trusted commit `b70481a`
+  (`hop_limit=10`, `hop_used=6`):
+** H001 `worker`/implement -- `completed` (commit `05d53cd`).
+** H002 `independent_reviewer`/review -- `changes_required`, four recorded
+   blockers (commit `2cadbad`, durable review artifact
+   `workflow_coordinator_front_door_direct_v1_implementation_2026-10-28_review_001.adoc`).
+** H003 `worker`/rereview-route correction -- `completed`, all four blockers
+   corrected (commit `550b1bc`).
+** H004 `independent_reviewer`/correction-route review -- `changes_required`,
+   one further A1-path-validation gap found; no commit.
+** H005 `worker`/rereview-route correction -- `completed`, the A1 gap
+   corrected (commit `b70481a`).
+* H006 (`independent_reviewer`/rereview) produced a well-formed structured
+  result: `verdict: accept`, `requested_route: accept`, citing commit
+  `b70481a`, the four closed review blockers, passing `pytest`/`ruff`/format
+  checks, and a clean `git status`
+  (`~/wfc-state/.../checkouts/479fce45-42de-4e09-ac14-812f263ac617/result-message.json`).
+* The Coordinator's own post-invocation handling of that result did not
+  complete. `operator-summary.json` records
+  `operator_error: "[Errno 28] No space left on device:
+  '/home/stefan/repos/spreadsheet-handling/workflow-coordinator/.git/index' ->
+  '/tmp/wfc-observe-index-gsealc9v'"`. Direct inspection of
+  `src/workflow_coordinator/git_facts.py:470-490`
+  (`observe_repository()`) confirms the mechanism: it copies the
+  repository's `.git/index` to a `tempfile.mkstemp(prefix=
+  "wfc-observe-index-")` path -- which, absent an overriding `TMPDIR`,
+  resolves under the ambient system `/tmp` -- to take a read-only,
+  lock-free Git observation without disturbing the real index. With `/tmp`
+  full, that copy failed with `ENOSPC`.
+* The persisted Run/Hop record (`run.json`, `checkpoint.json`) charges H006
+  `role=uncertain_dispatch`, `outcome=uncertain`,
+  `stop_reason=interrupted_after_dispatch_marker`, summarized verbatim as
+  "Invocation may have been accepted; charged without replay." The Run's
+  terminal state is `run_status=reconcile_required`,
+  `stop_reason=reconcile_requires_explicit_resume`,
+  `human_question="Validate current reality and explicitly authorize
+  resume."`.
+* `current_head` remains `b70481a` (H005's trusted commit); no commit was
+  lost. The `workflow-coordinator` Development repository is clean at
+  `b70481a` as of this report.
+* No mechanical archive for this attempt exists under
+  `workflow-coordinator-run-evidence/archive/`. This Run is *not* recorded
+  as a successful or completed WFC Run; it ended `reconcile_required` with
+  H006's `independent_reviewer` disposition `uncertain_dispatch`, not
+  accepted.
+
+=== 2.4 Preliminary forensic capture and immediate measure
+
+* A preliminary forensic baseline was captured to
+  `~/wfc-diagnostics/tmp-pressure-20261029/evidence/baseline.txt`. It records
+  the filesystem/inode measurements in §2.1-§2.2 above; it is a set of
+  measurements, not a full snapshot or inventory of the individual files
+  under `/tmp/pytest-of-stefan`.
+* As an immediate operational measure, the maintainer remounted `/tmp` at 12
+  GiB (up from the original 5.7 GiB `tmpfs` size).
+* No cleanup of the `pytest-of-stefan` session directories has been
+  performed. No repair, resume, or reconciliation of the interrupted Run's
+  `reconcile_required` state has been performed. This report performs none
+  of those actions either.
+
+== 3. Plausible explanations (not yet confirmed)
+
+* Recurring `pytest` fixtures that materialize a fresh virtual environment
+  and/or a repository checkout per test or per session are a plausible
+  structural source of the volume observed, consistent with the visible
+  shape of the retained material (§2.2). This is consistent with, but not
+  independently confirmed against, the separately recorded
+  link:../concepts/workflow_coordinator_front_door_stage1_commission_test_burden_finding_2026-10-25.adoc[Front
+  Door Stage 1 Commission test-burden finding]'s observation that
+  `test_self_development_governance.py` alone performs 42
+  `_materialize_bundle()` calls (>=252 Git subprocesses) per full suite run
+  -- a different, already-documented concern about test count and runtime,
+  not about temporary-file retention, but a plausible contributor to the
+  same directory tree.
+* Six concurrently present `pytest-NNN` session directories suggest either
+  that `pytest`'s own `tmp_path`/`tmpdir` base-temp retention policy (which
+  by default keeps a bounded number of recent sessions) had not yet rotated
+  out these six, or that something prevented normal rotation/cleanup. Which
+  of these applies is not established.
+* The specific fixture(s), test module(s), or invocation pattern(s)
+  responsible for the bulk of the 528,603 files, and whether any single
+  session is disproportionately responsible, are not established -- the
+  captured baseline records aggregate sizes per session directory, not a
+  per-fixture or per-test breakdown.
+
+== 4. Open questions
+
+* Which specific fixture(s) or test(s) create the bulk of the retained
+  files, and why.
+* Why six sessions' worth of material persisted concurrently rather than
+  being rotated out or cleaned up (whether by `pytest`'s own retention
+  policy, an interrupted run, a configuration difference, or something
+  else).
+* Whether the six retained sessions correspond to six genuinely distinct
+  local test invocations, or to some smaller number of invocations that
+  each left more than one session directory behind.
+* Whether this is a steady-state accumulation pattern that will recur
+  without intervention, or was a one-off buildup.
+* Whether other local processes (outside `pytest`) also write to `/tmp` in
+  volumes that matter for this budget; this report did not establish that
+  they do, nor that they do not.
+
+== 5. Measures taken
+
+* `/tmp` remounted at 12 GiB (from 5.7 GiB), as an immediate, preliminary
+  operational mitigation. This is a capacity increase, not a fix for
+  whatever causes retention, and does not by itself prevent recurrence at a
+  larger scale.
+* Forensic baseline captured to
+  `~/wfc-diagnostics/tmp-pressure-20261029/evidence/baseline.txt`.
+* No cleanup of `/tmp/pytest-of-stefan` was performed.
+* No repair, resume, or reconciliation action was taken on Run
+  `RUN-c358b544417c4a33a0d040a0d8c38656`'s `reconcile_required` state. Its
+  accepted implementation at commit `b70481a` remains available, unaltered,
+  as ordinary Development-repository state for the maintainer to resume,
+  reconcile, or build on through a separate, explicit decision; no such
+  decision is made or needed by this report.
+
+== 6. Further work (not authorized or scheduled by this report)
+
+* A full inventory of the retained `pytest` temporary material (not merely
+  aggregate sizes), if the open questions in §4 are to be resolved with
+  confidence.
+* A bounded investigation into `pytest`'s own temporary-directory retention
+  configuration and behavior in this environment.
+* The scratch-space management requirement this incident motivated is
+  recorded separately as FD-08 in
+  link:../concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc[the
+  Front Door priority and Profile/Commission boundary plan] §9, and as
+  `docs/backlog/BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc` for the test-
+  infrastructure defect itself. Neither is implemented, scheduled for
+  immediate implementation, or authorized by this report.
+* Explicit maintainer resume/reconcile of Run
+  `RUN-c358b544417c4a33a0d040a0d8c38656`, if and when desired, remains a
+  separate decision outside this report's scope.
+
+== 7. Non-claims
+
+This report does not claim: that the `pytest` fixture(s) responsible have
+been identified; that `pytest` itself, as opposed to a specific fixture or
+invocation pattern, is the cause; that the retained sessions will not recur;
+that the interrupted Run failed for a semantic or implementation reason
+(H001-H005 succeeded on their own merits, and H006's own agent-reported
+result was `accept`); or that any corrective action has been taken beyond
+the preliminary 12 GiB remount.
+
+== 8. Evidence / provenance
+
+* `~/wfc-diagnostics/tmp-pressure-20261029/evidence/baseline.txt` (forensic
+  baseline; measurements, not a file-level snapshot).
+* `~/wfc-state/wfc-front-door-direct-v1-implementation-002-20261028-01/operator-summary.json`,
+  `run.json`, `checkpoint.json`, and
+  `checkouts/479fce45-42de-4e09-ac14-812f263ac617/result-message.json` (Run
+  state).
+* `src/workflow_coordinator/git_facts.py:470-490` (`observe_repository()`,
+  the `ENOSPC` call site).
+* `workflow-coordinator@b70481a` (Run's trusted implementation head);
+  `workflow-coordinator@f67019b` (Commission baseline).
+* `docs/warm_storage/concepts/workflow_coordinator_front_door_direct_v1_implementation_2026-10-28_review_001.adoc`
+  (durable review artifact from H002/H004).
+* `docs/warm_storage/concepts/workflow_coordinator_front_door_stage1_commission_test_burden_finding_2026-10-25.adoc`
+  (related, already-documented test-burden evidence).

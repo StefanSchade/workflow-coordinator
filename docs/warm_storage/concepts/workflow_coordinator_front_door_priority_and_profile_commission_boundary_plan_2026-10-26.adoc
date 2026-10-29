@@ -382,6 +382,19 @@ that separation legible to operators, not building a new mechanism).
 understandable to operators -- the operator manual (§§13-14, 17) and
 `DEC-WFC-013`/`DEC-WFC-014` already define these precisely; FD-07 is a
 legibility/documentation gap, not a semantics gap.
+
+|FD-08
+|Explicit scratch-space management: a configurable scratch root, defaulting
+under `$HOME` rather than the ambient system `/tmp`, usable consistently by
+operator, agent, and Evidence-side processes, resolved before the first
+temporary-file operation, portable across Linux/WSL2/differing mount
+configurations, with resources and effective paths kept legible to an
+operator (motivated by the 2026-10-28/29 `/tmp` tmpfs-exhaustion incident --
+see link:../incidents/2026-10-28_tmpfs_exhaustion.adoc[the incident report]
+and §9 below). Distinct from FD-01: FD-01 is about reducing an operator's own
+repeated manual environment/path/venv/model-binding rediscovery around an
+already-mechanized PREPARE/LAUNCH; FD-08 is about where ordinary temporary
+files land during execution, a separate concern FD-01 does not cover.
 |===
 
 == 8. Operational diagnostic concern: the unexplained 2026-10-26 provider failure
@@ -450,7 +463,104 @@ This must distinguish, and a future design must state explicitly:
   `operator.py` now; it is evidence and a bounded problem statement for a
   separately authorized design Commission (feeding Workstream 6, §6).
 
-== 9. Non-goals
+== 9. FD-08 scratch-space management and the Commission-Intent/Compiler contract
+
+=== 9.1 Motivating incident
+
+The 2026-10-28/29 `/tmp` tmpfs-exhaustion incident
+(link:../incidents/2026-10-28_tmpfs_exhaustion.adoc[incident report]) found
+`/tmp` completely full (a 5.7 GiB tmpfs, while `/` itself had over 400 GB
+free) during the Front Door Direct-v1 successor Run
+(`RUN-c358b544417c4a33a0d040a0d8c38656`,
+`WI-WFC-FRONT-DOOR-DIRECT-V1-IMPLEMENTATION-002`): after five productive Hops
+reached trusted commit `b70481a`, H006's structured `accept` review result
+could not be durably processed because `observe_repository()`
+(`src/workflow_coordinator/git_facts.py:477`) copies `.git/index` to a
+`tempfile.mkstemp(prefix="wfc-observe-index-")` path -- which resolves under
+the ambient system `/tmp` by Python default -- and that copy failed with
+`ENOSPC`. The Run stopped `reconcile_required`, not `completed`; see the
+incident report and the Run Ledger for the full facts. This section records
+FD-08 as the resulting candidate requirement and assesses its contract
+boundary; it does not reopen or re-litigate the incident's own open
+questions.
+
+=== 9.2 FD-08 requirement
+
+A configurable scratch-space root, defaulting to a location under `$HOME`
+rather than the ambient system `/tmp`, that:
+
+* is established, and resolved to one effective path, before the first
+  temporary-file operation any operator, agent sandbox, or Evidence-side
+  process performs -- not discovered lazily after one has already attempted
+  to write;
+* is used consistently by Harness/operator-owned temporary operations (for
+  example `git_facts.py`'s index-observation copy), by agent-side sandboxes,
+  and by the separate Evidence repository's own temporary needs, rather than
+  each independently defaulting to the ambient system temp directory;
+* remains portable across plain Linux, WSL2, and differing host mount
+  configurations, where the ambient `/tmp` may be a small fixed-size tmpfs
+  distinct from a much larger root/data filesystem -- exactly the asymmetry
+  the incident exposed; and
+* keeps the resolved effective path, and the resource backing it, legible to
+  an operator inspecting a Run or Attempt afterward -- consistent with this
+  plan's existing legibility direction (FD-07), not a new silent default.
+
+This is distinct from FD-01 (§7): FD-01 targets an operator's own repeated
+manual environment/path/venv/model-binding rediscovery around the
+already-mechanized PREPARE/LAUNCH sequence; FD-08 targets where ordinary
+temporary files are written during execution, which FD-01 does not address
+and which PREPARE/LAUNCH mechanization does not currently control.
+
+=== 9.3 Explicit contract-boundary assessment
+
+FD-08 does *not* change the accepted Commission-Intent/Compiler contract
+(`workflow_coordinator_front_door_commission_contract_design_2026-10-28.adoc`).
+That design's boundary (its §2) assigns reusable-program semantics,
+Commission-specific task bindings, explicit authorization, and derived
+effective permissions to the compiler/Intent side, and assigns "Runtime
+execution" -- provider invocation, state transitions, and Git mechanics,
+explicitly "not a compiler service" -- to "Runtime/operator under the
+separately authorized launch." Scratch/temp-file location is not an Intent
+field anywhere in that design's §3 field contract, is not a program or
+policy input, and is not a value the compiler projects into any rendered
+WorkItem, profile, or policy. Where a Harness process, the Runtime's own code
+(`git_facts.py`'s `observe_repository()`), an agent sandbox, or the Evidence
+repository stage a transient file is squarely "how the Runtime executes," not
+"what a Commission may do" -- the latter being the Commission-Intent
+design's entire subject matter.
+
+Concretely, FD-08 is scoped to:
+
+* Harness/operator launcher and preparation mechanics, where a scratch root
+  would be resolved and exported, alongside today's PREPARE-time
+  environment/path/venv/model-binding discovery;
+* the Runtime's own temporary-file call sites, starting with the one
+  concretely implicated in this incident; and
+* the separate Evidence repository's own temporary-file needs during
+  archiving.
+
+FD-08 does not propose, and must not be read as proposing: a Direct/Robust
+program change, a new Commission Intent field, a change to
+`operator._preflight()`'s admission predicates, or any
+`model.py`/`reducer.py` or kernel/shell-boundary change. It is
+launcher/operational integration, not program design -- the same distinction
+`FTR-WFC-ARCHITECTURAL-CORE-AND-CONSOLIDATION-BOUNDARIES` already draws
+between CLI/operational detail and architectural core.
+
+=== 9.4 Staging
+
+Consistent with this plan's own non-goals (§10) and with FD-01 through FD-07,
+FD-08 is recorded here only as a candidate requirement; nothing in this
+section authorizes its implementation. If and when scheduled, it is a
+separate, small Front Door follow-up step -- sized like the existing Stage
+1/Stage 2 items in
+`workflow_coordinator_level0_mvp_planning_decisions_2026-10-21.adoc`
+§§6-7 -- not an immediate redesign mandate, and not a precondition for
+Direct-v1 itself, whose Run already reached H005 successfully before the
+unrelated Hop-6 observation-copy failure. No Commission is authorized by
+this section.
+
+== 10. Non-goals
 
 * No bulk profile migration.
 * No new workflow DSL or formal verifier.
@@ -461,8 +571,10 @@ This must distinguish, and a future design must state explicitly:
 * No P3.5 implementation Commission authorized by this record.
 * No change to `codex_adapter.py` or `operator.py` diagnostic propagation
   authorized by this record.
+* No scratch-space implementation, launcher change, or `git_facts.py` change
+  authorized by this record; FD-08 (§9) remains a candidate requirement only.
 
-== 10. References
+== 11. References
 
 * `docs/warm_storage/concepts/workflow_coordinator_mvp_repository_consolidation_and_level1_transition_concept_2026-10-12.adoc`
   §§4.3-4.6, §8.
@@ -477,5 +589,10 @@ This must distinguish, and a future design must state explicitly:
 * `docs/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc`.
 * `docs/wfc_operator_manual.adoc` §§13-14, 17.
 * `src/workflow_coordinator/codex_adapter.py`, `src/workflow_coordinator/operator.py`.
+* `docs/warm_storage/concepts/workflow_coordinator_front_door_commission_contract_design_2026-10-28.adoc`
+  §2 (FD-08 contract-boundary assessment, §9).
+* `docs/warm_storage/incidents/2026-10-28_tmpfs_exhaustion.adoc` (FD-08 motivating
+  incident).
+* `docs/backlog/BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc`.
 * `workflow-coordinator-run-evidence` Run Ledger, P3.5 Requirements-
   Archaeology Reassessment entry (2026-10-26).

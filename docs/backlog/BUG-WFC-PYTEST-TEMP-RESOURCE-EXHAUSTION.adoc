@@ -1,0 +1,135 @@
+= BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION -- Retained `pytest` Temporary Material Exhausted the `/tmp` tmpfs and Interrupted a WFC Run
+
+Type:: bug -- test-infrastructure resource-exhaustion defect (not a
+Coordinator, Runtime, or Commission-design defect)
+Status:: open, disposition LATER -- revisit as part of test consolidation
+after the MVP (see link:_open.adoc[the active-work manifest] for its current
+card)
+Current controlling source:: This record.
+Next action:: None authorized here. A bounded investigation into the actual
+retention cause, and only then a bounded correction, each require their own
+separately authorized maintainer Commission.
+Not authorized here:: Any claim that a specific fixture, test, or `pytest`
+itself is the cause; any cleanup of existing `/tmp` material; any change to
+test code, fixtures, or `pytest` configuration; any WFC Run.
+Date:: 2026-10-29.
+Classification:: test-infrastructure resource-exhaustion finding, surfaced
+while diagnosing the 2026-10-28 operational incident recorded in
+link:../warm_storage/incidents/2026-10-28_tmpfs_exhaustion.adoc[the `/tmp`
+tmpfs-exhaustion incident report].
+Discovery:: maintainer diagnosis of the 2026-10-28/29 `/tmp` exhaustion that
+interrupted Run `RUN-c358b544417c4a33a0d040a0d8c38656`.
+
+== Observed behavior
+
+As recorded in full in the linked incident report: `/tmp`, a 5.7 GiB
+`tmpfs`, was found completely full while `/` had over 400 GB free.
+`/tmp/pytest-of-stefan` alone accounted for the full 5.7 GiB, across
+528,603 files concentrated in six `pytest` session directories (`pytest-216`,
+`pytest-222`, `pytest-227`, `pytest-228`, `pytest-229`, `pytest-230`). Inode
+usage on the `/tmp` tmpfs stood at 607,722 of 1,048,576 (58%). Recurring
+test-environment and repository-copy-shaped material is visible under these
+session directories, consistent with fixtures that materialize a fresh
+environment or repository checkout per test or per session -- but this is an
+observation about the shape of the retained material, not an identified
+cause.
+
+This resource pressure was not merely latent: it materially interrupted a
+real WFC Run. The Front Door Direct-v1 successor Commission reached its
+sixth and final Hop with a well-formed, agent-reported `accept` review
+result, but the Coordinator's own post-invocation Git observation
+(`src/workflow_coordinator/git_facts.py`'s `observe_repository()`, which
+copies `.git/index` to a `tempfile.mkstemp()` path under the ambient system
+`/tmp`) failed with `ENOSPC`, and the Run stopped `reconcile_required`
+rather than completing. Full facts are in the incident report; this BUG
+record does not repeat them beyond what is needed to state the defect.
+
+== What this is not
+
+This record does not establish, and does not authorize anyone to assert,
+which specific fixture(s), test module(s), or invocation pattern(s) are
+responsible for the bulk of the retained files or file count. It does not
+claim that `pytest`'s own default temporary-directory retention behavior is
+misconfigured, that a particular fixture leaks, or that repeated local test
+runs alone explain six concurrently retained sessions rather than some
+smaller number of invocations each leaving more than one session behind.
+Each of these remains an open question in the incident report's §4 and is
+not resolved here.
+
+This record also does not characterize the Coordinator's `ENOSPC` handling
+itself (the fail-closed `uncertain_dispatch` charge and `reconcile_required`
+stop) as defective; that behavior is the Coordinator correctly failing closed
+on an unexpected I/O error, not a Coordinator defect, and is out of scope for
+this BUG.
+
+This is related to, but is a distinct concern from, the already-recorded
+link:../warm_storage/concepts/workflow_coordinator_front_door_stage1_commission_test_burden_finding_2026-10-25.adoc[Front
+Door Stage 1 Commission test-burden finding], which is about permanent
+per-Commission test *count* and *runtime* (7,731 lines, 44 tests, 42
+`_materialize_bundle()` calls per full run), not about temporary-file
+*retention*. The two may share an underlying contributor -- repeated
+environment/repository materialization -- but neither finding established
+that relationship, and this BUG does not assume it.
+
+== Why this is undesirable
+
+Local test execution is ordinarily expected to be a closed loop: temporary
+material it creates should not accumulate to the point of affecting
+unrelated operations on the same host, let alone interrupting a WFC Run that
+has nothing to do with the test suite's own temporary-file usage beyond
+sharing the same `/tmp`. A full `/tmp` is a shared-resource failure mode
+that can recur with any process that writes there, not only a WFC Run; this
+particular incident happened to surface it, but the underlying resource
+pressure is a test-infrastructure concern independent of WFC.
+
+== Non-scope
+
+This record does not authorize:
+
+* any claim about the specific fixture, test, or configuration responsible;
+* any cleanup of the currently retained `/tmp/pytest-of-stefan` material;
+* any change to `pytest` configuration, fixtures, or test code;
+* any change to `src/workflow_coordinator/git_facts.py` or any other
+  production source;
+* the FD-08 scratch-space management requirement recorded separately in
+  link:../warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc[the
+  Front Door priority and Profile/Commission boundary plan] §9 (that record
+  addresses where the Coordinator/Harness/Evidence stage scratch files;
+  this BUG addresses test-infrastructure temp-file retention, which is a
+  different surface even though both are motivated by the same incident);
+* a WorkItem, profile, policy, or WFC Run of any kind.
+
+== Disposition
+
+`LATER`. This is recorded for test consolidation after the MVP, alongside
+the existing test-burden finding above, rather than for immediate bounded
+correction. No investigation or correction Commission is authorized by this
+record; one becomes eligible only when test consolidation is actually
+prioritized, per the active-work manifest.
+
+== Evidence pointers
+
+* link:../warm_storage/incidents/2026-10-28_tmpfs_exhaustion.adoc[Incident
+  investigation report] (full filesystem/inode measurements, the
+  interrupted Run's facts, and the preliminary forensic baseline at
+  `~/wfc-diagnostics/tmp-pressure-20261029/evidence/baseline.txt`).
+* `src/workflow_coordinator/git_facts.py:470-490` (`observe_repository()`,
+  the call site that surfaced the exhaustion via `ENOSPC`, not itself a
+  claimed cause of the exhaustion).
+* link:../warm_storage/concepts/workflow_coordinator_front_door_stage1_commission_test_burden_finding_2026-10-25.adoc[Front
+  Door Stage 1 Commission test-burden finding] (related permanent-test-count
+  concern; distinct from this BUG's temp-file-retention concern).
+* link:../warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc[Front
+  Door priority and Profile/Commission boundary plan] §9 (FD-08
+  scratch-space management requirement; a distinct, launcher/operational
+  concern motivated by the same incident).
+
+== Lifecycle
+
+This BUG is *open*, disposition `LATER`. This record documents the observed
+resource-exhaustion finding and its open causal questions only. It
+authorizes no investigation, no cleanup, no test or fixture change, and no
+WFC Run. A future bounded investigation, and only subsequently a bounded
+correction, each require their own separately authorized maintainer
+Commission/WorkItem. Committing this documentation record does not itself
+commission, prepare, or launch any Run, and does not invoke any provider.
