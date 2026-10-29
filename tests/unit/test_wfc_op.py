@@ -1380,3 +1380,57 @@ components_ref: {{path: governance/self-development/components.yaml, source_comm
     )
     assert changed_pin.returncode == 2
     assert "closed direct@v1 literal record" in changed_pin.stderr
+
+
+def test_robust_commission_render_and_check_use_the_existing_cli_seam(tmp_path: Path):
+    repository = tmp_path / "robust-commission-repository"
+    _clone_local(REPO_ROOT, repository)
+    commission_env = {**os.environ, "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")}
+    source_head = git(repository, "rev-parse", "HEAD")
+    intent = repository / "governance/commissions/robust-cli-test/intent.yaml"
+    intent.parent.mkdir(parents=True)
+    intent.write_text(
+        f"""schema_version: 1
+commission_id: robust-cli-test
+work_item_id: WI-ROBUST-CLI-TEST
+authority_source: Maintainer authorizes this robust CLI projection test.
+program: {{id: robust, revision: v1, source_commit: {source_head}}}
+task:
+  title: Robust CLI test
+  body: Render robust through the CLI.
+  acceptance: The bundle is projected and checked provider-free.
+  withheld_authority: No other path is authorized.
+  escalation_default: Use a typed scope escalation.
+scope: [src, tests, docs]
+personas:
+  worker: bounded worker
+  independent_reviewer: independent reviewer
+evidence_profile: task-check-v1
+policy_basis: {{id: repository-standard, revision: v1, source_commit: {source_head}}}
+max_autonomous_hops: 8
+durable_artifacts:
+  broad_review: [docs/reviews/robust-cli-broad.adoc]
+  focused_review: [docs/reviews/robust-cli-focused.adoc]
+components_ref: {{path: governance/self-development/components.yaml, source_commit: {source_head}}}
+""",
+        encoding="utf-8",
+    )
+    rendered = subprocess.run(
+        (sys.executable, str(WFC_OP), "commission", "render", "--intent", str(intent), "--check"),
+        cwd=repository, text=True, capture_output=True, env=commission_env,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert "program required_artifacts: broad_review, focused_review" in rendered.stdout
+    assert "user durable_artifact broad_review: docs/reviews/robust-cli-broad.adoc" in rendered.stdout
+    assert "program phase focused_review scope: docs/reviews/robust-cli-focused.adoc" in rendered.stdout
+    git(repository, "add", ".")
+    git(repository, "commit", "--quiet", "-m", "test: committed robust CLI Commission projection")
+    checked = subprocess.run(
+        (
+            sys.executable, str(WFC_OP), "commission", "check", "--intent", str(intent),
+            "--repository", str(repository), "--expected-head", git(repository, "rev-parse", "HEAD"),
+        ),
+        text=True, capture_output=True, env=commission_env,
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert "COMMISSION CHECK OK" in checked.stdout

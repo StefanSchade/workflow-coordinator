@@ -117,7 +117,12 @@ def _commission_report(rendered) -> str:
             f"policy evidence_command {name}: argv={' '.join(command['argv'])} "
             f"timeout_seconds={command['timeout_seconds']}"
         )
-    lines.append("program required_artifacts: none")
+    if intent.durable_artifacts:
+        lines.append("program required_artifacts: " + ", ".join(sorted(intent.durable_artifacts)))
+        for phase, paths in intent.durable_artifacts.items():
+            lines.append(f"user durable_artifact {phase}: {', '.join(paths)}")
+    else:
+        lines.append("program required_artifacts: none")
     for entry in sources["selected_components"]:
         lines.append(f"program selected_component {entry['id']}: {entry['path']} sha256={entry['sha256']}")
     for role, persona in intent.personas.items():
@@ -1185,7 +1190,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="non-authoritative closed-program rendering and provider-free projection checking",
     )
     commission_sub = commission.add_subparsers(dest="commission_command", required=True)
-    commission_render = commission_sub.add_parser("render", help="render a direct@v1 Commission bundle")
+    commission_render = commission_sub.add_parser("render", help="render a closed-program Commission bundle")
     commission_render.add_argument("--intent", required=True, help="Commission Intent YAML")
     commission_render.add_argument("--out-dir", help="repository-relative rendered bundle directory")
     commission_render.add_argument("--check", action="store_true", help="print the provenance-labelled render report")

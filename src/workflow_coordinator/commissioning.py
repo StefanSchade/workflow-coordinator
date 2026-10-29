@@ -1,9 +1,10 @@
 """Closed-program, non-authoritative Commission Intent rendering.
 
 This module deliberately has no reducer integration and makes no provider
-selection.  It turns the small ``direct@v1`` request vocabulary into ordinary
-WFC governing files, then (only for ``verify_render_manifest``) asks the
-existing operator preflight to admit those files.
+selection.  It turns the small ``direct@v1`` and ``robust@v1`` request
+vocabularies into ordinary WFC governing files, then (only for
+``verify_render_manifest``) asks the existing operator preflight to admit
+those files.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ class CommissionError(ValueError):
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _COMPONENT_MANIFEST_PATH = "governance/self-development/components.yaml"
 _PROGRAM_PATH = "governance/workflow-programs/direct/v1.yaml"
+_ROBUST_PROGRAM_PATH = "governance/workflow-programs/robust/v1.yaml"
 _POLICY_PATH = "governance/policy-bases/repository-standard-v1.yaml"
 
 
@@ -196,9 +198,18 @@ def commission_intent_from_yaml(text: str) -> CommissionIntent:
     scope = tuple(_path(value, context="Commission Intent.scope") for value in data["scope"])
     if len(set(scope)) != len(scope):
         raise CommissionError("Commission Intent.scope must not contain duplicates")
-    personas = _mapping(data["personas"], context="Commission Intent.personas", required={"worker"})
+    program = _source_ref(data["program"], context="Commission Intent.program")
+    required_personas = {
+        ("direct", "v1"): {"worker"},
+        ("robust", "v1"): {"worker", "independent_reviewer"},
+    }.get((program.id, program.revision))
+    if required_personas is None:
+        raise CommissionError("only the closed direct@v1 and robust@v1 programs are supported")
+    personas = _mapping(data["personas"], context="Commission Intent.personas", required=required_personas)
     personas = {role: _text(value, context=f"Commission Intent.personas.{role}") for role, value in personas.items()}
-    artifacts_raw = _mapping(data["durable_artifacts"], context="Commission Intent.durable_artifacts", required=set())
+    artifacts_raw = data["durable_artifacts"]
+    if not isinstance(artifacts_raw, dict) or any(not isinstance(key, str) for key in artifacts_raw):
+        raise CommissionError("Commission Intent.durable_artifacts must be a string-keyed mapping")
     artifacts: dict[str, tuple[str, ...]] = {}
     for phase, values in artifacts_raw.items():
         if not isinstance(values, list) or not values:
@@ -219,7 +230,7 @@ def commission_intent_from_yaml(text: str) -> CommissionIntent:
         commission_id=_text(data["commission_id"], context="Commission Intent.commission_id"),
         work_item_id=_text(data["work_item_id"], context="Commission Intent.work_item_id"),
         authority_source=_text(data["authority_source"], context="Commission Intent.authority_source"),
-        program=_source_ref(data["program"], context="Commission Intent.program"),
+        program=program,
         task=TaskBinding(**{key: _text(value, context=f"Commission Intent.task.{key}") for key, value in task.items()}),
         scope=scope,
         personas=personas,
@@ -265,6 +276,22 @@ def _direct_template() -> dict[str, Any]:
     }
 
 
+def _robust_template() -> dict[str, Any]:
+    """The accepted robust@v1 literal record, excluding catalogue provenance."""
+
+    return {
+        "schema_version": 1, "program_id": "robust", "revision": "v1",
+        "roles": ["worker", "independent_reviewer"], "scope_slot": "S", "artifact_scope_slot": "A",
+        "evidence_profiles": {"task-check-v1": {"evidence": ["task-check"]}},
+        "phases": {
+            "implement": {"role": "worker", "components": {"role": ["worker"], "modifiers": [], "repository_policy": []}, "durable_artifact": "none", "scope": "S", "artifact_key": None, "authorized_actions": ["edit", "commit"], "human_gates": [], "evidence": [], "review": None, "routes": {"broad_review": {"effect": "goto", "target": "broad_review"}}},
+            "broad_review": {"role": "independent_reviewer", "components": {"role": ["reviewer"], "modifiers": [], "repository_policy": []}, "durable_artifact": "required", "scope": "A", "artifact_key": "broad_review", "authorized_actions": ["review", "edit", "commit"], "human_gates": [], "evidence": "E", "review": {"purpose": "independent adversarial full-scope review of the rendered Commission", "breadth": "broad", "authority": "gate", "context": "fresh", "blocking_policy": "blocking_only", "trigger": "profile_selected", "exit": "declared_route", "finding_authority": ["resolve"], "failed_evidence_route": "correction"}, "routes": {"accept": {"effect": "complete"}, "correction": {"effect": "goto", "target": "correct"}}},
+            "correct": {"role": "worker", "components": {"role": ["worker"], "modifiers": [], "repository_policy": []}, "durable_artifact": "none", "scope": "S", "artifact_key": None, "authorized_actions": ["edit", "commit"], "human_gates": [], "evidence": [], "review": None, "routes": {"focused_review": {"effect": "goto", "target": "focused_review"}}},
+            "focused_review": {"role": "independent_reviewer", "components": {"role": ["reviewer"], "modifiers": [], "repository_policy": []}, "durable_artifact": "required", "scope": "A", "artifact_key": "focused_review", "authorized_actions": ["review", "edit", "commit"], "human_gates": [], "evidence": "E", "review": {"purpose": "independent focused verification of correction and disposition of the prior broad/focused Findings", "breadth": "focused", "authority": "gate", "context": "fresh", "blocking_policy": "blocking_only", "trigger": "profile_selected", "exit": "declared_route", "finding_authority": ["resolve"], "failed_evidence_route": "correction"}, "routes": {"correction": {"effect": "goto", "target": "correct"}, "renew_broad_review": {"effect": "goto", "target": "broad_review"}}},
+        },
+    }
+
+
 def _repository_standard_v1_record(policy: Any) -> bool:
     """Return whether a parsed basis is the one immutable Direct-v1 basis.
 
@@ -288,14 +315,20 @@ def _repository_standard_v1_record(policy: Any) -> bool:
     )
 
 
-def _load_sources(intent: CommissionIntent, repository: Path) -> tuple[dict[str, Any], dict[str, Any], str, str, str]:
-    if (intent.program.id, intent.program.revision) != ("direct", "v1"):
-        raise CommissionError("only the closed direct@v1 program is supported")
+def _load_sources(intent: CommissionIntent, repository: Path) -> tuple[dict[str, Any], dict[str, Any], str, str, str, str]:
+    program_specs = {
+        ("direct", "v1"): (_PROGRAM_PATH, _direct_template, {"worker"}),
+        ("robust", "v1"): (_ROBUST_PROGRAM_PATH, _robust_template, {"worker", "reviewer"}),
+    }
+    try:
+        program_path, expected_template, required_components = program_specs[(intent.program.id, intent.program.revision)]
+    except KeyError as error:
+        raise CommissionError("only the closed direct@v1 and robust@v1 programs are supported") from error
     if (intent.policy_basis.id, intent.policy_basis.revision) != ("repository-standard", "v1"):
-        raise CommissionError("direct@v1 requires repository-standard@v1")
+        raise CommissionError(f"{intent.program.id}@{intent.program.revision} requires repository-standard@v1")
     if intent.components_ref.path != _COMPONENT_MANIFEST_PATH:
-        raise CommissionError("direct@v1 requires the fixed self-development component manifest")
-    program_text = _git_text(repository, intent.program.source_commit, _PROGRAM_PATH, context="program catalogue")
+        raise CommissionError(f"{intent.program.id}@{intent.program.revision} requires the fixed self-development component manifest")
+    program_text = _git_text(repository, intent.program.source_commit, program_path, context="program catalogue")
     policy_text = _git_text(repository, intent.policy_basis.source_commit, _POLICY_PATH, context="policy basis")
     components_text = _git_text(repository, intent.components_ref.source_commit, intent.components_ref.path, context="component manifest")
     program = _yaml_load(program_text, context="pinned program")
@@ -303,8 +336,10 @@ def _load_sources(intent: CommissionIntent, repository: Path) -> tuple[dict[str,
         raise CommissionError("pinned program must be a mapping")
     semantic_program = dict(program)
     semantic_program.pop("source", None)
-    if semantic_program != _direct_template():
-        raise CommissionError("pinned program does not equal the closed direct@v1 literal record")
+    if semantic_program != expected_template():
+        raise CommissionError(
+            f"pinned program does not equal the closed {intent.program.id}@{intent.program.revision} literal record"
+        )
     try:
         policy = repository_policy_from_yaml(policy_text)
         manifest = component_manifest_from_yaml(components_text)
@@ -312,9 +347,9 @@ def _load_sources(intent: CommissionIntent, repository: Path) -> tuple[dict[str,
         raise CommissionError(str(error)) from error
     if not _repository_standard_v1_record(policy):
         raise CommissionError("pinned policy basis does not equal the immutable repository-standard@v1 record")
-    if "worker" not in manifest:
-        raise CommissionError("fixed component manifest does not define worker")
-    return program, {"policy": policy, "manifest": manifest}, program_text, policy_text, components_text
+    if missing_components := required_components - set(manifest):
+        raise CommissionError("fixed component manifest does not define " + ", ".join(sorted(missing_components)))
+    return program, {"policy": policy, "manifest": manifest}, program_text, policy_text, components_text, program_path
 
 
 def _yaml(data: Mapping[str, Any]) -> str:
@@ -330,20 +365,36 @@ def _task_text(intent: CommissionIntent) -> str:
 
 
 def render_commission(intent: CommissionIntent, *, repository: Path | str, target_dir: str | None = None) -> RenderedCommission:
-    """Render a closed direct@v1 projection without making an admission decision."""
+    """Render a closed program projection without making an admission decision."""
 
     repository = Path(repository).resolve()
     if not repository.is_dir():
         raise CommissionError(f"repository is not a directory: {repository}")
-    program, loaded, program_text, policy_text, components_text = _load_sources(intent, repository)
+    program, loaded, program_text, policy_text, components_text, program_path = _load_sources(intent, repository)
     policy = loaded["policy"]
     manifest = loaded["manifest"]
-    if set(intent.personas) != {"worker"}:
-        raise CommissionError("direct@v1 requires exactly the worker persona")
+    required_personas = set(program["roles"])
+    if set(intent.personas) != required_personas:
+        raise CommissionError(
+            f"{intent.program.id}@{intent.program.revision} requires exactly "
+            + ", ".join(sorted(required_personas)) + " personas"
+        )
     if intent.evidence_profile not in program["evidence_profiles"]:
-        raise CommissionError("Intent selects an undefined direct@v1 evidence profile")
-    if intent.durable_artifacts:
-        raise CommissionError("direct@v1 has no durable-artifact phases")
+        raise CommissionError(f"Intent selects an undefined {intent.program.id}@{intent.program.revision} evidence profile")
+    required_artifacts = {
+        phase["artifact_key"]
+        for phase in program["phases"].values()
+        if phase["durable_artifact"] == "required"
+    }
+    if set(intent.durable_artifacts) != required_artifacts:
+        if not required_artifacts:
+            raise CommissionError(f"{intent.program.id}@{intent.program.revision} contains forbidden durable-artifact mappings")
+        raise CommissionError(
+            f"{intent.program.id}@{intent.program.revision} requires exactly durable-artifact mappings: "
+            + ", ".join(sorted(required_artifacts))
+        )
+    if any(not _within(path, intent.scope) for paths in intent.durable_artifacts.values() for path in paths):
+        raise CommissionError("Intent durable-artifact paths must be contained in Intent scope")
     if intent.max_autonomous_hops > policy.max_autonomous_hops:
         raise CommissionError("Intent hop limit exceeds the policy-basis ceiling")
     if any(not _within(path, tuple(policy.work_item_scope_ceiling)) for path in intent.scope):
@@ -360,9 +411,18 @@ def render_commission(intent: CommissionIntent, *, repository: Path | str, targe
     }
     profile_phases = json.loads(json.dumps(program["phases"]))
     for phase in profile_phases.values():
-        phase["authorized_scope"] = list(intent.scope) if phase.pop("scope") == "S" else phase["scope"]
-    profile_phases["verification"]["evidence"] = list(program["evidence_profiles"][intent.evidence_profile]["evidence"])
-    profile_data = {"schema_version": 2, "profile_id": f"{intent.commission_id}-direct-v1", "revision": "1", "phases": profile_phases}
+        scope_slot = phase.pop("scope")
+        artifact_key = phase.pop("artifact_key", None)
+        if scope_slot == "S":
+            phase["authorized_scope"] = list(intent.scope)
+        else:
+            phase["authorized_scope"] = list(intent.durable_artifacts[artifact_key])
+        if phase["evidence"] == "E":
+            phase["evidence"] = list(program["evidence_profiles"][intent.evidence_profile]["evidence"])
+    profile_data = {
+        "schema_version": 2, "profile_id": f"{intent.commission_id}-{intent.program.id}-{intent.program.revision}",
+        "revision": "1", "phases": profile_phases,
+    }
     policy_data = {
         "schema_version": policy.schema_version, "policy_id": policy.policy_id, "revision": policy.revision,
         "scope": list(policy.scope), "governance_paths": list(policy.governance_paths),
@@ -375,11 +435,16 @@ def render_commission(intent: CommissionIntent, *, repository: Path | str, targe
         "profile_ref": paths["profile"], "repository": policy.scope[0], "scope": list(intent.scope),
         "initial_phase": "implement", "max_autonomous_hops": intent.max_autonomous_hops,
         "personas": dict(intent.personas),
-        "profile_labels": ["program_id=direct", "program_revision=v1", f"program_source_commit={intent.program.source_commit}"],
-        "durable_artifacts": {},
+        "profile_labels": [f"program_id={intent.program.id}", f"program_revision={intent.program.revision}", f"program_source_commit={intent.program.source_commit}"],
+        "durable_artifacts": {key: list(paths) for key, paths in intent.durable_artifacts.items()},
     }
     texts = {paths["work_item"]: _yaml(item_data), paths["profile"]: _yaml(profile_data), paths["policy"]: _yaml(policy_data), paths["task"]: _task_text(intent)}
-    selected_components = {"worker": manifest["worker"].path}
+    selected_components = {
+        component: manifest[component].path
+        for component in dict.fromkeys(
+            component for phase in program["phases"].values() for component in phase["components"]["role"]
+        )
+    }
     source_digests = {
         "intent": _sha(intent.raw_text), "program": _sha(program_text), "policy_basis": _sha(policy_text),
         "components": _sha(components_text),
@@ -389,7 +454,7 @@ def render_commission(intent: CommissionIntent, *, repository: Path | str, targe
         "schema_version": 1,
         "intent": {"sha256": source_digests["intent"]},
         "sources": {
-            "program": {"id": intent.program.id, "revision": intent.program.revision, "source_commit": intent.program.source_commit, "path": _PROGRAM_PATH, "sha256": source_digests["program"]},
+            "program": {"id": intent.program.id, "revision": intent.program.revision, "source_commit": intent.program.source_commit, "path": program_path, "sha256": source_digests["program"]},
             "policy_basis": {"id": intent.policy_basis.id, "revision": intent.policy_basis.revision, "source_commit": intent.policy_basis.source_commit, "path": _POLICY_PATH, "sha256": source_digests["policy_basis"]},
             "components": {"path": intent.components_ref.path, "source_commit": intent.components_ref.source_commit, "sha256": source_digests["components"]},
             "selected_components": [{"id": name, "path": path, "source_commit": intent.components_ref.source_commit, "sha256": source_digests[f"component:{name}"]} for name, path in selected_components.items()],
@@ -454,8 +519,12 @@ def verify_render_manifest(
     with tempfile.TemporaryDirectory(prefix="wfc-commission-check-") as root:
         temp = Path(root)
         bindings = temp / "execution-bindings.yaml"
+        binding_lines = "".join(
+            f"  {role}: {{adapter: codex_cli, model: commission-check, reasoning: medium}}\n"
+            for role in intent.personas
+        )
         bindings.write_text(
-            "schema_version: 1\nbindings:\n  worker: {adapter: codex_cli, model: commission-check, reasoning: medium}\n",
+            "schema_version: 1\nbindings:\n" + binding_lines,
             encoding="utf-8",
         )
         args = argparse.Namespace(
