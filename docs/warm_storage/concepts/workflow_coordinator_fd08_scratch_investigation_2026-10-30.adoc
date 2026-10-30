@@ -1,0 +1,376 @@
+= FD-08 Investigation -- Attempt Scratch Storage Outside Shared /tmp
+:toc:
+:toclevels: 3
+:sectnums:
+
+Status:: Investigation and bounded implementation recommendation only. This
+report does not implement FD-08, alter /tmp, authorize cleanup, or create a
+general scratch-management framework.
+Date:: 2026-10-30.
+Scope:: WFC Harness preparation/launch and Runtime, Codex, and trusted-evidence
+subprocesses. Persistent state and durable evidence are distinguished from
+scratch.
+
+== 1. Problem, incident references, and method
+
+=== Confirmed facts
+
+The link:../incidents/2026-10-28_tmpfs_exhaustion.adoc[2026-10-28/29 incident]
+established that a 5.7 GiB /tmp tmpfs was full while the root filesystem had
+over 400 GiB free. /tmp/pytest-of-stefan consumed approximately all of it:
+5.7 GiB and 528,603 files in six retained pytest-NNN session directories. The
+incident does not identify the responsible fixture, test, or retention cause.
+
+The pressure interrupted Run RUN-c358b544417c4a33a0d040a0d8c38656. The
+Coordinator's git_facts.observe_repository() copied .git/index into a
+tempfile.mkstemp(prefix="wfc-observe-index-") file and received ENOSPC. The
+Run's fail-closed reconcile_required outcome is not claimed to be defective.
+
+The link:../../backlog/BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc[separate
+pytest temporary-resource-exhaustion BUG] is open and distinct: it concerns
+test-infrastructure retention. FD-08 concerns staging location for the
+Harness/Coordinator/agent/evidence chain. Neither source proves that FD-08
+will cure the pytest-retention cause. FD-08 is in
+link:workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc#_operator_dogfooding_requirements[the
+Front Door plan, section 7].
+
+This report is static source inspection at commit
+5c558452dd1c2f9811cc2e35ebc7dabda352d860. No WFC launch, virtualenv/package
+operation, provider invocation, pytest run, live tmpfs inspection, environment
+change, or privileged operation was performed. External-program claims are
+therefore limited to verified WFC inheritance behavior.
+
+=== Terms
+
+Scratch:: Non-authoritative staging for one Harness Attempt. It must not become
+accepted evidence, Run truth, or authorization input.
+Persistent state:: External Coordinator STATE: checkout association,
+Run/checkpoint/dispatch records, execution evidence, schema, result message,
+and diagnostics.
+Durable evidence:: The separately selected Evidence repository and archive,
+which are not scratch.
+
+=== Hypotheses, not facts
+
+Repeated fixture-created repository or virtualenv trees are plausible
+contributors, but this report does not attribute the incident to pytest, pip,
+Codex, a fixture, or a test. A measured, separately authorized
+test-retention investigation is required before changing pytest behavior.
+
+== 2. Verified preparation, launch, and subprocess paths
+
+[cols="1,2,3",options="header"]
+|===
+|Boundary |Source reference |Verified behavior
+
+|Attempt roots
+|scripts/wfc_op.py: validate_attempt(), ops_root(), state_root()
+|Attempt identifiers reject separators, traversal-like forms, and disallowed
+characters. OPS is $HOME/wfc-ops/<attempt>; STATE is
+$HOME/wfc-state/<attempt>. Neither establishes scratch or TMPDIR/TMP/TEMP.
+
+|Harness PREPARE
+|wfc_op.cmd_prepare() (scripts/wfc_op.py:719-809)
+|Pins Development/Runtime/Evidence, rejects reused OPS/STATE, creates OPS,
+exports/installs Runtime, creates development/evidence venv, freezes PATH,
+runs pinned Runtime preflight, and writes launch.sh. No temporary-variable
+assignment occurs.
+
+|Bootstrap
+|export_runtime(), build_venv(), pip_install(), prepare_runtime_environment(),
+prepare_development_environment() (wfc_op.py:334-406)
+|Runtime source and both venvs are under OPS: attempt-owned, not scratch.
+git archive, tar, python -m venv, pip install, and wfc --help lack explicit
+env and inherit the Harness environment. Their cache/temp behavior is not
+specified by this repository.
+
+|Pinned preflight
+|run_canonical_preflight_seam() (wfc_op.py:487-510)
+|Runs the pinned Runtime interpreter with inherited environment plus frozen
+PATH. It admits evidence commands but runs neither evidence nor a provider.
+
+|Materialized LAUNCH
+|write_launch_sh() and cmd_launch() (wfc_op.py:552-594, :812-858)
+|launch.sh exports only frozen literal PATH then execs pinned wfc. cmd_launch()
+runs bash launch.sh without env=. A PREPARE-only temporary override is lost at
+a separately invoked LAUNCH.
+
+|Runtime admission
+|operator._parse_args() and _preflight() (operator.py:225-468)
+|No scratch CLI exists. It calls observe_repository() before state allocation,
+requires fresh STATE, reads pinned governing inputs, snapshots inherited
+environment once, and prepares evidence commands with the snapshot.
+
+|Serial dispatch
+|operator.run_serial_hops() (operator.py:745-908)
+|Uses external STATE/checkouts/<opaque-id> for Run/checkpoint/execution evidence
+and creates CodexCliAdapter(run_root, ...).
+
+|Codex adapter
+|CodexCliAdapter.execute() (codex_adapter.py:361-408)
+|Writes schema and result-message below run_root; starts codex with no env=,
+thus ordinary subprocess inheritance. Its inspected argv has no scratch
+option. Stdout/stderr are pipes bounded after completion.
+
+|Trusted evidence
+|snapshot_environment(), prepare_evidence_commands(),
+ProductionEvidenceRunner.observe() (evidence.py:72-143, :177-258)
+|Snapshots all inherited values; later executes with that immutable snapshot
+as env=, repository-root cwd, no shell, and pipes. Executable resolution,
+canonical path, and stat fingerprint provenance remain unchanged.
+|===
+
+== 3. Temporary-storage consumers and boundaries
+
+[cols="1,2,3",options="header"]
+|===
+|Consumer |Source reference |Classification and current behavior
+
+|Coordinator Git observation
+|git_facts.observe_repository() (git_facts.py:472-495)
+|Default tempfile.mkstemp(prefix="wfc-observe-index-"), index copy, finally
+unlink. This is the incident failure path and follows Python default temp
+selection absent an override.
+
+|Coordinator salvage inspection
+|salvage_inventory() and salvage_omissions() (git_facts.py:83-122, :247-277)
+|Default mkstemp isolated-index copies, cleaned in finally; scratch.
+
+|Persistent atomic writes
+|persistence.atomic_write_text() (persistence.py:83-104)
+|Uses mkstemp(dir=path.parent) for atomic replace and fsync. It intentionally
+stages beside durable state/evidence and is not redirected by TMPDIR.
+
+|Codex adapter files
+|CodexCliAdapter.execute() (codex_adapter.py:376-404)
+|Schema/result-message are persistent state below run root, not scratch.
+
+|Evidence and pytest
+|ProductionEvidenceRunner.observe() (evidence.py:177-258)
+|A command receives snapshotted inherited variables. pytest or another tool may
+honor, override, or ignore them; static inspection cannot prove internals.
+Stream bodies are not durable evidence; counts/digests are.
+
+|Dependencies
+|Harness bootstrap helpers
+|Venv directories are OPS. Tool-internal build material inherits a Harness
+override if one is installed. This does not assert that pip caches move.
+
+|Commission check
+|commissioning.verify_render_manifest() (commissioning.py:519-539)
+|Uses default TemporaryDirectory for a short-lived projection check; outside
+normal prepared-Run launch.
+
+|Explicit salvage output
+|operator._export_salvage() (operator.py:1350-1425)
+|Uses mkdtemp(dir=output.parent), 0700, then no-replace publication. It
+intentionally stages beside maintainer-selected durable output.
+
+|Unrelated utility
+|scripts/memory_workbook.py:174-270
+|Uses default temporary directories but is not invoked by Harness/Runtime and
+is outside this FD-08 slice.
+|===
+
+No inspected WFC source assigns TMPDIR, TMP, or TEMP. Python tempfile normally
+consults these before platform fallback. Supplying all three equally to one
+absolute directory is the minimal portable interface; this does not assume
+non-Python consumers use the same precedence.
+
+== 4. Environment propagation and controllability
+
+[source,text]
+----
+wfc-op prepare
+  +-- git / tar / venv / pip / pinned wfc --help       (inherit)
+  +-- pinned Runtime preflight seam                    (inherited env + frozen PATH)
+  +-- generated launch.sh
+       +-- pinned Runtime wfc                          (launch exports)
+            +-- Coordinator tempfile and Git subprocesses
+            +-- Codex CLI                              (Popen inheritance)
+            |    +-- provider/agent descendants         (external behavior unknown)
+            +-- trusted evidence executable             (frozen snapshot)
+                 +-- pytest/other descendants           (external behavior unknown)
+----
+
+WFC reliably controls its own environment; preflight seam; literal launch
+exports; started Runtime; Coordinator Python tempfile lookups; and Evidence
+runner environments. It also controls Codex persistent result directory.
+
+It cannot, from inspected source alone, guarantee that Codex CLI, provider
+tools, agent tools, pytest plugins, pip, Git hooks, or descendants honor
+inherited variables. They can use explicit directories, their own cache,
+sandbox mounts, or rebuilt environments. This report makes no claim about
+Codex CLI internal storage. The guarantee is environment injection, not
+containment or quota enforcement.
+
+== 5. Minimal recommended implementation
+
+=== Recommendation
+
+Add one optional Harness PREPARE input:
+
+[source,text]
+----
+wfc-op prepare ... [--scratch-root ABSOLUTE_DIRECTORY]
+----
+
+Default to $HOME/wfc-scratch; do not guess filesystem capacity or alter /tmp
+mounts. Derive exactly one private directory:
+
+[source,text]
+----
+<scratch-root>/<validated-attempt-id>
+----
+
+Create it in cmd_prepare() immediately after attempt validation and before
+repository pinning, OPS creation, or any temporary-capable subprocess. Use:
+
+[source,text]
+----
+TMPDIR=<attempt-scratch>
+TMP=<attempt-scratch>
+TEMP=<attempt-scratch>
+----
+
+Use this environment for Harness bootstrap and the preflight seam. Place the
+same literal shell-quoted exports in launch.sh beside frozen PATH. Record root
+and effective path in preparation-pins.txt and harness-prepared.json, and
+project effective path in wfc-op status. The existing launch-script digest
+protects its literal exports; records make them operator-legible.
+
+No Runtime --scratch-root is necessary for this slice: Harness environment and
+launch artifact already connect all controlled processes, and Runtime snapshots
+the inherited environment for trusted evidence. Direct manual wfc invocation
+remains an explicit operator responsibility.
+
+=== Sufficiency and limits
+
+A per-Attempt directory outside Development, Runtime, and Evidence repositories
+redirects verified Coordinator default-temp operations, separates concurrent
+attempts, and gives bootstrap, Codex, and evidence one setting. It leaves
+repositories, OPS, STATE, archive destinations, schema/result files,
+atomic-write locality, A1, executable fingerprints, and evidence provenance
+unchanged.
+
+It cannot force external compliance; guarantee capacity; prevent exhaustion of
+the selected filesystem; cure retained pytest material from unrelated runs;
+move same-directory atomic writes; recover predecessor scratch; impose quotas;
+or introduce cleanup/retention machinery.
+
+== 6. Security, lifecycle, and trust
+
+=== Recommended validation and failure behavior
+
+* Require absolute expanded root; create default if absent; reject root or
+  attempt symlinks and non-directories.
+* Verify effective-uid ownership and 0700 mode after creation. Reject an
+  existing attempt directory; never reuse or delete it.
+* Reject effective path equal to, inside, or an ancestor of a pinned
+  Development, Runtime, or Evidence repository. Require it distinct from OPS
+  and STATE.
+* Derive path only from maintainer CLI input and validated attempt id, never
+  agent output, policy, or evidence command input.
+* Refuse on create/chmod/verification failure before PREPARED, without /tmp
+  fallback, STATE allocation, or provider dispatch.
+
+mkdir/lstat prevents accidental locations and direct leaf symlinks, but not a
+hostile same-uid actor racing ancestor replacement. Descriptor-relative openat
+traversal is a separate security design, outside this single-operator slice.
+
+=== Lifecycle recommendation
+
+Create at PREPARE and retain across explicit LAUNCH and after completion/failure.
+Do not recursively auto-delete: a timed-out provider can have descendants, and
+deletion adds process/lifecycle semantics. Scratch is non-authoritative
+diagnostic debris, never salvage or durable evidence. Inspection and removal
+of a completed attempt are separately authorized maintainer operations.
+
+This trades shared /tmp pressure for visible $HOME/wfc-scratch accumulation.
+The recorded path is legible, not proof it contains every external temporary
+file.
+
+=== Trust/provenance preservation
+
+Environment injection changes no A1 scope check, policy selection, result
+correlation, or untrusted-agent/Coordinator-trusted-evidence boundary. Evidence
+keeps frozen PATH, canonical executable, and stat fingerprint. Scratch is
+Harness/launch provenance only, not evidence identity or agent authority.
+Persistent data remains in STATE with existing atomic same-directory protocol.
+
+== 7. Focused regression and integration tests
+
+. Unit-test root resolution: default under a home seam, explicit absolute root,
+  validated child, 0700, uid/leaf-symlink refusal, repository-overlap refusal,
+  and pre-existing-attempt refusal. Use test directories, not live /tmp/mounts.
+. Extend tests/unit/test_wfc_op.py: prepared facts record path; generated
+  launch.sh exports TMPDIR, TMP, TEMP before exec.
+. Use a preflight probe Runtime/test double to observe all three values and
+  confirm frozen PATH is unchanged.
+. Use harmless Codex/evidence probes to demonstrate WFC Popen and
+  evidence-snapshot propagation while schema/result remains under run_root and
+  executable provenance checks remain active. This proves WFC, not Codex or
+  pytest internals.
+. Integration-test PREPARE then separate LAUNCH with different caller
+  variables; generated launch must supply recorded path. A Python tempfile
+  probe should land beneath it.
+. Test scratch-validation failure: no /tmp fallback, STATE, dispatch, or
+  weakened revalidation.
+
+Do not simulate tmpfs exhaustion, alter mounts, or assert Codex internals or
+pytest retention in this WorkItem. Those require separate authority.
+
+== 8. Proposed bounded implementation WorkItem
+
+Candidate:: WI-WFC-FD08-ATTEMPT-SCRATCH-001 -- Inject private Harness attempt
+scratch into prepared execution environment.
+
+Candidate changed files::
+
+* scripts/wfc_op.py -- option; path/ownership/mode/overlap helper; early
+  creation; environment projection; prepared facts; launch exports; status.
+* tests/unit/test_wfc_op.py -- Harness propagation/refusal coverage.
+* tests/unit/test_codex_adapter_conformance.py and/or tests/unit/test_operator.py
+  only if existing seams need environment assertions.
+* Narrow Harness-operator documentation, only if separately authorized.
+
+Acceptance criteria::
+
+* PREPARE selects explicit or $HOME-backed private scratch before its first
+  temporary-capable subprocess and refuses unsafe, overlapping, non-private,
+  or reused locations without fallback.
+* Bootstrap/preflight, generated launch, Coordinator defaults, Codex child,
+  and evidence child receive equal TMPDIR/TMP/TEMP at WFC-controlled
+  boundaries.
+* Later LAUNCH uses recorded path despite different caller environment.
+* OPS/STATE/repositories/durable Evidence, result/schema location, persistence
+  atomicity, A1, executable resolution/fingerprinting, and provenance retain
+  existing semantics.
+* No promise of external compliance, cleanup, quota, tmpfs change, or
+  pytest-retention repair is introduced.
+
+== 9. Decisions reserved for maintainer authority
+
+* Default name and whether a supplied root must pre-exist.
+* Whether a maintainer-provisioned symlink root is allowed; no root symlink is
+  recommended for the first slice.
+* Manual retention/cleanup procedure, horizon, and capacity monitoring. No
+  deletion is authorized here.
+* Whether direct wfc or wfc-op commission check later needs the same surface.
+* Whether evidence justifies provider settings, capacity preflight, quotas, or
+  separate pytest-retention correction.
+* Platform/threat model for stronger symlink-race protection and non-POSIX
+  permissions.
+
+== 10. Evidence references and non-claims
+
+Primary evidence is the incident, pytest BUG, and FD-08 plan cited in section
+1, plus cited functions in scripts/wfc_op.py and
+src/workflow_coordinator/{operator,codex_adapter,evidence,git_facts,
+persistence,slice4,commissioning}.py.
+
+This report does not claim to eliminate all host /tmp use, identify pytest
+retention, control Codex internals, guarantee capacity, preserve scratch
+through machine failure, or change any bytes' trust status. It recommends only
+a small, testable redirection of verified Coordinator defaults and
+WFC-controlled inherited environments.
