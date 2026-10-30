@@ -30,9 +30,10 @@ The link:../../backlog/BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc[separate
 pytest temporary-resource-exhaustion BUG] is open and distinct: it concerns
 test-infrastructure retention. FD-08 concerns staging location for the
 Harness/Coordinator/agent/evidence chain. Neither source proves that FD-08
-will cure the pytest-retention cause. FD-08 is in
-link:workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc#_operator_dogfooding_requirements[the
-Front Door plan, section 7].
+will cure the pytest-retention cause. FD-08 is in section 9 (especially
+§§9.2--9.4) of
+link:workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc[the
+Front Door plan].
 
 This report is static source inspection at commit
 5c558452dd1c2f9811cc2e35ebc7dabda352d860. No WFC launch, virtualenv/package
@@ -118,6 +119,16 @@ ProductionEvidenceRunner.observe() (evidence.py:72-143, :177-258)
 |Snapshots all inherited values; later executes with that immutable snapshot
 as env=, repository-root cwd, no shell, and pipes. Executable resolution,
 canonical path, and stat fingerprint provenance remain unchanged.
+
+|Evidence archive
+|wfc_op.cmd_archive() and _invoke_canonical_archive()
+(scripts/wfc_op.py:1060-1123)
+|`wfc-op archive` is a separate, later CLI invocation. It reads preparation
+facts to find Evidence and starts that repository's canonical
+`scripts/wfc-archive-run` wrapper twice (dry-run then real) with no `env=`.
+Each wrapper invocation therefore inherits the *archive caller's* environment,
+not PREPARE's seam environment or `launch.sh` exports. The Harness does not
+inspect the Evidence wrapper's temporary-file behavior.
 |===
 
 == 3. Temporary-storage consumers and boundaries
@@ -191,11 +202,16 @@ wfc-op prepare
             |    +-- provider/agent descendants         (external behavior unknown)
             +-- trusted evidence executable             (frozen snapshot)
                  +-- pytest/other descendants           (external behavior unknown)
+
+wfc-op archive (separate later invocation; does not run launch.sh)
+  +-- Evidence scripts/wfc-archive-run (archive caller environment today)
+       +-- Evidence-owned archive descendants            (external behavior unknown)
 ----
 
 WFC reliably controls its own environment; preflight seam; literal launch
-exports; started Runtime; Coordinator Python tempfile lookups; and Evidence
-runner environments. It also controls Codex persistent result directory.
+exports; started Runtime; Coordinator Python tempfile lookups; Evidence runner
+environments; and, if explicitly passed as `env=`, the two Evidence archive
+wrapper invocations. It also controls Codex persistent result directory.
 
 It cannot, from inspected source alone, guarantee that Codex CLI, provider
 tools, agent tools, pytest plugins, pip, Git hooks, or descendants honor
@@ -239,6 +255,18 @@ and effective path in preparation-pins.txt and harness-prepared.json, and
 project effective path in wfc-op status. The existing launch-script digest
 protects its literal exports; records make them operator-legible.
 
+The same prepared effective path must be recovered, cross-checked between the
+two preparation records, and revalidated before `cmd_archive()` invokes the
+canonical Evidence wrapper. `_invoke_canonical_archive()` should receive an
+environment copied from its archive caller with only `TMPDIR`, `TMP`, and
+`TEMP` replaced by that recorded path. It must use that environment for both
+the required dry-run and the real archive invocation. This is necessary:
+archive is not a descendant of `launch.sh`, so launch exports and Runtime's
+evidence snapshot cannot reach it. It adds no Evidence-repository CLI option,
+does not reinterpret the wrapper's output, and leaves wrapper argv,
+repository choice, dry-run-before-real sequencing, and Evidence-owned archive
+semantics unchanged.
+
 No Runtime --scratch-root is necessary for this slice: Harness environment and
 launch artifact already connect all controlled processes, and Runtime snapshots
 the inherited environment for trusted evidence. Direct manual wfc invocation
@@ -248,15 +276,18 @@ remains an explicit operator responsibility.
 
 A per-Attempt directory outside Development, Runtime, and Evidence repositories
 redirects verified Coordinator default-temp operations, separates concurrent
-attempts, and gives bootstrap, Codex, and evidence one setting. It leaves
-repositories, OPS, STATE, archive destinations, schema/result files,
+attempts, and gives bootstrap, Codex, trusted evidence, and the Harness-started
+Evidence archive wrapper one setting. The latter requires the recorded-path
+archive injection above; PREPARE/LAUNCH propagation alone is insufficient. It
+leaves repositories, OPS, STATE, archive destinations, schema/result files,
 atomic-write locality, A1, executable fingerprints, and evidence provenance
 unchanged.
 
 It cannot force external compliance; guarantee capacity; prevent exhaustion of
 the selected filesystem; cure retained pytest material from unrelated runs;
 move same-directory atomic writes; recover predecessor scratch; impose quotas;
-or introduce cleanup/retention machinery.
+introduce cleanup/retention machinery; or redirect a maintainer who runs the
+Evidence wrapper directly rather than through `wfc-op archive`.
 
 == 6. Security, lifecycle, and trust
 
@@ -269,6 +300,11 @@ or introduce cleanup/retention machinery.
 * Reject effective path equal to, inside, or an ancestor of a pinned
   Development, Runtime, or Evidence repository. Require it distinct from OPS
   and STATE.
+* Before the later archive invocation, require that the prepared record and
+  pins agree on the exact scratch path and that the retained directory still
+  satisfies the chosen ownership, mode, non-symlink, and non-overlap checks.
+  Refuse archive on disagreement or failed revalidation; do not silently use
+  the archive caller's `/tmp` instead.
 * Derive path only from maintainer CLI input and validated attempt id, never
   agent output, policy, or evidence command input.
 * Refuse on create/chmod/verification failure before PREPARED, without /tmp
@@ -311,6 +347,11 @@ Persistent data remains in STATE with existing atomic same-directory protocol.
   evidence-snapshot propagation while schema/result remains under run_root and
   executable provenance checks remain active. This proves WFC, not Codex or
   pytest internals.
+. Use a synthetic canonical Evidence archive wrapper that records its three
+  temporary variables. Verify both Harness-required invocations (dry-run and
+  real) receive the recorded path even when the later `wfc-op archive` caller
+  supplies different values; verify prepared-record disagreement or scratch
+  revalidation failure refuses before either wrapper invocation.
 . Integration-test PREPARE then separate LAUNCH with different caller
   variables; generated launch must supply recorded path. A Python tempfile
   probe should land beneath it.
@@ -328,7 +369,9 @@ scratch into prepared execution environment.
 Candidate changed files::
 
 * scripts/wfc_op.py -- option; path/ownership/mode/overlap helper; early
-  creation; environment projection; prepared facts; launch exports; status.
+  creation; environment projection; prepared facts; launch exports; status;
+  recorded-path revalidation and environment injection for both canonical
+  Evidence archive wrapper calls.
 * tests/unit/test_wfc_op.py -- Harness propagation/refusal coverage.
 * tests/unit/test_codex_adapter_conformance.py and/or tests/unit/test_operator.py
   only if existing seams need environment assertions.
@@ -341,8 +384,12 @@ Acceptance criteria::
   or reused locations without fallback.
 * Bootstrap/preflight, generated launch, Coordinator defaults, Codex child,
   and evidence child receive equal TMPDIR/TMP/TEMP at WFC-controlled
-  boundaries.
+  boundaries; the separately invoked archive wrapper receives those same
+  values from cross-checked preparation facts for both dry-run and real calls.
 * Later LAUNCH uses recorded path despite different caller environment.
+  Later `wfc-op archive` likewise uses the recorded path despite different
+  caller variables, and refuses rather than falling back if the preparation
+  facts or retained scratch directory are unsafe.
 * OPS/STATE/repositories/durable Evidence, result/schema location, persistence
   atomicity, A1, executable resolution/fingerprinting, and provenance retain
   existing semantics.
@@ -357,6 +404,9 @@ Acceptance criteria::
 * Manual retention/cleanup procedure, horizon, and capacity monitoring. No
   deletion is authorized here.
 * Whether direct wfc or wfc-op commission check later needs the same surface.
+* Whether direct invocation of the Evidence repository's archive wrapper
+  needs an Evidence-owned equivalent; this Harness slice covers only
+  `wfc-op archive` and must not make a claim about direct use.
 * Whether evidence justifies provider settings, capacity preflight, quotas, or
   separate pytest-retention correction.
 * Platform/threat model for stronger symlink-race protection and non-POSIX
