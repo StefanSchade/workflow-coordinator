@@ -1,0 +1,85 @@
+= BUG-WFC-COMMISSION-RENDER-CHECK-WRITES-BUNDLE -- `commission render --check` Writes the Full Bundle, Despite Appearing To Be a Dry Run
+
+Type:: bug -- CLI semantics / naming defect (not a rendering-correctness
+defect; `render_commission`'s pure projection logic is unaffected)
+Status:: open (documentation only; no correction authorized by this record)
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Next action:: Design clearly differentiated writing-render / non-writing preview-or-check / validation semantics under a separately authorized bounded Commission.
+Not authorized here:: Any CLI or rendering implementation change; the exact design remains open.
+Date:: 2026-10-30
+Discovery:: Commission-authoring process preceding the first successful
+`robust@v1` end-to-end self-development dogfood, attempt
+`wfc-doc-authority-index-001-20261030-01` (`RUN-42bda08cd72a4e7e97ebb5bd75c05650`).
+This Run was independently accepted; this record is a follow-up observation,
+not a Run anomaly or a reason to revisit its acceptance.
+
+== Observed behavior
+
+`scripts/wfc_op.py::cmd_commission_render` (around lines 136-150) calls
+`render_commission(...)` and then unconditionally calls
+`rendered.write_to(repository)` -- materializing all five bundle files
+(`work-item.yaml`, `profile.yaml`, `policy.yaml`, `task.md`,
+`render-manifest.json`) under the target governance directory -- *before*
+checking `args.check` at all. `--check`'s only observable effect is printing
+an additional provenance report (`_commission_report(rendered)`); it adds
+information, it does not change whether the bundle is written.
+
+A maintainer or agent invoking `commission render --check` to preview a
+Commission Intent's projection without yet committing to a target directory
+reasonably expects a dry run. The current behavior writes the full bundle
+exactly as the plain `render` command does.
+
+== Why this is misleading rather than merely surprising
+
+`render_commission` (`src/workflow_coordinator/commissioning.py:367` onward)
+is itself a pure, non-writing projection; the write only happens in
+`RenderedCommission.write_to` (`src/workflow_coordinator/commissioning.py`
+`write_to`, which already refuses to overwrite an existing bundle). The CLI
+layer could call `--check` with the pure projection alone and skip
+`write_to`, but currently always calls both. The underlying rendering and
+the already-existing `commission check` subcommand (bundle-equivalence and
+preflight validation against an already-committed bundle, via
+`verify_render_manifest`) are unaffected by this record; the defect is
+isolated to `cmd_commission_render`'s own sequencing of write-then-report
+versus `--check`.
+
+== Desired direction (not committed)
+
+Clearly differentiate, as separate and correctly named CLI semantics:
+
+. a writing render (materializes the bundle; current default behavior,
+  unchanged);
+. a non-writing preview/check (reports the same provenance information
+  without materializing any file); and
+. the existing `commission check` validation against an already-committed
+  bundle (unchanged).
+
+The exact CLI design -- a new flag, a changed default, or a separate
+subcommand -- is left open to a future design effort.
+
+== Non-scope
+
+This record authorizes no implementation. A future correction must not:
+
+* change `render_commission`'s pure projection logic;
+* change `RenderedCommission.write_to`'s refuse-to-overwrite semantics; or
+* change `commission check` / `verify_render_manifest`'s bundle-equivalence
+  or preflight validation behavior.
+
+== Evidence pointers
+
+* `scripts/wfc_op.py::cmd_commission_render` (around lines 136-150).
+* `src/workflow_coordinator/commissioning.py::render_commission`,
+  `RenderedCommission.write_to`.
+* Run context: attempt `wfc-doc-authority-index-001-20261030-01`,
+  `RUN-42bda08cd72a4e7e97ebb5bd75c05650`, archived at
+  `workflow-coordinator-run-evidence@e1f07092`, ledger entry at
+  `workflow-coordinator-run-evidence@bcc7b37`.
+
+== Lifecycle
+
+This BUG is *open*. This record documents the observed CLI-semantics defect
+only. It authorizes no implementation, no test change, and no WFC Run. A
+future correction requires its own separately authorized maintainer
+Commission/WorkItem, scoped at minimum to `scripts/wfc_op.py` and its
+focused tests, subject to the non-scope above.

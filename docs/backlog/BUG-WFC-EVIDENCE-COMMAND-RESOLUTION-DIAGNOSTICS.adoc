@@ -1,0 +1,123 @@
+= BUG-WFC-EVIDENCE-COMMAND-RESOLUTION-DIAGNOSTICS -- Evidence-Command Executable Resolution Lacks Actionable Diagnostics
+
+Type:: bug -- operator/preflight diagnostics ergonomics gap (not a resolution-
+correctness defect; the observed fail-closed refusal is correct and is not
+characterized as a defect)
+Status:: open (documentation only; no correction authorized by this record)
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Next action:: Investigate possible `python`/`python3` resolution-diagnostic improvements under a separately authorized bounded Commission.
+Not authorized here:: Any automatic `python`/`python3` substitution, or any change to executable identity, path fingerprinting, or canonical preflight semantics.
+Date:: 2026-10-30
+Discovery:: Commission-authoring process preceding the first successful
+`robust@v1` end-to-end self-development dogfood, attempt
+`wfc-doc-authority-index-001-20261030-01` (`RUN-42bda08cd72a4e7e97ebb5bd75c05650`,
+final Development head `f10624c4b48d091d1ecc6602066e134d26b056f8`). This Run
+was independently accepted; this record is a follow-up observation, not a
+Run anomaly or a reason to revisit its acceptance.
+
+== Observed behavior
+
+`commission check` (`scripts/wfc_op.py::cmd_commission_check` ->
+`commissioning.verify_render_manifest` -> `operator._preflight`) refused the
+committed Commission's projected evidence command `task-check` (policy-
+authored `argv: [python, -m, pytest, -q]`, inherited from the
+`repository-standard@v1` policy basis, as rendered into
+`governance/commissions/wfc-doc-authority-index-001/policy.yaml`) on a host
+whose ambient `PATH` exposed `/usr/bin/python3` but no unqualified `python`
+executable.
+
+Concretely:
+
+* `evidence.resolve_executable` (`src/workflow_coordinator/evidence.py:109-141`)
+  walks the snapshotted `PATH` and raises
+  `ExecutableResolutionError(f"executable does not resolve to an executable regular file: {authored_argv0}")`,
+  i.e. literally `"...: python"`.
+* `evidence.prepare_evidence_commands` (`src/workflow_coordinator/evidence.py:143-184`)
+  re-raises this as
+  `EvidencePreparationError(f"evidence command {name}: {error}")`, i.e.
+  `"evidence command task-check: executable does not resolve to an executable regular file: python"`.
+* `commissioning.verify_render_manifest` (`src/workflow_coordinator/commissioning.py`,
+  the `_preflight` call near the end of the function) wraps any
+  `OperatorPreflightError` as
+  `CommissionError(f"operator preflight refused projected bundle: {error}")`.
+
+The identical committed Commission bundle passed `commission check` once a
+prepared Development environment containing `bin/python` was prepended to
+`PATH`. Both outcomes are the correct, intended resolution behavior for the
+`PATH` each was run under.
+
+== Why this is a diagnostics gap, not a resolution defect
+
+The two closed records
+`docs/cold_storage/backlog/done/BUG-WFC-SELF-DEVELOPMENT-PREFLIGHT-PYTHON-ALIAS-IDENTITY.adoc`
+and
+`docs/cold_storage/backlog/done/BUG-WFC-PREFLIGHT-ARCHITECTURE-TEST-AMBIENT-PATH.adoc`
+already establish and accept, respectively: that policy-authored `python` is
+correctly resolved by alias-independent canonical interpreter identity
+(`ExecutableResolution.canonical_path` / `realpath`) rather than by literal
+invocation-path spelling; and that a host whose snapshotted `PATH` contains
+no entry resolving the authored token at all is correctly refused by
+production `_preflight()` -- that refusal is "the production resolver
+correctly fail[ing] closed," not a defect. This record does not reopen,
+amend, or contradict either closed record, and does not propose weakening
+resolution, fingerprinting, alias handling, or canonical-preflight semantics
+established there.
+
+The gap observed here is narrower and purely diagnostic:
+`ExecutableResolutionError`'s message names only the unresolved authored
+token (`python`) and the fact that it did not resolve. It says nothing about
+which interpreters were actually discoverable on the snapshotted `PATH`
+(e.g. `python3`), nor how to supply a conforming environment (e.g. which
+prepared `bin/` directory to prepend). An operator or agent seeing only
+`"executable does not resolve to an executable regular file: python"` has no
+actionable next step recorded in the error itself.
+
+== Desired direction (not committed)
+
+Richer, still fail-closed diagnostics that identify, at minimum:
+
+* the missing policy-authored command name and its `argv[0]`;
+* interpreters actually discoverable on the snapshotted `PATH` (e.g. a
+  bounded, read-only probe for sibling names such as `python3`), presented
+  as information, not as a substitute resolution; and
+* how a conforming environment is supplied (e.g. prepending a prepared
+  `bin/` directory to `PATH`).
+
+== Non-scope
+
+This record authorizes no implementation. A future correction must not:
+
+* introduce an automatic `python` -> `python3` (or any other alias)
+  substitution that silently changes the authorized evidence command;
+* weaken `resolve_executable`'s existing `PATH`-walk, fingerprinting, or
+  alias-independent canonical-identity model;
+* reopen, amend, or contradict either closed Python-alias/preflight record
+  cited above; or
+* change `_preflight()`'s fail-closed refusal behavior itself.
+
+== Evidence pointers
+
+* `src/workflow_coordinator/evidence.py:109-184` (`resolve_executable`,
+  `prepare_evidence_commands`).
+* `src/workflow_coordinator/operator.py` (`_preflight`, the
+  `prepare_evidence_commands` call site).
+* `src/workflow_coordinator/commissioning.py` (`verify_render_manifest`'s
+  `_preflight` call and `CommissionError` wrapping).
+* Committed rendered bundle:
+  `governance/commissions/wfc-doc-authority-index-001/policy.yaml`
+  (`task-check` evidence command).
+* Closed records: `docs/cold_storage/backlog/done/BUG-WFC-SELF-DEVELOPMENT-PREFLIGHT-PYTHON-ALIAS-IDENTITY.adoc`,
+  `docs/cold_storage/backlog/done/BUG-WFC-PREFLIGHT-ARCHITECTURE-TEST-AMBIENT-PATH.adoc`.
+* Run context: attempt `wfc-doc-authority-index-001-20261030-01`,
+  `RUN-42bda08cd72a4e7e97ebb5bd75c05650`, archived at
+  `workflow-coordinator-run-evidence@e1f07092`, ledger entry at
+  `workflow-coordinator-run-evidence@bcc7b37`.
+
+== Lifecycle
+
+This BUG is *open*. This record documents the observed diagnostics gap only.
+It authorizes no implementation, no test change, no Runtime change, and no
+WFC Run. A future correction requires its own separately authorized
+maintainer Commission/WorkItem, scoped at minimum to
+`src/workflow_coordinator/evidence.py` and its focused tests, subject to the
+non-scope above.
