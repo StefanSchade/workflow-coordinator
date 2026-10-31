@@ -1,0 +1,312 @@
+= `simple@v1` Level-0 architecture design (2026-10-31)
+:toc:
+:toclevels: 2
+:sectnums:
+
+Status:: *Design for a separately authorized implementation only.*
+Scope:: One deliberately small vertical slice: a closed `simple@v1` programme.
+Implementation authority:: None. This document neither changes a programme nor
+authorizes a Runtime, schema, test, governance, or Commission change.
+Source baseline:: Development `169dabf9291b5d060faf9f5aa952c53e6c61f1cd`.
+
+The 2026-10-31 capability decision makes `simple` an MVP requirement, but does
+not make it an alias for `direct` or `robust`.  Capability (`simple`), programme
+revision (`simple@v1`), representation schema, and Runtime Git revision remain
+four independent dimensions (capability decision record §5).  This design does
+not promote P3.5, change either existing programme, or introduce a general
+workflow/evidence framework.
+
+== 1. Requirements and explicit non-goals
+
+`simple@v1` has exactly one Worker provider invocation in ordinary execution.
+The Worker performs its own task/self-check in that one invocation.  Afterwards
+the Coordinator may perform deterministic mechanics, including trusted evidence
+commands; those subprocesses are not agent invocations.  There is no independent
+reviewer, verification Worker dispatch, correction loop, retry, or continuation
+inside the Run.  A success assertion is only an untrusted proposal: Coordinator
+Git/scope/commit checks and mandatory evidence decide whether completion is
+allowed.
+
+The programme must fail closed for an invalid/failed result, dirty or
+out-of-scope change, untrusted-commit failure, evidence error/failure, missing
+provider result, infrastructure interruption, or escalation.  Human authority
+or a separately authorized successor may address a stopped Run; it is not a
+second Simple invocation.
+
+Non-goals are a workflow DSL, catalogue/capability registry, evidence pipeline,
+P3.5 implementation, profile migration, Runtime promotion, changes to
+`direct@v1`/`robust@v1`, and a claim of generic historical compatibility.  The
+Level-0 planning record and active-work manifest identify `simple` as NEXT/MVP
+scope, not implemented work; that ordering and the Claude/token MVP items are
+unchanged.
+
+== 2. Current-code assessment with source references
+
+The following references were independently checked at the stated baseline;
+they are observations, not reused P3.5 line citations.
+
+* Commission parsing presently rejects Simple twice: `commission_intent_from_yaml`
+  has only Direct and Robust persona pairs at
+  `src/workflow_coordinator/commissioning.py:177-209`; `_load_sources` has only
+  their catalogue/template/component entries and rejects every other pair at
+  `:318-352`.  Rendering projects programme roles, evidence and scope slots at
+  `:367-425`, and labels the rendered WorkItem with programme id/revision at
+  `:433-440`.  There is therefore no Simple catalogue/template/Intent persona
+  binding today.
+* Preflight pins a clean expected HEAD and parses all governing inputs at
+  `operator.py:281-323`; it checks exact role/binding agreement, actions and
+  phase scope containment at `:324-367`, A1 governance/scope/hop relations at
+  `:138-201`, evidence-command definitions at `:204-218`, and prepares command
+  identities at `:451-467`.  `_prepared_evidence_plan` records command digest,
+  timeout, resolved executable/stat fingerprint and PATH digest at `:598-626`.
+* The current admission obstacle is precise: `_admit_evidence_disposition`
+  rejects every evidence-bearing phase unless it has a `gate` review and a
+  `failed_evidence_route` (`operator.py:123-135`).  It does *not* otherwise
+  require a second phase.  Direct happens to have `implement -> verification`
+  and Robust has review/correction phases because their closed records declare
+  them, not because `new_run` or `record_hop` requires two Hops
+  (`model.py:854-883`, `:886-914`).
+* `select_result_contract` selects `WORK_RESULT` for a Worker with no review,
+  `REVIEW_VERDICT` only for an independent reviewer with a review, and generic
+  routing otherwise (`model.py:654-702`).  Existing route effects already
+  include `complete`, `await_human`, and `stop` (`:118-123`); `_apply_route`
+  completes only when no blocking Finding remains (`reducer.py:1152-1188`).
+  Hence neither a new status nor a new terminal primitive is required.
+* The current vertical path already schedules evidence at the desired boundary:
+  it dispatches and validates the one agent result (`vertical.py:284-341`),
+  applies the trusted commit/scope boundary (`:342-413`), invokes evidence for
+  the *current phase* (`:414-424`), checks that evidence did not alter HEAD or
+  worktree (`:425-445`), then records/reduces the Hop (`:519-563`).  The serial
+  driver invokes `run_real_one_hop` once per dispatched Hop
+  (`operator.py:815-910`).  Thus evidence subprocess count must not be confused
+  with agent-invocation count.
+* Reduction makes mechanical facts controlling: errors preempt to
+  `awaiting_human` (`reducer.py:1621-1658`); a Worker `FAILED` also stops
+  (`:1660-1666`); unknown route and inappropriate changes-required are stopped
+  (`:1679-1692`).  Required evidence failure is routed before completion; absent
+  a legal gate failure route it stops `required_evidence_failed_without_route`
+  (`:1742-1757`).  Hop ceiling enforcement occurs before a route needing another
+  invocation (`:1806-1835`), while `Run.hop_remaining` is defined at
+  `model.py:649-651` and preflight applies the hard ceiling at
+  `operator.py:193-200`/`:368-371`.
+
+== 3. Proposed Simple programme and finite execution lifecycle
+
+The future immutable catalogue record is `governance/workflow-programs/simple/v1.yaml`.
+It has `roles: [worker]`, one `task-check-v1` evidence profile mapping only to
+`[task-check]`, no durable artifacts, scope slot `S`, and one `implement`
+phase:
+
+[source,yaml]
+----
+role: worker
+components: {role: [worker], modifiers: [], repository_policy: []}
+durable_artifact: none
+scope: S
+authorized_actions: [edit, commit]
+human_gates: []
+evidence: E
+review: null
+routes: {accept: {effect: complete}}
+----
+
+`E` is always `[task-check]`; Simple v1 deliberately has no `none` profile.
+The Worker returns the ordinary `work-result` v1 contract and may request only
+`accept` on its successful path.  The finite lifecycle is:
+
+`PREPARE/admit -> dispatch Worker once -> trusted commit/scope observation ->
+trusted evidence -> reduce -> COMPLETED | AWAITING_HUMAN | RECONCILE_REQUIRED`.
+
+No `goto` exists in this programme.  A human stop is terminal for autonomous
+Simple execution, rather than an instruction to dispatch the Worker again.
+
+== 4. Exact one-invocation contract
+
+Set `max_autonomous_hops: 1` in every Simple Intent and retain the normal
+hard/policy ceiling.  The operator dispatch loop counts provider calls through
+accepted Hops; a Simple run must record exactly H001 and no H002.  The Worker
+may inspect and self-check before submitting its one result, but its own check
+is not trusted evidence and cannot make a failed Coordinator observation pass.
+
+Terminal outcome mapping reuses existing states:
+
+* Valid Worker completion, trusted commit/scope checks, and all evidence pass:
+  `accept -> COMPLETE`.
+* Worker `blocked`, `failed`, escalation, or `requires_human`: existing
+  `AWAITING_HUMAN` stop (`result_blocked`, `result_failed`, or mechanical human
+  authority preemption).
+* Invalid result, commit/scope/Git/governing identity fault: existing mechanical
+  preemption to `AWAITING_HUMAN` (or `RECONCILE_REQUIRED` for uncertain
+  dispatch/recovery as currently owned by Slice 4).
+* Evidence fail/error/not-run: `AWAITING_HUMAN`, never `COMPLETE`.
+* Provider interruption/no validated candidate: preserve the current uncertain
+  dispatch/recovery outcome, not a fabricated completed Hop.
+
+== 5. Trusted evidence scheduling and failure behavior
+
+Three alternatives were assessed.
+
+A. Add a new post-Worker Coordinator evidence operation.  This could express
+the boundary explicitly but duplicates `vertical.run_one_hop`'s existing
+post-agent/pre-reduction observation, requires new persistence/recovery
+correlation rules, and risks creating a second orchestration subsystem.
+
+B. Reuse that existing seam for a review-less terminal Worker phase.  Evidence
+already executes after the agent and before reduction, with prepared command
+identity and execution evidence/provenance.  Its sole incompatibility is the
+over-broad preflight gate requirement above.
+
+C. Admit only a no-evidence Simple MVP.  It avoids code but contradicts the
+binding requirement that mandatory Coordinator validation/evidence remain and
+does not demonstrate failure behavior for a real required check.
+
+*Recommendation: B.*  Make one narrow, backward-compatible change to
+`_admit_evidence_disposition`: continue to admit the present gate-with-failure-
+route pattern unchanged, and additionally admit an evidence-bearing phase only
+when it is a review-less Worker *terminal phase*: its routes have no `goto` or
+supervisor route and include the closed programme's only `complete` route.
+For this shape, evidence failure deliberately takes the current reducer's
+fail-closed `required_evidence_failed_without_route` human stop rather than a
+correction route.  The compiler's exact Simple template supplies the stronger
+one-phase/`accept` shape; the admission predicate prevents an arbitrary
+evidence-bearing looping worker phase.  No new evidence type, runner, command
+format, or non-agent phase is added.
+
+This retains current profile/result contracts: Simple remains a Worker/no-review
+`WORK_RESULT`; the existing `MechanicalFacts.required_evidence_*` path decides
+after the evidence observation.  It has better recovery/provenance than a new
+hook because the staged execution-evidence record already includes required
+command identities and observations (`vertical.py:446-518`).
+
+== 6. Findings and terminal-state semantics
+
+FD-08 was not a reducer failure.  Its H002 opened F001; H004 requested accept
+but Direct's gate had `finding_authority: []`, so completion correctly stopped
+with `completion_blocked_by_open_blocking_findings` (BUG record
+§“FD-08”, especially lines 177-205).  A gate's disposition operations are
+independent of gate authority.
+
+Source inspection also establishes that lack of a review descriptor does *not*
+forbid creation.  `_finding_operation(None, OPEN)` is `None`
+(`reducer.py:470-486`), and legacy v1 processing allocates/records a new
+Finding without calling `_may_dispose` when that operation is `None`
+(`:566-618`).  `reduce_result` gives a review-less Worker `AGENT` authority
+and no disposition operations (`:1693-1721`), while `_may_dispose` permits
+only HUMAN or gate-listed operations (`:489-498`).
+
+Therefore Simple v1 permits a Worker to create a Run-native Finding, but only
+with constrained terminal semantics: it must report `blocked`/human escalation
+when its self-check identifies an issue; a blocking Finding also independently
+prevents `complete` (`:1145-1174`).  It cannot repair, review, or dispose it in
+another Simple Hop.  Human authority decides disposition or launches a new
+Commission; the successor cannot mutate the predecessor ledger.  This prevents
+the FD-08 silent-acceptance shape without pretending that a no-review phase
+cannot create Findings.  A non-blocking Finding may be recorded with a completed
+run; it is not an open *blocking* governance dead end.  P3.5's explicit
+creation capability and reachability check remain deferred, not prerequisites.
+
+== 7. Required minimal schema/compiler/operator/reducer changes, if any
+
+No profile/Run/result technical-schema bump, new `RunStatus`, route effect,
+evidence serialization, or reducer change is required for this slice.  The
+future implementation changes only:
+
+* add the immutable Simple catalogue record and its literal in-memory template;
+* add `("simple", "v1")` with `{worker}` to the two closed mappings in
+  `commissioning.py`, allowing exactly one Worker persona and no artifacts;
+* render the same schema-v2 profile/WorkItem/manifest shape and existing
+  programme provenance labels; and
+* make the narrow terminal-worker evidence exception in
+  `_admit_evidence_disposition`, with focused tests.
+
+The result remains `WORK_RESULT` v1, selected by existing `model.py:677-702`;
+the reducer's existing evidence failure and completion blocker guards enforce
+the semantics.  Direct and Robust catalogue literals, mappings and runtime
+behavior are unchanged.
+
+== 8. Comparison of alternatives and rationale for the chosen design
+
+The recommendation is smallest because it uses the existing trusted command
+preparation, execution, post-evidence Git check, Hop evidence record, reduction,
+and terminal statuses.  A new post-Hop operation would need an atomic boundary
+and recovery/provenance design; a synthetic second verification phase violates
+the product contract; a gate descriptor on the sole phase would retain
+unnecessary review semantics and select generic routing rather than the normal
+Worker contract; and no-evidence Simple does not meet the stated assurance
+goal.  The narrow admission relaxation is auditable, applies only to a terminal
+Worker evidence shape, and leaves both established programme revisions intact.
+
+== 9. Trust-boundary and provenance preservation
+
+The Worker never chooses evidence argv, timeout, executable identity, policy,
+route map, or programme revision.  Intent pins the programme/policy/component
+source commits; `_load_sources` requires byte-equivalent literal programmes
+(`commissioning.py:331-350`) and the renderer records source digests.  The
+Front Door check rerenders pinned sources and byte-compares the bundle before
+canonical preflight (`commissioning.py:490-539`).  Normal preflight retains
+clean HEAD, policy scope, governing input, role/binding and action checks.
+
+At execution the Coordinator owns trusted commit landing and allowed-path
+validation (`vertical.py:342-407`), evidence command execution and post-check
+repository observation (`:414-445`), and reduction.  A Worker self-check,
+summary, or evidence reference remains agent-attributed information, not proof
+that the Coordinator command passed.  The execution record retains adapter,
+executable/model/reasoning binding and required-evidence identity, preserving
+both executable and source provenance.
+
+== 10. Focused test and real dogfood acceptance plan
+
+The implementation WorkItem should add focused unit/integration tests that:
+
+* render/admit Simple with one Worker, one phase, `task-check`, no artifact,
+  `max_autonomous_hops: 1`; reject extra persona/artifact, `none` evidence,
+  modified route/evidence/action/Finding authority, or nonliteral programme;
+* instrument the adapter and evidence runner separately: exactly one adapter
+  invocation, while one Coordinator evidence subprocess is expected;
+* complete only when a valid Worker result, trusted in-scope commit, clean
+  post-evidence repository, and passing evidence are all present;
+* prove failing/error/not-run evidence cannot apply `accept`, scope-exceeding
+  changes/commit intent cannot complete, a provider missing result/interruption
+  does not fabricate completion, and an evidence-bearing Worker `goto` profile
+  is preflight-rejected;
+* prove a Worker-created blocking Finding stops completion/human-escalates and
+  is never silently terminally accepted; and
+* retain Direct and Robust render/preflight and their existing execution tests
+  unchanged as regressions, including programme/pin and executable provenance.
+
+First dogfood is one small real maintenance change with a bounded source/test
+scope and its actual task check, not a fixture that merely returns success.  Its
+acceptance record must show one provider invocation versus the separate command
+count, source commit/digests, binding/executable identity, commit/scope facts,
+and the trusted evidence observation.
+
+== 11. A proposed bounded implementation WorkItem with candidate file scope
+
+Proposed WorkItem title:: `WI-WFC-SIMPLE-V1-IMPLEMENTATION-001 -- admit and
+execute closed one-invocation simple@v1`.
+
+Candidate production scope::
+`governance/workflow-programs/simple/v1.yaml`,
+`src/workflow_coordinator/commissioning.py`,
+`src/workflow_coordinator/operator.py`, and focused existing commissioning/
+operator/vertical tests.  The separately rendered dogfood Commission inputs
+are generated outputs of that WorkItem, not a migration.  Excluded: model,
+reducer, serialization, evidence subsystem, Direct/Robust programme files,
+P3.5, backlog, and Runtime promotion unless a focused test proves the stated
+no-change assessment false.
+
+== 12. Unresolved decisions requiring maintainer authority
+
+* Whether Simple v1's sole mandatory evidence should be the current
+  repository-standard `task-check` only, as recommended, or whether a later
+  immutable Simple revision should define another closed evidence profile.
+* Whether non-blocking Worker-created Findings should be prohibited in a future
+  Simple revision.  Prohibiting them truthfully requires an explicit creation
+  capability/result restriction and is not silently supplied by this design.
+* Whether the narrow terminal-worker evidence admission remains an acceptable
+  shared Runtime rule after real dogfood.  It must not be broadened into a
+  generic post-phase pipeline without separate authority.
+* The capability/revision/schema/Runtime compatibility declaration and
+  retirement policy remain the separately recorded future Front Door work; this
+  design records all four dimensions but does not create that mechanism.
+
