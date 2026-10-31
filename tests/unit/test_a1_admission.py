@@ -7,14 +7,21 @@ from pathlib import Path
 
 import pytest
 
-from workflow_coordinator.model import EvidenceCommand, RepositoryPolicy, WorkItem, WorkflowRole
+from workflow_coordinator.model import (
+    EvidenceCommand,
+    RepositoryPolicy,
+    ResultContractKind,
+    WorkItem,
+    WorkflowRole,
+    select_result_contract,
+)
 from workflow_coordinator.operator import (
     OperatorPreflightError,
     _admit_a1,
     _admit_evidence_disposition,
 )
 from workflow_coordinator.serialization import workflow_profile_from_yaml
-from tests.support import phase, profile, route
+from tests.support import phase, profile, route, run_for
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
@@ -108,6 +115,38 @@ def test_evidence_disposition_admission_accepts_the_successful_p2_profile():
         / "governance/self-development/projected-result-contracts-p2-integration-completion-profile.yaml"
     )
     _admit_evidence_disposition(workflow_profile_from_yaml(profile_path.read_text()))
+
+
+def test_closed_terminal_worker_shape_is_the_only_reviewless_evidence_exception():
+    selected = replace(
+        phase({"accept": route("complete")}),
+        modifier_components=("simple-self-check",),
+        repository_policy_components=(),
+        evidence=("task-check",),
+    )
+    admitted = profile({"implement": selected})
+
+    _admit_evidence_disposition(admitted)
+    assert select_result_contract(admitted, selected, run_for(admitted)) is ResultContractKind.GENERIC_ROUTING_RESULT
+
+    invalid = (
+        replace(selected, routes={"accept": route("goto", "implement")}),
+        replace(selected, routes={"accept": route("complete", supervisor=True)}),
+        replace(selected, routes={"accept": route("await_human")}),
+        replace(selected, routes={"accept": route("complete"), "again": route("complete")}),
+        replace(selected, modifier_components=()),
+        replace(selected, routes={"stop": route("complete")}),
+        replace(selected, evidence=("other",)),
+    )
+    for candidate in invalid:
+        rejected = profile({"implement": candidate})
+        with pytest.raises(OperatorPreflightError, match="not a gate review"):
+            _admit_evidence_disposition(rejected)
+        assert select_result_contract(rejected, candidate, run_for(rejected)) is ResultContractKind.WORK_RESULT
+
+    extra_phase = profile({"implement": selected, "other": replace(selected, evidence=())})
+    with pytest.raises(OperatorPreflightError, match="not a gate review"):
+        _admit_evidence_disposition(extra_phase)
 
 
 @pytest.mark.parametrize(

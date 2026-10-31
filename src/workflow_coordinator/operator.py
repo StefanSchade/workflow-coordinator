@@ -42,6 +42,7 @@ from .model import (
     ExecutionEvidenceDocument,
     SuccessorProvenance,
     WorkflowRole,
+    is_closed_terminal_worker_shape,
     new_run,
 )
 from .persistence import (
@@ -124,6 +125,8 @@ def _admit_evidence_disposition(profile) -> None:
     """Require new profiles to make required-evidence failure routing explicit."""
     for phase_key, phase in profile.phases.items():
         if not phase.evidence:
+            continue
+        if is_closed_terminal_worker_shape(profile, phase):
             continue
         if phase.review is None or phase.review.authority is not ReviewAuthority.GATE:
             raise OperatorPreflightError(

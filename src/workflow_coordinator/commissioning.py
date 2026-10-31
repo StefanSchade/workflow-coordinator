@@ -202,9 +202,10 @@ def commission_intent_from_yaml(text: str) -> CommissionIntent:
     required_personas = {
         ("direct", "v1"): {"worker"},
         ("robust", "v1"): {"worker", "independent_reviewer"},
+        ("simple", "v1"): {"worker"},
     }.get((program.id, program.revision))
     if required_personas is None:
-        raise CommissionError("only the closed direct@v1 and robust@v1 programs are supported")
+        raise CommissionError("only the closed direct@v1, robust@v1, and simple@v1 programs are supported")
     personas = _mapping(data["personas"], context="Commission Intent.personas", required=required_personas)
     personas = {role: _text(value, context=f"Commission Intent.personas.{role}") for role, value in personas.items()}
     artifacts_raw = data["durable_artifacts"]
@@ -292,6 +293,18 @@ def _robust_template() -> dict[str, Any]:
     }
 
 
+def _simple_template() -> dict[str, Any]:
+    """The accepted simple@v1 literal record, excluding catalogue provenance."""
+
+    return {
+        "schema_version": 1, "program_id": "simple", "revision": "v1", "roles": ["worker"], "scope_slot": "S",
+        "evidence_profiles": {"task-check-v1": {"evidence": ["task-check"]}},
+        "phases": {
+            "implement": {"role": "worker", "components": {"role": ["worker"], "modifiers": ["simple-self-check"], "repository_policy": []}, "durable_artifact": "none", "scope": "S", "authorized_actions": ["edit", "commit"], "human_gates": [], "evidence": "E", "review": None, "routes": {"accept": {"effect": "complete"}}},
+        },
+    }
+
+
 def _repository_standard_v1_record(policy: Any) -> bool:
     """Return whether a parsed basis is the one immutable Direct-v1 basis.
 
@@ -319,11 +332,12 @@ def _load_sources(intent: CommissionIntent, repository: Path) -> tuple[dict[str,
     program_specs = {
         ("direct", "v1"): (_PROGRAM_PATH, _direct_template, {"worker"}),
         ("robust", "v1"): (_ROBUST_PROGRAM_PATH, _robust_template, {"worker", "reviewer"}),
+        ("simple", "v1"): ("governance/workflow-programs/simple/v1.yaml", _simple_template, {"worker", "simple-self-check"}),
     }
     try:
         program_path, expected_template, required_components = program_specs[(intent.program.id, intent.program.revision)]
     except KeyError as error:
-        raise CommissionError("only the closed direct@v1 and robust@v1 programs are supported") from error
+        raise CommissionError("only the closed direct@v1, robust@v1, and simple@v1 programs are supported") from error
     if (intent.policy_basis.id, intent.policy_basis.revision) != ("repository-standard", "v1"):
         raise CommissionError(f"{intent.program.id}@{intent.program.revision} requires repository-standard@v1")
     if intent.components_ref.path != _COMPONENT_MANIFEST_PATH:
@@ -442,7 +456,13 @@ def render_commission(intent: CommissionIntent, *, repository: Path | str, targe
     selected_components = {
         component: manifest[component].path
         for component in dict.fromkeys(
-            component for phase in program["phases"].values() for component in phase["components"]["role"]
+            component
+            for phase in program["phases"].values()
+            for component in (
+                *phase["components"]["role"],
+                *phase["components"]["modifiers"],
+                *phase["components"]["repository_policy"],
+            )
         )
     }
     source_digests = {

@@ -342,6 +342,66 @@ def test_validation_failure_retains_its_message_in_real_hop_run(repository, tmp_
     assert recovered.outcome_error == "truncated or invalid structured result"
 
 
+@pytest.mark.parametrize(
+    ("returncode", "timed_out"),
+    ((7, False), (0, True)),
+    ids=("nonzero-with-candidate", "timeout-with-candidate"),
+)
+def test_failed_provider_transport_with_a_valid_candidate_recovers_uncertain_without_evidence(
+    repository, tmp_path, returncode, timed_out
+):
+    state = tmp_path / "external"
+    association = register_checkout(state, repository)
+    workflow = profile({"work": replace(phase({"done": route("complete")}), evidence=("task-check",))})
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+    provider_calls = []
+    evidence_calls = []
+
+    class Adapter:
+        def execute(self, request):
+            provider_calls.append(request.invocation.hop_id)
+            return AgentExecutionOutcome(
+                json.dumps(_known_good_envelope(request.result_contract_kind)),
+                returncode,
+                timed_out,
+                "candidate was emitted",
+                "transport failed",
+            )
+
+    class Runner:
+        def observe(self, command):
+            evidence_calls.append(command.command_name)
+            return simulated_observation(command)
+
+    recovered = run_real_one_hop(
+        run,
+        workflow,
+        repository,
+        _components(),
+        state_root=state,
+        association=association,
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture worker",
+        task_payload="fixture",
+        invocation_id="INV-transport",
+        timeout_seconds=2,
+        adapter=Adapter(),
+        evidence_runner=Runner(),
+        evidence_commands=prepared_evidence(repository, ("task-check",)),
+    )
+    run_root = state / "checkouts" / association.checkout_id
+    assert provider_calls == ["H001"]
+    assert evidence_calls == []
+    assert recovered.vertical is None
+    assert recovered.run.status.value == "reconcile_required"
+    assert recovered.run.hop_used == 1
+    assert recovered.run.hops[-1].role == "uncertain_dispatch"
+    assert recovered.run.hops[-1].outcome == "uncertain"
+    assert recovered.run.current_head == head
+    assert (run_root / "dispatch.json").exists()
+
+
 def test_real_dispatch_schema_requested_route_tracks_the_live_phase_routes(repository, tmp_path):
     """H001 correction, wired end to end: the schema actually written for a real
     dispatch enumerates exactly the current phase's permitted routes, not a

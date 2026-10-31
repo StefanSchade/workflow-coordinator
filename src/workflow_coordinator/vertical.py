@@ -328,6 +328,11 @@ def run_one_hop(
         result_contract_kind=selected_result_contract,
         permitted_routes=permitted_route_keys(run, profile),
     ))
+    if outcome.returncode not in (None, 0) or outcome.timed_out:
+        raise ExecutionResultValidationError(
+            outcome,
+            "agent execution provider transport did not complete cleanly",
+        )
     if outcome.candidate_result is None:
         raise ExecutionResultValidationError(outcome, "agent execution produced no candidate structured result")
     try:

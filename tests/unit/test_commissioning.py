@@ -76,6 +76,29 @@ components_ref: {{path: governance/self-development/components.yaml, source_comm
 '''
 
 
+def simple_intent_text(head: str, *, evidence: str = "task-check-v1") -> str:
+    return f'''schema_version: 1
+commission_id: simple-commission-test
+work_item_id: WI-SIMPLE-COMMISSION-TEST
+authority_source: Maintainer authorizes the stated bounded simple test only.
+program: {{id: simple, revision: v1, source_commit: {head}}}
+task:
+  title: Simple Commission test
+  body: Render the accepted closed simple program.
+  acceptance: The rendered bundle admits without a provider call.
+  withheld_authority: Nothing outside the requested scope is authorized.
+  escalation_default: Use a typed scope escalation when another path is needed.
+scope: [src, tests]
+personas:
+  worker: Bounded worker persona.
+evidence_profile: {evidence}
+policy_basis: {{id: repository-standard, revision: v1, source_commit: {head}}}
+max_autonomous_hops: 1
+durable_artifacts: {{}}
+components_ref: {{path: governance/self-development/components.yaml, source_commit: {head}}}
+'''
+
+
 def robust_expected_phases(
     scope: list[str], broad_paths: list[str], focused_paths: list[str],
 ) -> dict:
@@ -133,6 +156,89 @@ def test_direct_render_is_deterministic_and_literal_for_both_evidence_profiles(r
     assert yaml.safe_load(none.texts[none.paths["profile"]])["phases"] == expected(["src"], [])
     assert yaml.safe_load(checked.texts[checked.paths["profile"]])["phases"] == expected(["tests"], ["task-check"])
     assert "independent_reviewer" not in checked.texts[checked.paths["profile"]]
+
+
+def test_simple_render_is_literal_and_selects_every_prompt_component(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = git(repository, "rev-parse", "HEAD")
+    intent = commission_intent_from_yaml(simple_intent_text(head))
+    rendered = render_commission(intent, repository=repository)
+
+    assert rendered.texts == render_commission(intent, repository=repository).texts
+    assert yaml.safe_load(rendered.texts[rendered.paths["work_item"]])["max_autonomous_hops"] == 1
+    assert yaml.safe_load(rendered.texts[rendered.paths["profile"]])["phases"] == {
+        "implement": {
+            "role": "worker",
+            "components": {"role": ["worker"], "modifiers": ["simple-self-check"], "repository_policy": []},
+            "durable_artifact": "none",
+            "authorized_actions": ["edit", "commit"],
+            "human_gates": [],
+            "evidence": ["task-check"],
+            "review": None,
+            "routes": {"accept": {"effect": "complete"}},
+            "authorized_scope": ["src", "tests"],
+        }
+    }
+    assert [entry["id"] for entry in rendered.manifest["sources"]["selected_components"]] == [
+        "worker", "simple-self-check"
+    ]
+    intent_path = "governance/commissions/simple-commission-test/intent.yaml"
+    (repository / intent_path).parent.mkdir(parents=True)
+    (repository / intent_path).write_text(simple_intent_text(head), encoding="utf-8")
+    rendered.write_to(repository)
+    git(repository, "add", ".")
+    git(repository, "commit", "-m", "test: materialize simple Commission projection")
+    monkeypatch.setenv("PATH", str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
+    verify_render_manifest(
+        intent_path,
+        repository=repository,
+        expected_head=git(repository, "rev-parse", "HEAD"),
+        evidence_runner=NoOpEvidenceRunner(),
+    )
+
+
+def test_simple_rejects_nonliteral_intent_and_pinned_modifier_mismatch_before_preflight(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = git(repository, "rev-parse", "HEAD")
+    for altered, match in (
+        (simple_intent_text(head, evidence="none"), "undefined"),
+        (simple_intent_text(head).replace("durable_artifacts: {}", "durable_artifacts: {implement: [src/x]}"), "forbidden"),
+        (simple_intent_text(head).replace("  worker: Bounded worker persona.\n", "  worker: Bounded worker persona.\n  observer: forbidden\n"), "forbidden"),
+    ):
+        with pytest.raises(CommissionError, match=match):
+            render_commission(commission_intent_from_yaml(altered), repository=repository)
+
+    program_path = repository / "governance/workflow-programs/simple/v1.yaml"
+    program_path.write_text(program_path.read_text(encoding="utf-8").replace("effect: complete", "effect: stop"), encoding="utf-8")
+    git(repository, "add", str(program_path.relative_to(repository)))
+    git(repository, "commit", "-m", "test: mutate simple program")
+    altered = simple_intent_text(head).replace(
+        f"source_commit: {head}", f"source_commit: {git(repository, 'rev-parse', 'HEAD')}", 1
+    )
+    with pytest.raises(CommissionError, match="closed simple@v1 literal record"):
+        render_commission(commission_intent_from_yaml(altered), repository=repository)
+
+    # Render from the original pins, then alter only the modifier at expected
+    # HEAD.  The complete selected-component traversal must refuse it before
+    # delegated operator preflight can run.
+    intent_path = "governance/commissions/simple-commission-test/intent.yaml"
+    (repository / intent_path).parent.mkdir(parents=True)
+    (repository / intent_path).write_text(simple_intent_text(head), encoding="utf-8")
+    rendered = render_commission(commission_intent_from_yaml(simple_intent_text(head)), repository=repository)
+    rendered.write_to(repository)
+    git(repository, "add", ".")
+    git(repository, "commit", "-m", "test: materialize simple Commission projection")
+    modifier = repository / "governance/self-development/prompts/simple-self-check.txt"
+    modifier.write_text(modifier.read_text(encoding="utf-8") + "\nchanged\n", encoding="utf-8")
+    git(repository, "add", str(modifier.relative_to(repository)))
+    git(repository, "commit", "-m", "test: mutate simple modifier")
+    calls = []
+    monkeypatch.setattr(commissioning, "_preflight", lambda *_args, **_kwargs: calls.append(True))
+    with pytest.raises(CommissionError, match="reused component differs"):
+        verify_render_manifest(intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"))
+    assert calls == []
 
 
 def test_robust_intent_roles_are_exactly_the_closed_program_roles(repository: Path) -> None:

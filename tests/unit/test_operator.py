@@ -1739,7 +1739,7 @@ sys.exit(1)
         "candidate_result_present": False,
         "diagnostics": [
             "Codex CLI exited 1",
-            "agent execution produced no candidate structured result",
+            "agent execution provider transport did not complete cleanly",
         ],
         "stdout_tail": f"{stdout_tail}\n",
         "stderr_tail": f"{stderr_tail}\n",
@@ -1906,7 +1906,7 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     assert diagnostic["stderr_tail"] == f"{stderr_tail}\n"
     assert failed["diagnostics"] == [
         "Codex CLI exited 1",
-        "agent execution produced no candidate structured result",
+        "agent execution provider transport did not complete cleanly",
     ]
     evidence_text = (run_root / "execution-evidence.json").read_text()
     summary_text = (state / "operator-summary.json").read_text()

@@ -651,6 +651,31 @@ class Run:
         return self.hop_limit - self.hop_used
 
 
+def is_closed_terminal_worker_shape(profile: WorkflowProfile, phase: Phase) -> bool:
+    """Return whether ``phase`` is the closed, review-less terminal Worker shape."""
+
+    if len(profile.phases) != 1 or profile.convergence is not None:
+        return False
+    if (
+        phase.role is not WorkflowRole.WORKER
+        or phase.review is not None
+        or phase.modifier_components != ("simple-self-check",)
+        or phase.evidence != ("task-check",)
+        or phase.convergence_role is not ConvergenceRole.NONE
+        or phase.normal_correction_route is not None
+        or phase.escape_route is not None
+        or set(phase.routes) != {"accept"}
+    ):
+        return False
+    accept = phase.routes["accept"]
+    return (
+        accept.effect is RouteEffect.COMPLETE
+        and accept.target is None
+        and accept.question is None
+        and not accept.supervisor
+    )
+
+
 def select_result_contract(
     profile: WorkflowProfile, phase: Phase, run: Run,
 ) -> ResultContractKind:
@@ -673,6 +698,8 @@ def select_result_contract(
         run.schema_version,
     )
     if phase.convergence_role is not ConvergenceRole.NONE:
+        return ResultContractKind.GENERIC_ROUTING_RESULT
+    if is_closed_terminal_worker_shape(profile, phase):
         return ResultContractKind.GENERIC_ROUTING_RESULT
     if phase.role is WorkflowRole.WORKER and phase.review is None:
         return ResultContractKind.WORK_RESULT

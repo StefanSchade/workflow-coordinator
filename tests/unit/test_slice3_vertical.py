@@ -32,8 +32,10 @@ from tests.support import (
     phase,
     profile,
     qualification_evidence,
+    prepared_evidence,
     route,
     run_for,
+    simulated_observation,
     tracked_convergence_run,
 )
 
@@ -452,6 +454,91 @@ def test_one_invocation_identity_is_projected_dispatched_and_validated(repositor
     assert adapter.request.result_contract_kind is ResultContractKind.WORK_RESULT
     for name, value in adapter.request.invocation.__dict__.items():
         assert f"{name}={value}" in adapter.request.prompt
+
+
+def test_closed_terminal_worker_runs_one_provider_call_and_separate_task_check(repository):
+    selected = replace(
+        phase({"accept": route("complete")}),
+        modifier_components=("simple-self-check",),
+        repository_policy_components=(),
+        evidence=("task-check",),
+        authorized_scope=("src",),
+    )
+    workflow = profile({"implement": selected})
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+    candidate = json.loads(envelope(
+        requested_route="accept",
+        commit_intent={
+            "paths": ["src/simple-change"],
+            "subject": "feat(workflow): WI-1 H001 simple change",
+        },
+    ))
+    candidate["result"].pop("status")
+    candidate["result"]["outcome"] = "completed"
+
+    class CountingAdapter(CapturingAdapter):
+        def __init__(self, payload, *, mutate=False):
+            super().__init__(json.dumps(payload))
+            self.calls = 0
+            self.mutate = mutate
+
+        def execute(self, request):
+            self.calls += 1
+            if self.mutate:
+                (request.repository / "src" / "simple-change").write_text("change\n")
+            return super().execute(request)
+
+    evidence_calls = []
+
+    class PassingRunner:
+        def observe(self, command):
+            evidence_calls.append(command.command_name)
+            return simulated_observation(command)
+
+    failed_candidate = json.loads(json.dumps(candidate))
+    failed_candidate["result"]["outcome"] = "failed"
+    failed_candidate["result"]["commit_intent"] = None
+    failed_adapter = CountingAdapter(failed_candidate)
+    failed = run_one_hop(
+        run,
+        workflow,
+        repository,
+        failed_adapter,
+        components(("worker", 1), ("simple-self-check", 1)),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture worker",
+        task_payload="tiny",
+        invocation_id="INV-1",
+        evidence_runner=PassingRunner(),
+        evidence_commands=prepared_evidence(repository, ("task-check",)),
+    )
+    assert failed_adapter.calls == 1
+    assert failed.reduction.run.status.value == "awaiting_human"
+    assert failed.reduction.run.stop_reason == "result_failed"
+
+    evidence_calls.clear()
+    adapter = CountingAdapter(candidate, mutate=True)
+    completed = run_one_hop(
+        run,
+        workflow,
+        repository,
+        adapter,
+        components(("worker", 1), ("simple-self-check", 1)),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture worker",
+        task_payload="tiny",
+        invocation_id="INV-1",
+        evidence_runner=PassingRunner(),
+        evidence_commands=prepared_evidence(repository, ("task-check",)),
+    )
+    assert adapter.calls == 1
+    assert evidence_calls == ["task-check"]
+    assert adapter.request is not None
+    assert adapter.request.result_contract_kind is ResultContractKind.GENERIC_ROUTING_RESULT
+    assert completed.reduction.run.status.value == "completed"
+    assert completed.reduction.run.hops[0].actual_commits
+    assert subprocess.run(("git", "-C", str(repository), "status", "--porcelain"), text=True, capture_output=True, check=True).stdout == ""
 
 
 @pytest.mark.parametrize("phase_key", ["diagnose", "reframe", "strategy"])
