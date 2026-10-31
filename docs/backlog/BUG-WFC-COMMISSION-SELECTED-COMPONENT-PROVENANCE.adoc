@@ -1,0 +1,190 @@
+= BUG-WFC-COMMISSION-SELECTED-COMPONENT-PROVENANCE -- Compiler Selected-Component Provenance Is Narrower Than Runtime Prompt Selection
+
+Type:: bug -- source-inspected provenance gap, not a reproduced defect
+Status:: open (documentation only; no correction commissioned or implemented)
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Next action:: Design and commission the bounded renderer-traversal completion
+below under a separately authorized WorkItem; add the stated negative test
+first.
+Not authorized here:: Any source, test, Runtime, or Evidence change; any
+claim that a real Commission has exploited this gap.
+Date:: 2026-10-31.
+Discovery context:: Source inspection performed while assessing implementation
+feasibility for the accepted `simple@v1` Level-0 architecture design
+(`docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31.adoc`
+§2, §7, §9), independently verified against current
+`src/workflow_coordinator/commissioning.py` and `src/workflow_coordinator/operator.py`
+at Development commit `a2051c5` (`a2051c5c3d606f89e567d9fe7b3f156e62382cf4`).
+Cross-reference:: Run `RUN-fd99befee6734b7aba04f94773013ddd`, Finding `F004`
+(originally opened at `H004`, resolved at `H007` by the focused review
+`docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31_focused_review.adoc`,
+and reconfirmed at `H008` by the final broad review
+`docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31_broad_review.adoc`
+§3.4).
+
+== What this is not
+
+No observed exploit exists. This record does not claim that the currently
+closed `direct@v1` or `robust@v1` programme records necessarily exercise the
+missing modifier/repository-policy path today: both catalogue literals
+currently declare empty `modifiers` and `repository_policy` lists in every
+phase (`commissioning.py:268-278` `_direct_template`, `:279-294`
+`_robust_template`), so the gap is currently latent for both existing
+programmes. It becomes concrete only for a *future* programme revision (such
+as the proposed `simple@v1`) whose closed template selects a non-empty
+`modifiers` or `repository_policy` list. This record documents a mismatch
+between two already-existing traversal definitions, not a demonstrated
+dispatch of unpinned content.
+
+This record does not characterize the Front Door pinned-blob comparison
+mechanism, `verify_render_manifest`, or canonical preflight as defective in
+general; the comparison loop itself is correct for every path it is given.
+The gap is that the renderer does not yet give it the complete set of paths
+that runtime prompt selection actually uses.
+
+== Observed current behavior (source-inspected)
+
+`render_commission`'s selected-component comprehension traverses only each
+phase's `components.role`:
+
+[source,python]
+----
+selected_components = {
+    component: manifest[component].path
+    for component in dict.fromkeys(
+        component for phase in program["phases"].values() for component in phase["components"]["role"]
+    )
+}
+----
+
+(`src/workflow_coordinator/commissioning.py:442-447`). That truncated
+`selected_components` mapping is the sole input to both the per-component
+source digest generation (`:448-452`, each entry hashed via
+`_git_text(repository, intent.components_ref.source_commit, path, ...)`) and
+the `sources.selected_components` manifest record (`:453-460`, included in
+`manifest_data["sources"]`). `verify_render_manifest`'s reused-input loop
+(`:514-518`) byte-compares only `intent.components_ref.path` and the paths
+already present in `rendered.manifest["sources"]["selected_components"]`
+against their pinned sources -- i.e., it can only check what the renderer
+put there.
+
+In contrast, the runtime operator's `_selected_ids` traverses all three
+component categories per phase:
+
+[source,python]
+----
+def _selected_ids(profile) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(
+        component_id
+        for phase in profile.phases.values()
+        for component_id in (*phase.role_components, *phase.modifier_components, *phase.repository_policy_components)
+    ))
+----
+
+(`src/workflow_coordinator/operator.py:107-112`). Preflight (`:437-446`)
+loads every one of those IDs from the manifest at `args.expected_head` and
+makes each one a governing input, independent of whatever the render
+manifest recorded.
+
+Because the renderer's digest/manifest generation and the Front Door's
+byte-comparison loop only ever see the role-only set, a future programme
+revision whose closed template selects a non-empty `modifiers` or
+`repository_policy` list for some phase would have that component's bytes
+dispatched to the provider (since operator-side `_selected_ids` and prompt
+assembly do include it) without the Front Door ever having byte-compared it
+against the Intent's pinned component source object. The provenance
+invariant that every prompt-shaping input is source-pinned and verified
+before dispatch would be silently incomplete for exactly that component
+category.
+
+== Why this is undesirable
+
+The stated provenance invariant for Commission admission is that every
+prompt component capable of shaping Worker behavior is recorded in the
+render manifest with its pinned-source digest and byte-compared against the
+Intent's pinned component source object before admission
+(`docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31_focused_review.adoc`
+§3.1, stated invariant). The current renderer traversal does not meet that
+invariant for any component selected only via `modifiers` or
+`repository_policy`: such a component could differ between the Intent's
+pinned `components_ref.source_commit` and `expected_head` at operator
+preflight time without Front Door detecting the mismatch, because the
+renderer never added that path to the set being compared in the first
+place. This is a provenance *gap*, not a currently reachable dispatch of
+tampered content, because no closed programme record exercises a non-empty
+`modifiers`/`repository_policy` list today.
+
+== Proposed correction (not authorized by this record)
+
+Replace the role-only comprehension in `render_commission`
+(`commissioning.py:442-446`) with a deterministic traversal of `role`,
+`modifiers`, then `repository_policy`, in that order, for every phase, with
+first-reference deduplication (reusing the existing `dict.fromkeys`
+idiom) -- i.e., matching `_selected_ids`'s category order exactly. Feed that
+complete, ordered set into the existing digest generation and
+`sources.selected_components` producers unchanged; no new manifest field,
+pinning service, or admission phase is introduced. The existing
+`verify_render_manifest` reused-input loop (`:513-518`) then automatically
+byte-compares every selected category because it iterates whatever
+`sources.selected_components` contains.
+
+This is the same correction already specified for `simple@v1` in
+`docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31.adoc`
+§7, independently reviewed and accepted at `H007`/`H008` of
+`RUN-fd99befee6734b7aba04f94773013ddd`. This record exists separately
+because the underlying mismatch is a general compiler/operator provenance
+gap, not a `simple`-specific defect: it should be tracked and correctable on
+its own terms even if `simple@v1` implementation were deferred indefinitely.
+
+== Required negative test (not yet written)
+
+A correction commission must add, at minimum, the construction specified by
+the design's §10: a pinned component manifest whose modifier (or
+repository-policy) component bytes differ between
+`intent.components_ref.source_commit` and `expected_head`, for a programme
+template with a non-empty `modifiers` or `repository_policy` list. Assert
+that Front Door rejects it (via the existing `verify_render_manifest`/
+`commissioning.py:490-518` comparison) before any operator dispatch. Assert
+that `direct@v1` and `robust@v1` render output remains byte-identical after
+the correction, since their `modifiers`/`repository_policy` lists are empty
+in every phase today -- this makes the regression concrete rather than
+aspirational.
+
+== Non-scope
+
+This record does not authorize:
+
+* any change to `src/workflow_coordinator/commissioning.py`, `operator.py`,
+  or any test;
+* a new manifest schema, pinning service, admission phase, or prompt
+  registry;
+* any claim that `direct@v1` or `robust@v1` have been dispatched with
+  unpinned content; both are currently unaffected because their templates
+  select no modifier or repository-policy components; or
+* a WorkItem, Profile, Policy, or WFC Run of any kind.
+
+== Evidence / provenance
+
+* `src/workflow_coordinator/commissioning.py:268-278` (`_direct_template`),
+  `:279-294` (`_robust_template`), `:442-460` (`render_commission` selected-
+  component comprehension and digest/manifest generation), `:490-539`
+  (`verify_render_manifest`, reused-input comparison loop at `:514-518`).
+* `src/workflow_coordinator/operator.py:107-112` (`_selected_ids`),
+  `:437-446` (preflight component loading from `expected_head`).
+* Design and review cross-reference:
+  `docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31.adoc`
+  §2, §7, §9, §10;
+  `..._focused_review.adoc` §§2-3 (F004 disposition, "resolved" against the
+  *proposed* design, not against current unmodified source);
+  `..._broad_review.adoc` §3.4.
+
+== Lifecycle
+
+This BUG is *open* and *documentation only*. No WorkItem, profile, policy, or
+Run exists for it. It is recorded as a prerequisite for safe `simple@v1`
+implementation (see the design's §7 and §9, and the implementation-boundary
+handoff note
+`docs/warm_storage/concepts/workflow_coordinator_simple_v1_implementation_boundary_handoff_2026-10-31.adoc`),
+not because `simple@v1` is the only programme capability that could someday
+need it. It must not be marked resolved until a correction is designed,
+reviewed, implemented, and the negative test above passes.

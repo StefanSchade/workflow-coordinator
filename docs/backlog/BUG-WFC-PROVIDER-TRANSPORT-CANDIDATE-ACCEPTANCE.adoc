@@ -1,0 +1,206 @@
+= BUG-WFC-PROVIDER-TRANSPORT-CANDIDATE-ACCEPTANCE -- A Correlated Candidate Result Is Validated Before Provider Transport Is Checked
+
+Type:: bug -- source-inspected possibility, not a reproduced defect
+Status:: open (documentation only; no correction commissioned or implemented)
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Next action:: Design and commission the bounded early-guard correction below under
+a separately authorized WorkItem; add the stated negative tests first.
+Not authorized here:: Any source, test, Runtime, or Evidence change; any claim
+that this has been observed in a real Run.
+Date:: 2026-10-31.
+Discovery context:: Source inspection performed while assessing implementation
+feasibility for the accepted `simple@v1` Level-0 architecture design
+(`docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31.adoc`
+§2, §4, §8), independently verified against current
+`src/workflow_coordinator/vertical.py` and `src/workflow_coordinator/slice4.py`
+at Development commit `a2051c5` (`a2051c5c3d606f89e567d9fe7b3f156e62382cf4`).
+Cross-reference:: Run `RUN-fd99befee6734b7aba04f94773013ddd`, Findings `F002`/`F004`
+(final broad review
+`docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31_broad_review.adoc`
+§3.2; focused review
+`docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31_focused_review.adoc`).
+
+== What this is not
+
+No reproducing test exists and no actual incident has been observed. This
+record is a source-inspected possibility, independently confirmed by direct
+reading of the current code at the stated Development commit, not an
+empirical defect report. It does not characterize the existing
+`recover_uncertain`/uncertain-dispatch recovery mechanism, `DEC-WFC-013`, or
+the fail-closed `reconcile_required` outcome as defective; that mechanism is
+sound for the case it currently covers (no candidate present). This record is
+narrowly about the case where a candidate *is* present despite failed
+provider transport.
+
+This record does not characterize a Worker-reported task failure
+(`outcome: failed` in a correlated, valid structured result) as a defect of
+any kind. That is working as intended and is a distinct code path from the
+one described here. The defect under investigation is specifically that the
+Coordinator does not yet distinguish "the provider process itself did not
+complete cleanly" from "the provider process completed and returned a
+semantically valid result" before deciding whether that result's meaning
+matters.
+
+== Observed current behavior (source-inspected)
+
+`src/workflow_coordinator/vertical.py`'s `run_one_hop` calls
+`adapter.execute(...)` and binds the full `AgentExecutionOutcome` to
+`outcome` (`vertical.py:324-329`). It then branches only on
+`outcome.candidate_result`:
+
+[source,python]
+----
+outcome = adapter.execute(AgentExecutionRequest(...))
+if outcome.candidate_result is None:
+    raise ExecutionResultValidationError(outcome, "agent execution produced no candidate structured result")
+try:
+    result = validated_result(
+        outcome.candidate_result, invocation, selected_result_contract_version, selected_result_contract,
+    )
+except ResultValidationError as error:
+    raise ExecutionResultValidationError(outcome, str(error)) from error
+----
+
+(`vertical.py:324-341`). `AgentExecutionOutcome` (`adapter.py:61-73`) carries
+`candidate_result: str | None`, `returncode: int | None`, and
+`timed_out: bool` as independent fields. Nothing between `adapter.execute`
+returning and `validated_result` being invoked reads `outcome.returncode` or
+`outcome.timed_out`. If a provider process exits nonzero, or times out, but
+still emits a syntactically valid, schema-conformant structured result on its
+output channel before terminating, `outcome.candidate_result` is non-`None`
+and `validated_result` succeeds. Parsing then proceeds into the trusted
+commit/scope boundary (`vertical.py:342-413`), Coordinator evidence
+(`:414-424`), the post-evidence repository check (`:425-445`), and reduction
+(`:519-563`) exactly as if provider transport had completed normally.
+
+Both `outcome.returncode` and `outcome.timed_out` are read later, but only
+for untrusted operational diagnostics: `operator.py`'s `_summary` (around
+`:999-1002`) and `_best_effort_failure_summary` (around `:1044-1047`) each
+fold them into a `provider` dict as best-effort telemetry (consistent with
+the existing propagation gap described in
+`BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION.adoc`), not as a controlling input
+to whether the candidate is acted upon.
+
+`slice4.py`'s `run_real_one_hop` already has a no-replay recovery path for
+exactly the case this record is concerned with keeping distinct: catching
+`ExecutionResultValidationError` and calling `recover_uncertain(error.outcome, str(error))`
+(`slice4.py:390`), which retains the charged dispatch via
+`recover_uncertain_dispatch` and does not dispatch a replacement Worker
+(`slice4.py:332-354`). That recovery path is only reached today when
+`candidate_result is None` or fails schema validation -- not when a
+nonzero-exit or timed-out transport still yields a validator-passing
+candidate.
+
+== Why this is undesirable
+
+A provider process that exits nonzero or times out has not demonstrated that
+it completed its invocation cleanly. Treating any syntactically valid output
+it happened to emit as an authoritative semantic result conflates two
+distinct facts that the current data model already keeps separate
+(`AgentExecutionOutcome.returncode`/`timed_out` vs. `candidate_result`): that
+the provider *transport* completed, and that the provider *produced a
+result*. A result correlated with failed transport should not be trusted
+merely because it parses -- the process's own abnormal exit means the
+Coordinator has no basis for confidence that the output is complete, was not
+truncated or interleaved with a crash, or reflects the provider's actual
+final state. This is distinct from, and must not be confused with, a Worker
+that completes cleanly and *reports* `outcome: failed` -- that is a
+correlated, trusted-transport result and must continue to be accepted and
+routed normally.
+
+This is a general shared-execution-invariant gap in the current vertical
+Hop boundary -- it is not specific to any one programme capability -- but it
+is surfaced here because the accepted `simple@v1` design (§4, §8) explicitly
+requires it as a precondition: Simple's exactly-one-invocation contract
+depends on failed provider transport never completing a Hop, since there is
+no independent reviewer able to catch a wrongly-accepted candidate
+afterward.
+
+== Proposed correction (not authorized by this record)
+
+Add an early guard immediately after `adapter.execute` returns in
+`vertical.run_one_hop`, before `outcome.candidate_result` is read or
+`validated_result` is called: if `outcome.returncode` is truthy and nonzero,
+or `outcome.timed_out` is `True`, raise the existing
+`ExecutionResultValidationError(outcome, ...)` unconditionally, regardless of
+whether `outcome.candidate_result` is present. This reuses the existing
+exception type and the existing no-replay `recover_uncertain` path in
+`slice4.run_real_one_hop` (`slice4.py:386-390`) without introducing a new
+recovery state, retry mechanism, evidence schema, or Worker-failure
+taxonomy. The dispatch marker and recovered `uncertain_dispatch` Hop remain
+the durable recovery record, exactly as they are today for the
+already-handled missing-candidate case; only the guard's trigger condition
+widens.
+
+This preserves the existing boundary completely: no trusted commit, no
+Coordinator evidence subprocess, and no `record_hop`/reduction may run for a
+Hop whose provider transport did not complete cleanly, matching the
+"provider-transport acceptance before any candidate is acted upon" invariant
+already stated for the Coordinator in
+`docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31.adoc`
+§9.
+
+== Required negative tests (not yet written)
+
+A correction commission must add, at minimum:
+
+* a nonzero-`returncode`-with-valid-correlated-candidate case: assert no
+  trusted commit, no evidence subprocess, and no reduction to a completed Hop
+  occurs; assert exactly one provider call is charged; assert the dispatch
+  marker and recovered `uncertain_dispatch` Hop remain; assert the local
+  diagnostic still records the transport fact.
+* a `timed_out=True`-with-valid-correlated-candidate case with the same
+  assertions.
+* a regression proving the existing missing-candidate and
+  schema-invalid-candidate paths are unchanged.
+* a regression proving a clean-transport (`returncode == 0`,
+  `timed_out is False`) candidate with a correlated `outcome: failed` result
+  is still accepted as a valid, routable Worker result (i.e., the guard must
+  not be confused with, or substitute for, ordinary Worker-failure handling).
+
+== Non-scope
+
+This record does not authorize:
+
+* any change to `src/workflow_coordinator/vertical.py`, `slice4.py`,
+  `adapter.py`, `codex_adapter.py`, or any test;
+* any claim about why a provider process might exit nonzero or time out while
+  still emitting a candidate, or any provider-side root-cause taxonomy;
+* any change to the existing `recover_uncertain`/`DEC-WFC-013` salvage
+  semantics beyond widening this one guard's trigger condition;
+* any Worker-failure (`outcome: failed`) handling change; that path is
+  working as intended and is explicitly out of scope; or
+* a WorkItem, Profile, Policy, or WFC Run of any kind.
+
+== Evidence / provenance
+
+* `src/workflow_coordinator/vertical.py:280-341` (`run_one_hop`, the
+  insertion boundary).
+* `src/workflow_coordinator/adapter.py:19-25`
+  (`ExecutionResultValidationError`), `:61-73` (`AgentExecutionOutcome`).
+* `src/workflow_coordinator/slice4.py:332-354` (`recover_uncertain`),
+  `:390` (the `ExecutionResultValidationError` catch site).
+* `src/workflow_coordinator/operator.py:995-1002` (`_summary`'s `provider`
+  dict), `:1038-1047` (`_best_effort_failure_summary`'s `provider` dict),
+  confirming `returncode`/`timed_out` are read only as telemetry today.
+* Design and review cross-reference:
+  `docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31.adoc`
+  §2 ("one required transport correction"), §4, §8, §9;
+  `..._broad_review.adoc` §3.2 (F002, "remains resolved" against the
+  *proposed* design, not against current unmodified source);
+  `..._focused_review.adoc`.
+* Related but distinct record:
+  `docs/backlog/BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION.adoc` (diagnostic
+  *legibility* after a stop, not candidate *acceptance* before one).
+
+== Lifecycle
+
+This BUG is *open* and *documentation only*. No WorkItem, profile, policy, or
+Run exists for it. It is recorded as a prerequisite for safe `simple@v1`
+implementation (see the design's §2 and §8, and the implementation-boundary
+handoff note
+`docs/warm_storage/concepts/workflow_coordinator_simple_v1_implementation_boundary_handoff_2026-10-31.adoc`),
+not because `simple@v1` is the only programme capability affected: the guard
+is a shared vertical-Hop invariant and benefits `direct@v1` and `robust@v1`
+equally. It must not be marked resolved until a correction is designed,
+reviewed, implemented, and the negative tests above pass.
