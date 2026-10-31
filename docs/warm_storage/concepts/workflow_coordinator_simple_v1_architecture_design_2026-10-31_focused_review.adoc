@@ -1,18 +1,18 @@
-= Independent focused review -- corrected `simple@v1` Level-0 architecture design
+= Independent focused review -- Simple prompt-provenance correction
 :toc:
 :toclevels: 3
 :sectnums:
 
 Status:: *ACCEPT.*
 WorkItem:: `WI-WFC-SIMPLE-V1-ARCHITECTURE-001`.
-Run / Hop:: `RUN-fd99befee6734b7aba04f94773013ddd` / `H004`.
+Run / Hop:: `RUN-fd99befee6734b7aba04f94773013ddd` / `H007`.
 Reviewed candidate::
 `docs/warm_storage/concepts/workflow_coordinator_simple_v1_architecture_design_2026-10-31.adoc`
-at commit `12d2bf8bad510cb551ed34f0041feb771f465bd9`.
+at commit `3f0dac6fcbe571d2dda984b5b456934673b03798`.
 Reviewed correction range::
-`e49de08dc21139b4e93636681af2d694341eadd6..12d2bf8bad510cb551ed34f0041feb771f465bd9`.
-Review phase:: Independent focused rereview of Current-Run Findings `F001`--`F003`
-and the complete nine-point mandate.
+`ddf15c16a12bc968493ff0dfccc201af45ec847e..3f0dac6fcbe571d2dda984b5b456934673b03798`.
+Review phase:: Independent focused rereview of Current-Run Finding `F004`, plus
+regression against the complete nine-point mandate.
 Date:: 2026-10-31.
 
 == 1. Disposition
@@ -20,203 +20,160 @@ Date:: 2026-10-31.
 Outcome:: `accept`
 Route:: `renew_broad_review`
 
-All three Current-Run blocking Findings are resolved.  The correction makes
-Worker-reported failure representable without widening Work-result v1, makes
-failed provider transport controlling before candidate acceptance, and makes
-the same-invocation self-check an immutable Simple-only prompt component.  The
-changed implementation boundary is still one bounded vertical slice: one
-Worker dispatch, the existing Coordinator evidence seam, one narrow closed-
-shape admission/selector predicate, and existing terminal/recovery primitives.
+Current-Run blocking Finding `F004` is resolved.  The corrected design no
+longer assumes that the existing role-only selected-component traversal pins a
+Simple modifier.  It identifies the actual renderer/operator mismatch, requires
+one bounded completion of the existing renderer traversal, retains the existing
+Front Door pinned-blob comparison, and adds the negative test that exposes the
+original counterexample.
 
-No new blocking Finding was found.  This review authoritatively proposes:
+No new blocking Finding was found.  Prior Findings `F001`--`F003` remain
+resolved: this correction does not change the selected generic result family,
+provider-transport guard, or mandatory same-invocation self-check behavior.
+This review authoritatively proposes `F004: resolved`.
 
-* `F001`: `resolved`;
-* `F002`: `resolved`; and
-* `F003`: `resolved`.
+The inspection and checks recorded here are reviewer-side diagnostic evidence.
+They do not replace the Coordinator-owned `task-check` evidence.
 
-The source inspection and checks recorded here are reviewer-side diagnostic
-evidence.  The Commission's `task-check` remains Coordinator-owned trusted
-evidence and is not replaced by this review.
+== 2. Adversarial review method
 
-== 2. Focused review method
+The rereview compared the correction with the actual source selection and
+admission seams at the reviewed HEAD, then attempted to preserve the F004
+counterexample: pin the component manifest at one commit, change only the
+Simple modifier bytes at expected HEAD, and allow those changed bytes to enter
+the dispatched prompt.
 
-The rereview inspected the corrected design and independently re-walked the
-current selection, projection, execution, recovery, reduction, Finding, and
-prompt-component seams at the reviewed HEAD.  In particular it tested whether
-each correction is expressible using admitted current objects rather than only
-desirable prose:
+The relevant current behavior is:
 
-* `WorkflowProfile` and `Phase` expose profile identity, phase count, role,
-  components, evidence, review, convergence, and routes
-  (`model.py:243-272`), so one shared closed-Simple predicate can be evaluated
-  by `select_result_contract` and evidence preflight;
-* generic routing v1 projects all four `Outcome` values and the phase's closed
-  route enum (`codex_adapter.py:105-121, :197-205`), parses `failed`
-  (`serialization.py:1214-1287`), and persists result-family identity on the
-  Hop before reduction (`vertical.py:519-543`);
-* transport return code and timeout are available immediately from
-  `adapter.execute` (`vertical.py:324-341`), before trusted commit, evidence,
-  Hop recording, or reduction; and
-* the existing `ExecutionResultValidationError` handler enters
-  `recover_uncertain`, retains the dispatch marker, charges the uncertain Hop,
-  and does not replay the provider (`slice4.py:332-354, :390-399`).
+* `render_commission` traverses only every phase's `components.role`, preserves
+  first-reference order through `dict.fromkeys`, and uses that truncated set for
+  both component source digests and `sources.selected_components`
+  (`src/workflow_coordinator/commissioning.py:442-460`).
+* Runtime `_selected_ids` traverses every phase and, within each phase, role,
+  modifier, then repository-policy components, also deduplicating in first-
+  reference order (`src/workflow_coordinator/operator.py:107-112`).  Preflight
+  loads every such selected component from expected HEAD and makes it a
+  governing input (`operator.py:437-446`).
+* `verify_render_manifest` rerenders from pinned sources and byte-compares the
+  five rendered targets, but its reused-input loop can compare only the
+  component-manifest path and the selected-component paths the renderer put in
+  the manifest (`commissioning.py:490-518`).
 
-The review also rechecked that evidence remains after the one provider call and
-trusted commit/scope observation but before reduction (`vertical.py:342-445,
-:519-563`), and that a review-less Worker can still create a legacy v1 Finding
-while lacking disposition authority (`reducer.py:470-498, :566-618,
-:1693-1721`).
+Therefore the defect is neither in prompt assembly nor in the pinned-blob loop.
+It is the renderer's incomplete input set.  The correction targets that exact
+seam: design lines 281-290 require a deterministic phase traversal of `role`,
+`modifiers`, then `repository_policy`, with first-reference deduplication, and
+require the existing digest and manifest generation to consume the complete
+set.  That ordering matches `_selected_ids`, so there is no second component
+selection definition with different semantics.
 
-== 3. Finding dispositions
+== 3. Finding disposition
 
-=== 3.1 F001 -- Worker-reported failure is representable
-
-Disposition:: *Resolved.*
-
-The correction no longer selects Work-result v1 for Simple.  It identifies the
-current `WorkStatus` limitation and instead selects existing generic routing v1
-only for the exact closed Simple shape (design lines 69-82, 141-146, 213-230,
-261-313).  This is mechanically representable:
-
-* generic strict projection includes `Outcome.FAILED`
-  (`codex_adapter.py:197-205`);
-* `routing_result_from_data` parses it (`serialization.py:1214-1287`);
-* persisted result-family identity makes reducer/replay disagreement fail
-  closed (`reducer.py:1541-1581`); and
-* `Outcome.FAILED` stops at `result_failed` before route or Finding proposals
-  can take effect (`reducer.py:1660-1663`).
-
-The design explicitly avoids a technical-schema bump, a new result family, and
-a silent widening of Work-result v1.  Its focused tests require the dispatched
-generic family, a correlated failed result, `result_failed`, and no second
-invocation (design lines 356-359).  The implementation scope now includes the
-model selector and adapter-facing tests (lines 386-398).
-
-One wording precision is non-blocking: line 146 says only `completed` may
-_request_ `accept`, while generic routing v1 requires `requested_route` for
-every outcome and the sole enum value is `accept`.  Mechanically, a failed or
-blocked result carries that inert route value, and the reducer stops it before
-route application (`reducer.py:1660-1663, :1738-1740`).  The enforceable claim
-is therefore that only completed can have `accept` applied.  The surrounding
-contract and required tests use that safe behavior and do not depend on a
-conditional route field, so this imprecision does not reopen F001.
-
-=== 3.2 F002 -- failed provider transport controls valid leftover candidates
+=== 3.1 F004 -- every closed Simple prompt component is source-pinned
 
 Disposition:: *Resolved.*
 
-The correction identifies the exact present hole and requires an immediate
-guard after `adapter.execute`: either nonzero `returncode` or `timed_out` raises
-`ExecutionResultValidationError` before candidate parsing, trusted commit,
-evidence, `record_hop`, or reduction (design lines 90-99, 172-186, 279-284,
-315-319).  This is the correct lifecycle boundary.  It makes the transport fact
-controlling even when the candidate bytes are otherwise valid.
+Invariant:: Every prompt component supplying closed Simple programme behavior
+is recorded in the render manifest with its pinned-source digest and is byte-
+compared against the Intent's pinned component source object before admission.
 
-The selected recovery behavior is already available and preserves the
-one-invocation contract: `run_real_one_hop` catches that exact exception and
-calls `recover_uncertain` (`slice4.py:390-391`); recovery observes the repository,
-records an uncertain dispatch and checkpoint, retains the marker, and returns
-without another adapter call (`:332-354`).  The correction does not misclassify
-the leftover candidate as Worker failure or qualifying evidence.
+The corrected design satisfies the invariant in four independently enforceable
+parts:
 
-The negative tests now separately require nonzero-with-valid-correlated-
-candidate and timeout-with-valid-correlated-candidate cases.  Each must prove
-no trusted commit, evidence, or completion reduction, exactly one charged
-provider call, retained recovery state, and transport diagnostics (design lines
-364-369).  That directly closes the broad-review counterexample.
+. It now documents the current mismatch rather than claiming protection that
+  does not exist (`design:56-66`).
+. The implementation prescription expands only the existing
+  `render_commission` traversal to all three component categories already used
+  by runtime selection, and makes the existing source-digest and
+  `selected_components` producers consume that same ordered set
+  (`design:279-290`).
+. The trust-boundary section explicitly retains rerendering, rendered-bundle
+  equivalence, and the current reused-component pinned-blob comparison before
+  canonical preflight (`design:341-364`;
+  `commissioning.py:490-539`).
+. The negative test uses the original counterexample: a pinned component
+  manifest plus modifier bytes that differ between
+  `components_ref.source_commit` and expected HEAD must be rejected before
+  operator dispatch (`design:366-381`).  It additionally requires every
+  selected category to be rendered and byte-checked.
 
-=== 3.3 F003 -- the closed programme projects the mandatory self-check
+The correction is minimal.  It adds no second manifest, pinning service,
+admission phase, or prompt registry.  The existing pinned-source read supplies
+the digest; the existing manifest record carries it; and the existing Front
+Door loop performs the expected-HEAD-versus-pinned-object comparison.  The
+current Direct-v1 and Robust-v1 catalogue records have empty `modifiers` and
+`repository_policy` lists in every phase, so the specified byte-identical
+render-manifest regression is concrete rather than aspirational.
 
-Disposition:: *Resolved.*
+The counterexample can no longer pass under the proposed design: once the
+Simple modifier path is in `sources.selected_components`, its changed expected-
+HEAD bytes fail the existing comparison at `commissioning.py:514-518` before
+`_preflight` is called at `:519-539`.  This closes F004 without changing the
+one-invocation lifecycle or trusting the Worker's self-assessment.
 
-The corrected programme selects `[simple-self-check]` as its sole modifier
-(design lines 112-139).  The proposed immutable component text requires the
-bounded self-check before the sole result, distinguishes task failure from an
-authority/dependency block, and explicitly does not claim trusted evidence.
-This makes self-check programme-declared behavior rather than optional task
-prose.
-
-The future scope includes the new prompt, component-manifest entry, literal
-Simple record, compiler requirement, and normal source digest/equivalence
-protection (design lines 266-270, 336-339, 386-395).  The tests reject a
-missing/altered component or digest, assert its presence in the dispatched
-Simple prompt, and assert unchanged Direct/Robust projection (lines 346-351).
-The shared Worker component and both existing programme revisions remain
-untouched.
-
-== 4. Complete nine-point mandate ledger
+== 4. Complete nine-point mandate regression
 
 [cols="2,5",options="header"]
 |===
 |Mandate |Focused-review result
 
 |Exactly one agent invocation
-|Pass.  The one-phase profile has one terminal route and no `goto`, supervisor,
-reviewer, retry, or continuation.  `max_autonomous_hops` is one.  The tests
-instrument adapter calls separately from the evidence runner and require one of
-each; an evidence subprocess is not counted as an agent invocation.
+|Pass.  The correction changes only compiler provenance design.  Simple still
+has one Worker phase, one terminal route, `max_autonomous_hops: 1`, no reviewer,
+retry, correction route, or continuation.  Tests count adapter calls separately
+from Coordinator evidence subprocesses.
 
 |No undocumented second invocation on failure
-|Pass.  Worker block/failure, escalation, mechanical preemption, evidence
-failure, and an open blocking Finding stop.  Invalid/missing results and failed
-transport enter charged uncertain-dispatch recovery with no replay.  No stated
-failure path targets another phase.
+|Pass.  Worker failure/block, escalation, mechanical refusal, evidence failure,
+open blocking Finding, and uncertain provider transport all stop without a
+second dispatch.  The provenance mismatch is rejected before dispatch.
 
 |Evidence lifecycle boundary
-|Pass.  The selected alternative reuses `vertical.run_one_hop`: provider result,
-trusted commit/scope observation, Coordinator evidence, post-evidence repository
-check, Hop recording, then reduction.  Evidence failure reaches the existing
-fail-closed no-route human stop and cannot apply `accept`.
+|Pass.  Alternative B remains unchanged: trusted evidence follows provider
+result and trusted commit/scope observation, precedes reduction, and cannot be
+overridden by `accept`.
 
 |Representable and enforceable result/route contract
-|Pass.  F001's generic routing v1 selection represents `failed`; persisted
-contract identity and strict parsing protect replay; reducer failure, blockage,
-human, changes-required, evidence, Finding, and completion guards enforce the
-finite outcomes.  No new status or schema is required.
+|Pass.  Simple still selects existing generic routing v1 for its exact closed
+shape, making Worker `failed` representable and terminal without widening
+Work-result v1 or adding a schema/status.
 
 |No FD-08-shaped Finding dead end
-|Pass.  The design does not falsely promise an in-Run disposer.  It accurately
-allows legacy Finding creation, blocks completion on an open blocker, and makes
-human authority or a new Commission the explicit terminal governance boundary.
-No second Simple Hop is presented as a correction/disposition path, and P3.5
+|Pass.  A Worker-created blocking Finding prevents completion and stops for
+human authority; no in-Run disposer or hidden correction Hop is promised.  P3.5
 remains deferred.
 
 |Self-assessment is not trusted evidence
-|Pass.  The new component makes the self-check mandatory but agent-attributed.
-Prepared command identity, observation, evidence-failure truth, and post-command
-repository checks remain Coordinator-owned and controlling.
+|Pass.  The source-pinned modifier requires the self-check but grants no evidence
+authority.  Coordinator mechanical facts and command observations remain
+controlling.
 
 |Scope, Git, executable, and provenance invariants
-|Pass.  Existing Front Door byte equivalence, source digests, clean-HEAD and
-scope preflight, trusted commit, allowed-path check, prepared executable/stat
-identity, post-evidence cleanliness, and staged execution identity remain in
-force.  The transport guard now precedes every candidate-dependent mutation or
-qualification step.
+|Pass.  F004's only failing sub-invariant is now closed in the design.  The
+complete prompt-component selection is digest-recorded and pinned-blob checked;
+clean HEAD, governing inputs, trusted commit/scope, executable identity, and
+post-evidence cleanliness remain unchanged.
 
 |Minimality, P3.5 deferral, and existing revisions
-|Pass.  The design adds one closed programme/template/component, two closed
-Intent/compiler bindings, one shared exact-shape predicate, one transport guard,
-and focused tests.  It adds no orchestration subsystem, evidence type, terminal
-state, technical schema, reducer behavior, DSL, registry, or profile migration.
-Direct v1, Robust v1, and P3.5 remain unchanged.
+|Pass.  Completing one existing traversal is smaller than a new provenance
+mechanism.  Direct-v1 and Robust-v1 records and behavior are unchanged, and
+their empty modifier/repository-policy selections make output identity directly
+testable.  No P3.5 behavior is introduced.
 
 |Concrete negative regression tests
-|Pass.  The plan now covers result-family failure, both valid-candidate transport
-failures, evidence fail/error/not-run, unauthorized paths/intent, malformed
-Simple shapes, Findings, prompt provenance, provider interruption, executable
-identity, invocation-versus-command counts, and Direct/Robust regression.  The
-first dogfood is required to be a bounded real maintenance change with its real
-task check.
+|Pass.  The plan now includes the pinned-manifest/changed-modifier-blob refusal
+before dispatch, complete-category manifest coverage, and byte-identical
+Direct/Robust render outputs, in addition to invocation count, result-family,
+transport, evidence, scope, Finding, executable, and real-dogfood cases.
 |===
 
 == 5. Acceptance boundary
 
-This acceptance is for the architecture document only.  It does not authorize
-production code, tests, governance records, a Runtime/schema promotion, P3.5,
-programme creation, dogfood execution, or a nested WFC invocation.  The future
-implementation WorkItem remains subject to separate maintainer authority and
-must prove the focused negative cases rather than treating this review as
-runtime evidence.
+This acceptance covers only the architecture document and resolves the
+Current-Run review Finding.  It does not authorize source, test, governance,
+schema, Runtime, programme, P3.5, dogfood, or nested-WFC changes.  The proposed
+implementation must still prove that the renderer and runtime selection sets
+remain identical and that a changed modifier blob is refused before dispatch.
 
-The requested `renew_broad_review` route is the permitted completing transition
-available to this Hop; it does not perform that future phase here.
+`renew_broad_review` is the configured completing transition for this focused
+review.  Requesting it does not perform that later broad review in this Hop.
