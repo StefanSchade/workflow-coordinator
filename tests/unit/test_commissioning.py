@@ -241,6 +241,119 @@ def test_simple_rejects_nonliteral_intent_and_pinned_modifier_mismatch_before_pr
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    (
+        ("evidence: [task-check]", "evidence: [none]"),
+        ("authorized_actions: [edit, commit]", "authorized_actions: [edit]"),
+        ("review: null", "review: null\n    finding_authority: [resolve]"),
+    ),
+    ids=("evidence", "actions", "finding-authority"),
+)
+def test_simple_rejects_each_nonliteral_programme_semantic(
+    repository: Path, original: str, replacement: str
+) -> None:
+    head = git(repository, "rev-parse", "HEAD")
+    program_path = repository / "governance/workflow-programs/simple/v1.yaml"
+    program_path.write_text(
+        program_path.read_text(encoding="utf-8").replace(original, replacement),
+        encoding="utf-8",
+    )
+    git(repository, "add", str(program_path.relative_to(repository)))
+    git(repository, "commit", "-m", "test: alter closed simple programme")
+    altered = simple_intent_text(head).replace(
+        f"source_commit: {head}",
+        f"source_commit: {git(repository, 'rev-parse', 'HEAD')}",
+        1,
+    )
+    with pytest.raises(CommissionError, match="closed simple@v1 literal record"):
+        render_commission(commission_intent_from_yaml(altered), repository=repository)
+
+
+def test_simple_rejects_missing_component_source_and_tampered_selected_digest_before_preflight(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = git(repository, "rev-parse", "HEAD")
+    components_path = repository / "governance/self-development/components.yaml"
+    components_path.write_text(
+        components_path.read_text(encoding="utf-8").replace(
+            "  simple-self-check:\n", "  renamed-simple-self-check:\n"
+        ),
+        encoding="utf-8",
+    )
+    git(repository, "add", str(components_path.relative_to(repository)))
+    git(repository, "commit", "-m", "test: remove simple component source")
+    missing_component = simple_intent_text(head).replace(
+        f"components_ref: {{path: governance/self-development/components.yaml, source_commit: {head}}}",
+        f"components_ref: {{path: governance/self-development/components.yaml, source_commit: {git(repository, 'rev-parse', 'HEAD')}}}",
+    )
+    with pytest.raises(CommissionError, match="does not define simple-self-check"):
+        render_commission(commission_intent_from_yaml(missing_component), repository=repository)
+
+    # Start a separate valid projection from the original pins, then make a
+    # matching-looking manifest digest impossible to accept by rerendering.
+    components_path.write_text(
+        components_path.read_text(encoding="utf-8").replace(
+            "  renamed-simple-self-check:\n", "  simple-self-check:\n"
+        ),
+        encoding="utf-8",
+    )
+    git(repository, "add", str(components_path.relative_to(repository)))
+    git(repository, "commit", "-m", "test: restore simple component source")
+    intent_path = "governance/commissions/simple-commission-test/intent.yaml"
+    (repository / intent_path).parent.mkdir(parents=True)
+    (repository / intent_path).write_text(simple_intent_text(head), encoding="utf-8")
+    rendered = render_commission(
+        commission_intent_from_yaml(simple_intent_text(head)), repository=repository
+    )
+    rendered.write_to(repository)
+    git(repository, "add", ".")
+    git(repository, "commit", "-m", "test: materialize simple digest projection")
+    manifest_path = repository / rendered.paths["manifest"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sources"]["selected_components"][1]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    git(repository, "add", str(manifest_path.relative_to(repository)))
+    git(repository, "commit", "-m", "test: tamper selected component digest")
+    calls = []
+    monkeypatch.setattr(commissioning, "_preflight", lambda *_args, **_kwargs: calls.append(True))
+    with pytest.raises(CommissionError, match="projection equivalence mismatch"):
+        verify_render_manifest(
+            intent_path, repository=repository,
+            expected_head=git(repository, "rev-parse", "HEAD"),
+        )
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("make_intent", "expected_components"),
+    (
+        (intent_text, ("worker",)),
+        (robust_intent_text, ("worker", "reviewer")),
+    ),
+    ids=("direct", "robust"),
+)
+def test_existing_programme_component_manifests_remain_role_only_and_deterministic(
+    repository: Path, make_intent, expected_components
+) -> None:
+    head = git(repository, "rev-parse", "HEAD")
+    rendered = render_commission(
+        commission_intent_from_yaml(make_intent(head)), repository=repository
+    )
+    assert rendered.texts == render_commission(
+        commission_intent_from_yaml(make_intent(head)), repository=repository
+    ).texts
+    assert tuple(
+        item["id"] for item in rendered.manifest["sources"]["selected_components"]
+    ) == expected_components
+    phases = yaml.safe_load(rendered.texts[rendered.paths["profile"]])["phases"]
+    assert all(
+        item["components"]["modifiers"] == []
+        and item["components"]["repository_policy"] == []
+        for item in phases.values()
+    )
+
+
 def test_robust_intent_roles_are_exactly_the_closed_program_roles(repository: Path) -> None:
     head = git(repository, "rev-parse", "HEAD")
     accepted = commission_intent_from_yaml(robust_intent_text(head))

@@ -52,6 +52,25 @@ def envelope(run_id="RUN-1", hop_id="H001", invocation_id="INV-1", **result_chan
                        "invocation_id": invocation_id, "result": result})
 
 
+def closed_terminal_worker_workflow():
+    selected = replace(
+        phase({"accept": route("complete")}),
+        modifier_components=("simple-self-check",),
+        repository_policy_components=(),
+        evidence=("task-check",),
+        authorized_scope=("src",),
+    )
+    return profile({"implement": selected})
+
+
+def closed_terminal_worker_envelope(**result_changes):
+    payload = json.loads(envelope(requested_route="accept", **result_changes))
+    payload["result"].pop("status")
+    payload["result"]["outcome"] = result_changes.pop("outcome", "completed")
+    payload["result"].update(result_changes)
+    return json.dumps(payload)
+
+
 def envelope_v2(
     run_id="RUN-1", hop_id="H001", invocation_id="INV-1", **result_changes
 ):
@@ -440,6 +459,11 @@ class CapturingAdapter:
         return AgentExecutionOutcome(self.output, 0, False, "", "")
 
 
+class PassingEvidenceRunner:
+    def observe(self, command):
+        return simulated_observation(command)
+
+
 def test_one_invocation_identity_is_projected_dispatched_and_validated(repository):
     workflow = profile({"work": replace(phase({"done": route("complete")}), evidence=())})
     run = replace(run_for(workflow, budget=1), current_head=subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip())
@@ -457,14 +481,7 @@ def test_one_invocation_identity_is_projected_dispatched_and_validated(repositor
 
 
 def test_closed_terminal_worker_runs_one_provider_call_and_separate_task_check(repository):
-    selected = replace(
-        phase({"accept": route("complete")}),
-        modifier_components=("simple-self-check",),
-        repository_policy_components=(),
-        evidence=("task-check",),
-        authorized_scope=("src",),
-    )
-    workflow = profile({"implement": selected})
+    workflow = closed_terminal_worker_workflow()
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
     candidate = json.loads(envelope(
@@ -539,6 +556,159 @@ def test_closed_terminal_worker_runs_one_provider_call_and_separate_task_check(r
     assert completed.reduction.run.status.value == "completed"
     assert completed.reduction.run.hops[0].actual_commits
     assert subprocess.run(("git", "-C", str(repository), "status", "--porcelain"), text=True, capture_output=True, check=True).stdout == ""
+
+
+@pytest.mark.parametrize(
+    ("result_changes", "expected_stop"),
+    (
+        ({"outcome": "failed"}, "result_failed"),
+        ({"outcome": "blocked"}, "result_blocked"),
+        ({"outcome": "changes_required"}, "mechanical_preemption:changes_required_requires_review"),
+        (
+            {
+                "requires_human": True,
+                "escalation": {"kind": "scope", "question": "Need another path."},
+            },
+            "mechanical_preemption:human_authority:scope",
+        ),
+    ),
+    ids=("failed", "blocked", "changes-required", "escalation"),
+)
+def test_closed_terminal_worker_failure_outcomes_stop_after_one_provider_call(
+    repository, result_changes, expected_stop
+):
+    workflow = closed_terminal_worker_workflow()
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+
+    class Adapter(CapturingAdapter):
+        def __init__(self):
+            super().__init__(closed_terminal_worker_envelope(**result_changes))
+            self.calls = 0
+
+        def execute(self, request):
+            self.calls += 1
+            return super().execute(request)
+
+    adapter = Adapter()
+    result = run_one_hop(
+        run, workflow, repository, adapter,
+        components(("worker", 1), ("simple-self-check", 1)),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture worker", task_payload="tiny", invocation_id="INV-1",
+        evidence_runner=PassingEvidenceRunner(),
+        evidence_commands=prepared_evidence(repository, ("task-check",)),
+    )
+
+    assert adapter.calls == 1
+    assert result.reduction.run.hop_used == 1
+    assert result.reduction.run.status.value == "awaiting_human"
+    assert result.reduction.run.stop_reason == expected_stop
+
+
+@pytest.mark.parametrize("status", ("fail", "error", "not_run"))
+def test_closed_terminal_worker_required_evidence_never_applies_accept(
+    repository, status
+):
+    workflow = closed_terminal_worker_workflow()
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+    evidence_calls = []
+
+    class Adapter(CapturingAdapter):
+        def __init__(self):
+            super().__init__(closed_terminal_worker_envelope())
+            self.calls = 0
+
+        def execute(self, request):
+            self.calls += 1
+            return super().execute(request)
+
+    class Runner:
+        def observe(self, command):
+            evidence_calls.append(command.command_name)
+            return simulated_observation(command, status=status, summary=status)
+
+    adapter = Adapter()
+    result = run_one_hop(
+        run, workflow, repository, adapter,
+        components(("worker", 1), ("simple-self-check", 1)),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture worker", task_payload="tiny", invocation_id="INV-1",
+        evidence_runner=Runner(),
+        evidence_commands=prepared_evidence(repository, ("task-check",)),
+    )
+
+    assert adapter.calls == 1
+    assert evidence_calls == ["task-check"]
+    assert result.reduction.run.status.value == "awaiting_human"
+    assert result.reduction.run.hop_used == 1
+
+
+def test_closed_terminal_worker_blocking_finding_and_out_of_scope_commit_stop_once(repository):
+    workflow = closed_terminal_worker_workflow()
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+    finding = {
+        "finding_id": None,
+        "invariant": "The candidate must not complete with this blocker.",
+        "blocking": True,
+        "proposed_state": "open",
+        "evidence_refs": ["fixture"],
+        "successor_ref": None,
+        "new_material_evidence": False,
+    }
+
+    class FindingAdapter(CapturingAdapter):
+        calls = 0
+
+        def execute(self, request):
+            self.calls += 1
+            return AgentExecutionOutcome(
+                closed_terminal_worker_envelope(findings=[finding]), 0, False, "", ""
+            )
+
+    finding_adapter = FindingAdapter("")
+    blocked = run_one_hop(
+        run, workflow, repository, finding_adapter,
+        components(("worker", 1), ("simple-self-check", 1)),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture worker", task_payload="tiny", invocation_id="INV-1",
+        evidence_runner=PassingEvidenceRunner(),
+        evidence_commands=prepared_evidence(repository, ("task-check",)),
+    )
+    assert finding_adapter.calls == 1
+    assert blocked.reduction.run.status.value == "awaiting_human"
+    assert blocked.reduction.run.findings[0].blocking
+
+    class ScopeAdapter(CapturingAdapter):
+        calls = 0
+
+        def execute(self, request):
+            self.calls += 1
+            request.repository.joinpath("outside.md").write_text("outside scope\n")
+            return AgentExecutionOutcome(
+                closed_terminal_worker_envelope(
+                    commit_intent={
+                        "paths": ["outside.md"],
+                        "subject": "docs(workflow): WI-1 H001 outside",
+                    }
+                ),
+                0, False, "", "",
+            )
+
+    scope_adapter = ScopeAdapter("")
+    scoped = run_one_hop(
+        run, workflow, repository, scope_adapter,
+        components(("worker", 1), ("simple-self-check", 1)),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture worker", task_payload="tiny", invocation_id="INV-1",
+        evidence_runner=PassingEvidenceRunner(),
+        evidence_commands=prepared_evidence(repository, ("task-check",)),
+    )
+    assert scope_adapter.calls == 1
+    assert scoped.reduction.run.status.value == "awaiting_human"
+    assert scoped.reduction.run.hop_used == 1
 
 
 @pytest.mark.parametrize("phase_key", ["diagnose", "reframe", "strategy"])

@@ -97,6 +97,43 @@ def test_operator_summary_projects_v3_convergence_context_only_when_supplied(rep
 
 
 @pytest.mark.parametrize(
+    ("returncode", "timed_out"),
+    ((7, False), (0, True)),
+    ids=("nonzero", "timeout"),
+)
+def test_failed_transport_diagnostics_retain_a_present_candidate_fact(
+    repository, returncode, timed_out
+):
+    workflow = profile({"work": phase({"done": route("complete")})})
+    summary = operator._best_effort_failure_summary(
+        repository,
+        run_for(workflow),
+        invocation_id="INV-transport",
+        checkout_id=None,
+        outcome=AgentExecutionOutcome(
+            '{"valid": "but untrusted after transport failure"}',
+            returncode,
+            timed_out,
+            "stdout",
+            "stderr",
+            ("transport failed",),
+        ),
+        error=RuntimeError("transport failed"),
+        outcome_error="agent execution provider transport did not complete cleanly",
+    )
+    assert summary["provider"] == {
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "candidate_result_present": True,
+        "diagnostics": [
+            "transport failed",
+            "agent execution provider transport did not complete cleanly",
+        ],
+        "diagnostics_artifact": None,
+    }
+
+
+@pytest.mark.parametrize(
     "corruption",
     ["absent", "legacy", "malformed", "cross_run", "duplicate", "anchor"],
 )

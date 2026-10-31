@@ -357,12 +357,22 @@ def test_failed_provider_transport_with_a_valid_candidate_recovers_uncertain_wit
     run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
     provider_calls = []
     evidence_calls = []
+    candidate = _known_good_envelope()
+    # This is a valid candidate which would otherwise enter the trusted-commit
+    # boundary.  The transport guard must reject it before that boundary.
+    candidate["result"]["commit_intent"] = {
+        "paths": ["PROOF.md"],
+        "subject": "docs(workflow): WI-1 H001 transport candidate",
+    }
 
     class Adapter:
         def execute(self, request):
             provider_calls.append(request.invocation.hop_id)
+            request.repository.joinpath("PROOF.md").write_text(
+                "provider candidate mutation\n"
+            )
             return AgentExecutionOutcome(
-                json.dumps(_known_good_envelope(request.result_contract_kind)),
+                json.dumps(candidate),
                 returncode,
                 timed_out,
                 "candidate was emitted",
@@ -394,11 +404,20 @@ def test_failed_provider_transport_with_a_valid_candidate_recovers_uncertain_wit
     assert provider_calls == ["H001"]
     assert evidence_calls == []
     assert recovered.vertical is None
+    assert recovered.outcome is not None
+    assert recovered.outcome.returncode == returncode
+    assert recovered.outcome.timed_out is timed_out
     assert recovered.run.status.value == "reconcile_required"
     assert recovered.run.hop_used == 1
     assert recovered.run.hops[-1].role == "uncertain_dispatch"
     assert recovered.run.hops[-1].outcome == "uncertain"
     assert recovered.run.current_head == head
+    assert recovered.run.hops[-1].actual_commits == ()
+    assert subprocess.run(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        text=True, capture_output=True, check=True,
+    ).stdout.strip() == head
+    assert (repository / "PROOF.md").read_text() == "provider candidate mutation\n"
     assert (run_root / "dispatch.json").exists()
 
 
