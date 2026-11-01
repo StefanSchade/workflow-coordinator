@@ -1,0 +1,198 @@
+= BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION -- Nested `prepare` Package Installation Is Untested Under an Offline Agent Shell
+
+Type:: bug -- test-execution-environment gap (pre-beta operational hardening;
+not a Coordinator fail-closed defect, not a characterization of the Simple
+Runtime or its dogfood as defective)
+Status:: open (documentation only; no correction authorized by this record)
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Next action:: Investigate candidate offline-safe fixture approaches under a separately authorized bounded Commission; no approach is selected here.
+Not authorized here:: Any implementation, dependency change, global build-isolation change, network-access grant, or test change.
+Date:: 2026-11-01
+Classification:: pre-beta operational hardening; does not block current
+Simple or Robust execution.
+Discovery:: Maintainer-authorized repository-maintenance task following the
+first real Simple dogfood, informed by the new offline-execution guidance
+added to the Worker/Reviewer role prompts
+(link:../../governance/self-development/prompts/worker.txt[worker.txt],
+link:../../governance/self-development/prompts/reviewer.txt[reviewer.txt]).
+
+== What is verified (test implementation and dependency facts)
+
+`tests/unit/test_wfc_op.py`'s module-scoped `prepared` fixture
+(`tests/unit/test_wfc_op.py:265-289`) makes "one full, real `prepare` call"
+and is reused read-only by every LAUNCH test in that file. `prepare`
+(`scripts/wfc_op.py::cmd_prepare`) calls both
+`prepare_runtime_environment` (`scripts/wfc_op.py:373-389`) and
+`prepare_development_environment` (`scripts/wfc_op.py:391-406`) --
+`cmd_prepare`, around lines 741-742. Each of these builds a fresh venv
+(`build_venv`, `scripts/wfc_op.py:334-339`) and then runs `pip install`
+against a local source tree (`pip_install`, `scripts/wfc_op.py:341-345):
+the Runtime path installs a `git archive` export of the pinned Runtime
+commit; the Development path installs the live Development checkout with
+its `[dev]` extra (`build>=1.2`, `pytest>=8.2`, `ruff>=0.6`).
+
+`pyproject.toml` (`[build-system]`) declares `requires = ["setuptools>=68"]`
+with `build-backend = "setuptools.build_meta"` and no `[tool.setuptools]`
+override disabling build isolation. A plain `pip install <local path>`
+against this project therefore uses pip's default PEP 517 build-isolation
+behavior: pip provisions an ephemeral build environment and resolves/
+installs `setuptools>=68` into it before building the wheel, independently
+of the target venv `pip_install` installs into. This is a nested
+installation step inside an already-nested `prepare` call: `prepare` ->
+`pip install` -> PEP 517 build isolation -> resolve `setuptools`.
+
+Whether that resolution step needs the network depends on the host: it is
+satisfied locally if a compatible `setuptools` wheel is already present in
+the invoking user's `pip` cache (ordinarily under the host's unprivileged
+account, not necessarily shared with or reachable from an agent's sandboxed
+shell), and requires reaching PyPI otherwise. No code in this repository
+pins, vendors, or stages a local `setuptools` wheel for this path.
+
+== What was reported (agent-shell failure observations)
+
+This record's Discovery context is the newly added Worker/Reviewer
+role-prompt guidance on offline agent execution (Part A of this same
+maintenance task), which exists because agent-shell invocations of this
+project's test suite have previously been observed to lack network access
+while mechanically separate Coordinator-owned trusted evidence for the same
+work passed. This record documents the class of problem the new prompt
+guidance anticipates for this specific nested-`prepare` path; it does not
+itself attach a fresh, reproduced failure transcript from an intentionally
+offline agent shell for this exact fixture.
+
+A probe run in the current (networked) interactive session -- `python3 -m
+venv` followed by `pip install --no-input <this project's path>` -- *did
+not* fail: pip reported `Installing build dependencies: ... finished with
+status 'done'` and completed the install, because this session's shell has
+outbound network access (confirmed separately via a direct HTTPS request to
+`pypi.org`) and/or a warm local wheel cache. That result does not confirm or
+disprove this record's hypothesis; it only establishes that reproducing the
+failure requires a shell with neither network access nor a pre-populated
+`setuptools` wheel in `pip`'s cache, which this session is not.
+
+== What remains a hypothesis requiring reproduction
+
+That an intentionally offline agent shell (no network, no relevant local
+`pip` cache entry) running `tests/unit/test_wfc_op.py`'s `prepared` fixture
+(or any other nested-`prepare` test) will have `pip_install` fail at the
+PEP 517 build-isolation step with a network-resolution error for
+`setuptools`, surfaced through `HarnessRefusal(f"pip install {target!r}
+into {env_dir} failed: ...")` (`scripts/wfc_op.py:344-345`). This has not
+yet been reproduced under a genuinely offline agent shell as part of this
+record; it is recorded as the mechanism most directly supported by the
+verified facts above, not as an observed transcript.
+
+== Coordinator-trusted evidence (for contrast, not in tension with the above)
+
+The first real Simple dogfood, `RUN-e28bd75fe52f4118b3b33a0f1f944c62`
+(exactly one Worker invocation; Coordinator-owned `task-check`: pass; final
+commit `de963c0ff500f19ea4d77732b2913b84f5ad1349`; clean worktree, no
+Findings or Run anomalies), passed its Coordinator-owned trusted evidence.
+That evidence is executed and trusted separately from any agent-shell
+invocation of the broader test suite (per the operating contract's existing
+distinction; see
+`src/workflow_coordinator/resources/agent_operating_contract_v6.txt`, "Agent-
+side tests and checks ... are not Coordinator-trusted evidence"). This
+record does not call that Run's acceptance into question, and a hypothetical
+future offline-agent failure in `tests/unit/test_wfc_op.py` would not, by
+itself, reopen or contradict that Run's already-accepted trusted-evidence
+result.
+
+== Important historical caution -- do not generalize
+
+Earlier forensic work on a separate, unrelated Run failure already
+established that a general "setuptools / network" explanation was *not* the
+cause of that other incident. This record does not reopen, cite as
+precedent, or rely on that prior diagnosis; it treats the nested-`prepare`
+offline-installation mechanism described above as its own, independently
+reasoned and independently-to-be-reproduced hypothesis. Conversely, that
+prior diagnosis being inapplicable there does not mean sandbox-local
+dependency installation can never fail independently elsewhere -- the two
+incidents are not shown to share a cause, and must not be treated as
+interchangeable.
+
+== Why this is pre-beta hardening, not a current blocker
+
+Coordinator-owned trusted evidence for Simple and Robust does not route
+through an agent's own shell and is unaffected by whether that shell has
+network access (see the preceding section). The gap recorded here is about
+agent-side exploratory/diagnostic test execution specifically -- a worker or
+reviewer wanting to run `tests/unit/test_wfc_op.py` locally inside a
+sandboxed, offline invocation -- not about any currently authorized
+Simple or Robust execution path. It is recorded now, ahead of PyPI Beta
+hardening, because the new offline-execution role-prompt guidance (Part A)
+means agents are now expected to notice and report exactly this class of
+limitation rather than silently fail or silently skip meaningful packaging
+validation.
+
+== Candidate approaches (options, not a predetermined solution)
+
+The following are recorded as possibilities for a future, separately
+authorized investigation to weigh against each other; none is selected,
+scoped, or authorized by this record:
+
+* A locally staged/vendored compatible `setuptools` wheel (and any other
+  currently-PyPI-resolved build dependency) made available to `pip_install`
+  via `--find-links` or an equivalent offline-first resolution path, so
+  `prepare`'s nested installs never need the network for build dependencies
+  already satisfiable from the repository or a prepared cache.
+* A dedicated, explicitly offline-fixture variant of the `prepared` fixture
+  (or a new, narrower fixture) that either pre-warms the two venvs' build
+  dependencies from a controlled local source before any sandboxed test run,
+  or is skipped with an explicit, actionable reason under a detected-offline
+  condition rather than failing opaquely.
+* Recording, and gating on, whether a compatible `setuptools` wheel is
+  already present in the executing environment's `pip` cache before
+  attempting the nested installs, to turn a late PEP 517 failure into an
+  earlier, clearer diagnostic.
+
+Any of these must preserve meaningful packaging validation (a real `pip
+install` against this project's `pyproject.toml` and `setuptools.build_meta`
+backend) rather than merely suppressing or bypassing the installation step.
+
+== Non-scope
+
+This record authorizes no implementation. A future correction must not:
+
+* change `pyproject.toml` build requirements or dependencies;
+* disable PEP 517 build isolation globally, or for any path other than a
+  narrowly scoped, explicitly offline test fixture;
+* grant network access to any sandbox or agent execution environment;
+* alter `tests/unit/test_wfc_op.py` or any other test as part of this
+  record (a future correction's own tests are a separate, later authorized
+  change);
+* reopen, amend, or contradict any closed record concerning the unrelated
+  prior Run failure referenced in the historical caution above; or
+* characterize the first real Simple dogfood
+  (`RUN-e28bd75fe52f4118b3b33a0f1f944c62`) or its Coordinator-owned
+  trusted evidence as deficient.
+
+== Evidence pointers
+
+* `tests/unit/test_wfc_op.py:265-289` (`prepared` fixture).
+* `scripts/wfc_op.py:334-345` (`build_venv`, `pip_install`),
+  `scripts/wfc_op.py:373-389` (`prepare_runtime_environment`),
+  `scripts/wfc_op.py:391-406` (`prepare_development_environment`),
+  `cmd_prepare` call sites around lines 741-742.
+* `pyproject.toml` `[build-system]` (`requires = ["setuptools>=68"]`,
+  `build-backend = "setuptools.build_meta"`) and `[project.optional-
+  dependencies].dev`.
+* `src/workflow_coordinator/resources/agent_operating_contract_v6.txt`,
+  the existing agent-side-diagnostics-versus-Coordinator-trusted-evidence
+  distinction this record relies on and does not duplicate or weaken.
+* `governance/self-development/prompts/worker.txt` and
+  `governance/self-development/prompts/reviewer.txt`, the newly added
+  offline-execution operational guidance (this same maintenance task's
+  Part A) that this record's Discovery responds to.
+* First real Simple dogfood: `RUN-e28bd75fe52f4118b3b33a0f1f944c62`;
+  development commit `de963c0ff500f19ea4d77732b2913b84f5ad1349`.
+
+== Lifecycle
+
+This BUG is *open*. This record documents an untested, offline-agent-shell
+packaging-installation gap and candidate directions only. It authorizes no
+implementation, no test change, no dependency change, no network-access
+grant, no Runtime change, and no WFC Run. A future correction requires its
+own separately authorized maintainer Commission/WorkItem, scoped at minimum
+to `scripts/wfc_op.py`'s environment-build helpers and/or a dedicated
+offline test fixture, subject to the non-scope above.
