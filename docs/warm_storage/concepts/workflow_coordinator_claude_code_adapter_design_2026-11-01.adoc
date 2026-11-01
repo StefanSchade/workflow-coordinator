@@ -90,7 +90,7 @@ Read-only local discovery found `/home/stefan/.local/bin/claude`, version `2.1.2
 |`--print` is finite; WFC owns the timeout and process-group kill.  The exact provider error JSON is not relied on: nonzero and timeout remain untrusted transport failures, with stdout/stderr only diagnostic tails.
 
 |Permissions and filesystem
-|Installed help exposes `--permission-mode`, `--permission-prompts none`, `--allowed-tools`, `--restricted`, and the dangerous bypass flag.  The CLI documentation says `none` denies unanswered prompts and `--restricted` confines file tools/removes code-running tools unless named (https://code.claude.com/docs/en/cli-usage[CLI reference]).  Invoke `--permission-mode acceptEdits --permission-prompts none`, without dangerous bypass or fallback.  This is a provider request, not an OS sandbox.  A real smoke must show a tiny allowed edit works; command-tool approval, if needed, requires a separately approved narrow allow-list.
+|Installed 2.1.270 help exposes `--restricted`, `--safe-mode`, `--tools`, `--strict-mcp-config`, `--settings`, `--permission-mode`, and `--permission-prompts none`.  `--restricted` ignores user/project/local settings, confines file tools to working directories, and removes code-running tools unless `--tools` explicitly names them; `--safe-mode` disables `CLAUDE.md`, skills, plugins, hooks, MCP, commands/agents, workflows, and memory; `--strict-mcp-config` admits only explicit MCP configuration (https://code.claude.com/docs/en/cli-usage[CLI reference]).  The concrete closed profile is specified in §4.1.  Managed policy still applies to both modes and is a residual host-policy dependency, not WFC-pinned evidence.  Provider sandboxing is an inner control, not an OS boundary WFC has verified (https://code.claude.com/docs/en/sandboxing[Sandbox documentation]).
 
 |Authentication
 |No credentials were read.  Documented paths include Console, subscription, and enterprise platforms (https://docs.anthropic.com/en/docs/claude-code/getting-started[setup documentation]).  Later smoke observes only success/failure under provisioned auth and prints no credential data.
@@ -109,11 +109,39 @@ Add frozen `ClaudeCliAdapter(result_directory, model, reasoning_effort, executab
 ----
 <executable> -p --output-format json --json-schema <serialized WFC schema>
   --model <binding.model> --effort <binding.reasoning>
+  --restricted --safe-mode --strict-mcp-config
+  --tools Read,Glob,Grep,Edit,Write,Bash
+  --settings <generated-closed-settings.json>
   --permission-mode acceptEdits --permission-prompts none
   --no-session-persistence <request.prompt>
 ----
 
-The prompt is an argv element passed without a shell.  The adapter creates no Codex output file and passes no Codex/OpenAI flag, bypass-permissions flag, or session resume/continue option.  It may retain only small generated schema/diagnostic files, never raw transcripts.
+The prompt is an argv element passed without a shell.  The adapter creates no Codex output file and passes no Codex/OpenAI flag, `--allowed-tools`, bypass-permissions flag, `--add-dir`, `--mcp-config`, plugin option, session resume/continue option, or fallback-model option.  It may retain only small generated schema/settings/diagnostic files, never raw transcripts.
+
+`generated-closed-settings.json` is a short adapter-created file under the existing private result directory, with the repository path interpolated as data (not shell text), permissions that deny `WebFetch` and `WebSearch`, and this mandatory sandbox core:
+
+[source,json]
+----
+{
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {"denyRead": ["~/"], "allowRead": ["<repository>"]},
+    "network": {"allowedDomains": []}
+  },
+  "permissions": {
+    "deny": ["WebFetch", "WebSearch"],
+    "blockReadsOutsideWorkingDirectories": true
+  }
+}
+----
+
+The implementation must add no `excludedCommands`, additional directory, network-domain, credential-path, or permissive allow rule.  It sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` in the Claude process environment so Claude applies its documented all-subprocess environment scrubbing; the later smoke verifies that this does not break the selected authentication path.  `--restricted` plus the explicit `--tools` list makes the minimum built-in surface visible: project-local file inspection/edit/write and Bash only.  The only intended noninteractive Bash path is the CLI's sandboxed Bash behavior; `--permission-prompts none` turns an action that still asks into denial, and `allowUnsandboxedCommands: false` prevents a retry outside the sandbox.  There is no provider-side command fallback.  `acceptEdits` is retained only for the named project-local file tools.
+
+This profile deliberately loads no user, project, or local settings; no `CLAUDE.md`, skill, hook, plugin, agent/command, workflow, memory, MCP server, custom output style, or explicit MCP configuration is admitted.  Managed settings/policy may still apply according to Claude Code's documented precedence.  They are an administrator-owned residual host-policy input, not part of the WFC execution binding or a claim of controlled source.  An installation whose managed policy forbids the profile fails transport/preflight rather than falling back; an installation whose managed policy adds behavior is outside the profile's reproducibility claim and must be accepted as a separately governed host prerequisite.  The adapter neither tries to inspect nor logs managed policy.
+
+This is deliberately only an inner provider control.  Claude documents that its Bash sandbox covers shell commands and their children, while file tools, hooks, MCP, and other processes can run outside it (https://code.claude.com/docs/en/sandboxing[Sandbox documentation]); the closed startup removes the latter configurable sources, but it does not turn WFC into an OS-sandbox verifier.  The settings make unavailable sandbox support a failure and deny default network access, but the later smoke must confirm the effective behavior for the pinned CLI/platform before release.
 
 After clean transport, the adapter parses the Claude JSON transport wrapper, requires its successful structured-output member, JSON-serializes that member, and returns it as `candidate_result`.  It never fills or repairs `run_id`, `hop_id`, `invocation_id`, route, kind, or version.  The complete path remains:
 
@@ -135,7 +163,7 @@ Do not change `model.py`, `reducer.py`, port records, `validated_result`, prompt
 
 === 4.3 Failure mechanics
 
-Claude copies Codex's relevant local process pattern, not its CLI dialect: `Popen(..., start_new_session=True)`, `communicate` timeout, `killpg(SIGTERM)`, three-second grace, `killpg(SIGKILL)`, and bounded stdout/stderr tails.  OSError/value failure before `Popen` raises an `ExecutionNotStartedError` subtype.  A started process, including one with a decoding error, returns its transport observations so existing uncertain-dispatch recovery stays conservative.
+Claude copies Codex's relevant local process pattern, not its CLI dialect: `Popen(..., start_new_session=True)`, `communicate` timeout, `killpg(SIGTERM)`, three-second grace, `killpg(SIGKILL)`, and bounded stdout/stderr tails.  OSError/value failure or generated-settings failure before `Popen` raises an `ExecutionNotStartedError` subtype.  Required-sandbox refusal or loss after `Popen`, including startup refusal, is a nonzero transport failure.  A started process, including one with a decoding error, returns its transport observations so existing uncertain-dispatch recovery stays conservative.
 
 === 4.4 Mixed roles and executable provenance
 
@@ -176,7 +204,9 @@ If mixed roles become a requirement, the smallest separately authorized extensio
 
 == 6. Security, transport failure, and trust boundaries
 
-Claude's permission mode is not a Coordinator-verified OS boundary, just as the current Codex `--sandbox workspace-write` request is not one.  WFC independently relies on the pinned clean checkout, admitted binding/executable, post-Hop Git/scope observation, Coordinator-owned Git/evidence, semantic reduction, and Finding authority.  `--restricted` is future hardening only until it is demonstrated compatible with WFC tasks.
+Claude's permission mode and closed sandbox request are not a Coordinator-verified OS boundary, just as the current Codex `--sandbox workspace-write` request is not one.  WFC independently relies on the pinned clean checkout, admitted binding/executable, post-Hop Git/scope observation, Coordinator-owned Git/evidence, semantic reduction, and Finding authority.  The Claude profile does nonetheless make provider behavior deliberately bounded: `--restricted` excludes user/project/local settings and confines file tools; `--safe-mode` disables workspace/user customizations; `--strict-mcp-config` with no `--mcp-config` excludes MCP; the explicit tools exclude web/agent surfaces; and generated settings require the Bash sandbox, prohibit unsandboxed retry, block home-directory subprocess reads, and give it no network domains.
+
+The remaining host trust boundary is explicit.  Managed Claude policy continues to apply, and the Bash sandbox's default process environment/read surface is otherwise provider-defined.  WFC does not read configuration or credentials to prove effective policy.  Thus no claim is made that managed policy, an external process, or a provider defect is contained by the WFC binding.  The real smoke verifies the selected profile on the pinned executable/platform; deployment that requires stronger cross-process isolation must provide it outside this adapter (for example, by its managed host/container policy), not by expanding this slice.
 
 [cols="2,3",options="header"]
 |===
@@ -195,7 +225,7 @@ Claude's permission mode is not a Coordinator-verified OS boundary, just as the 
 |No valid candidate reaches acceptance; never repair fields from dispatch and never retry.
 
 |Permission/auth failure
-|Unanswered prompts deny rather than hang; auth failure is nonzero transport failure.  No secret is copied or logged.
+|Unanswered prompts deny rather than hang; unavailable required sandbox, policy refusal, or auth failure is a failed transport.  No secret, settings body, or credential value is copied or logged.
 
 |Unexpected error after dispatch
 |Existing dispatch marker and uncertain-dispatch recovery conservatively stop/charge; no replay.
@@ -205,11 +235,11 @@ Therefore one accepted provider invocation remains one charged Hop; provider fai
 
 == 7. Focused tests, fake CLI, and real-provider smoke
 
-Add deterministic `tests/unit/test_claude_adapter_conformance.py` fake-executable coverage for exact argv (no Codex flags), prompt/cwd, model/effort, shared schema ID/route constraints, startup failure, and successful wrapper extraction.  Add nonzero-with-valid-JSON, timeout-with-partial-JSON, malformed wrapper, success-without-structured-output, malformed extracted envelope, and mismatched Run/Hop/Invocation.  Every negative case proves no repair or candidate acceptance.
+Add deterministic `tests/unit/test_claude_adapter_conformance.py` fake-executable coverage for exact argv (no Codex, plugin, MCP, resume, fallback, bypass, or ambient-config flags), prompt/cwd, model/effort, shared schema ID/route constraints, startup failure, generated closed-settings JSON, scrubbed-subprocess environment, and successful wrapper extraction.  Assert the exact `--restricted --safe-mode --strict-mcp-config`, named five-tool surface, empty network domain configuration, `failIfUnavailable`, `allowUnsandboxedCommands: false`, and no `excludedCommands`/additional directories.  A fake must reject an argv that omits any required isolation control or selects a forbidden configuration source.  Add nonzero-with-valid-JSON, timeout-with-partial-JSON, malformed wrapper, success-without-structured-output, malformed extracted envelope, and mismatched Run/Hop/Invocation.  Every negative case proves no repair or candidate acceptance.
 
 Extend serialization tests so exactly the two adapter literals are admitted and arbitrary literals rejected.  Add operator tests that patch each adapter and prove identical binding provenance/reduction plus mixed-binding/scalar-executable rejection.  Extend `test_wfc_op.py` only to preserve a `claude_cli` binding; do not authenticate or invoke Claude.  Keep Codex tests, including OpenAI strict-subset checks, passing after the shared-builder extraction.
 
-A separately authorized real smoke is release-gating, not this design's execution: run exactly one pinned `claude -p` invocation in a disposable repository on a read-only or tiny authorized-file task, without exposing credentials.  It must confirm the exact JSON wrapper/structured-output decoder, schema enforcement, working directory, valid model/effort, unattended edit permission behavior, and nonzero diagnostics.  It also records only which non-secret provider-usage fields are present.  It is not a production Run or fallback path.
+A separately authorized real smoke is release-gating, not this design's execution: run exactly one pinned `claude -p` invocation in a disposable repository on a tiny authorized-file task, without exposing credentials.  It must confirm the exact JSON wrapper/structured-output decoder, schema enforcement, working directory, valid model/effort, an authorized in-repository edit, and a required sandboxed test command.  It must also plant a project customization (for example `CLAUDE.md` or a hook) and prove it is not loaded; attempt an out-of-workspace file read and a network access; and simulate/observe unavailable sandbox support to prove failure rather than unsandboxed retry.  The test records only pass/fail and non-secret provider-usage field names, never credentials, settings contents, or raw transcripts.  It is not a production Run or fallback path.
 
 == 8. Bounded implementation WorkItem
 
@@ -223,13 +253,14 @@ Acceptance criteria::
 * Claude returns only a decoded structured WFC envelope candidate; all current port, vertical, semantic, and correlation checks remain intact and pass.
 * Fake tests cover every positive/negative transport and decoder case in §7; Codex conformance/lifecycle coverage still passes.
 * Homogeneous Simple, Direct and Robust bindings work with either provider without programme-specific code; mixed bindings with scalar executable are rejected before launch.
-* A separately authorized, non-secret smoke confirms the pinned CLI wrapper and permission behavior before release acceptance.
+* Fake tests prove the closed startup/tool/settings profile and a separately authorized, non-secret smoke confirms the pinned CLI wrapper, effective isolation, required edit/test behavior, and fail-closed sandbox behavior before release acceptance.
 
 == 9. Decisions requiring maintainer approval
 
-The design needs no further decision for the small homogeneous-provider slice.  Two later decisions remain explicit:
+The implementation slice is otherwise bounded, but these maintainer decisions remain explicit:
 
 . Is a Claude Worker plus Codex reviewer required for Level-0?  If yes, authorize the bounded `--role-executable` interface from §4.4; do not use a dispatcher executable.
-. If `acceptEdits` plus denied prompts cannot complete intended work, which narrowly scoped provider tool rules are acceptable?  Approval is necessary because it widens the provider-side capability request, though it does not create an OS sandbox claim.
+. Does the intended deployment accept the stated residual trust in administrator-managed Claude policy, or must the implementation WorkItem also receive a separately specified managed-host prerequisite?  The adapter cannot prove or pin managed policy without a broader execution-environment authority.
+. If the named local `Bash` surface cannot run the required tests under the fail-closed sandbox, which exact project-local command capability and sandbox filesystem/network exception is acceptable?  Approval is necessary because it widens the provider-side capability request; do not solve it with ambient allow rules, `excludedCommands`, or an unsandboxed retry.
 
 Future token evidence must attach only provider-reported fields plus provider/version/output-location provenance, represent absence as absence, and avoid pricing, estimates, raw transcripts, policy, or routing.  This design neither blocks nor implements that separate MVP work.
