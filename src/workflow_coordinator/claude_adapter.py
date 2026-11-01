@@ -47,9 +47,11 @@ class ClaudeCliAdapter:
             if value.splitlines() != [value] or "\0" in value:
                 raise ValueError(f"Claude CLI {name} must be a single-line value")
 
-    def argv(self, request: AgentExecutionRequest, schema: Path, settings: Path) -> tuple[str, ...]:
+    def argv(
+        self, request: AgentExecutionRequest, serialized_schema: str, settings: Path
+    ) -> tuple[str, ...]:
         return (
-            self.executable, "-p", "--output-format", "json", "--json-schema", str(schema),
+            self.executable, "-p", "--output-format", "json", "--json-schema", serialized_schema,
             "--model", self.model, "--effort", self.reasoning_effort,
             "--restricted", "--safe-mode", "--strict-mcp-config", "--tools", _TOOLS,
             "--settings", str(settings), "--permission-mode", "acceptEdits",
@@ -109,14 +111,20 @@ class ClaudeCliAdapter:
         try:
             schema = self.result_directory / "structured-result.schema.json"
             settings = self.result_directory / "claude-closed-settings.json"
-            atomic_write_json(schema, structured_result_envelope_schema(
+            schema_object = structured_result_envelope_schema(
                 request.invocation, request.contract_version, request.result_contract_kind,
                 permitted_routes=request.permitted_routes,
-            ))
+            )
+            atomic_write_json(schema, schema_object)
             atomic_write_json(settings, self._settings(request))
             environment = {**os.environ, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"}
             child = subprocess.Popen(
-                self.argv(request, schema, settings), cwd=request.repository,
+                self.argv(
+                    request,
+                    json.dumps(schema_object, separators=(",", ":"), sort_keys=True),
+                    settings,
+                ),
+                cwd=request.repository,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 start_new_session=True, env=environment,
             )

@@ -43,10 +43,11 @@ def test_exact_closed_argv_profile_settings_cwd_prompt_and_scrubbed_environment(
     executable = fake(tmp_path, f'''\
         import json, os, pathlib, sys
         arguments = sys.argv[1:]
+        schema = json.loads(arguments[arguments.index("--json-schema") + 1])
         settings = pathlib.Path(arguments[arguments.index("--settings") + 1])
         pathlib.Path({str(observed)!r}).write_text(json.dumps({{
             "argv": arguments, "cwd": os.getcwd(), "scrub": os.environ.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"),
-            "settings": json.loads(settings.read_text()),
+            "schema": schema, "settings": json.loads(settings.read_text()),
         }}))
         print(json.dumps({{"type": "result", "subtype": "success", "is_error": False,
                           "structured_output": {envelope(Invocation("RUN-C", "H001", "INV-C"))!r}}}))
@@ -54,7 +55,27 @@ def test_exact_closed_argv_profile_settings_cwd_prompt_and_scrubbed_environment(
     outcome = adapter(tmp_path, executable).execute(request(tmp_path))
     observation = json.loads(observed.read_text())
     argv = observation["argv"]
-    assert argv == ["-p", "--output-format", "json", "--json-schema", str(tmp_path / "structured-result.schema.json"), "--model", "claude-model", "--effort", "high", "--restricted", "--safe-mode", "--strict-mcp-config", "--tools", "Read,Glob,Grep,Edit,Write,Bash", "--settings", str(tmp_path / "claude-closed-settings.json"), "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--no-session-persistence", "make the bounded change"]
+    assert argv[:4] == ["-p", "--output-format", "json", "--json-schema"]
+    schema = observation["schema"]
+    assert argv[4] == json.dumps(schema, separators=(",", ":"), sort_keys=True)
+    assert argv[5:] == ["--model", "claude-model", "--effort", "high", "--restricted", "--safe-mode", "--strict-mcp-config", "--tools", "Read,Glob,Grep,Edit,Write,Bash", "--settings", str(tmp_path / "claude-closed-settings.json"), "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--no-session-persistence", "make the bounded change"]
+    assert schema["type"] == "object" and schema["additionalProperties"] is False
+    assert schema["required"] == ["schema_version", "run_id", "hop_id", "invocation_id", "result"]
+    assert set(schema["properties"]) == set(schema["required"])
+    assert schema["properties"]["schema_version"]["enum"] == [1]
+    assert schema["properties"]["run_id"]["enum"] == ["RUN-C"]
+    assert schema["properties"]["hop_id"]["enum"] == ["H001"]
+    assert schema["properties"]["invocation_id"]["enum"] == ["INV-C"]
+    result_schema = schema["properties"]["result"]
+    assert result_schema["properties"]["schema_version"]["enum"] == [1]
+    assert result_schema["required"] == [
+        "schema_version", "outcome", "requested_route", "scope_changed", "requires_human",
+        "escalation", "findings", "claimed_commits", "commit_intent", "evidence_refs", "summary",
+    ]
+    assert result_schema["properties"]["outcome"]["enum"] == [
+        "completed", "changes_required", "blocked", "failed",
+    ]
+    assert result_schema["properties"]["requested_route"]["enum"] == ["broad_review"]
     forbidden = ("codex", "--mcp-config", "--allowed-tools", "--fallback-model", "--resume", "--continue", "--add-dir", "--dangerously-skip-permissions")
     assert not any(item in argv for item in forbidden)
     assert observation["cwd"] == str(tmp_path) and observation["scrub"] == "1"
