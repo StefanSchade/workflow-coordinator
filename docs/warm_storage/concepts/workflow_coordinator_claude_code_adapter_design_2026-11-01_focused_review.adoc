@@ -1,0 +1,260 @@
+= Independent focused review -- Claude invocation-profile correction
+:toc:
+:toclevels: 3
+:sectnums:
+
+Status:: *CHANGES REQUIRED -- F001 RESOLVED; CCADR-002 OPEN.*
+WorkItem:: `WI-WFC-CLAUDE-CODE-ADAPTER-DESIGN-001`.
+Run / Hop:: `RUN-b0ce81b7489e4ef197690d0c25e1c282` / `H004`.
+Invocation:: `INV-cd51e40281db4afc947033a149b2c6db`.
+Reviewed candidate::
+`docs/warm_storage/concepts/workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc`
+at commit `06b2caeb8bc6e17ebed7197fdb6c7c91dec53272`.
+Reviewed correction range::
+`ae22dae94db7e1b9650a64ddbafc5d2c839af7f2..06b2caeb8bc6e17ebed7197fdb6c7c91dec53272`.
+Review phase:: Independent focused rereview of Current-Run Finding `F001`, with
+regression against the independent-review mandate.
+Date:: 2026-11-01.
+
+[IMPORTANT]
+====
+`CCADR-002` is a durable review-artifact label and correction handle.  It is
+not a Current-Run Finding ID.  The correlated H004 result proposes the defect
+as a genuinely new Finding with `finding_id = null`, leaving allocation of an
+authoritative Run-local ID to the Coordinator.
+====
+
+== 1. Disposition
+
+Outcome:: `changes_required`
+Route:: `correction`
+
+Current-Run blocking Finding `F001` is resolved.  The corrected design now
+defines a closed Claude startup profile: restricted and safe modes exclude
+ambient user/project customizations, MCP is closed, the built-in tool surface
+is explicit, subprocess environment scrubbing is requested, and generated
+settings require the command sandbox without unsandboxed retry.  It also names
+managed policy as an unpinned residual prerequisite and preserves the rule that
+provider sandboxing is not a Coordinator-verified OS boundary.  The fake and
+real-smoke plans exercise the corrected profile.  These changes satisfy F001's
+invariant rather than merely documenting the previous exposure.
+
+Acceptance is nevertheless blocked by one narrower new defect.  Section 4.3
+asserts that required-sandbox refusal or loss after `Popen` is a nonzero
+transport failure.  That is not Claude's documented behavior after the process
+has started: the session can continue while sandboxed commands are refused.
+The design therefore assigns a transport observation the adapter cannot
+reliably make, and its failure/test prescription can accept an implementation
+that mistakes an inner tool refusal for a guaranteed process exit.
+
+The inspection and checks recorded here are reviewer-side diagnostics.  They
+do not replace Coordinator-owned `task-check` evidence.
+
+== 2. Adversarial rereview method
+
+The rereview compared the H003 diff with the F001 counterexample and then
+rechecked the exact installed interface without invoking a provider session or
+inspecting authentication:
+
+* `/home/stefan/.local/bin/claude --version` reported `2.1.270 (Claude Code)`;
+* `/home/stefan/.local/bin/claude --help` confirmed `--restricted`,
+  `--safe-mode`, `--strict-mcp-config`, `--tools`, `--settings`,
+  `--permission-mode`, `--permission-prompts none`, and the print-mode settings
+  warning used below; and
+* the current official sandbox documentation was rechecked for unavailable
+  sandbox behavior, unsandboxed retry, subprocess scrubbing, and the boundary
+  between shell commands and file tools
+  (https://code.claude.com/docs/en/sandboxing[Claude Code sandbox documentation]).
+
+No live authenticated or unauthenticated provider invocation, auth-status
+inspection, nested WFC Run, or external mutation occurred.
+
+== 3. Finding disposition and new blocking Finding
+
+=== 3.1 F001 -- ambient prompt and tool configuration is bounded
+
+Disposition:: *Resolved.*
+
+Invariant:: A noninteractive provider adapter must explicitly bound
+prompt-shaping configuration and provider tool/filesystem behavior; ambient
+user/project instructions, hooks, plugins, MCP servers, permission rules, and
+unsandboxed command retries may not silently widen an admitted WFC invocation.
+
+The correction closes the original counterexample in independently testable
+parts:
+
+. The exact argv now combines `--restricted`, `--safe-mode`, and
+  `--strict-mcp-config`, passes no explicit MCP, plugin, resume, fallback,
+  additional-directory, or bypass option, and closes the built-in surface to
+  `Read,Glob,Grep,Edit,Write,Bash` (`design:106-119`).
+. The generated settings enable the sandbox, require availability, disable
+  unsandboxed retries, deny home reads except for the repository, admit no
+  network domain, and deny the web tools (`design:121-140`).  The subprocess
+  environment request adds Claude's documented all-subprocess credential
+  scrubbing.
+. The design explicitly excludes user, project, and local settings and all
+  listed customizations, while describing managed policy as a separately
+  governed residual host input rather than WFC-pinned evidence
+  (`design:142-144,205-209`).
+. Fake tests assert the exact closed argv/settings/environment shape; the
+  separately authorized smoke plants a customization, attempts external read
+  and network access, exercises an edit/test, and checks unavailable-sandbox
+  behavior (`design:236-242`).
+
+The correction does not claim that these provider controls are an outer WFC
+security boundary, does not add a provider framework, and does not weaken
+correlation, semantic validation, routing, Git, evidence, or Finding authority.
+F001 can therefore be resolved even though the distinct failure-classification
+defect below still blocks design acceptance.
+
+=== 3.2 CCADR-002 -- sandbox refusal is not a guaranteed nonzero transport failure
+
+Severity:: *BLOCKING.*
+Disposition:: *OPEN; correction required.*
+
+Invariant:: The adapter design must classify only observable provider process
+and wrapper facts as transport outcomes.  A provider-side tool refusal must
+remain fail-closed, but it must not be promoted to a guaranteed nonzero exit or
+adapter-detectable transport failure when the documented CLI can continue and
+emit an ordinary result wrapper.
+
+==== 3.2.1 Counterexample
+
+The design correctly requires `sandbox.failIfUnavailable: true` and
+`allowUnsandboxedCommands: false`, but then says:
+
+* generated-settings failure before `Popen` is an
+  `ExecutionNotStartedError`; and
+* required-sandbox refusal or loss after `Popen`, including startup refusal,
+  is a nonzero transport failure (`design:164-166`).
+
+The second statement is unsupported.  Anthropic documents two different
+states:
+
+* when a dependency is missing or the platform is unsupported at process
+  startup, `failIfUnavailable` can block Claude Code from starting; but
+* when sandbox initialization fails after Claude Code has started, or the
+  sandbox becomes unavailable during the session, each sandboxed command is
+  refused and _the session keeps running_.  Unsandboxed retry stays disabled,
+  which is the required security property, but a nonzero process exit is not
+  promised
+  (https://code.claude.com/docs/en/sandboxing#commands-are-refused-with-sandbox-is-required[Commands are refused with “Sandbox is required”]).
+
+Consequently a fake CLI can exit zero with a syntactically valid Claude wrapper
+after representing a refused command.  The adapter observes only zero exit,
+the wrapper, and diagnostic tails; the proposed design gives it no documented
+machine-readable sandbox-refusal signal to override that transport state.  It
+must not invent one.  The existing WFC semantic validator can validate the
+envelope, but it cannot prove that a requested provider tool call ran.
+
+There is a related fail-closed qualification the correction should state
+precisely.  Installed `claude --help` says that settings files which fail
+validation are silently ignored in print mode.  The adapter can detect its own
+JSON generation/write error before `Popen`, and the release smoke can qualify
+the exact settings against the pinned CLI, but the design must not describe an
+arbitrary CLI-side settings rejection as an `ExecutionNotStartedError` unless a
+read-only compatibility check actually exposes it.  This makes the exact
+version/interface smoke a required compatibility gate, not proof of a runtime
+transport observation.
+
+==== 3.2.2 Required correction
+
+Correct only the affected failure and test language:
+
+. Split pre-`Popen` local generation/write failure, observed process nonzero or
+  timeout, and post-start sandboxed-command refusal into three separate cases.
+. Preserve `failIfUnavailable` and `allowUnsandboxedCommands: false` as the
+  fail-closed provider controls.  State that a post-start refusal may leave the
+  CLI running and is not independently promoted by the adapter to nonzero
+  transport unless the pinned CLI exposes and the implementation verifies a
+  documented machine-readable failure signal.
+. Make the release smoke record actual exit status and wrapper behavior for
+  both startup unavailability and post-start command refusal.  Do not
+  presuppose nonzero.  Fake tests should continue proving that observed
+  nonzero/timeout rejects all candidate JSON, and should not manufacture a
+  provider-independent tool-execution oracle.
+. Acknowledge the print-mode invalid-settings behavior.  Keep exact local
+  generated-settings validation and gate the supported pinned CLI/profile with
+  the smoke; do not add a registry, telemetry schema, transcript parser, or
+  Coordinator policy branch to infer sandbox state.
+. Correct the editorial count in §7: the explicit surface contains six tools,
+  not five (`design:238`).
+
+This correction is bounded to the design document.  It does not require a
+production, test, governance, programme, schema, Runtime, or Evidence change in
+this Hop.
+
+== 4. Independent-review mandate regression
+
+[cols="3,1,5",options="header"]
+|===
+|Review question |Result |Focused-review basis
+
+|Unsupported Claude assumptions
+|Fail
+|CCADR-002.  The invocation/profile flags are verified, but a post-start
+sandbox refusal is incorrectly equated with a guaranteed nonzero process exit.
+
+|Exact correlation and fail-closed semantic validation
+|Pass
+|The correction does not alter the canonical envelope path.  Claude's object is
+decoded without filling identity or route fields, and existing
+`validated_result` still independently checks kind/version, keys, semantics,
+and the exact Run/Hop/Invocation triple (`design:146-156`).
+
+|Provider logic leakage into Coordinator policy
+|Pass
+|Startup flags, settings, wrapper decoding, and diagnostics remain inside the
+Claude adapter.  The shared changes remain a closed two-literal admission, a
+local two-case constructor, and the existing WFC-shaped schema builder.
+
+|Noninteractive permission and sandbox constraints
+|Pass, subject to CCADR-002
+|F001's ambient-input and unsandboxed-retry exposure is closed.  The residual
+defect concerns what transport fact follows a safe refusal, not permission to
+run the command outside the sandbox.
+
+|Negative transport and timeout tests
+|Fail
+|Nonzero-with-valid-JSON and timeout-with-partial-JSON remain correct, but the
+new unavailable-sandbox case is specified against an exit guarantee the CLI
+does not make.  CCADR-002 supplies the bounded correction.
+
+|Simple, Direct, and Robust compatibility
+|Pass
+|The profile is programme-neutral for homogeneous bindings.  Mixed real
+providers remain honestly rejected while one scalar executable is in use; the
+optional role-executable extension remains outside this slice.
+
+|Unnecessary architectural machinery
+|Pass
+|The correction adds only adapter-private profile inputs and tests.  There is
+still no registry, router, fallback, provider hierarchy, or programme-specific
+path.  CCADR-002 explicitly does not request a transcript/tool-event parser.
+
+|Actual provider-neutrality test
+|Pass
+|Both adapters still feed the same request/outcome port, vertical transport
+gate, canonical envelope, semantic validator, reducer, binding evidence, and
+programme execution.  Provider-specific wrappers are not separate workflows.
+
+|Token evidence boundary
+|Pass
+|The correction leaves usage observational and deferred, with no price,
+estimate, shared telemetry schema, or routing consequence.
+|===
+
+== 5. Agent-local validation and scope
+
+Reviewer diagnostics performed for this artifact:
+
+* the committed H003 diff was inspected against the complete F001 correction;
+* installed Claude Code 2.1.270 version/help was inspected read-only;
+* official Claude sandbox documentation was checked for the precise
+  unavailable-sandbox states used by CCADR-002;
+* `git diff --check` passed for this review artifact; and
+* this artifact rendered successfully with `asciidoctor`.
+
+Only the designated focused-review artifact is changed.  The main design,
+broad-review artifact, production/test source, governance, backlog, programme
+definitions, Runtime, Evidence, and all other paths remain untouched.
