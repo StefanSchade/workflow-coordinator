@@ -1,0 +1,330 @@
+# Architecture analysis and implementation design for a Claude Code CLI adapter
+
+Develop an implementable, deliberately SMALL design for adding the
+Claude Code CLI as a second real provider behind the existing
+`AgentExecutionPort`, alongside the one existing real provider, Codex
+CLI (`src/workflow_coordinator/codex_adapter.py`).
+
+This is both a required Level-0 MVP feature
+(docs/backlog/_open.adoc's "Claude Code adapter / provider neutrality"
+row; 2026-10-21 planning decisions section 4) and an architectural test
+of provider neutrality. The primary question is:
+
+**Which currently Codex-specific assumptions must change to support
+Claude Code correctly, and which parts of our provider-neutral
+abstraction already work unchanged?**
+
+Do not start by designing a new adapter framework.
+
+### Required reading
+
+Read, in full, as grounding fact rather than assumption, before
+drafting:
+
+- docs/backlog/_open.adoc, in particular the "Claude Code adapter /
+  provider neutrality" and "Token consumption evidence" rows of the
+  Level-0 MVP planning family table.
+- docs/warm_storage/concepts/workflow_coordinator_level0_mvp_planning_decisions_2026-10-21.adoc
+  sections 4 (Claude Code adapter, MUST-HAVE) and 5 (token-consumption
+  evidence, observational and bounded).
+- docs/warm_storage/concepts/workflow_coordinator_program_capabilities_and_version_lifecycle_decisions_2026-10-31.adoc,
+  which restates (without amending) the same two MUST-HAVEs and records
+  the durable distinction between programme capability, programme
+  revision, technical schema version, and Runtime revision (section 5)
+  -- a distinction this design must not blur when it names `robust@v1`
+  as the unaffected programme this Commission itself executes under.
+- docs/backlog/FTR-WFC-ARCHITECTURAL-CORE-AND-CONSOLIDATION-BOUNDARIES.adoc,
+  whose load-bearing boundary is that "CLI-specific detail stays inside
+  the adapter" and that "[a]dapters execute a provider and return
+  execution observations or a candidate structured result[; ...]
+  Coordinator policy, authority, routing, trusted Git mutation, and
+  authoritative Finding transitions remain outside adapters."
+- `src/workflow_coordinator/adapter.py` (the provider-neutral
+  `AgentExecutionPort`, request/outcome dataclasses, and
+  `validated_result`).
+- `src/workflow_coordinator/codex_adapter.py` (the one existing real
+  adapter: argv construction, the OpenAI Structured Outputs strict-
+  schema projection, process lifecycle, timeout handling, output
+  capture, diagnostics).
+- `src/workflow_coordinator/operator.py` and
+  `src/workflow_coordinator/serialization.py` (execution-binding
+  parsing/admission, and operator adapter instantiation/role
+  selection).
+- `scripts/wfc_op.py` (execution-binding generation and executable
+  handling during `prepare`).
+- `governance/commissions/wfc-simple-v1-architecture-001/` (intent.yaml,
+  profile.yaml, policy.yaml, task.md, work-item.yaml,
+  render-manifest.json) as the precedent for how a documentation-only
+  Robust-v1 design Commission is actually rendered and structured.
+  Inspect its rendered structure directly rather than reproducing
+  assumptions about it from this task text.
+- Relevant adapter, execution-binding, operator, and Front Door tests
+  under `tests/` (see the starting inventory below; verify it against
+  the tree, do not merely restate it).
+
+Do not treat any line-number citation in this task body as still exact
+without independently re-verifying it against the actual Development
+HEAD read during this Run: cite only what you have yourself confirmed
+in the current source tree. The citations below were verified against
+Development HEAD `1ddb677d4779e26c8b8890dece5c1c43110a50cf`; if your
+HEAD differs, re-verify before relying on any of them.
+
+### Starting facts (verify and cite precisely; do not assume unchanged)
+
+- `AgentExecutionPort` is a `Protocol` with one method,
+  `execute(request) -> AgentExecutionOutcome`
+  (`src/workflow_coordinator/adapter.py`). `AgentExecutionRequest` and
+  `AgentExecutionOutcome` are both frozen dataclasses already carrying
+  no Codex-specific fields. `validated_result()` is the sole
+  provider-neutral semantic-acceptance authority: it parses JSON,
+  checks the envelope key-set, checks `schema_version`, checks the
+  exact `(run_id, hop_id, invocation_id)` correlation triple against
+  the dispatched `Invocation`, and dispatches to one of three
+  kind-specific parsers. `FakeAdapter` and `SubprocessAdapter` already
+  exist in this module as non-Codex adapters, proving the port itself
+  is not Codex-only at the type level.
+- `CodexCliAdapter` (`src/workflow_coordinator/codex_adapter.py`) is
+  the entire locus of Codex-specific mechanics: argv construction
+  (fixed flags including `--ask-for-approval never`, `--sandbox
+  workspace-write`, `--output-schema <path>`, `--output-last-message
+  <path>`, trailing `-` for a stdin-delivered prompt), the OpenAI
+  Structured Outputs strict-schema projection
+  (`assert_openai_strict_schema`, `structured_result_envelope_openai_schema`),
+  `subprocess.Popen(..., start_new_session=True)` process-group
+  lifecycle, `communicate(..., timeout=...)` timeout enforcement with
+  an escalating `SIGTERM` then `SIGKILL` on the process group via
+  `os.killpg`, bounded (16 KiB tail) stdout/stderr capture, and a
+  literal `executable: str = "codex"` default. The candidate
+  structured result is read from the `--output-last-message` file, not
+  from stdout. Diagnostics text is the only place the literal string
+  "Codex CLI" appears as adapter-authored prose.
+- Exactly two places in the shell currently hard-code the single
+  string `"codex_cli"` as the only admitted adapter name: (1)
+  `serialization.py`'s `run_execution_configuration_from_yaml`, whose
+  own docstring calls this "the strict Codex-only MVP binding grammar"
+  and which raises `ValidationError` on any other value; (2)
+  `operator.py`'s `run_serial_hops`, which raises
+  `OperatorPreflightError` on any other value and otherwise directly
+  constructs `CodexCliAdapter(...)` -- a literal `if`, not a registry
+  or factory. No adapter registry exists anywhere in the tree.
+- `model.py`'s `ExecutionBinding` (`adapter`, `model`, `reasoning`,
+  all plain strings) and the durable per-Hop
+  `StagedQualificationAttempt` evidence record (which already carries
+  plain-string `adapter` and `executable` fields, with no Codex-specific
+  typing) appear to already be provider-neutral; confirm this directly,
+  including that neither `model.py` nor `reducer.py` references
+  "codex" at all.
+- The pinned-executable path (`--executable`, `scripts/wfc_op.py`
+  `cmd_prepare`) currently flows as one scalar for the whole Run, reused
+  for every role's adapter construction in `operator.py`; it is not
+  per-role. Separately, `docs/backlog/BUG-WFC-OPERATOR-PREPARE-EXECUTABLE-VALIDATION.adoc`
+  (Status WATCH) already records that harness preparation performs no
+  validation of an explicitly supplied local executable before
+  declaring readiness -- confirm this gap still exists rather than
+  assuming it is already closed.
+- No token-usage or token-consumption field exists anywhere in the
+  current source tree (`model.py`, `adapter.py`, `codex_adapter.py`,
+  `operator.py`, `serialization.py`): confirm this directly rather than
+  assuming a seam already exists to attach Claude-reported usage to.
+- `tests/unit/test_codex_adapter_conformance.py` and
+  `tests/unit/test_codex_adapter_smoke.py` are schema/fake-executable
+  conformance suites; no currently existing test invokes a live,
+  authenticated Codex CLI. `tests/unit/test_operator.py` and
+  `tests/unit/test_serialization.py` contain the operator-dispatch and
+  execution-binding-admission tests that encode today's single-adapter
+  assumption, including an explicit regression test asserting that a
+  non-`codex_cli` adapter is rejected at admission. Confirm the current
+  shape and exact names of these tests; do not assume this description
+  remains byte-exact.
+
+### Required analysis
+
+**A. Existing boundaries.** Inspect and cite actual functions and code
+locations for: `AgentExecutionPort`, request/outcome objects, and
+result validation; Codex CLI invocation, strict-schema projection,
+process lifecycle, timeout handling, output capture, and diagnostics;
+execution-binding YAML parsing and admission; operator adapter
+instantiation and role selection; `wfc_op.py` execution-binding
+generation and executable handling; pinned execution identity and
+evidence; and existing unit, fake-CLI, and real-provider conformance
+tests. Explicitly classify each current hard-coded `codex_cli`
+assumption as: genuinely adapter-private; a minimally required shared
+integration change; or an architectural boundary violation that would
+require correction.
+
+**B. Actual Claude Code CLI contract.** Investigate the CLI version
+and interfaces actually available in the intended environment, using
+installed CLI help/version information where available and
+authoritative documentation where necessary. Do not assume Claude Code
+supports OpenAI's Structured Outputs dialect or Codex CLI flags.
+Verify or identify remaining uncertainties concerning: headless,
+noninteractive execution; prompt delivery and working directory;
+explicit model selection; structured JSON output and schema
+enforcement, if available; process exit status and error reporting;
+timeout and child-process termination; permission modes, filesystem
+access, and sandbox behavior; authentication prerequisites without
+inspecting or exposing secrets; and potential provider-reported token
+usage. No live authenticated provider invocation is authorized by this
+design task. Read-only CLI discovery is acceptable. Distinguish
+verified capabilities from assumptions; where a required capability
+cannot be confirmed, identify a concrete validation step for the later
+implementation.
+
+**C. Provider-neutral semantic result.** Show how Claude's output can
+be transformed into the existing canonical WFC structured-result
+envelope. Preserve exact `run_id`, `hop_id`, and `invocation_id`
+correlation, selected result-contract kind/version, permitted routes,
+and fail-closed semantic validation. If Claude provides weaker
+output-shape guarantees than Codex, propose the smallest reliable
+alternative. Do not weaken WFC's semantic acceptance rules to
+accommodate provider-specific behavior.
+
+**D. Security and failure behavior.** Analyze noninteractive
+permissions and effective sandboxing separately from WFC's own trust
+boundaries. Do not equate a provider-requested permission or sandbox
+mode with a Coordinator-verified OS security boundary -- note, as a
+useful comparison, that the existing Codex adapter already requests
+its own provider-side sandbox mode (`--sandbox workspace-write`)
+without WFC treating that request as a verified OS boundary; the
+Claude design should name the equivalent distinction explicitly rather
+than introduce a new one. Preserve: one charged Hop per accepted
+provider invocation; no automatic replay after uncertain dispatch;
+rejection of nonzero or timed-out provider transport before trusting a
+candidate; Coordinator-owned Git authority and evidence; controlled
+source/scope and executable provenance; no provider-specific bypass of
+preflight or reduction. Address nonzero exit with valid JSON, timeout
+with partial output, no output, malformed output, correlation
+mismatch, and local executable/startup failure.
+
+**E. Minimal integration.** Propose the smallest actual implementation
+changes that allow the maintainer to select either `codex_cli` or
+`claude_cli` explicitly for a role. Existing Simple, Direct, and Robust
+programmes should work with either provider without
+programme-specific special cases. Test whether mixed role bindings,
+such as a Claude Worker and a Codex independent reviewer, can be
+supported without redesign, given that the pinned executable path is
+currently a single scalar for the whole Run rather than per-role. If
+the present `--executable` and per-role binding interfaces need
+adjustment, propose the least invasive usable operator interface.
+Avoid provider registries, dynamic model routers, provider fallback,
+agent hierarchies, generic orchestration, and speculative
+configuration layers.
+
+**F. Token evidence boundary.** Token-consumption evidence for Codex
+and Claude is a separate Level-0 MVP requirement
+(2026-10-21 planning decisions section 5). Identify where
+Claude-reported usage can later be obtained and attached with
+provenance, but do NOT implement token accounting, shared telemetry
+schemas, pricing, or cost optimization as part of this adapter design.
+Ensure the adapter proposal does not unnecessarily obstruct that
+future work.
+
+### Required design document contents
+
+The main document must contain, identifiably structured (e.g. as
+numbered sections):
+
+1. Requirements, non-goals, and MVP acceptance criterion.
+2. Current-code analysis with verified source references.
+3. Verified Claude CLI behavior and remaining uncertainties.
+4. Minimal proposed implementation, including candidate files/
+   functions.
+5. Provider-specific versus provider-neutral responsibility matrix.
+6. Security, transport failure, and trust-boundary behavior.
+7. Focused positive/negative tests, CLI fake tests, and real-provider
+   smoke-test strategy.
+8. One bounded implementation WorkItem proposal with exact candidate
+   scope and acceptance criteria.
+9. Decisions genuinely requiring maintainer approval, if any.
+
+Prefer one coherent implementation slice. Split implementation only if
+a concrete dependency makes a single slice impractical. Do not create
+a lengthy multi-stage roadmap or expand scope into P3.5/P4/P5.
+
+### Independent review mandate
+
+The independent reviewer must critically challenge, not summarize, the
+design, and must specifically test and record findings on whether:
+unsupported Claude CLI assumptions remain in the design; any implied
+relaxation of structured-result correlation or validation exists;
+provider-specific logic has leaked into the Coordinator; noninteractive
+permission/sandbox constraints are missing; negative transport and
+timeout tests are missing; the design is incompatible with existing
+Direct, Robust, or Simple runs; the design introduces unnecessary
+architectural machinery; and whether the proposed implementation
+actually tests the provider-neutral abstraction rather than merely
+running two unrelated provider-specific paths. Disposition any Finding
+you open using the authority this Commission's rendered profile
+actually grants you; do not weaken the review to obtain acceptance.
+
+### Scope note (known, unrepaired limitation)
+
+You (the Worker) are instructed to create or correct ONLY the main
+design document listed in this Commission's scope, even though the
+rendered Robust-v1 worker-phase `authorized_scope` is mechanically
+broader and also contains both review-artifact paths (see
+docs/backlog/FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc).
+Reviewer-authored artifacts are reserved for the independent reviewer.
+Do not attempt to repair that separate, already-recorded
+scope-isolation limitation in this Commission; it is out of scope
+here.
+
+
+## Acceptance
+
+The main design document exists at the path this Commission's scope
+and durable-artifact bindings designate and contains all nine required
+elements listed in the task body, identifiably structured. The broad
+and focused review artifacts exist at their designated paths and
+record a genuine independent adversarial review against the mandate in
+the task body, with any Finding disposed using only the authority this
+Commission's rendered Robust-v1 profile actually grants, and with no
+blocking Finding left open at completion. The design: maps current
+Codex-specific assumptions with verified file/function/line citations
+rather than assumption, and classifies each as adapter-private,
+minimally-shared, or a boundary violation; distinguishes verified
+Claude CLI capabilities from unverified assumptions and names a
+concrete validation step for each unverified one; shows a
+provider-neutral transformation of Claude's output into the existing
+structured-result envelope preserving exact correlation and
+fail-closed validation; analyzes security/failure behavior without
+equating a provider-requested permission or sandbox mode with a
+Coordinator-verified OS boundary; proposes the minimal shared
+integration change set admitting `claude_cli` alongside `codex_cli`
+without a provider registry or generic orchestration layer; names
+where future token evidence can attach without implementing it; and
+is one small implementable vertical slice, not a multi-slice roadmap.
+
+
+## Withheld authority
+
+No production implementation, source-code edit, test, governance
+change, kernel change, new schema, Runtime promotion, Evidence
+mutation, cleanup, nested WFC invocation, external push, or live
+provider invocation of any kind (Codex or Claude). No new programme
+catalogue entry is created by this Run; only the design document and
+its two review artifacts may be written. All code, tests, governance,
+backlog, programme definitions, and other documents outside this
+Commission's scope are read-only investigation inputs. The Worker must
+touch only the main design document; the two review-artifact paths are
+reserved for the independent reviewer, notwithstanding the Robust-v1
+worker-phase scope-isolation limitation noted in the task body, which
+this Commission does not attempt to repair. No automatic authorization
+of a subsequent implementation WorkItem is granted by completing this
+design; the maintainer separately authorizes preparation and launch of
+any such WorkItem.
+
+
+## Default escalation
+
+Stop and request maintainer authority if: the required analysis
+cannot be completed without modifying production code, tests, or
+governance inputs; a required Claude CLI capability cannot be
+confirmed by read-only discovery or authoritative documentation and no
+concrete validation step can be named for it; no design satisfying
+provider neutrality can be produced without a kernel change broader
+than what the current-implementation-constraints analysis concretely
+identifies as necessary; or a reviewer-opened Finding cannot be
+disposed within this Commission's own granted Finding authority and
+ordinary Robust-v1 correction flow.
+
