@@ -666,10 +666,21 @@ bindings:
         parsed.bindings[WorkflowRole.WORKER] = parsed.bindings[WorkflowRole.WORKER]
 
 
+@pytest.mark.parametrize("adapter", ("codex_cli", "claude_cli"))
+def test_execution_binding_parser_admits_exactly_the_two_supported_adapters(adapter):
+    parsed = run_execution_configuration_from_yaml(
+        f"""schema_version: 1
+bindings:
+  worker: {{adapter: {adapter}, model: selected-model, reasoning: high}}
+"""
+    )
+    assert parsed.bindings[WorkflowRole.WORKER].adapter == adapter
+
+
 @pytest.mark.parametrize(
     ("binding", "message"),
     [
-        ("{adapter: other, model: m, reasoning: high}", "adapter must be codex_cli"),
+        ("{adapter: other, model: m, reasoning: high}", "adapter must be codex_cli or claude_cli"),
         ("{adapter: codex_cli, reasoning: high}", "missing fields: model"),
         ("{adapter: codex_cli, model: m}", "missing fields: reasoning"),
         ("{adapter: codex_cli, model: '', reasoning: high}", "non-empty"),

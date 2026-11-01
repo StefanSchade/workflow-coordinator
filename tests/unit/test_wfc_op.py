@@ -250,6 +250,18 @@ def test_attempt_id_rejects_implausible_forms():
         sys.path.remove(str(REPO_ROOT / "scripts"))
 
 
+def test_generic_binding_writer_round_trips_claude_cli(tmp_path: Path):
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    try:
+        import wfc_op
+        path = wfc_op.write_execution_bindings(
+            tmp_path, ["worker=claude_cli:fixture-claude:high"]
+        )
+        assert "adapter: claude_cli" in path.read_text(encoding="utf-8")
+    finally:
+        sys.path.remove(str(REPO_ROOT / "scripts"))
+
+
 # -------------------------------------------------------- fixtures (session)
 
 @pytest.fixture(scope="module")

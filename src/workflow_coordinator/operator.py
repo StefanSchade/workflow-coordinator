@@ -72,11 +72,27 @@ from .serialization import (
 )
 from .slice4 import Slice4Error, checkout_state_root, register_checkout, run_real_one_hop, validate_checkout
 from .codex_adapter import CodexCliAdapter
+from .claude_adapter import ClaudeCliAdapter
 from .vertical import convergence_prompt_context
 
 
 class OperatorPreflightError(RuntimeError):
     """A local rejection that occurred before provider execution."""
+
+
+def _execution_adapter(binding: ExecutionBinding, *, result_directory: Path, executable: str):
+    """Construct one admitted provider without a registry or fallback."""
+    if binding.adapter == "codex_cli":
+        return CodexCliAdapter(
+            result_directory, model=binding.model, reasoning_effort=binding.reasoning,
+            executable=executable,
+        )
+    if binding.adapter == "claude_cli":
+        return ClaudeCliAdapter(
+            result_directory, model=binding.model, reasoning_effort=binding.reasoning,
+            executable=executable,
+        )
+    raise OperatorPreflightError(f"unsupported execution adapter: {binding.adapter}")
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -354,6 +370,10 @@ def _preflight(
             "Run execution bindings must exactly match roles used by the profile ("
             + "; ".join(details)
             + ")"
+        )
+    if len({binding.adapter for binding in execution_configuration.bindings.values()}) != 1:
+        raise OperatorPreflightError(
+            "mixed execution adapters are incompatible with the single scalar executable"
         )
     policy_actions = set(policy.actions)
     work_scope = _normalized_scope(work_item.scope, context="WorkItem.scope")
@@ -856,16 +876,9 @@ def run_serial_hops(
                 raise OperatorPreflightError(
                     f"no admitted execution binding for workflow role: {workflow_role.value}"
                 ) from error
-            if resolved_binding.adapter != "codex_cli":
-                raise OperatorPreflightError(
-                    f"unsupported execution adapter: {resolved_binding.adapter}"
-                )
             run_root = checkout_state_root(state_root, association)
-            execution_adapter = CodexCliAdapter(
-                run_root,
-                model=resolved_binding.model,
-                reasoning_effort=resolved_binding.reasoning,
-                executable=executable,
+            execution_adapter = _execution_adapter(
+                resolved_binding, result_directory=run_root, executable=executable
             )
             binding = _binding_evidence(resolved_binding, executable=executable)
         else:

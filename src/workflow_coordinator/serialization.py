@@ -984,7 +984,7 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
 
 
 def run_execution_configuration_from_yaml(text: str) -> RunExecutionConfiguration:
-    """Parse the strict Codex-only MVP binding grammar exactly once upstream."""
+    """Parse the strict closed-provider MVP binding grammar exactly once upstream."""
 
     data = _fields(
         _yaml_mapping(text, context="Run execution configuration"),
@@ -1008,8 +1008,8 @@ def run_execution_configuration_from_yaml(text: str) -> RunExecutionConfiguratio
             required={"adapter", "model", "reasoning"},
         )
         adapter = _string(binding["adapter"], context=f"{context}.adapter")
-        if adapter != "codex_cli":
-            raise ValidationError(f"{context}.adapter must be codex_cli")
+        if adapter not in {"codex_cli", "claude_cli"}:
+            raise ValidationError(f"{context}.adapter must be codex_cli or claude_cli")
         bindings[role] = ExecutionBinding(
             adapter=adapter,
             model=_execution_value(binding["model"], context=f"{context}.model"),

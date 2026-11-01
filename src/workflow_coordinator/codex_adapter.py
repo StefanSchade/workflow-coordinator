@@ -34,7 +34,6 @@ from .serialization import (
     NEW_FINDING_DELTA_V2_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
     ROUTING_RESULT_V2_REQUIRED_KEYS,
-    STRUCTURED_RESULT_ENVELOPE_KEYS,
 )
 from .model import (
     ConvergenceAssessmentResult,
@@ -47,6 +46,7 @@ from .model import (
     StrategyAssessmentResult,
     StrategyRevisionKind,
 )
+from .structured_result_schema import StructuredResultSchemaError, structured_result_envelope_schema
 
 
 class CodexCliError(ExecutionNotStartedError, RuntimeError):
@@ -306,29 +306,13 @@ def structured_result_envelope_openai_schema(
     result_contract_kind: ResultContractKind = ResultContractKind.GENERIC_ROUTING_RESULT,
     *, permitted_routes: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Return the exact strict schema supplied by ``CodexCliAdapter``.
-
-    Correlation identity is Coordinator-owned dispatch data known exactly before
-    the provider is entered, so each identity field projects as a one-element
-    typed enum of its dispatched value instead of free generative text.  This
-    only narrows what the provider may emit; ``adapter.validated_result``
-    remains the independent provider-neutral byte-exact correlation authority
-    over whatever the returned envelope actually contains.
-    """
-    def dispatched(value: str) -> dict[str, Any]:
-        return {"type": "string", "enum": [value]}
-    return {
-        "type": "object", "additionalProperties": False,
-        "required": list(STRUCTURED_RESULT_ENVELOPE_KEYS),
-        "properties": {
-            "schema_version": {"type": "integer", "enum": [contract_version]},
-            "run_id": dispatched(invocation.run_id), "hop_id": dispatched(invocation.hop_id),
-            "invocation_id": dispatched(invocation.invocation_id),
-            "result": projected_result_openai_schema(
-                result_contract_kind, contract_version, permitted_routes=permitted_routes
-            ),
-        },
-    }
+    """Return the shared closed WFC schema in Codex's strict dialect."""
+    try:
+        return structured_result_envelope_schema(
+            invocation, contract_version, result_contract_kind, permitted_routes=permitted_routes
+        )
+    except StructuredResultSchemaError as error:
+        raise OpenAIStrictSchemaError(str(error)) from error
 
 
 @dataclass(frozen=True)

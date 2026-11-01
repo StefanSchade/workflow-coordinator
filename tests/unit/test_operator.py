@@ -1987,7 +1987,7 @@ def test_binding_evidence_projects_only_the_explicit_resolved_value():
 
 
 @pytest.mark.parametrize(
-    ("personas", "forbidden_subject_text"),
+    ("personas", "forbidden_subject_text", "adapter_name"),
     [
         (
             {
@@ -1995,6 +1995,7 @@ def test_binding_evidence_projects_only_the_explicit_resolved_value():
                 WorkflowRole.INDEPENDENT_REVIEWER: "adversarial code reviewer",
             },
             "Latin course designer",
+            "codex_cli",
         ),
         (
             {
@@ -2002,12 +2003,13 @@ def test_binding_evidence_projects_only_the_explicit_resolved_value():
                 WorkflowRole.INDEPENDENT_REVIEWER: "Latin lector/editor",
             },
             "senior software developer",
+            "claude_cli",
         ),
     ],
     ids=["dmc", "latin-neutral"],
 )
 def test_dmc_and_latin_consumers_use_distinct_role_bindings_in_one_serial_run(
-    repository: Path, tmp_path: Path, monkeypatch, personas, forbidden_subject_text
+    repository: Path, tmp_path: Path, monkeypatch, personas, forbidden_subject_text, adapter_name
 ):
     workflow = profile(
         {
@@ -2052,9 +2054,10 @@ def test_dmc_and_latin_consumers_use_distinct_role_bindings_in_one_serial_run(
     binding_source.write_text(
         """schema_version: 1
 bindings:
-  worker: {adapter: codex_cli, model: worker-model, reasoning: medium}
-  independent_reviewer: {adapter: codex_cli, model: reviewer-model, reasoning: high}
+  worker: {adapter: ADAPTER, model: worker-model, reasoning: medium}
+  independent_reviewer: {adapter: ADAPTER, model: reviewer-model, reasoning: high}
 """
+        .replace("ADAPTER", adapter_name)
     )
     configuration = run_execution_configuration_from_yaml(binding_source.read_text())
     observed = []
@@ -2093,16 +2096,20 @@ bindings:
         }
         return AgentExecutionOutcome(json.dumps(envelope), 0, False, "", "")
 
-    monkeypatch.setattr(operator.CodexCliAdapter, "execute", execute)
+    adapter_type = (
+        operator.CodexCliAdapter if adapter_name == "codex_cli" else operator.ClaudeCliAdapter
+    )
+    monkeypatch.setattr(adapter_type, "execute", execute)
 
     def mutate_source_after_h001(observed_run, _invocation_id, _outcome, _outcome_error):
         if observed_run.hop_used == 1:
             binding_source.write_text(
                 """schema_version: 1
 bindings:
-  worker: {adapter: codex_cli, model: changed-worker, reasoning: low}
-  independent_reviewer: {adapter: codex_cli, model: changed-reviewer, reasoning: low}
+  worker: {adapter: ADAPTER, model: changed-worker, reasoning: low}
+  independent_reviewer: {adapter: ADAPTER, model: changed-reviewer, reasoning: low}
 """
+                .replace("ADAPTER", adapter_name)
             )
 
     state = tmp_path / "consumer-state"
@@ -2757,6 +2764,47 @@ def test_preflight_rejects_missing_binding_for_profile_role_before_provider(
     binding_path.write_text("schema_version: 1\nbindings: {}\n")
     assert main(command) == 2
     assert "missing roles: worker" in capsys.readouterr().err
+    assert not counter.exists()
+
+
+def test_preflight_rejects_mixed_provider_bindings_before_provider(
+    repository: Path, tmp_path: Path, capsys
+):
+    counter = tmp_path / "counter"
+    executable = malformed_fake(tmp_path, counter)
+    profile_path = repository / "profile.yml"
+    profile_path.write_text(profile_path.read_text() + """\
+  review:
+    role: independent_reviewer
+    components:
+      role: [worker]
+      modifiers: []
+      repository_policy: []
+    durable_artifact: none
+    authorized_scope: [PROOF.md]
+    authorized_actions: [edit, commit]
+    human_gates: []
+    evidence: []
+    review: null
+    routes:
+      done:
+        effect: complete
+""")
+    work_path = repository / "work.yml"
+    work_path.write_text(work_path.read_text().replace(
+        "personas:\n  worker: fixture worker",
+        "personas:\n  worker: fixture worker\n  independent_reviewer: fixture reviewer",
+    ))
+    commit(repository)
+    command = args(repository, tmp_path / "mixed-binding-state", str(executable))
+    binding_path = Path(command[command.index("--execution-bindings") + 1])
+    binding_path.write_text(
+        "schema_version: 1\nbindings:\n"
+        "  worker: {adapter: codex_cli, model: worker, reasoning: medium}\n"
+        "  independent_reviewer: {adapter: claude_cli, model: reviewer, reasoning: high}\n"
+    )
+    assert main(command) == 2
+    assert "mixed execution adapters" in capsys.readouterr().err
     assert not counter.exists()
 
 
