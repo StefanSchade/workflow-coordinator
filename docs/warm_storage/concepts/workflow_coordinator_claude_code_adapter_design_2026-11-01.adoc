@@ -1,0 +1,235 @@
+= Claude Code CLI adapter: small provider-neutrality implementation design
+:toc:
+
+Status:: Proposed implementation design; no production implementation is authorized by this document.
+Date:: 2026-11-01
+Commission:: `WI-WFC-CLAUDE-CODE-ADAPTER-DESIGN-001`, running under existing `robust@v1`; this is not a programme/revision/schema/Runtime change.
+Source baseline inspected:: Development `bcbae8ab6873ae4ed7bd414f1cceb3ac983f99d7`.
+
+== 1. Requirements, non-goals, and MVP criterion
+
+Claude Code is a Level-0 release prerequisite, independently of deferred P4/P5; provider-reported token evidence is a separate bounded observational MVP requirement (`docs/warm_storage/concepts/workflow_coordinator_level0_mvp_planning_decisions_2026-10-21.adoc:100-152`; `docs/backlog/_open.adoc:233-245`).  This design must not turn either into a provider framework or telemetry system.
+
+The small MVP criterion is: an admitted role binding may explicitly name `codex_cli` or `claude_cli`; Simple, Direct, and Robust use the selected provider through the existing `AgentExecutionPort`; and a Claude result reaches the existing exact, fail-closed WFC semantic validator.  No provider registry, automatic selection/fallback, SDK, router, new result contract, agent hierarchy, generic orchestration, programme-specific branch, or Coordinator-core change is proposed.
+
+This Commission's use of `robust@v1` remains distinct from product capability, programme revision, technical schema version, and Runtime revision, exactly as required by `docs/warm_storage/concepts/workflow_coordinator_program_capabilities_and_version_lifecycle_decisions_2026-10-31.adoc:215-244`.  It does not alter `direct@v1` or `robust@v1`.
+
+== 2. Verified current-code analysis
+
+=== 2.1 Provider-neutral boundary that already works
+
+`AgentExecutionRequest` and `AgentExecutionOutcome` are frozen, provider-neutral dataclasses (`src/workflow_coordinator/adapter.py:38-74`); the request carries Invocation, prompt, repository, result contract/kind/version, timeout and routes, while the outcome carries a raw candidate and transport observations.  `AgentExecutionPort` has one `execute(request)` method (`:79-80`).  `FakeAdapter` and `SubprocessAdapter` already implement the port (`:83-107`).  Claude needs no port, model, reducer, or result-contract field.
+
+`validated_result` is the sole semantic acceptance authority (`adapter.py:110-144`).  It parses JSON, requires the exact envelope key-set, requires the selected version, compares the entire `(run_id, hop_id, invocation_id)` triple, and calls the parser selected by result-contract kind.  This remains unchanged.  Independently, `run_one_hop` rejects a nonzero return or timeout before examining any candidate, then rejects an absent candidate before calling `validated_result` (`src/workflow_coordinator/vertical.py:326-345`).
+
+`ExecutionBinding` already holds plain-string adapter/model/reasoning (`src/workflow_coordinator/model.py:170-184`); `StagedQualificationAttempt` records string adapter and executable provenance (`:823-851`), and its parser does the same (`src/workflow_coordinator/serialization.py:1759-1786`).  Current source inspection finds no `codex` reference in either `model.py` or `reducer.py`.
+
+=== 2.2 Codex assumptions, classification, and disposition
+
+[cols="2,3,1",options="header"]
+|===
+|Verified current location |Required disposition |Classification
+
+|`CodexCliAdapter` owns executable/model/reasoning checks, argv, OpenAI strict schema, result-file transport, process group, timeout escalation, bounded 16-KiB tails, and diagnostics (`src/workflow_coordinator/codex_adapter.py:52-102,304-408`).  Its argv has Codex-only `exec`, `--sandbox workspace-write`, `--output-schema`, `--output-last-message`, and stdin `-` flags (`:353-359`).
+|Keep these mechanics and terms inside `codex_adapter.py`.  Claude must not reuse Codex flags or its result file.  The new-session/TERM/KILL subprocess pattern is reusable local process handling, not a Codex semantic rule.
+|Adapter-private
+
+|The Codex projection constrains envelope IDs as one-value enums and route as the current permitted-route enum (`codex_adapter.py:304-331`); `assert_openai_strict_schema` checks an OpenAI-only subset (`:60-98`).
+|Extract the WFC-shaped Draft-7-compatible envelope builder into a small shared module.  Codex retains its strict-subset assertion; Claude serializes the shared schema for its own flag.  This avoids making an OpenAI-named projection Claude's authority without a framework.
+|Minimally shared
+
+|`run_execution_configuration_from_yaml` calls itself the Codex-only grammar and rejects every adapter other than `codex_cli` (`src/workflow_coordinator/serialization.py:986-1026`).
+|Admit exactly the closed pair `{codex_cli, claude_cli}`; preserve field, role, version and nonempty checks.
+|Minimally shared
+
+|`run_serial_hops` makes the second `codex_cli` check and directly instantiates `CodexCliAdapter` (`src/workflow_coordinator/operator.py:848-870`).
+|Use one private two-case `if/elif` factory (or equivalent local code).  Do not add a registry, dynamic import, or fallback.
+|Minimally shared
+
+|The global `--executable` defaults to `codex` (`operator.py:266-281`), is reused for every role (`:896-912`), and is persisted by `_binding_evidence` (`:590-598`).  The harness only accepts one executable while emitting explicit role bindings (`scripts/wfc_op.py:427-463,719-778,1151-1161`).
+|Keep it for the homogeneous-provider MVP and retain its existing provenance record.  See §4.4 for mixed roles.
+|Minimally shared
+
+|`slice4.invoke_codex` and the no-adapter fallback are Codex compatibility seams (`src/workflow_coordinator/slice4.py:139-161,296-326`).
+|Production operator dispatch already supplies an adapter; leave this compatibility seam alone.  Adding provider selection here duplicates the operator and violates the boundary.
+|Adapter-private / no change
+
+|Adapters may return observations/candidates, but policy, routing, trusted Git, evidence, and Finding transitions remain outside them (`docs/backlog/FTR-WFC-ARCHITECTURAL-CORE-AND-CONSOLIDATION-BOUNDARIES.adoc:51-67`).
+|Putting Claude route/Finding/Git/evidence authority into an adapter or reducer is prohibited.
+|Boundary violation if done
+|===
+
+The explicit-executable preparation gap remains open: `cmd_prepare` pins and writes the supplied executable but the canonical preflight does not probe it (`scripts/wfc_op.py:517-591,719-778`; `docs/backlog/BUG-WFC-OPERATOR-PREPARE-EXECUTABLE-VALIDATION.adoc:12-105`).  This work must not claim it fixes that defect.  Both adapters must still convert pre-launch `Popen` failure to a local not-started error, as Codex does (`codex_adapter.py:387-392`).
+
+No token-usage/consumption field exists in `model.py`, `adapter.py`, `codex_adapter.py`, `operator.py`, or `serialization.py`: a current case-insensitive search has no provider-usage hit.  There is no current storage seam to claim.
+
+=== 2.3 Current test inventory
+
+`tests/unit/test_codex_adapter_conformance.py` is offline schema/fake-executable coverage: `test_exact_codex_projection_conforms_to_supported_openai_strict_subset` (`:47-48`), `test_codex_argv_is_adapter_owned_and_request_is_provider_neutral` (`:217-229`), correlation projection (`:286-328`), and empty-route prelaunch rejection (`:385-406`).  `tests/unit/test_codex_adapter_smoke.py` explicitly uses deterministic fake executables and covers success, nonzero, malformed/cross-run candidate, timeout, and missing executable (`:60-251`).  Neither invokes an authenticated Codex CLI.
+
+The existing single-provider admission is asserted by `test_execution_binding_parser_is_strict_explicit_and_immutable` and `test_execution_binding_parser_rejects_unsupported_or_incomplete_bindings` (`tests/unit/test_serialization.py:655-706`), including `adapter must be codex_cli`.  Operator fixtures pin Codex role bindings (`tests/unit/test_operator.py:282-300`) and the binding-preservation test patches `CodexCliAdapter` (`:2051-2131`).  The harness accepts the generic-looking `ROLE=ADAPTER:MODEL:REASONING` string (`tests/unit/test_wfc_op.py:231-235`).
+
+== 3. Actual Claude Code CLI contract
+
+Read-only local discovery found `/home/stefan/.local/bin/claude`, version `2.1.270 (Claude Code)`.  No `claude -p`, live authenticated invocation, auth-status inspection, or secret access occurred.
+
+[cols="2,3",options="header"]
+|===
+|Question |Verified fact and design treatment
+
+|Headless prompt and cwd
+|Installed `--help` says `-p`/`--print` is noninteractive and accepts the prompt argument; the official CLI reference confirms it queries and exits (https://code.claude.com/docs/en/cli-usage[CLI reference]).  Pass `request.prompt` as the trailing, non-shell argv argument and set `cwd=request.repository`.  A fake asserts prompt/cwd; an authorized later smoke confirms observed cwd.
+
+|Model and effort
+|Installed help and the official reference expose `--model`; installed help exposes `--effort low|medium|high|xhigh|max`.  Map explicit binding model/reasoning to `--model`/`--effort`; never use a default or `--fallback-model`.  Availability of every model/effort pair is unverified and must surface as a nonzero transport failure in later smoke.
+
+|Structured JSON
+|Installed help exposes `--json-schema` and `--output-format json`.  The official reference says `--json-schema` validates JSON after workflow completion and errors for an invalid schema (https://code.claude.com/docs/en/cli-usage[CLI reference, `--json-schema`]); Anthropic's structured-output documentation requires treating success with no structured output as failure (https://code.claude.com/docs/en/agent-sdk/structured-outputs[Structured outputs]).  Neither inspected source specifies the exact CLI JSON wrapper for 2.1.270 or confirms every feature of WFC's present strict projection.  The decoder and exact shared schema are therefore fake-tested and release-gated by the real smoke in §7.  If the exact schema is rejected, use only a semantically equivalent Claude-compatible projection; do not weaken WFC's envelope/correlation rules or fall back to free-form `result` text.
+
+|Exit/error/timeout
+|`--print` is finite; WFC owns the timeout and process-group kill.  The exact provider error JSON is not relied on: nonzero and timeout remain untrusted transport failures, with stdout/stderr only diagnostic tails.
+
+|Permissions and filesystem
+|Installed help exposes `--permission-mode`, `--permission-prompts none`, `--allowed-tools`, `--restricted`, and the dangerous bypass flag.  The CLI documentation says `none` denies unanswered prompts and `--restricted` confines file tools/removes code-running tools unless named (https://code.claude.com/docs/en/cli-usage[CLI reference]).  Invoke `--permission-mode acceptEdits --permission-prompts none`, without dangerous bypass or fallback.  This is a provider request, not an OS sandbox.  A real smoke must show a tiny allowed edit works; command-tool approval, if needed, requires a separately approved narrow allow-list.
+
+|Authentication
+|No credentials were read.  Documented paths include Console, subscription, and enterprise platforms (https://docs.anthropic.com/en/docs/claude-code/getting-started[setup documentation]).  Later smoke observes only success/failure under provisioned auth and prints no credential data.
+
+|Usage
+|The Agent SDK documents input/output/cache and per-model usage, and calls cost fields local estimates (https://code.claude.com/docs/en/agent-sdk/cost-tracking[Track cost and usage]).  The inspected CLI reference does not promise equivalent single-JSON fields.  Smoke must inventory non-secret fields actually emitted; this slice stores none.
+|===
+
+== 4. Minimal proposed implementation
+
+=== 4.1 Adapter and candidate transformation
+
+Add frozen `ClaudeCliAdapter(result_directory, model, reasoning_effort, executable="claude")` in `src/workflow_coordinator/claude_adapter.py`, implementing the existing port.  It validates explicit nonempty model/reasoning, launches without a shell in `request.repository`, and performs the same request-contract checks as Codex.
+
+[source,text]
+----
+<executable> -p --output-format json --json-schema <serialized WFC schema>
+  --model <binding.model> --effort <binding.reasoning>
+  --permission-mode acceptEdits --permission-prompts none
+  --no-session-persistence <request.prompt>
+----
+
+The prompt is an argv element passed without a shell.  The adapter creates no Codex output file and passes no Codex/OpenAI flag, bypass-permissions flag, or session resume/continue option.  It may retain only small generated schema/diagnostic files, never raw transcripts.
+
+After clean transport, the adapter parses the Claude JSON transport wrapper, requires its successful structured-output member, JSON-serializes that member, and returns it as `candidate_result`.  It never fills or repairs `run_id`, `hop_id`, `invocation_id`, route, kind, or version.  The complete path remains:
+
+[source,text]
+----
+Claude schema-validated object -> adapter wrapper decoder -> canonical WFC JSON
+-> validated_result(raw, dispatched invocation, selected kind/version) -> reducer
+----
+
+Claude schema validation is only an earlier guard.  WFC still independently rejects malformed keys, contract/version mismatch, any correlation mismatch, or kind-specific semantic invalidity.
+
+Extract the current envelope construction from the OpenAI-named adapter to candidate `src/workflow_coordinator/structured_result_schema.py`.  The builder still takes Invocation, kind/version and permitted routes and returns the same closed WFC envelope shape.  Codex consumes it and keeps `assert_openai_strict_schema`; Claude serializes it for `--json-schema`.  This is one shared projection helper, not a new adapter architecture.
+
+=== 4.2 Selection and unchanged WFC responsibilities
+
+`run_execution_configuration_from_yaml` admits exactly `codex_cli` and `claude_cli`.  In `run_serial_hops`, a private two-case factory constructs Codex or Claude with the resolved binding and current executable; unknown values retain a defense-in-depth `OperatorPreflightError`.  `_binding_evidence` stays provider-neutral and persists the actual adapter/executable/model/reasoning.
+
+Do not change `model.py`, `reducer.py`, port records, `validated_result`, prompt/result contracts, Coordinator-owned Git mutation, evidence, or Finding authority.  Provider/model selection remains a shell concern, as required by the architecture boundary.
+
+=== 4.3 Failure mechanics
+
+Claude copies Codex's relevant local process pattern, not its CLI dialect: `Popen(..., start_new_session=True)`, `communicate` timeout, `killpg(SIGTERM)`, three-second grace, `killpg(SIGKILL)`, and bounded stdout/stderr tails.  OSError/value failure before `Popen` raises an `ExecutionNotStartedError` subtype.  A started process, including one with a decoding error, returns its transport observations so existing uncertain-dispatch recovery stays conservative.
+
+=== 4.4 Mixed roles and executable provenance
+
+Today a Claude Worker plus Codex reviewer is not safely supportable: each role could select a different adapter but both receive one scalar executable.  A dispatcher wrapper that guesses provider is hidden routing and is rejected.  The selected MVP supports homogeneous real-provider bindings per Run: Simple uses either provider for Worker, while Direct/Robust use either provider for all their roles.  Mixed bindings with one executable must fail in preflight before provider execution.
+
+If mixed roles become a requirement, the smallest separately authorized extension is repeatable `--role-executable ROLE=PATH`, retained through `wfc_op` preparation and launch, validated against admitted roles, and used as an override to the existing scalar default.  `_binding_evidence` records the resolved per-role path.  This preserves the existing three-field `ExecutionBinding` grammar and homogeneous invocations, avoids a registry, and is explicitly out of this slice.
+
+== 5. Provider-specific versus provider-neutral responsibilities
+
+[cols="2,2,2",options="header"]
+|===
+|Responsibility |Adapter-private |Provider-neutral WFC
+
+|argv, prompt/cwd, model/effort spelling, output wrapper, permission request, diagnostic text
+|Codex or Claude adapter
+|Never
+
+|Canonical WFC envelope JSON schema
+|Serializes/projections for provider
+|Small shared builder defines envelope/identity/routes
+
+|Process and timeout observations
+|Executes and reports transport facts
+|Rejects nonzero/timed-out transport before semantic trust
+
+|Envelope, kind/version, exact correlation and result semantics
+|May constrain, never accept
+|`validated_result`, serialization, profile and reducer
+
+|Git, scope, evidence, route, Finding authority, accounting/replay
+|Never
+|Existing Coordinator mechanisms
+
+|Selection provenance
+|Consumes selected inputs
+|Binding admission and `StagedQualificationAttempt`
+|===
+
+== 6. Security, transport failure, and trust boundaries
+
+Claude's permission mode is not a Coordinator-verified OS boundary, just as the current Codex `--sandbox workspace-write` request is not one.  WFC independently relies on the pinned clean checkout, admitted binding/executable, post-Hop Git/scope observation, Coordinator-owned Git/evidence, semantic reduction, and Finding authority.  `--restricted` is future hardening only until it is demonstrated compatible with WFC tasks.
+
+[cols="2,3",options="header"]
+|===
+|Event |Required behavior
+
+|Local schema/executable/startup failure before `Popen`
+|Local not-started error; existing pre-acceptance path removes dispatch marker.  No provider invocation occurred.
+
+|Nonzero exit, including valid-looking JSON
+|Return transport facts; vertical rejects before candidate parsing.  No automatic replay.
+
+|Timeout with partial stdout/JSON
+|Terminate group, return timed-out outcome/tails, reject before parsing.  Partial output never becomes candidate.
+
+|Zero exit but absent/malformed wrapper, absent structured output, malformed envelope, or wrong correlation
+|No valid candidate reaches acceptance; never repair fields from dispatch and never retry.
+
+|Permission/auth failure
+|Unanswered prompts deny rather than hang; auth failure is nonzero transport failure.  No secret is copied or logged.
+
+|Unexpected error after dispatch
+|Existing dispatch marker and uncertain-dispatch recovery conservatively stop/charge; no replay.
+|===
+
+Therefore one accepted provider invocation remains one charged Hop; provider failure cannot fabricate completion or bypass preflight, reduction, trusted Git, evidence, scope, or Finding controls.
+
+== 7. Focused tests, fake CLI, and real-provider smoke
+
+Add deterministic `tests/unit/test_claude_adapter_conformance.py` fake-executable coverage for exact argv (no Codex flags), prompt/cwd, model/effort, shared schema ID/route constraints, startup failure, and successful wrapper extraction.  Add nonzero-with-valid-JSON, timeout-with-partial-JSON, malformed wrapper, success-without-structured-output, malformed extracted envelope, and mismatched Run/Hop/Invocation.  Every negative case proves no repair or candidate acceptance.
+
+Extend serialization tests so exactly the two adapter literals are admitted and arbitrary literals rejected.  Add operator tests that patch each adapter and prove identical binding provenance/reduction plus mixed-binding/scalar-executable rejection.  Extend `test_wfc_op.py` only to preserve a `claude_cli` binding; do not authenticate or invoke Claude.  Keep Codex tests, including OpenAI strict-subset checks, passing after the shared-builder extraction.
+
+A separately authorized real smoke is release-gating, not this design's execution: run exactly one pinned `claude -p` invocation in a disposable repository on a read-only or tiny authorized-file task, without exposing credentials.  It must confirm the exact JSON wrapper/structured-output decoder, schema enforcement, working directory, valid model/effort, unattended edit permission behavior, and nonzero diagnostics.  It also records only which non-secret provider-usage fields are present.  It is not a production Run or fallback path.
+
+== 8. Bounded implementation WorkItem
+
+Proposed WorkItem:: `WI-WFC-CLAUDE-CODE-ADAPTER-IMPLEMENTATION-001`, separately authorized.
+
+Candidate scope:: new `src/workflow_coordinator/structured_result_schema.py` and `src/workflow_coordinator/claude_adapter.py`; `src/workflow_coordinator/codex_adapter.py`, `serialization.py`, `operator.py`; and the focused tests in §7.  Touch `scripts/wfc_op.py` only if its generic binding writer/test needs the newly admitted literal.  Do not touch model/reducer, workflow programmes/profiles, governance, token evidence, or mixed-executable interface.
+
+Acceptance criteria::
+
+* Closed admission accepts exactly `codex_cli` and `claude_cli`; selection is an explicit two-case operation, not registry/fallback.
+* Claude returns only a decoded structured WFC envelope candidate; all current port, vertical, semantic, and correlation checks remain intact and pass.
+* Fake tests cover every positive/negative transport and decoder case in §7; Codex conformance/lifecycle coverage still passes.
+* Homogeneous Simple, Direct and Robust bindings work with either provider without programme-specific code; mixed bindings with scalar executable are rejected before launch.
+* A separately authorized, non-secret smoke confirms the pinned CLI wrapper and permission behavior before release acceptance.
+
+== 9. Decisions requiring maintainer approval
+
+The design needs no further decision for the small homogeneous-provider slice.  Two later decisions remain explicit:
+
+. Is a Claude Worker plus Codex reviewer required for Level-0?  If yes, authorize the bounded `--role-executable` interface from §4.4; do not use a dispatcher executable.
+. If `acceptEdits` plus denied prompts cannot complete intended work, which narrowly scoped provider tool rules are acceptable?  Approval is necessary because it widens the provider-side capability request, though it does not create an OS sandbox claim.
+
+Future token evidence must attach only provider-reported fields plus provider/version/output-location provenance, represent absence as absence, and avoid pricing, estimates, raw transcripts, policy, or routing.  This design neither blocks nor implements that separate MVP work.
