@@ -41,34 +41,51 @@ of the target venv `pip_install` installs into. This is a nested
 installation step inside an already-nested `prepare` call: `prepare` ->
 `pip install` -> PEP 517 build isolation -> resolve `setuptools`.
 
-Whether that resolution step needs the network depends on the host: it is
-satisfied locally if a compatible `setuptools` wheel is already present in
-the invoking user's `pip` cache (ordinarily under the host's unprivileged
-account, not necessarily shared with or reachable from an agent's sandboxed
-shell), and requires reaching PyPI otherwise. No code in this repository
-pins, vendors, or stages a local `setuptools` wheel for this path.
+A cached artifact and offline dependency resolution are not the same
+condition. An already-cached `setuptools` wheel only satisfies the
+installation step once a specific version has already been resolved; pip's
+default resolution for an unpinned range such as `setuptools>=68`
+ordinarily still performs an index lookup to pick a candidate version,
+independently of whether a matching wheel already sits in the local wheel
+cache (ordinarily under the host's unprivileged account, not necessarily
+shared with or reachable from an agent's sandboxed shell). That index
+lookup is what actually needs the network -- it is avoided only if pip is
+told to skip it (e.g. `--no-index`/`--find-links` against a local-only
+source) or if a prior, still-fresh query of the same index is itself served
+from pip's separate HTTP response cache -- and is not avoided merely
+because a usable wheel happens to already be cached locally. No code in
+this repository pins, vendors, or stages a local `setuptools` wheel, nor
+configures an index-lookup bypass, for this path.
 
 == What was reported (agent-shell failure observations)
 
 This record's Discovery context is the newly added Worker/Reviewer
 role-prompt guidance on offline agent execution (Part A of this same
-maintenance task), which exists because agent-shell invocations of this
-project's test suite have previously been observed to lack network access
-while mechanically separate Coordinator-owned trusted evidence for the same
-work passed. This record documents the class of problem the new prompt
-guidance anticipates for this specific nested-`prepare` path; it does not
-itself attach a fresh, reproduced failure transcript from an intentionally
-offline agent shell for this exact fixture.
+maintenance task). That guidance exists because the first real Simple
+dogfood, `RUN-e28bd75fe52f4118b3b33a0f1f944c62`, reports exactly this class
+of observation: its Worker-attributed structured result records an
+unsuccessful agent-local full-suite diagnostic implicating `setuptools`
+availability. That report is the Worker's own agent-side observation, not
+an independently reproduced root cause for this exact nested-`prepare`/
+`prepared`-fixture mechanism -- no diagnostic transcript tying the failure
+specifically to the PEP 517 build-isolation step above has been reproduced
+-- and it is distinct from that same Run's Coordinator-owned `task-check`,
+which executed separately and passed (see "Coordinator-trusted evidence"
+below). This record documents the class of problem that report and the new
+prompt guidance anticipate for this specific nested-`prepare` path; it does
+not itself attach a fresh, reproduced failure transcript from an
+intentionally offline agent shell for this exact fixture.
 
 A probe run in the current (networked) interactive session -- `python3 -m
 venv` followed by `pip install --no-input <this project's path>` -- *did
 not* fail: pip reported `Installing build dependencies: ... finished with
 status 'done'` and completed the install, because this session's shell has
 outbound network access (confirmed separately via a direct HTTPS request to
-`pypi.org`) and/or a warm local wheel cache. That result does not confirm or
-disprove this record's hypothesis; it only establishes that reproducing the
-failure requires a shell with neither network access nor a pre-populated
-`setuptools` wheel in `pip`'s cache, which this session is not.
+`pypi.org`) and/or a cached index response that made the version-resolution
+index lookup unnecessary. That result does not confirm or disprove this
+record's hypothesis; it only establishes that reproducing the failure
+requires a shell that can perform neither the index lookup nor fall back to
+an already-cached equivalent of it, which this session is not.
 
 == What remains a hypothesis requiring reproduction
 
