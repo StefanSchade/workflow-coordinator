@@ -1,0 +1,380 @@
+schema_version: 1
+commission_id: wfc-claude-adapter-write-permissions-001
+work_item_id: WI-WFC-CLAUDE-ADAPTER-WRITE-PERMISSIONS-001
+
+authority_source: >-
+  Maintainer directly authorizes Commission authoring (render + commit +
+  `commission check` only; no `prepare`, no `launch`, no provider
+  invocation) of a bounded `robust@v1` correction for the live permission
+  mismatch recorded in `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`.
+  This authorization is for Commission authoring only; it is not
+  authorization to implement the fix directly, to launch WFC, or to invoke
+  an authenticated provider.
+
+  Baseline verified against Git immediately before writing this Intent:
+  Development `HEAD` is `9f4dcfc0184e689e15066c7d272fccb66e8d859a`
+  ("docs(backlog): record Claude adapter write-permission mismatch"), one
+  commit ahead of `a152ad2` ("docs(commission): prepare first Claude Opus
+  simple@v1 qualification run"); the working tree is clean. `a152ad2` is
+  therefore stale as a current-baseline reference and is not used for any
+  source pin below; every `source_commit` in this Intent instead pins the
+  verified current `HEAD`, `9f4dcfc0184e689e15066c7d272fccb66e8d859a`.
+
+  Bug record used: `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`,
+  committed at `9f4dcfc0184e689e15066c7d272fccb66e8d859a` together with its
+  `docs/backlog/_open.adoc` card (status `NOW`). That record documents two
+  live qualification attempts under Commission
+  `wfc-simple-v1-maintainer-principles-001` against Claude Code CLI
+  `2.1.270` and Runtime commit `5cf0fe1a`: the first,
+  `wfc-claude-opus-simple-20261102-01`, failed before agent execution on a
+  since-resolved missing-`socat` local dependency and is not this record's
+  subject; the second, `wfc-claude-opus-simple-20261102-02`, ran
+  successfully at the provider-transport level (CLI exit 0, a valid
+  correlated structured result, no timeout, `task-check` passing, no Git
+  change) but had `Write` to the WFC-authorized, not-yet-existing
+  `docs/developer_guide/maintainer_principles.adoc` and `Bash mkdir -p
+  docs/developer_guide` both denied by the Claude Code CLI's own
+  permission layer, with no interactive approval surface, inside the exact
+  scope (`docs/developer_guide`) that Commission
+  `wfc-simple-v1-maintainer-principles-001`'s rendered `profile.yaml`
+  explicitly authorized (`authorized_actions: [edit, commit]`,
+  `authorized_scope: [docs/developer_guide]`). WFC's own scope/Finding
+  mechanics behaved correctly throughout (clean `awaiting_human` stop, no
+  Git change); the bug record itself classifies this as a provider-adapter
+  effective-permission gap, not a Coordinator authority defect, and
+  records two unconfirmed mechanism hypotheses -- permission-mode override
+  under `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` forcing the CLI's interactive
+  default permission mode back on while `--permission-prompts none`
+  converts every resulting ask into an outright denial; and the generated
+  settings JSON defining no write-scope-equivalent field at all -- neither
+  confirmed, both requiring investigation before correction. The run
+  evidence directories under `~/wfc-state/wfc-claude-opus-simple-20261102-01`
+  and `-02` are maintainer-local and are not a dependency of this
+  Commission's worker: every reproduction fact the worker needs is already
+  recorded in the bug record and reiterated in the rendered task below.
+
+  This Intent authorizes only the bounded investigation-then-correction
+  described in the rendered task: establishing the actual causal mechanism
+  from the two hypotheses above (or another the Worker independently
+  finds), implementing the narrowest correction such investigation
+  actually supports, and having it independently reviewed -- never
+  adoption of either hypothesis as an established root cause without the
+  Worker's own evidence, never a live authenticated provider run, and
+  never promotion to Runtime or a WFC launch.
+
+program:
+  id: robust
+  revision: v1
+  source_commit: 9f4dcfc0184e689e15066c7d272fccb66e8d859a
+
+task:
+  title: Diagnose and correct the Claude Code adapter's write-permission mismatch for WFC-authorized scope
+  body: |
+    Diagnose, then correct, the gap recorded in
+    `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`:
+    a live, noninteractive Claude Code worker process could not perform a
+    `Write` or a directory-creating `Bash mkdir -p` inside the exact scope
+    (`docs/developer_guide`) its WFC Commission profile authorized
+    (`authorized_actions: [edit, commit]`), with both operations denied by
+    the Claude Code CLI's own permission layer and no approval surface
+    available to resolve either denial. WFC's own scope/Finding mechanics
+    are not the defect; `ClaudeCliAdapter`'s effective permission
+    configuration is.
+
+    ### Required reading
+
+    Read, in full, before changing anything:
+
+    - `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`
+      in its entirety, including "Suspected mechanisms," "Security
+      invariant," "Acceptance criteria," and "Explicit limitation." Do not
+      re-derive what it already records as verified fact; do verify its
+      two mechanism hypotheses independently rather than assuming either.
+    - `src/workflow_coordinator/claude_adapter.py` in full -- `argv`
+      (lines ~50-59: `--restricted --safe-mode --strict-mcp-config`,
+      `--permission-mode acceptEdits --permission-prompts none`),
+      `_settings` (lines ~61-78: `sandbox.filesystem.allowRead`/`denyRead`,
+      `permissions.deny`, `blockReadsOutsideWorkingDirectories`, and the
+      absence of any write-scope-equivalent field), and `execute` (line
+      ~120: `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` in the child environment).
+    - `src/workflow_coordinator/adapter.py` (`AgentExecutionRequest`,
+      `AgentExecutionOutcome`, `AgentExecutionPort`) -- read-only context;
+      not in this Commission's scope. Note in particular that
+      `AgentExecutionRequest` carries only `repository` (the whole
+      checkout root), never an explicit per-phase authorized-path list;
+      the phase's actual `authorized_scope` lives only in the rendered
+      WFC profile, one layer above this adapter, and is never passed into
+      the request the adapter receives.
+    - `tests/unit/test_claude_adapter_conformance.py` in full -- it is
+      exclusively a deterministic fake-executable suite; no test in it
+      invokes a real `claude` binary or can observe the CLI's own
+      permission-engine behavior.
+    - `governance/commissions/wfc-simple-v1-maintainer-principles-001/profile.yaml`
+      and `work-item.yaml`, to see the exact `authorized_scope`/
+      `authorized_actions` grant the live attempt's denial contradicted.
+    - `docs/warm_storage/concepts/workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc`,
+      sections 3 ("Permissions and filesystem"), 4.1, 6, and 9 (decision 3:
+      widening the provider-side capability request requires maintainer
+      approval, "do not solve it with ambient allow rules,
+      `excludedCommands`, or an unsandboxed retry") -- the accepted design
+      this correction must stay inside.
+    - `docs/warm_storage/concepts/workflow_coordinator_claude_code_adapter_implementation_continuation_2026-11-01_broad_review.adoc`,
+      which independently accepted the current implementation while
+      explicitly noting no authenticated provider was invoked and that a
+      real Claude smoke test remains a separate, deferred release
+      prerequisite -- this Commission does not authorize that smoke test.
+
+    ### Mandate
+
+    1. Establish the actual causal mechanism before writing any fix.
+       Distinguish, with concrete reasoning or a reproducing deterministic
+       test where one is genuinely possible without a live authenticated
+       CLI invocation: (a) whether `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`
+       causes the CLI to fall back to its interactive-default permission
+       mode despite `--permission-mode acceptEdits`, as the first
+       qualification attempt's own warning text
+       ("Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
+       is set") literally reported, and whether `--permission-prompts none`
+       then converts every resulting ask into an outright denial for both
+       `Write` and `Bash`; (b) whether the generated settings JSON's
+       complete absence of any write-scope/`allowWrite`-equivalent field is
+       an independent gap regardless of permission mode; and (c) whether
+       `--restricted`'s working-directory confinement itself has any
+       distinct interaction with creating a not-yet-existing subdirectory.
+       Record which mechanism(s) are confirmed, which are ruled out, and
+       the evidence for each -- do not merely restate the bug record's
+       hypotheses as a conclusion.
+    2. Investigate the implication of `AgentExecutionRequest` carrying no
+       explicit per-phase authorized-path list. Determine whether a
+       correct fix can be made entirely inside `claude_adapter.py`'s own
+       `argv`/`_settings`/environment construction -- for example, a
+       corrected permission-mode/prompts combination consistent with
+       keeping `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, or an explicit
+       write-scope setting derived only from `request.repository` (the
+       field the adapter already receives) -- or whether it actually
+       requires adding a new phase-scoped authorized-path field to
+       `AgentExecutionRequest` and threading it through `operator.py`.
+       Strongly prefer the former. If, and only if, investigation
+       concludes the latter is genuinely unavoidable, do not implement it:
+       stop and escalate per `escalation_default` instead of silently
+       expanding the port or operator surface.
+    3. Implement the narrowest correction the investigation in (1)-(2)
+       actually establishes, exclusively within
+       `src/workflow_coordinator/claude_adapter.py`. The correction must
+       preserve every security invariant
+       `BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`'s own
+       "Security invariant" section lists verbatim: no
+       `--dangerously-skip-permissions`, `--permission-mode
+       bypassPermissions`, or other blanket bypass; no widening of
+       `sandbox.filesystem.allowRead` beyond the resolved repository root,
+       and no `allowWrite`-equivalent broader than the repository root
+       (the adapter has no phase-scope information narrower than that to
+       grant, per (2)); no removing `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`
+       without the investigation in (1) having actually established that
+       doing so is the correct and sufficient mechanism, and without
+       separately reconfirming the scrubbed-environment authentication
+       behavior the accepted design already required (design section
+       4.1); and no falling back to Codex's coarser `--sandbox
+       workspace-write` model.
+    4. Do not invoke an authenticated `claude` CLI process, inspect or
+       expose credentials, widen sandbox permissions beyond what (3)
+       allows, or make any network-dependent test mandatory.
+    5. Run the repository's full `task-check` evidence command (`python -m
+       pytest -q`) through the configured Coordinator evidence gate, and
+       provide an exact `commit_intent` containing only paths with actual
+       worktree mutation for this Hop.
+
+    ### Scope
+
+    - `src/workflow_coordinator/claude_adapter.py`: the only production
+      source file this correction may change. Do not touch
+      `codex_adapter.py`, `adapter.py`, `operator.py`, `serialization.py`,
+      `model.py`, `reducer.py`, or `scripts/wfc_op.py` -- if the
+      investigation concludes any of these must change, stop and escalate
+      instead (see `escalation_default`).
+    - `tests/unit/test_claude_adapter_conformance.py`: add focused,
+      deterministic regression tests for the diagnosed mechanism; do not
+      weaken or remove any existing assertion.
+    - The two durable review artifacts this Commission's rendered
+      `robust@v1` profile designates for `broad_review` and
+      `focused_review`, newly named and distinct from any predecessor
+      review artifact.
+
+    Do not change any file outside this list. In particular, do not
+    pre-create `docs/developer_guide/` or otherwise work around the
+    symptom outside the adapter; do not disable sandboxing globally; do
+    not permit unsandboxed command execution; do not weaken WFC's own
+    trusted Git/scope validation; and do not introduce a generic
+    provider-capability or permissions framework.
+
+    ### Required semantics
+
+    - Every existing Claude structured-output, transport, and
+      error-handling behavior (`_candidate_from_wrapper`, timeout
+      handling, nonzero-exit handling, diagnostics) is preserved unchanged
+      in intent; only the permission-mode/prompts/settings/environment
+      construction that causes the diagnosed denial may change.
+    - `sandbox.enabled`, `failIfUnavailable`, `allowUnsandboxedCommands:
+      false`, the empty `network.allowedDomains`, and the `~/`-read deny
+      rule are unchanged unless the established mechanism specifically
+      requires a narrowly scoped change to one of them -- in which case
+      the Worker must explicitly justify that specific change against this
+      exact invariant in its `commit_intent` rationale and the durable
+      review artifact, not merely make it silently.
+    - `Invocation`/`AgentExecutionRequest`/`AgentExecutionOutcome` and
+      `validated_result`'s exact correlation and semantic-validation
+      behavior are unchanged for both providers.
+    - The Codex adapter and its existing conformance/smoke tests are
+      untouched and must still pass unmodified in intent -- this
+      correction is Claude-adapter-only.
+
+    ### Required tests and qualification boundary
+
+    Add focused deterministic fake-executable regression tests to
+    `tests/unit/test_claude_adapter_conformance.py` for exactly the
+    diagnosed mechanism, at minimum: the resulting `argv` and generated
+    settings JSON after correction, proving the specific permission-mode/
+    prompts/settings/environment combination that fixes the denial and
+    that no unrelated flag, scope, or sandbox setting was widened; and a
+    negative case proving the corrected configuration still does not grant
+    `allowRead`/write access, or any flag, beyond the resolved repository
+    root. Extend, do not replace, the existing positive/negative cases
+    (successful wrapper extraction, startup/pre-`Popen` failure, nonzero
+    exit, timeout, malformed wrapper, mismatched correlation, sandbox
+    refusal) -- every one of them must still pass unmodified in intent.
+
+    Per the bug record's own "Explicit limitation" section, these
+    deterministic fake-executable tests can only prove what configuration
+    `ClaudeCliAdapter` now generates; they cannot by themselves prove that
+    a real Claude Code CLI process actually grants the authorized write
+    and directory-creation operations, or that it still correctly denies
+    operations outside the authorized repository root. State this
+    boundary explicitly in the durable review artifact. A separately
+    authorized, later, real authenticated Claude Code integration test
+    exercising both the positive case (creating
+    `docs/developer_guide/maintainer_principles.adoc` or an equivalent
+    not-yet-existing WFC-authorized path) and the negative case (a write
+    attempt outside the authorized scope is still denied) remains the
+    final live qualification step and is explicitly **not authorized by
+    this Commission**.
+
+    ### Independent review mandate
+
+    A fresh independent reviewer must assess the complete corrected
+    `claude_adapter.py` and its tests for: whether the Worker actually
+    established the causal mechanism with concrete evidence rather than
+    merely asserting a plausible-sounding one; whether the chosen
+    correction is the narrowest one the established mechanism supports;
+    whether every named security invariant from the bug record still
+    holds, including that no scope wider than the resolved repository
+    root was granted; whether the per-phase authorized-path question in
+    Mandate step 2 was genuinely investigated and, if a cross-layer change
+    appeared necessary, correctly escalated rather than silently
+    implemented; whether the deterministic tests actually exercise the
+    diagnosed mechanism rather than being tautological; and that the
+    review artifact itself correctly states the fake-executable
+    qualification boundary rather than overclaiming it as a substitute for
+    a live CLI test. Use normal Robust correction and rereview routing;
+    disposition any Finding using only the authority this Commission's
+    rendered profile actually grants. A successful broad review may accept
+    directly; focused review is needed only if that phase is reached.
+
+  acceptance: |
+    The durable review artifact(s) record a concrete, evidence-based
+    causal diagnosis of the write-permission denial -- not a restatement
+    of the bug record's unconfirmed hypotheses as fact -- distinguishing
+    which of the two recorded mechanisms (or another independently found)
+    is actually responsible. `src/workflow_coordinator/claude_adapter.py`
+    is the only production source file changed, and the change is the
+    narrowest one the established diagnosis supports. Every security
+    invariant named in `BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`'s
+    "Security invariant" section holds: no blanket permission bypass, no
+    `allowRead`/write grant wider than the resolved repository root, no
+    removal of `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` without an established
+    justification, and no fallback to Codex's coarser sandbox model.
+    `AgentExecutionRequest`, `operator.py`, `model.py`, `reducer.py`, and
+    the workflow-program/profile schema are all unchanged -- unless the
+    Worker instead stopped and escalated per `escalation_default` because
+    a cross-layer change was genuinely required, in which case this
+    Commission's acceptance is that clean, well-reasoned escalation, not
+    an implementation. `tests/unit/test_claude_adapter_conformance.py`
+    contains new deterministic regression tests that exercise the
+    diagnosed mechanism and prove no unintended widening, and every
+    existing test in that file and in the Codex conformance/smoke suites
+    still passes unmodified in intent. The full repository `task-check`
+    (`python -m pytest -q`) passes through the Coordinator evidence gate.
+    No authenticated Claude or Codex CLI was invoked, no credential was
+    inspected or exposed, and the durable review artifact explicitly
+    states that these deterministic tests establish configuration
+    correctness only, with a separately authorized live integration test
+    still required before release. No file outside this Commission's
+    authorized scope was changed. The independent reviewer's broad (and,
+    if reached, focused) review artifact records a genuine adversarial
+    challenge to the diagnosis and the security implications, with no
+    blocking Finding left open at completion.
+
+  withheld_authority: |
+    No live, authenticated Claude or Codex CLI invocation; no credential
+    inspection or exposure; no authorization for the separately required
+    real-Claude-CLI integration smoke test this Commission's task
+    describes but does not grant. No change to
+    `src/workflow_coordinator/codex_adapter.py`, `adapter.py`,
+    `operator.py`, `serialization.py`, `model.py`, `reducer.py`,
+    `scripts/wfc_op.py`, any workflow program or profile schema, or any
+    governance file. No new provider-capability registry, generic
+    permissions/sandbox framework, dynamic routing, or provider fallback.
+    No global disabling of sandboxing and no unsandboxed command
+    execution of any kind. No widening of `allowRead`, or any
+    `allowWrite`-equivalent, beyond the resolved repository root. No
+    removal of `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` without an evidenced
+    mechanism justification recorded in the durable review artifact. No
+    weakening of WFC's own trusted Git/scope validation or of
+    `validated_result`'s exact correlation/semantic checks for either
+    provider. No file outside this Commission's rendered
+    `authorized_scope` for the active phase may be edited, including any
+    predecessor review artifact or predecessor Run evidence. No Runtime
+    promotion, Evidence mutation, nested WFC invocation, `prepare`,
+    `launch`, or external push.
+
+  escalation_default: |
+    Stop and request maintainer authority if: the causal mechanism cannot
+    be established with reasonable confidence from code-level inspection
+    and deterministic testing alone, and only a live authenticated Claude
+    Code invocation could resolve it; a correct fix is found to require
+    adding a per-phase authorized-path field to `AgentExecutionRequest` or
+    otherwise touching `operator.py` or the profile/program schema; a
+    correct fix is found to require any change outside
+    `src/workflow_coordinator/claude_adapter.py` and its conformance
+    tests; preserving a named security invariant is found to be
+    incompatible with any fix that actually resolves the denial; or a
+    reviewer-opened Finding cannot be disposed within this Commission's
+    own granted Finding authority and ordinary Robust-v1 correction flow.
+
+scope:
+  - src/workflow_coordinator/claude_adapter.py
+  - tests/unit/test_claude_adapter_conformance.py
+  - docs/warm_storage/concepts/workflow_coordinator_claude_code_adapter_write_permission_fix_2026-11-02_broad_review.adoc
+  - docs/warm_storage/concepts/workflow_coordinator_claude_code_adapter_write_permission_fix_2026-11-02_focused_review.adoc
+
+personas:
+  worker: "Senior Python engineer for provider execution and CLI integration, diagnosing and correcting the Claude Code adapter's effective write-permission gap strictly within its existing closed profile, establishing root cause through evidence rather than assertion, and escalating rather than expanding the architecture if a cross-layer change proves unavoidable."
+  independent_reviewer: "Adversarial Python integration/security reviewer, challenging the diagnosis itself and every named security invariant, verifying scope discipline and the fake-executable qualification boundary, over the complete corrected adapter and its tests."
+
+evidence_profile: task-check-v1
+
+policy_basis:
+  id: repository-standard
+  revision: v1
+  source_commit: 9f4dcfc0184e689e15066c7d272fccb66e8d859a
+
+max_autonomous_hops: 10
+
+durable_artifacts:
+  broad_review:
+    - docs/warm_storage/concepts/workflow_coordinator_claude_code_adapter_write_permission_fix_2026-11-02_broad_review.adoc
+  focused_review:
+    - docs/warm_storage/concepts/workflow_coordinator_claude_code_adapter_write_permission_fix_2026-11-02_focused_review.adoc
+
+components_ref:
+  path: governance/self-development/components.yaml
+  source_commit: 9f4dcfc0184e689e15066c7d272fccb66e8d859a
