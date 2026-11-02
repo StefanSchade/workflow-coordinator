@@ -1,0 +1,302 @@
+= BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH -- A Live Claude Worker's WFC-Authorized Writes Were Denied By The CLI's Own Permission Layer, With No Approval Surface
+
+Type:: bug -- provider-adapter effective-permission mismatch (not a Coordinator
+authority-enforcement defect)
+Status:: open (documentation only; no correction authorized by this record)
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Next action:: Investigate the suspected mechanisms below and commission a bounded correction only under a separately authorized WorkItem.
+Not authorized here:: Any change to `src/workflow_coordinator/claude_adapter.py`, any other source or test, any Commission, any Runtime or Evidence-repository change, or a Run.
+Date:: 2026-11-02.
+Classification:: pre-beta release blocker; the accepted Claude Code adapter design's provider-permission profile does not yet demonstrably support the write operations WFC itself authorizes.
+Discovery:: maintainer-observed live qualification attempts under Commission `wfc-simple-v1-maintainer-principles-001`: first attempt `wfc-claude-opus-simple-20261102-01` (separately resolved missing-`socat` startup defect, not this record's subject) and second attempt `wfc-claude-opus-simple-20261102-02`, both against Claude Code CLI `2.1.270` and Runtime commit `5cf0fe1a` (`workflow-coordinator-runtime`, matching Development's accepted `WI-WFC-CLAUDE-CODE-ADAPTER-IMPLEMENTATION-CONTINUATION-001` H003 correction, independently re-reviewed and accepted at H005 with zero remaining findings; see the design and review sources under "Evidence / provenance" below).
+
+== What this is not
+
+This is not a reproduction of `BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc`'s
+continuation gap: that record concerns what happens *after* a worker correctly
+and deliberately escalates for authority it does not have, having already
+produced useful uncommitted work. Here, the worker never produced any
+uncommitted work at all -- its very first authorized write was denied before
+any candidate mutation could exist.
+
+This is also not a reproduction of `BUG-WFC-PROVIDER-TRANSPORT-CANDIDATE-ACCEPTANCE.adoc`
+(an unreproduced, source-inspected possibility about a different code path:
+whether a correlated candidate result is trusted despite failed transport).
+In this attempt transport completed and the worker's own structured result
+was valid and correctly handled.
+
+This is not a Coordinator fail-closed defect. WFC's own scope-ceiling,
+Finding, and completion mechanics behaved exactly as intended: `task-check`
+passed, no unauthorized write occurred, no candidate was wrongly accepted,
+and the Run correctly stopped `awaiting_human` with a clean Git worktree. The
+defect under investigation is narrower: the *Claude Code CLI's own*
+permission layer, as currently configured by `ClaudeCliAdapter`, denied
+operations inside the exact scope (`docs/developer_guide/`) that the
+Commission's profile (`governance/commissions/wfc-simple-v1-maintainer-principles-001/profile.yaml`)
+explicitly authorized the worker to write.
+
+== Observed failure and reproduction context
+
+Commission `wfc-simple-v1-maintainer-principles-001` authorizes exactly one
+Worker invocation of `simple@v1` (`governance/commissions/wfc-simple-v1-maintainer-principles-001/work-item.yaml`:
+`max_autonomous_hops: 1`, `scope: [docs/developer_guide]`), with the worker
+persona instructed to write a new document at
+`docs/developer_guide/maintainer_principles.adoc`. The profile's `implement`
+phase grants `authorized_actions: [edit, commit]` and
+`authorized_scope: [docs/developer_guide]`
+(`governance/commissions/wfc-simple-v1-maintainer-principles-001/profile.yaml`).
+`docs/developer_guide/` did not yet exist in the target repository at launch.
+
+In the second live attempt (`wfc-claude-opus-simple-20261102-02`):
+
+* Claude started, authenticated, and read the complete DMC reference copy
+  from `tmp/dmc-source.adoc` (explicitly staged, untracked reference
+  material per the work item's `authority_source`).
+* The CLI process exited 0 and returned a valid, correlated structured
+  result.
+* `Write` to `docs/developer_guide/maintainer_principles.adoc` was denied by
+  the CLI's own session permission layer.
+* `Bash mkdir -p docs/developer_guide` was denied as outside the session's
+  allowed working-directory scope.
+* No approval surface was available to resolve either denial.
+* The worker reported an operational escalation in its structured result.
+* WFC's own mechanics then behaved correctly: Coordinator-owned `task-check`
+  passed, the reducer correctly found no candidate mutation to accept, and
+  the Run transitioned to `awaiting_human` with the target checkout clean
+  and unchanged.
+
+The first attempt (`wfc-claude-opus-simple-20261102-02`'s immediate
+predecessor, `wfc-claude-opus-simple-20261102-01`) additionally emitted:
+
+----
+Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set
+----
+
+That attempt's separate missing-`socat` local startup failure has already
+been resolved and is not this record's subject; the warning text itself is
+quoted here only because it co-occurred with the same adapter profile and is
+relevant context for the mechanism hypotheses below.
+
+== Expected behavior
+
+The effective permissions Claude Code grants a WFC-dispatched worker process
+must support every operation WFC itself explicitly authorizes for that
+phase, including creating a previously nonexistent directory strictly inside
+the phase's `authorized_scope` and writing a file inside it. A Commission
+that grants `edit`/`commit` authority over `docs/developer_guide/` must not
+be defeated by the underlying CLI silently denying the corresponding
+filesystem operations with no approval surface to resolve them. WFC's own
+scope enforcement (the post-Hop Git/scope observation) is the authoritative
+boundary on *where* a candidate may land; the provider's permission profile
+must not impose a narrower, un-reconciled boundary on top of it that WFC
+never asked for and cannot see failing until the Hop is already lost.
+
+== Suspected mechanisms (not established facts)
+
+Two independent hypotheses are recorded here, clearly distinguished from the
+verified facts above. Neither has been reproduced under controlled
+conditions; both require investigation, not immediate correction.
+
+. *Permission-mode override by environment scrubbing.* `ClaudeCliAdapter.execute`
+  sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` in the child environment
+  (`src/workflow_coordinator/claude_adapter.py:120`), while `argv` separately
+  requests `--permission-mode acceptEdits --permission-prompts none`
+  (`claude_adapter.py:57-58`). The first attempt's own CLI warning --
+  "Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is
+  set" -- is at minimum a verified, literal fact: the CLI itself reported
+  overriding the requested mode. The accepted adapter design treats
+  `acceptEdits` as the mechanism that silently authorizes the named
+  project-local file tools without a prompt
+  (`docs/warm_storage/concepts/workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc:140`:
+  "`acceptEdits` is retained only for the named project-local file tools"),
+  and treats `--permission-prompts none` as turning any action that still
+  asks into denial (same line). If `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` forces
+  the CLI back to its interactive-default permission mode -- which does ask
+  -- then `--permission-prompts none` would convert every such ask into an
+  outright denial, with no approval surface, for both `Write` and the `Bash`
+  tool. This is consistent with everything observed, but the design document
+  that specified this exact flag combination was independently reviewed and
+  accepted twice (H002 broad review opened `F001`, unrelated to permissions;
+  H005 renewed broad review accepted the implementation with "no blocking
+  Finding open" -- `docs/warm_storage/concepts/workflow_coordinator_claude_code_adapter_implementation_continuation_2026-11-01_broad_review.adoc`
+  §§1, 3) without exercising an authenticated CLI process, so neither review
+  could have observed this interaction. Only a real authenticated invocation
+  can confirm or refute it.
+. *Sandbox filesystem configuration has no write-scope field at all.*
+  `ClaudeCliAdapter._settings` (`claude_adapter.py:61-78`) sets
+  `sandbox.filesystem.allowRead`/`denyRead` and `permissions.deny`/
+  `blockReadsOutsideWorkingDirectories`, but defines no write-scope
+  equivalent anywhere in the generated settings. The accepted design
+  (`workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc`
+  §4.1/§6) is explicit that this generated-settings file is deliberately
+  minimal and that `acceptEdits` alone is relied on to cover file write/edit
+  tools; it does not independently specify how the CLI's own permission
+  layer treats a `Write`/`Bash mkdir` targeting a subdirectory that does not
+  yet exist under the allowed read root, nor how `--restricted`'s own
+  working-directory confinement interacts with directory creation
+  specifically. This may be the same mechanism as hypothesis 1 under a
+  forced-default permission mode, or it may be an independent gap in what
+  `acceptEdits`/`--restricted` actually cover for a not-yet-existing path;
+  the two are not yet distinguished.
+
+Both hypotheses are offered as starting points for investigation, not as a
+diagnosis. Neither is to be treated as confirmed without a reproducing,
+authenticated integration test.
+
+== Why this is undesirable
+
+A Commission's `authorized_scope` and `authorized_actions` are the
+Coordinator's own authority grant, independently enforced after the fact by
+the post-Hop Git/scope observation. If the underlying provider's permission
+layer imposes a stricter, un-reconciled denial *before* any candidate can
+even be produced, every such Commission is unusable for its granted scope
+regardless of how correctly WFC's own authority model is designed -- and,
+critically, this is currently discovered only by running a real live
+attempt, not by any existing offline check. The existing closed-profile
+conformance suite (`tests/unit/test_claude_adapter_conformance.py`) is
+exclusively a fake-executable, offline suite: it asserts exact argv,
+settings JSON shape, and wrapper-decoding behavior, but every fake
+executable it runs always trivially "succeeds" at whatever filesystem
+operation it claims to perform, because it is a stub script, not a real
+Claude Code process subject to the CLI's own permission engine. No test in
+the current suite invokes an authenticated `claude` binary, so this entire
+class of effective-permission mismatch is structurally invisible to the
+existing test suite. This is consistent with the accepted design's own
+framing: the "separately authorized real authenticated Claude smoke
+remains a release prerequisite" and was explicitly deferred past the
+H005-accepted implementation review
+(`..._implementation_continuation_2026-11-01_broad_review.adoc` §1, §4:
+"No authenticated Claude or Codex provider was invoked... The future pinned
+real-Claude smoke must still qualify wrapper and effective-provider behavior
+before release acceptance"). This live Commission attempt is, in effect,
+the first time that deferred qualification step was actually exercised, and
+it surfaced exactly the gap the design anticipated.
+
+== Security invariant (must hold under any future correction)
+
+Any correction must not grant the Claude worker process writes outside its
+WFC-authorized scope, and must not silently disable or weaken the sandbox
+(`sandbox.enabled`, `failIfUnavailable`, `allowUnsandboxedCommands: false`,
+the empty network-domain allowlist, or the `~/`-read deny rule). In
+particular, a correction must not:
+
+* add `--dangerously-skip-permissions`, `--permission-mode bypassPermissions`,
+  or any other blanket bypass;
+* widen `sandbox.filesystem.allowRead` beyond the resolved repository root,
+  or add any `allowWrite`-equivalent broader than the Commission's own
+  `authorized_scope`;
+* remove `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` without first establishing,
+  by a real reproducing test, that doing so is the actual and sufficient
+  fix, and without separately re-confirming the scrubbed-environment
+  authentication behavior the accepted design already required
+  (`workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc` §4.1);
+  or
+* fall back to Codex's coarser `--sandbox workspace-write` model, which
+  grants unscoped read/write across the whole workspace rather than the
+  phase-scoped grant WFC's own profile model expresses.
+
+WFC's own post-Hop Git/scope observation remains the authoritative,
+Coordinator-verified boundary on where an accepted candidate may land; the
+provider's permission profile is only ever expected to make the *authorized*
+operations possible, never to widen what WFC itself will later accept.
+
+== Acceptance criteria
+
+A correction is acceptable only once a real, authenticated Claude Code
+integration test (not the existing fake-executable conformance suite) can
+demonstrate, under the closed profile `ClaudeCliAdapter` generates:
+
+* a worker invocation can create a previously nonexistent, WFC-authorized
+  subdirectory (e.g. mirroring `docs/developer_guide/` not yet existing) and
+  write a file inside it, succeeding end to end through WFC's own candidate
+  acceptance and reduction; and
+* the same invocation still cannot write, or create a directory, outside its
+  authorized scope -- a negative case proving the fix does not silently
+  widen the provider's effective permissions beyond what the Commission
+  grants.
+
+Both cases must be exercised against a real `claude` process under
+provisioned authentication, not a fake executable; a fake executable cannot
+observe the CLI's own permission-engine behavior that caused this failure.
+
+== Explicit limitation
+
+No static preflight check can guarantee that all future provider tool
+operations will succeed under this profile. Claude Code's permission engine,
+sandbox behavior, and interaction with environment scrubbing are provider-
+owned and may change across CLI versions, managed host policy, or platform.
+`ClaudeCliAdapter`'s existing fake-executable conformance tests
+(`tests/unit/test_claude_adapter_conformance.py`) already demonstrate exact
+argv and settings construction; they cannot and do not demonstrate that the
+real CLI actually grants the operations WFC's profiles authorize. Only a
+real authenticated integration test, run before each release that depends
+on this adapter, can establish that. This record does not propose a general
+new permissions framework; the accepted design's existing closed-profile
+approach (`--restricted`, `--safe-mode`, `--strict-mcp-config`, the explicit
+`--tools` list, generated settings) is not shown by this record to need
+replacing, only to need a real integration-test gate it does not yet have.
+
+== Priority
+
+Before the Level-0 PyPI beta. The Claude Code adapter is an independently
+decided Level-0 release prerequisite (`docs/backlog/_open.adoc`'s "Claude
+Code adapter / provider neutrality" row), and this defect means the adapter,
+as currently configured, cannot yet be relied on to perform the writes WFC
+itself authorizes -- discovered only by a real live attempt, not by the
+existing offline suite.
+
+== Non-scope
+
+This record does not authorize:
+
+* any change to `src/workflow_coordinator/claude_adapter.py`, any other
+  production source, or any test;
+* a general new permissions/sandbox framework, a provider-capability
+  registry, or any change to the Codex adapter;
+* adoption of either suspected mechanism as an established root cause;
+* any change to `workflow-coordinator-runtime` or the
+  `workflow-coordinator-run-evidence` repository;
+* a WorkItem, Profile, Policy, or a Run of any kind; or
+* closure or correction of Commission `wfc-simple-v1-maintainer-principles-001`
+  itself, which remains `awaiting_human` exactly as WFC left it.
+
+== Evidence / provenance
+
+* `src/workflow_coordinator/claude_adapter.py:50-78` (`argv`, `_settings`),
+  `:120` (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` in the child environment).
+* `tests/unit/test_claude_adapter_conformance.py` (current coverage is
+  exclusively fake-executable and offline; no authenticated CLI invocation
+  exists in the suite).
+* Accepted design:
+  `docs/warm_storage/concepts/workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc`
+  §3 ("Permissions and filesystem"), §4.1, §6, §9 (decision 3: widening the
+  provider-side capability request requires maintainer approval, "do not
+  solve it with ambient allow rules, `excludedCommands`, or an unsandboxed
+  retry").
+* Accepted implementation review:
+  `docs/warm_storage/concepts/workflow_coordinator_claude_code_adapter_implementation_continuation_2026-11-01_broad_review.adoc`
+  §1, §2, §4 (accepted with zero blocking Findings; explicitly notes no
+  authenticated provider was invoked and that the real smoke remains a
+  release prerequisite).
+* Commission governing bundle:
+  `governance/commissions/wfc-simple-v1-maintainer-principles-001/work-item.yaml`,
+  `.../profile.yaml` (the exact `docs/developer_guide` scope and `edit`/
+  `commit` authorized actions denied in practice).
+* Discovery attempts (maintainer-reported; not yet archived in
+  `workflow-coordinator-run-evidence` at the time of this record -- Run
+  evidence archival remains a separate, later maintainer-owned lifecycle
+  step): `wfc-claude-opus-simple-20261102-01`,
+  `wfc-claude-opus-simple-20261102-02`, Claude Code CLI `2.1.270`, Runtime
+  commit `5cf0fe1a` (`workflow-coordinator-runtime`, current HEAD at the
+  time of this record).
+* Precedent coarser-grained provider sandbox, cited only for contrast, not
+  as a proposed fallback: `src/workflow_coordinator/codex_adapter.py:340`
+  (`--sandbox workspace-write`).
+
+== Lifecycle
+
+This BUG is *open* and *documentation only*. No WorkItem, Profile, Policy,
+or Run exists for it. It records a live-discovered pre-beta gap in the
+Claude Code adapter's effective write permissions; a bounded investigation,
+and only then a bounded correction under a separately authorized WorkItem,
+remain future maintainer-owned steps.
