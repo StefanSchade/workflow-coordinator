@@ -7117,6 +7117,15 @@ P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_GOVERNING_PATHS = (
 P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT = (
     "docs/warm_storage/concepts/workflow_coordinator_p35_finding_reachability_design_2026-10-18_review_002.adoc"
 )
+# The frozen governance Profile/Policy/WorkItem above declare this exact
+# path as authorized_scope at the pinned historical commit; that is
+# immutable governance text and is never retro-edited. The pre-0.1.0b1
+# cold-storage curation subsequently moved the same file on disk, so its
+# real current location (checked below) differs from its declared scope.
+P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT_CURRENT_PATH = (
+    "docs/cold_storage/backlog/pre-0.1.0b1/p35-commission-authority-conformance/"
+    "workflow_coordinator_p35_finding_reachability_design_2026-10-18_review_002.adoc"
+)
 
 
 def test_p35_finding_reachability_design_review_002_bundle_passes_production_preflight(
@@ -7312,6 +7321,13 @@ P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_GOVERNING_PATHS = (
 P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_REVIEW_ARTIFACT = (
     "docs/warm_storage/concepts/workflow_coordinator_p35_finding_reachability_design_2026-10-18_review_003.adoc"
 )
+# See the _CURRENT_PATH comment on the _002 constant above: declared
+# governance scope (immutable, pinned) versus real current location
+# (moved by the pre-0.1.0b1 cold-storage curation) now differ.
+P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_REVIEW_ARTIFACT_CURRENT_PATH = (
+    "docs/cold_storage/backlog/pre-0.1.0b1/p35-commission-authority-conformance/"
+    "workflow_coordinator_p35_finding_reachability_design_2026-10-18_review_003.adoc"
+)
 
 
 def test_p35_finding_reachability_design_review_003_bundle_passes_production_preflight(
@@ -7483,8 +7499,8 @@ def test_p35_finding_reachability_design_review_003_bundle_passes_production_pre
     # carried-forward disposition, so it already exists on disk; the
     # predecessor's own `_review_002` artifact is real, pre-existing,
     # read-only history and also already exists.
-    assert (PROJECT_ROOT / P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_REVIEW_ARTIFACT).exists()
-    assert (PROJECT_ROOT / P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT).exists()
+    assert (PROJECT_ROOT / P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_REVIEW_ARTIFACT_CURRENT_PATH).exists()
+    assert (PROJECT_ROOT / P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT_CURRENT_PATH).exists()
 
     # This successor bundle is strictly additive: both predecessors' own
     # governing bundles (WorkItem, profile, policy, task -- not the shared
@@ -7519,6 +7535,13 @@ P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_ASSESSMENT_DOC = (
 )
 P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_REVIEW_DOC = (
     "docs/warm_storage/concepts/workflow_coordinator_p35_structural_invariant_reassessment_2026-10-25_review.adoc"
+)
+# See the _CURRENT_PATH comment on P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT
+# above: declared governance scope (immutable, pinned) versus real current
+# location (moved by the pre-0.1.0b1 cold-storage curation) now differ.
+P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_REVIEW_DOC_CURRENT_PATH = (
+    "docs/cold_storage/backlog/pre-0.1.0b1/p35-commission-authority-conformance/"
+    "workflow_coordinator_p35_structural_invariant_reassessment_2026-10-25_review.adoc"
 )
 
 
@@ -7703,7 +7726,7 @@ def test_p35_structural_invariant_reassessment_001_bundle_passes_production_pref
     # so a fresh agent is given a structural template for both documents
     # rather than a blank page for either.
     assert (PROJECT_ROOT / P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_ASSESSMENT_DOC).exists()
-    assert (PROJECT_ROOT / P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_REVIEW_DOC).exists()
+    assert (PROJECT_ROOT / P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_REVIEW_DOC_CURRENT_PATH).exists()
 
     # This bundle is fully independent of the entire P3.5 design-review
     # lineage: every one of that lineage's own governing files and review
@@ -7714,8 +7737,10 @@ def test_p35_structural_invariant_reassessment_001_bundle_passes_production_pref
         *(P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)),
         *(P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)),
         P35_FINDING_REACHABILITY_DESIGN_REVIEW_SCOPE[0],
-        P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT,
-        P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_REVIEW_ARTIFACT,
+        # Current on-disk location (post pre-0.1.0b1 archive), not the
+        # declared-scope path -- see the _CURRENT_PATH comments above.
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT_CURRENT_PATH,
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_REVIEW_ARTIFACT_CURRENT_PATH,
     )
     successor_own_paths = tuple(
         P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)
@@ -7745,6 +7770,13 @@ P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_ASSESSMENT_DOC = (
 )
 P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_REVIEW_DOC = (
     "docs/warm_storage/concepts/workflow_coordinator_p35_requirements_archaeology_reassessment_2026-10-26_review.adoc"
+)
+# See the _CURRENT_PATH comment on P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT
+# above: declared governance scope (immutable, pinned) versus real current
+# location (moved by the pre-0.1.0b1 cold-storage curation) now differ.
+P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_REVIEW_DOC_CURRENT_PATH = (
+    "docs/cold_storage/backlog/pre-0.1.0b1/p35-commission-authority-conformance/"
+    "workflow_coordinator_p35_requirements_archaeology_reassessment_2026-10-26_review.adoc"
 )
 
 
@@ -7938,7 +7970,7 @@ def test_p35_requirements_archaeology_reassessment_001_bundle_passes_production_
     # to carry forward, so a fresh agent is given a structural template for
     # both documents rather than a blank page for either.
     assert (PROJECT_ROOT / P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_ASSESSMENT_DOC).exists()
-    assert (PROJECT_ROOT / P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_REVIEW_DOC).exists()
+    assert (PROJECT_ROOT / P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_REVIEW_DOC_CURRENT_PATH).exists()
 
     # This bundle is fully independent of the entire P3.5 design-review
     # lineage and of the prior structural-invariant reassessment: every one
@@ -7951,10 +7983,12 @@ def test_p35_requirements_archaeology_reassessment_001_bundle_passes_production_
         *(P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)),
         *(P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)),
         P35_FINDING_REACHABILITY_DESIGN_REVIEW_SCOPE[0],
-        P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT,
-        P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_REVIEW_ARTIFACT,
+        # Current on-disk locations (post pre-0.1.0b1 archive), not the
+        # declared-scope paths -- see the _CURRENT_PATH comments above.
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_002_REVIEW_ARTIFACT_CURRENT_PATH,
+        P35_FINDING_REACHABILITY_DESIGN_REVIEW_003_REVIEW_ARTIFACT_CURRENT_PATH,
         P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_ASSESSMENT_DOC,
-        P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_REVIEW_DOC,
+        P35_STRUCTURAL_INVARIANT_REASSESSMENT_001_REVIEW_DOC_CURRENT_PATH,
     )
     successor_own_paths = tuple(
         P35_REQUIREMENTS_ARCHAEOLOGY_REASSESSMENT_001_GOVERNING_PATHS[index] for index in (0, 1, 2, 4)
