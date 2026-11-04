@@ -5,9 +5,27 @@ are flat under `src/workflow_coordinator/*.py`; that is observed current state,
 not a canonized future package organization. Its operator owns
 deterministic admission, serial workflow progression, Git observation and
 bounded mechanical commits, evidence execution, persistence, and stop routing.
-The provider-neutral execution port separates those semantics from the Codex
-CLI adapter; consumers own task inputs, repository policy, workflow profiles,
-and authorization.
+The provider-neutral execution port separates those semantics from the implemented
+`codex_cli` and `claude_cli` adapters, selected through per-role execution
+bindings (currently one adapter per Run); consumers own task inputs, repository
+policy, workflow profiles, and authorization.
+
+The Front-Door layer in `commissioning.py` deterministically renders a
+maintainer-authored Commission Intent into the ordinary WorkItem, Profile,
+Policy, and Task files consumed by `prepare` and `launch`. After review and
+commit, `commission check` verifies the rendering and asks the canonical,
+provider-free operator preflight to admit the bundle; it selects no provider
+and admits no Run. The maintainer then prepares, inspects, and authorizes launch.
+The current entry point is the repo-local `scripts/wfc_op.py`; a pip-installable,
+consumer-repository-neutral Front Door remains planned.
+
+The closed `simple@v1`, `direct@v1`, and `robust@v1` workflow programs are
+implemented. `simple@v1` has one bounded Worker invocation with an
+in-invocation self-check and no independent reviewer. `direct@v1` follows a
+Worker with deterministic verification (including `task-check` when selected)
+and a correction loop. `robust@v1` adds an independent adversarial reviewer
+with broad and focused review and correction loops. The latter two have
+outstanding implementation review work.
 
 The package-owned A3 operating contract is loaded through `importlib.resources`
 and cannot be selected or replaced by a consumer. Durable consumer evidence and
