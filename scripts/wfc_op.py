@@ -53,6 +53,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import shutil
 import subprocess
 import sys
@@ -203,6 +204,57 @@ def ops_root(attempt: str) -> Path:
 
 def state_root(attempt: str) -> Path:
     return Path.home() / "wfc-state" / attempt
+
+
+def _check_scratch(root: Path, scratch: Path, repositories: list[Path], ops: Path, state: Path) -> None:
+    try:
+        for path in (root, scratch):
+            if not stat.S_ISDIR(path.lstat().st_mode):
+                raise HarnessRefusal(f"scratch path is a symlink or not a directory: {path}")
+        info = scratch.lstat()
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise HarnessRefusal(f"scratch directory must be owned by effective uid and mode 0700: {scratch}")
+        effective = scratch.resolve()
+        for repo in repositories:
+            other = repo.resolve()
+            if effective == other or effective in other.parents or other in effective.parents:
+                raise HarnessRefusal(f"scratch overlaps repository: {other}")
+        if effective in (ops.resolve(), state.resolve()):
+            raise HarnessRefusal("scratch must be distinct from OPS and STATE")
+    except OSError as error:
+        raise HarnessRefusal(f"scratch validation failed: {error}") from error
+
+
+def create_attempt_scratch(value: str | None, attempt: str, repositories: list[Path], ops: Path, state: Path) -> tuple[Path, Path]:
+    root = Path(value).expanduser() if value is not None else Path.home() / "wfc-scratch"
+    if not root.is_absolute():
+        raise HarnessRefusal("scratch root must be absolute")
+    if any(ord(c) < 32 or ord(c) == 127 for c in str(root)):
+        raise HarnessRefusal("scratch root contains a control character")
+    try:
+        if value is None:
+            root.mkdir(parents=True, exist_ok=True)
+        if not stat.S_ISDIR(root.lstat().st_mode):
+            raise HarnessRefusal(f"scratch root is a symlink or not a directory: {root}")
+        root = root.resolve()
+        scratch = root / attempt
+        effective = scratch.resolve()
+        for repo in repositories:
+            other = repo.resolve()
+            if effective == other or effective in other.parents or other in effective.parents:
+                raise HarnessRefusal(f"scratch overlaps repository: {other}")
+        if effective in (ops.resolve(), state.resolve()):
+            raise HarnessRefusal("scratch must be distinct from OPS and STATE")
+        scratch.mkdir(mode=0o700)
+        scratch.chmod(0o700)
+        _check_scratch(root, scratch, repositories, ops, state)
+    except OSError as error:
+        raise HarnessRefusal(f"scratch creation failed: {error}") from error
+    return root, scratch
+
+
+def _scratch_environment(scratch: Path) -> dict[str, str]:
+    return {**os.environ, **{name: str(scratch) for name in ("TMPDIR", "TMP", "TEMP")}}
 
 
 # ----------------------------------------------------------------- Git facts
@@ -519,7 +571,7 @@ def write_preparation_pins(
     development: RepoPins, runtime: RepoPins, evidence: RepoPins,
     executable: str, timeout_seconds: str,
     work_item: str, profile: str, policy: str, components: str, task: str,
-    execution_bindings: Path,
+    execution_bindings: Path, scratch_root: Path, scratch: Path,
 ) -> Path:
     """Extends the ``attempt_id``/``state_root`` keys
     ``wfc-archive-run`` already reads with Development/Runtime/Evidence pins,
@@ -529,6 +581,8 @@ def write_preparation_pins(
     lines = [
         f"attempt_id={attempt}",
         f"state_root={state}",
+        f"scratch_root={scratch_root}",
+        f"scratch_path={scratch}",
         f"development_path={development.path}",
         f"development_head={development.head}",
         f"runtime_path={runtime.path}",
@@ -553,7 +607,7 @@ def write_launch_sh(
     ops: Path, *, runtime_env: Path, development: Path,
     state: Path, expected_head: str, work_item: str, profile: str,
     policy: str, components: str, task: str, execution_bindings: Path,
-    executable: str, timeout_seconds: str, controlled_path_value: str,
+    executable: str, timeout_seconds: str, controlled_path_value: str, scratch: Path,
 ) -> Path:
     """Materialize the already-prepared launch artifact.
 
@@ -573,6 +627,7 @@ def write_launch_sh(
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         f"export PATH={q(controlled_path_value)}",
+        *(f"export {name}={q(str(scratch))}" for name in ("TMPDIR", "TMP", "TEMP")),
         f"exec {q(str(wfc))} \\",
         f"  --repository {q(str(development))} \\",
         f"  --state-root {q(str(state))} \\",
@@ -597,7 +652,7 @@ def write_harness_record(
     ops: Path, *, attempt: str, state: Path,
     development: RepoPins, runtime: RepoPins, evidence: RepoPins,
     launch_sh: Path, execution_bindings: Path,
-    runtime_env: Path, dev_env: Path, controlled_path_value: str,
+    runtime_env: Path, dev_env: Path, controlled_path_value: str, scratch_root: Path, scratch: Path,
 ) -> Path:
     """One small Harness-owned mechanical record -- attempt/pins/paths/launch
     artifact digests and the chosen preflight substrate.  Records no semantic
@@ -609,6 +664,8 @@ def write_harness_record(
         "attempt": attempt,
         "ops": str(ops),
         "state_root": str(state),
+        "scratch_root": str(scratch_root),
+        "scratch_path": str(scratch),
         "development": {"path": str(development.path), "head": development.head},
         "runtime": {"path": str(runtime.path), "head": runtime.head},
         "evidence": {"path": str(evidence.path), "head": evidence.head},
@@ -662,7 +719,8 @@ def _read_preparation_pins(path: Path) -> dict[str, str] | None:
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         key, sep, value = line.partition("=")
         if sep:
-            values[key.strip()] = value.strip()
+            key = key.strip()
+            values[key] = value if key in ("scratch_root", "scratch_path") else value.strip()
     return values
 
 
@@ -720,7 +778,23 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     attempt = validate_attempt(args.attempt)
     ops = ops_root(attempt)
     state = state_root(attempt)
+    scratch_root, scratch = create_attempt_scratch(
+        args.scratch_root, attempt, [Path(args.development), Path(args.runtime), Path(args.evidence)], ops, state,
+    )
+    previous = {name: os.environ.get(name) for name in ("TMPDIR", "TMP", "TEMP")}
+    os.environ.update({name: str(scratch) for name in previous})
+    try:
+        return _prepare_with_scratch(args, attempt, ops, state, scratch_root, scratch)
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
+
+def _prepare_with_scratch(args: argparse.Namespace, attempt: str, ops: Path, state: Path,
+                          scratch_root: Path, scratch: Path) -> int:
     development = pin_development(Path(args.development).resolve())
     runtime = pin_runtime(Path(args.runtime).resolve())
     evidence = pin_evidence(Path(args.evidence).resolve())
@@ -768,18 +842,19 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         state=state, expected_head=development.head, work_item=args.work_item,
         profile=args.profile, policy=args.policy, components=args.components,
         task=args.task, execution_bindings=execution_bindings, executable=args.executable,
-        timeout_seconds=str(args.timeout_seconds), controlled_path_value=path_value,
+        timeout_seconds=str(args.timeout_seconds), controlled_path_value=path_value, scratch=scratch,
     )
     write_preparation_pins(
         ops, attempt=attempt, state=state, development=development, runtime=runtime,
         evidence=evidence, executable=args.executable, timeout_seconds=str(args.timeout_seconds),
         work_item=args.work_item, profile=args.profile, policy=args.policy,
         components=args.components, task=args.task, execution_bindings=execution_bindings,
+        scratch_root=scratch_root, scratch=scratch,
     )
     write_harness_record(
         ops, attempt=attempt, state=state, development=development, runtime=runtime,
         evidence=evidence, launch_sh=launch_sh, execution_bindings=execution_bindings,
-        runtime_env=runtime_env, dev_env=dev_env, controlled_path_value=path_value,
+        runtime_env=runtime_env, dev_env=dev_env, controlled_path_value=path_value, scratch_root=scratch_root, scratch=scratch,
     )
 
     # Final repository revalidation, immediately before declaring PREPARED --
@@ -893,6 +968,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         corrupt.append(prep_record_error)
 
     report["preparation_present"] = bool(prep_record or prep_pins)
+    scratch_path = (prep_pins or {}).get("scratch_path") or (prep_record or {}).get("scratch_path")
+    if scratch_path:
+        report["scratch_path"] = scratch_path
     pinned_development = (prep_pins or {}).get("development_head") or (
         (prep_record or {}).get("development") or {}
     ).get("head")
@@ -991,7 +1069,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 _STATUS_FIELD_ORDER = (
-    "attempt", "ops", "state", "lifecycle",
+    "attempt", "ops", "state", "lifecycle", "scratch_path",
     "preparation_present", "prepared_development_head", "prepared_runtime_head", "prepared_evidence_head",
     "state_present", "run_id", "work_item_id", "checkout_id", "run_status", "current_phase",
     "hop_used", "hop_limit", "stop_reason", "human_question", "operator_status", "operator_error",
@@ -1058,14 +1136,14 @@ def _parse_wrapper_report(stdout: str) -> dict[str, str]:
 
 
 def _invoke_canonical_archive(
-    wrapper: Path, state: Path, evidence: Path, *, dry_run: bool, semantic_json: Path | None,
+    wrapper: Path, state: Path, evidence: Path, *, dry_run: bool, semantic_json: Path | None, env: dict[str, str],
 ) -> subprocess.CompletedProcess:
     argv = [str(wrapper), str(state), str(evidence)]
     if semantic_json is not None:
         argv += ["--semantic-json", str(semantic_json)]
     if dry_run:
         argv.append("--dry-run")
-    return subprocess.run(argv, capture_output=True, text=True)
+    return subprocess.run(argv, capture_output=True, text=True, env=env)
 
 
 def cmd_archive(args: argparse.Namespace) -> int:
@@ -1088,6 +1166,28 @@ def cmd_archive(args: argparse.Namespace) -> int:
     if not ops.is_dir():
         raise HarnessRefusal(f"OPS directory not found; cannot derive Evidence repository automatically: {ops}")
 
+    pins = _read_preparation_pins(ops / "preparation-pins.txt")
+    record, error = _read_json_optional(ops / "harness-prepared.json")
+    if error or not pins or not record:
+        raise HarnessRefusal("scratch preparation records missing or corrupt")
+    for key in ("scratch_root", "scratch_path"):
+        if not isinstance(record.get(key), str) or not record[key] or pins.get(key) != record[key]:
+            raise HarnessRefusal(f"preparation facts disagree on {key}")
+    root, scratch = Path(record["scratch_root"]), Path(record["scratch_path"])
+    if not root.is_absolute() or scratch != root / attempt:
+        raise HarnessRefusal("invalid recorded scratch path")
+    try:
+        repositories = []
+        for name in ("development", "runtime", "evidence"):
+            path = record[name]["path"]
+            if not isinstance(path, str) or not path or pins.get(f"{name}_path") != path:
+                raise HarnessRefusal(f"preparation facts disagree on {name} path")
+            repositories.append(Path(path))
+    except (KeyError, TypeError) as error:
+        raise HarnessRefusal("missing recorded repository paths") from error
+    _check_scratch(root, scratch, repositories, ops, state)
+    archive_env = _scratch_environment(scratch)
+
     evidence_path = _resolve_recorded_evidence_path(ops)
     evidence = _require_git_toplevel(evidence_path, name="Evidence")
     if not _is_clean(evidence):
@@ -1101,7 +1201,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
 
     head_before = _git(evidence, "rev-parse", "HEAD")
 
-    dry = _invoke_canonical_archive(wrapper, state, evidence, dry_run=True, semantic_json=semantic_json)
+    dry = _invoke_canonical_archive(wrapper, state, evidence, dry_run=True, semantic_json=semantic_json, env=archive_env)
     if dry.returncode != 0:
         detail = (dry.stderr or dry.stdout).strip()
         raise HarnessRefusal(f"canonical archive dry-run refused: {detail}")
@@ -1116,7 +1216,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
         print("ARCHIVE DRY-RUN ONLY: no real archive performed")
         return 0
 
-    real = _invoke_canonical_archive(wrapper, state, evidence, dry_run=False, semantic_json=semantic_json)
+    real = _invoke_canonical_archive(wrapper, state, evidence, dry_run=False, semantic_json=semantic_json, env=archive_env)
     print(real.stdout)
     if real.returncode != 0:
         detail = (real.stderr or real.stdout).strip()
@@ -1145,6 +1245,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="deterministic PREPARE mechanics against an already maintainer-selected envelope; never launches",
     )
     prepare.add_argument("--attempt", required=True)
+    prepare.add_argument("--scratch-root", metavar="ABSOLUTE_DIRECTORY")
     prepare.add_argument("--development", required=True, help="Development repository path")
     prepare.add_argument("--runtime", required=True, help="Runtime repository path")
     prepare.add_argument("--evidence", required=True, help="Evidence repository path")

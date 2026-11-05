@@ -327,6 +327,12 @@ def test_prepare_positive_produces_complete_envelope_and_leaves_state_absent(pre
     record = json.loads((ops / "harness-prepared.json").read_text())
     assert record["prepared"] is True
     assert record["preflight_seam"] == "ok"
+    scratch = prepared["home"] / "wfc-scratch" / prepared["attempt"]
+    assert record["scratch_root"] == str(scratch.parent)
+    assert record["scratch_path"] == str(scratch)
+    assert f"scratch_path={scratch}" in pins
+    assert scratch.stat().st_mode & 0o777 == 0o700
+    assert json.loads(run_wfc_op(prepared["home"], "status", prepared["attempt"], "--json").stdout)["scratch_path"] == str(scratch)
     assert record["development"]["head"] == dev_head
     assert record["runtime"]["head"] == runtime_head
 
@@ -337,6 +343,8 @@ def test_prepare_positive_produces_complete_envelope_and_leaves_state_absent(pre
     # must never re-expand a future launcher's own $PATH.
     launch_sh_text = (ops / "launch.sh").read_text()
     assert "$PATH" not in launch_sh_text
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        assert f"export {name}={shlex.quote(str(scratch))}" in launch_sh_text
     assert record["controlled_path"] in launch_sh_text
 
     # Development/Runtime/Evidence themselves are unchanged.
@@ -1053,12 +1061,13 @@ canonical-looking labeled report lines. Implements NONE of the real
 commit logic; it exists only to prove Harness's OWN delegation mechanics.
 """
 import sys
+import os
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
 args = sys.argv[1:]
 with (here / "invocations.log").open("a", encoding="utf-8") as log:
-    log.write(" ".join(args) + "\\n")
+    log.write(" ".join(args) + " | " + " ".join(os.environ.get(k, "") for k in ("TMPDIR", "TMP", "TEMP", "FD08_MARKER")) + "\\n")
 
 dry_run = "--dry-run" in args
 attempt = Path(args[0]).name if args else "unknown"
@@ -1113,10 +1122,18 @@ def make_fake_evidence(tmp_path_factory) -> Path:
 def _ops_pointing_at(home: Path, *, attempt: str, state: Path, evidence: Path) -> Path:
     ops = home / "wfc-ops" / attempt
     ops.mkdir(parents=True)
+    root = home / "wfc-scratch"
+    scratch = root / attempt
+    scratch.mkdir(parents=True, mode=0o700)
     (ops / "preparation-pins.txt").write_text(
-        f"attempt_id={attempt}\nstate_root={state}\nevidence_path={evidence}\n",
+        f"attempt_id={attempt}\nstate_root={state}\nevidence_path={evidence}\n"
+        f"development_path={evidence}\nruntime_path={evidence}\n"
+        f"scratch_root={root}\nscratch_path={scratch}\n",
     )
-    (ops / "harness-prepared.json").write_text(json.dumps({"evidence": {"path": str(evidence)}}))
+    (ops / "harness-prepared.json").write_text(json.dumps({
+        "evidence": {"path": str(evidence)}, "development": {"path": str(evidence)},
+        "runtime": {"path": str(evidence)}, "scratch_root": str(root), "scratch_path": str(scratch),
+    }))
     return ops
 
 
@@ -1455,3 +1472,171 @@ components_ref: {{path: governance/self-development/components.yaml, source_comm
     )
     assert checked.returncode == 0, checked.stderr
     assert "COMMISSION CHECK OK" in checked.stdout
+
+
+def test_scratch_creation_and_refusals(tmp_path, monkeypatch):
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    try:
+        import wfc_op
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        ops, state = home / "ops", home / "state"
+        root, scratch = wfc_op.create_attempt_scratch(None, "one", [], ops, state)
+        assert root == home / "wfc-scratch" and scratch == root / "one"
+        assert scratch.stat().st_mode & 0o777 == 0o700
+        with pytest.raises(wfc_op.HarnessRefusal):
+            wfc_op.create_attempt_scratch(str(root), "one", [], ops, state)
+        with pytest.raises(wfc_op.HarnessRefusal):
+            wfc_op.create_attempt_scratch("relative", "two", [], ops, state)
+        (root / "link").symlink_to(scratch)
+        with pytest.raises(wfc_op.HarnessRefusal):
+            wfc_op.create_attempt_scratch(str(root), "link", [], ops, state)
+        linked_root = home / "linked-root"
+        linked_root.symlink_to(root)
+        with pytest.raises(wfc_op.HarnessRefusal):
+            wfc_op.create_attempt_scratch(str(linked_root), "another", [], ops, state)
+        file_root = home / "file-root"
+        file_root.touch()
+        with pytest.raises(wfc_op.HarnessRefusal):
+            wfc_op.create_attempt_scratch(str(file_root), "another", [], ops, state)
+        for index, other in enumerate((root / "repo", root / "nested" / "repo", ops, state)):
+            attempt = ("repo", "nested", "ops", "state")[index]
+            target = root / attempt
+            check_ops = target if index == 2 else ops
+            check_state = target if index == 3 else state
+            with pytest.raises(wfc_op.HarnessRefusal):
+                wfc_op.create_attempt_scratch(str(root), attempt, [other] if index < 2 else [], check_ops, check_state)
+        with pytest.raises(wfc_op.HarnessRefusal):
+            wfc_op.create_attempt_scratch(str(root), "one-child", [root], ops, state)
+        monkeypatch.setattr(wfc_op.os, "geteuid", lambda: scratch.stat().st_uid + 1)
+        with pytest.raises(wfc_op.HarnessRefusal):
+            wfc_op._check_scratch(root, scratch, [], ops, state)
+    finally:
+        sys.path.remove(str(REPO_ROOT / "scripts"))
+
+
+def test_archive_scratch_environment_and_refusals(fake_archive_case, monkeypatch):
+    case = fake_archive_case
+    scratch = case["home"] / "wfc-scratch" / case["attempt"]
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        monkeypatch.setenv(name, "/different-caller-directory")
+    monkeypatch.setenv("FD08_MARKER", "preserved")
+    result = run_wfc_op(case["home"], "archive", case["attempt"])
+    assert result.returncode == 0, result.stderr
+    assert all(f" | {scratch} {scratch} {scratch} preserved" in line for line in _invocation_log_lines(case["evidence"]))
+    log = case["evidence"] / "scripts" / "invocations.log"
+    log.unlink()
+    record_path = case["ops"] / "harness-prepared.json"
+    original = record_path.read_text()
+    record = json.loads(original)
+    record["scratch_path"] += "-different"
+    record_path.write_text(json.dumps(record))
+    assert run_wfc_op(case["home"], "archive", case["attempt"]).returncode == 2
+    assert _invocation_log_lines(case["evidence"]) == []
+    record_path.write_text(original)
+    scratch.chmod(0o755)
+    assert run_wfc_op(case["home"], "archive", case["attempt"]).returncode == 2
+    assert _invocation_log_lines(case["evidence"]) == []
+
+
+def test_prepare_preflight_inherits_scratch_and_frozen_path(tmp_path, monkeypatch):
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    try:
+        import wfc_op
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        for key in ("TMPDIR", "TMP", "TEMP"):
+            monkeypatch.setenv(key, "caller-value")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        pins = wfc_op.RepoPins(repo, "abc")
+        for name in ("pin_development", "pin_runtime", "pin_evidence"):
+            monkeypatch.setattr(wfc_op, name, lambda path: pins)
+        monkeypatch.setattr(wfc_op, "require_governing_input", lambda *a, **kw: None)
+        probe_output = tmp_path / "probe-output"
+        def runtime_env(pins, ops):
+            runtime = ops / "runtime-env"
+            (runtime / "bin").mkdir(parents=True)
+            wfc = runtime / "bin/wfc"
+            wfc.write_text(f"#!{sys.executable}\nimport tempfile\nfrom pathlib import Path\nPath({str(probe_output)!r}).write_text(tempfile.mkstemp()[1])\n")
+            wfc.chmod(0o755)
+            return runtime
+        def development_env(pins, ops):
+            dev = ops / "dev-env"
+            (dev / "bin").mkdir(parents=True)
+            (dev / "bin/python3").touch()
+            return dev
+        monkeypatch.setattr(wfc_op, "prepare_runtime_environment", runtime_env)
+        monkeypatch.setattr(wfc_op, "prepare_development_environment", development_env)
+        monkeypatch.setattr(wfc_op, "verify_controlled_path", lambda *a: None)
+        seen = {}
+        def seam(runtime, ops, argv, env):
+            seen.update(env)
+        monkeypatch.setattr(wfc_op, "run_canonical_preflight_seam", seam)
+        args = wfc_op.build_parser().parse_args(prepare_argv(
+            attempt="probe", development=repo, runtime=repo, evidence=repo, executable="fake",
+        ))
+        assert wfc_op.cmd_prepare(args) == 0
+        record = json.loads((home / "wfc-ops/probe/harness-prepared.json").read_text())
+        assert seen["PATH"] == record["controlled_path"]
+        assert all(seen[key] == record["scratch_path"] for key in ("TMPDIR", "TMP", "TEMP"))
+        for key in ("TMPDIR", "TMP", "TEMP"):
+            monkeypatch.setenv(key, str(tmp_path))
+        assert wfc_op.cmd_launch(wfc_op.build_parser().parse_args(["launch", "probe"])) == 0
+        assert Path(probe_output.read_text()).parent == Path(record["scratch_path"])
+    finally:
+        sys.path.remove(str(REPO_ROOT / "scripts"))
+
+
+def test_launch_script_freezes_scratch_for_tempfile(tmp_path):
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    try:
+        import wfc_op
+        ops = tmp_path / "ops"
+        ops.mkdir()
+        scratch = tmp_path / "scratch with spaces"
+        scratch.mkdir(mode=0o700)
+        runtime = tmp_path / "runtime"
+        (runtime / "bin").mkdir(parents=True)
+        probe = runtime / "bin/wfc"
+        probe.write_text(f"#!{sys.executable}\nimport tempfile\nprint(tempfile.mkstemp()[1])\n")
+        probe.chmod(0o755)
+        launch = wfc_op.write_launch_sh(
+            ops, runtime_env=runtime, development=tmp_path, state=tmp_path / "state",
+            expected_head="abc", work_item="w", profile="p", policy="p", components="c", task="t",
+            execution_bindings=ops / "bindings", executable="fake", timeout_seconds="5",
+            controlled_path_value=os.environ["PATH"], scratch=scratch,
+        )
+        env = {**os.environ, **{k: str(tmp_path) for k in ("TMPDIR", "TMP", "TEMP")}}
+        result = subprocess.run(("bash", str(launch)), env=env, text=True, capture_output=True, check=True)
+        assert Path(result.stdout.strip()).parent == scratch
+    finally:
+        sys.path.remove(str(REPO_ROOT / "scripts"))
+
+
+def test_scratch_failure_refuses_before_pinning_or_dispatch(tmp_path, monkeypatch):
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    try:
+        import wfc_op
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "taken").mkdir()
+        def forbidden(*args, **kwargs):
+            pytest.fail("scratch refusal must precede pinning and dispatch")
+        monkeypatch.setattr(wfc_op, "pin_development", forbidden)
+        monkeypatch.setattr(wfc_op, "run_canonical_preflight_seam", forbidden)
+        args = wfc_op.build_parser().parse_args(prepare_argv(
+            attempt="taken", development=tmp_path / "dev", runtime=tmp_path / "runtime",
+            evidence=tmp_path / "evidence", executable="provider",
+        ) + ["--scratch-root", str(root)])
+        with pytest.raises(wfc_op.HarnessRefusal):
+            wfc_op.cmd_prepare(args)
+        assert not (home / "wfc-state" / "taken").exists()
+        assert not (home / "wfc-ops" / "taken").exists()
+    finally:
+        sys.path.remove(str(REPO_ROOT / "scripts"))
