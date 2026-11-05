@@ -1178,19 +1178,16 @@ def test_archive_refuses_missing_state(tmp_path_factory, fresh_attempt_name):
     assert "STATE is absent" in result.stderr
 
 
-def test_archive_refuses_disagreeing_evidence_facts(tmp_path_factory, fresh_attempt_name):
-    home = tmp_path_factory.mktemp("home")
-    ops = home / "wfc-ops" / fresh_attempt_name
-    state = home / "wfc-state" / fresh_attempt_name
-    ops.mkdir(parents=True)
-    state.mkdir(parents=True)
-    (ops / "preparation-pins.txt").write_text(
-        f"attempt_id={fresh_attempt_name}\nstate_root={state}\nevidence_path=/tmp/evidence-A\n",
-    )
-    (ops / "harness-prepared.json").write_text(json.dumps({"evidence": {"path": "/tmp/evidence-B"}}))
-    result = run_wfc_op(home, "archive", fresh_attempt_name)
+def test_archive_refuses_disagreeing_evidence_facts(fake_archive_case):
+    case = fake_archive_case
+    record_path = case["ops"] / "harness-prepared.json"
+    record = json.loads(record_path.read_text())
+    record["evidence"]["path"] = str(case["home"] / "different-evidence")
+    record_path.write_text(json.dumps(record))
+    result = run_wfc_op(case["home"], "archive", case["attempt"])
     assert result.returncode == 2
-    assert "disagree" in result.stderr
+    assert "preparation facts disagree on evidence path" in result.stderr
+    assert _invocation_log_lines(case["evidence"]) == []
 
 
 def test_archive_refuses_dirty_evidence_without_invoking_wrapper(fake_archive_case):
@@ -1485,6 +1482,12 @@ def test_scratch_creation_and_refusals(tmp_path, monkeypatch):
         root, scratch = wfc_op.create_attempt_scratch(None, "one", [], ops, state)
         assert root == home / "wfc-scratch" and scratch == root / "one"
         assert scratch.stat().st_mode & 0o777 == 0o700
+        explicit = tmp_path / "explicit-root"
+        explicit.mkdir()
+        explicit_root, explicit_scratch = wfc_op.create_attempt_scratch(str(explicit), "explicit", [], ops, state)
+        assert explicit_root == explicit
+        assert explicit_scratch == explicit / "explicit"
+        assert explicit_scratch.stat().st_mode & 0o777 == 0o700
         with pytest.raises(wfc_op.HarnessRefusal):
             wfc_op.create_attempt_scratch(str(root), "one", [], ops, state)
         with pytest.raises(wfc_op.HarnessRefusal):
@@ -1575,11 +1578,19 @@ def test_prepare_preflight_inherits_scratch_and_frozen_path(tmp_path, monkeypatc
         def seam(runtime, ops, argv, env):
             seen.update(env)
         monkeypatch.setattr(wfc_op, "run_canonical_preflight_seam", seam)
+        explicit_root = tmp_path / "explicit-scratch"
+        explicit_root.mkdir()
         args = wfc_op.build_parser().parse_args(prepare_argv(
             attempt="probe", development=repo, runtime=repo, evidence=repo, executable="fake",
-        ))
+        ) + ["--scratch-root", str(explicit_root)])
         assert wfc_op.cmd_prepare(args) == 0
         record = json.loads((home / "wfc-ops/probe/harness-prepared.json").read_text())
+        assert record["scratch_root"] == str(explicit_root)
+        assert record["scratch_path"] == str(explicit_root / "probe")
+        assert not (home / "wfc-scratch").exists()
+        pins_text = (home / "wfc-ops/probe/preparation-pins.txt").read_text()
+        assert f"scratch_root={explicit_root}\n" in pins_text
+        assert f"scratch_path={explicit_root / 'probe'}\n" in pins_text
         assert seen["PATH"] == record["controlled_path"]
         assert all(seen[key] == record["scratch_path"] for key in ("TMPDIR", "TMP", "TEMP"))
         for key in ("TMPDIR", "TMP", "TEMP"):
