@@ -1,48 +1,179 @@
-= Claude adapter write-permission correction: implementation handoff
+= Claude adapter write-permission correction: independent broad review
 
-== Diagnosis and evidence
+WorkItem:: WI-WFC-CLAUDE-ADAPTER-WRITE-PERMISSIONS-004-REVIEW-001
+Run / Hop:: RUN-c84952c2d82344d08b4b2f5a7951a45f / H001
+Date:: 2026-11-05
+Verdict:: Changes required; route `correction` for one new blocking Finding.
 
-The most plausible mechanism is the recorded environment-scrubbing
-override of `acceptEdits`, with moderate confidence. The bug record reports
-the CLI's literal warning that scrubbing forced default mode, and the adapter
-sets the scrub variable while requesting `acceptEdits` and no prompts. The
-installed Claude Code 2.1.270 `--help` says that `--permission-prompts none`
-denies actions that would prompt. These facts fit the observed file-tool
-denial; they do not prove that it caused that denial. The alternative missing
-sandbox write-scope hypothesis, including directory creation behavior, is not
-ruled out. Help describes `--allowed-tools` as allowing named tools, and
-`--restricted` as confining file tools to working directories; it does not
-establish the detailed interaction of these settings with scrubbing.
+== Review basis and scope
 
-== Candidate
+Independently inspected the complete diff from
+`76596ac79669389de8921cfe33d612cf12e07c21` to
+`498c331c25a65198a849a228de495127cee3bb5b`. It changes exactly the Claude
+adapter, its conformance tests, and the implementation handoff formerly at
+this artifact path. The production changes are `permissions.allow: ["Edit"]`
+and resolving the subprocess cwd. Those three files are unchanged between
+that candidate and this review's base HEAD,
+`4e494ddc22319a607b43a75211208a2403b5d393`. Publication was not treated as
+acceptance, and the worker's summary was not adopted as evidence.
 
-The generated settings add only `permissions.allow: ["Edit"]`, intended to
-grant file edits without depending on `acceptEdits`. The resolved repository
-is the subprocess working directory, with no additional working directories;
-restricted mode supplies the provider-side file-tool boundary. The existing
-read allowance also uses that resolved root. No general Bash approval or
-additional sandbox write grant is added: neither is established as necessary
-by the observed mode override, and a general Bash grant would be broader.
-The existing sandbox, network, read-denial, scrub, and closed-profile settings
-remain intact. The applicable security invariant is recorded in full in
-link:../../backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc#security-invariant-must-hold-under-any-future-correction[the bug record's Security invariant section]; the settled repository-root provider boundary and WFC's authoritative post-Hop scope check are described in `docs/architecture.md` and `docs/self-development.adoc`.
+This review changes only this artifact. Production/test correction belongs
+to the separately dispatched correction Hop. No existing Findings were
+projected; the issue below proposes a new Finding without assigning a
+run-local ID. Predecessor Runs and their recorded states remain untouched.
 
-The fake-executable regression checks the generated edit grant, scrub,
-restricted mode, resolved working directory and read root, and absence of an
-additional working directory or filesystem write allowance, including a
-symlinked repository input. It checks the transmitted configuration, not
-the provider's actual enforcement or permissions semantics.
+== Diagnosis assessment
 
-== Residual uncertainty
+The scrub-induced mode override is evidence-supported, not an asserted
+historical root cause. The bug record reports the literal override warning
+from the first attempt, whereas the denied Write was observed in the second
+attempt. The adapter sets the same scrub variable and requests `acceptEdits`
+with `--permission-prompts none`. Independent introspection of the installed
+`claude --version` identifies 2.1.270; its `--help` says that actions requiring
+prompts are automatically denied when the prompt target is `none`.
 
-The explicit `Edit` rule is the smallest candidate for the observed
-mode-override mechanism, but whether it also permits `Write` and creation of
-missing parent directories under this exact CLI profile is unconfirmed. Bash
-`mkdir` may still be denied; an independent sandbox write restriction may
-also prevent the intended operation. Only the separately authorized
-live-provider qualification can establish an authenticated worker's
-end-to-end creation and write in an authorized missing subdirectory and the
-negative case outside the phase scope, including WFC candidate acceptance.
-No authenticated provider was invoked here, and this candidate does not claim
-the live issue is conclusively resolved. This handoff is for deterministic
-implementation review, not live-provider qualification.
+Read-only inspection of the installed executable's embedded JavaScript
+further supports this mechanism: its scrub branch returns default mode and
+recommends explicit tool allowances. This establishes relevant static CLI
+behavior, not the causal history of the recorded authenticated attempt.
+The competing sandbox/directory-creation explanation remains unexcluded as
+an explanation of that attempt. No authenticated provider was invoked.
+
+[[blocking-write-grant]]
+== Blocking issue: the allowance omits Write
+
+`src/workflow_coordinator/claude_adapter.py:78` grants the bare tool rule
+`Edit`, while the unchanged explicit tool list contains both `Edit` and
+`Write`. The installed CLI distinguishes bare tool allowances from
+path-scoped file-edit rules. In particular:
+
+* Rule parsing preserves bare `Edit` and `Write` as distinct names; the
+  legacy-name alias map does not merge them.
+* Whole-tool allow matching compares the actual tool name. The Write tool
+  has name `Write`, without an Edit family-parent declaration.
+* Both tools call the shared file-write permission check, but its Edit-path
+  allow matching requires a rule with path content. A bare `Edit` rule is
+  excluded from that matching.
+* Under default mode, an ordinary repository-local Write with neither a
+  matching path rule nor a whole-tool Write allowance therefore still asks
+  for approval. `--permission-prompts none` denies that request.
+
+Thus the correction can allow Edit while leaving the exact Write tool
+used in the recorded failure ungranted. This is a static implementation
+gap, not a demand for live-provider certainty. Edit's ability to create some
+files is not evidence that the separately exposed Write tool has permission.
+The handoff's uncertainty about whether Edit covers Write can be narrowed
+using locally available implementation evidence; it should not be left
+entirely to the deferred live qualification.
+
+Required correction: provide the narrowest supported allowance covering
+both repository-local Edit and Write while retaining restricted mode and
+the resolved repository boundary. Explicitly allowing Write alongside Edit
+is one bounded option; a supported repository-scoped Edit path rule is
+another approach to assess. Do not grant general Bash access to compensate.
+The installed Write implementation requests parent creation itself, so the
+observed Bash mkdir denial alone does not justify a separate Bash grant.
+Extend the deterministic configuration tests to reject a missing Write
+authorization as well as unintended widening, and update the explanation
+and residual uncertainty. No change outside the adapter and its conformance
+tests is needed to address this Finding.
+
+=== Local CLI source provenance
+
+These observations come from reading, not executing, embedded source in
+`/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`, the
+target of `/usr/local/bin/claude`. SHA-256:
+`3a624a5a7cd79bbad4d32bd7db36f1197ecf458bc5bf1e2aed81834a01ad3ef0`.
+Offsets below are zero-based bytes in that exact installed binary, not
+portable interfaces or a new repository dependency:
+
+[cols="1,3",options="header"]
+|===
+|Offset / embedded function |Review observation
+|188039987; 193979403 |Scrub override warning, with surrounding default-mode branches.
+|185368197 (`Yu`); 185369707 (`yr`) |Legacy-name normalization and permission-rule parsing preserve the two bare names.
+|185490357 (`ch`); 188449103 (`Ci`); 188449517 (`SWe`) |Actual tool-name selection and whole-tool allow matching.
+|188085125 (`kt`) |Tool construction preserves the declared name and does not add a file-edit family parent to Write.
+|188451715 (`Xn`); 188471672 (`Zr`) |Path-rule selection excludes rules without path content.
+|188483168 (`ok`) |Shared edit/write check: restricted boundary, path rules, acceptEdits fast path, otherwise approval request.
+|191683731 (Write tool declaration); 191687804 (`ZIo`) |Write uses that shared check; its implementation requests parent creation.
+|192355750 (`VBn`) |Generic permission decision preserves denials and checks the actual whole-tool allowance.
+|===
+
+== Security invariant assessment
+
+The candidate does not introduce a security-boundary widening identified by
+this review. Its functional allowance is too narrow. The bug record's
+security requirements were assessed with the settled layering in
+`docs/architecture.md:48` and `docs/self-development.adoc:106`: the provider
+boundary is the resolved repository root, and WFC's post-Hop observation
+authoritatively enforces the narrower phase scope.
+
+[cols="1,2",options="header"]
+|===
+|Invariant |Independent assessment
+|No blanket bypass |Exact argv retains acceptEdits, restricted mode and no prompts; no bypass flag or bypassPermissions mode is added.
+|Sandbox remains enabled and fails closed |`enabled: true`, `failIfUnavailable: true`, and `allowUnsandboxedCommands: false` remain unchanged in the full settings assertion.
+|No network/read widening |Empty network-domain allowlist, WebFetch/WebSearch denial, `denyRead: ["~/"]`, and outside-working-directory read blocking remain unchanged.
+|Resolved repository boundary |Only the resolved repository is configured as cwd/read root; no additional working directory or allowWrite-equivalent is added. CLI help describes restricted file-tool confinement; its source checks confinement before applying a whole-tool allowance.
+|Scrubbing retained |`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` is still set and checked at the fake-process boundary.
+|Closed profile retained |Safe mode, strict MCP configuration, explicit tool list and no session persistence remain unchanged. Tool availability is distinct from tool approval.
+|No Codex fallback or trusted-boundary weakening |No other production source changed. WFC scope/Git checks and validated_result correlation/semantic checks are untouched; existing negative-result tests still pass.
+|===
+
+== Deterministic tests and limitations
+
+Agent-local command:
+
+[source,shell]
+----
+.venv/bin/python -m pytest -q tests/unit/test_claude_adapter_conformance.py tests/unit/test_codex_adapter_conformance.py tests/unit/test_codex_adapter_smoke.py
+----
+
+All 50 cases passed. The existing Claude cases retain their intent; the only
+changed existing assertion adds the candidate's Edit grant to the exact
+settings expectation. The new symlink case launches a fake executable and
+checks the actual transmitted settings, restricted argv, scrub variable,
+and physical cwd. It verifies configuration wiring rather than copying a
+call to `_settings` into its expectation. However, `getcwd()` also resolves
+a symlink with the old cwd argument, so that assertion alone does not prove
+the new `.resolve()` expression is necessary.
+
+Independent in-memory mutations of the adapter, without changing source or
+tests on disk, removed Edit, added Bash, broadened allowRead to the repository
+parent, added allowWrite for the repository parent, or removed restricted
+mode. Each mutation made both configuration tests fail (two expected
+failures per mutation). These tests meaningfully reject loss of the grant
+and configuration widening, but their exact Edit-only expectation cannot
+detect the missing Write permission identified above. A fake executable
+does not enforce the provider's permission engine.
+
+The agent-local full-suite command
+`PATH="$PWD/.venv/bin:$PATH" python -m pytest -q` completed with exit 1:
+five failures and thirteen setup errors in `tests/unit/test_wfc_op.py`
+(837 cases collected). Preparation fixtures attempt isolated package
+installation and fail before their intended checks. Diagnostics include
+`Failed to establish a new connection: [Errno -2] Name or service not known`
+for `/simple/setuptools/`, followed by
+`No matching distribution found for setuptools>=68`. The shell initially
+had no `python`; system python3 lacked pytest, so the existing repository
+virtual environment was used. No dependency download workaround or security
+setting change was attempted. These are agent-local environmental results,
+not a production Finding and not Coordinator-trusted evidence. No full-suite
+pass is claimed; Coordinator-owned `task-check` remains independently gated.
+
+== Residual uncertainty and disposition
+
+The candidate handoff correctly distinguished implementation acceptance
+from live-provider qualification, but left a statically investigable Write
+permission gap unresolved. Route to correction for that gap. The local
+full-suite limitation is not an operational escalation.
+
+After a correction, only the separately authorized maintainer-run live
+qualification can demonstrate an authenticated worker creating a missing
+authorized subdirectory and writing within it end to end through WFC
+acceptance, plus the negative outside-phase-scope case. Managed policy,
+actual sandbox availability and runtime interactions remain untested here.
+That qualification remains outside this Commission and is not a prerequisite
+for its deterministic implementation acceptance. This review neither
+conclusively resolves the live bug nor requests authority to run a provider.
