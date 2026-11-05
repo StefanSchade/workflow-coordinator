@@ -43,9 +43,28 @@ accepted Runtime WFC N  --never mutates--> Runtime WFC N
 The runtime executable, repository, Git state, and execution artifacts are not
 development payload. WFC may create only bounded local commits admitted for the
 development repository. A maintainer reviews and accepts those commits and
-alone owns any push and any later, separate runtime promotion. No current
-Coordinator-owned or Coordinator-verified OS/environment containment boundary
-is claimed.
+alone owns any push and any later, separate runtime promotion.
+
+WFC's present core responsibility, in general and not only for
+self-development, is repository-acceptance integrity: independently observing
+Git/filesystem state and applying deterministic scope and acceptance checks
+before any Coordinator-owned commit, regardless of what an agent's own
+instructions authorized. This is distinct from execution-environment
+containment. WFC V1 provides neither hostile-code containment nor host
+isolation; restricting agent writes is primarily an operational safeguard
+against accidental damage, not a security perimeter. A provider's own
+sandbox/permission request (Codex `--sandbox workspace-write`, the Claude
+adapter's closed profile) is a transitional operational safeguard -- useful,
+not discarded without reason, but provider-owned and not Coordinator-verified
+(`DEC-WFC-009`). No current Coordinator-owned or Coordinator-verified
+OS/environment containment boundary is claimed, for self-development or any
+other consumer repository, and WFC does not require a provider sandbox to
+preventively enforce a phase's `authorized_scope`; the Coordinator's own
+post-Hop Git/scope observation is the authoritative enforcement of that
+scope. A WFC-owned, provider-independent execution-isolation layer is a
+possible future direction, not current V1 functionality; see
+[FTR-WFC-EXECUTION-TRUST-BOUNDARIES](backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc)
+for its status and non-current standing.
 
 The [standalone authority index](README.adoc) is the authoritative
 classification of current authority, provenance, historical material, and
