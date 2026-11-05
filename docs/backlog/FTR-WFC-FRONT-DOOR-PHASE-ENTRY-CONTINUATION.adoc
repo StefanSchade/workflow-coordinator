@@ -1,0 +1,119 @@
+= FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION -- The Commission Intent Renderer Cannot Enter An Existing Closed-Program Workflow At An Already-Authorized Continuation Phase
+
+Type:: future technical record -- Front Door capability gap
+Status:: proposed / backlog
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Next action:: Develop a small renderer enhancement (an Intent field selecting
+a non-default `initial_phase`, validated against the closed program's own
+phase set) only under a separately authorized Commission.
+Not authorized here:: Any change to `src/workflow_coordinator/commissioning.py`
+or any other source, any new workflow program or profile schema, or a Run.
+Priority:: small; evidence-gated by recurrence.
+Date:: 2026-11-05.
+
+== Decision summary
+
+`src/workflow_coordinator/model.py::new_run()` and the operator's own
+preflight (`operator.py::_preflight()`) already admit a WorkItem whose
+`initial_phase` names *any* phase declared by the supplied profile -- the
+only check is `work_item.initial_phase in profile.phases`
+(`model.py:891-892`; re-checked at `operator.py:395-396`). Nothing in the
+Coordinator, the reducer, or the admission chain restricts a Run to starting
+at a program's nominal first phase. This is current, already-accepted
+mechanics, not a proposal.
+
+The Commission Intent renderer does not expose this. `commissioning.py:450`
+hardcodes the rendered WorkItem's `initial_phase` to the literal string
+`"implement"` on every render, for both `direct@v1` and `robust@v1`. An
+Intent author has no field to request a different, already-declared phase
+as the Run's entry point.
+
+This is a real capability gap against the Front Door's own stated purpose:
+the closed-program model exists precisely so that ordinary Commission
+authoring never needs a hand-authored WorkItem/Profile/Policy bundle outside
+`commission render` / `commission check`. Entering an existing closed
+workflow at an authorized continuation phase -- for example, resuming
+independent review of an already-committed, not-yet-reviewed candidate after
+a Hop was lost to a mechanical/transport interruption -- currently has no
+Intent-level expression and forces exactly the hand-authored,
+render-bypassing bundle the Front Door was built to eliminate.
+
+== Motivating case
+
+Commission `wfc-claude-adapter-write-permissions-004` (`robust@v1`,
+`RUN-6ebce1ac10df4e099e93848d6c292f8b`): Hop 1 (`implement`) completed and
+was trusted-committed (`498c331c25a65198a849a228de495127cee3bb5b`). Hop 2
+(`broad_review`) was charged as an uncertain dispatch after the reviewer's
+Codex CLI invocation failed at the transport level (a transient
+provider-capacity condition, confirmed from the invocation's untrusted
+local diagnostics; unrelated to the Commission or the candidate). The Run
+correctly stopped `reconcile_required` with `semantic_stop: null`.
+
+Neither currently implemented recovery primitive covers this exact shape:
+
+* same-Run reconcile/resume (`reducer.resume_after_reconcile()`) is a
+  tested library function with no operator-CLI wiring at all
+  (`docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc` already names this gap);
+* `prepare-successor` is implemented and wired, but
+  `operator.py::_predecessor_for_successor()` admits only a predecessor
+  Run whose `status is RunStatus.AWAITING_HUMAN` and which carries a
+  non-null `semantic_stop` (`operator.py:1463-1464`) -- this Run's stop is
+  mechanical, not semantic, so it is categorically ineligible.
+
+The only available continuation was an ordinary fresh WorkItem reusing the
+existing, already-committed `robust@v1` profile.yaml unchanged (same routes,
+scopes, role bindings, evidence gates, Finding authority, and correction
+path), hand-authored outside `commission render` purely because the
+renderer cannot express `initial_phase: broad_review`. The hand-authored
+bundle still passed the same regular, provider-free operator preflight
+(`_admit_a1`, `_preflight`) that a rendered bundle would -- the renderer
+limitation is additive friction, not a missing safety check.
+
+== What this is not
+
+This is not a defect in `_admit_a1`/`_preflight`'s admission logic, in the
+`robust@v1` program's phase graph, or in the reconcile/resume or
+successor-preparation mechanics themselves -- all of those already behave
+exactly as designed. This record is narrowly about the Intent *renderer*
+lacking a field to use a capability the rest of the system already has.
+
+This is also not a request to make `reconcile_required` Runs eligible for
+`prepare-successor`, and not a request to implement same-Run resume -- both
+remain `FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`'s separate, already-tracked scope.
+
+== Possible shape (recorded for later evaluation only)
+
+An Intent field such as `initial_phase: <phase-key>` (defaulting to the
+program's existing nominal first phase when omitted, preserving current
+behavior for every ordinary Commission), validated by the renderer against
+the resolved program's own `phases` mapping before rendering, with the
+rendered WorkItem's `durable_artifacts` populated accordingly for whichever
+phase is selected. No change to `_admit_a1`/`_preflight`, the program
+catalogue, or any phase's routes/scope/evidence would be required -- the
+renderer would simply stop forcing one hardcoded value onto a field the
+rest of the system already treats generically.
+
+This shape is recorded as a starting point for a future design, not as an
+accepted design. A separately authorized Commission must still evaluate
+alternatives (for example, whether this belongs on the Intent at all versus
+a distinct "continuation Intent" concept) before implementing anything.
+
+== Evidence / provenance
+
+* `src/workflow_coordinator/commissioning.py:450` (hardcoded
+  `"initial_phase": "implement"`).
+* `src/workflow_coordinator/model.py:891-892` (`new_run()`'s only
+  `initial_phase` check).
+* `src/workflow_coordinator/operator.py:395-396` (`_preflight()`'s matching
+  check), `:1463-1464` (`_predecessor_for_successor()`'s
+  `AWAITING_HUMAN`-plus-`semantic_stop` gate).
+* Motivating Run: `RUN-6ebce1ac10df4e099e93848d6c292f8b`
+  (`wfc-claude-adapter-write-permissions-004-20261105-01`), archived at
+  `workflow-coordinator-run-evidence/archive/unclassified/wfc-claude-adapter-write-permissions-004-20261105-01`.
+* Related, separately tracked gap: `docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`
+  (same-Run reconcile/resume is unimplemented at the operator-CLI level).
+
+== Lifecycle
+
+This FTR is recorded as a follow-up engineering issue only. No source
+change, no new Intent field, and no Run are made by this record.
