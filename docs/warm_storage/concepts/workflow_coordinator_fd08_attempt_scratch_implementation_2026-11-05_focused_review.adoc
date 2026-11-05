@@ -1,0 +1,154 @@
+= FD-08 Attempt scratch implementation: independent focused review
+
+WorkItem:: WI-WFC-FD08-ATTEMPT-SCRATCH-001
+Run / Hop:: RUN-e440b3e1f421413892e51b8355230d9f / H004
+Invocation:: INV-ef278736bf3349a8b6b65158701a84ef
+Date:: 2026-11-05
+Reviewed HEAD:: 51ad777ef4f62b1ecc555b4b8303781f49f75ad6
+Correction range:: df1865b45717a6ac21318df40b876bbbfe8d87e0..51ad777ef4f62b1ecc555b4b8303781f49f75ad6
+Verdict:: Accept the focused corrections; resolve F001 and F002 and request `renew_broad_review`.
+
+== Review scope and governing basis
+
+Read all ten sections of the accepted FD-08 investigation and the motivating
+tmpfs incident report. Inspected the actual scratch helpers, preparation,
+bootstrap, preflight, launch generation/revalidation, preparation records,
+status, archive, and associated tests against investigation sections 5--8.
+Read the preceding broad-review artifact and independently checked the
+correction diff and the complete implementation diff from `f5c048d`.
+Historical line numbers were reverified against this HEAD.
+
+The H003 correction changes only `tests/unit/test_wfc_op.py`. Across the
+implementation and correction, the changed program files remain exactly
+`scripts/wfc_op.py`, `tests/unit/test_wfc_op.py`, and the authorized FD-08
+paragraph in `docs/wfc_operator_manual.adoc`, plus the broad-review artifact.
+All of `src/workflow_coordinator` is byte-identical to the implementation
+baseline, including every expressly excluded Runtime source. This Hop edits
+only the declared focused-review artifact. No agent-owned Git mutation was
+performed.
+
+== Finding disposition and adversarial verification
+
+=== F001: Evidence-record disagreement test -- resolved
+
+`test_archive_refuses_disagreeing_evidence_facts()` at
+`tests/unit/test_wfc_op.py:1181` now uses `fake_archive_case`, whose
+preparation records contain complete, agreeing scratch and repository facts.
+The test changes only the JSON Evidence path. It requires exit 2, the precise
+`preparation facts disagree on evidence path` diagnostic, and an empty
+wrapper invocation log. A missing scratch fact cannot satisfy this assertion.
+
+The unmodified test passes. An independent in-memory test-runner probe made
+the Evidence paths agree immediately before the archive subprocess, retaining
+all other facts. Archive then succeeded, and the corrected test failed at
+its expected-refusal assertion (`returncode` was 0). Thus the previous
+false-positive control no longer passes. No repository test or implementation
+file was modified for this experiment.
+
+=== F002: Successful explicit scratch-root coverage -- resolved
+
+`test_scratch_creation_and_refusals()` at `tests/unit/test_wfc_op.py:1474`
+now creates a fresh Attempt under a pre-existing absolute explicit root,
+asserting the selected root, exact child, and mode 0700. Its uid-mismatch
+negative case remains active. The existing preparation/preflight test at
+line 1546 now supplies `--scratch-root`, checks both recorded root/path
+values in both preparation files, and asserts the default root was not
+created. It still checks all three preflight temporary variables, frozen
+PATH, and a separately launched Python tempfile under the recorded child
+after changing the caller's temporary variables.
+
+Both tests pass unmodified. Independent in-memory mutations (a) rejected
+every explicit root and (b) ignored every explicit root by selecting the
+default. Each mutation caused both tests to fail. These positive tests
+therefore detect both refusal and silent disregard of the CLI input.
+
+== Conformance and regression checks
+
+The correction preserves the broad review's implementation assessment:
+
+* Scratch creation follows validated Attempt selection and precedes pinning,
+  OPS creation, bootstrap, and temporary-capable subprocesses. Absolute
+  expanded roots, default creation, root/leaf type checks, exclusive child
+  creation, effective-uid/0700 verification, repository equality/containment/
+  ancestry refusal, and OPS/STATE distinctness remain enforced. Creation,
+  chmod, or verification failure cannot fall back or reach STATE/provider
+  dispatch. Existing root/leaf symlink, non-directory, reuse, relative-root,
+  uid, overlap, and early-refusal tests remain in place.
+* Bootstrap inherits the three assigned variables; the canonical preflight
+  receives them beside frozen PATH. Literal shell-quoted exports precede
+  launch's `exec`. Both records carry root and child; status projects the
+  child. Existing repository-pin and launch/bindings digest revalidation
+  code is unchanged.
+* Archive cross-checks both preparation records, validates root/Attempt
+  derivation and retained directory ownership/mode/type/overlap, and refuses
+  before either wrapper on disagreement or failed validation. Both dry-run
+  and real calls receive explicit `env=`. Independent dictionary equality
+  confirmed this environment is exactly the archive caller's copy with only
+  TMPDIR/TMP/TEMP replaced; the caller itself is unchanged. Wrapper argv,
+  repository selection, and dry-run-before-real order retain their meaning.
+  The synthetic wrapper regression exercises propagation, preservation of an
+  unrelated variable, record disagreement, and mode-refusal with no calls.
+* All 44 pre-existing Harness tests remain present with unchanged decorators;
+  no removal or new skip was introduced. The two modified existing tests
+  extend the positive envelope assertions and restore the Evidence
+  disagreement admission check. A1 and all excluded-source security tests
+  are unchanged.
+* The inspected `git_facts` observation and both salvage helpers use default
+  `tempfile.mkstemp()` calls, so fresh Runtime processes honor the inherited
+  environment. Codex's subprocess inherits it and trusted evidence uses its
+  frozen snapshot. No temp-consumer source change is needed.
+* Scratch retention remains unchanged across launch/completion/refusal.
+  The diff introduces no deletion, retention/quota framework, mount change,
+  capacity guess, Runtime scratch option, retry/recovery, mixed-adapter
+  interface, or provider-independent isolation. Environment injection makes
+  no claim of OS containment or external-tool compliance.
+
+== Independent validation and evidence limits
+
+The six focused tests selected by
+`.venv/bin/python -m pytest -q tests/unit/test_wfc_op.py -k 'scratch or prepare_preflight_inherits or disagreeing_evidence'`
+passed, exit 0. Each mutation probe returned the expected pytest test-failure
+status; those intentional failures are evidence of regression sensitivity.
+The environment/scope checks and `git diff --check` passed.
+
+The full-suite exploratory run used the existing virtualenv on PATH and
+`PIP_NO_INDEX=1`, with `python -m pytest -q`; dependencies were not downloaded
+and build isolation was not bypassed. Result: exit 1; 824 passed, five failed,
+and thirteen setup errors (counted from pytest's complete progress report).
+The failures/errors all arise from the real-venv Harness fixtures' nested pip
+build isolation, which cannot obtain its required build dependency offline:
+
+[source,text]
+----
+ERROR: Could not find a version that satisfies the requirement setuptools>=68 (from versions: none)
+ERROR: No matching distribution found for setuptools>=68
+----
+
+This repeats the broad review's agent-local dependency limitation, rather
+than exposing a correction defect. The real-venv preparation/launch checks
+are not claimed as passing locally; the focused tests and their synthetic
+seams do pass. No download, security-setting change, fixture change, or
+test weakening was attempted to bypass the limitation. It does not require
+an operational escalation to dispose these two corrected coverage Findings.
+Agent-local results are distinct from Coordinator-owned `task-check`; no
+current trusted result is projected to this reviewer. The preceding worker's
+reported passing suite/gate is attribution, not independent trusted evidence
+established by this Hop. The Coordinator's evidence gate remains separate.
+
+Agent-local diagnostic references:
+
+* `/tmp/fd08-h004-focused-tests.log`
+* `/tmp/fd08-h004-reject-explicit.log`
+* `/tmp/fd08-h004-ignore-explicit.log`
+* `/tmp/fd08-h004-agree-evidence.log`
+* `/tmp/fd08-h004-scope-environment-check.log`
+* `/tmp/fd08-h004-task-check.log`
+
+== Disposition
+
+No blocking observation remains from this focused review. Submit resolutions
+for the authoritative current-Run Findings F001 and F002 under this Hop's
+projected `resolve` authority. Request `renew_broad_review`, the configured
+successful focused-review route; final WorkItem acceptance belongs to the
+renewed broad gate. No scope expansion, escalation, or human intervention
+is required.
