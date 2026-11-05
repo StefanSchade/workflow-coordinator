@@ -1,0 +1,320 @@
+= WFC Technical Model -- Claude Code Adapter: Implementation and Live-Provider Qualification
+:toc:
+:toclevels: 2
+
+Maturity::  stable
+Authority:: informative
+Updated::   2026-11-05
+Owns::      The as-implemented `ClaudeCliAdapter` invocation mechanics, the write-permission-denial diagnosis and correction provenance, and the authenticated live-qualification observations against promoted Runtime `4eb69d9c038110f9885c05612927535c725a21e6`. Defers to `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc` for feature-implementation status (§1.6 of `ai_info/doc_conventions.adoc`), to `docs/architecture.md` and `docs/self-development.adoc` for the normative security-layering statements this document only restates for comprehension, and to the warm_storage design/review artifacts cited throughout for full evidentiary detail.
+
+This document consolidates technical findings already established elsewhere; it
+adopts no new contract and resolves no open governance question. Where a
+statement here and a cited source could drift, the cited source controls.
+
+== 1. What this document is, and is not
+
+It explains how WFC's `claude_cli` adapter actually invokes the Claude Code
+CLI today, why the write-permission correction took the shape it did, and
+what a subsequent authenticated live qualification observed. It is not a
+competing architecture proposal: the accepted design remains
+link:../warm_storage/concepts/workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc[the
+Claude Code adapter design] and its reviews; the open defect record remains
+link:../backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[the
+BUG record]; the correction's own review trail remains
+link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_broad_review.adoc[the
+broad review] and
+link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_focused_review.adoc[the
+focused review]. This document cites and summarizes those sources for
+durable Technical Model reference; it does not restate their full content.
+
+== 2. As-implemented: how WFC invokes Claude Code noninteractively
+
+`src/workflow_coordinator/claude_adapter.py`'s `ClaudeCliAdapter` is WFC's
+only `claude_cli` execution-port implementation (selected by
+`operator.py::_execution_adapter`, `operator.py:85-91`).
+
+`argv()` (`claude_adapter.py:50-59`) builds, as a tuple passed without a
+shell: `-p --output-format json --json-schema <schema>` for structured
+output, `--model`/`--effort` from the role binding, `--restricted
+--safe-mode --strict-mcp-config --tools Read,Glob,Grep,Edit,Write,Bash` for
+the closed tool surface, `--settings <generated-file>
+--permission-mode acceptEdits --permission-prompts none
+--no-session-persistence`, and the task prompt as the final positional
+argument.
+
+`_settings()` (`claude_adapter.py:61-82`) generates a settings file with:
+`sandbox.enabled: true`, `failIfUnavailable: true`,
+`allowUnsandboxedCommands: false`; `filesystem.allowRead` set to the single
+resolved repository path, `denyRead: ["~/"]`; `network.allowedDomains: []`;
+and `permissions.allow: ["Edit", "Write"]`, `deny: ["WebFetch",
+"WebSearch"]`, `blockReadsOutsideWorkingDirectories: true`.
+
+`execute()` (`claude_adapter.py:102-156`) writes the schema and settings
+files, builds the child environment as `{**os.environ,
+"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"}` (`:124`), and launches the
+subprocess with `cwd=request.repository.resolve()` (`:131`) -- the same
+resolved path used as the sandbox's `allowRead` root, so there is a single
+source of truth for "the repository" rather than two independently
+maintained paths.
+
+== 3. Environment scrub x permission mode: why `Edit` alone was insufficient
+
+Setting `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` makes the installed CLI apply
+its own all-subprocess environment scrubbing (the accepted design's
+intended behavior). Both the original bug discovery and this document's
+§4 live qualification independently observed the installed CLI itself
+reporting the consequence: the requested `--permission-mode acceptEdits`
+is overridden back to the CLI's default permission mode when scrubbing is
+active, with the CLI's own hint to "declare allowedTools explicitly." Under
+default mode, `--permission-prompts none` denies, rather than asks
+approval for, any tool call that would otherwise prompt.
+
+The first implementation candidate
+(`498c331c25a65198a849a228de495127cee3bb5b`, WI-WFC-CLAUDE-ADAPTER-WRITE-PERMISSIONS-004
+H001) added only `permissions.allow: ["Edit"]`. The independent broad
+review
+(`5d46d67fe938ec127e4abf6ec1086aabed1530dc`, Run `RUN-c84952c2d82344d08b4b2f5a7951a45f`
+H001; see
+link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_broad_review.adoc#blocking-write-grant[the
+artifact's "Blocking issue" section] for full byte-offset provenance)
+found, by reading -- not executing -- the installed CLI's own embedded
+source, that `Edit` and `Write` are parsed and matched as distinct tool
+names with no family relationship; a bare `Edit` allow-rule does not cover
+the `Write` tool. Both tools share one underlying write-permission check,
+but that check's path-scoped matching requires a rule carrying path
+content, which a bare tool-name rule does not provide; under default mode,
+an unmatched `Write` call still asks for approval, and `--permission-prompts
+none` converts that ask into an outright denial with no approval surface.
+The correction
+(`4eb69d9c038110f9885c05612927535c725a21e6`, H002) widened the rule to
+`permissions.allow: ["Edit", "Write"]` -- the narrowest change the
+reviewer's own evidence supported, adding no other tool, directory, or
+network allowance.
+
+This mechanism is implementation-specific behavior of the installed Claude
+Code CLI (observed and cited against `2.1.270`'s own embedded source by
+both the H001 broad review and the H003 focused review), not a documented
+public CLI contract. A future CLI version could parse or match permission
+rules differently; nothing here claims otherwise.
+
+== 4. Repository boundary, `--restricted`, sandbox settings, and Bash
+
+`--restricted` confines the file tools (`Edit`/`Write`/`Read`-family) to
+the working directory and removes code-running tools unless `--tools`
+names them explicitly; `_TOOLS` (`claude_adapter.py:27`) names `Bash`
+alongside the file tools, so Bash remains available to the worker -- this
+is not a general Bash grant layered on top of the closed profile, it is the
+accepted design's own minimum built-in surface (see the design document,
+link:../warm_storage/concepts/workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc[§
+"Permissions and filesystem"]). The adapter never widens this: no
+`--add-dir`, no `excludedCommands`, no `--dangerously-skip-permissions` or
+`bypassPermissions` mode, no second working directory.
+
+The generated settings have no `filesystem.allowWrite`/`denyWrite` field at
+all. `Edit`/`Write` confinement to the repository root rests entirely on
+`--restricted`'s own working-directory confinement plus the explicit
+`permissions.allow` rule, not on a settings-level write-scope list -- the
+adapter's settings schema only ever populated `allowRead`/`denyRead` (the
+read boundary), never a write-scope equivalent. This absence was recorded
+as an open, unexcluded alternative hypothesis throughout the bug record and
+every review Hop; §5 of this document records what the live qualification
+established about it.
+
+The accepted design already distinguishes Bash's own sandbox coverage from
+file-tool confinement rather than treating them as one uniform boundary:
+"Claude documents that its Bash sandbox covers shell commands and their
+children, while file tools, hooks, MCP, and other processes can run outside
+it" (design document, same section). `sandbox.enabled`/`failIfUnavailable`
+require Claude's own Bash sandbox and forbid an unsandboxed retry;
+`allowUnsandboxedCommands: false` removes the fallback path. This document's
+§5 records a live observation consistent with that distinction.
+
+== 5. Division of protections: provider-owned vs. WFC-owned
+
+Three layers, kept distinct per `docs/self-development.adoc`'s
+Commission-authoring section and `docs/architecture.md`'s generalized
+containment disclaimer (both from `36089fb`, §6 below):
+
+. *Provider file-tool permission* -- the explicit `Edit`/`Write` allow
+  rule, operating under the scrub-induced default permission mode. Provider-
+  owned, not Coordinator-verified (`DEC-WFC-009`).
+. *Provider execution isolation* -- the CLI's own sandbox (`--restricted`,
+  the generated `sandbox.*` settings, and whatever temp/scratch exceptions
+  the CLI's own sandbox profile grants by design; §7 records a live
+  instance of the latter). Also provider-owned, not Coordinator-verified.
+. *WFC's trusted post-Hop Git/scope observation* -- Coordinator-owned and
+  authoritative. This is what actually determines whether a candidate
+  mutation becomes an accepted WFC commit, independent of what the
+  provider's own permission or sandbox layer did or did not prevent.
+
+No provider permission or sandbox setting described in this document is an
+OS-level isolation guarantee WFC has verified. Per `docs/architecture.md`
+(`36089fb`): "WFC V1 provides neither hostile-code containment nor host
+isolation; restricting agent writes is primarily an operational safeguard
+against accidental damage, not a security perimeter." The Claude adapter's
+closed profile is, in that same sense, "a transitional operational
+safeguard -- useful, not discarded without reason, but provider-owned and
+not Coordinator-verified."
+
+== 6. Implementation and review provenance
+
+[cols="1,4",options="header"]
+|===
+|Commit |What it established
+
+|`36089fb`
+|Generalized `docs/architecture.md`'s containment disclaimer beyond
+self-development and added `docs/self-development.adoc`'s Commission-
+authoring section requiring any stated security requirement to name its
+enforcement layer (provider sandbox vs. WFC's post-Hop observation). Not
+itself part of the adapter fix; the clarification this correction's own
+Commission authoring and review relied on.
+
+|`498c331`
+|First implementation candidate (WI-WFC-CLAUDE-ADAPTER-WRITE-PERMISSIONS-004
+H001): `permissions.allow: ["Edit"]` and `cwd=request.repository.resolve()`.
+Diagnosed the scrub-induced default-mode override as the leading mechanism;
+did not grant `Write`.
+
+|`5d46d67`
+|Independent broad review (WI-...-004-REVIEW-001 H001, Run
+`RUN-c84952c2d82344d08b4b2f5a7951a45f`): opened Finding F001 -- the bare
+`Edit` rule does not cover the distinct `Write` tool -- backed by read-only
+inspection of the installed CLI's embedded source (exact byte offsets cited
+in the artifact). Routed to `correction`.
+
+|`4eb69d9`
+|Correction (H002): `permissions.allow: ["Edit", "Write"]`. This is the
+Runtime SHA promoted and used for the live qualification in §7.
+
+|`fe4e6e0`
+|Focused review (H003): confirmed F001 resolved by the H002 diff; independent
+re-inspection of the CLI source, plus mutation testing of the conformance
+suite (six independently-introduced negative mutations -- missing `Edit`,
+missing `Write`, an added Bash grant, a widened `allowRead`, an added
+`allowWrite`, and a removed `--restricted` -- each correctly rejected by the
+existing tests). Proposed `renew_broad_review`.
+
+|`698e334`
+|Renewed broad review (H004): accepted the deterministic implementation; F001
+already resolved, no new blocking Finding; recorded the Coordinator-owned
+`task-check` pass. Explicitly states that live-provider qualification
+"remains a separate, subsequent, maintainer-run step" and was not performed
+in H001-H004.
+|===
+
+Across `498c331`..`698e334`, `src/workflow_coordinator/claude_adapter.py` is
+the only production source changed; the conformance-test extensions are
+confined to `tests/unit/test_claude_adapter_conformance.py`. Deterministic
+implementation acceptance was complete as of `698e334`. Live-provider
+qualification is the separate, non-blocking step §7 records.
+
+== 7. Live-provider qualification (2026-11-05, operator-reported)
+
+Performed directly in a maintainer chat session against Runtime pinned at
+`4eb69d9c038110f9885c05612927535c725a21e6`, Claude Code CLI `2.1.270`. This
+was explicitly *not* a Coordinator-mediated WFC Run: no existing facility
+supports pointing WFC's self-referential Commission/Run machinery at a
+disposable, non-self-referential target repository without inventing
+significant new infrastructure (the existing
+`tests/unit/test_codex_adapter_smoke.py`/`codex_adapter_smoke.py` one-shot
+pattern was reused instead, adapted to actually exercise file tools, which
+that existing smoke deliberately does not). A disposable git workspace,
+outside every WFC repository, was the sole target; the real, unmodified
+`ClaudeCliAdapter.execute()` was invoked directly against it. Coordinator
+trusted-commit/accept was therefore not exercised, and this qualification
+does not demonstrate authenticated Claude-to-WFC trusted commit acceptance.
+
+=== 7.1 Positive invocation
+
+`Write` created a new file inside an existing authorized directory; `Write`
+created a new file inside a previously nonexistent nested directory without
+any Bash `mkdir`; `Edit` modified an existing file. All three were confirmed
+against actual filesystem contents, not only the model's self-report. The
+CLI's own JSON result reported `permission_denials: []`. The CLI reproduced,
+in a real authenticated invocation, the exact scrub-forces-default-mode
+warning the design and review chain in §3 predicted statically -- the first
+live confirmation that this mechanism actually occurs in practice, not only
+in the installed CLI's embedded source.
+
+=== 7.2 Negative invocation
+
+A `Write` attempt targeting a path outside the resolved repository root was
+denied, with an explicit boundary error citing `--restricted`'s
+working-directory confinement -- consistent with §4. A `Bash` shell
+redirection (`echo ... > <path outside the repository root>`) succeeded;
+the written file was independently confirmed on disk. Follow-up,
+side-effect-free inspection in the same session established that the
+written path was inside the *outer*, already-running Claude Code session's
+own documented scratchpad directory (`/tmp/claude-<uid>/<session-id>/scratchpad/...`),
+and that the nested invocation had inherited `CLAUDE_CODE_SESSION_ID` and
+related `CLAUDE_CODE_*` variables from that outer session, because
+`ClaudeCliAdapter.execute()` builds the child environment as
+`{**os.environ, ...}` (`claude_adapter.py:124`) without removing them.
+
+This supports, without conclusively establishing, that the observed Bash
+write used Claude's own documented scratchpad exception -- consistent with
+§4's point that Bash's sandbox coverage and file-tool confinement are not
+one uniform boundary -- rather than demonstrating an arbitrary, unconfined
+host-filesystem escape. An independent clean-session re-test (invoked
+without any ambient `CLAUDE_CODE_*` environment) has *not* been performed
+and would be needed to rule out, rather than merely make less likely, an
+unrelated filesystem-isolation failure. No generic Bash containment
+guarantee is established by this qualification either way.
+
+=== 7.3 Evidentiary status
+
+These observations are operator-reported from a live chat session, backed
+by captured stdout and independently-checked filesystem state preserved in
+a local scratchpad outside any WFC repository. They are *not* archived as
+Coordinator-trusted Run Evidence in `workflow-coordinator-run-evidence`, and
+this document does not claim otherwise. Archiving them, if wanted, is a
+separate maintainer step this document does not perform.
+
+== 8. Residual security-model distinctions and deferred work
+
+The three-layer split in §5 holds with the §7.2 observation folded in under
+layer 2 (provider execution isolation): the scratchpad write is provider
+sandbox behavior, not a WFC-verified control, and it does not change what
+layer 3 (WFC's own post-Hop Git/scope observation) actually enforces for
+acceptance into a trusted commit.
+
+Whatever VM or host boundary currently limits the operational blast radius
+of running any of this is independent of, and does not by itself establish,
+repository-root isolation *inside* that VM; Claude's own sandbox is the only
+mechanism attempting the latter today, and §7.2 is a live data point about
+where that mechanism's boundary actually sits for one tool (Bash) under one
+observed condition (a nested invocation).
+
+Provider-specific sandbox behavior -- Claude's `bwrap`/scratchpad mechanics
+specifically -- should not become a foundational WFC security assumption.
+A WFC-owned, provider-independent execution-isolation layer remains the
+intended future direction, not an implemented control today; see
+link:../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[FTR-WFC-EXECUTION-TRUST-BOUNDARIES]
+for its current (deferred) standing.
+
+Any future isolation design should explicitly consider inherited
+provider-session environment variables (`CLAUDE_CODE_SESSION_ID`,
+`CLAUDE_CODE_CHILD_SESSION`, and related `CLAUDE_CODE_*` names) as a factor
+in how a nested or nested-like invocation resolves its own sandbox/scratch
+boundaries. Indiscriminately stripping all `CLAUDE_CODE_*` variables from
+the child environment is *not* assumed, by this document, to be safe or
+sufficient -- it has not been evaluated against the authentication path or
+any other behavior that may depend on them, and any such change would need
+its own bounded, separately authorized test.
+
+Finally: §7.2 does not establish that Claude's sandbox is broken. The
+observed Bash behavior is consistent with a documented product feature (a
+session-scoped scratchpad write allowance) evaluated against a
+stricter-than-documented WFC objective (repository-root-only containment),
+not with an absent or defective isolation mechanism.
+
+== 9. Cross-references
+
+* link:../architecture.md[Architecture] -- generalized containment disclaimer (`36089fb`).
+* link:../self-development.adoc[Self-development] -- Commission-authoring, enforcement-layer naming (`36089fb`).
+* link:../backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH] -- controlling feature-status record; open as of this writing.
+* link:../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[FTR-WFC-EXECUTION-TRUST-BOUNDARIES] -- future WFC-owned execution-isolation layer; deferred.
+* link:../warm_storage/concepts/workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc[Claude Code adapter design] and its broad/focused review artifacts -- accepted design provenance.
+* link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_broad_review.adoc[Write-permission correction: broad review] and
+  link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_focused_review.adoc[focused review] -- full Finding/evidence detail for §3 and §6.
