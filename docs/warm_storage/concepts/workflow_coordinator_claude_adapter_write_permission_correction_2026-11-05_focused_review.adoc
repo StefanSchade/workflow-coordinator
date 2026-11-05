@@ -1,0 +1,134 @@
+= Claude adapter write-permission correction: independent focused review
+
+WorkItem:: WI-WFC-CLAUDE-ADAPTER-WRITE-PERMISSIONS-004-REVIEW-001
+Run / Hop:: RUN-c84952c2d82344d08b4b2f5a7951a45f / H003
+Invocation:: INV-d0ae93f5015f4a2ab36eed98901cb9bd
+Date:: 2026-11-05
+Candidate:: 4eb69d9c038110f9885c05612927535c725a21e6
+Verdict:: Accept the focused correction; propose resolving current-Run F001 and route `renew_broad_review`.
+
+== Review basis
+
+Independently inspected the complete original diff
+`76596ac79669389de8921cfe33d612cf12e07c21..498c331c25a65198a849a228de495127cee3bb5b`
+and the correction diff
+`5d46d67fe938ec127e4abf6ec1086aabed1530dc..4eb69d9c038110f9885c05612927535c725a21e6`.
+Read the governing bug record in full, the broad-review artifact including
+its correction addendum, the current adapter and its complete conformance
+suite, and the settled containment guidance in `docs/architecture.md` and
+`docs/self-development.adoc`. Worker summaries were treated as claims to
+verify. The correction changes only the adapter, its conformance tests, and
+the broad-review artifact. Across both implementation candidates the only
+production source changed is `src/workflow_coordinator/claude_adapter.py`.
+
+This Hop creates only this required focused-review record. It does not
+modify the implementation, tests, prior review record, governance, or any
+predecessor Run. No agent-owned mutating Git command was used.
+
+[[finding-f001]]
+== F001: omitted Write allowance -- resolved
+
+The correction adds `Write` alongside `Edit` in `permissions.allow`, without
+adding any other tool allowance. Both fake-executable configuration tests
+now require exactly `["Edit", "Write"]`, including with a symlinked repository.
+This directly addresses the projected Finding's missing Write authorization.
+
+Independent `claude --version` introspection identifies installed CLI
+2.1.270. Its `--help` describes restricted file-tool confinement to working
+directories, and automatic denial of actions that would prompt when
+`--permission-prompts none` is set. Read-only inspection of its embedded
+JavaScript independently confirms the material broad-review observations:
+the scrub override selects default mode and recommends explicit allowances;
+bare whole-tool matching uses the actual tool name; path-rule matching
+excludes rules without path content; Write calls the shared write-permission
+check; that check applies restricted-directory confinement before generic
+whole-tool approval, which preserves denials. Write's implementation itself
+requests parent creation, so the recorded Bash mkdir denial does not
+justify approving Bash generally.
+
+Source provenance: `/usr/local/bin/claude` resolves to
+`/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`, SHA-256
+`3a624a5a7cd79bbad4d32bd7db36f1197ecf458bc5bf1e2aed81834a01ad3ef0`.
+Independently read zero-based byte offsets include 188039987 (scrub warning
+and default return), 188449103 (whole-tool matching), 188451715 and
+188471672 (path-rule selection), 188466002 (restricted boundary helper),
+188483168 (shared write check), 191685126 (Write permission delegation),
+191687804 (Write implementation), and 192355750 (generic permission
+decision). These offsets describe the installed executable, not a new
+dependency or portable CLI contract. No CLI session or authentication was
+initiated.
+
+The recorded warning occurred in the first historical attempt and the Write
+denial in the second. Their causal connection remains a supported leading
+diagnosis rather than an established history. Nevertheless, the explicit
+two-tool grant is a narrow correction for the statically supported
+default-mode permission gap. There is no remaining blocking issue in F001
+under deterministic implementation acceptance.
+
+== Security invariants
+
+[cols="1,2",options="header"]
+|===
+|Requirement |Focused assessment
+|Repository boundary and phase scope |The sole cwd and read root remain the resolved `request.repository`; restricted mode and absence of additional directories remain asserted. No filesystem write-root setting is introduced. Per settled architecture, WFC's unchanged post-Hop Git/scope observation enforces narrower phase acceptance; preventive phase-level provider containment is not claimed.
+|No blanket bypass |The complete argv assertion retains `acceptEdits`, restricted mode and no prompts, with no bypass flag or bypassPermissions mode.
+|Sandbox fails closed |The complete settings assertion retains `enabled: true`, `failIfUnavailable: true`, and `allowUnsandboxedCommands: false`.
+|No network or read widening |Empty network-domain allowlist, WebFetch/WebSearch denials, `denyRead: ["~/"]`, and outside-working-directory read blocking remain unchanged.
+|Scrub retained |The child environment still sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`; both configuration tests observe it at the subprocess boundary.
+|Closed profile retained |Safe mode, strict MCP configuration, the explicit tool inventory and no session persistence remain unchanged. Bash availability has not been converted into a general Bash permission grant.
+|Trusted boundaries retained |No Codex fallback or change to other production sources, WFC Git/scope validation, or validated_result correlation/semantic checks. Existing negative-result cases retain their intent and pass.
+|===
+
+[[validation]]
+== Independent deterministic validation
+
+[source,shell]
+----
+.venv/bin/python -m pytest -q tests/unit/test_claude_adapter_conformance.py tests/unit/test_codex_adapter_conformance.py tests/unit/test_codex_adapter_smoke.py
+----
+
+All 50 cases passed, exit 0. Existing tests remain intact in intent; the two
+changed expectations now require both file-tool grants. Tests launch fake
+executables that observe serialized settings, argv, physical cwd, and the
+scrub variable, rather than merely calling the settings helper. The symlink
+case checks the effective resolved boundary; `getcwd()` alone cannot prove
+that spelling `.resolve()` in the adapter was necessary.
+
+Independent in-memory adapter mutations removed Write, added a Bash grant,
+broadened allowRead to the repository parent, or added allowWrite for the
+repository parent. Both configuration tests rejected each mutation: four
+runs, each with exactly two expected test failures and exit 1. Source and
+test files were not edited. These negative checks demonstrate sensitivity
+to F001's mechanism and unintended configuration widening; fake processes
+do not prove real CLI permission enforcement.
+
+The shell's `python` command was unavailable; the existing `.venv/bin/python`
+ran the tests. The standalone mutation harness initially needed
+`PYTHONPATH=src`, which pytest's normal configuration supplies during ordinary
+collection; the corrected harness completed as reported above.
+`git diff --check` passed for the tracked candidate. No dependency downloads
+or sandbox changes were made. The full repository suite was not rerun in
+this Hop; the earlier broad review records its agent-local package-install
+limitation. None of these checks is Coordinator-trusted evidence, and no
+full-suite pass is claimed. Coordinator-owned `task-check`
+(`python -m pytest -q`) remains the separate required evidence gate.
+
+== Residual uncertainty and route
+
+The H002 addendum accurately describes configuration validation and leaves
+actual sandbox and managed-policy interactions untested. The competing
+sandbox/directory-creation explanation remains unexcluded for the historical
+failure. Static source evidence supports Write parent creation but does not
+establish an authenticated operation's success under the complete profile.
+Only the separately authorized maintainer-run live-provider qualification
+can demonstrate creation of a missing authorized directory and writing
+within it end to end through WFC acceptance, together with the negative
+outside-phase-scope case. This review makes no claim that the live issue is
+conclusively resolved; that qualification is outside this Commission and
+does not diminish deterministic implementation acceptance.
+
+Propose resolving the authoritative current-Run F001. No new blocking
+Finding was identified. Accept this focused correction and request
+`renew_broad_review`, the profile's declared next route after successful
+focused review. Final broad-review acceptance and the Coordinator's trusted
+evidence gate remain their own workflow decisions.
