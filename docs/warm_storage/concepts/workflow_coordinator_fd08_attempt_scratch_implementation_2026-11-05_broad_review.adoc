@@ -1,0 +1,175 @@
+= FD-08 Attempt scratch implementation: independent broad review
+
+WorkItem:: WI-WFC-FD08-ATTEMPT-SCRATCH-001
+Run / Hop:: RUN-e440b3e1f421413892e51b8355230d9f / H002
+Invocation:: INV-d90bb5e13179449c8e85f0b74bb2fc83
+Date:: 2026-11-05
+Reviewed HEAD:: 181e2c09dc1aeb8185baaa5fef812dd3e5e07da6
+Implementation range:: f5c048dcf425d0a332bf329ef845c7e8c09b01f7..181e2c09dc1aeb8185baaa5fef812dd3e5e07da6
+Verdict:: Changes required; route `correction` for two blocking test-coverage defects.
+
+== Review basis and scope
+
+Read the accepted FD-08 investigation in full, including its reserved
+decisions and non-claims, and the motivating tmpfs incident report. Inspected
+the actual Harness implementation, its preparation/launch/archive tests,
+the complete implementation diff, and the default-temp operations in
+`git_facts.observe_repository()`, `salvage_inventory()`, and
+`salvage_omissions()`. Reverified function locations against the reviewed
+HEAD rather than relying on the task's historical line numbers. Also
+inspected the existing Coordinator environment snapshot, Codex subprocess,
+and evidence subprocess seams and their relevant tests.
+
+The implementation commit changes exactly `scripts/wfc_op.py`,
+`tests/unit/test_wfc_op.py`, and the narrow FD-08 paragraph in
+`docs/wfc_operator_manual.adoc`. Every excluded Runtime source is unchanged
+against the implementation baseline. This review changes only this declared
+artifact. No agent-owned Git mutation, provider invocation, nested WFC run,
+promotion, push, mount change, or dependency download was performed.
+
+== Blocking observations
+
+These observation labels are document anchors, not authoritative Run-local
+Finding IDs. Both are submitted as new Findings for Coordinator allocation.
+
+[[evidence-disagreement-coverage]]
+=== Preserve the existing Evidence-record disagreement security test
+
+At `tests/unit/test_wfc_op.py:1181-1193`,
+`test_archive_refuses_disagreeing_evidence_facts()` constructs preparation
+records without any scratch facts. The new guard at
+`scripts/wfc_op.py:1173-1175` refuses immediately with
+`preparation facts disagree on scratch_root`. The test asserts only exit 2
+and the substring `disagree`, so it passes without reaching an Evidence-path
+agreement check. Its pre-existing admission-check intent is no longer
+preserved, contrary to the explicit review mandate.
+
+An independent probe reproduced the fixture twice: first with different
+Evidence paths, then with identical Evidence paths. Both yielded exactly:
+
+[source,text]
+----
+returncode=2
+wfc-op: REFUSED: preparation facts disagree on scratch_root
+original test assertions pass: True
+----
+
+Correction required: give this test a valid scratch directory and complete,
+agreeing preparation facts for every unrelated field, vary only the
+Evidence path, and assert an Evidence-specific disagreement plus zero wrapper
+invocations. Preserve its original security purpose; a missing scratch key
+must not satisfy it. This is a test regression, not a claim that the current
+production Evidence disagreement checks are absent.
+
+[[explicit-root-positive-coverage]]
+=== Add the required successful explicit scratch-root regression
+
+At `tests/unit/test_wfc_op.py:1477-1514`, the scratch-resolution test's only
+successful creation uses `value=None`. Every explicit-root call expects a
+refusal. The new preparation/preflight/launch test also uses the default
+root. Thus no checked-in positive test proves that a supplied absolute
+`--scratch-root` succeeds or is used instead of `$HOME/wfc-scratch`, despite
+the task's explicit requirement for that positive case.
+
+An independent in-memory mutation wrapped `create_attempt_scratch()` so
+that every non-null `value` raised `HarnessRefusal`, leaving default-root
+behavior intact. Running all five new scratch tests with
+`-k 'scratch or prepare_preflight_inherits'` still passed, exit 0. No source
+or test file was edited for this experiment. A completely broken explicit
+root option therefore escapes the new coverage.
+
+Correction required: add a successful creation using a test-local absolute
+root different from the default and a fresh validated Attempt ID, asserting
+the selected root, exact child, ownership, and mode. Exercise that explicit
+option through the existing preparation/preflight test seam as well, so
+ignoring or unconditionally rejecting the CLI value fails the test. The
+independent unmutated helper probe succeeds today; this finding concerns
+missing required regression coverage.
+
+== Implementation and security assessment
+
+[cols="1,3",options="header"]
+|===
+|Boundary |Observed implementation
+|Resolution and early creation
+|`cmd_prepare()` validates the Attempt ID, derives OPS/STATE without allocating them, and creates scratch before repository pinning or any subprocess. The root is expanded and required absolute; the default is created if absent. An explicit root must already be a directory, consistent with the investigation's instruction to create the default if absent; no additional provisioning decision is required here.
+|Filesystem refusal rules
+|Root `lstat()` rejects symlinks and non-directories. Exclusive child `mkdir()` rejects existing directories, files, and leaf symlinks without reuse or deletion. `chmod(0700)` and post-creation ownership/mode checks fail closed. Resolved scratch paths are rejected for equality, containment, or ancestry against each supplied repository path; those same resolved repository paths are subsequently pinned. OPS and STATE equality is rejected as specified. Ancestor-replacement race hardening is outside this slice.
+|Preparation environment
+|All three variables are installed in `os.environ` before pinning/bootstrap, inherited by bootstrap subprocesses, copied into the canonical preflight environment beside frozen PATH, and restored for the embedding caller on return or failure. Generated `launch.sh` exports literal `shlex.quote()` values before `exec`; its existing digest check remains active.
+|Records and status
+|Both preparation files contain root and effective child. JSON and human-readable status project `scratch_path`. Scratch is not used as STATE, accepted evidence, or agent authority.
+|Archive
+|Both preparation files must agree on root and effective child, the child must equal root/Attempt, and recorded repository paths must agree. Retained root/child type, child uid/mode, repository overlap, and OPS/STATE distinctness are revalidated before either wrapper invocation. `_scratch_environment()` copies all caller variables and replaces only TMPDIR/TMP/TEMP. Both dry-run and real `subprocess.run()` receive this copy through additive `env=` arguments. Wrapper argv, Evidence selection, and dry-run-before-real sequencing remain intact.
+|Lifecycle and exclusions
+|No scratch deletion, retention policy, quota, capacity guessing, Runtime scratch option, recovery/retry, mixed-adapter interface, or provider-independent isolation mechanism appears in the diff. Scratch is retained across launch and refusal. No claim of provider-enforced filesystem containment is made.
+|Existing security checks
+|Repository-pin revalidation, launch/execution-bindings digest checks, A1 checks, executable provenance, and existing source-level admission behavior remain intact. No existing test was removed or newly skipped. The Evidence disagreement test nevertheless lost its effective coverage through the earlier guard, as documented above.
+|Temp consumers
+|The three inspected `git_facts.py` helpers use default `tempfile.mkstemp()` without an explicit `dir`, so a fresh Runtime process honors the inherited temporary-directory environment. Codex's `Popen` inherits the Runtime environment; evidence receives the immutable environment snapshot. No consumer-source change is necessary.
+|===
+
+The added tests exercise default-home resolution, mode 0700, uid mismatch,
+relative-root refusal, root and leaf symlinks, a non-directory root,
+pre-existing Attempt refusal, all three repository-overlap relationships,
+OPS/STATE equality, frozen preflight PATH and temporary variables, prepared
+path records, separately invoked launch with a tempfile probe, and archive
+environment preservation/refusal before wrapper invocation. The early
+scratch-failure test prevents pinning/preflight and asserts absent OPS/STATE.
+The two omissions above prevent acceptance of the required coverage.
+
+== Independent validation and evidence limits
+
+The shell initially had no `python` executable on PATH (exit 127). Used the
+existing repository virtualenv, without installing dependencies:
+
+[source,shell]
+----
+PATH="$PWD/.venv/bin:$PATH" PIP_NO_INDEX=1 python -m pytest -q
+----
+
+Result: exit 1; 824 passed, five failed, thirteen setup errors (counts from
+the complete progress and failure report). Every failure/setup error traces
+to the pre-existing real-venv Harness fixtures' nested pip build isolation:
+
+[source,text]
+----
+ERROR: Could not find a version that satisfies the requirement setuptools>=68 (from versions: none)
+ERROR: No matching distribution found for setuptools>=68
+----
+
+This is an agent-local offline dependency limitation, not a production
+defect or a finding about the trusted evidence command. No dependency
+download, build-isolation bypass, fixture change, or test weakening was
+attempted. The five new scratch tests passed in the unmutated full run;
+the expensive real preparation/launch fixture assertions did not execute
+successfully and are not claimed as passing.
+
+Additional independent probes confirmed successful explicit-root creation,
+exact child path, effective uid, 0700 mode, and environment-map equality to
+the caller copy with only the three temporary variables replaced. Injected
+chmod failure and uid mismatch through `cmd_prepare()` each refused before
+pinning, left OPS/STATE absent, and preserved the caller environment. The
+two adversarial coverage experiments are detailed with the observations.
+`git diff --check` on the implementation range passed.
+
+Agent-local diagnostic logs:
+
+* `/tmp/fd08-h002-task-check.log`
+* `/tmp/fd08-h002-mutation-check.log`
+* `/tmp/fd08-h002-evidence-disagreement-probe.log`
+* `/tmp/fd08-h002-validation-probe.log`
+
+These logs are exploratory diagnostics, not Coordinator-trusted evidence
+or durable archive material. No current Coordinator-owned `task-check`
+result was projected to this reviewer. Its execution and disposition remain
+separate from these local observations.
+
+== Disposition
+
+Request the admitted `correction` route to restore the existing admission
+test's intent and add the required explicit-root positive coverage. The
+current review does not modify implementation or tests. No scope expansion,
+maintainer decision, operational escalation, or human intervention is needed
+to perform those bounded corrections. Both blocking observations remain
+open; no pre-existing authoritative Findings were projected or disposed.
