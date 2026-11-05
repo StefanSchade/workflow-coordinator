@@ -79,9 +79,36 @@ def test_exact_closed_argv_profile_settings_cwd_prompt_and_scrubbed_environment(
     forbidden = ("codex", "--mcp-config", "--allowed-tools", "--fallback-model", "--resume", "--continue", "--add-dir", "--dangerously-skip-permissions")
     assert not any(item in argv for item in forbidden)
     assert observation["cwd"] == str(tmp_path) and observation["scrub"] == "1"
-    assert observation["settings"] == {"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False, "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path)]}, "network": {"allowedDomains": []}}, "permissions": {"deny": ["WebFetch", "WebSearch"], "blockReadsOutsideWorkingDirectories": True}}
+    assert observation["settings"] == {"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False, "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path)]}, "network": {"allowedDomains": []}}, "permissions": {"allow": ["Edit"], "deny": ["WebFetch", "WebSearch"], "blockReadsOutsideWorkingDirectories": True}}
     assert outcome.returncode == 0 and not outcome.timed_out
     assert json.loads(outcome.candidate_result or "{}") == envelope(Invocation("RUN-C", "H001", "INV-C"))
+
+
+def test_edit_grant_uses_only_resolved_repository_as_working_directory(tmp_path: Path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(repository, target_is_directory=True)
+    observed = tmp_path / "grant.json"
+    executable = fake(tmp_path, f'''\
+        import json, os, pathlib, sys
+        args = sys.argv[1:]
+        settings = json.loads(pathlib.Path(args[args.index("--settings") + 1]).read_text())
+        pathlib.Path({str(observed)!r}).write_text(json.dumps({{
+            "cwd": os.getcwd(), "args": args, "settings": settings,
+            "scrub": os.environ.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"),
+        }}))
+    ''')
+    adapter(tmp_path, executable).execute(request(alias))
+    result = json.loads(observed.read_text())
+    assert result["cwd"] == str(repository.resolve())
+    assert result["scrub"] == "1"
+    assert "--restricted" in result["args"]
+    assert "--add-dir" not in result["args"]
+    assert result["settings"]["permissions"]["allow"] == ["Edit"]
+    assert result["settings"]["sandbox"]["filesystem"] == {
+        "denyRead": ["~/"], "allowRead": [str(repository.resolve())],
+    }
 
 
 def test_successful_wrapper_candidate_is_still_validated_by_wfc(tmp_path: Path):

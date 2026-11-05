@@ -72,6 +72,10 @@ class ClaudeCliAdapter:
                 "network": {"allowedDomains": []},
             },
             "permissions": {
+                # Restricted mode confines file tools to the working directory.
+                # Explicitly allow edits even if environment scrubbing forces
+                # the requested permission mode to default.
+                "allow": ["Edit"],
                 "deny": ["WebFetch", "WebSearch"],
                 "blockReadsOutsideWorkingDirectories": True,
             },
@@ -124,7 +128,7 @@ class ClaudeCliAdapter:
                     json.dumps(schema_object, separators=(",", ":"), sort_keys=True),
                     settings,
                 ),
-                cwd=request.repository,
+                cwd=request.repository.resolve(),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 start_new_session=True, env=environment,
             )
