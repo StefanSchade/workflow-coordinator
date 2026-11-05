@@ -79,7 +79,7 @@ def test_exact_closed_argv_profile_settings_cwd_prompt_and_scrubbed_environment(
     forbidden = ("codex", "--mcp-config", "--allowed-tools", "--fallback-model", "--resume", "--continue", "--add-dir", "--dangerously-skip-permissions")
     assert not any(item in argv for item in forbidden)
     assert observation["cwd"] == str(tmp_path) and observation["scrub"] == "1"
-    assert observation["settings"] == {"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False, "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path)]}, "network": {"allowedDomains": []}}, "permissions": {"allow": ["Edit"], "deny": ["WebFetch", "WebSearch"], "blockReadsOutsideWorkingDirectories": True}}
+    assert observation["settings"] == {"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False, "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path)]}, "network": {"allowedDomains": []}}, "permissions": {"allow": ["Edit", "Write"], "deny": ["WebFetch", "WebSearch"], "blockReadsOutsideWorkingDirectories": True}}
     assert outcome.returncode == 0 and not outcome.timed_out
     assert json.loads(outcome.candidate_result or "{}") == envelope(Invocation("RUN-C", "H001", "INV-C"))
 
@@ -105,7 +105,7 @@ def test_edit_grant_uses_only_resolved_repository_as_working_directory(tmp_path:
     assert result["scrub"] == "1"
     assert "--restricted" in result["args"]
     assert "--add-dir" not in result["args"]
-    assert result["settings"]["permissions"]["allow"] == ["Edit"]
+    assert result["settings"]["permissions"]["allow"] == ["Edit", "Write"]
     assert result["settings"]["sandbox"]["filesystem"] == {
         "denyRead": ["~/"], "allowRead": [str(repository.resolve())],
     }

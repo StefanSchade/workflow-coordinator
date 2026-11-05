@@ -73,9 +73,9 @@ class ClaudeCliAdapter:
             },
             "permissions": {
                 # Restricted mode confines file tools to the working directory.
-                # Explicitly allow edits even if environment scrubbing forces
-                # the requested permission mode to default.
-                "allow": ["Edit"],
+                # Allow both file tools if environment scrubbing forces the
+                # requested permission mode to default.
+                "allow": ["Edit", "Write"],
                 "deny": ["WebFetch", "WebSearch"],
                 "blockReadsOutsideWorkingDirectories": True,
             },
