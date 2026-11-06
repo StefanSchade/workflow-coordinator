@@ -114,3 +114,32 @@ def test_sandbox_cannot_create_alias_to_protected_file(tmp_path):
     assert result.returncode == 0, result.stderr
     assert protected.read_text() == 'unchanged'
     assert not (writable / 'alias').exists()
+
+
+@pytest.mark.parametrize('target_kind', ['protected', 'git', 'external'])
+def test_writable_symlink_hardlink_metadata_is_rejected(tmp_path, target_kind):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    writable = repo / 'writable'
+    writable.mkdir()
+    alias = writable / 'alias'
+    alias.symlink_to('missing')
+    mounts = [Mount(writable, PurePosixPath('/repo/writable'), MountMode.WRITABLE),
+              Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)]
+    boundary = validate(repo, mounts)
+    result = run(boundary, ['/bin/sh', '-c', 'touch -h -d @123 /repo/writable/alias'])
+    assert result.returncode == 0, result.stderr
+    assert alias.lstat().st_mtime_ns == 123_000_000_000
+
+    target = {'protected': repo / 'protected-link', 'git': repo / '.git' / 'secret-link',
+              'external': tmp_path / 'external-link'}[target_kind]
+    target.symlink_to('missing')
+    before = target.lstat()
+    alias.unlink()
+    os.link(target, alias, follow_symlinks=False)
+    with pytest.raises(BoundaryConfigurationError, match='hardlink aliases'):
+        validate(repo, mounts)
+    with pytest.raises(BoundaryConfigurationError, match='hardlink aliases'):
+        run(boundary, ['/bin/sh', '-c', 'touch -h -d @123 /repo/writable/alias'])
+    assert target.lstat().st_mtime_ns == before.st_mtime_ns

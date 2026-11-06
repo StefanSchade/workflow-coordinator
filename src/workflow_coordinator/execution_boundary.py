@@ -49,7 +49,7 @@ def _real_path(path: Path) -> Path:
 
 
 def _check_writable_aliases(source: Path) -> None:
-    """Reject regular files whose inode is reachable through another name.
+    """Reject non-directory inodes reachable through another name.
 
     Do not follow symlinks: their targets are resolved inside the sandbox.
     As with mount validation generally, the source tree must remain stable.
@@ -59,8 +59,12 @@ def _check_writable_aliases(source: Path) -> None:
         while pending:
             path = pending.pop()
             info = path.lstat()
-            if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
-                raise BoundaryConfigurationError(f"writable file has hardlink aliases: {path}")
+            # Directory link counts include their subdirectories. Linux does
+            # not permit ordinary users to create hardlinks to directories.
+            # Every other inode type, including symlinks and special files,
+            # can have metadata changed through a writable hardlink alias.
+            if not stat.S_ISDIR(info.st_mode) and info.st_nlink != 1:
+                raise BoundaryConfigurationError(f"writable entry has hardlink aliases: {path}")
             if stat.S_ISDIR(info.st_mode):
                 with os.scandir(path) as entries:
                     pending.extend(Path(entry.path) for entry in entries)

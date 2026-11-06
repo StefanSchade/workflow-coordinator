@@ -1,3 +1,4 @@
+import os
 from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
@@ -60,3 +61,16 @@ def test_unreadable_writable_tree_fails_closed(tmp_path: Path):
             with pytest.raises(BoundaryConfigurationError, match='cannot inspect writable source'):
                 run(boundary, ['/bin/true'])
             spawn.assert_not_called()
+
+
+def test_hardlinked_fifo_in_writable_tree_is_rejected(tmp_path: Path):
+    (tmp_path / '.git').mkdir()
+    directory = tmp_path / 'dir'
+    directory.mkdir()
+    fifo = tmp_path / 'fifo'
+    os.mkfifo(fifo)
+    os.link(fifo, directory / 'alias')
+    mounts = [Mount(directory, PurePosixPath('/repo/dir'), MountMode.WRITABLE),
+              Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)]
+    with pytest.raises(BoundaryConfigurationError, match='hardlink aliases'):
+        validate(tmp_path, mounts)
