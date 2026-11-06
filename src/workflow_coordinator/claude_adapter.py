@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 from dataclasses import dataclass
@@ -25,6 +27,16 @@ class ClaudeCliError(ExecutionNotStartedError, RuntimeError):
 
 
 _TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
+
+# Claude Code derives its own per-session IPC directory from TMPDIR (keyed by
+# uid, the launch cwd with "/" replaced by "-", and a session UUID) and binds
+# AF_UNIX sockets inside it for the Bash tool's sandbox bridge. AF_UNIX socket
+# paths are capped at 108 bytes (`sockaddr_un.sun_path`); WFC's own ambient
+# TMPDIR is a long, human-readable, Attempt-scoped scratch/state directory
+# name, and inheriting it reliably pushes that derived path past the kernel
+# limit, failing the sandbox bridge even for trivial commands. Give the
+# subprocess a short, invocation-scoped TMPDIR instead of inheriting it.
+_SHORT_TMP_ROOT = Path("/tmp")
 
 
 def _bounded(value: str, limit: int = 16_384) -> str:
@@ -82,6 +94,15 @@ class ClaudeCliAdapter:
         }
 
     @staticmethod
+    def _short_subprocess_tmp_dir(request: AgentExecutionRequest) -> Path:
+        """A short, deterministic per-invocation TMPDIR; see `_SHORT_TMP_ROOT`."""
+        token = hashlib.sha256(
+            f"{request.invocation.run_id}/{request.invocation.hop_id}/"
+            f"{request.invocation.invocation_id}".encode()
+        ).hexdigest()[:16]
+        return _SHORT_TMP_ROOT / f"wfc-claude-{token}"
+
+    @staticmethod
     def _candidate_from_wrapper(stdout: str) -> str | None:
         """Return only Claude's successful structured-output member, verbatim."""
         try:
@@ -112,39 +133,47 @@ class ClaudeCliAdapter:
             raise ClaudeCliError(
                 "current phase has no permitted routes; refusing to dispatch an unroutable invocation"
             )
+        tmp_dir = self._short_subprocess_tmp_dir(request)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
         try:
-            schema = self.result_directory / "structured-result.schema.json"
-            settings = self.result_directory / "claude-closed-settings.json"
-            schema_object = structured_result_envelope_schema(
-                request.invocation, request.contract_version, request.result_contract_kind,
-                permitted_routes=request.permitted_routes,
-            )
-            atomic_write_json(schema, schema_object)
-            atomic_write_json(settings, self._settings(request))
-            environment = {**os.environ, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"}
-            child = subprocess.Popen(
-                self.argv(
-                    request,
-                    json.dumps(schema_object, separators=(",", ":"), sort_keys=True),
-                    settings,
-                ),
-                cwd=request.repository.resolve(),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                start_new_session=True, env=environment,
-            )
-        except (OSError, ValueError) as error:
-            raise ClaudeCliError("local pre-acceptance executable launch failure") from error
-        try:
-            stdout, stderr = child.communicate(timeout=request.timeout_seconds)
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            os.killpg(child.pid, signal.SIGTERM)
             try:
-                stdout, stderr = child.communicate(timeout=3)
+                schema = self.result_directory / "structured-result.schema.json"
+                settings = self.result_directory / "claude-closed-settings.json"
+                schema_object = structured_result_envelope_schema(
+                    request.invocation, request.contract_version, request.result_contract_kind,
+                    permitted_routes=request.permitted_routes,
+                )
+                atomic_write_json(schema, schema_object)
+                atomic_write_json(settings, self._settings(request))
+                environment = {
+                    **os.environ, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
+                    "TMPDIR": str(tmp_dir), "TMP": str(tmp_dir), "TEMP": str(tmp_dir),
+                }
+                child = subprocess.Popen(
+                    self.argv(
+                        request,
+                        json.dumps(schema_object, separators=(",", ":"), sort_keys=True),
+                        settings,
+                    ),
+                    cwd=request.repository.resolve(),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    start_new_session=True, env=environment,
+                )
+            except (OSError, ValueError) as error:
+                raise ClaudeCliError("local pre-acceptance executable launch failure") from error
+            try:
+                stdout, stderr = child.communicate(timeout=request.timeout_seconds)
+                timed_out = False
             except subprocess.TimeoutExpired:
-                os.killpg(child.pid, signal.SIGKILL)
-                stdout, stderr = child.communicate()
+                timed_out = True
+                os.killpg(child.pid, signal.SIGTERM)
+                try:
+                    stdout, stderr = child.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    stdout, stderr = child.communicate()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
         stdout = stdout or ""
         stderr = stderr or ""
         candidate = None if timed_out or child.returncode != 0 else self._candidate_from_wrapper(stdout)

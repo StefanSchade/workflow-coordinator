@@ -166,6 +166,61 @@ def test_local_startup_failure_and_unroutable_request_never_launch(tmp_path: Pat
     assert not executable.exists()
 
 
+def test_subprocess_tmpdir_is_short_and_cleaned_up_regardless_of_ambient_tmpdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    # A realistic long, human-readable ambient TMPDIR, as WFC's own launch.sh
+    # sets it (Attempt-scoped scratch root); this is what previously leaked
+    # into the Claude subprocess and broke its Bash-tool sandbox bridge.
+    long_ambient = tmp_path / (
+        "wfc-bubblewrap-fs-isolation-001-review-001-correction-002-20261106-01"
+    )
+    long_ambient.mkdir()
+    monkeypatch.setenv("TMPDIR", str(long_ambient))
+    monkeypatch.setenv("TMP", str(long_ambient))
+    monkeypatch.setenv("TEMP", str(long_ambient))
+
+    observed = tmp_path / "tmpdir_observed.json"
+    executable = fake(tmp_path, f'''\
+        import json, os, pathlib
+        pathlib.Path({str(observed)!r}).write_text(json.dumps({{
+            "tmpdir": os.environ.get("TMPDIR"), "tmp": os.environ.get("TMP"),
+            "temp": os.environ.get("TEMP"),
+            "tmpdir_exists": os.path.isdir(os.environ.get("TMPDIR", "")),
+        }}))
+        print('{{"type":"result","subtype":"success","is_error":false}}')
+    ''')
+    adapter(tmp_path, executable).execute(request(tmp_path))
+    observation = json.loads(observed.read_text())
+
+    # Same short value across all three variables, independent of the long
+    # ambient one, with enough headroom for Claude Code's own
+    # claude-<uid>/<mangled-cwd>/<session-uuid>/<socket> suffix to stay
+    # under the 108-byte AF_UNIX sun_path limit.
+    assert observation["tmpdir"] == observation["tmp"] == observation["temp"]
+    assert len(observation["tmpdir"]) <= 40
+    assert observation["tmpdir"] != str(long_ambient)
+    assert observation["tmpdir_exists"] is True
+
+    # Cleaned up again once the subprocess has exited; nothing litters /tmp.
+    assert not Path(observation["tmpdir"]).exists()
+
+
+def test_subprocess_tmpdir_is_cleaned_up_even_on_timeout(tmp_path: Path):
+    observed = tmp_path / "tmpdir_on_timeout.json"
+    slow = fake(tmp_path, f'''\
+        import json, os, pathlib, sys, time
+        pathlib.Path({str(observed)!r}).write_text(json.dumps({{"tmpdir": os.environ.get("TMPDIR")}}))
+        sys.stdout.write("partial")
+        sys.stdout.flush()
+        time.sleep(10)
+    ''')
+    outcome = adapter(tmp_path, slow).execute(request(tmp_path, timeout=0.05))
+    assert outcome.timed_out
+    recorded_tmpdir = Path(json.loads(observed.read_text())["tmpdir"])
+    assert not recorded_tmpdir.exists()
+
+
 def test_zero_exit_sandbox_refusal_does_not_retry_or_invent_transport_failure(tmp_path: Path):
     observed = tmp_path / "calls"
     executable = fake(tmp_path, f'''\
