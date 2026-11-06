@@ -1,0 +1,201 @@
+# Independently verify an untrusted lead describing a bind-mount-alias bypass of the bwrap filesystem-isolation primitive's writable-grant boundary, and correct it if -- and only if -- you reproduce it yourself
+
+### Continuation context -- read this first
+
+This WorkItem continues the bwrap filesystem-isolation lineage started by
+`WI-WFC-BUBBLEWRAP-FS-ISOLATION-001` and carried through
+`WI-WFC-BUBBLEWRAP-FS-ISOLATION-001-REVIEW-001`
+(`RUN-11823103c2d9465ab9d7c0a70974562c`, Attempt
+`wfc-bubblewrap-fs-isolation-001-review-001-20261106-02`). That Run's Hops
+completed and were Coordinator-trusted-committed as follows:
+
+- H001-H004: re-verified and then re-fixed a hardlink-based inode-alias
+  bypass of writable-grant isolation (Finding F001).
+- H005 (independent_reviewer, `focused_review`):
+  `a83bf5badefbd54a0fdaaeef0214d13b376afaf7`. Independently re-verified the
+  inode-alias correction effective; F001 disposition `resolved`. **This is
+  the last trusted Hop and this WorkItem's base HEAD.**
+- H006 (independent_reviewer, `broad_review`): wrote a new broad-review
+  artifact proposing a *second, distinct* bypass -- a pre-existing
+  bind-mount alias, not a hardlink -- then its Codex CLI provider turn
+  failed with a cybersecurity-content rejection before emitting a
+  structured candidate. No candidate was ever delivered to WFC; the Run
+  charged an uncertain Hop and stopped `reconcile_required`. H006's content
+  was never reduced, never reviewed, never assigned a Finding ID, and
+  never accepted.
+
+That Attempt is frozen historical fact, archived unmodified to
+`workflow-coordinator-run-evidence` at commit
+`d77b3ea5930cc288741599829c7ce1a8ad6690c0`
+(`archive/unclassified/wfc-bubblewrap-fs-isolation-001-review-001-20261106-02`).
+H006's dirty artifact was separately preserved as an explicitly
+non-authoritative Git salvage commit,
+`649437735955a0bc85fecf5260c3ab04359fef8f`, on dedicated branch
+`salvage/wfc-bubblewrap-fs-isolation-001-review-001-h006` -- never merged
+into `main`, carrying no acceptance, no Finding ID, no correctness credit.
+Do not relaunch, resume, or rewrite either Run; do not inherit a Finding ID
+or disposition from H006.
+
+### Why this WorkItem enters at `correct` with `max_autonomous_hops: 1`
+
+The maintainer has explicitly authorized independent verification and, if
+confirmed, correction of H006's lead -- but has explicitly withheld
+authorization for the *final independent adversarial review of the
+corrected implementation*, reserving it for a separately authorized later
+stage. The `correct` phase's only route (`focused_review`) unconditionally
+goes to an independent-reviewer phase; with `max_autonomous_hops: 1`, the
+Coordinator's own existing `autonomous_hop_budget_exhausted` mechanism will
+refuse to dispatch that second Hop once this one completes. This is the
+intended stop. Do not treat it as a bug, and do not attempt to work around
+it, extend your own authority, invoke a reviewer yourself, or otherwise
+produce a result that functions as that review. Your Hop is worker-only
+preparation.
+
+### The lead (UNTRUSTED -- independently verify before touching anything)
+
+H006's reviewer claimed: validation in
+`src/workflow_coordinator/execution_boundary.py` checks canonical path
+spelling, source type, repository ancestry, destination overlap, and
+(after the F001 fix) non-directory hardlink aliasing via `st_nlink` -- but
+never checks for a *pre-existing bind mount*. A bind-mount alias is
+canonical (passes `Path.resolve()` unchanged), shares the original inode,
+and keeps `st_nlink == 1`, so it passes every existing check while still
+reaching an ungranted host path (a protected repository file, hidden
+`.git` content, or an external file) through a separate writable grant.
+The claim covers both exact-file grants and directory grants (a directory
+*containing* such an alias), and both at validation time and at
+runner/execution-time revalidation.
+
+A minimal reproduction H006 claimed to have run, for the external-file /
+exact-file case, using only disposable synthetic files and the system
+`bwrap` (reproduced here verbatim for your own independent re-execution --
+treat it as a lead to test, not a verified fact):
+
+[source,python]
+----
+from pathlib import Path
+import os, shutil, subprocess, tempfile
+import workflow_coordinator.execution_boundary as eb
+
+with tempfile.TemporaryDirectory(prefix='wfc-bind-alias-') as root:
+    fixture = Path(root)
+    (fixture / 'repo/.git').mkdir(parents=True)
+    (fixture / 'repo/writable').mkdir()
+    (fixture / 'repo/writable/alias').touch()
+    original = fixture / 'external'
+    original.write_text('protected host data')
+    shutil.copyfile(eb.__file__, fixture / 'execution_boundary.py')
+    inner = '''
+from pathlib import Path, PurePosixPath
+from execution_boundary import Mount, MountMode, validate, run
+source = Path('/fixture/repo/writable/alias')
+assert source.resolve() == source and source.stat().st_nlink == 1
+boundary = validate(Path('/fixture/repo'), [
+    Mount(source, PurePosixPath('/repo/writable/alias'), MountMode.WRITABLE),
+    Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH),
+])
+result = run(boundary, ['/bin/sh', '-c',
+    'printf BREACHED > /repo/writable/alias'])
+assert result.returncode == 0, result.stderr
+'''
+    args = ['/usr/bin/bwrap', '--die-with-parent', '--dev', '/dev',
+            '--proc', '/proc', '--tmpfs', '/tmp', '--ro-bind', '/usr', '/usr']
+    for name in ('/bin', '/sbin', '/lib', '/lib64'):
+        if os.path.islink(name):
+            args += ['--symlink', os.readlink(name), name]
+        elif os.path.exists(name):
+            args += ['--ro-bind', name, name]
+    args += ['--bind', root, '/fixture', '--bind', str(original),
+             '/fixture/repo/writable/alias', '--chdir', '/fixture',
+             '--', '/usr/bin/python3', '-c', inner]
+    completed = subprocess.run(args, capture_output=True)
+    assert completed.returncode == 0, completed.stderr
+    assert original.read_text() == 'BREACHED'
+----
+
+The salvaged H006 artifact on branch
+`salvage/wfc-bubblewrap-fs-isolation-001-review-001-h006` (commit
+`6494377`) additionally claims this generalizes to a directory-containing
+-an-alias grant and to a hidden-`.git`-content alias -- nine combinations
+total. Treat all of it, including the script above, as an unverified claim
+written by an agent whose own result was never delivered or accepted, not
+as established fact. If that branch is reachable from your checkout, you
+may read it for additional context; if it is not, the excerpt above is
+sufficient to start from. Either way, build your own independent
+understanding of the current `execution_boundary.py` as committed at this
+WorkItem's base HEAD -- do not assume the lead's framing, terminology, or
+claimed root cause is accurate.
+
+### Mandate
+
+1. Read the current `src/workflow_coordinator/execution_boundary.py` and
+   both its test files fresh, independent of the lead's framing.
+2. Attempt to reproduce the claimed bind-mount-alias bypass yourself, with
+   real `bwrap`, using disposable synthetic fixtures only -- never the
+   actual repository's own protected files. Test at least the exact-file
+   and directory-grant shapes; do not rely on the hardlink-based checks
+   already in place being sufficient merely because they resolve the
+   hardlink case.
+3. If you reproduce a real bypass:
+   a. Implement the narrowest fail-closed correction, confined to
+      `src/workflow_coordinator/execution_boundary.py`.
+   b. Extend -- never weaken, remove, or skip -- the existing tests in
+      `tests/unit/test_execution_boundary_config.py` and
+      `tests/integration/test_execution_boundary_bwrap.py` with real-`bwrap`
+      regression coverage for the specific bind-mount-alias shapes you
+      confirmed.
+   c. Actually re-run (not merely inspect) the existing hardlink/inode-alias
+      regressions from F001's correction and confirm they still pass
+      unmodified in intent -- nonregression of that already-accepted fix is
+      required, not assumed.
+   d. Run the full repository `task-check` (`python -m pytest -q`) and
+      record the result honestly, including any pre-existing unrelated
+      failures (as H005/H006 did for the agent-local `setuptools`
+      network-fetch limitation) -- do not characterize those as caused by
+      your change if they are not.
+4. If you do not reproduce the claimed bypass, or find the actual behavior
+   materially different from H006's description: do not invent or force a
+   correction. Record precisely what you tried, how, and what you actually
+   observed. You may note this in your commit message and, if useful,
+   by adding a clearly labeled "independent verification note" section to
+   the in-scope `..._focused_review.adoc` artifact -- but do not write or
+   imply any Finding disposition or WFC acceptance there; that authority
+   belongs exclusively to an independent-reviewer phase, which this bounded
+   Run does not reach.
+5. Do not allocate a Finding ID (F00x-shaped identifier) under any
+   circumstance in this Hop. Do not claim this Hop constitutes or completes
+   a review. Do not claim acceptance of anything.
+6. Stay confined to this WorkItem's exact scope. No network sidecars, no
+   credential architecture, no broad governance revisions, no refactor
+   outside `execution_boundary.py` and its two test files.
+
+### Withheld authority
+
+No change to `src/workflow_coordinator/operator.py`, `codex_adapter.py`,
+`claude_adapter.py`, `git_facts.py`, `persistence.py`, `evidence.py`,
+`commissioning.py`, `serialization.py`, `model.py`, `reducer.py`,
+`slice4.py`, `vertical.py`, `proof_harness.py`, `scripts/wfc_op.py`, or
+`pyproject.toml`. No wiring of this primitive into any live provider
+invocation or Hop dispatch path. No broader trust-boundary architecture,
+credential broker, or network-namespace policy. No weakening, removal, or
+skip of any existing security or admission test. No relaunch, resume, or
+rewrite of `RUN-11823103c2d9465ab9d7c0a70974562c` or its archived evidence,
+and no merge or rebase of the `salvage/...-h006` branch into `main`. No
+change to `max_autonomous_hops`, the Coordinator Hop ceiling, or any other
+governance limit. No Runtime promotion, Evidence mutation, nested WFC
+invocation, or external push. No independent-reviewer action of any kind --
+that phase is unreached by design in this bounded Run. No file outside this
+WorkItem's rendered `authorized_scope` for the `correct` phase may be
+edited.
+
+### Default escalation
+
+Stop and request maintainer authority only if: fully reproducing or
+falsifying the claim would require a kernel/`bwrap` capability unavailable
+on this machine (report the exact `bwrap` error); the correction, if
+warranted, cannot be confined to `execution_boundary.py` and its two test
+files; or completing this Hop would require any decision reserved to
+maintainer authority by `FTR-WFC-EXECUTION-TRUST-BOUNDARIES`. Do not stop
+merely because reaching the end of this Hop will exhaust the Hop budget and
+leave `focused_review` undispatched -- that is this WorkItem's intended
+stop, not a blocker to escalate about.
