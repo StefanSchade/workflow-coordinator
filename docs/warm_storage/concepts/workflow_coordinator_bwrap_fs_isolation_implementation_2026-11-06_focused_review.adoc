@@ -1,0 +1,197 @@
+= Bubblewrap filesystem isolation primitive: independent focused review
+
+WorkItem:: WI-WFC-BUBBLEWRAP-FS-ISOLATION-001
+Run:: RUN-d9c2ff670e5143c0a746db90defea1a2
+Hop:: H004
+Invocation:: INV-f12441aa45e34435bce6c839b9147f49
+Candidate:: f4c3a68d9b15b4f21b11569114db29ef87947ef3
+Correction range:: ce48cf3f8aa976ad93a56e65198b34b8b49dd972..f4c3a68d9b15b4f21b11569114db29ef87947ef3
+Disposition:: Accept the focused corrections; resolve F001 and F002; request renew_broad_review.
+
+== Basis and authority
+
+Inspected the complete boundary implementation, complete configuration tests,
+and complete integration tests, together with the correction diff and prior
+broad review. Revisited both governing trust-boundary FTRs, including the
+2026-11-06 narrow authorization, self-development Commission guidance and
+DEC-WFC-009, provider adapters, operator admission/scope helpers,
+repository-standard policy, and existing unit/architecture conventions.
+
+This Hop has resolve authority for the two projected current-Run Findings.
+Only this new focused review artifact is authored; implementation, tests,
+and the prior broad review artifact remain unchanged. The rendered focused
+review has a declared-route exit: renewed broad review is the appropriate
+route after accepting these corrections. This focused acceptance does not
+assert that a fresh Coordinator-owned full-suite evidence gate has passed.
+
+[[output-faithfulness]]
+== F001: resolved -- preserve completed subprocess output and status
+
+`execution_boundary.py:115-117` now returns `CompletedProcess[bytes]` and
+uses `capture_output=True, check=False` without text decoding. Its single
+launch site returns the captured bytes and return code directly.
+
+The new `test_output_and_exit_status_are_preserved` actually invokes real
+bwrap and `/bin/sh`, emitting CRLF and non-UTF-8 bytes on both streams and
+exiting 37. It passed with stdout `b'out\r\n\xff'`, stderr
+`b'err\r\n\xfe'`, and return code 37. This is subprocess observation,
+not argv inspection or a mocked isolation result.
+
+A reviewer-only sensitivity experiment loaded that test without changing
+its file and replaced its `run` binding in memory with the former
+`subprocess.run(build_argv(...), capture_output=True, text=True,
+check=False)` behavior. Real bwrap still ran. The regression rejected that
+behavior with `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in
+position 5: invalid start byte`. The correction and its regression address
+the original output-loss finding.
+
+[[scratch-observation]]
+== F002: resolved -- observe scratch distinction on the host
+
+`test_real_filesystem_boundary` now creates synthetic `repo/tmp` and a
+sentinel before execution. The real sandbox writes and rereads
+`/tmp/private-file`. Afterward the test checks that `repo/tmp` contains
+only its sentinel, the sentinel content is unchanged, and the directory's
+nanosecond mtime is unchanged. The unmodified test passed.
+
+Repeated the original broad-review sensitivity experiment without editing
+any implementation or test file: loaded the test, replaced its `run`
+binding in memory with a wrapper around real `build_argv`, replaced only
+`--tmpfs /tmp` with `--bind <synthetic-repo>/tmp /tmp`, and executed the
+result with real bwrap. The shell completed with exit 0, and the host
+`repo/tmp/private-file` contained `b'scratch'`. The strengthened host-side
+assertion failed as required. This directly proves that the test now
+detects the repository-backed scratch violation missed previously.
+
+== Isolation and fail-closed verification
+
+Both committed integration tests run actual bwrap subprocesses through the
+production runner. There are no mocks, dry-run flags, skips, or capability
+shortcuts in either test. The combined filesystem test actually performs
+every required in-sandbox filesystem operation:
+
+* Reads ordinary read-only repository content and compares its real value.
+* Writes a file in the explicit writable directory grant and verifies the
+  resulting host content.
+* Attempts a write to a protected file and verifies unchanged host content
+  and nanosecond mtime.
+* Tests existence of an unrelated synthetic host file and its directory,
+  attempts reading the file, and attempts listing the directory at their
+  original host paths. Those accesses fail inside the sandbox.
+* Attempts reading `/repo/.git/secret` and creating `/repo/.git/new`.
+  Both fail inside the sandbox; the repository's real metadata is hidden
+  by an empty read-only tmpfs overlay.
+* Writes and reads private scratch in the same sandbox, with the corrected
+  host-side repository-temp distinction checks described above.
+* Attempts writing through a writable-directory symlink whose target is
+  the external synthetic host secret, and attempts a
+  `/repo/writable/../../private/secret` traversal. Both fail, and the
+  external host secret remains unchanged.
+
+The two configuration tests are intentionally construction/rejection tests,
+not claims of subprocess isolation. They verify exact file binding,
+symlinked and relative source rejection, `.git` grant rejection, a missing
+destination parent/remapping, overlapping destinations, missing bwrap, and
+an empty command. Their invalid-configuration checks assert no subprocess
+was spawned.
+
+Additional reviewer probes exercised the actual runner with a single
+writable file: writing that file succeeded, writing its sibling failed,
+and creating a new file in the parent directory failed. Host observation
+confirmed the granted file changed, the sibling remained unchanged, and
+the new file did not exist. File authority is not widened to its directory.
+
+Eight additional invalid-boundary probes directly constructed the public
+`ValidatedBoundary` and called `run`: relative source, symlink source,
+`.git` file grant, missing destination parent/remapping, duplicate explicit
+destinations, alternate scratch destination, missing binary, and an
+existing non-executable binary. Each raised `BoundaryConfigurationError`;
+the patched subprocess launch counter remained zero. Public dataclass
+construction cannot bypass execution-time revalidation. No unsandboxed
+fallback or retry exists in the implementation.
+
+== Bounded subset and trust claims
+
+The supported subset is an existing real repository containing a real
+`.git` directory, existing regular files/directories beneath it bound at
+their identical `/repo/<relative>` destinations, and exactly one explicit
+source-free scratch tmpfs at `/tmp`. Duplicate/nested explicit mounts,
+external sources, symlinked sources, `.git` source components, arbitrary
+remappings, system/repository overlap, and alternate scratch shapes are
+rejected. Existing destination parents follow from the identical-path
+mapping; automatic parent creation is unsupported.
+
+A Commission grant naming a file that does not yet exist cannot be
+translated by this version and is explicitly rejected rather than widened
+to its parent. Git worktrees with a `.git` file and symlinked `.git`
+directories are unsupported. Host sources must remain stable between
+validation and execution, as the module documents; concurrent hostile host
+mount-tree mutation is not a claimed guarantee.
+
+The argv requests die-with-parent, read-only system executables/libraries,
+read-only repository visibility, hidden/read-only Git metadata, exact
+writable grants, and private scratch. There is no network-namespace flag
+or network policy. This remains an opt-in provider-neutral library. It
+does not resolve visibility/mutation/execution authority, change provider
+permission behavior, replace authoritative post-Hop Git/scope checks, or
+cross into the deferred elevated-surface workflow.
+
+== Additive scope and existing security checks
+
+`git diff --name-status eb4f3ba..HEAD` shows exactly four additions: the
+module, two test files, and broad review artifact. H003 changed only the
+new module and new integration test. No pre-existing source or test file
+has been modified, deleted, or renamed. Explicit comparisons confirm every
+excluded source file, `scripts/wfc_op.py`, and `pyproject.toml` is identical
+to the pre-implementation baseline. `git diff --check` passed.
+
+Source/script search finds no import or invocation of this module from an
+existing dispatch path. No A1 scope-ceiling, repository-pin, execution-binding
+digest, admission, or other existing security test was weakened, skipped,
+or removed. The unchanged `testpaths = ["tests"]` discovers the separate
+integration directory without configuration changes.
+
+[[validation]]
+== Agent-local validation and trusted evidence boundary
+
+Real unprivileged namespace/mount execution succeeded with
+`/usr/bin/bwrap`, reporting `bubblewrap 0.11.0`. The shell has no bare
+`python`, so the already available development environment supplied the
+interpreter without dependency installation or security-setting changes:
+
+[source,shell]
+----
+/home/stefan/wfc-ops/wfc-bubblewrap-fs-isolation-001-20261106-01/dev-env/bin/python -m pytest -q tests/unit/test_execution_boundary_config.py tests/integration/test_execution_boundary_bwrap.py
+# Exit 0: four tests passed, including both real-bwrap integration tests.
+
+PATH=/home/stefan/wfc-ops/wfc-bubblewrap-fs-isolation-001-20261106-01/dev-env/bin:$PATH python -m pytest -q
+----
+
+The full command exited 1: 828 passed, five failed, and thirteen setup
+errors (counted from pytest's progress outcomes). Every failure/error was
+in the pre-existing `tests/unit/test_wfc_op.py`. Nested package builds
+could not obtain their isolated build dependency; the diagnostic was:
+
+[source,text]
+----
+pip subprocess to install build dependencies did not run successfully.
+Failed to establish a new connection: [Errno -2] Name or service not known
+ERROR: Could not find a version that satisfies the requirement setuptools>=68 (from versions: none)
+ERROR: No matching distribution found for setuptools>=68
+----
+
+The five failures concern preparation drift revalidation, canonical
+preflight refusal, frozen prepared PATH, shell-significant launch paths,
+and the optional real canonical archive wrapper. The thirteen setup errors
+affect dependent preparation/status/launch fixtures. The complete log is
+`/tmp/wfc-h004-full-pytest.log`. This is an agent-local build-dependency
+availability limitation, not an observed boundary implementation defect.
+No dependency workaround, existing-test bypass, or security-setting change
+was attempted. The full suite is not claimed to pass.
+
+These local tests and reviewer probes are exploratory validation, not
+Coordinator-owned trusted `task-check` evidence. No current-candidate
+trusted evidence result is projected to this reviewer; no pass is inferred
+from historical summaries. Both concrete blocking Findings are resolved;
+renewed broad review and the Coordinator evidence gate retain their
+independent responsibilities for overall acceptance and full-suite evidence.
