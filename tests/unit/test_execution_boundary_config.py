@@ -46,3 +46,17 @@ def test_overlapping_destinations_rejected(tmp_path: Path):
         validate(tmp_path, [Mount(directory, PurePosixPath('/repo/dir'), MountMode.WRITABLE),
                             Mount(directory / 'file', PurePosixPath('/repo/dir/file'), MountMode.WRITABLE),
                             Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)])
+
+
+def test_unreadable_writable_tree_fails_closed(tmp_path: Path):
+    (tmp_path / '.git').mkdir()
+    directory = tmp_path / 'dir'
+    directory.mkdir()
+    mounts = [Mount(directory, PurePosixPath('/repo/dir'), MountMode.WRITABLE),
+              Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)]
+    boundary = validate(tmp_path, mounts)
+    with patch('workflow_coordinator.execution_boundary.os.scandir', side_effect=PermissionError('denied')):
+        with patch('subprocess.run') as spawn:
+            with pytest.raises(BoundaryConfigurationError, match='cannot inspect writable source'):
+                run(boundary, ['/bin/true'])
+            spawn.assert_not_called()

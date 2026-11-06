@@ -11,6 +11,7 @@ from enum import Enum
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import stat
 import subprocess
 from typing import Sequence
 
@@ -45,6 +46,26 @@ def _real_path(path: Path) -> Path:
     if not path.exists():
         raise BoundaryConfigurationError(f"source does not exist: {path}")
     return path
+
+
+def _check_writable_aliases(source: Path) -> None:
+    """Reject regular files whose inode is reachable through another name.
+
+    Do not follow symlinks: their targets are resolved inside the sandbox.
+    As with mount validation generally, the source tree must remain stable.
+    """
+    try:
+        pending = [source]
+        while pending:
+            path = pending.pop()
+            info = path.lstat()
+            if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                raise BoundaryConfigurationError(f"writable file has hardlink aliases: {path}")
+            if stat.S_ISDIR(info.st_mode):
+                with os.scandir(path) as entries:
+                    pending.extend(Path(entry.path) for entry in entries)
+    except OSError as exc:
+        raise BoundaryConfigurationError(f"cannot inspect writable source: {source}") from exc
 
 
 def validate(repository: Path, mounts: Sequence[Mount], *, binary: str = "bwrap") -> ValidatedBoundary:
@@ -83,6 +104,8 @@ def validate(repository: Path, mounts: Sequence[Mount], *, binary: str = "bwrap"
                 raise BoundaryConfigurationError("bind must map an existing non-.git repository subpath to its matching destination")
             if not (source.is_file() or source.is_dir()):
                 raise BoundaryConfigurationError("only regular files and directories are supported")
+            if mount.mode is MountMode.WRITABLE:
+                _check_writable_aliases(source)
             checked.append(Mount(source, dest, mount.mode))
             continue
         checked.append(mount)

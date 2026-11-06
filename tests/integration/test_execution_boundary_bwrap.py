@@ -1,6 +1,11 @@
+import os
 from pathlib import PurePosixPath
 
-from workflow_coordinator.execution_boundary import Mount, MountMode, run, validate
+import pytest
+
+from workflow_coordinator.execution_boundary import (
+    BoundaryConfigurationError, Mount, MountMode, run, validate,
+)
 
 
 def test_real_filesystem_boundary(tmp_path):
@@ -59,3 +64,53 @@ def test_output_and_exit_status_are_preserved(tmp_path):
     assert result.returncode == 37
     assert result.stdout == b'out\r\n\xff'
     assert result.stderr == b'err\r\n\xfe'
+
+
+@pytest.mark.parametrize('target_kind', ['protected', 'git', 'external'])
+@pytest.mark.parametrize('grant_kind', ['file', 'directory'])
+def test_writable_hardlink_alias_is_rejected_before_launch(tmp_path, target_kind, grant_kind):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    directory = repo / 'writable'
+    directory.mkdir()
+    nested = directory / 'nested'
+    nested.mkdir()
+    alias = nested / 'alias'
+    alias.write_text('initial')
+    target = {'protected': repo / 'protected', 'git': repo / '.git' / 'secret',
+              'external': tmp_path / 'external'}[target_kind]
+    target.write_text('protected content')
+    source = alias if grant_kind == 'file' else directory
+    destination = '/repo/writable/nested/alias' if grant_kind == 'file' else '/repo/writable'
+    mounts = [Mount(source, PurePosixPath(destination), MountMode.WRITABLE),
+              Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)]
+    boundary = validate(repo, mounts)
+    result = run(boundary, ['/bin/sh', '-c', 'printf allowed > /repo/writable/nested/alias'])
+    assert result.returncode == 0, result.stderr
+    assert alias.read_text() == 'allowed'
+    alias.unlink()
+    os.link(target, alias)
+    with pytest.raises(BoundaryConfigurationError, match='hardlink aliases'):
+        validate(repo, mounts)
+    with pytest.raises(BoundaryConfigurationError, match='hardlink aliases'):
+        run(boundary, ['/bin/sh', '-c', 'printf breached > /repo/writable/nested/alias'])
+    assert target.read_text() == 'protected content'
+
+
+def test_sandbox_cannot_create_alias_to_protected_file(tmp_path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    protected = repo / 'protected'
+    protected.write_text('unchanged')
+    writable = repo / 'writable'
+    writable.mkdir()
+    boundary = validate(repo, [Mount(writable, PurePosixPath('/repo/writable'), MountMode.WRITABLE),
+                               Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)])
+    result = run(boundary, ['/bin/sh', '-c',
+                            'if ln /repo/protected /repo/writable/alias 2>/dev/null; then '
+                            'printf breached > /repo/writable/alias; exit 1; fi'])
+    assert result.returncode == 0, result.stderr
+    assert protected.read_text() == 'unchanged'
+    assert not (writable / 'alias').exists()
