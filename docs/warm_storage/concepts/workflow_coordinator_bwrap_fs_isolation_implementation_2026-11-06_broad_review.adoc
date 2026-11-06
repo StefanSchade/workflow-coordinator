@@ -1,189 +1,246 @@
-= Bubblewrap filesystem isolation primitive: independent broad review
+= Bubblewrap filesystem isolation primitive: fresh independent broad review
 
-WorkItem:: WI-WFC-BUBBLEWRAP-FS-ISOLATION-001
-Run:: RUN-d9c2ff670e5143c0a746db90defea1a2
-Hop:: H002
-Invocation:: INV-02f438e657054de4af003f00a20557d8
-Candidate:: 605a324685731b774d6a445fea8968c811637870
-Reviewed range:: eb4f3ba66aa98f2441c62757e1928687a1861fd1..605a324685731b774d6a445fea8968c811637870
+WorkItem:: WI-WFC-BUBBLEWRAP-FS-ISOLATION-001-REVIEW-001
+Run:: RUN-11823103c2d9465ab9d7c0a70974562c
+Hop:: H001
+Invocation:: INV-5f6a856a412647ab882592d9914e01fa
+Candidate:: b5928df8cdaba2172304009c711d757ef30c5416
+Reviewed range:: eb4f3ba66aa98f2441c62757e1928687a1861fd1..b5928df8cdaba2172304009c711d757ef30c5416
+Execution base:: d07671ca1ecd8fb2b8b025e24db061655758443b
 Disposition:: changes_required; request correction
 
 == Review basis and authority
 
-Reviewed the complete new implementation and both complete new test files,
-the two governing trust-boundary backlog records (including the 2026-11-06
-narrow authorization), self-development guidance, both provider adapters,
-the operator's scope/admission helpers, repository-standard policy, and
-existing unit/architecture test conventions. Visibility, mutation, and
-execution authority remain separate. This primitive does not resolve
-authority or replace Coordinator-owned post-Hop Git/scope observation
-with provider-owned permission behavior (DEC-WFC-009).
+This is a fresh review of the complete H001-H004 cumulative diff. Read the
+original Commission's task, both trust-boundary FTRs, self-development
+guidance including its DEC-WFC-009 distinction, the complete implementation
+and both test files, and both historical review artifacts. Inspected
+current adapter dispatch code, operator scope helpers, and repository
+policy. Independently ran committed tests and adversarial probes against
+harmless synthetic repositories with real bwrap 0.11.0.
 
-Only this review artifact is changed by H002. Implementation corrections
-belong to the configured correction Hop. The labels below identify sections
-of this review, not allocated current-Run Finding IDs; both findings are new.
+The execution base has no changes from the candidate in `src`, `tests`,
+`scripts`, or `pyproject.toml`. Only this broad-review artifact is changed
+in this Hop. Implementation correction belongs to the configured correction
+phase. No predecessor Run state was accessed or rewritten.
 
-== Blocking findings
+No authoritative current-Run Finding IDs were projected. Historical
+F001/F002 labels below are provenance, not IDs disposed by this Hop.
+The new blocking concern is proposed without an allocated Finding ID.
 
-[[output-faithfulness]]
-=== Preserve arbitrary subprocess output and its exit result
+[[inode-alias-bypass]]
+== Blocking finding: hardlinks bypass protected-path write isolation
 
-Location:: `src/workflow_coordinator/execution_boundary.py:115-117`
-Requirement:: The runner must return/propagate the wrapped subprocess's exit
-status, stdout, and stderr faithfully.
+Locations:: `src/workflow_coordinator/execution_boundary.py:42-47,77-85,106-111`;
+`tests/integration/test_execution_boundary_bwrap.py:6-49`.
+Invariant:: Writable grants must not modify ungranted host paths, including
+read-only repository files and hidden Git metadata. Unsafe configurations
+must be rejected instead of broadening effective authority.
 
-`subprocess.run(..., text=True)` decodes using the host text encoding and
-normalizes newlines. A valid sandboxed command emitting non-UTF-8 bytes
-therefore raises `UnicodeDecodeError` instead of returning its exit status
-and streams. CRLF output is also changed to LF. No output restriction or
-lossy decoding contract was authorized for the caller-supplied executable.
+Validation checks canonical path spelling, source type, repository ancestry,
+and destination overlap, but never checks inode aliases. A regular file
+with an existing hardlink passes `_real_path`, and a writable directory
+containing such a file also passes. A read-only bind and the empty `.git`
+overlay protect their mount paths; they do not protect a shared inode
+reached through a separate writable bind.
 
-Observed with a real validated boundary and real bwrap, running
-`/usr/bin/python3 -c` inside the sandbox:
+Created all links before validation, without concurrent source mutation:
+
+* `repo/protected` contained `protected original`.
+* `repo/.git/secret` contained `git original`.
+* An external synthetic `private` file contained `private original`.
+* `repo/writable/{protected,git,private}-alias` were hardlinks to those
+  respective files.
+
+Production `validate` accepted a writable directory grant for
+`repo/writable` plus private scratch. Production `run` executed real bwrap
+with this shell payload:
+
+[source,shell]
+----
+set -eu
+cat /repo/writable/git-alias
+cat /repo/writable/private-alias
+for n in protected git private; do
+    printf breached > /repo/writable/$n-alias
+done
+----
+
+Observed exit 0, stdout `b'git originalprivate original'`, and empty stderr.
+Host reads afterward returned `breached` for all three original protected
+files, including the hidden Git file and the file outside the repository.
+This is actual sandbox behavior, not an argv inference.
+
+Next, granted only the existing file `repo/writable/protected-alias` at
+`/repo/writable/protected-alias`, plus scratch. Executing
+`printf file-grant-breach > /repo/writable/protected-alias` through real
+bwrap exited 0; the ungranted host `repo/protected` then contained
+`file-grant-breach`. No parent-directory bind is substituted, but an exact
+file bind still fails to bound mutation by the authorized path when the
+inode has another name.
+
+A minimal reproduction of the single-file case is:
 
 [source,python]
 ----
 import os
-os.write(1, b"out\r\n")
-os.write(2, b"err\r\n")
-raise SystemExit(17)
-# Actual: returncode 17, stdout 'out\n', stderr 'err\n'.
+from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
+from workflow_coordinator.execution_boundary import Mount, MountMode, run, validate
 
-import os
-os.write(1, b"\xff")
-raise SystemExit(17)
-# Actual: UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff
-# in position 0: invalid start byte; no CompletedProcess is returned.
+with TemporaryDirectory() as temporary:
+    repo = Path(temporary) / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    protected = repo / 'protected'
+    protected.write_text('unchanged')
+    alias = repo / 'granted'
+    os.link(protected, alias)
+    boundary = validate(repo, [
+        Mount(alias, PurePosixPath('/repo/granted'), MountMode.WRITABLE),
+        Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH),
+    ])
+    result = run(boundary, ['/bin/sh', '-c', 'printf breached > /repo/granted'])
+    print(result.returncode, protected.read_text())  # 0 breached
 ----
 
-Correction needed: provide lossless capture (for example bytes, with matching
-return typing), and regression coverage using real bwrap for nonzero exit
-status plus binary/newline-sensitive output on both stdout and stderr.
+Correction needed: fail closed on unsafe inode-alias configurations for
+both direct writable files and files recursively contained in writable
+directory grants. Extend tests with static hardlink fixtures involving an
+ungranted repository file, root Git metadata, and an external synthetic
+file. Verify rejection before launch for unsupported shapes, plus actual
+sandbox/host observations for any alias shapes that remain supported.
+Retain all existing tests and the source-stability precondition. This fits
+the module and its two test files; no broader authority model, live dispatch
+change, or additional maintainer decision is required.
 
-[[scratch-observation]]
-=== Observe that scratch does not write into repository temporary storage
+[[committed-test-audit]]
+== Committed tests and actual isolation observations
 
-Location:: `tests/integration/test_execution_boundary_bwrap.py:31-32,42`
-Requirement:: Private temporary storage must be observed from the sandbox
-and verified host-distinct from the repository's own temp handling.
+All four new tests passed locally. Both integration tests call production
+`run`, which launches actual bwrap. Neither mocks subprocess behavior,
+skips execution, nor treats missing capability as success. The filesystem
+test actually exercises:
 
-The test writes `/tmp/private-file` and reads it in the sandbox, but its only
-host-side check is absence of `repo/private-file`. It creates no repository
-temporary directory/sentinel and does not check `repo/tmp/private-file`.
-Consequently it does not prove the required distinction from repository
-temporary storage.
+* Permitted read: compares `/repo/readable` with its fixture content.
+* Permitted write: creates `/repo/writable/created` and checks host content.
+* Forbidden write: attempts `/repo/protected`, then checks unchanged host
+  content and nanosecond mtime.
+* Unrelated host paths: tests existence of a synthetic external file and
+  directory, attempts reading the file and listing the directory by their
+  host paths. Those accesses fail.
+* Git metadata: attempts reading `/repo/.git/secret` and creating
+  `/repo/.git/new`; both fail through the overlaid root `.git` path.
+* Scratch: writes and rereads `/tmp/private-file`, then checks unchanged
+  repository `tmp` contents, sentinel content, and directory nanosecond mtime.
+* Symlink/traversal: attempts writing through a grant-contained symlink to
+  an external synthetic secret and through `../../private/secret`; both
+  fail, and the external host secret remains unchanged.
 
-A reviewer-only sensitivity experiment, without editing any source or test
-file, loaded the integration test and replaced its `run` binding with a
-wrapper around the real `build_argv`. That wrapper created `repo/tmp` and
-replaced only `--tmpfs /tmp` with `--bind <repo/tmp> /tmp`, then executed the
-result with real bwrap. The entire existing integration test still passed;
-the host `repo/tmp/private-file` contained `scratch` afterward. Thus a
-repository-backed writable scratch violating the requirement escapes the
-assertions. This experiment demonstrates a test gap; the committed module
-itself does currently request tmpfs.
+These observations hold for the committed non-aliased fixtures. They do
+not establish the general write-isolation claim: the hardlink fixture
+above defeats it. Integration tests contain no hardlink case or actual
+single-file-grant execution case.
 
-Correction needed: use synthetic repository temp fixtures and host-side
-content/absence assertions that distinguish them from the sandbox scratch
-path, while retaining actual sandbox write/read observation. The test must
-fail if `/tmp` is instead backed by the repository's temp directory.
+Overlap and invalid-specification rejection are deliberately checked
+without launching a subprocess, as the original Commission's unit-level
+exceptions explicitly require. Missing-bwrap behavior is also checked
+before spawn; a missing executable cannot be proved by successfully
+running it.
 
-== Isolation and fail-closed audit
+[[historical-corrections]]
+== Independent re-verification of historical F001 and F002
 
-The committed integration test invokes `run`, which invokes an actual
-`subprocess.run` of bwrap. It has no mock, dry-run, skip, or capability-based
-success shortcut. Its shell actually performs each of these operations:
+Historical F001 (output faithfulness) is corrected. `run` directly returns
+`CompletedProcess[bytes]`, without text decoding or newline conversion.
+The committed real-bwrap output test passed with exit 37, stdout
+`b'out\r\n\xff'`, and stderr `b'err\r\n\xfe'`. An independent sensitivity
+experiment replaced only the test's in-memory runner binding with the
+former `text=True` capture while still invoking real bwrap. It failed
+with `UnicodeDecodeError` on byte `0xff` at position 5, demonstrating that
+the regression detects the original defect.
 
-* Read ordinary repository content and compare the real string.
-* Create a writable-grant file and verify its host content afterward.
-* Attempt a protected-file write, then verify unchanged host content and
-  nanosecond mtime.
-* Test existence of an unrelated synthetic host file and directory, attempt
-  to read the file, and attempt to list the directory by their host paths.
-* Attempt to read `.git/secret` and create `.git/new` inside the sandbox.
-  The empty overlay is read-only; the original metadata contents are hidden.
-* Write and reread scratch in the same sandbox. The host-distinction proof
-  remains deficient as described above.
-* Attempt a write through a grant-contained symlink to a synthetic external
-  host secret and attempt `../../private/secret` traversal from the writable
-  path. The external host secret is checked unchanged afterward.
+Historical F002 (scratch host-distinction proof) is corrected. Independently
+replaced only `--tmpfs /tmp` in the built argv with
+`--bind <synthetic-repo>/tmp /tmp`, then executed actual bwrap through an
+in-memory test binding. The altered sandbox exited 0 and left host
+`repo/tmp/private-file` containing `b'scratch'`; the committed host-side
+assertion failed. Thus the strengthened test detects the previously missed
+repository-backed scratch violation. No source or test file was edited for
+these sensitivity experiments; no historical Finding state is changed.
 
-Configuration tests inspect argv/rejections rather than claiming subprocess
-isolation. They cover an exact existing-file grant, symlink/relative sources,
-`.git` writes, remapping into a missing destination parent, overlapping
-destinations, an explicit nonexistent bwrap path, and an empty command.
+[[fail-closed-audit]]
+== Fail-closed and exact-file-grant audit
 
-Additional reviewer probes called the real runner with a single writable
-file grant. Writing that file succeeded, while writing its sibling and
-creating a file in its containing directory failed; host observations were
-`file=changed`, `sibling=keep`, `new=False`. The file grant is not widened
-into a directory grant.
+The runner has one subprocess launch site and no unsandboxed fallback or
+retry. `build_argv` revalidates public `ValidatedBoundary` instances.
+In addition to the committed configuration tests, directly constructed
+invalid instances and called `run` with a patched launch counter for:
+relative source, symlink source, missing source, `.git` source, external
+source, repository-root grant, remapping beneath a missing destination
+parent, traversal destination, relative destination, duplicate destinations,
+nested destinations, missing scratch, alternate scratch location,
+source-bearing scratch, nonexistent binary, and non-executable binary.
+All sixteen raised `BoundaryConfigurationError`; total launch count was
+zero. These checks do not cover the accepted unsafe hardlink shapes.
 
-Additional probes directly constructed `ValidatedBoundary` instances with
-relative sources, `.git` writable sources, missing destination parents,
-nonexistent binaries, and existing non-executable binaries, and called
-`run` with subprocess spawning patched only to count attempted launches.
-Each raised `BoundaryConfigurationError`; total spawn count was zero.
-`build_argv` revalidates public dataclass instances. There is exactly one
-runner launch site and no unsandboxed fallback or automatic retry.
+A separate real-bwrap probe with a non-aliased single-file grant changed
+the granted file, denied writing its sibling, and denied creating a file
+in its parent directory. Host observation was `file=changed`,
+`sibling=keep`, `new exists=False`. The argv binds the exact file, never
+its parent; inode aliasing is the distinct unresolved defect.
 
-The argv includes `--die-with-parent`, read-only system roots, a read-only
-repository at `/repo`, a separately read-only empty `.git` tmpfs, explicit
-bind grants, and explicit scratch tmpfs. No network-namespace policy is
-introduced. Source stability between validation and execution is an explicit
-module precondition; concurrent hostile host mount-tree mutation is not
-claimed to be solved by this slice.
+The supported subset requires an existing absolute real repository with a
+real `.git` directory, existing regular-file/directory sources below it at
+matching `/repo` destinations, and exactly one source-free `/tmp` scratch
+mount. It rejects symlink sources, nonexistent file grants, arbitrary
+remapping, overlapping explicit destinations, and repositories overlapping
+system roots. Git worktrees with `.git` files are unsupported. These
+limitations do not authorize approximation to parent-directory writes.
 
-== Supported subset and explicit rejections
+The constructed boundary requests read-only system executable/library
+mounts, read-only repository visibility, a read-only empty root `.git`
+overlay, explicit writable binds, private scratch, and `--die-with-parent`.
+No network namespace policy is introduced. This is an opt-in primitive,
+not an authority resolver, credential boundary, replacement for post-Hop
+scope observation, or statement about provider-owned permission modes.
 
-The bounded subset accepts an existing absolute real repository with a real
-`.git` directory, existing regular-file/directory bind sources beneath it
-mapped to their identical `/repo/<relative>` locations, and exactly one
-source-free scratch request at `/tmp`. Nested/duplicate explicit destinations
-are rejected even when one is read-only. System-root/repository overlap,
-symlinked sources, external sources, arbitrary remappings, `.git` source
-components, non-file/non-directory bind sources, and alternate scratch shapes
-are rejected.
+[[additive-scope]]
+== Additive scope and existing security tests
 
-In particular, a Commission scope naming a file that does not yet exist
-cannot be translated to a writable mount by this slice: it is rejected,
-without widening to its parent directory. Missing destination parents and
-requested directory creation/remapping are also unsupported. Git worktrees
-with a `.git` file, or repositories with a symlinked `.git`, are rejected.
-These are bounded-subset limitations rather than implicit scope translation.
+`git diff --name-status eb4f3ba..b5928df` reports exactly five additions:
+the module, two new test files, and two review artifacts. There are no
+modifications, deletions, or renames. Explicit comparisons of every withheld
+source file, `scripts/wfc_op.py`, and `pyproject.toml` are empty. Every
+pre-existing source and test file remains byte-identical to the baseline.
+No existing security/admission test was weakened, skipped, or removed.
+The current Hop edits only this authorized review artifact.
 
-== Additive scope and dispatch audit
+Production source/script search found no import or use of
+`execution_boundary` from existing dispatch paths. Inspected adapter launch
+sites continue to invoke their provider CLIs directly. Unchanged pytest
+`testpaths = ["tests"]` discovers the new integration directory without
+configuration changes. `git diff --check eb4f3ba b5928df` passed.
 
-`git diff --name-status` for the reviewed range reports exactly three added
-files: the boundary module, unit configuration tests, and integration tests.
-There are no modifications, deletions, or renames. All excluded source files,
-`scripts/wfc_op.py`, `pyproject.toml`, and all pre-existing tests are identical
-to the parent. `git diff --check` passed. Searching production source and
-scripts found no import or use of the new module from an existing execution
-path. Existing admission/security tests were not edited, weakened, skipped,
-or removed. The unmodified pytest `testpaths = ["tests"]` discovers the
-integration directory without a new marker/configuration change.
+[[validation]]
+== Agent-local validation and trusted evidence boundary
 
-== Agent-local validation
-
-Available bwrap reports `bubblewrap 0.11.0`; real namespace/mount execution
-worked. The initial shell had no `python` command, and `/usr/bin/python3`
-had no pytest. The existing attempt's development environment supplied the
-test interpreter without installation or security-setting changes:
+The initial shell has no bare `python`; the already installed current
+Attempt development environment supplied the interpreter without dependency
+installation or security-setting changes:
 
 [source,shell]
 ----
-/home/stefan/wfc-ops/wfc-bubblewrap-fs-isolation-001-20261106-01/dev-env/bin/python -m pytest -q tests/unit/test_execution_boundary_config.py tests/integration/test_execution_boundary_bwrap.py
-# Passed: all three tests, including the real-bwrap integration test.
+/home/stefan/wfc-ops/wfc-bubblewrap-fs-isolation-001-review-001-20261106-02/dev-env/bin/python -m pytest -q tests/unit/test_execution_boundary_config.py tests/integration/test_execution_boundary_bwrap.py
+# Exit 0: four passed, including both real-bwrap integration tests.
 
-PATH=/home/stefan/wfc-ops/wfc-bubblewrap-fs-isolation-001-20261106-01/dev-env/bin:$PATH python -m pytest -q
+PATH=/home/stefan/wfc-ops/wfc-bubblewrap-fs-isolation-001-review-001-20261106-02/dev-env/bin:$PATH python -m pytest -q
 ----
 
-The full command exited 1: 827 passed, five failures and thirteen setup errors
-(counted from pytest's progress outcomes). All failures/errors were in
-the pre-existing `tests/unit/test_wfc_op.py`. Nested package installation
-failed while preparing isolated build dependencies. The actual diagnostic
-included:
+The full suite exited 1: 828 passed, five failed, and thirteen setup errors
+(counted from pytest's progress outcomes). All failures/errors were in the
+pre-existing `tests/unit/test_wfc_op.py`. Their isolated package builds
+could not download the required build dependency. Actual diagnostics:
 
 [source,text]
 ----
@@ -193,17 +250,16 @@ ERROR: Could not find a version that satisfies the requirement setuptools>=68 (f
 ERROR: No matching distribution found for setuptools>=68
 ----
 
-The five failing tests were preparation drift revalidation, canonical
-preflight refusal, frozen prepared PATH, shell-significant launch paths,
-and the optional canonical wrapper archive test. The thirteen setup errors
-were dependent preparation/status/launch fixtures. The complete local log
-is `/tmp/wfc-h002-full-pytest.log`. This is an agent-local build-dependency
-availability limitation, not evidence of a production regression. No
-dependency download workaround, test bypass, or security-setting change
-was attempted. The full suite is not claimed to pass.
+The failures concern preparation drift revalidation, canonical preflight
+refusal, frozen prepared PATH, shell-significant launch paths, and the
+optional canonical archive wrapper. The thirteen setup errors affect
+dependent preparation/status/launch fixtures. The complete local log is
+`/tmp/wfc-review001-h001-task-check.log`. This is an agent-local build
+dependency availability limitation, not evidence of a production regression.
+No dependency download workaround, security-setting change, or existing-test
+bypass was attempted. The full suite is not claimed to pass.
 
-Agent-local execution is exploratory evidence, not Coordinator-owned trusted
-`task-check` evidence. No trusted evidence result was projected to this
-reviewer, and none is inferred from the prior worker's summary. This local
-limitation does not require escalation to report the two concrete blocking
-findings and request the authorized correction route.
+These executions and probes are agent-local exploratory validation, not
+Coordinator-trusted `task-check` evidence. No current-Run trusted evidence
+result was projected, and none is inferred from historical summaries.
+The reproducible isolation defect independently requires correction.
