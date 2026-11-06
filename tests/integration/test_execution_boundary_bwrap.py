@@ -14,6 +14,11 @@ def test_real_filesystem_boundary(tmp_path):
     before = protected.stat().st_mtime_ns
     writable = repo / 'writable'
     writable.mkdir()
+    repo_tmp = repo / 'tmp'
+    repo_tmp.mkdir()
+    sentinel = repo_tmp / 'sentinel'
+    sentinel.write_text('repository temporary data')
+    tmp_before = repo_tmp.stat().st_mtime_ns
     private = tmp_path / 'private'
     private.mkdir()
     secret = private / 'secret'
@@ -39,4 +44,18 @@ if (echo bad > /repo/writable/../../private/secret) 2>/dev/null; then exit 5; fi
     assert protected.read_text() == 'unchanged'
     assert protected.stat().st_mtime_ns == before
     assert secret.read_text() == 'host secret'
-    assert not (repo / 'private-file').exists()
+    assert list(repo_tmp.iterdir()) == [sentinel]
+    assert sentinel.read_text() == 'repository temporary data'
+    assert repo_tmp.stat().st_mtime_ns == tmp_before
+
+
+def test_output_and_exit_status_are_preserved(tmp_path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    boundary = validate(repo, [Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)])
+    result = run(boundary, ['/bin/sh', '-c',
+                            "printf 'out\\r\\n\\377'; printf 'err\\r\\n\\376' >&2; exit 37"])
+    assert result.returncode == 37
+    assert result.stdout == b'out\r\n\xff'
+    assert result.stderr == b'err\r\n\xfe'

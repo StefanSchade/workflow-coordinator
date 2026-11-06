@@ -112,6 +112,6 @@ def build_argv(boundary: ValidatedBoundary, command: Sequence[str]) -> list[str]
     return args + ['--chdir', '/repo', '--', *command]
 
 
-def run(boundary: ValidatedBoundary, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    """Run only through bwrap, returning its status and captured streams."""
-    return subprocess.run(build_argv(boundary, command), text=True, capture_output=True, check=False)
+def run(boundary: ValidatedBoundary, command: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
+    """Run only through bwrap, returning its status and unmodified output bytes."""
+    return subprocess.run(build_argv(boundary, command), capture_output=True, check=False)
