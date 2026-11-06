@@ -1,0 +1,308 @@
+= FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT -- Execution-Environment and Successor-Commission Integration Debt Exposed by the Bubblewrap and Claude CLI Self-Development Work
+
+Type:: future technical record -- consolidation debt and open evaluation
+questions, not a design, not a defect diagnosis, not a correction
+Status:: open, disposition `LATER` -- explicitly after the MVP; see
+link:_open.adoc[the active-work manifest] for its current card.
+Current controlling source:: This record.
+Next action:: None authorized here. Each observation below becomes eligible
+for its own separately authorized investigation/design Commission only when
+test/execution-environment consolidation is actually prioritized.
+Not authorized here:: Any implementation, refactoring, Runtime promotion, or
+WFC Run; any redesign of the Front Door / generic profile / Coordinator
+separation; any diagnosis or correction of the Bash-tool approval denial
+that stopped `WI-WFC-BUBBLEWRAP-FS-ISOLATION-001-REVIEW-001-CORRECTION-003`
+(tracked here only as a raw observation, not analyzed).
+Priority:: deferred; post-MVP consolidation.
+Date:: 2026-11-06.
+Discovery:: `WI-WFC-BUBBLEWRAP-FS-ISOLATION-001-REVIEW-001-CORRECTION-002`
+(`RUN-921eae416d264bbaba51c603b33b33c0`) and `-CORRECTION-003`
+(`RUN-36b4cca018b34545bec89402bc0d2842`), both run under the `claude_cli`
+adapter, and the intervening Claude-adapter TMPDIR repair (commits
+`4776fd0`, `7a5b736`) and Runtime promotion (`4eb69d9` -> `7a5b736`)
+performed between them.
+Recorded now:: Three consecutive self-development Attempts
+(`WI-WFC-BUBBLEWRAP-FS-ISOLATION-001-REVIEW-001-CORRECTION-001` through
+`-CORRECTION-003`) against the same bind-mount-alias investigation each
+stopped on an environmental/provider blocker before performing any
+investigation, and repairing one such blocker (the Claude CLI Bash
+sandbox's IPC-bridge socket-creation failure) itself reintroduced a
+dependency on the ambient system `/tmp` that FD-08 had deliberately moved
+Attempt scratch away from. Preserve these cross-cutting observations
+together now, as open evaluation questions, rather than letting each
+resurface later as an independent provider-specific point fix.
+
+== What this is not
+
+Not a redesign proposal for any boundary the cited FTRs already settle; not
+a diagnosis of the Bash-tool approval denial that stopped correction-003
+(open, undiagnosed, explicitly out of scope here); not a reopening of
+`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION`'s own open causal questions about
+`pytest` temp-file retention, which remain exactly as that record left
+them; and not a claim that any one of the observations below has an
+identified root cause or a selected fix. Each is recorded as an open
+question for later investigation.
+
+== Observations and evaluation questions
+
+=== 1. Scratch/temp-file management has drifted back toward ambient `/tmp`, provider-adapter by provider-adapter
+
+FD-08
+(link:../warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc[Front
+Door priority and Profile/Commission boundary plan] §9) moved Harness/
+operator temp operations, agent sandboxes, and the Evidence repository's
+own temp needs to a configurable scratch root defaulting under `$HOME`,
+specifically to stop depending on the ambient system `/tmp` -- a small,
+fixed-size `tmpfs` distinct from a much larger root/data filesystem, per
+the `ENOSPC` incident that motivated it
+(link:../cold_storage/backlog/pre-0.1.0b1/infrastructure-and-incidents/2026-10-28_tmpfs_exhaustion.adoc[incident
+report], and the related but distinct
+link:BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc[BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION]).
+That requirement is implemented today: the correction-002/-003 `launch.sh`
+artifacts set `TMPDIR`/`TMP`/`TEMP` to an Attempt-scoped path under
+`~/wfc-scratch/`, not `/tmp`.
+
+The Claude-adapter TMPDIR repair (`src/workflow_coordinator/claude_adapter.py:39`,
+`_SHORT_TMP_ROOT = Path("/tmp")`; commits `4776fd0`, `7a5b736`)
+independently reintroduces a dependency on that same ambient `/tmp` --
+scoped per provider invocation rather than per Attempt, and solving a
+different, narrower problem (the Claude CLI's own `AF_UNIX` IPC-bridge
+socket path-length limit) -- without revisiting FD-08's own rationale for
+moving away from it. Each fix was locally correct and narrowly scoped to
+its own Commission's authorized surface; nothing currently evaluates
+retention, capacity, permissions, cleanup, and ownership of temporary
+material across Harness scratch, Evidence scratch, and now
+per-provider-invocation scratch, together, as one shared resource.
+
+Evaluation questions (open, no predetermined answer):
+
+* Should a provider adapter's own short-lived, short-path temp-directory
+  need be requested from a Harness-owned allocator (which could place it
+  under the already-established FD-08 scratch root, or elsewhere, by
+  policy) rather than each adapter hardcoding `/tmp` independently?
+* Does the Codex adapter, or any future adapter, have or need an
+  equivalent short-path accommodation, and would a per-adapter point fix
+  recur?
+* What retention/cleanup policy should apply when a Hop times out, is
+  killed, or crashes before an adapter's own cleanup runs?
+* Who owns capacity/inode planning for whichever root is ultimately
+  chosen, given the same ambient `/tmp` has already caused one WFC-visible
+  `ENOSPC` incident unrelated to this adapter?
+
+=== 2. Claude tool availability, noninteractive approval, permission modes, and sandbox operation are separate, under-integrated mechanisms
+
+`BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc` already records two
+unreconciled hypotheses from a live qualification failure: that
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` forces the CLI's permission mode back to
+an interactive default while `--permission-prompts none` silently converts
+every resulting ask into denial with no approval surface; and that the
+generated sandbox settings define read-scope but no write-scope-equivalent
+field at all. The adapter's own technical model
+(link:../technical_model/claude_code_adapter_architecture.adoc[Claude Code
+adapter architecture] §8) separately flags nested-invocation
+`CLAUDE_CODE_*` environment-variable inheritance as an unevaluated factor
+and explicitly cautions against treating Claude's own sandbox/scratchpad
+mechanics as a WFC security assumption.
+
+The bubblewrap correction work surfaced two further, distinct failure
+modes in the same general area, neither yet reconciled with the two
+hypotheses above: correction-002's Bash tool reached sandbox
+initialization and failed there (`"Failed to create bridge sockets after 5
+attempts"`, traced to the long Attempt-scoped `TMPDIR` and since repaired);
+correction-003's Bash tool was denied before any sandbox-init attempt
+(`"no approval surface... denied automatically"`), under a generated
+`claude-closed-settings.json` verified byte-identical to correction-002's
+-- so settings content was not the differentiator, and the actual
+state-transition logic between "denied for lack of an approval surface"
+and "sandboxed and attempting to initialize" remains unexplained. Four
+distinct failure surfaces in the same mechanism area, found only by
+running real Hops, with no single description of how tool allow-listing,
+permission mode, approval-prompt policy, environment scrubbing, and
+sandbox/`bwrap` availability actually compose.
+
+Evaluation questions:
+
+* What is the complete, accurate state machine linking these mechanisms in
+  the current Claude CLI, and which parts are provider-owned and
+  version-/host-policy-dependent (per the technical model's own caution)
+  versus adapter-owned and correctable?
+* What diagnostics would let a worker, or the maintainer offline, reliably
+  distinguish these failure modes from each other without first spending a
+  live Hop to discover which one occurred?
+* Does correcting one mechanism (as `4776fd0`/`7a5b736` did for the
+  IPC-bridge case) have side effects on the others that only a live
+  invocation would reveal?
+
+=== 3. Live provider smoke tests caught failures the deterministic adapter suite structurally cannot
+
+`BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc` already states this
+plainly: the existing `tests/unit/test_claude_adapter_conformance.py` suite
+is exclusively fake-executable and offline, so "this entire class of
+effective-permission mismatch is structurally invisible to the existing
+test suite." The opt-in live smoke test added in `7a5b736` is valuable --
+three real, passing invocations against the actual Claude CLI -- but it is
+opt-in, not routine, and every one of correction-002's and correction-003's
+blockers was still found only by an actual live Hop, not by any preflight
+or routine test.
+
+Evaluation question, deliberately without a predetermined answer: is there
+a minimal, cheap, non-network-dependent capability/preflight probe (for
+example, one that inspects tool-allow-list and sandbox-availability shape
+without a full conversational invocation) that would narrow this
+structural gap, without making routine `python -m pytest -q` depend on
+network access or a provisioned, authenticated CLI -- weighed against the
+real cost of a flaky or environment-coupled routine suite, which this
+record does not assume is an acceptable trade merely because the gap is
+real.
+
+=== 4. Successor-Commission ergonomics: repeated governing-input authoring, stale persona references, and recovery/salvage integration
+
+The operator manual's
+link:../wfc_operator_manual.adoc[§22.5 "Commission-authoring anti-patterns"]
+already names "constraint accumulation across successor Commissions" and
+documents its precedent:
+`wfc-claude-adapter-write-permissions-001`/`-002`/`-003` each restated
+predecessor history and added new provenance narrative without removing or
+restructuring the underlying demand, growing from 16.4KB to 22.6KB to
+28.1KB across three Attempts while the actual deadlock stayed untouched.
+
+The bubblewrap-isolation correction lineage just repeated the same
+structural shape: `wfc-bubblewrap-fs-isolation-001-review-001-correction-001`
+through `-correction-003` were each hand-authored by copying the
+predecessor's `authority_source`/task text forward and appending new
+provenance about the latest stop, while reusing the identical
+`robust@v1` profile/policy and the identical `worker`/`independent_reviewer`
+personas unchanged across all three. This is not evidence that the
+personas or profile/policy were wrong -- each stop was environmental, not a
+mandate defect -- but it is the same accumulation shape the manual already
+warns against, now observed outside the adapter-permission lineage it was
+first documented from.
+
+Separately, `BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc` and its linked
+`FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc` mechanism
+(`export-salvage`/`prepare-successor`) address continuation after a
+predecessor Hop produced useful *uncommitted* work. None of
+correction-001 through -003 produced any -- each had `hop_used == 0`
+changed paths and identical `baseline_head`/`final_head` -- so that
+mechanism correctly had nothing to carry forward and was not invoked. This
+leaves open whether a distinct, lighter-weight successor aid should exist
+for the zero-candidate/environmental-stop case specifically, which is not
+the case that mechanism was built for.
+
+Evaluation questions:
+
+* Should hand-authoring a successor WorkItem for the common "identical
+  profile/policy/personas, only the provenance narrative changes" shape
+  have a lighter mechanized path, rather than full prose re-authoring each
+  time?
+* Can successor provenance stay legible to the worker (who reads the task
+  file in isolation, not through the documentation system) without each
+  new task re-narrating full predecessor history inline -- consistent with
+  link:../ai_info/doc_conventions.adoc[the documentation writing
+  conventions]' "state it once, link elsewhere" principle, which governing
+  task text does not currently have a mechanized way to honor?
+* Does the `export-salvage`/`prepare-successor` eligibility boundary
+  (`AWAITING_HUMAN` with a non-null `semantic_stop`) warrant a distinct,
+  narrower sibling mechanism for the zero-candidate environmental-stop
+  case, or is hand-authoring actually the right-sized tool for a case this
+  infrequent?
+
+== Explicit non-goal: preserve the existing separation
+
+This record does not propose, and must not be read as implying, that the
+Front Door / generic profile / Coordinator separation needs redesign.
+`FTR-WFC-ARCHITECTURAL-CORE-AND-CONSOLIDATION-BOUNDARIES.adoc` already
+decided that the standalone Workflow Coordinator does not need a
+fundamental redesign, and already classifies "prompt components, role
+presentation, provider/model selection, and future persona/execution
+binding" as shell concerns that must not become semantic route predicates
+("Load-bearing boundaries to preserve," point 6). Every observation above
+sits at that same shell/adapter/launcher layer -- temp-file placement,
+provider permission/sandbox mechanics, test-boundary shape, and
+Commission-authoring ergonomics -- not in `model.py`/`reducer.py` or in
+declarative workflow topology. Nothing here is evidence that the
+deterministic core, the declarative routing model, or the Front
+Door/generic-profile/Coordinator boundary needs to change; the same FTR's
+"Architecture-test direction" and "Explicit non-goals" sections continue to
+govern whether and how any of this is eventually addressed.
+
+== Cross-references
+
+* link:FTR-WFC-ARCHITECTURAL-CORE-AND-CONSOLIDATION-BOUNDARIES.adoc[FTR-WFC-ARCHITECTURAL-CORE-AND-CONSOLIDATION-BOUNDARIES]
+  -- the boundary this record's non-goal explicitly preserves.
+* link:BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc[BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION]
+  -- the sibling, already-`LATER` ambient-`/tmp` resource-exhaustion
+  finding that observation 1 extends to a second, independent temp-file
+  source; the two are related but distinct, exactly as that BUG already
+  distinguishes itself from the Front Door Stage 1 test-burden finding.
+* link:../warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc[Front
+  Door priority and Profile/Commission boundary plan] §9 -- FD-08's own
+  scratch-space requirement and rationale, which observation 1 checks the
+  Claude-adapter repair against.
+* link:BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH]
+  -- the controlling record for the permission/sandbox mismatch family
+  observation 2 extends with two further observed failure modes; still
+  open, three correction Attempts in, as that record's own Lifecycle
+  states.
+* link:../technical_model/claude_code_adapter_architecture.adoc[Claude Code
+  adapter architecture] §8 -- the adapter's own residual security-model
+  distinctions and deferred work, including the nested-invocation
+  environment-inheritance caution observation 2 relies on.
+* link:FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[FTR-WFC-EXECUTION-TRUST-BOUNDARIES]
+  -- the deferred, WFC-owned execution-isolation direction that the
+  bubblewrap primitive is a narrow authorized slice of; this record does
+  not widen that authorization.
+* link:../wfc_operator_manual.adoc[Operator manual] §22.5 -- names the
+  "constraint accumulation across successor Commissions" anti-pattern that
+  observation 4 finds repeated outside its original adapter-permission
+  lineage.
+* link:BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc[BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP]
+  and
+  link:FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc[FTR-WFC-SCOPE-ESCALATION-CONTINUATION]
+  -- the related but distinct useful-uncommitted-work continuation
+  mechanism that observation 4 notes does not cover the zero-candidate
+  environmental-stop case.
+* link:../ai_info/doc_conventions.adoc[Documentation writing conventions]
+  -- the "state it once, link elsewhere" principle observation 4 asks
+  whether governing task text can honor.
+
+== Non-scope
+
+This record does not authorize:
+
+* any change to `src/workflow_coordinator/claude_adapter.py`,
+  `scripts/wfc_op.py`, any other production source, or any test;
+* any diagnosis or correction of the Bash-tool approval denial that
+  stopped `WI-WFC-BUBBLEWRAP-FS-ISOLATION-001-REVIEW-001-CORRECTION-003`
+  -- recorded only as a raw observation under item 2 above, not analyzed,
+  and left for separate investigation;
+* any change to
+  `FTR-WFC-ARCHITECTURAL-CORE-AND-CONSOLIDATION-BOUNDARIES.adoc`,
+  `FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc`,
+  `BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc`,
+  `BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`,
+  `BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP.adoc`, or
+  `FTR-WFC-SCOPE-ESCALATION-CONTINUATION.adoc`;
+* adoption of any evaluation question's implied direction as a selected
+  solution;
+* a WorkItem, Profile, Policy, or a Run of any kind.
+
+== Disposition
+
+`LATER`, explicitly after the MVP. Each observation above becomes eligible
+for its own bounded investigation only when test/execution-environment
+consolidation is actually prioritized on
+link:_open.adoc[the active-work manifest], consistent with how
+`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION` is already deferred to the same
+future consolidation window.
+
+== Lifecycle
+
+This FTR is *open*, disposition `LATER`. It records cross-cutting
+execution-environment and successor-Commission integration debt and open
+evaluation questions only. It authorizes no investigation, no design, no
+implementation, and no WFC Run. A future bounded investigation into any one
+observation, and only subsequently any correction or design, each require
+their own separately authorized maintainer Commission/WorkItem. Committing
+this documentation record does not itself commission, prepare, or launch
+any Run, and does not invoke any provider.
