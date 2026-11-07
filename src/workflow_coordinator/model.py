@@ -748,6 +748,22 @@ class StatFingerprint:
 
 
 @dataclass(frozen=True)
+class UntrustedDiagnosticCapture:
+    """A bounded, explicitly untrusted stdout/stderr tail for a failed observation.
+
+    Never trusted A2 evidence: not digested, not an identity/outcome fact,
+    and not consulted by any reducer/routing decision. Present only to give
+    a correction Hop a recoverable diagnostic signal it would otherwise have
+    to re-run the command to obtain.
+    """
+
+    stdout_tail_base64: str
+    stdout_tail_truncated: bool
+    stderr_tail_base64: str
+    stderr_tail_truncated: bool
+
+
+@dataclass(frozen=True)
 class Observation:
     provider: str
     status: str
@@ -774,6 +790,7 @@ class Observation:
     stderr_byte_count: int | None
     stderr_sha256: str | None
     stderr_body_omitted: bool | None
+    untrusted_diagnostic: UntrustedDiagnosticCapture | None = None
 
 
 @dataclass(frozen=True)

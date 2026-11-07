@@ -18,6 +18,7 @@ from workflow_coordinator.model import (
     ResultContractKind,
     SemanticStop,
     SuccessorProvenance,
+    UntrustedDiagnosticCapture,
     WorkflowRole,
     SupersedeFinding,
     new_run,
@@ -946,6 +947,87 @@ def test_schema4_execution_evidence_is_closed_and_anchor_is_route_independent():
         malformed["attempts"][0][field] = "unsupported-value"
         with pytest.raises(ValidationError, match="must be one of"):
             execution_evidence_from_json(json.dumps(malformed))
+
+
+def test_schema4_observation_round_trips_untrusted_diagnostic_capture():
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="diagnostic"
+    )
+    run, _, evidence_json = qualification_evidence(
+        run, {evaluator_hop: ("fail",)}
+    )
+    document = execution_evidence_from_json(evidence_json)
+    diagnostic = UntrustedDiagnosticCapture(
+        stdout_tail_base64="c3Rkb3V0LXRhaWw=",
+        stdout_tail_truncated=False,
+        stderr_tail_base64="",
+        stderr_tail_truncated=True,
+    )
+    attempt = document.attempts[0]
+    observation = replace(attempt.trusted_observations[0], untrusted_diagnostic=diagnostic)
+    attempt = replace(attempt, trusted_observations=(observation,))
+    document = replace(document, attempts=(attempt,) + document.attempts[1:])
+
+    encoded = execution_evidence_to_json(document)
+    assert execution_evidence_from_json(encoded) == document
+
+    original = json.loads(evidence_json)["attempts"][0]["trusted_observations"][0]
+    round_tripped = json.loads(encoded)["attempts"][0]["trusted_observations"][0]
+    assert round_tripped["untrusted_diagnostic"] == {
+        "stdout_tail_base64": "c3Rkb3V0LXRhaWw=",
+        "stdout_tail_truncated": False,
+        "stderr_tail_base64": "",
+        "stderr_tail_truncated": True,
+    }
+    # Every existing trusted field round-trips identically to the undiagnosed original.
+    trusted_keys = set(original) - {"untrusted_diagnostic"}
+    assert {key: round_tripped[key] for key in trusted_keys} == {
+        key: original[key] for key in trusted_keys
+    }
+
+
+def test_schema4_observation_tolerates_missing_untrusted_diagnostic_key():
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="diagnostic-absent"
+    )
+    run, _, evidence_json = qualification_evidence(
+        run, {evaluator_hop: ("pass",)}
+    )
+    historical = json.loads(evidence_json)
+    del historical["attempts"][0]["trusted_observations"][0]["untrusted_diagnostic"]
+    document = execution_evidence_from_json(json.dumps(historical))
+    assert document.attempts[0].trusted_observations[0].untrusted_diagnostic is None
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda diag: diag.update(stdout_tail_base64="not-base64!!"), "stdout_tail_base64"),
+        (lambda diag: diag.update(stdout_tail_truncated="yes"), "stdout_tail_truncated"),
+        (lambda diag: diag.pop("stderr_tail_base64"), "missing fields: stderr_tail_base64"),
+        (lambda diag: diag.update(extra=True), "unknown fields: extra"),
+    ],
+)
+def test_schema4_observation_rejects_malformed_untrusted_diagnostic(mutate, message):
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(
+        run, workflow, evidence_prefix="diagnostic-malformed"
+    )
+    run, _, evidence_json = qualification_evidence(
+        run, {evaluator_hop: ("fail",)}
+    )
+    malformed = json.loads(evidence_json)
+    malformed["attempts"][0]["trusted_observations"][0]["untrusted_diagnostic"] = {
+        "stdout_tail_base64": "",
+        "stdout_tail_truncated": False,
+        "stderr_tail_base64": "",
+        "stderr_tail_truncated": False,
+    }
+    mutate(malformed["attempts"][0]["trusted_observations"][0]["untrusted_diagnostic"])
+    with pytest.raises(ValidationError, match=message):
+        execution_evidence_from_json(json.dumps(malformed))
 
 
 def test_v3_hop_anchor_is_the_only_new_semantic_wire_field():

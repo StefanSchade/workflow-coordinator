@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -17,7 +18,11 @@ from .model import (
     EvidenceCommand,
     Observation,
     StatFingerprint,
+    UntrustedDiagnosticCapture,
 )
+
+
+UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES = 16_384
 
 
 ENVIRONMENT_POLICY = "coordinator-inherited-environment-v1"
@@ -189,6 +194,25 @@ def _stream_facts(value: bytes) -> tuple[int, str, bool]:
     return len(value), hashlib.sha256(value).hexdigest(), bool(value)
 
 
+def _diagnostic_tail(value: bytes) -> tuple[str, bool]:
+    """Base64 the last ``UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES`` of ``value``."""
+
+    truncated = len(value) > UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES
+    tail = value[-UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES:]
+    return base64.b64encode(tail).decode("ascii"), truncated
+
+
+def _untrusted_diagnostic_capture(stdout: bytes, stderr: bytes) -> UntrustedDiagnosticCapture:
+    stdout_tail_base64, stdout_tail_truncated = _diagnostic_tail(stdout)
+    stderr_tail_base64, stderr_tail_truncated = _diagnostic_tail(stderr)
+    return UntrustedDiagnosticCapture(
+        stdout_tail_base64=stdout_tail_base64,
+        stdout_tail_truncated=stdout_tail_truncated,
+        stderr_tail_base64=stderr_tail_base64,
+        stderr_tail_truncated=stderr_tail_truncated,
+    )
+
+
 def _observation(
     command: PreparedEvidenceCommand,
     *,
@@ -201,6 +225,7 @@ def _observation(
     error_class: str | None = None,
     stdout: bytes | None = None,
     stderr: bytes | None = None,
+    untrusted_diagnostic: UntrustedDiagnosticCapture | None = None,
 ) -> Observation:
     stdout_facts = (None, None, None) if stdout is None else _stream_facts(stdout)
     stderr_facts = (None, None, None) if stderr is None else _stream_facts(stderr)
@@ -230,6 +255,7 @@ def _observation(
         stderr_byte_count=stderr_facts[0],
         stderr_sha256=stderr_facts[1],
         stderr_body_omitted=stderr_facts[2],
+        untrusted_diagnostic=untrusted_diagnostic,
     )
 
 
@@ -323,6 +349,9 @@ class ProductionEvidenceRunner:
             exit_code=returncode,
             stdout=stdout,
             stderr=stderr,
+            untrusted_diagnostic=(
+                _untrusted_diagnostic_capture(stdout, stderr) if status == "fail" else None
+            ),
         )
 
 

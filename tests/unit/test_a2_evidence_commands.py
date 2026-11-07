@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -332,6 +333,15 @@ def test_exit_taxonomy_and_complete_empty_stream_facts(tmp_path, exit_code, stat
     assert observation.stdout_byte_count == observation.stderr_byte_count == 0
     assert observation.stdout_sha256 == hashlib.sha256(b"").hexdigest()
     assert observation.stdout_body_omitted is False
+    if status == "pass":
+        assert observation.untrusted_diagnostic is None
+    else:
+        # A "fail" observation always carries a capture, even with empty real streams.
+        assert observation.untrusted_diagnostic is not None
+        assert observation.untrusted_diagnostic.stdout_tail_base64 == ""
+        assert observation.untrusted_diagnostic.stdout_tail_truncated is False
+        assert observation.untrusted_diagnostic.stderr_tail_base64 == ""
+        assert observation.untrusted_diagnostic.stderr_tail_truncated is False
 
 
 def test_signal_is_error_with_complete_streams(tmp_path):
@@ -344,6 +354,8 @@ def test_signal_is_error_with_complete_streams(tmp_path):
     assert observation.status == "error" and observation.signal == signal.SIGTERM
     assert observation.error_class == "signal" and observation.exit_code is None
     assert observation.stdout_byte_count == 0
+    # No fabricated diagnostic capture for an "error" status.
+    assert observation.untrusted_diagnostic is None
 
 
 def test_runtime_resolution_failure_has_unavailable_streams(tmp_path):
@@ -357,6 +369,7 @@ def test_runtime_resolution_failure_has_unavailable_streams(tmp_path):
     assert observation.invocation_path is None
     assert observation.stdout_byte_count is observation.stdout_sha256 is None
     assert observation.stdout_body_omitted is None
+    assert observation.untrusted_diagnostic is None
 
 
 def test_spawn_permission_error_is_classified_and_streams_unavailable(tmp_path, monkeypatch):
@@ -372,6 +385,7 @@ def test_spawn_permission_error_is_classified_and_streams_unavailable(tmp_path, 
     assert observation.status == "error"
     assert observation.error_class == "spawn:PermissionError"
     assert observation.stdout_byte_count is None
+    assert observation.untrusted_diagnostic is None
 
 
 def test_subprocess_communication_failure_is_infrastructure_error(tmp_path, monkeypatch):
@@ -400,6 +414,7 @@ def test_subprocess_communication_failure_is_infrastructure_error(tmp_path, monk
     assert observation.status == "error"
     assert observation.error_class == "communication:RuntimeError"
     assert observation.stdout_byte_count is None
+    assert observation.untrusted_diagnostic is None
 
 
 def test_timeout_kills_and_reaps_direct_child(tmp_path):
@@ -412,8 +427,66 @@ def test_timeout_kills_and_reaps_direct_child(tmp_path):
     pid = int(pid_file.read_text())
     assert observation.status == "error" and observation.error_class == "timeout"
     assert observation.stdout_byte_count is None
+    assert observation.untrusted_diagnostic is None
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+def test_fail_observation_carries_bounded_untrusted_diagnostic_capture(tmp_path):
+    stdout_payload = b"fail-stdout-body"
+    stderr_payload = b"fail-stderr-body"
+    code = (
+        "import sys; "
+        f"sys.stdout.buffer.write({stdout_payload!r}); "
+        f"sys.stderr.buffer.write({stderr_payload!r}); "
+        "sys.exit(1)"
+    )
+    prepared = prepare_evidence_commands(
+        ("fail",), {"fail": EvidenceCommand((sys.executable, "-c", code), 10)}, tmp_path
+    )[0]
+    observation = PRODUCTION_EVIDENCE_RUNNER.observe(prepared)
+    assert observation.status == "fail"
+    diagnostic = observation.untrusted_diagnostic
+    assert diagnostic is not None
+    assert base64.b64decode(diagnostic.stdout_tail_base64) == stdout_payload
+    assert diagnostic.stdout_tail_truncated is False
+    assert base64.b64decode(diagnostic.stderr_tail_base64) == stderr_payload
+    assert diagnostic.stderr_tail_truncated is False
+    # Existing trusted facts remain the untruncated original digests/counts.
+    assert observation.stdout_byte_count == len(stdout_payload)
+    assert observation.stdout_sha256 == hashlib.sha256(stdout_payload).hexdigest()
+    assert observation.stderr_byte_count == len(stderr_payload)
+    assert observation.stderr_sha256 == hashlib.sha256(stderr_payload).hexdigest()
+    assert observation.artifact_ref is None
+
+
+@pytest.mark.parametrize(
+    ("overflow", "expected_truncated"),
+    [(-1, False), (0, False), (1, True), (509, True)],
+)
+def test_fail_diagnostic_capture_bounds_each_stream_to_16kib_tail(
+    tmp_path, overflow, expected_truncated
+):
+    limit = evidence.UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES
+    size = limit + overflow
+    payload = bytes((index % 251) for index in range(size))
+    code = (
+        "import sys; "
+        f"sys.stdout.buffer.write(bytes((i % 251) for i in range({size}))); "
+        "sys.exit(3)"
+    )
+    prepared = prepare_evidence_commands(
+        ("fail",), {"fail": EvidenceCommand((sys.executable, "-c", code), 10)}, tmp_path
+    )[0]
+    observation = PRODUCTION_EVIDENCE_RUNNER.observe(prepared)
+    assert observation.status == "fail"
+    diagnostic = observation.untrusted_diagnostic
+    captured_stdout = base64.b64decode(diagnostic.stdout_tail_base64)
+    assert captured_stdout == payload[-limit:]
+    assert len(captured_stdout) == min(size, limit)
+    assert diagnostic.stdout_tail_truncated is expected_truncated
+    # The pre-existing trusted byte count always reflects the untruncated original size.
+    assert observation.stdout_byte_count == size
 
 
 def test_exact_attempt_projection_has_no_output_body_or_combined_digest(tmp_path):
@@ -429,10 +502,15 @@ def test_exact_attempt_projection_has_no_output_body_or_combined_digest(tmp_path
         "path_source", "path_digest", "exit_code", "signal", "error_class",
         "stdout_byte_count", "stdout_sha256", "stdout_body_omitted",
         "stderr_byte_count", "stderr_sha256", "stderr_body_omitted",
+        "untrusted_diagnostic",
     }
     assert data["provider"] == data["command_name"] == "audit"
     assert "digest" not in data
     assert not any(key in data for key in ("stdout", "stderr", "output", "body"))
+    # A "pass" observation must never carry the untrusted diagnostic capture.
+    assert observation.status == "pass"
+    assert observation.untrusted_diagnostic is None
+    assert data["untrusted_diagnostic"] is None
 
 
 def git(repository: Path, *args: str) -> str:

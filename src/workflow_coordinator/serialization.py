@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import hashlib
 import re
@@ -77,6 +79,7 @@ from .model import (
     SuccessorProvenance,
     StagedQualificationAttempt,
     StatFingerprint,
+    UntrustedDiagnosticCapture,
     WorkItem,
     WorkflowProfile,
     WorkflowRole,
@@ -1618,11 +1621,51 @@ def _stat_fingerprint(value: Any, *, context: str) -> StatFingerprint | None:
     )
 
 
+def _base64_string(value: Any, *, context: str) -> str:
+    if not isinstance(value, str):
+        raise ValidationError(f"{context} must be a base64-encoded string")
+    try:
+        base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValidationError(f"{context} must be a base64-encoded string") from error
+    return value
+
+
+def _untrusted_diagnostic(value: Any, *, context: str) -> UntrustedDiagnosticCapture | None:
+    if value is None:
+        return None
+    data = _fields(
+        value,
+        context=context,
+        required={
+            "stdout_tail_base64",
+            "stdout_tail_truncated",
+            "stderr_tail_base64",
+            "stderr_tail_truncated",
+        },
+    )
+    return UntrustedDiagnosticCapture(
+        stdout_tail_base64=_base64_string(
+            data["stdout_tail_base64"], context=f"{context}.stdout_tail_base64"
+        ),
+        stdout_tail_truncated=_boolean(
+            data["stdout_tail_truncated"], context=f"{context}.stdout_tail_truncated"
+        ),
+        stderr_tail_base64=_base64_string(
+            data["stderr_tail_base64"], context=f"{context}.stderr_tail_base64"
+        ),
+        stderr_tail_truncated=_boolean(
+            data["stderr_tail_truncated"], context=f"{context}.stderr_tail_truncated"
+        ),
+    )
+
+
 def _observation(value: Any, *, context: str) -> Observation:
     data = _fields(
         value,
         context=context,
-        required={field.name for field in fields(Observation)},
+        required={field.name for field in fields(Observation)} - {"untrusted_diagnostic"},
+        optional={"untrusted_diagnostic"},
     )
     status = _string(data["status"], context=f"{context}.status")
     if status not in {"pass", "fail", "error", "not_run"}:
@@ -1707,6 +1750,9 @@ def _observation(value: Any, *, context: str) -> Observation:
         stderr_byte_count=stream_values["stderr"][0],
         stderr_sha256=stream_values["stderr"][1],
         stderr_body_omitted=stream_values["stderr"][2],
+        untrusted_diagnostic=_untrusted_diagnostic(
+            data.get("untrusted_diagnostic"), context=f"{context}.untrusted_diagnostic"
+        ),
     )
 
 

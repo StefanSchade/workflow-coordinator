@@ -178,8 +178,42 @@ def test_checkpoint_is_deterministic_and_derives_routes_from_profile(tmp_path):
     assert first["next_permitted_route_keys"] == ["a_route", "z_route"]
     assert first["budget"] == {"used": 0, "remaining": 2}
     assert first["evidence"][0]["status"] == "pass"
+    assert first["evidence"][0]["untrusted_diagnostic"] is None
     assert "project_memory" not in first
     assert "convergence_facts" not in first
+
+
+def test_observation_to_data_projects_untrusted_diagnostic_without_disturbing_trusted_fields(
+    tmp_path,
+):
+    from workflow_coordinator.model import UntrustedDiagnosticCapture
+    from workflow_coordinator.persistence import observation_to_data
+
+    command = prepared_evidence(tmp_path)["tests"]
+    diagnostic = UntrustedDiagnosticCapture(
+        stdout_tail_base64="aGVsbG8=",
+        stdout_tail_truncated=False,
+        stderr_tail_base64="",
+        stderr_tail_truncated=True,
+    )
+    without_diagnostic = simulated_observation(command, status="fail", summary="exit 1")
+    with_diagnostic = replace(without_diagnostic, untrusted_diagnostic=diagnostic)
+
+    base_data = observation_to_data(without_diagnostic)
+    diagnostic_data = observation_to_data(with_diagnostic)
+
+    assert base_data["untrusted_diagnostic"] is None
+    assert diagnostic_data["untrusted_diagnostic"] == {
+        "stdout_tail_base64": "aGVsbG8=",
+        "stdout_tail_truncated": False,
+        "stderr_tail_base64": "",
+        "stderr_tail_truncated": True,
+    }
+    # No existing trusted field's projection is disturbed by the new field's presence.
+    trusted_keys = set(base_data) - {"untrusted_diagnostic"}
+    assert {key: diagnostic_data[key] for key in trusted_keys} == {
+        key: base_data[key] for key in trusted_keys
+    }
 
 
 def test_checkpoint_optionally_projects_derived_convergence_facts_and_sources():

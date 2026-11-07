@@ -77,6 +77,16 @@ def observation_to_data(observation: Observation) -> dict[str, Any]:
         "stderr_byte_count": observation.stderr_byte_count,
         "stderr_sha256": observation.stderr_sha256,
         "stderr_body_omitted": observation.stderr_body_omitted,
+        "untrusted_diagnostic": (
+            None
+            if observation.untrusted_diagnostic is None
+            else {
+                "stdout_tail_base64": observation.untrusted_diagnostic.stdout_tail_base64,
+                "stdout_tail_truncated": observation.untrusted_diagnostic.stdout_tail_truncated,
+                "stderr_tail_base64": observation.untrusted_diagnostic.stderr_tail_base64,
+                "stderr_tail_truncated": observation.untrusted_diagnostic.stderr_tail_truncated,
+            }
+        ),
     }
 
 
