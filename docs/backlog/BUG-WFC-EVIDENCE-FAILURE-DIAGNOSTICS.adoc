@@ -1,0 +1,158 @@
+= BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS -- Failed Trusted A2 Evidence Observations Carry No Recoverable Diagnostic Signal
+
+Type:: bug -- evidence/diagnostics ergonomics gap (not an A2-contract defect;
+WFC-EVID-08's non-persistence of the stdout/stderr body is deliberate and is
+not reopened by this record).
+Status:: open (correction commissioned as `WI-WFC-EVIDENCE-FAILURE-DIAGNOSTICS-001`;
+not yet implemented, reviewed, or accepted).
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Next action:: Execute the already commissioned bounded correction and its independent review.
+Not authorized here:: Any general logging architecture; any change to the A2
+trusted digest/body-omission contract (WFC-EVID-08); any new permission
+profile; any workflow-semantics change; remediation of the distinct
+correction-cycling-with-idle-worker failure mode observed in the same Run
+(tracked only as an unlabelled ledger observation, not this record's
+concern); any edit to `scripts/archive_run.py` or any other file in the
+sibling `workflow-coordinator-run-evidence` repository (cross-repository,
+separately authorized later); and no Runtime promotion beyond what the
+maintainer has already separately decided for the Claude adapter environment
+allowlist.
+Date:: 2026-11-07.
+Discovery:: Run `RUN-b435ab0c7e394eb5912330c38b5eca5b`,
+`WI-WFC-CLAUDE-ADAPTER-ENVIRONMENT-ALLOWLIST-001`, which exhausted its 10-Hop
+budget (`awaiting_human_budget`) despite five independent review passes
+finding no blocking implementation defect. Archived at
+`workflow-coordinator-run-evidence` `archive/unclassified/wfc-claude-adapter-environment-allowlist-001-20261107-01/`;
+semantic ledger entry at `project_memory/run_ledger.adoc:1743-1764` in that
+repository, which records this gap as an observed fact without opening a
+BUG/FTR itself.
+
+== Observed behavior
+
+Every one of the five `task-check` trusted evidence observations in that Run
+(Hops H002/H004/H006/H008/H010) persisted an identical exit classification
+(`status="fail"`, `exit_code=1`), identical `stdout_byte_count=3119`, an
+empty `stderr`, and `stdout_body_omitted=true` with `artifact_ref=null` --
+but five different `stdout_sha256` digests. The digests prove the five runs'
+actual output differed; nothing durable records *how*. A correction Hop
+receiving only this record cannot localize the failure without re-running
+`task-check` itself.
+
+This is implemented exactly as designed: `evidence.py:188-233`
+(`_stream_facts`/`_observation`) reduces any captured `stdout`/`stderr`
+bytes to `(byte_count, sha256, body_omitted)` and hard-codes
+`artifact_ref=None` (`evidence.py:213`); `ProductionEvidenceRunner.observe`'s
+`"fail"` branch (`evidence.py:316-326`) has the real captured bytes in hand
+at the moment it calls `_observation`, and discards them immediately
+afterward. `model.py:757,771-776` carry the corresponding `Observation`
+fields; `persistence.py:54,76` and `serialization.py:1680,1706` project and
+parse them unchanged. None of this is a defect in that code -- it is doing
+exactly what WFC-EVID-08 requires.
+
+== Why this is a diagnostics gap, not an A2-contract defect
+
+WFC-EVID-08 (originating in the non-authoritative
+`docs/imported/core-incubator/FTR-AGENT-WORKFLOW-COORDINATOR-P5.adoc:771-780`,
+restated as current fact in `docs/wfc_operator_manual.adoc:785-803`, §16)
+requires: "No stdout or stderr body shall be durable A2 evidence... the
+durable summary shall be generated only from Coordinator outcome facts and
+shall not copy command output," uniformly across pass/fail/error. §16 itself
+already names the consequence as "a known limitation of the current evidence
+persistence, not something redesigned here" -- i.e. this record documents
+exactly the gap the operator manual already flags as unaddressed, now with
+concrete Run evidence of its cost (a 10-Hop budget exhausted partly on
+correction cycles against evidence nobody could read).
+
+This record does not propose weakening, removing, or reinterpreting
+WFC-EVID-08, the A2 trusted-evidence/untrusted-telemetry boundary
+(`DEC-WFC-006`), or any existing digest/body-omission field. The desired
+correction is a second, explicitly untrusted channel alongside the
+unchanged trusted `Observation`, not a change to it.
+
+== Relation to neighboring records
+
+Two existing open records are adjacent in name but do not cover this gap,
+as the ledger entry above already confirms by direct inspection:
+
+* `docs/backlog/BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION.adoc` concerns
+  `AgentExecutionOutcome.stdout`/`stderr`/`diagnostics` -- provider-transport
+  telemetry discarded in `operator.py`, a different boundary than
+  `evidence.py`'s own A2 observation of a trusted evidence *command*
+  (`task-check`).
+* `docs/backlog/BUG-WFC-EVIDENCE-COMMAND-RESOLUTION-DIAGNOSTICS.adoc`
+  concerns executable-resolution-time errors (`python` vs `python3`) raised
+  *before* a command spawns; it says nothing about retaining output from a
+  command that did run.
+
+== Desired direction (commissioned)
+
+A bounded, explicitly untrusted diagnostic capture, populated only when a
+trusted A2 evidence observation's status is not `"pass"` (i.e. the `"fail"`
+branch, `evidence.py:316-326`, where real bytes already exist in-process):
+at most a 16 KiB tail of each of `stdout`/`stderr`, with truncation
+metadata (at minimum, whether truncation occurred and the original byte
+count -- the existing `stdout_byte_count`/`stderr_byte_count` fields already
+carry the latter, so this likely does not need to be repeated). The existing
+trusted `stdout_byte_count`/`stdout_sha256`/`stdout_body_omitted` fields (and
+their `stderr` counterparts) must remain byte-for-byte unchanged in value and
+meaning; the new capture must not be written into `Observation.artifact_ref`
+or any other existing A2-contract field, and must be identifiable by a
+reviewer as diagnostic/untrusted rather than trusted A2 evidence. Never
+capture anything on a `"pass"` status. Where the diagnostic content is
+stored, and exactly how it is referenced from the trusted record without
+becoming part of it, is an implementation decision for the commissioned
+WorkItem, not fixed by this record.
+
+Handling expectations the implementation must still satisfy: the captured
+tail can contain paths or environment-dependent detail, so it must be
+treated with the same sensitivity as other untrusted telemetry, never copied
+into a trusted record, and never widened into a general log. Extending the
+Git-backed evidence archive's own allow-list (`scripts/archive_run.py`, in
+the separate `workflow-coordinator-run-evidence` repository) to recognize
+and retain this new, small artifact type is a necessary follow-up but is
+explicitly out of this WorkItem's scope -- it lives in a different
+repository that no self-development Run operates on.
+
+== Non-scope
+
+A future correction must not: introduce a general logging architecture or
+framework; change any A2 digest/body-omission field or WFC-EVID-08 itself;
+add a new permission profile; change workflow/Hop/review semantics;
+address the separate correction-cycling-with-idle-worker observation from
+the same Run; touch `scripts/archive_run.py` or any other file in
+`workflow-coordinator-run-evidence`; capture anything on a successful
+(`"pass"`) observation; or widen Runtime promotion beyond the Claude
+adapter environment-allowlist decision the maintainer has already made
+separately.
+
+== Evidence pointers
+
+* `src/workflow_coordinator/evidence.py:188-233,239-326` (`_stream_facts`,
+  `_observation`, `ProductionEvidenceRunner.observe`).
+* `src/workflow_coordinator/model.py:757,771-776` (`Observation` fields).
+* `src/workflow_coordinator/persistence.py:54,76` and
+  `src/workflow_coordinator/serialization.py:1680,1706` (projection/parsing).
+* `docs/imported/core-incubator/FTR-AGENT-WORKFLOW-COORDINATOR-P5.adoc:771-780`
+  (WFC-EVID-08, historical, non-authoritative source) and
+  `docs/wfc_operator_manual.adoc:785-803` (§16, current authoritative
+  restatement, naming this exact limitation).
+* `docs/backlog/BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION.adoc`,
+  `docs/backlog/BUG-WFC-EVIDENCE-COMMAND-RESOLUTION-DIAGNOSTICS.adoc`
+  (adjacent, non-covering records).
+* Run context: `RUN-b435ab0c7e394eb5912330c38b5eca5b`,
+  `WI-WFC-CLAUDE-ADAPTER-ENVIRONMENT-ALLOWLIST-001`, archived at
+  `workflow-coordinator-run-evidence`
+  `archive/unclassified/wfc-claude-adapter-environment-allowlist-001-20261107-01/`,
+  ledger entry at `project_memory/run_ledger.adoc:1743-1764` in that
+  repository.
+
+== Lifecycle
+
+This BUG is *open*. The maintainer has commissioned a bounded correction,
+`WI-WFC-EVIDENCE-FAILURE-DIAGNOSTICS-001` (see "Desired direction" above),
+to give a future correction Hop a recoverable diagnostic signal for a failed
+trusted evidence observation without weakening the A2 trusted-evidence
+boundary or widening the Git evidence archive's contents. No implementation
+has been made and no Run has been launched by this record: only the
+WorkItem, its dedicated profile/policy, and its task text exist so far. Only
+an accepted review of that WorkItem's implementation may close this BUG.
