@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .adapter import (
@@ -27,6 +28,13 @@ class ClaudeCliError(ExecutionNotStartedError, RuntimeError):
 
 
 _TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
+_ENVIRONMENT_NAMES = ("PATH", "HOME", "USER", "LANG")
+
+
+def _extra_environment_names() -> tuple[str, ...]:
+    """Read comma-separated additional environment names once at construction."""
+    value = os.environ.get("WFC_CLAUDE_EXTRA_ENV_NAMES", "")
+    return tuple(name.strip() for name in value.split(",")) if value else ()
 
 # Claude Code derives its own per-session IPC directory from TMPDIR (keyed by
 # uid, the launch cwd with "/" replaced by "-", and a session UUID) and binds
@@ -51,8 +59,15 @@ class ClaudeCliAdapter:
     model: str
     reasoning_effort: str
     executable: str = "claude"
+    extra_environment_names: tuple[str, ...] = field(default_factory=_extra_environment_names)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.extra_environment_names, tuple):
+            raise ValueError("Claude CLI extra environment names must be a tuple")
+        for name in self.extra_environment_names:
+            if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+                    or name.startswith("CLAUDE_CODE_") or name in {"TMPDIR", "TMP", "TEMP"}):
+                raise ValueError("invalid or reserved Claude CLI extra environment name")
         for name, value in (("model", self.model), ("reasoning_effort", self.reasoning_effort)):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"Claude CLI {name} must be explicit and non-empty")
@@ -85,8 +100,6 @@ class ClaudeCliAdapter:
             },
             "permissions": {
                 # Restricted mode confines file tools to the working directory.
-                # Allow both file tools if environment scrubbing forces the
-                # requested permission mode to default.
                 "allow": ["Edit", "Write"],
                 "deny": ["WebFetch", "WebSearch"],
                 "blockReadsOutsideWorkingDirectories": True,
@@ -146,9 +159,11 @@ class ClaudeCliAdapter:
                 atomic_write_json(schema, schema_object)
                 atomic_write_json(settings, self._settings(request))
                 environment = {
-                    **os.environ, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
-                    "TMPDIR": str(tmp_dir), "TMP": str(tmp_dir), "TEMP": str(tmp_dir),
+                    name: os.environ[name]
+                    for name in (*_ENVIRONMENT_NAMES, *self.extra_environment_names)
+                    if name in os.environ
                 }
+                environment.update(TMPDIR=str(tmp_dir), TMP=str(tmp_dir), TEMP=str(tmp_dir))
                 child = subprocess.Popen(
                     self.argv(
                         request,

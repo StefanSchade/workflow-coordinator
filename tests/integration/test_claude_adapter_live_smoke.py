@@ -95,3 +95,37 @@ def test_real_claude_cli_bash_sandbox_initializes_with_a_long_ambient_tmpdir(
     assert result["outcome"] == "completed", result["summary"]
     assert "sandbox" not in result["summary"].lower() or "no sandbox" in result["summary"].lower()
     assert not tmp_dir.exists(), "subprocess TMPDIR was not cleaned up"
+
+
+@pytest.mark.skipif(
+    not (_CLAUDE_EXECUTABLE and _OPT_IN),
+    reason="optional live-provider integration: set WFC_RUN_LIVE_CLAUDE_SMOKE=1 with authenticated claude",
+)
+def test_real_claude_worker_bash_creates_authorized_file(tmp_path: Path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    results = tmp_path / "results"
+    results.mkdir()
+    adapter = ClaudeCliAdapter(results, model="claude-sonnet-5", reasoning_effort="low",
+                               executable=_CLAUDE_EXECUTABLE)
+    invocation = Invocation("RUN-LIVEBASH", "H001", "INV-LIVEBASH")
+    request = AgentExecutionRequest(
+        invocation=invocation,
+        prompt=(
+            "You are authorized to create files under smoke-output/. Use the Bash tool to run exactly "
+            "this command: mkdir -p smoke-output && printf 'wfc-bash-ok' > smoke-output/result.txt\n"
+            "Return a JSON object matching the supplied schema, using its required correlation values. "
+            "Set result.outcome to completed only if the Bash command succeeded; otherwise set it "
+            "to blocked. Set requested_route to smoke_test, scope_changed and requires_human to false, "
+            "escalation and commit_intent to null, findings, claimed_commits and evidence_refs to [], "
+            "and summary to what happened."
+        ),
+        repository=repository, result_contract=ROUTING_RESULT_ENVELOPE_CONTRACT,
+        timeout_seconds=120, permitted_routes=("smoke_test",),
+    )
+    outcome = adapter.execute(request)
+    assert outcome.returncode == 0 and not outcome.timed_out, (outcome.stdout, outcome.stderr)
+    assert outcome.candidate_result is not None, outcome.stdout
+    result = json.loads(outcome.candidate_result)["result"]
+    assert result["outcome"] == "completed", result["summary"]
+    assert (repository / "smoke-output" / "result.txt").read_text() == "wfc-bash-ok"

@@ -38,7 +38,7 @@ def adapter(tmp_path: Path, executable: Path) -> ClaudeCliAdapter:
     return ClaudeCliAdapter(tmp_path, model="claude-model", reasoning_effort="high", executable=str(executable))
 
 
-def test_exact_closed_argv_profile_settings_cwd_prompt_and_scrubbed_environment(tmp_path: Path):
+def test_exact_closed_argv_profile_settings_cwd_prompt_and_environment(tmp_path: Path):
     observed = tmp_path / "observed.json"
     executable = fake(tmp_path, f'''\
         import json, os, pathlib, sys
@@ -78,7 +78,7 @@ def test_exact_closed_argv_profile_settings_cwd_prompt_and_scrubbed_environment(
     assert result_schema["properties"]["requested_route"]["enum"] == ["broad_review"]
     forbidden = ("codex", "--mcp-config", "--allowed-tools", "--fallback-model", "--resume", "--continue", "--add-dir", "--dangerously-skip-permissions")
     assert not any(item in argv for item in forbidden)
-    assert observation["cwd"] == str(tmp_path) and observation["scrub"] == "1"
+    assert observation["cwd"] == str(tmp_path) and observation["scrub"] is None
     assert observation["settings"] == {"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False, "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path)]}, "network": {"allowedDomains": []}}, "permissions": {"allow": ["Edit", "Write"], "deny": ["WebFetch", "WebSearch"], "blockReadsOutsideWorkingDirectories": True}}
     assert outcome.returncode == 0 and not outcome.timed_out
     assert json.loads(outcome.candidate_result or "{}") == envelope(Invocation("RUN-C", "H001", "INV-C"))
@@ -102,13 +102,51 @@ def test_edit_grant_uses_only_resolved_repository_as_working_directory(tmp_path:
     adapter(tmp_path, executable).execute(request(alias))
     result = json.loads(observed.read_text())
     assert result["cwd"] == str(repository.resolve())
-    assert result["scrub"] == "1"
+    assert result["scrub"] is None
     assert "--restricted" in result["args"]
     assert "--add-dir" not in result["args"]
     assert result["settings"]["permissions"]["allow"] == ["Edit", "Write"]
     assert result["settings"]["sandbox"]["filesystem"] == {
         "denyRead": ["~/"], "allowRead": [str(repository.resolve())],
     }
+
+
+def test_child_environment_is_explicit_and_extra_names_are_additive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HOME", "/example/home")
+    monkeypatch.setenv("USER", "example")
+    monkeypatch.setenv("LANG", "C.UTF-8")
+    monkeypatch.setenv("UNRELATED_SECRET", "never-copy")
+    monkeypatch.setenv("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "nested-session")
+    monkeypatch.delenv("WFC_CLAUDE_EXTRA_ENV_NAMES", raising=False)
+    observed = tmp_path / "environment.json"
+    executable = fake(tmp_path, f'''\
+        import json, os, pathlib
+        pathlib.Path({str(observed)!r}).write_text(json.dumps(dict(os.environ)))
+    ''')
+    instance = adapter(tmp_path, executable)
+    instance.execute(request(tmp_path))
+    baseline = json.loads(observed.read_text())
+    expected_tmp = str(instance._short_subprocess_tmp_dir(request(tmp_path)))
+    assert baseline == {"PATH": "/usr/bin:/bin", "HOME": "/example/home", "USER": "example",
+                        "LANG": "C.UTF-8", "TMPDIR": expected_tmp, "TMP": expected_tmp, "TEMP": expected_tmp}
+
+    monkeypatch.setenv("WFC_CLAUDE_EXTRA_ENV_NAMES", "EXTRA_ONE, EXTRA_TWO,MISSING")
+    monkeypatch.setenv("EXTRA_ONE", "old")
+    extended = adapter(tmp_path, executable)
+    monkeypatch.setenv("EXTRA_ONE", "at-launch")
+    monkeypatch.setenv("EXTRA_TWO", "second")
+    monkeypatch.setenv("WFC_CLAUDE_EXTRA_ENV_NAMES", "UNRELATED_SECRET")
+    extended.execute(request(tmp_path))
+    assert json.loads(observed.read_text()) == {**baseline, "EXTRA_ONE": "at-launch", "EXTRA_TWO": "second"}
+
+
+@pytest.mark.parametrize("names", ["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "CLAUDE_CODE_SESSION_ID", "X=value", "TMPDIR", "OK,,OTHER"])
+def test_extra_environment_names_reject_reserved_or_non_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, names: str):
+    monkeypatch.setenv("WFC_CLAUDE_EXTRA_ENV_NAMES", names)
+    with pytest.raises(ValueError, match="invalid or reserved"):
+        adapter(tmp_path, tmp_path / "unused")
 
 
 def test_successful_wrapper_candidate_is_still_validated_by_wfc(tmp_path: Path):
