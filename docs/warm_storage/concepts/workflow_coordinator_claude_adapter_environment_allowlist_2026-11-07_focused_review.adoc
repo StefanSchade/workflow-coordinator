@@ -1,0 +1,148 @@
+= Claude adapter environment allowlist: focused review
+
+Work item:: WI-WFC-CLAUDE-ADAPTER-ENVIRONMENT-ALLOWLIST-001
+Run:: RUN-b435ab0c7e394eb5912330c38b5eca5b
+Review hop:: H004, independent reviewer
+Reviewed HEAD:: `cb1d6aa77dd8a471aae9485cf778a481e21059a5`
+Implementation candidate:: `464aefe3d3438bc66b110725de68def316238ffa`
+Verdict:: Accept on deterministic implementation grounds; no blocking findings. Request `renew_broad_review`; the Coordinator-owned evidence gate remains separate.
+
+== Diagnosis and bounded correction
+
+The reviewer read the full permission-mismatch bug record and section 2 of
+the execution-integration-debt record, the commission's recorded authority
+source, the candidate diff against `725b329`, and the H002 broad review.
+H003 produced no implementation correction; this review assesses the same
+committed candidate independently.
+
+The maintainer's established controlled A/B experiment used identical
+adapter helpers and an explicit child-environment allowlist. With the scrub
+variable present, Claude reported forced-default permission mode and denied
+the authorized Bash command without an approval surface; its marker file
+was absent. Omitting that variable allowed the command to succeed and
+produce the expected marker. This is the supplied mechanism justification
+for removing forced scrubbing; this review did not reproduce the live
+experiment. Inspection independently confirms that the previous adapter
+both requested `acceptEdits` and forced scrubbing, while inheriting the
+entire parent environment and potentially its Claude session state.
+
+The replacement constructs a fresh dictionary from present values of exactly
+`PATH`, `HOME`, `USER`, and `LANG`, plus validated operator-selected names.
+These defaults cover executable discovery, file-based authentication, user
+identity, and locale. There is no environment copy, wildcard, fallback, or
+implicit inheritance of other names. The unchanged per-invocation temporary
+directory supplies `TMPDIR`, `TMP`, and `TEMP` separately.
+
+Omitting `XDG_RUNTIME_DIR` is supported by inspection, not assumed. Without
+executing it, the reviewer inspected embedded source in the installed
+`/home/stefan/.local/share/claude/versions/2.1.270` image. The Linux sandbox
+bridge imports `tmpdir` from `os`, constructs its HTTP/SOCKS sockets from
+that function, and discovers `bwrap` and `socat` as executables. That bridge
+does not require an XDG runtime directory. No additional default variable
+is justified for this mechanism. Host-specific needs can use the explicit
+extension rather than expanding every invocation's default environment.
+
+`WFC_CLAUDE_EXTRA_ENV_NAMES` is one comma-separated source of additional
+names, read at adapter construction; an explicit constructor tuple follows
+the same validation. Selected values are obtained from the orchestrating
+process at launch. Missing names are omitted. Identifier validation rejects
+assignments and malformed entries; prefix validation rejects every
+`CLAUDE_CODE_*` name, including a previously unknown name or the bare prefix.
+All three temporary-directory names are reserved. Selection is additive,
+defaults to empty, and has no settings, permissions, or scope interface.
+This is a narrow name-selection mechanism, not a general environment or
+permissions framework. Its operator documentation is present in the broad
+review artifact.
+
+== Security and regression assessment
+
+An independent AST comparison against `725b329` confirmed unchanged `argv`,
+`_settings`, and `_short_subprocess_tmp_dir` implementations. Inspection also
+confirmed the unchanged `/tmp` root, directory creation, TMP triplet,
+timeout handling, and cleanup. Restricted/safe mode, strict MCP configuration,
+the explicit tools, noninteractive permission flags, repository-root read
+grant, home-read denial, sandbox enablement and failure behavior, prohibition
+on unsandboxed commands, and empty network-domain allowlist remain intact.
+No blanket bypass, broader filesystem grant, retry, or governance change
+was introduced. WFC's post-Hop scope observation remains authoritative for
+accepted candidate scope; unchanged provider settings do not establish
+per-commission write containment.
+
+The new fake executable records the actual child environment. Its literal
+expected dictionary is independent of the production allowlist constant;
+it would fail under the previous environment-copy implementation. It plants
+scrub/session variables and an unrelated secret in the parent, checks exact
+default keys and values, and then proves additive selection, omitted missing
+names, construction-time name selection, and launch-time value lookup.
+Invalid/reserved-name cases exercise rejection. Existing tests retain their
+argv/settings, transport, result-validation, resolved-root, timeout, and
+short-TMPDIR intent, with only the obsolete forced-scrub expectation changed.
+
+The new live regression is gated by `WFC_RUN_LIVE_CLAUDE_SMOKE=1`, like its
+unchanged neighbor. It requests an authorized Bash directory/file creation
+and checks the resulting file's content as well as the reported outcome.
+Both live tests were skipped during this review. The test does not establish
+WFC candidate acceptance or a negative out-of-scope case.
+
+== Agent-local validation and evidence limits
+
+The following focused command passed, with both live Claude tests skipped:
+
+[source,shell]
+----
+env WFC_RUN_LIVE_CLAUDE_SMOKE=0 WFC_RUN_LIVE_CODEX_SMOKE=0 .venv/bin/python -m pytest -q tests/unit/test_claude_adapter_conformance.py tests/integration/test_claude_adapter_live_smoke.py tests/unit/test_codex_adapter_conformance.py tests/unit/test_codex_adapter_smoke.py
+----
+
+Additional ephemeral offline probes passed: direct-constructor rejection of
+the reserved Claude prefix and a novel session name, all TMP names,
+assignments, empty/malformed names; exact launch-boundary environment with
+missing default variables, a missing extra, a duplicate default selection,
+and an unselected ambient Claude sentinel; and temporary-directory cleanup.
+These probes and the AST comparison changed no production or test file.
+
+One broader agent-local run was performed with dependency downloads disabled:
+
+[source,shell]
+----
+env PIP_NO_INDEX=1 WFC_RUN_LIVE_CLAUDE_SMOKE=0 .venv/bin/python -m pytest -q
+----
+
+It exited 1. Its five failures and thirteen setup errors were all in
+`tests/unit/test_wfc_op.py`, where disposable test-environment preparation
+could not install build dependencies. The diagnostic was:
+
+[source,text]
+----
+ERROR: Could not find a version that satisfies the requirement setuptools>=68 (from versions: none)
+ERROR: No matching distribution found for setuptools>=68
+----
+
+The local output is `/tmp/wfc-allowlist-h004-pytest.log`. This is an
+agent-local offline dependency limitation, not an identified production
+defect or a successful full-suite result. No dependency was downloaded and
+no build-isolation or security restriction was bypassed. It does not establish
+the cause of the earlier Coordinator gate failure: no trusted gate
+diagnostics were projected for this hop. The separately executed
+Coordinator-owned `task-check` must still meet its configured gate; none of
+these agent-local checks substitutes for it. No current-Run Finding state
+was projected, and no historical label is treated as an authoritative
+Finding or given a disposition here.
+
+== Residual uncertainty and disposition
+
+The evidence supports the bounded environment correction. Provider-owned
+permission, authentication, sandbox, managed-host-policy, and version-specific
+behavior can still differ at runtime. This review does not establish the
+separate live-provider qualification described in the bug record, including
+authorized directory/file creation through WFC acceptance and the negative
+out-of-scope case. A real post-promotion WFC Hop under the corrected Runtime
+remains a distinct, subsequent, maintainer-owned integration-proof step.
+Both are non-blocking subsequent steps for this commission's deterministic
+acceptance and neither was performed or established here. No authenticated
+Claude or Codex invocation was initiated by this reviewer.
+
+No blocking implementation finding is opened. Accept and request renewed
+broad review, subject to Coordinator-owned evidence handling. H004 changes
+only this focused-review artifact; the source, tests, broad review, backlog,
+governance, Runtime, and Evidence remain unchanged by this review. Mechanical
+Git handling is left to the Coordinator through the CommitIntent.
