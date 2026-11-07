@@ -1,0 +1,233 @@
+= BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION -- The Claude Adapter's Short, `/tmp`-Rooted Subprocess `TMPDIR` Lets Agent-Launched Test Processes Exhaust the Host `tmpfs`
+
+Type:: bug -- Claude adapter resource-isolation gap (a distinct, causally
+identified failure mode; not the same concern as
+`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION`'s open, causally-undetermined
+`pytest` retention finding).
+Status:: open. No investigation or correction authorized by this record.
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Next action:: None authorized here. A bounded investigation, and only then a
+bounded correction, each require their own separately authorized maintainer
+Commission/WorkItem.
+Not authorized here:: Any change to `claude_adapter.py` or any other
+production source; any new Commission, profile, policy, or WFC Run; any
+Runtime promotion; any new permission profile or governance abstraction; any
+cleanup of `/tmp` material (the specific exhaustion this record documents
+was already cleaned, as a one-off operational measure, outside this
+record -- see "Observed behavior"); and any selection among the candidate
+directions listed below as a committed design.
+Date:: 2026-11-07.
+Classification:: Claude adapter resource-isolation finding, confirmed by a
+real self-development Run; realizes an evaluation question already recorded
+(unconfirmed) in
+link:FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT.adoc[FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT].
+Discovery:: Maintainer-operator monitoring of Run
+`RUN-b112595129b34f4c97806f634a0b7133`
+(`WI-WFC-EVIDENCE-FAILURE-DIAGNOSTICS-001`), interactive session 2026-11-07.
+
+== Observed behavior
+
+The Claude adapter gives the Claude CLI subprocess a short, invocation-scoped
+`TMPDIR` rooted at the ambient system `/tmp`
+(`src/workflow_coordinator/claude_adapter.py:39-47`,
+`_SHORT_TMP_ROOT = Path("/tmp")`; `_short_subprocess_tmp_dir()` at
+`:110-116`; applied at `:149,166`). This exists for a narrow, already-
+accepted reason, unrelated to this record's concern: Claude Code derives its
+Bash-tool sandbox's `AF_UNIX` IPC-bridge socket path from `TMPDIR`, and
+`sockaddr_un.sun_path` is capped at 108 bytes, so a long, human-readable,
+Attempt-scoped `TMPDIR` reliably breaks sandbox initialization (fixed by
+commit `4776fd0`, "give the Claude CLI subprocess a short TMPDIR", qualified
+by the opt-in live smoke test added in the immediately following commit).
+
+Bash-tool commands the Claude CLI launches during a Hop inherit this same
+short, `/tmp`-rooted `TMPDIR` (unless a command sets its own). During
+`WI-WFC-EVIDENCE-FAILURE-DIAGNOSTICS-001`'s H002 (independent-review) Hop,
+the worker/reviewer agent's own exploratory validation included running
+`pytest` via the Bash tool. `pytest`'s own temporary-directory machinery
+honors inherited `TMPDIR`, so its session/fixture material -- which can be
+extensive, including fixtures in `tests/unit/test_wfc_op.py` that
+materialize real exported repository trees and `pip`-installed virtual
+environments -- landed on the same small host `/tmp` `tmpfs`, not on the
+Attempt's own large-filesystem scratch
+(`$HOME/wfc-scratch/<attempt>`, established by FD-08; see "Relation to
+FD-08" below).
+
+Concretely: `/tmp` reached **1,048,576 / 1,048,576 inodes (100%)**, almost
+entirely (530,457 files) under three `pytest-of-stefan` session directories
+(`pytest-10`, `pytest-11`, and their `pytest-current` symlink target), each
+around 265,000 files. Observed effect on the interactive maintainer-operator
+session monitoring the Run: every `Bash` tool call began failing with
+`ENOSPC: no space left on device` while creating its own small working
+files, for several minutes, independent of and in addition to whatever the
+Run's own Claude CLI subprocess experienced. The Run's own trusted
+`task-check` evidence was unaffected (it executes in the Harness-built
+`dev-env`, not under the agent's short `/tmp` `TMPDIR`), and the Run
+completed normally at Hop 2 with no anomaly recorded. The exhausted `/tmp`
+material was removed as a one-off operational cleanup, confirmed first that
+no process still referenced it; this is recorded as a fact about what
+happened, not as an authorization for future cleanup, and is explicitly
+outside this record's own scope (see "Not authorized here").
+
+The independent reviewer's own broad-review artifact for that same Hop
+independently reports the identical class of symptom from inside the Run
+itself: "denied `pypi.org:443` egress for the real venv installs those
+tests build and exhaustion of the sandbox temporary filesystem; repeat runs
+could not complete once that filesystem filled, and redirecting or clearing
+it was not permitted" -- correctly classified there as an agent-local
+environmental limitation, not a candidate defect, and not Coordinator-
+trusted evidence
+(`docs/warm_storage/concepts/workflow_coordinator_evidence_failure_diagnostics_2026-11-07_broad_review.adoc`).
+That classification is correct and is not reopened here; this record exists
+because the *same* underlying resource collision also affected the
+interactive operator session directly, and because its causal mechanism is
+now concretely identified and worth recording precisely.
+
+== Relation to `BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION`
+
+That record documents a `/tmp` `tmpfs` exhaustion with the *same symptom
+shape* (retained `pytest-of-stefan` session directories exhausting `/tmp`
+inodes; 607,722/1,048,576 inodes there, versus 1,048,576/1,048,576 here) but
+explicitly declines to attribute a cause: "This record does not establish...
+which specific fixture(s), test module(s), or invocation pattern(s) are
+responsible." Its disposition is `LATER`, filed under test consolidation,
+not reopened by this record.
+
+This record is deliberately narrower and more specific: it identifies one
+concrete, confirmed causal path -- the Claude adapter's short, `/tmp`-rooted
+subprocess `TMPDIR` (`claude_adapter.py:39-47,110-116`) being inherited by
+agent-launched Bash-tool test processes -- that is sufficient on its own to
+reproduce the same symptom shape, independent of whatever other causes
+`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION`'s own open questions may still
+cover for ordinary (non-agent-launched) local test runs. The two records
+are not merged: this one is scoped to the Claude-adapter-specific causal
+path; that one remains scoped to the general, causally-open retention
+question. A future correction of either should check whether it also
+addresses the other, but neither record claims that for itself.
+
+== Relation to FD-08 and the socket-path TMPDIR history
+
+FD-08 ("Launcher Scratch Management",
+`docs/cold_storage/backlog/pre-0.1.0b1/front-door/workflow_coordinator_fd08_scratch_investigation_2026-10-30.adoc`,
+implemented under `WI-WFC-FD08-ATTEMPT-SCRATCH-001`) deliberately moved the
+*Harness*'s own `TMPDIR`/`TMP`/`TEMP` away from the ambient system `/tmp` to
+a private, Attempt-scoped directory under `$HOME/wfc-scratch` (a large,
+non-`tmpfs` filesystem), motivated by the distinct 2026-10-28 incident
+recorded in
+`docs/cold_storage/backlog/pre-0.1.0b1/infrastructure-and-incidents/2026-10-28_tmpfs_exhaustion.adoc`.
+Commit `4776fd0`'s socket-path fix, authored afterward to solve the
+`AF_UNIX` path-length problem, reintroduced a `/tmp` dependency one level
+deeper -- inside the Claude adapter's own subprocess environment -- without
+revisiting FD-08's rationale for moving away from it, because it was
+solving a narrower, locally correct problem (socket path length, not
+general scratch placement) within its own Commission's authorized scope.
+
+`FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT.adoc` already records
+this exact tension as an open, unconfirmed evaluation question: "Should a
+provider adapter's own short-lived, short-path temp-directory need be
+requested from a Harness-owned allocator... rather than each adapter
+hardcoding `/tmp` independently?" -- explicitly "not a reopening of
+`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION`'s own open causal questions." This
+record is the first confirmed incident realizing that evaluation question;
+it does not itself answer it.
+
+== Product requirement
+
+WFC must be able to give a provider subprocess (today, the Claude CLI) a
+short temporary path for socket/IPC purposes without that short path also
+becoming the destination for unrelated, potentially large volumes of
+temporary material the subprocess or its own child processes (such as an
+agent-launched `pytest` run) may create. The two needs -- a short *path*
+(bytes, for `sun_path`) and a large-capacity, Attempt-isolated *filesystem*
+(for bulk material) -- are presently conflated onto one `TMPDIR` value and
+must not be.
+
+=== Portability constraint
+
+Any correction must assume as little as possible about the host
+environment. In particular, it must not require, as an ordinary
+precondition, a privileged or administrative host change (such as a
+system-wide `/tmp` resize, an administrator-installed symlink, or a mount
+performed outside WFC's own process tree). It must remain usable, without
+such a precondition, at minimum on Ubuntu under WSL and in restrictive
+corporate environments where the operator cannot assume elevated host
+privileges. A correction that works only given such a precondition is not
+acceptable as the ordinary case, whatever role it may play as an optional,
+clearly-labeled enhancement.
+
+== Candidate directions for later investigation (hypotheses, not a decision)
+
+None of the following is selected, authorized, or ruled out by this record;
+each requires its own investigation before any is chosen:
+
+* Direct `pytest` fixture/session material to the existing Attempt scratch
+  root (FD-08) via `PYTEST_DEBUG_TEMPROOT`, possibly reinforced by explicit
+  worker-prompt instruction not to rely on ambient `/tmp` for exploratory
+  test runs. Open question: whether and how this can be made to actually
+  reach a `pytest` invocation the agent itself launches, which WFC does not
+  control the invocation of.
+* An explicit `--basetemp` convention, including the known risks of nested
+  or parallel `pytest` invocations sharing or colliding over one fixed
+  `--basetemp` path.
+* A short symlink (or short bind-mount-like indirection) under `/tmp`
+  pointing at the real Attempt scratch root, if compatible with the Claude
+  sandbox's own socket-creation path resolution -- unverified whether the
+  sandbox follows symlinks the way this would require.
+* A bind mount inside a WFC-owned bubblewrap namespace, where available --
+  explicitly not to be assumed available, since an unprivileged mount
+  namespace is itself a host capability some environments (restrictive
+  corporate hosts in particular) may not grant.
+
+Each direction trades off differently against the portability constraint
+above; none is presumed compatible with it until investigated.
+
+== Non-scope
+
+This record authorizes no implementation, no investigation, and no WFC Run.
+A future correction must not:
+
+* select one of the candidate directions above as a committed design
+  without its own investigation;
+* assume a privileged or administrative host change as an ordinary
+  precondition;
+* change `claude_adapter.py`'s socket-path-length fix itself (commit
+  `4776fd0`) or its qualifying live smoke test;
+* reopen `BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION`'s own open causal
+  questions, which remain exactly as that record left them;
+* revisit the independent reviewer's classification of the same symptom,
+  observed from inside the Run, as an agent-local environmental limitation
+  rather than a candidate defect -- that classification stands;
+* perform any cleanup of `/tmp` material as part of this record (the one-off
+  cleanup already performed is a fact this record reports, not an
+  authorization it grants).
+
+== Evidence pointers
+
+* `src/workflow_coordinator/claude_adapter.py:39-47,110-116,149,166`
+  (`_SHORT_TMP_ROOT`, `_short_subprocess_tmp_dir()`, and its application).
+* Commit `4776fd0` ("fix(claude_adapter): give the Claude CLI subprocess a
+  short TMPDIR") and the following commit's opt-in live smoke test
+  (`tests/integration/test_claude_adapter_live_smoke.py`).
+* `docs/warm_storage/concepts/workflow_coordinator_evidence_failure_diagnostics_2026-11-07_broad_review.adoc`
+  (independent reviewer's own in-Run observation of the same symptom class,
+  correctly classified as agent-local and non-blocking).
+* `docs/backlog/BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc` (prior,
+  causally-undetermined incident with the same symptom shape; not merged
+  with this record).
+* `docs/backlog/FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT.adoc`
+  (prior, unconfirmed evaluation question this record's incident realizes).
+* `docs/cold_storage/backlog/pre-0.1.0b1/front-door/workflow_coordinator_fd08_scratch_investigation_2026-10-30.adoc`
+  and `WI-WFC-FD08-ATTEMPT-SCRATCH-001` (the Harness-level scratch move this
+  record's incident reintroduces a `/tmp` dependency alongside, one layer
+  deeper, without contradicting it).
+* Run context: `RUN-b112595129b34f4c97806f634a0b7133`,
+  `WI-WFC-EVIDENCE-FAILURE-DIAGNOSTICS-001`, Hop H002, 2026-11-07.
+
+== Lifecycle
+
+This BUG is *open*. This record documents the observed incident, its
+confirmed causal mechanism, the required product property, the portability
+constraint any correction must satisfy, and open candidate directions only.
+It authorizes no investigation, no correction, no new Commission, no
+Runtime promotion, and no governance abstraction. A future bounded
+investigation, and only subsequently a bounded correction, each require
+their own separately authorized maintainer Commission/WorkItem.
