@@ -1,0 +1,192 @@
+= Failed A2 evidence observation diagnostics: broad review
+
+Work item:: WI-WFC-EVIDENCE-FAILURE-DIAGNOSTICS-001
+Run:: RUN-b112595129b34f4c97806f634a0b7133
+Review hop:: H002, independent reviewer
+Candidate:: `df51c9f54762b7c7957d6aeaf02f648d47f0b2e9`
+Parent:: `cdd706617d2bfedea8cdabf9992fb4f3c5364aa4`
+Scope:: Deterministic implementation acceptance; no blocking findings
+
+== What the candidate does
+
+`docs/backlog/BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS.adoc` commissions a
+second, explicitly untrusted diagnostic channel alongside an unchanged
+trusted `Observation`: a bounded stdout/stderr tail, populated only for a
+failed trusted A2 evidence observation, never written into an existing
+A2-contract field and never represented as trusted evidence.
+
+The candidate adds a frozen `UntrustedDiagnosticCapture` dataclass
+(`model.py:750-765`) carrying `stdout_tail_base64`,
+`stdout_tail_truncated`, `stderr_tail_base64`, and
+`stderr_tail_truncated`, and a single new optional `Observation` field,
+`untrusted_diagnostic` (`model.py:793`), defaulting to `None`.
+`evidence.py` gains a module constant
+`UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES = 16_384`, a `_diagnostic_tail`
+helper that base64-encodes `value[-LIMIT:]` and reports whether the
+original exceeded the bound, and `_untrusted_diagnostic_capture`, which
+builds the per-stream pair. `_observation` accepts the capture as a new
+keyword argument and passes it through unchanged. `persistence.py`
+projects the capture as a nested object (or `null`), and
+`serialization.py` parses it as an optional field with its own closed
+field set and base64 validation.
+
+== Independent assessment against the review mandate
+
+The reviewer read the controlling backlog record in full, the two adjacent
+non-covering records (`BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION.adoc`,
+`BUG-WFC-EVIDENCE-COMMAND-RESOLUTION-DIAGNOSTICS.adoc`), operator manual
+section 16, the historical WFC-EVID-08 text
+(`docs/imported/core-incubator/FTR-AGENT-WORKFLOW-COORDINATOR-P5.adoc:770-780`),
+and the candidate's actual source and test bodies -- not a diff summary.
+
+*Fail-only trigger.* `ProductionEvidenceRunner.observe` has exactly one
+construction site that supplies a capture (`evidence.py:343-355`), the
+final normally-completed return, guarded by `if status == "fail"`, where
+`status = "pass" if returncode == 0 else "fail"` on the preceding line.
+All five `"error"` returns (resolution failure, spawn failure, timeout,
+communication failure, signal termination at `evidence.py:271-341`) omit
+the argument and therefore persist `None`, including the
+signal-termination branch that does hold real bytes -- so no capture is
+fabricated where bytes are absent, and none is produced where the status
+is not `"fail"`. The parameter default in `_observation` is `None`, so no
+other caller can acquire a capture implicitly. `reducer.py:70-78` reads
+only `(command_name, argv_digest, timeout_seconds, status)` from
+observations, so the new field cannot influence any convergence or
+routing decision.
+
+*16 KiB bound actually enforced per stream.* `_diagnostic_tail` slices the
+tail before encoding and sets the flag from the pre-slice length, matching
+the existing `_bounded(value) -> value[-limit:]` tail idiom in
+`codex_adapter.py:101` and `claude_adapter.py:50` with the same 16_384
+limit. An agent-local probe of the production helper at sizes 0, 1,
+16_383, 16_384, 16_385, and 100_000 decoded 0, 1, 16_383, 16_384, 16_384,
+and 16_384 bytes respectively, with `truncated` false up to and including
+the bound and true above it. Each stream is bounded independently, so a
+failed observation adds at most two 16 KiB captures, carried as about
+21.8 KiB of base64 text per stream.
+
+*Existing trusted fields unchanged in value and meaning.* `_observation`'s
+trusted arguments and `_stream_facts` are untouched; `artifact_ref=None`
+remains hard-coded at `evidence.py:238` and is not repurposed.
+`observation_error` (`evidence.py:361-434`), the malformation gate for a
+runner return, is unchanged and makes no trust claim about the new field.
+`persistence.py:44-90` appends one key and rewrites no existing key;
+`serialization.py` changes exactly one pre-existing line, replacing the
+`required` field set with the same set minus `untrusted_diagnostic` plus
+that name as `optional`, so every other field's parsing is bit-identical.
+The new field is last in the dataclass with a `None` default, so
+pre-existing keyword construction sites (including `tests/support.py:534,586`
+and `tests/unit/test_slice5b.py:1272,1284`) are unaffected and historical
+records parse equal to their re-constructed form.
+
+*Trusted/untrusted separation.* The capture is a separately named nested
+object, not a scalar merged into a trusted field: a reader of persisted
+JSON sees `untrusted_diagnostic` as a distinct structure whose own keys are
+all explicitly tail/truncation named, and the dataclass docstring states it
+is never trusted A2 evidence, is not digested, and is not consulted by any
+reducer or routing decision. Section 16 of the operator manual now states
+the same boundary for operators. The commissioning record leaves the storage
+location and reference mechanism to the implementation, and the commission
+text explicitly authorizes new `Observation` field(s) for this purpose, so a
+nested, additively parsed, explicitly named field is within granted latitude.
+
+*Scope.* `git diff --numstat cdd7066..df51c9f` shows eight files:
+`docs/wfc_operator_manual.adoc` (+12/-6), `evidence.py` (+29/-0),
+`model.py` (+17/-0), `persistence.py` (+10/-0), `serialization.py`
+(+47/-1), and the three designated test files (+78/-0, +34/-0, +82/-0).
+Every path is inside the commissioned scope; `operator.py`,
+`codex_adapter.py`, `claude_adapter.py`, `proof_harness.py`,
+`commissioning.py`, `reducer.py`, `slice4.py`, `vertical.py`,
+`git_facts.py`, and `scripts/archive_run.py` are byte-identical to the
+parent, no second documentation file is touched, no backlog record was
+edited or merged, and nothing outside this repository is involved. The
+working tree is clean apart from pre-existing untracked operator dotfiles
+unrelated to this candidate. The review hop itself changes only this
+artifact.
+
+*No withheld mechanism introduced.* The change is one module constant, two
+private helpers, one dataclass, one optional field, and its projection and
+parsing. There is no logger, no framework, no verbosity or log-level
+setting, no environment or profile switch, no new permission profile, and
+no workflow, Hop, or review semantics change.
+
+*Tests actually exercise the pass/fail/error distinction.* The three test
+files have zero deleted lines, so no pre-existing assertion was weakened,
+skipped, or removed; the only change to an existing assertion extends the
+exact-key-set check of the A2 attempt projection
+(`test_a2_evidence_commands.py:492-513`) to include the new key and assert
+it is `null` on a `"pass"` observation, which keeps that projection closed.
+Positive coverage runs a real failing subprocess and decodes both captured
+tails, while asserting the trusted counts and digests still describe the
+untruncated originals and that `artifact_ref` is `None`
+(`test_a2_evidence_commands.py:435-461`). A parametrized bound test drives
+the production constant at `limit-1`, `limit`, `limit+1`, and `limit+509`,
+comparing against `payload[-limit:]`, asserting captured length
+`min(size, limit)` and the expected truncation flag, and confirming
+`stdout_byte_count` remains the full original size
+(`test_a2_evidence_commands.py:463-490`). Negative coverage asserts `None`
+on `"pass"` and on all five `"error"` paths -- resolution, spawn,
+communication, timeout, and signal termination -- including the
+signal branch that does have real bytes
+(`test_a2_evidence_commands.py:337-430`). Persistence coverage compares the
+projection of one observation with and without a capture and proves every
+other key's value is identical (`test_persistence.py:186-215`), plus the
+checkpoint `null` case. Serialization coverage round-trips a populated
+capture through schema 4 while comparing all other trusted keys against the
+undiagnosed original, accepts historical JSON with the key deleted entirely,
+and rejects a non-base64 tail, a non-boolean truncation flag, a missing
+field, and an unknown field (`test_serialization.py:952-1030`).
+
+== Independent validation
+
+The following agent-local command exited successfully with 232 tests
+passing:
+
+[source,shell]
+----
+.venv/bin/python -m pytest -q tests/unit/test_a2_evidence_commands.py tests/unit/test_persistence.py tests/unit/test_serialization.py
+----
+
+An additional ephemeral probe script, written to the repository's gitignored
+`tmp/` scratch directory and never to a production or test file, exercised
+the production `_diagnostic_tail` boundary values reported above and the
+nested-object JSON projection.
+
+A full-suite agent-local run was attempted but is not established here. Its
+only observed failures were confined to `tests/unit/test_wfc_op.py` and
+`tests/unit/test_claude_adapter_conformance.py`, whose proximate causes in
+this sandbox are denied `pypi.org:443` egress for the real venv installs
+those tests build and exhaustion of the sandbox temporary filesystem;
+repeat runs could not complete once that filesystem filled, and redirecting
+or clearing it was not permitted. Neither file touches an edited module.
+These are agent-local environmental limitations, not candidate defects, and
+they are not Coordinator-trusted evidence. The separately executed
+Coordinator `task-check` gate (`python -m pytest -q`) remains responsible
+for the full repository result.
+
+Verdict: accept on deterministic implementation grounds, with no blocking
+findings.
+
+== Residual, non-blocking observations
+
+* `observation_error` does not reject a capture attached to a `"pass"` or
+  `"error"` observation; the fail-only invariant is enforced only at the
+  single production construction site. Because the field is untrusted and
+  ignored by the reducer, this cannot affect an outcome, but a future
+  hardening pass could assert it at the gate.
+* The capture is durable inside the A2 attempt document. That is the design
+  the commission chose and manual section 16 now states it is never trusted
+  A2 evidence, but the historical WFC-EVID-08 sentence "no stdout or stderr
+  body shall be durable A2 evidence" reads literally against a durable tail
+  of any size. The trusted summary, counts, digests, and body-omission flags
+  it governs are unchanged; any clarification of that historical wording is
+  a separate documentation concern.
+* Captured tails may contain paths and environment-dependent detail and are
+  not redacted. Extending the sibling `workflow-coordinator-run-evidence`
+  archive allow-list to recognize and retain this small artifact type
+  remains the follow-up the backlog record already names as out of scope,
+  and it should account for up to about 44 KiB of base64 tail per failed
+  observation.
+* The distinct correction-cycling-with-idle-worker observation from
+  `RUN-b435ab0c7e394eb5912330c38b5eca5b` remains uncommissioned and is
+  untouched by this candidate.
