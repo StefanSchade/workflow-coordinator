@@ -1,7 +1,10 @@
-= Claude adapter environment allowlist: implementation evidence
+= Claude adapter environment allowlist: broad review
 
 Work item:: WI-WFC-CLAUDE-ADAPTER-ENVIRONMENT-ALLOWLIST-001
-Scope:: Implementation handoff for independent broad review
+Run:: RUN-b435ab0c7e394eb5912330c38b5eca5b
+Review hop:: H002, independent reviewer
+Candidate:: `464aefe3d3438bc66b110725de68def316238ffa`
+Scope:: Deterministic implementation acceptance; no blocking findings
 
 == Diagnosis and correction
 
@@ -36,6 +39,37 @@ additive operator mechanism; it changes neither settings nor permissions.
 Operators should only select variables appropriate for the deployment, since
 their values will be available to the child.
 
+== Independent assessment
+
+The reviewer read the complete permission-mismatch bug record and the
+integration-debt record, including section 2, and compared the committed
+candidate with its parent `725b3297ac32ff884dd3cf1178bebeb69e7bebe1`.
+The candidate changes only the adapter, the two designated test files, and
+this artifact. The independent review changes only this artifact.
+
+Environment construction iterates the literal four-name tuple and the
+validated extra-name tuple, looking up only those names in `os.environ`.
+There is no parent-environment copy or fallback. `PATH`, `HOME`, `USER`,
+and `LANG` are the required minimal defaults for executable discovery,
+file-based authentication, identity, and locale. Optional configuration,
+credentials, locale overrides, and session state are not implicitly inherited.
+Missing names are omitted. Both constructor input and the environment-backed
+source pass through the same validation, which rejects the entire
+`CLAUDE_CODE_` prefix, assignments, invalid identifiers, and all three reserved
+temporary-directory names. Values are read at launch, while the selected
+names are fixed at construction. The default extension is empty.
+
+For the `XDG_RUNTIME_DIR` decision, the reviewer also inspected embedded
+source in the installed Claude executable and the local
+`/home/stefan/.local/share/claude/versions/2.1.270` image without executing
+either. The Linux HTTP/SOCKS bridge constructs its socket paths using an
+import of `tmpdir` from `os`, and discovers `bwrap` and `socat` as executables.
+Its bridge initialization does not require `XDG_RUNTIME_DIR`. Other inspected
+XDG runtime-directory uses concern optional IPC/daemon paths and have
+fallbacks. This supports retaining the explicit TMPDIR override and omitting
+an unrelated runtime-directory default; it does not qualify actual provider
+startup or authentication under the corrected environment.
+
 The existing restricted profile, repository-root read grant, home-read denial,
 empty network-domain allowlist, sandbox failure behavior, and short temporary
 directory lifecycle are unchanged. WFC's post-Hop scope observation remains
@@ -43,6 +77,48 @@ the boundary for accepted candidates; the provider sandbox is not a proof of
 per-commission write containment. Existing settings and argv assertions and
 the new fake-executable environment checks support deterministic inspection,
 not a claim about the real provider's permission engine.
+
+An independent AST comparison confirmed that `argv`, `_settings`, and
+`_short_subprocess_tmp_dir` are unchanged from the parent. The unchanged
+`_SHORT_TMP_ROOT`, invocation-directory creation, timeout handling, and cleanup
+were also inspected. No blanket bypass, scope expansion, unsandboxed retry,
+network-domain grant, or governance change was introduced. The maintainer's
+established A/B evidence supplies the mechanism justification for removing
+forced scrubbing; this review did not repeat that experiment.
+
+The fake-executable regression captures the actual child environment and
+compares it with a literal expected dictionary, independent of the production
+allowlist constant. It plants scrub/session variables and an unrelated secret
+in the test process, checks exact default keys and values, then checks that
+only selected extras are added. It also checks construction-time selection,
+launch-time values, and omission of a missing selected variable. Reserved-name
+cases exercise rejection. These checks would detect the former full-environment
+inheritance and forced scrub behavior. Existing argv/settings, resolved-root,
+wrapper validation, transport, timeout, and temporary-directory cases remain.
+The new opt-in smoke checks a real output file as well as the reported outcome;
+its successful execution remains unestablished here.
+
+== Independent validation and verdict
+
+The following agent-local command exited successfully, with both live Claude
+tests skipped:
+
+[source,shell]
+----
+env WFC_RUN_LIVE_CLAUDE_SMOKE=0 .venv/bin/python -m pytest -q tests/unit/test_claude_adapter_conformance.py tests/integration/test_claude_adapter_live_smoke.py tests/unit/test_codex_adapter_conformance.py tests/unit/test_codex_adapter_smoke.py
+----
+
+Additional ephemeral offline probes confirmed direct-constructor rejection of
+a novel `CLAUDE_CODE_` name, the bare reserved prefix, all TMP triplet names,
+assignments, and malformed names. A mocked launch-boundary probe independently
+checked missing default variables, present and absent explicit extras, and
+exclusion of an ambient session sentinel. No production or test file was
+edited for these probes. `git diff --check` passed.
+
+Verdict: accept on deterministic implementation grounds, with no blocking
+findings. These are agent-local review results, not Coordinator-trusted
+evidence. The separately executed Coordinator `task-check` gate remains
+responsible for the full repository `python -m pytest -q` result.
 
 == Residual uncertainty
 
@@ -53,4 +129,5 @@ acceptance or negative containment test. A real post-promotion WFC Hop under
 the corrected Runtime remains a distinct, subsequent maintainer-owned
 integration-proof step. Neither that step nor live-provider qualification is
 established by this commission. No authenticated CLI invocation is authorized
-within this implementation hop.
+within this review hop, and none was performed. These subsequent maintainer
+steps are non-blocking for this commission's deterministic acceptance.
