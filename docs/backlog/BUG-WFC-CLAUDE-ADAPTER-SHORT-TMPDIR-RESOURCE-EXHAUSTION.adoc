@@ -101,20 +101,120 @@ operator cannot assume elevated host privileges.
 * Point `pytest` fixture/session material at the existing Attempt scratch
   root (FD-08) via `PYTEST_DEBUG_TEMPROOT`, possibly reinforced by explicit
   worker-prompt instruction not to rely on ambient `/tmp` for exploratory
-  test runs. Open question: whether and how this reaches a `pytest`
-  invocation the agent itself launches, which WFC does not control.
+  test runs. **Follow-up (see below): live-qualified and now the preferred
+  direction, combined with a scoped `sandbox.filesystem.allowRead`/
+  `allowWrite` grant** -- the propagation question is answered (yes), and
+  so is the further sandbox-reachability question that answering it
+  exposed. Still only a `pytest`-fixture-specific measure; see "Residual
+  scope not covered" below.
 * An explicit `--basetemp` convention, including the known risks of nested
   or parallel `pytest` invocations sharing or colliding over one fixed
-  `--basetemp` path.
+  `--basetemp` path. Not re-examined this round; superseded in priority by
+  the `PYTEST_DEBUG_TEMPROOT` direction above, not ruled out.
 * A short symlink (or similar short indirection) under `/tmp` pointing at
   the real Attempt scratch root -- unverified whether the Claude sandbox's
   own socket-path resolution follows symlinks the way this would require.
+  Not re-examined this round, since the follow-up below found a working
+  direction without needing it; left open, not ruled out.
 * A bind mount inside a WFC-owned bubblewrap namespace, where available --
   not to be assumed available, since an unprivileged mount namespace is
-  itself a host capability some environments may not grant.
+  itself a host capability some environments may not grant. Not
+  re-examined this round, for the same reason as the symlink direction.
 
-Each trades off differently against the portability requirement above;
-none is known to satisfy it yet.
+Each trades off differently against the portability requirement above. The
+first direction is now demonstrated (follow-up below) to satisfy it for the
+pytest-fixture case specifically; none of the four is shown to satisfy the
+full requirement (all temp-material sources, not only pytest fixtures) yet.
+
+== Follow-up live qualification (2026-11-07, maintainer-run)
+
+Two rounds of direct live qualification against the real, unmodified
+`ClaudeCliAdapter.execute()` (Claude CLI `2.1.270`), each run outside any
+WFC Run/Commission/Runtime, against a disposable repository outside every
+WFC checkout -- methodologically the same kind of direct maintainer-run
+qualification already used in
+link:../technical_model/claude_code_adapter_architecture.adoc[the Claude
+Code adapter architecture document] §7. No production source was changed;
+only the settings payload `ClaudeCliAdapter._settings()` normally generates
+was temporarily substituted, for the experiment only, in a throwaway driver
+script.
+
+**Round 1 -- does `PYTEST_DEBUG_TEMPROOT` reach the agent-launched `pytest`,
+under the closed profile exactly as shipped?** Yes. Set via the existing
+`WFC_CLAUDE_EXTRA_ENV_NAMES` mechanism (no adapter change needed; `TMPDIR`
+itself remains reserved and short, per `claude_adapter.py:68-70`), the
+variable reached the Bash-tool-launched `pytest` process every time. With
+the redirect target left under `$HOME` (the unmodified closed profile,
+`denyRead: ["~/"]`, no corresponding `allowRead`), `pytest` itself failed --
+`rootdir.mkdir(mode=0o700, exist_ok=True)` (`_pytest/tmpdir.py`, no
+`parents=True`) raised `FileNotFoundError`, because the redirected path's
+*parent* was invisible inside the sandboxed child's own filesystem view,
+even though it demonstrably existed on the host. A control run with the
+same mechanism, only pointed at a path inside the repository's own working
+tree (already sandbox-visible), passed end to end (`1 passed`), isolating
+the cause to sandbox filesystem-visibility specifically, not to the
+propagation or redirection mechanism.
+
+**Round 2 -- can a scoped `sandbox.filesystem.allowRead`/`allowWrite` grant
+fix exactly that, without widening anything else?** The installed CLI binary
+(`2.1.270`) documents, in its own embedded help/error strings (not public
+docs), independent `sandbox.filesystem.allowRead`/`denyRead`/`allowWrite`/
+`denyWrite` keys ("Paths allowed for writing" / "Paths denied for writing
+(takes precedence over allowWrite)"), and treats
+`permissions.blockReadsOutsideWorkingDirectories` as a separate, prior gate
+whose own documented remedy is exactly `sandbox.filesystem.allowRead`
+("Sandboxed commands lose your home directory... until you re-open paths
+with sandbox.filesystem.allowRead"). Two live tests used a settings payload
+identical to the shipped one except `allowRead` and `allowWrite` each also
+named exactly one dedicated, explicitly-untrusted scratch subpath (not
+`wfc-scratch` itself, not any Attempt or Evidence directory) -- `denyRead:
+["~/"]`, `sandbox.enabled`, `failIfUnavailable`, `allowUnsandboxedCommands:
+false`, `network.allowedDomains: []`, and
+`permissions.blockReadsOutsideWorkingDirectories: true` all left unchanged:
+
+* *Positive:* `PYTEST_DEBUG_TEMPROOT` pointed at the one allow-listed
+  subpath. Fixture material was verifiably created there (confirmed by
+  direct host-side filesystem inspection after the run, not only the
+  worker's own report), with no material appearing under host `/tmp`.
+* *Negative control:* the same profile, instructed to read the allow-listed
+  path's own parent directory and an unrelated home-directory file, was
+  blocked outright by `permissions.blockReadsOutsideWorkingDirectories`
+  before any sandboxed execution of the command, producing no output at
+  all -- confirmed by host-side inspection of the (empty) redirected-output
+  files, which also caught and corrected an inaccurate self-report from an
+  earlier, not-independently-verified sub-run that had claimed the read
+  succeeded. The rest of the home directory stayed unreadable and the
+  sandbox stayed enabled and enforcing throughout both rounds (the positive
+  case could not have passed otherwise: a failed sandbox init fails closed
+  under `failIfUnavailable: true`).
+
+**Conclusion of the follow-up:** a scoped `sandbox.filesystem.allowRead` +
+`allowWrite` grant, limited to one dedicated untrusted scratch subpath, combined
+with `PYTEST_DEBUG_TEMPROOT` via the existing `WFC_CLAUDE_EXTRA_ENV_NAMES`
+mechanism, is now the maintainer's preferred correction direction -- demonstrated
+to coexist with the existing short-`TMPDIR` fix, and to leave `denyRead`,
+`blockReadsOutsideWorkingDirectories`, and the sandbox's own enablement
+otherwise intact. The symlink and bubblewrap-mount directions above were not
+re-examined and are not ruled out; they were simply not needed once this
+direction worked.
+
+**Residual scope not covered (this BUG is not resolved by the above):** the
+adapter's existing short, `/tmp`-rooted `TMPDIR`/`TMP`/`TEMP`
+(`claude_adapter.py:149,166`) is untouched by this direction and continues
+to be inherited by `pip`, Python's own `tempfile` module, and any other
+child process that does not specifically consult `PYTEST_DEBUG_TEMPROOT` --
+confirmed by reading `_pytest/tmpdir.py` itself, which uses that variable
+only for its own `tmp_path`/`tmp_path_factory` basetemp, never for
+`tempfile.gettempdir()`. A correction scoped to the `pytest`-fixture case
+alone would leave this record open, not resolve it.
+
+**What a later correction still needs to determine:** a concrete way to
+provision the one dedicated untrusted scratch subpath this direction grants
+access to, owned by WFC rather than hardcoded to the FD-08 self-development
+Attempt-scratch path (`$HOME/wfc-scratch/<attempt>`) specifically -- so that
+a future non-self-development WFC use of this same adapter has an
+equivalent grantable path, not only this particular development-time
+environment. Not yet selected; no implementation follows from this record.
 
 == Evidence pointers
 
