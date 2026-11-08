@@ -1,0 +1,385 @@
+schema_version: 1
+commission_id: wfc-bubblewrap-external-scratch-001
+work_item_id: WI-WFC-BUBBLEWRAP-EXTERNAL-SCRATCH-001
+
+authority_source: >-
+  Maintainer directly authorizes, by explicit 2026-11-08 interactive
+  instruction given outside ordinary WFC execution, Commission authoring,
+  rendering, committing, `commission check`, preparation, and launch of the
+  bounded extension to `src/workflow_coordinator/execution_boundary.py`
+  described below: one dedicated, caller-designated external WFC scratch
+  bind-mount, coexisting with the existing private `/tmp` tmpfs scratch.
+  This instruction explicitly authorizes launch (not merely
+  authoring/commit), subject to all required preflight and authority checks
+  passing; if any hard preflight or authority condition fails,
+  preparation/launch stops and the blocker is reported rather than bypassed.
+
+  Controlling backlog record: `docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc`
+  records a new "2026-11-08 narrow slice authorization (extends, does not
+  widen, the 2026-11-06 slice)" section, committed at Development commit
+  `19d96d10b2b811d7acbbdc53ab59c7b7954c8ff3`, recording this exact
+  authorization for this one extension only. The active-work manifest,
+  `docs/backlog/_open.adoc`, carries a matching "Bubblewrap external scratch
+  bind-mount" entry under "Ready to commission" pointing at this
+  Commission. This authorization does not lift deferral of the broader
+  trust-boundary architecture, nested Claude-in-bubblewrap qualification,
+  Claude/Codex provider wiring, credential brokers, network sidecars,
+  elevated privileges, a general read-authority/classification model, any
+  wiring into `operator.py` or either provider adapter, or any general
+  loosening of the existing repository-only bind-source rule beyond this
+  one designated exception; all of those remain deferred exactly as the FTR
+  records them.
+
+  Motivating record: `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc`
+  (status: open) and
+  `docs/cold_storage/architecture/pre-0.1.0b1/workflow_coordinator_claude_adapter_development_retrospective_2026-11-08.adoc`
+  (commit `da5b942c861bc63d6337807502f73a94a9118a8d`), which found a short
+  `/tmp` symlink to external scratch functionally adequate but mechanically
+  incompatible with this module's own `--tmpfs /tmp`, and identified an
+  external bind-mount inside the same bubblewrap namespace as the preferred
+  target direction (retrospective section 12), not yet designed into
+  `execution_boundary.py`'s validation model.
+
+  Feasibility baseline: unprivileged `bwrap` is present and functional on
+  this machine (consistent with the 2026-11-06 slice's own feasibility
+  check); the retrospective separately confirmed, by live experiment, that
+  `bwrap --bind <external-scratch> /tmp/s` successfully provides a
+  short-path external bind under a tmpfs-backed `/tmp` (retrospective
+  section 13).
+
+  Hop-ceiling note: `max_autonomous_hops: 10` is set directly at the
+  `repository-standard@v1` policy basis's own ceiling (no override
+  attempted or required), consistent with the maintainer's current standing
+  guidance (`docs/self-development.adoc`, "Commission Hop budget") and this
+  Commission's own explicit instruction to use the standard bounded 10-Hop
+  budget.
+
+  Baseline verified against Git immediately before writing this Intent:
+  Development `HEAD` is `19d96d10b2b811d7acbbdc53ab59c7b7954c8ff3` (the
+  backlog-authorization commit above); the working tree is clean. Runtime
+  (`workflow-coordinator-runtime`) `HEAD` is
+  `464aefe3d3438bc66b110725de68def316238ffa`, detached, clean. Evidence
+  (`workflow-coordinator-run-evidence`) `HEAD` is
+  `95246cb7556f1a67746c48e4763f06d1b524bc99`, clean. Every `source_commit`
+  below pins this Development HEAD.
+
+  Runtime-promotion note: this extension is not wired into the live
+  provider execution path and changes no existing Coordinator/adapter
+  dispatch behavior, so promoting Runtime to the latest Development commit
+  is not a technical prerequisite for this Attempt; the pinned Runtime
+  already executes `robust@v1` Claude-adapter Attempts (most recently
+  `WI-WFC-EVIDENCE-FAILURE-DIAGNOSTICS-001`) against this exact Runtime
+  `HEAD`.
+
+program:
+  id: robust
+  revision: v1
+  source_commit: 8b5b7c6320cc67860146aceb16955c893d9f6e74
+
+task:
+  title: Extend the bwrap filesystem-isolation primitive with one dedicated external WFC scratch bind-mount
+  body: |
+    Extend the existing, already-implemented, provider-neutral
+    `src/workflow_coordinator/execution_boundary.py` with exactly one new
+    capability: a dedicated, caller-designated external WFC scratch
+    bind-mount, coexisting with the module's existing private `/tmp` tmpfs
+    scratch mount, so that a sandboxed subprocess can be given a
+    short-path, large-capacity scratch location distinct from the
+    repository and from the ambient host `/tmp`. This directly addresses
+    `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc`:
+    today's module gives a sandboxed subprocess only a private, size-bounded
+    `/tmp` tmpfs or repository-internal binds, neither of which is a
+    deliberately WFC-controlled, externally-backed scratch location.
+
+    ### Required reading
+
+    Read, in full, before implementing:
+
+    - `src/workflow_coordinator/execution_boundary.py` in its entirety (the
+      module you are extending): `validate()`'s existing invariants --
+      every non-scratch bind source must resolve inside the repository
+      (`source.relative_to(repository)`), exactly one `MountMode.SCRATCH`
+      mount is required and must be a private tmpfs at `/tmp`, destinations
+      must not overlap, and `_check_writable_aliases()` rejects writable
+      hardlink aliases -- and `build_argv()`'s existing mount order and its
+      revalidate-at-execution-boundary call. Understand these as the
+      invariants you are deliberately widening by one bounded, explicit
+      exception, not loosening generally.
+    - `tests/unit/test_execution_boundary_config.py` and
+      `tests/integration/test_execution_boundary_bwrap.py` in their
+      entirety, including the existing hardlink/inode-alias isolation
+      tests added by the prior review's corrections
+      (`WI-WFC-BUBBLEWRAP-FS-ISOLATION-001-REVIEW-001`), to keep new tests
+      consistent in style and to avoid duplicating or weakening existing
+      coverage.
+    - `docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc`, including both
+      its 2026-11-06 and 2026-11-08 narrow-authorization sections -- the
+      controlling trust-dimension framing and the exact bounds of this
+      extension's authorization.
+    - `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc`
+      in full, for the motivating resource-exhaustion scenario and the
+      prior symlink-based mitigation's confirmed incompatibility with this
+      module's own `--tmpfs /tmp`.
+    - `docs/cold_storage/architecture/pre-0.1.0b1/workflow_coordinator_claude_adapter_development_retrospective_2026-11-08.adoc`
+      sections 9-13, for the live-experiment evidence behind this
+      extension's design direction (do not re-derive what it already
+      records as confirmed fact).
+    - `docs/self-development.adoc`'s Commission-authoring and Decision
+      sections, in particular `DEC-WFC-009`'s distinction between a
+      provider's own sandbox/permission request and WFC's own
+      deterministic post-Hop Git/scope observation -- this extension does
+      not change, and must not be represented as superseding, either.
+    - `src/workflow_coordinator/claude_adapter.py` and
+      `src/workflow_coordinator/codex_adapter.py`, read-only, for the shape
+      of today's short-`TMPDIR` mechanism this extension is designed to one
+      day make unnecessary -- without editing either file. Wiring this
+      extension into either adapter is explicitly out of scope.
+
+    Do not treat this record as asking for, or as itself constituting, a
+    general loosening of the repository-only bind-source rule, a general
+    read-authority/classification model, or any change to an existing
+    security/admission check. None of those is in scope.
+
+    ### Scope
+
+    Modify only:
+
+    - `src/workflow_coordinator/execution_boundary.py` (existing file,
+      extended, not rewritten): add one new, explicitly distinct mount kind
+      for a dedicated external WFC scratch bind, separate from the existing
+      `MountMode.SCRATCH` private-tmpfs invariant (which must remain
+      required and unchanged -- this is an addition, not a replacement).
+      The new mount kind must:
+      - accept exactly zero or one occurrence per boundary (never more than
+        one external scratch bind);
+      - take its source only from one caller-supplied, already-validated
+        external scratch root parameter (never from an arbitrary `Mount`
+        the caller could otherwise construct) -- the function signature
+        change needed to express this is in scope;
+      - require that source to be an absolute, real path (no symlink
+        components, via the same resolution discipline `_real_path()`
+        already applies), that it exists and is a directory, and that it
+        does not resolve inside the repository, inside any system root
+        `validate()` already checks, or inside/over any other mount's
+        destination or source;
+      - reuse `_check_writable_aliases()` (or an equally strict equivalent)
+        against the external scratch root, exactly as every other writable
+        grant already requires;
+      - mount at a short, fixed-shape destination nested inside the
+        existing private `/tmp` tmpfs (for example a single bounded
+        subdirectory such as `/tmp/s`), proven in `build_argv()` to be
+        constructed strictly after the private `/tmp` tmpfs mount so the
+        bind lands inside it rather than racing or being shadowed by it;
+      - preserve `build_argv()`'s existing revalidate-at-execution-boundary
+        call (`validate()` is called again inside `build_argv()`); the new
+        mount kind must be revalidated exactly like every existing one, not
+        bypass that call.
+    - `tests/unit/test_execution_boundary_config.py` (existing file,
+      extended): new configuration/validation unit tests for the new mount
+      kind that do not require running a real `bwrap` subprocess.
+    - `tests/integration/test_execution_boundary_bwrap.py` (existing file,
+      extended): new real-`bwrap`-subprocess tests proving the new mount
+      kind's isolation and interoperation properties, per "Required tests"
+      below.
+    - The two durable review artifacts this Commission's rendered
+      `robust@v1` profile designates for `broad_review` and
+      `focused_review`.
+
+    Do not edit `src/workflow_coordinator/operator.py`,
+    `codex_adapter.py`, `claude_adapter.py`, `git_facts.py`,
+    `persistence.py`, `evidence.py`, `commissioning.py`,
+    `serialization.py`, `model.py`, `reducer.py`, `slice4.py`,
+    `vertical.py`, `proof_harness.py`, `scripts/wfc_op.py`,
+    `pyproject.toml`, or any existing test file other than the two named
+    above. This WorkItem does not wire the new mount kind, or this module
+    at all, into any existing dispatch path; it must remain possible to run
+    every existing test and every existing Codex/Claude Attempt exactly as
+    before, byte-for-byte unchanged in behavior, with the new mount kind
+    simply unused by any existing caller.
+
+    ### Required semantics
+
+    - The module remains a library only: still not imported or called from
+      `operator.py`, `codex_adapter.py`, `claude_adapter.py`, or
+      `scripts/wfc_op.py` in this WorkItem.
+    - Fail closed, always, for the new mount kind exactly as for every
+      existing one: a missing external scratch root, a relative or
+      symlinked source, a source resolving inside the repository or inside
+      any other mount's source or destination, more than one external
+      scratch mount, or any writable-alias violation must raise before any
+      subprocess is spawned.
+    - The existing exactly-one-private-`/tmp`-scratch invariant is
+      unchanged and still required; the new external scratch bind is
+      additive and optional, never a substitute for it.
+    - The existing repository-only bind-source rule for every other,
+      already-existing mount kind is unchanged; the new external scratch
+      bind is the one explicit, narrowly-typed exception this Commission
+      authorizes, not a general relaxation of `_real_path()` or
+      `source.relative_to(repository)` for any other call site.
+    - Mount ordering inside `build_argv()` must be proven correct by actual
+      observed sandboxed behavior (the external bind must be visible,
+      writable, and nested correctly under the private `/tmp` tmpfs), not
+      asserted from argv construction alone.
+    - Never weaken, remove, or bypass any existing security/admission test
+      (including the hardlink/inode-alias tests from the prior review's
+      corrections) to make this WorkItem's own tests easier to pass.
+
+    ### Required tests
+
+    All new tests in `tests/integration/test_execution_boundary_bwrap.py`
+    (real `bwrap` subprocesses against synthetic fixture directories) unless
+    noted as unit-level in `tests/unit/test_execution_boundary_config.py`:
+
+    - A permitted write to the external scratch bind succeeds inside the
+      sandbox and is visible on the host afterward at the expected path.
+    - The external scratch bind coexists with the private `/tmp` tmpfs: a
+      file written to the private scratch and a file written to the
+      external scratch bind are both independently visible inside the same
+      sandboxed process, and neither write is visible at the other's path.
+    - An arbitrary host path *not* designated as the external scratch root
+      cannot be mounted as, or substituted for, the external scratch bind
+      (attempt to construct a boundary with an unauthorized host path in
+      that role and assert it is rejected before any subprocess is
+      spawned).
+    - A symlink-based escape attempt (the external scratch root itself, or
+      an entry inside it, pointing outside the designated external scratch
+      tree) cannot reach a forbidden host path; assert the host file
+      outside the designated tree is unchanged, by actual attempted access
+      from inside a real sandboxed subprocess.
+    - A hardlink/inode alias inside the external scratch root is rejected
+      by the same discipline that already rejects one for every other
+      writable grant (unit-level, asserting the raised error).
+    - More than one external scratch mount, or an external scratch mount
+      overlapping the repository, any system root, or any other mount's
+      destination, is rejected by the validator before any subprocess is
+      spawned (unit-level, asserting the raised error, not a subprocess
+      run).
+    - A smoke test proving the full existing repository test suite
+      (`python -m pytest -q`) still passes unmodified, demonstrating
+      existing execution paths and the pre-existing private-`/tmp`-only
+      behavior are unchanged when the new mount kind is not used.
+
+    A test that only inspects the generated `bwrap` command line without
+    actually running a sandboxed subprocess and observing real filesystem
+    behavior does not satisfy any isolation or coexistence requirement
+    above.
+
+    Run the repository's `task-check` evidence command
+    (`python -m pytest -q`) as the Coordinator evidence gate.
+
+    ### Independent review mandate
+
+    The independent reviewer must inspect the actual implementation and
+    tests -- not merely a diff summary -- for: that every required test
+    above actually exercises a real sandboxed subprocess where specified;
+    that the external scratch bind is genuinely restricted to one
+    caller-designated root and cannot be substituted with an arbitrary host
+    path by any caller of the public API; that the existing
+    repository-only bind-source rule for every other mount kind is
+    provably unchanged; that mount ordering actually nests the external
+    bind inside the private `/tmp` tmpfs rather than merely constructing
+    plausible-looking argv; that no excluded file was touched and the diff
+    is purely additive to the two named existing modules/test files plus
+    the two new review artifacts; that fail-closed behavior holds for every
+    named invalid-configuration case with no unsandboxed fallback anywhere;
+    that no existing security/admission test (hardlink/inode-alias included)
+    was weakened, skipped, or removed; and that the full existing test
+    suite still passes. Use normal Robust correction and re-review routing;
+    disposition any Finding using only the authority this Commission's
+    rendered profile actually grants. A successful broad review may accept
+    directly; focused review is needed only if that phase is reached.
+
+  acceptance: |
+    `src/workflow_coordinator/execution_boundary.py` is extended, not
+    rewritten, with exactly one new, explicitly distinct, caller-designated
+    external WFC scratch bind-mount kind per "Scope" and "Required
+    semantics" above, coexisting with the unchanged, still-required private
+    `/tmp` tmpfs scratch invariant and the unchanged repository-only
+    bind-source rule for every other mount kind. It is not imported by, and
+    does not change the behavior of, `operator.py`, `codex_adapter.py`,
+    `claude_adapter.py`, or `scripts/wfc_op.py`.
+    `tests/unit/test_execution_boundary_config.py` and
+    `tests/integration/test_execution_boundary_bwrap.py` are both extended
+    and together satisfy every item in "Required tests" above using real
+    `bwrap` subprocesses and actual observed filesystem behavior for every
+    coexistence and isolation claim. No existing source or test file
+    outside this Commission's rendered scope is changed; in particular
+    `operator.py`, `codex_adapter.py`, `claude_adapter.py`,
+    `scripts/wfc_op.py`, and `pyproject.toml` are byte-identical to their
+    state before this Attempt. `task-check` (`python -m pytest -q`) passes
+    against the full suite, including both extended test files. The
+    independent reviewer's broad (and, if reached, focused) review artifact
+    records a genuine adversarial review against the mandate above and
+    leaves no blocking Finding open at completion.
+
+  withheld_authority: |
+    No change to `src/workflow_coordinator/operator.py`,
+    `codex_adapter.py`, `claude_adapter.py`, `git_facts.py`,
+    `persistence.py`, `evidence.py`, `commissioning.py`,
+    `serialization.py`, `model.py`, `reducer.py`, `slice4.py`,
+    `vertical.py`, `proof_harness.py`, `scripts/wfc_op.py`, or
+    `pyproject.toml`. No wiring of this module, the existing primitive, or
+    the new external scratch mount kind into any live provider invocation,
+    Hop dispatch, or ordinary Codex/Claude execution path -- it remains
+    opt-in library code only in this WorkItem. No nested execution of a
+    provider's own sandbox inside this boundary. No general loosening of
+    the repository-only bind-source rule for any mount kind other than the
+    one new, narrowly-typed external scratch bind this Commission
+    authorizes. No broader trust-boundary architecture, read-authority/
+    classification model, credential broker, network-namespace policy or
+    egress control, privileged or setuid mechanism, trusted-test-service
+    sidecar, or automatic recovery/retry mechanism. No weakening, removal,
+    or skip of any existing security or admission test, including the
+    hardlink/inode-alias tests from the prior review's corrections. No
+    representation of a provider-requested sandbox/permission mode as a
+    Coordinator-verified OS boundary, and no weakening of any existing A1
+    scope-ceiling or repository-pin revalidation check. No Runtime
+    promotion, Evidence mutation, nested WFC invocation, or external push.
+    No file outside this Commission's rendered `authorized_scope` for the
+    active phase may be edited.
+
+  escalation_default: |
+    Stop and request maintainer authority if: the new external scratch
+    bind-mount kind cannot be implemented without touching an excluded
+    source file; proving coexistence with the private `/tmp` tmpfs, or
+    symlink/alias resistance for the external scratch root, under real
+    `bwrap` turns out to require a kernel/bwrap capability unavailable on
+    this machine (report the exact `bwrap` error); a reviewer-opened
+    Finding cannot be disposed within this Commission's own granted
+    Finding authority and ordinary Robust-v1 correction flow; or completing
+    this extension would require any decision reserved to maintainer
+    authority by `FTR-WFC-EXECUTION-TRUST-BOUNDARIES` itself -- including
+    any actual wiring into provider dispatch, any network-policy decision,
+    any read-authority model broader than this one designated external
+    scratch exception, or any step toward nested Claude-in-bubblewrap
+    qualification.
+
+scope:
+  - src/workflow_coordinator/execution_boundary.py
+  - tests/unit/test_execution_boundary_config.py
+  - tests/integration/test_execution_boundary_bwrap.py
+  - docs/warm_storage/concepts/workflow_coordinator_bwrap_external_scratch_implementation_2026-11-08_broad_review.adoc
+  - docs/warm_storage/concepts/workflow_coordinator_bwrap_external_scratch_implementation_2026-11-08_focused_review.adoc
+
+personas:
+  worker: "Senior Python engineer for Linux namespace/sandboxing mechanics, extending an existing bwrap filesystem-isolation primitive with one bounded, caller-designated external scratch bind-mount, without wiring it into any dispatch path or loosening the module's existing repository-only bind-source rule for any other mount kind."
+  independent_reviewer: "Adversarial Linux sandboxing/filesystem-security reviewer, verifying the new external scratch bind is genuinely restricted to one designated root, coexists correctly with the existing private tmpfs scratch, and that no existing security/admission test, mount kind, or dispatch path was touched or weakened."
+
+evidence_profile: task-check-v1
+
+policy_basis:
+  id: repository-standard
+  revision: v1
+  source_commit: eda4544f4e1826474f0cee59aab4c3e641ba2c28
+
+max_autonomous_hops: 10
+
+durable_artifacts:
+  broad_review:
+    - docs/warm_storage/concepts/workflow_coordinator_bwrap_external_scratch_implementation_2026-11-08_broad_review.adoc
+  focused_review:
+    - docs/warm_storage/concepts/workflow_coordinator_bwrap_external_scratch_implementation_2026-11-08_focused_review.adoc
+
+components_ref:
+  path: governance/self-development/components.yaml
+  source_commit: bf936e6f8f8163be45f0d3f62672f1aceccc51cb
