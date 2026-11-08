@@ -1,0 +1,167 @@
+= Nested Claude Code inside WFC bubblewrap: qualification record
+
+WorkItem:: WI-WFC-NESTED-CLAUDE-BWRAP-QUALIFICATION-001
+Date:: 2026-11-08
+Status:: bounded negative/mechanism qualification; no provider integration
+
+== Problem and controlling context
+
+The accepted opt-in `execution_boundary.py` primitive gives a process a
+private `/tmp` and, when explicitly supplied, an external WFC-controlled
+scratch bind at `/tmp/s`. This investigation asks whether a Claude Code CLI
+process can then initialize its own sandbox inside that outer namespace. It
+does not wire the primitive into an adapter or dispatch path.
+
+The controlling authorization is `FTR-WFC-EXECUTION-TRUST-BOUNDARIES`' 2026-11-06,
+2026-11-08 external-scratch, and 2026-11-08 nested-qualification sections.
+It extends the unqualified question in the Claude adapter retrospective
+§§9--13, especially §12. The short-`TMPDIR` resource motivation is
+`BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION`.
+
+The provider sandbox remains an operational provider request; WFC's post-Hop
+scope/Git observation remains the separate Coordinator-authoritative backstop
+(`docs/self-development.adoc`, “Runtime authority, Development payload, and
+enforcement layer”, `DEC-WFC-009`). Nothing here changes either layer.
+
+== Method and safety envelope
+
+The executable probe is
+`tests/integration/test_nested_claude_bwrap_qualification.py`; its only
+fixtures are `tests/fixtures/nested_claude_bwrap_qualification/README` and
+`provider_stub.sh`. The stub is not a Claude emulator: it creates an
+ordinary file in `/tmp/s` and launches a real inner `/usr/bin/bwrap`.
+
+It has no credential, token, private-key, or authentication file. Pytest
+creates one synthetic repository and one empty external scratch root. The
+outer boundary grants no home directory, provider configuration, credential
+location, or network. No host policy, package, setting, or source module was
+changed. `enableWeakerNestedSandbox`, or an equivalent setting, was never set.
+
+Reproducible local command (the recorded run used its prepared development
+environment):
+
+[source,shell]
+----
+/home/stefan/wfc-ops/wfc-nested-claude-bwrap-qualification-001-20261108-01/dev-env/bin/python \
+  -m pytest -q tests/integration/test_nested_claude_bwrap_qualification.py \
+  tests/integration/test_execution_boundary_bwrap.py \
+  tests/unit/test_execution_boundary_config.py
+----
+
+Observed result: `26 passed`. Claims below use a real `bwrap` subprocess'
+exit status, stderr, or host-visible fixture state, not generated argv.
+
+== Investigation results
+
+=== 1. Nested user/mount namespaces
+
+Classification:: mechanically confirmed negative finding.
+Probe:: `test_outer_boundary_reports_the_missing_proc_precondition_before_nested_bwrap`.
+Observed:: The outer `run()` starts and writes
+`external-scratch/claude-tmp/outer-marker`; the real inner `bwrap` then exits
+1 before its command with exactly `bwrap: Can't read
+/proc/sys/kernel/overflowuid: No such file or directory`. No `nested-marker`
+appears on the host.
+Conclusion:: With the accepted outer primitive exactly as implemented, nesting
+does *not* reach a nested command on this host. A visible `/proc` containing
+that kernel value is a demonstrated inner-bwrap precondition. This record does
+not add such a mount; whether it is safe is a later design decision.
+
+=== 2. Minimal mounts and process preconditions for Claude
+
+Classification:: explicitly unresolved open question, with one confirmed
+precondition for the inner `bwrap` launcher.
+Probe:: item-1 probe. Its inner command supplies only `/usr`, `/dev`,
+`/bin`/`/sbin`/`/lib` symlinks, private `/tmp`, and an explicit `/tmp/s`
+bind.
+Observed:: The launcher stops reading `/proc/sys/kernel/overflowuid`; neither
+its shell command nor a real provider begins.
+Conclusion:: Do not treat fixture runtime mounts as a Claude minimum. A later
+live test must first decide the narrowly sufficient `/proc` model and observe
+the real CLI without widening read authority.
+
+=== 3. AF_UNIX pathname limit one level deeper
+
+Classification:: mechanically confirmed negative finding for socket creation
+at external scratch; actual Claude pathname construction remains open.
+Probe:: `test_outer_boundary_denies_short_unix_socket_in_external_scratch`.
+It invokes `socket(AF_UNIX).bind('/tmp/s/claude-tmp/outer.sock')` inside a
+real outer `bwrap`.
+Observed:: The path is 29 bytes, below the 108-byte `sockaddr_un.sun_path`
+limit, but `bind()` exits 1 with `PermissionError: [Errno 1] Operation not
+permitted`; host inspection finds no socket.
+Conclusion:: A short pathname alone is insufficient under this outer boundary.
+This refutes extrapolating ordinary-file writability at `/tmp/s` to socket
+usability. It does not establish Claude's exact derived pathname or whether
+its setup changes this result.
+
+=== 4. /tmp/s reachability and scope
+
+Classification:: mechanically confirmed for the outer process; unresolved for
+a successfully initialized provider child.
+Probe:: item-1 probe and host assertions.
+Observed:: The outer sandbox's ordinary write at
+`/tmp/s/claude-tmp/outer-marker` appears at the dedicated host scratch root,
+not at its root. The inner process never begins, and item 3 denies a socket.
+Conclusion:: `/tmp/s` is reachable and writable for ordinary outer-process
+files, while provider-child reachability and AF_UNIX support cannot be claimed.
+
+=== 5. Effect on Claude's own sandbox initialization
+
+Classification:: explicitly unresolved open question, bounded by failed
+mechanism preconditions.
+Probe:: no real Claude invocation; items 1 and 3 are safe mechanism probes.
+Observed:: The accepted outer primitive prevents test-inner `bwrap` from
+passing its `/proc` preflight and denies a short external-scratch AF_UNIX bind.
+Conclusion:: There is no evidence that Claude initializes normally, degrades,
+or fails with a Claude-specific symptom. Calling a stub result a Claude
+qualification would be false.
+
+=== 6. Weaker nested-sandbox accommodation
+
+Classification:: explicitly unresolved open question; no accommodation applied.
+Probe:: no weaker setting was enabled or passed to the stub or provider.
+Observed:: `enableWeakerNestedSandbox` is absent from fixture and test commands.
+Current failures occur before a real Claude sandbox can report a requirement.
+Conclusion:: This investigation cannot say it is required or identify its exact
+weakened guarantee. It must remain a finding for a later real-CLI qualification,
+never an automatic workaround.
+
+=== 7. Requirements for a later integration Commission
+
+Classification:: mechanically informed recommendation, not an integration design.
+
+A separately authorized Commission should first resolve, with a real
+authenticated CLI run and a deliberately narrow authentication mechanism:
+
+* whether a minimal virtual `/proc` grant can meet the demonstrated inner
+  preflight without weakening WFC's trust boundary;
+* why AF_UNIX bind at `/tmp/s` receives `EPERM`, and whether the real CLI's
+  actual socket both fits `sun_path` and binds;
+* the closed profile's real nested-sandbox outcome, including any request for
+  a weaker setting and the exact guarantee it changes; and
+* only after qualification, a WFC-owned per-invocation scratch lifecycle and
+  narrow path grant. Adapter/dispatcher wiring requires separate authority.
+
+== Real-Claude status and retraction
+
+No real authenticated nested `claude` invocation was performed. The bound
+was the absence of an already-authorized narrow authentication/configuration
+grant. Discovering or mounting provider configuration from `$HOME`, or
+copying it into repository or scratch, would violate the task. No network
+grant or credential workaround was attempted.
+
+There is no retraction of the retrospective's confirmed external-bind fact:
+ordinary `/tmp/s` file writes work. This investigation retracts only the
+unsafe inference that ordinary-file success alone qualifies nested-provider
+behavior: the observed `/proc` preflight failure and short-path AF_UNIX
+`EPERM` disprove that inference on this host and primitive.
+
+== Limits
+
+The stub proves only real-bwrap outer/inner mechanics and observed filesystem
+or syscall behavior. It cannot demonstrate Claude authentication, its own
+sandbox initialization, exact socket-name algorithm, permissions, network
+behavior, or any weaker-nested-sandbox effect. No fake-provider result here is
+presented as a live Claude qualification.
+
