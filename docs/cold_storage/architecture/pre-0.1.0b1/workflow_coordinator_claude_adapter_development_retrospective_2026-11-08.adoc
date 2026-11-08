@@ -1,0 +1,583 @@
+= Workflow Coordinator -- Claude Adapter Development Retrospective
+:toc:
+:toclevels: 3
+:sectnums:
+
+Status:: HISTORICAL TECHNICAL RETROSPECTIVE. Non-authorizing: it authorizes
+no implementation, no Commission, no Runtime promotion, and no BUG closure.
+It restates and connects decisions and findings already recorded elsewhere
+under their own controlling sources; where this document and a controlling
+source (a `+BUG-*+`/`+FTR-*+` record, the technical model, `architecture.md`)
+ever appear to diverge, the controlling source governs.
+Date:: Covers 2026-09-01 through 2026-11-08; written 2026-11-08.
+Scope:: The causal path from the provider-neutral execution port through the
+Claude Code adapter's design, write-permission correction, environment
+scrubbing/allowlisting, the short-`TMPDIR` fix and the resource exhaustion it
+caused, the `PYTEST_DEBUG_TEMPROOT`/scoped-sandbox-grant/symlink
+investigation, and the still-open question of integrating WFC's own
+bubblewrap execution boundary. Not a general Workflow Coordinator project
+history: coordinator/reducer/self-development mechanics before 2026-09-01
+are cited only where causally necessary to this one thread.
+
+== 0. How to read this document
+
+Four kinds of statement appear below, and the distinction is load-bearing
+for anyone reading this months later:
+
+* *Contemporaneous assumption* -- what was believed or designed-for at the
+  time, before it was tested against a real provider invocation.
+* *Experimental observation* -- what a live, real-provider test actually
+  showed, with how it was verified (host-filesystem inspection is called
+  out explicitly wherever a worker's own self-report could not be trusted
+  alone -- see §10).
+* *Retraction* -- an earlier observation or hypothesis in this same
+  investigation later shown, by a dedicated control experiment, not to
+  hold. A retraction is stated as a retraction, not folded quietly into a
+  later "current status" as if it had never been believed.
+* *Current assessment (2026-11-08)* -- what is confirmed, what is a
+  working mechanism not yet integrated into product code, and what remains
+  entirely unqualified.
+
+Git commit hashes are given wherever a claim can be pinned to one; none are
+invented. Where a date or hash could not be confirmed from the repository's
+own history or existing documentation, that is stated rather than guessed.
+
+== 1. Before the Claude adapter: a provider-neutral execution port
+
+WFC's agent-execution abstraction predates Claude entirely. `refactor(workflow):
+establish agent execution port` (`2753dba`, 2026-09-01) introduced the seam
+later named `AgentExecutionPort` in `src/workflow_coordinator/adapter.py`:
+a `Protocol` with one method, `execute(request) -> AgentExecutionOutcome`,
+so the Coordinator's reducer and evidence model never depend on which
+provider CLI actually ran. `chore: establish standalone layout` (`9a771f6`,
+2026-09-20) split WFC into its own standalone repository and, in the same
+commit, added `codex_adapter.py` alongside `adapter.py` -- Codex, not
+Claude, was the *first* concrete provider adapter built against this port.
+Every later Claude-specific decision in this document (closed invocation
+profile, environment allowlist, sandbox settings) is a second, independent
+implementation of that same port, not a redesign of it.
+
+In the same early period, `docs(review): assess execution trust boundaries`
+/ `rereview execution trust boundaries` (`2833b71` / `4b3934d`, 2026-09-24)
+produced `FTR-WFC-EXECUTION-TRUST-BOUNDARIES` (dated 2026-09-23 in its own
+header) -- a *deferred*, non-implementing record distinguishing visibility,
+mutation, and execution authority as independent trust dimensions, and
+naming `bwrap` only as one *candidate* mechanism among several, explicitly
+not mandated. This record's relevance to the present thread is almost
+entirely retrospective: everything in §§3--11 below about Claude's own
+sandbox happened *without* this FTR being implemented, and §12 concerns the
+one narrow, much later authorization carved out of it.
+
+== 2. Claude adapter: design, implementation, first tests (2026-11-01)
+
+The Claude Code adapter was designed and implemented in a single dense day,
+`WI-WFC-CLAUDE-CODE-ADAPTER-DESIGN-001` running H001 through at least H008
+(`6ece5de` design H001 through `e9fda6e` H007 and further corrections same
+day; `4c16884`/`aa84dc9` close a separate `-DESIGN-CLOSURE-001`), consolidated
+later into `docs/technical_model/claude_code_adapter_architecture.adoc`
+(`8389a7c`, 2026-11-05 -- see §3 for why the gap between design and
+consolidation matters). The design's own closed noninteractive profile,
+still the shape of `ClaudeCliAdapter` today: `-p --output-format json
+--json-schema <schema> --model <m> --effort <e> --restricted --safe-mode
+--strict-mcp-config --tools Read,Glob,Grep,Edit,Write,Bash --settings <path>
+--permission-mode acceptEdits --permission-prompts none
+--no-session-persistence <prompt>`.
+
+Implementation followed the same day under a *second*, differently-named
+Commission -- `WI-WFC-CLAUDE-CODE-ADAPTER-IMPLEMENTATION-CONTINUATION-001`
+(`21e2f47` H001 "add Claude CLI adapter"; `5cf0fe1` H003 "serialize schema
+inline") -- after `wfc-claude-code-adapter-implementation-001` had already
+been authored (`bafb70f`) and apparently needed a successor Commission
+bundle (`6e9cbe5`) to actually land; this document does not reconstruct why
+the first Commission did not itself complete, only that the governance
+trail shows a continuation, not a single uninterrupted Attempt.
+
+*Contemporaneous assumption:* the closed profile (file-tool allow-listing
+plus Claude's own `--restricted`/sandbox settings) would be sufficient to
+confine a worker to its authorized repository scope, with WFC's own
+post-Hop Git/scope observation as the actual authoritative backstop. This
+assumption held for the *acceptance boundary* throughout (no incident in
+this document shows WFC accepting an unauthorized candidate mutation) but
+not, as the following sections show, for the provider's own permission and
+sandbox mechanics behaving exactly as the design predicted on the first
+real invocation.
+
+== 3. Write permissions: three distinct layers conflated at first
+
+`docs(backlog): record Claude adapter write-permission mismatch` (`9f4dcfc`,
+2026-11-02) is the first real-provider surprise: a live Commission
+(`wfc-simple-v1-maintainer-principles-001`) authorized a worker to create a
+new directory and file under `docs/developer_guide/`; the Claude CLI's own
+permission layer denied both the `Write` and a `Bash mkdir -p`, with *no
+approval surface* to resolve either denial, before any candidate mutation
+could exist. `BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH` recorded
+two unreconciled hypotheses at the time -- `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`
+forcing the CLI back to an interactive default permission mode that
+`--permission-prompts none` then converts to automatic denial; and the
+generated sandbox settings never having populated a write-scope-equivalent
+field (`allowRead`/`denyRead` only) -- offered explicitly as *hypotheses*,
+not as an established cause.
+
+Three separately authorized correction Commissions
+(`wfc-claude-adapter-write-permissions-001/-002/-003`, 2026-11-02 through
+2026-11-05) each stopped `awaiting_human` at Hop 1 with zero candidate
+produced, every one of them blocked by a *Commission-authoring* defect, not
+new information about the adapter: each Mandate required establishing the
+causal mechanism before writing a fix while withholding the one instrument
+that could establish it -- a real, authenticated Claude CLI invocation.
+`docs(wfc): correct unsatisfiable-prerequisite Commission-authoring defect`
+(`6c750d0`, 2026-11-05) names this anti-pattern explicitly (operator manual
+§§22.5--22.6); it recurred later, independently, in the bubblewrap
+correction lineage (§7).
+
+What actually unblocked progress was `docs(architecture): generalize
+provider-containment disclaimer; clarify self-development Commission
+authoring` (`36089fb`, 2026-11-05), resolving -002's own `semantic_authority`
+stop by establishing that a repository-root write grant is acceptable
+*because* WFC's own post-Hop Git/scope observation is the actual
+authoritative boundary, not the provider's permission layer -- the three-layer
+distinction this whole document keeps returning to:
+
+. *Provider file-tool permission* (`Edit`/`Write` allow rules) -- provider-owned.
+. *Provider execution isolation* (`--restricted`, sandbox settings, Bash's
+  own sandbox) -- also provider-owned, and §5 below is where this document
+  returns to exactly how far that isolation actually extends.
+. *WFC's trusted post-Hop Git/scope observation* -- Coordinator-owned,
+  authoritative regardless of what layers 1--2 did or did not prevent.
+
+The actual correction (`498c331` H001 2026-11-05, `permissions.allow:
+["Edit"]`; `4eb69d9` H002 same day, `["Edit", "Write"]`, correcting Finding
+F001 -- opened by an independent review between those two commits, on the
+bare `Edit` rule not covering `Write`, and confirmed resolved by a later
+focused re-review the same day) is a small diff. Its *live-provider qualification* -- a real,
+authenticated `claude` invocation in a disposable workspace, outside any
+Coordinator-mediated Run, performed directly in a maintainer chat session
+because no facility yet lets WFC point its self-referential Run machinery
+at a disposable non-self-referential target -- is recorded in the
+consolidated architecture document's §7. Its positive case confirmed `Write`
+creating files and nested directories, with `permission_denials: []`. Its
+negative case is where §4 below begins: a `Write` outside the repository
+root was denied as expected, but a *Bash* shell redirection to the same
+kind of out-of-repository path succeeded, landing inside the outer,
+already-running Claude session's own documented scratchpad directory.
+
+== 4. Environment scrubbing, a nested-session leak, and the later allowlist
+
+The §3 live qualification's negative case traced that Bash-redirection
+success to `ClaudeCliAdapter.execute()` building the child environment, at
+that time, as `{**os.environ, ...}` (architecture document §7.2, citing
+`claude_adapter.py:124` as it stood then) -- the nested Claude process had
+inherited `CLAUDE_CODE_SESSION_ID` and related `CLAUDE_CODE_*` variables
+from the *outer*, already-running session, and the write landed in that
+outer session's own scratchpad exception, not in an arbitrary unconfined
+location. The architecture document is explicit that this *supports, without
+conclusively establishing*, a documented-scratchpad explanation over a
+generic containment failure, and that an independent clean-session re-test
+had not been performed.
+
+This observation sat alongside the design's own explicit residual caution
+(§8 of the architecture document): "Indiscriminately stripping all
+`CLAUDE_CODE_*` variables from the child environment is *not* assumed... to
+be safe or sufficient." The eventual correction did not strip selectively --
+it replaced blanket environment inheritance with a strict, enumerated
+allowlist. `WI-WFC-CLAUDE-ADAPTER-ENVIRONMENT-ALLOWLIST-001` was authored
+and implemented the same day (`725b329` Commission, `464aefe` fix, both
+2026-11-07): the child environment is now built from exactly `PATH`, `HOME`,
+`USER`, `LANG`, plus names explicitly listed in `WFC_CLAUDE_EXTRA_ENV_NAMES`
+-- with that mechanism's own validation (`__post_init__`) refusing any name
+starting `CLAUDE_CODE_`, and refusing `TMPDIR`/`TMP`/`TEMP` outright, so the
+adapter's own short-`TMPDIR` invariant (§7) cannot be reopened through the
+same door. Per the maintainer's own project-memory record of that session,
+this implementation was never formally accepted inside its own WFC Run
+(hop-budget exhausted, `awaiting_human_budget`); the maintainer promoted it
+to Runtime directly after live-qualifying it outside ordinary WFC
+acceptance machinery -- an explicit, recorded exception, not the normal
+path.
+
+The `WFC_CLAUDE_EXTRA_ENV_NAMES` mechanism this Commission produced is, two
+days later, the exact channel `PYTEST_DEBUG_TEMPROOT` travels through in §9.
+
+== 5. What a provider sandbox does and does not establish
+
+By the time of the §3--4 work, the architecture document's §5 and §8 had
+already drawn a line this document's later experiments only ever confirm,
+never contradict: "No provider permission or sandbox setting... is an
+OS-level isolation guarantee WFC has verified," quoting `architecture.md`'s
+own disclaimer (also from `36089fb`): "WFC V1 provides neither hostile-code
+containment nor host isolation; restricting agent writes is primarily an
+operational safeguard against accidental damage, not a security perimeter."
+`FTR-WFC-EXECUTION-TRUST-BOUNDARIES` (§1 above) had already said the same
+thing in general terms in September, before any Claude-specific evidence
+existed; by November, live observations (the scratchpad write in §4; the
+sandbox-grant and symlink mechanics in §9--12) were specific confirmations
+of a caution that predated them, not a new discovery.
+
+== 6. FD-08 and scratch management, including an earlier, distinct `/tmp` incident
+
+A first, independent `/tmp` tmpfs exhaustion -- unrelated at the time to any
+Claude-specific mechanism -- interrupted
+`RUN-c358b544417c4a33a0d040a0d8c38656`
+(`WI-WFC-FRONT-DOOR-DIRECT-V1-IMPLEMENTATION-002`) on 2026-10-28/29,
+recorded as a factual incident report
+(`docs/cold_storage/backlog/pre-0.1.0b1/infrastructure-and-incidents/2026-10-28_tmpfs_exhaustion.adoc`)
+that explicitly declined to attribute a root cause beyond what was directly
+observed. This motivated FD-08
+(`WI-WFC-FD08-ATTEMPT-SCRATCH-001`): an investigation Commission
+(`docs(commission): prepare Direct-v1 FD-08 scratch investigation`,
+`5c55845`, 2026-10-30) followed by implementation
+(`docs(commission): author wfc-fd08-attempt-scratch-001 robust@v1`,
+`f5c048d`, 2026-11-05), moving the *Harness's own* `TMPDIR`/`TMP`/`TEMP` --
+and the Evidence repository's -- to a configurable, Attempt-scoped scratch
+root defaulting to `$HOME/wfc-scratch/<attempt>`, specifically to stop
+depending on the ambient system `/tmp`.
+
+*Contemporaneous assumption:* this closed the ambient-`/tmp`-dependency
+question generally, for Harness and operator temp operations. It did --
+for exactly the surfaces FD-08 itself touched. It did not, and was not
+designed to, reach a provider adapter's own independent subprocess
+environment construction, which is where §7 begins.
+
+== 7. Unix-domain sockets and the short-`TMPDIR` workaround
+
+Separately, 2026-11-06 opened a bounded, provider-independent bubblewrap
+primitive: `FTR-WFC-EXECUTION-TRUST-BOUNDARIES`'s own text records (as a
+dated addendum, not retroactively) that the maintainer authorized, outside
+ordinary WFC execution, "one bounded, provider-independent
+filesystem-isolation primitive -- a reusable `bwrap`-based execution
+boundary for an untrusted subprocess... not yet wired into the live
+Codex/Claude provider execution path." The implementation Commission
+(`wfc-bubblewrap-fs-isolation-001`, `eb4f3ba`) landed
+`src/workflow_coordinator/execution_boundary.py` (`605a324` H001, 2026-11-06)
+and iterated through independent review findings about writable hardlink
+and symlink-inode aliases (`e64d380` H002, `d0f78ea` H004) -- the module
+discussed in detail in §12.
+
+Correcting that module's own successor Attempts
+(`wfc-bubblewrap-fs-isolation-001-review-001-correction-001` through
+`-003`) is where the short-`TMPDIR` fix actually originates: each
+correction's own Bash tool hit the Claude CLI's `AF_UNIX` IPC-bridge
+socket-path construction failing ("Failed to create bridge sockets after 5
+attempts") because the inherited, FD-08-style, human-readable,
+Attempt-scoped `TMPDIR` pushed the CLI's own derived socket directory past
+the kernel's 108-byte `sun_path` cap. `fix(claude_adapter): give the Claude
+CLI subprocess a short TMPDIR` (`4776fd0`, 2026-11-06) is the fix: a short,
+invocation-scoped `TMPDIR` rooted directly at `/tmp`
+(`_SHORT_TMP_ROOT`/`_short_subprocess_tmp_dir()`), confirmed by an opt-in
+live smoke test the same day (`7a5b736`).
+
+This fix was, and remains, *locally correct*: it solves exactly the socket-
+path-length problem it targeted, and does so without touching FD-08's own
+Harness-level scratch mechanism. `docs(backlog): record execution-integration
+debt from bubblewrap/Claude CLI work` (`affc579`, 2026-11-06) recorded, the
+same day, the tension this would realize before it was ever observed to
+fire: "Should a provider adapter's own short-lived, short-path
+temp-directory need be requested from a Harness-owned allocator... rather
+than each adapter hardcoding `/tmp` independently?" -- an open evaluation
+question, deliberately not answered there.
+
+== 8. The pytest/tmpfs exhaustion: a locally correct fix, a new system-level gap
+
+`FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT`'s open question became
+a confirmed incident the very next day. During Hop H002 of
+`WI-WFC-EVIDENCE-FAILURE-DIAGNOSTICS-001` (Run
+`RUN-b112595129b34f4c97806f634a0b7133`, 2026-11-07 -- this Run is "FM-1" in
+the maintainer's own shorthand, named here only because it is this
+incident's discovery context, not for its own unrelated acceptance history),
+the agent's own exploratory `pytest` run inherited the adapter's short,
+`/tmp`-rooted `TMPDIR` and drove the host `tmpfs` to **1,048,576/1,048,576
+inodes (100%)**, almost entirely under `pytest-of-stefan` session
+directories. `BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION` was
+recorded the same day (`eebeb93`, then reduced to a technical-only record
+without governance scaffolding, `382f0bb`, both 2026-11-07). The independent
+reviewer's own broad-review artifact for the same Hop independently reported
+the same symptom from inside the Run itself, correctly classified there as
+an agent-local environmental limitation rather than a candidate defect.
+
+This is the clean illustration this whole retrospective exists to preserve:
+a fix that is *locally correct* for the problem it was authorized to solve
+(a narrow socket-path-length constraint) *reintroduced*, one layer deeper
+and scoped per-provider-invocation rather than per-Attempt, exactly the
+ambient-`/tmp` dependency FD-08 had deliberately moved away from for a
+different, earlier incident. Neither fix was wrong on its own terms; their
+composition was never jointly evaluated until it failed in a live Hop.
+
+`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION`, a prior, causally-undetermined
+incident with the same symptom shape, is recorded as a related but distinct
+sibling -- this record identifies one concrete, sufficient causal path,
+without claiming it is the only contributor to that older, still-open
+question.
+
+== 9. Investigating `PYTEST_DEBUG_TEMPROOT`, scoped sandbox grants, and symlinks (2026-11-07/08)
+
+What follows (§§9--12) is maintainer-directed, direct live-qualification work
+against the real, unmodified `ClaudeCliAdapter.execute()` -- methodologically
+the same kind of direct maintainer-run qualification already used for the
+write-permission correction in §3, performed entirely outside any WFC
+Run/Commission/Runtime, against disposable repositories outside every WFC
+checkout. No production source was changed in any of it; experiments
+substituted the settings payload and/or `TMPDIR`-selection logic temporarily,
+in throwaway driver scripts, never in `claude_adapter.py` itself.
+
+*Round 1 (2026-11-07):* does `PYTEST_DEBUG_TEMPROOT`, carried through the
+existing `WFC_CLAUDE_EXTRA_ENV_NAMES` mechanism from §4, reach an
+agent-launched `pytest` process at all? Yes, every time -- but pointed at a
+path under `$HOME` with the closed profile exactly as shipped (`denyRead:
+["~/"]`, no corresponding `allowRead`), `pytest`'s own `rootdir.mkdir(...,
+exist_ok=True)` (no `parents=True`) raised `FileNotFoundError`: the
+redirected path's parent was invisible inside the sandboxed child's own
+filesystem view, though it demonstrably existed on the host. A control run
+pointed at a path inside the repository's own working tree passed end to
+end, isolating the cause to sandbox filesystem-*visibility*, not to
+propagation or redirection.
+
+*Round 2 (2026-11-07):* the installed CLI binary (`2.1.270`) documents, in
+its own embedded help/error strings -- not public documentation, read
+directly from the installed executable -- independent
+`sandbox.filesystem.allowRead`/`denyRead`/`allowWrite`/`denyWrite` keys, and
+treats `permissions.blockReadsOutsideWorkingDirectories` as a separate,
+prior gate whose own documented remedy is exactly `sandbox.filesystem.
+allowRead`. A settings payload identical to the shipped one except for
+`allowRead`/`allowWrite` each also naming one dedicated, explicitly-untrusted
+scratch subpath (not `wfc-scratch` itself, no Attempt or Evidence
+directory) let `PYTEST_DEBUG_TEMPROOT`-redirected fixture material land
+there, verified by direct host-side filesystem inspection, not only the
+worker's own report -- which in this same investigation had already once
+been shown unreliable (a sub-run claiming a denied read had "succeeded,"
+contradicted by the actually-empty output file). A negative control
+confirmed the rest of the home directory stayed unreadable and the sandbox
+stayed enabled throughout.
+
+*Round 3, a second follow-up (2026-11-08):* could the same scoped grant,
+combined with a short `/tmp` symlink pointing `TMPDIR` itself at the
+external scratch, redirect *ordinary* tools -- not only `pytest` via its own
+dedicated variable -- so that `pip`, `tempfile`, and anything else that only
+consults `$TMPDIR` would benefit too? Host-side inspection after a run found
+Claude's *own* internal session artifacts (`srt-mux-<pid>-0.sock`,
+`cc-socks/`, `bash-edit-diff/`) physically created inside the real external
+target through the symlink, with short filenames throughout -- direct
+confirmation that Claude's own socket-path construction uses the given
+`TMPDIR` string as given and relies on the kernel to follow the symlink
+transparently at `bind()` time, rather than canonicalizing the path first;
+the 108-byte `sun_path` limit this whole chain exists because of (§7) is
+not re-violated even though the real resolved path is well over 150 bytes.
+
+== 10. The apparent third approval layer -- and its retraction
+
+The same symlink investigation's first agent-launched `touch`/`mkdir`/
+`python3` commands against `$TMPDIR` were denied with "no approval surface,"
+inconsistently across repeated rounds -- eventually, in later narrowing
+rounds, even under the adapter's completely default, unmodified `TMPDIR`
+handling, with no symlink and no monkeypatch of any kind involved. At that
+point this looked like a genuine, previously-unknown blocker specific to
+`TMPDIR`-redirection generally.
+
+A dedicated control round refuted this directly: its very first command, a
+plain repository-local write that never touched `$TMPDIR` at all, was *also*
+denied. **No `TMPDIR`-specific approval layer and no session-wide denial
+cascade exist; both are retracted outright, not downgraded to an open
+caveat.** The actual, narrower variable, isolated by removing candidate
+confounds one at a time: every probe command in this stretch of the
+investigation happened to use a `; echo "EXIT=$?"` exit-code-capture idiom
+for diagnostic convenience. Removing it -- no `$?`, no semicolon-chaining --
+let `touch`, `mkdir`, and `python3 --version` against `$TMPDIR` succeed
+immediately and repeatably, confirmed again by host-side inspection of files
+actually landing in the real external target, under both the default
+adapter and the symlink-plus-scoped-grant configuration.
+
+This is reported as an observation about the concrete Bash-command
+authorization behavior encountered in *these specific test sessions*, under
+the Claude CLI version and conditions in use at the time -- not a
+demonstrated general rule that `;` or `$?` are always denied, and no claim
+is made about the underlying mechanism or whether it reproduces under other
+conditions. A separate, narrower, unrelated observation survived the
+correction: a `python3 -c "<multi-line script that performs actual file
+I/O>"` invocation was still denied even without `$?` or semicolons, while
+`python3 --version` (no inline code execution) succeeded every time. This
+does not refute or block the symlink direction -- it was never shown to
+depend on `TMPDIR`, the symlink, or the sandbox grant -- and is noted only
+so a future investigation is not surprised by it or misattributes it.
+
+== 11. Final positive confirmation: an ordinary `pytest` run through the symlink
+
+A last, deliberately minimal live test (2026-11-08) removed every remaining
+test-harness artifact at once: no `PYTEST_DEBUG_TEMPROOT`, no `$?`, no shell
+chaining, no multi-line `python3 -c`, no `pip`. A single Bash command,
+`python3 -m pytest -q`, run through the real adapter with `TMPDIR` set to
+the short symlink and the scoped `allowRead`/`allowWrite` grant from §9,
+exercising one trivial `tmp_path`-fixture test. Result: `1 passed in 0.01s`,
+with the fixture's own evidence file confirmed, by direct host-filesystem
+inspection, physically present inside the real external scratch target
+(`<target>/claude-1000/pytest-of-stefan/pytest-0/.../probe-evidence.txt`),
+and the host's own `/tmp/pytest-of-stefan` confirmed absent throughout. This
+is the first and only demonstration in this entire investigation of the
+*unmodified, realistic* use case -- an ordinary test run, no special
+environment variable -- working end to end through the short-symlink
+mechanism.
+
+== 12. WFC's own bubblewrap: compatibility, not yet integration
+
+`src/workflow_coordinator/execution_boundary.py` (§7) is not wired into
+`ClaudeCliAdapter.execute()` today; it exists as the one narrow, authorized
+primitive `FTR-WFC-EXECUTION-TRUST-BOUNDARIES`'s 2026-11-06 addendum
+describes, tested so far only against harmless local subprocesses and
+synthetic repositories (its own commit history, §7). Its `validate()`
+requires every bind source to resolve inside the repository
+(`source.relative_to(repository)`) and every bind destination to mirror
+that same relative path under `/repo`; its one `MountMode.SCRATCH` requires
+`source is None` and `dest == '/tmp'`, which `build_argv()` turns into a
+bare `--tmpfs /tmp` -- a private, empty, per-invocation tmpfs, with nothing
+from outside that namespace visible underneath it.
+
+A small, isolated `bwrap` test (2026-11-08, no Claude CLI involved, plain
+`bwrap` invocations only) answered two of the maintainer's concrete
+questions mechanically rather than by inference from documentation:
+
+* *A host-created `/tmp` symlink does not survive `--tmpfs /tmp`.* Inside
+  a namespace with only `--tmpfs /tmp` applied, a symlink created on the
+  host beforehand at that same path was completely absent -- an empty
+  directory, not a dangling or followed link. This confirms, independent
+  of anything Claude-specific, that the short-symlink mechanism from §9--11
+  is **mechanically incompatible** with WFC's own planned bubblewrap
+  boundary exactly as that boundary is specified today: the private tmpfs
+  this boundary already applies would hide any host-level symlink a
+  provider adapter tried to rely on.
+* *A direct external bind, applied after the tmpfs, works without any
+  symlink.* `--bind <external scratch path> /tmp/s`, applied after
+  `--tmpfs /tmp` in the same `bwrap` invocation, gave read and write access
+  to the real external directory at a six-byte path inside the sandbox;
+  a file written inside the sandbox at that path was confirmed, from the
+  host, to exist with correct content in the real external target. This
+  achieves the same short-path/large-capacity split as the symlink, natively,
+  without ever creating a host-level `/tmp` artifact.
+
+Neither of these two mechanical facts has yet been tested with a real
+`claude` CLI invocation running *inside* such a boundary -- both tests above
+used plain subprocesses, deliberately, to answer the two most concrete open
+questions cheaply before considering any such combined test. Specifically
+unqualified, as of this writing:
+
+* Whether Claude's own internal sandbox (a second, nested `bwrap`/seccomp
+  layer, by its own embedded strings' own evidence -- see `enableWeakerNestedSandbox`,
+  documented there as "for Docker environments") actually initializes
+  correctly when the outer process is already inside a WFC-owned `bwrap`
+  namespace, or whether some additional settings accommodation (that same
+  weaker-nested-sandbox flag, or another not yet identified) would be
+  required.
+* What the mount-validation model in `execution_boundary.py` would need to
+  change to admit an external-scratch bind at all: today's `validate()`
+  categorically rejects any bind source outside the repository, by design;
+  admitting one deliberately-scoped exception (one specific, designated
+  WFC scratch root, validated the same way existing writable binds already
+  are via `_check_writable_aliases`) is a deliberate widening of that
+  specific invariant, not a loosening of it generally, and has not been
+  designed, let alone implemented.
+* Whether the existing "exactly one `SCRATCH` mount" invariant
+  (`validate()`) is the right place to express this new external-bind kind,
+  or whether it needs its own, separate `MountMode`.
+
+No new host privileges beyond what the already-adopted bubblewrap direction
+itself requires were found necessary for the external-bind case: an
+additional `--bind` argument is an ordinary, unprivileged `bwrap` operation,
+requiring nothing beyond what the module's existing repository-internal
+binds already assume.
+
+**Current assessment:** the external bind-mount-inside-WFC's-own-namespace
+direction is the maintainer's currently preferred target architecture,
+precisely because the host-symlink mechanism is now shown, mechanically,
+to be incompatible with that same planned boundary rather than merely an
+imperfect stopgap. Neither direction is implemented or integrated today.
+The symlink mechanism documented in §§9--11, confirmed working only under
+temporary, non-production test-driver substitutions of the adapter's own
+settings and `TMPDIR`-selection logic, remains unimplemented in product
+code and is not expected to become the long-term solution.
+
+== 13. Current state and open questions toward beta 1
+
+What is confirmed, by live, host-filesystem-verified experiment, as of
+2026-11-08:
+
+* `PYTEST_DEBUG_TEMPROOT`, via the existing environment-allowlist mechanism,
+  reliably redirects `pytest`'s own fixture material to an explicitly
+  granted external scratch subpath, without weakening `denyRead`,
+  `blockReadsOutsideWorkingDirectories`, or the sandbox's own enablement.
+* A short `/tmp` symlink to the same kind of external subpath, combined
+  with the same scoped grant, lets `TMPDIR` itself redirect both Claude's
+  own internal session artifacts and ordinary agent-launched tools (an
+  unmodified `pytest` run included) to the same external target -- more
+  general than the `PYTEST_DEBUG_TEMPROOT`-only direction, but mechanically
+  incompatible with WFC's own planned bubblewrap boundary.
+* An external bind-mount inside that same planned boundary achieves the
+  identical short-path/large-capacity split natively, with no host-level
+  artifact and no additional host privilege, but is not yet designed into
+  `execution_boundary.py`'s validation model, not yet wired into the Claude
+  adapter's invocation path, and not yet tested with a real nested Claude
+  invocation.
+
+What remains genuinely open, not merely unimplemented:
+
+* The adapter's short, `/tmp`-rooted `TMPDIR`/`TMP`/`TEMP` still reaches
+  `pip`, Python's own `tempfile` module, and any other child process that
+  does not specifically consult `PYTEST_DEBUG_TEMPROOT` -- a gap the
+  symlink/bind-mount directions address in principle but that no shipped
+  correction yet closes.
+* Nested execution of Claude's own sandbox inside WFC's own bubblewrap
+  boundary has not been qualified at all; this is the single largest
+  unknown standing between the current experimental findings and a
+  security-oriented beta-1 release that depends on WFC owning its own
+  execution-isolation layer rather than relying on provider-specific
+  sandbox behavior for that purpose.
+* A narrower, unrelated, and not-yet-characterized Bash-command-content
+  observation (§10) involving inline, file-writing `python3 -c` scripts
+  remains unexplained and untied to anything else in this document.
+
+== 14. Durable lessons
+
+* *Local correctness is not system correctness.* Every individual fix in
+  this chronology -- the short `TMPDIR` for socket paths, FD-08's own
+  Harness-scratch move, the environment allowlist -- was correct for the
+  problem it was built to solve, evaluated against its own authorized
+  scope. Two of them, evaluated jointly only after a live failure,
+  directly contradicted each other's assumptions about where temporary
+  material should live. Abstraction boundaries that hide this kind of
+  cross-cutting resource question are exactly where this class of defect
+  hides.
+* *A provider's own sandbox is not a security boundary WFC has verified,
+  however convincing one live qualification looks.* This was stated as a
+  general principle in September, before any Claude-specific evidence
+  existed, and every subsequent observation -- the scratchpad-write
+  exception, the sandbox-grant mechanics, the symlink's eventual
+  incompatibility with WFC's own planned boundary -- confirmed the same
+  caution rather than needing to discover it anew.
+* *A test harness can manufacture its own findings.* The apparent
+  third approval layer was real in the sense that every observation
+  behind it was accurately reported; it was not real as a product
+  behavior, because the actual cause was an artifact of how the test
+  commands themselves were written. Host-filesystem verification, not a
+  worker's own self-report, is what actually distinguished a genuine
+  finding from a reporting error more than once in this investigation.
+* *Environment, filesystem, and resource isolation are three separate
+  concerns that keep getting solved one at a time.* Environment scrubbing
+  (§4), filesystem visibility (§9--10), and bulk temporary-storage capacity
+  (§6--8) each had their own incident, their own fix, and their own later
+  interaction with one of the other two. None of this document's
+  individual fixes was wrong; none of them was sufficient alone, and
+  nothing in WFC's current architecture evaluates all three together as
+  one resource.
+
+== 15. Cross-references
+
+* `src/workflow_coordinator/adapter.py`, `src/workflow_coordinator/claude_adapter.py`,
+  `src/workflow_coordinator/execution_boundary.py` -- current source.
+* `docs/technical_model/claude_code_adapter_architecture.adoc` -- current,
+  normative technical model for the adapter; this document does not
+  restate what it already states as current fact.
+* `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`,
+  `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc`
+  -- controlling records; the latter carries the detailed, commit-level
+  account of §§9--12's experiments this document only summarizes.
+* `docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc`,
+  `docs/backlog/FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT.adoc`
+  -- the deferred future direction and the cross-cutting debt record this
+  document's own narrative realizes and extends.
+* `docs/cold_storage/backlog/pre-0.1.0b1/infrastructure-and-incidents/2026-10-28_tmpfs_exhaustion.adoc`
+  -- the earlier, distinct incident FD-08 responded to.
