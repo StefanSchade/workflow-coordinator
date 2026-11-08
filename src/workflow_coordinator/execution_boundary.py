@@ -24,6 +24,12 @@ class MountMode(Enum):
     READ_ONLY = "read-only"
     WRITABLE = "writable"
     SCRATCH = "scratch"
+    EXTERNAL_SCRATCH = "external-scratch"
+
+
+# Fixed, short destination for the one caller-designated external scratch
+# bind; nested inside the private /tmp tmpfs so it never substitutes for it.
+EXTERNAL_SCRATCH_DESTINATION = PurePosixPath('/tmp/s')
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,7 @@ class ValidatedBoundary:
     repository: Path
     mounts: tuple[Mount, ...]
     binary: str
+    external_scratch: Path | None = None
 
 
 def _real_path(path: Path) -> Path:
@@ -72,7 +79,18 @@ def _check_writable_aliases(source: Path) -> None:
         raise BoundaryConfigurationError(f"cannot inspect writable source: {source}") from exc
 
 
-def validate(repository: Path, mounts: Sequence[Mount], *, binary: str = "bwrap") -> ValidatedBoundary:
+def _check_no_overlap(path: Path, other: Path, message: str) -> None:
+    if path == other or path in other.parents or other in path.parents:
+        raise BoundaryConfigurationError(message)
+
+
+def validate(
+    repository: Path,
+    mounts: Sequence[Mount],
+    *,
+    binary: str = "bwrap",
+    external_scratch: Path | None = None,
+) -> ValidatedBoundary:
     executable = shutil.which(binary)
     if not executable or not os.path.isfile(executable) or not os.access(executable, os.X_OK):
         raise BoundaryConfigurationError(f"bwrap is missing or not executable: {binary}")
@@ -87,6 +105,9 @@ def validate(repository: Path, mounts: Sequence[Mount], *, binary: str = "bwrap"
     for mount in mounts:
         if not isinstance(mount, Mount) or not isinstance(mount.mode, MountMode) or not isinstance(mount.destination, PurePosixPath):
             raise BoundaryConfigurationError("invalid mount specification")
+        if mount.mode is MountMode.EXTERNAL_SCRATCH:
+            raise BoundaryConfigurationError(
+                "external scratch mounts must be requested via the external_scratch parameter, not constructed directly")
         dest = mount.destination
         if not dest.is_absolute() or '..' in dest.parts or str(dest) == '/':
             raise BoundaryConfigurationError(f"invalid destination: {dest}")
@@ -115,13 +136,31 @@ def validate(repository: Path, mounts: Sequence[Mount], *, binary: str = "bwrap"
         checked.append(mount)
     if sum(m.mode is MountMode.SCRATCH for m in checked) != 1:
         raise BoundaryConfigurationError("exactly one private scratch mount is required")
-    return ValidatedBoundary(repository, tuple(checked), executable)
+    resolved_external_scratch: Path | None = None
+    if external_scratch is not None:
+        resolved_external_scratch = _real_path(Path(external_scratch))
+        if not resolved_external_scratch.is_dir():
+            raise BoundaryConfigurationError("external scratch root must be a directory")
+        _check_no_overlap(resolved_external_scratch, repository, "external scratch root overlaps the repository")
+        for root in system_roots:
+            _check_no_overlap(resolved_external_scratch, root, "external scratch root overlaps a system mount")
+        for mount in checked:
+            if mount.source is not None:
+                _check_no_overlap(resolved_external_scratch, mount.source, "external scratch root overlaps another mount's source")
+        for other_dest in destinations:
+            if other_dest == PurePosixPath('/tmp'):
+                continue  # the external scratch bind is deliberately nested inside the private tmpfs
+            if (EXTERNAL_SCRATCH_DESTINATION == other_dest or EXTERNAL_SCRATCH_DESTINATION in other_dest.parents
+                    or other_dest in EXTERNAL_SCRATCH_DESTINATION.parents):
+                raise BoundaryConfigurationError(f"external scratch destination overlaps another mount: {other_dest}")
+        _check_writable_aliases(resolved_external_scratch)
+    return ValidatedBoundary(repository, tuple(checked), executable, resolved_external_scratch)
 
 
 def build_argv(boundary: ValidatedBoundary, command: Sequence[str]) -> list[str]:
     # Revalidate at the execution boundary; callers cannot bypass validation by
     # directly constructing the public dataclass.
-    boundary = validate(boundary.repository, boundary.mounts, binary=boundary.binary)
+    boundary = validate(boundary.repository, boundary.mounts, binary=boundary.binary, external_scratch=boundary.external_scratch)
     if not command or not command[0] or any(not isinstance(arg, str) for arg in command):
         raise BoundaryConfigurationError("command must contain a nonempty executable and string arguments")
     args = [boundary.binary, '--die-with-parent', '--dev', '/dev', '--ro-bind', '/usr', '/usr']
@@ -136,6 +175,10 @@ def build_argv(boundary: ValidatedBoundary, command: Sequence[str]) -> list[str]
             args += ['--tmpfs', str(mount.destination)]
         else:
             args += ['--bind' if mount.mode is MountMode.WRITABLE else '--ro-bind', str(mount.source), str(mount.destination)]
+    # Appended after the mounts loop so this bind always lands strictly after
+    # the private /tmp tmpfs mount, regardless of that mount's position above.
+    if boundary.external_scratch is not None:
+        args += ['--bind', str(boundary.external_scratch), str(EXTERNAL_SCRATCH_DESTINATION)]
     return args + ['--chdir', '/repo', '--', *command]
 
 

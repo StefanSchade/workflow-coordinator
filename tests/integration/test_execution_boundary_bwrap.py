@@ -4,7 +4,7 @@ from pathlib import PurePosixPath
 import pytest
 
 from workflow_coordinator.execution_boundary import (
-    BoundaryConfigurationError, Mount, MountMode, run, validate,
+    BoundaryConfigurationError, EXTERNAL_SCRATCH_DESTINATION, Mount, MountMode, run, validate,
 )
 
 
@@ -143,3 +143,49 @@ def test_writable_symlink_hardlink_metadata_is_rejected(tmp_path, target_kind):
     with pytest.raises(BoundaryConfigurationError, match='hardlink aliases'):
         run(boundary, ['/bin/sh', '-c', 'touch -h -d @123 /repo/writable/alias'])
     assert target.lstat().st_mtime_ns == before.st_mtime_ns
+
+
+def test_external_scratch_bind_coexists_with_private_tmp_tmpfs(tmp_path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    external_root = tmp_path / 'external'
+    external_root.mkdir()
+    boundary = validate(repo, [Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)], external_scratch=external_root)
+    script = f'''
+set -eu
+printf private > /tmp/private-file
+printf external > {EXTERNAL_SCRATCH_DESTINATION}/external-file
+[ "$(cat /tmp/private-file)" = private ]
+[ "$(cat {EXTERNAL_SCRATCH_DESTINATION}/external-file)" = external ]
+if [ -e {EXTERNAL_SCRATCH_DESTINATION}/private-file ]; then exit 1; fi
+if [ -e /tmp/external-file ]; then exit 2; fi
+'''
+    result = run(boundary, ['/bin/sh', '-c', script])
+    assert result.returncode == 0, result.stderr
+    assert (external_root / 'external-file').read_text() == 'external'
+    assert not (external_root / 'private-file').exists()
+
+
+def test_external_scratch_internal_symlink_escape_is_contained(tmp_path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    external_root = tmp_path / 'external'
+    external_root.mkdir()
+    forbidden = tmp_path / 'forbidden'
+    forbidden.mkdir()
+    secret = forbidden / 'secret'
+    secret.write_text('host secret')
+    (external_root / 'escape').symlink_to(forbidden)
+    boundary = validate(repo, [Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)], external_scratch=external_root)
+    script = f'''
+set -eu
+if cat {EXTERNAL_SCRATCH_DESTINATION}/escape/secret 2>/dev/null; then exit 1; fi
+if (echo bad > {EXTERNAL_SCRATCH_DESTINATION}/escape/newfile) 2>/dev/null; then exit 2; fi
+'''
+    result = run(boundary, ['/bin/sh', '-c', script])
+    assert result.returncode == 0, result.stderr
+    assert secret.read_text() == 'host secret'
+    assert not (forbidden / 'newfile').exists()
+    assert sorted(p.name for p in forbidden.iterdir()) == ['secret']
