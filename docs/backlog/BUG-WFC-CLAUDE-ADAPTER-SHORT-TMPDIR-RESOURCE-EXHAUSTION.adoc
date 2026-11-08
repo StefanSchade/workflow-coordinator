@@ -112,19 +112,27 @@ operator cannot assume elevated host privileges.
   `--basetemp` path. Not re-examined this round; superseded in priority by
   the `PYTEST_DEBUG_TEMPROOT` direction above, not ruled out.
 * A short symlink (or similar short indirection) under `/tmp` pointing at
-  the real Attempt scratch root -- unverified whether the Claude sandbox's
-  own socket-path resolution follows symlinks the way this would require.
-  Not re-examined this round, since the follow-up below found a working
-  direction without needing it; left open, not ruled out.
+  the real Attempt scratch root. **Second follow-up (2026-11-08, see
+  below): live-qualified and confirmed to work** -- the Claude sandbox's
+  own socket-path resolution does *not* re-canonicalize `TMPDIR` before
+  constructing IPC paths, so the 108-byte limit is not re-violated, and
+  (combined with the same scoped `allowRead`/`allowWrite` grant as the
+  first follow-up) ordinary tools that only consult `$TMPDIR` itself --
+  not only `pytest` via `PYTEST_DEBUG_TEMPROOT` -- were shown to land their
+  output in the real external scratch. Broader in principle than the
+  `PYTEST_DEBUG_TEMPROOT` direction above; see "Residual scope not
+  covered" below for what still limits it.
 * A bind mount inside a WFC-owned bubblewrap namespace, where available --
   not to be assumed available, since an unprivileged mount namespace is
   itself a host capability some environments may not grant. Not
-  re-examined this round, for the same reason as the symlink direction.
+  re-examined; superseded in priority by the symlink direction above once
+  it was confirmed to work, not ruled out.
 
 Each trades off differently against the portability requirement above. The
-first direction is now demonstrated (follow-up below) to satisfy it for the
-pytest-fixture case specifically; none of the four is shown to satisfy the
-full requirement (all temp-material sources, not only pytest fixtures) yet.
+first two directions are now each demonstrated (follow-ups below) to
+satisfy it for their respective scope (`pytest` fixtures specifically;
+anything that consults `$TMPDIR` directly, more generally) -- see "Residual
+scope not covered" for what remains uncovered by either.
 
 == Follow-up live qualification (2026-11-07, maintainer-run)
 
@@ -191,30 +199,92 @@ false`, `network.allowedDomains: []`, and
 **Conclusion of the follow-up:** a scoped `sandbox.filesystem.allowRead` +
 `allowWrite` grant, limited to one dedicated untrusted scratch subpath, combined
 with `PYTEST_DEBUG_TEMPROOT` via the existing `WFC_CLAUDE_EXTRA_ENV_NAMES`
-mechanism, is now the maintainer's preferred correction direction -- demonstrated
-to coexist with the existing short-`TMPDIR` fix, and to leave `denyRead`,
-`blockReadsOutsideWorkingDirectories`, and the sandbox's own enablement
-otherwise intact. The symlink and bubblewrap-mount directions above were not
-re-examined and are not ruled out; they were simply not needed once this
-direction worked.
+mechanism, was at this point the maintainer's preferred correction
+direction -- demonstrated to coexist with the existing short-`TMPDIR` fix,
+and to leave `denyRead`, `blockReadsOutsideWorkingDirectories`, and the
+sandbox's own enablement otherwise intact. The symlink direction was
+re-examined in a second follow-up below and also confirmed working, more
+generally; the bubblewrap-mount direction was not re-examined and is not
+ruled out.
 
-**Residual scope not covered (this BUG is not resolved by the above):** the
-adapter's existing short, `/tmp`-rooted `TMPDIR`/`TMP`/`TEMP`
-(`claude_adapter.py:149,166`) is untouched by this direction and continues
-to be inherited by `pip`, Python's own `tempfile` module, and any other
-child process that does not specifically consult `PYTEST_DEBUG_TEMPROOT` --
+**Residual scope not covered by this first follow-up alone:** the adapter's
+existing short, `/tmp`-rooted `TMPDIR`/`TMP`/`TEMP` (`claude_adapter.py:149,
+166`) is untouched by the `PYTEST_DEBUG_TEMPROOT` direction and continues to
+be inherited by `pip`, Python's own `tempfile` module, and any other child
+process that does not specifically consult `PYTEST_DEBUG_TEMPROOT` --
 confirmed by reading `_pytest/tmpdir.py` itself, which uses that variable
 only for its own `tmp_path`/`tmp_path_factory` basetemp, never for
-`tempfile.gettempdir()`. A correction scoped to the `pytest`-fixture case
-alone would leave this record open, not resolve it.
+`tempfile.gettempdir()`. The second follow-up below addresses this general
+case directly, by redirecting `TMPDIR` itself rather than a pytest-specific
+variable; see its own "what remains uncovered" note.
 
-**What a later correction still needs to determine:** a concrete way to
-provision the one dedicated untrusted scratch subpath this direction grants
-access to, owned by WFC rather than hardcoded to the FD-08 self-development
-Attempt-scratch path (`$HOME/wfc-scratch/<attempt>`) specifically -- so that
-a future non-self-development WFC use of this same adapter has an
-equivalent grantable path, not only this particular development-time
-environment. Not yet selected; no implementation follows from this record.
+== Second follow-up: short symlink to external scratch (2026-11-08,
+maintainer-run)
+
+Same direct-live-qualification methodology as the first follow-up (real,
+unmodified `ClaudeCliAdapter.execute()`, Claude CLI `2.1.270`, disposable
+repository, no production source changed; only `_settings()` and
+`_short_subprocess_tmp_dir()` temporarily substituted in a throwaway driver
+script for the experiment). Goal: redirect `TMPDIR` itself -- not a
+pytest-specific variable -- to the external scratch, so ordinary tools
+(`pip`, `tempfile`, anything else that only consults `$TMPDIR`) benefit too,
+not only `pytest`.
+
+**Mechanism confirmed working:** a short symlink under `/tmp` (e.g.
+`/tmp/wfc-sym-<token>`) whose target is a dedicated untrusted subpath of the
+external scratch, combined with the same scoped `sandbox.filesystem.
+allowRead`/`allowWrite` grant (naming the real target, not the symlink) used
+in the first follow-up. Host-side inspection after the run found Claude's
+*own* internal session artifacts -- `srt-mux-<pid>-0.sock`, `cc-socks/`,
+`bash-edit-diff/` -- physically created inside the real external target
+through the symlink, with short filenames throughout. This directly answers
+the open question the original "Candidate directions" entry raised: Claude's
+own socket-path construction uses the given `TMPDIR` string as-is and relies
+on the kernel to follow the symlink transparently at `bind()` time; it does
+not canonicalize/resolve the path first, so the 108-byte `sun_path` limit is
+not re-violated even though the real resolved path is well over 150 bytes.
+
+**False alarm, corrected:** an initial round of agent-launched `touch`/
+`mkdir`/`python3` commands against `$TMPDIR` were denied with "no approval
+surface," inconsistently across repeated rounds, including -- in later
+narrowing rounds -- even under the adapter's completely default,
+unmodified `TMPDIR` handling (no symlink, no monkeypatch of any kind). This
+was traced to a confound in the test harness itself, not to `TMPDIR`,
+location, or the symlink mechanism: every probe command in that investigation
+used a `; echo "EXIT=$?"` exit-code-capture idiom for diagnostic purposes.
+Removing it (no `$?`, no semicolon-chaining) immediately and reliably let
+`touch`, `mkdir`, and `python3 --version` against `$TMPDIR` succeed, under
+both the default adapter and the symlink-plus-scoped-grant configuration --
+confirmed by host-side inspection of files landing in the real external
+target, not only the worker's own report. **The originally reported "third
+approval layer blocking the symlink direction" is retracted**; no such
+layer was found once the test harness's own confound was removed.
+
+**What remains uncovered, not yet explained:** a `python3 -c "<multi-line
+script that performs actual file I/O, e.g. tempfile creation>"` invocation
+was still denied even after removing `$?` and semicolon-chaining, while
+`python3 --version` (no inline code execution) succeeded every time. This
+looks like a narrower, separate Bash-command-content heuristic -- plausibly
+treating inline-interpreted code that performs file writes with more
+caution than simple file utilities or no-execution flags -- distinct from
+the `$?`-idiom confound above and from everything this BUG is otherwise
+about. Not characterized further here (would need its own bounded
+investigation); noted so a future correction attempt is not surprised by it
+and does not re-attribute it to `TMPDIR`/sandbox-grant mechanics.
+
+**What a later correction still needs to determine, for either direction:**
+a concrete way to provision the one dedicated untrusted scratch subpath
+both follow-ups grant access to, owned by WFC rather than hardcoded to the
+FD-08 self-development Attempt-scratch path (`$HOME/wfc-scratch/<attempt>`)
+specifically -- so that a future non-self-development WFC use of this same
+adapter has an equivalent grantable path, not only this particular
+development-time environment. Also still open: the symlink's own lifecycle
+(`shutil.rmtree(tmp_dir, ignore_errors=True)` in `claude_adapter.py`'s
+`finally` block is a confirmed no-op on a symlink -- neither the symlink nor
+its real target get removed -- so the short symlink itself would accumulate
+under `/tmp` across invocations unless a correction adds its own cleanup;
+the real scratch target is not at risk from this specific gap either way).
+Neither is yet selected; no implementation follows from this record.
 
 == Evidence pointers
 
