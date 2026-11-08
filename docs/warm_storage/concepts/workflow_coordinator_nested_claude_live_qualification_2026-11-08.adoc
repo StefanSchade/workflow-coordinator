@@ -1,0 +1,122 @@
+= WFC / Claude Code: Nested Bubblewrap Live Qualification (2026-11-08)
+:toc:
+:toclevels: 2
+
+Status:: Interactive qualification record; partial result, no production integration or WFC acceptance implied.
+Date:: 2026-11-08
+Subject:: Claude Code startup and Bash sandbox inside a WFC-owned outer Bubblewrap boundary
+Evidence basis:: Operator-supplied terminal report from a controlled interactive Sonnet investigation, plus the previously reported local `/proc` and AF_UNIX experiments. This record does not independently rerun those experiments.
+
+== Purpose and boundaries
+
+The target architecture is a trusted WFC coordinator launching the Claude Code CLI inside a WFC-owned Bubblewrap namespace. Claude then launches Bash-tool processes within its own sandbox. The objective is to qualify whether both isolation layers can coexist without weakening provider protections or exposing credentials to agent-controlled tools.
+
+This was an *interactive investigation*, not a WFC Commission or a WFC Run. No WFC product source, tests, governance, or runtime were changed. No production credential grants, `enableWeakerNestedSandbox`, broad Unix-socket allowlists, permission bypass, root operation, or system configuration change were authorized or used.
+
+Relevant sources in the development repository:
+
+* `src/workflow_coordinator/execution_boundary.py`
+* `src/workflow_coordinator/claude_adapter.py`
+* `docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc`
+* `docs/warm_storage/concepts/workflow_coordinator_nested_claude_bwrap_qualification_2026-11-08.adoc` (earlier unaccepted H001 candidate preserved via salvage commit `4b13dc22dea9ca22cbb2071a176d6f68443f450b`)
+
+== Environment and preparation
+
+* Claude Code reported version `2.1.270` (`claude --version`) and was installed as a Bun-based native executable under `/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`.
+* The existing WFC boundary constructs a separate filesystem view with `/usr` read-only, a `/repo` worktree, protected `.git`, a private `/tmp`, and optional external WFC scratch at `/tmp/s`. By default it does not provide `/proc` or a separate PID namespace.
+* The live experiment used a synthetic test repository and temporary non-secret settings in `~/wfc-scratch/claude-nested-live/`. These paths are *operator-local evidence pointers*, not source-controlled artifacts of this record.
+* The host had existing OAuth-style file credentials in the user's Claude configuration, but no `ANTHROPIC_API_KEY` variable was detected. The investigation did not copy, print, or mount the credential contents into the external scratch.
+
+== Phase A: Claude-host control, real model invocation
+
+A single authenticated Claude `-p` invocation using Haiku was executed outside the WFC boundary, with temporary settings requesting:
+
+* `sandbox.enabled=true`
+* `sandbox.failIfUnavailable=true`
+* `sandbox.allowUnsandboxedCommands=false`
+
+The Claude session actually invoked the Bash tool. The reported cost was USD 0.0243, with `num_turns=2` and `permission_denials=[]`.
+
+[cols="2,2,3",options="header"]
+|===
+|Probe |Unsandboxed host shell |Claude Bash-tool child
+|Mount namespace inode |`2873829` |`2883487` (different namespace)
+|`/proc/self/status` Seccomp |Mode 0; zero filters |Mode 2; one filter
+|Filesystem view |Host `/` and `/tmp` writable |`/` remounted read-only; `/tmp` read-only tmpfs
+|Out-of-scope file access |Not relevant as a control guarantee |Test path invisible (`ENOENT`)
+|Network probe |HTTP 200 from `example.com` |Request blocked (`HTTP_000`)
+|===
+
+*Conclusion:* A real Claude Bash-tool command executed with observable namespace, filesystem and network restrictions. The experiment did not require a permission bypass or an unsandboxed fallback.
+
+*Caveat regarding Seccomp:* `Seccomp: 2` and one installed filter prove that some Seccomp filter was active in the child process. They do *not* identify the filter as Claude's optional AF_UNIX-specific `apply-seccomp` program, and do not prove that `socket(AF_UNIX, ...)` was blocked. The optional `@anthropic-ai/sandbox-runtime` / `apply-seccomp` executable was reportedly not found on the host. The filter's provenance remains undetermined; the earlier assumption that its absence means no Seccomp at all was disproven.
+
+== Phase B: Outer WFC boundary, without model contact
+
+=== Unmodified outer boundary
+
+Within the existing WFC Bubblewrap configuration, even `claude --version` aborted during Bun startup. This happened without contacting a model or requiring authentication.
+
+=== Experimental procfs / PID namespace addition
+
+Adding the following arguments only to a throwaway test harness's *outer* Bubblewrap invocation:
+
+[source,shell]
+----
+--unshare-pid --proc /proc
+----
+
+made `claude --version` exit successfully and print `2.1.270 (Claude Code)`. The external `/tmp/s` scratch was writable. This independently corroborates the previous result that procfs is needed not only by nested Bubblewrap initialization but already by the Bun-based Claude CLI runtime.
+
+The earlier synthetic nested-Bubblewrap qualification showed that this combination permits a second Bubblewrap process to execute a real command and limits the visible PID list to the sandbox branch. However, globally exposed procfs entries (for example host boot parameters and parts of `/proc/sys` and `/proc/net`) still require security assessment.
+
+=== Auth-less CLI check inside the modified outer boundary
+
+A `claude -p` attempt without credentials terminated with a clear `Not logged in · Please run /login` diagnostic, reported `duration_api_ms=0` and `total_cost_usd=0`, and did not reach model execution. It demonstrated the CLI could start and reach authentication checks, *not* that the nested Claude Bash sandbox worked.
+
+== Phase C: Authenticated nested run not attempted
+
+The authenticated Claude CLI/Bash invocation *inside* the outer WFC Bubblewrap boundary was not attempted. Two reported constraints prevented a permitted setup:
+
+. The existing `execution_boundary.validate()` permits bind sources only under the repository root. Claude's credential store is outside the synthetic repository, and granting it access would require a different, separately authorized boundary policy.
+. No pre-existing, validated credential-delivery mechanism suitable for the restricted outer process was available. The user’s CLI relied on file-based Claude authentication; no `ANTHROPIC_API_KEY` environment variable was present. An `apiKeyHelper` possibility was identified but not implemented or qualified.
+
+The investigation correctly did not copy credentials into scratch, mount the whole home directory, expose authentication files to agent-controlled file tools, or inject a token through an uncontrolled environment variable.
+
+*Security distinction:* Preventing Bash-tool access alone is not enough to protect secrets if another agent-accessible tool can read them. Similarly, a helper that retrieves credentials outside the boundary is not by itself a solution: the process receiving the token and the possible propagation to tool child processes or inherited file descriptors must be evaluated.
+
+== Findings by confidence
+
+[cols="1,4",options="header"]
+|===
+|Category |Finding
+|Mechanically demonstrated |Claude's own Bash sandbox started and executed a real harmless command on the host, with changed mount namespace, filesystem limits and network blocking.
+|Mechanically demonstrated |Unmodified WFC outer Bubblewrap caused a Bun abort on `claude --version`.
+|Mechanically demonstrated |Adding `--unshare-pid --proc /proc` to the experimental outer invocation enabled `claude --version` to complete.
+|Mechanically demonstrated |Inside that modified outer boundary, a credential-less Claude invocation reached a clean authentication failure without API contact.
+|Previously demonstrated |Standalone nested Bubblewrap works with an outer procfs; path-based AF_UNIX bind under `/tmp/s` works in interactive host probes.
+|Not demonstrated |A real authenticated Claude Bash-tool call functioning within both Bubblewrap layers.
+|Not demonstrated |The specific origin or AF_UNIX behavior of the one observed Seccomp filter.
+|Not demonstrated |A secure credential supply and isolation mechanism for the real Claude CLI inside the outer WFC boundary.
+|Not decided |Whether residual procfs visibility is acceptable under the WFC security model.
+|===
+
+== Implications for the next design step
+
+A provider-integration implementation is premature. The narrow next question is the *credential and tool-authority boundary*, not further synthetic socket experiments.
+
+Any proposed solution must:
+
+* Start Claude with the minimal external resources it requires; do not automatically grant arbitrary host-path bind sources.
+* Ensure authenticated provider use without exposing credential files, token-bearing environment variables, open descriptors or broker endpoints to agent-controlled tools, including non-Bash tools.
+* Preserve an authoritative WFC-owned outer sandbox and establish explicit network policy; verify remaining procfs exposure before promoting `--proc /proc` into production.
+* Test a real authenticated Claude Bash invocation under *both* sandbox layers with `failIfUnavailable=true`, without enabling `enableWeakerNestedSandbox`, broad Unix-socket access or permission bypass unless a separate security decision explicitly authorizes an alternative design.
+* Distinguish a successful Claude CLI startup from a successfully sandboxed Bash execution.
+
+A possible credential helper/broker was *suggested*, not designed, validated or authorized. It must not be described as an existing solution. A later minimal experiment should first determine which credentials the outer CLI requires and exactly which agents/tools could obtain them under a proposed isolation scheme.
+
+== Provenance and disposition
+
+This is an interpretation of the interactive test report supplied on 2026-11-08, not an independently accepted WFC artifact. The previous stopped run `RUN-b7a53a56286c4a3f85d9cf01d61d4bed` remains `awaiting_human` with no trusted H001 commit. Its archived evidence and later untrusted salvage remain separate from the present interactive qualification.
+
+No WFC Runtime promotion, execution-boundary integration, new WFC Run, or independent live nested-CLI qualification is asserted by this document.
