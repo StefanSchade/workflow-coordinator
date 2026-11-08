@@ -244,33 +244,54 @@ on the kernel to follow the symlink transparently at `bind()` time; it does
 not canonicalize/resolve the path first, so the 108-byte `sun_path` limit is
 not re-violated even though the real resolved path is well over 150 bytes.
 
-**False alarm, corrected:** an initial round of agent-launched `touch`/
+**False alarm, retracted:** an initial round of agent-launched `touch`/
 `mkdir`/`python3` commands against `$TMPDIR` were denied with "no approval
 surface," inconsistently across repeated rounds, including -- in later
-narrowing rounds -- even under the adapter's completely default,
-unmodified `TMPDIR` handling (no symlink, no monkeypatch of any kind). This
-was traced to a confound in the test harness itself, not to `TMPDIR`,
-location, or the symlink mechanism: every probe command in that investigation
-used a `; echo "EXIT=$?"` exit-code-capture idiom for diagnostic purposes.
-Removing it (no `$?`, no semicolon-chaining) immediately and reliably let
-`touch`, `mkdir`, and `python3 --version` against `$TMPDIR` succeed, under
-both the default adapter and the symlink-plus-scoped-grant configuration --
-confirmed by host-side inspection of files landing in the real external
-target, not only the worker's own report. **The originally reported "third
-approval layer blocking the symlink direction" is retracted**; no such
-layer was found once the test harness's own confound was removed.
+narrowing-down rounds -- even under the adapter's completely default,
+unmodified `TMPDIR` handling (no symlink, no monkeypatch of any kind). A
+dedicated control round refuted the hypotheses this had initially suggested
+(a `TMPDIR`-write-specific guard, or a denial that cascades through the
+rest of a session): the very first command of that control round, a plain
+repository-local write never touching `$TMPDIR` at all, was *also* denied.
+**No `TMPDIR`-specific approval layer and no session-wide cascade exist; both
+are retracted, not merely downgraded to an open caveat.**
 
-**What remains uncovered, not yet explained:** a `python3 -c "<multi-line
+The actual, narrower variable isolated: every probe command across this
+investigation happened to use a `; echo "EXIT=$?"` exit-code-capture idiom
+for diagnostic purposes. Removing it (no `$?`, no semicolon-chaining) let
+`touch`, `mkdir`, and `python3 --version` against `$TMPDIR` succeed
+immediately, repeatably, under both the default adapter and the
+symlink-plus-scoped-grant configuration -- confirmed by host-side
+inspection of files actually landing in the real external target, not only
+the worker's own report. This is reported as an observation about the
+concrete Bash-command authorization behavior encountered in *these specific
+test sessions*, under the Claude CLI version and conditions in use at the
+time -- not a demonstrated general rule that `;` or `$?` are always denied,
+and no claim is made about the underlying mechanism or whether it
+reproduces under other conditions.
+
+**Central positive result:** with that test-harness artifact removed,
+both Claude's own internal Unix-domain sockets (see above) and
+agent-launched `touch`/`mkdir` commands were confirmed working through the
+short symlink, writing verifiably into the real external scratch target --
+the symlink direction itself is demonstrated working, cleanly, with nothing
+outstanding against it from this investigation.
+
+**A separate, narrower, unrelated observation:** a `python3 -c "<multi-line
 script that performs actual file I/O, e.g. tempfile creation>"` invocation
 was still denied even after removing `$?` and semicolon-chaining, while
 `python3 --version` (no inline code execution) succeeded every time. This
-looks like a narrower, separate Bash-command-content heuristic -- plausibly
-treating inline-interpreted code that performs file writes with more
-caution than simple file utilities or no-execution flags -- distinct from
-the `$?`-idiom confound above and from everything this BUG is otherwise
-about. Not characterized further here (would need its own bounded
-investigation); noted so a future correction attempt is not surprised by it
-and does not re-attribute it to `TMPDIR`/sandbox-grant mechanics.
+looks like its own Bash-command-content heuristic -- plausibly treating
+inline-interpreted code that performs file writes with more caution than
+simple file utilities or no-execution flags -- distinct from the `$?`-idiom
+artifact above and from everything else this BUG is about. **It does not
+refute or block the symlink direction**: it was never shown to depend on
+`TMPDIR`, the symlink, or the scoped sandbox grant, and the same
+`python3 -c` shape was not specifically re-tested outside the symlink
+configuration to compare. Not characterized further here (would need its
+own bounded investigation); noted only so a future correction attempt is
+not surprised by it and does not mis-attribute it to `TMPDIR`/sandbox-grant
+mechanics.
 
 **What a later correction still needs to determine, for either direction:**
 a concrete way to provision the one dedicated untrusted scratch subpath
