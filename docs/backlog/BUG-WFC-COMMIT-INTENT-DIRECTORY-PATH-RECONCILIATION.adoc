@@ -1,0 +1,290 @@
+= BUG-WFC-COMMIT-INTENT-DIRECTORY-PATH-RECONCILIATION -- Directory-Shaped CommitIntent Paths Cannot Reconcile Against Trusted Commit
+
+Type:: bug -- Coordinator-owned Git handling / `CommitIntent` path semantics
+(not a security defect; the Coordinator refused fail-closed throughout).
+Status:: open (documented only; no correction commissioned, no fix implemented).
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Not authorized here:: Any change to `src/workflow_coordinator/git_facts.py`,
+`model.py`, `codex_adapter.py`, any worker-facing prompt or component, or
+any test file; any correction Commission or Run; any Runtime promotion; any
+decision between the two options recorded below.
+Date:: 2026-11-08.
+Discovery:: Run `RUN-b7a53a56286c4a3f85d9cf01d61d4bed`, `WI-WFC-NESTED-CLAUDE-BWRAP-QUALIFICATION-001`,
+Hop H001 (`implement`, worker persona `codex_cli:gpt-5.6-terra:high`),
+Development baseline HEAD `36dcbee7bc6df082b868f44e73d7688865e46f34`.
+
+== Observed behavior
+
+H001 completed without any provider failure (`returncode=0`, not timed out).
+The result envelope was well-formed:
+
+* `outcome=completed`
+* `requires_human=false`
+* `escalation=null`
+* `requested_route=broad_review`
+* `scope_changed=false`
+* a non-null `CommitIntent` was present, with a Conventional-Commit-compatible
+  subject carrying both the WorkItem and Hop identity tokens (satisfies
+  `commit_subject_error()`, `src/workflow_coordinator/git_facts.py:386-395`).
+
+The Coordinator attempted to materialize that `CommitIntent` via
+`trusted_commit()` (`src/workflow_coordinator/git_facts.py:684`), called from
+`vertical.py:391`, strictly *before* `git add`/`git commit` are ever invoked
+(`git_facts.py:729` is never reached). The attempt was mechanically refused.
+The Run stopped `run_status: awaiting_human`,
+`stop_reason: mechanical_preemption:<repository_anomaly>`; the independent
+review phase was never entered.
+
+The `CommitIntent.paths` actually returned were:
+
+[source,text]
+----
+tests/integration/test_nested_claude_bwrap_qualification.py
+tests/fixtures/nested_claude_bwrap_qualification
+docs/warm_storage/concepts/workflow_coordinator_nested_claude_bwrap_qualification_2026-11-08.adoc
+----
+
+The middle element names a newly created *directory*, not a concrete leaf
+file. The files that actually existed under it, and that Git therefore
+reported as untracked, were:
+
+[source,text]
+----
+tests/fixtures/nested_claude_bwrap_qualification/provider_stub.sh
+tests/fixtures/nested_claude_bwrap_qualification/repository/README
+----
+
+The Coordinator's own diagnostic named exactly these two sub-files as
+`unexpected dirty path`, matching `git_facts.py:724` character for character:
+
+[source,text]
+----
+non-ignored untracked state; post-evidence worktree is not clean with resolved submodules;
+trusted_commit:unexpected dirty path: tests/fixtures/nested_claude_bwrap_qualification/provider_stub.sh,
+tests/fixtures/nested_claude_bwrap_qualification/repository/README
+----
+
+== Technical cause
+
+Two distinct path-matching semantics exist in the current codebase for what
+looks, to a Commission author or a worker, like the same kind of path
+string.
+
+**Layer A -- scope authorization.** `_validated_intent_paths()`
+(`git_facts.py:412-422`) and the generic `authorized_scope` check both use
+prefix matching: a path is authorized if it equals an allowed entry or
+begins with `<entry>/`. This is the same mechanism
+`docs/wfc_operator_manual.adoc`, "Commission mutation-scope granularity"
+(current text, lines 182-194), documents and explicitly recommends:
+"accepts repository-relative *directory* scopes, not only exact file
+paths... File-exact mutation authority is therefore a Commission-author
+*choice*, not a generic WFC requirement." Directory-shaped scope entries are
+legitimate and encouraged by that text.
+
+**Layer B -- dirty-path reconciliation.** `trusted_commit()`
+(`git_facts.py:717-726`) compares the *literal* set of `CommitIntent.paths`
+against the literal set of paths Git actually reports as changed/untracked
+(`_changed_worktree_paths()`, `git_facts.py:425-436`, built from
+`git diff --name-only HEAD` and `git ls-files --others --exclude-standard`
+-- both of which can only ever report individual files, never a bare
+directory):
+
+[source,python]
+----
+paths = _validated_intent_paths(intent, allowed_paths)      # accepts the directory element
+actual_paths = _changed_worktree_paths(identity, ...)        # leaf files only
+unexpected = sorted(set(actual_paths) - set(paths))           # exact-string set difference
+if unexpected:
+    raise TrustedCommitError(f"unexpected dirty path: {', '.join(unexpected)}")
+if missing:  # git_facts.py:725-726
+    raise TrustedCommitError(f"commit intent path has no worktree mutation: {', '.join(missing)}")
+----
+
+A directory-shaped `CommitIntent.paths` entry can never equal any leaf file
+Git reports, so any such entry with one or more real files beneath it
+*always* triggers `unexpected`; even absent that, the directory string
+itself would separately trigger `missing` (`git_facts.py:726`), since it
+never appears in `actual_paths` either. This is a deterministic mismatch for
+every directory-shaped `CommitIntent.paths` entry with real content beneath
+it -- not an occasional or provider-specific defect.
+
+Nothing in the agent-facing contract disambiguates the two layers for this
+exact path shape. `CommitIntent` (`model.py:380-388`) has a bare docstring
+and a plain `paths: tuple[str, ...]` field with no documented granularity
+requirement. The Codex structured-result JSON schema
+(`codex_adapter.py:192-196`) declares `"paths": string_array` with no
+`description` constraining entries to leaf files. The generic worker
+component prompt (`governance/self-development/prompts/worker.txt`) says
+nothing about `CommitIntent` path granularity at all. The rendered task text
+for this WorkItem itself names the fixtures path as "(new directory)" twice
+(`governance/commissions/wfc-nested-claude-bwrap-qualification-001/task.md`,
+mirroring its own `scope:`'s directory-shaped entry, itself consistent with
+the operator manual's own recommended default) -- so a worker following the
+manual's own documented, encouraged directory-scope convention has no
+textual signal that `CommitIntent.paths` is held to a stricter, leaf-exact
+standard than `scope`/`authorized_scope`.
+
+== Classification
+
+* Not a lost result envelope -- the full structured result, including the
+  `CommitIntent`, was received and parsed intact.
+* Not an adapter/result-parsing defect -- `codex_adapter.py`/`serialization.py`
+  transported and parsed the `CommitIntent` correctly; the failure is
+  entirely inside `trusted_commit()`'s own reconciliation step.
+* Not a missing `CommitIntent` -- one was present, well-formed, and
+  requested a `broad_review` route.
+* Not a worker-omitted Git commit -- the worker never has Git authority
+  (`COMMIT_ACTION` semantics, `model.py:17-22`); it correctly proposed a
+  commit via the only channel available to it.
+* No demonstrated `robust@v1` defect -- the failure occurred entirely within
+  Hop H001 (`implement`), before any review/correction routing logic is
+  reached. The identical mismatch would occur under `direct@v1` or
+  `simple@v1` for any `CommitIntent` naming a newly created directory with
+  real content beneath it, independent of workflow programme.
+* Not specific to this investigation-shaped WorkItem -- the worker did not
+  treat its result as orally complete; it actively requested a versioned
+  commit. The actual correlation is narrower: this Commission's scope
+  happened to include a *newly created directory with multiple files*
+  (fixture material) rather than only individually pre-named files, which
+  is what exposes this exact mismatch; it is not an artifact of open-ended
+  research tasks as such.
+* The Coordinator reacted correctly, fail-closed, refusing to stage or
+  commit anything before `git add`/`git commit` ever ran, and left the
+  worktree exactly as the worker left it -- no partial commit, no silent
+  directory expansion, no unauthorized mutation. The defect is in the
+  contract's internal consistency (two path semantics sharing one surface
+  syntax, undocumented against each other), not in the fail-closed
+  response itself.
+* The `CommitIntent` cannot be said to have already satisfied every semantic
+  precondition the Coordinator's implementation actually requires: it was
+  structurally well-formed and scope-compatible, but failed the stricter,
+  previously undocumented leaf-exact reconciliation rule.
+
+== Correction options (deliberately left open)
+
+Two independently viable directions exist. This record takes no position
+between them; a future correction Commission makes that choice explicitly,
+weighing the security invariants and consumer ergonomics below.
+
+=== Option 1 -- require leaf-exact CommitIntent paths explicitly
+
+Keep `trusted_commit()`'s existing strict literal reconciliation unchanged.
+Make the contract's granularity requirement explicit wherever a worker or
+Commission author could otherwise reasonably assume directory-shaped
+entries are accepted:
+
+* `CommitIntent.paths` must name only actual, concrete mutated file paths;
+* a directory or scope-prefix path is never accepted as a stand-in for the
+  files beneath it;
+* the distinction from `scope`/`authorized_scope` (which does accept
+  directory-shaped entries) must be stated unambiguously, in a form that
+  actually reaches the rendered worker context -- not only in developer-
+  facing documentation;
+* schema descriptions, prompt components, and operator/technical
+  documentation must say the same thing consistently;
+* positive and negative regression tests must cover the behavior (see
+  "Expected regression tests" below).
+
+This is the smaller near-term correction: no change to the trusted Git
+write surface itself. It is not automatically the preferred long-term
+contract shape.
+
+=== Option 2 -- support directory-shaped CommitIntent paths
+
+Let `CommitIntent.paths` deliberately carry directory-prefix entries. The
+Coordinator would then resolve the actual changed leaf files beneath each
+such prefix and reconcile that resolved set against the authorized scope,
+rather than requiring the agent to enumerate every leaf file itself.
+
+This would be more ergonomic for agents and would align `CommitIntent`'s
+semantics with the `scope`/`authorized_scope` convention the operator
+manual already documents and recommends. It requires an explicit security
+analysis before any implementation, at minimum covering:
+
+* deterministic expansion of a directory entry to concrete Git paths;
+* complete capture of both tracked and untracked changes under that prefix;
+* path normalization and directory-boundary correctness;
+* symlinks, hardlink aliases, and other path-identity manipulation within
+  the expanded tree;
+* prevention of unintentionally staging additional, unrelated files that
+  happen to appear under the same prefix;
+* revalidation immediately before the trusted Git write, not only at
+  intent-admission time;
+* proof that the resulting commit's actual content set is exactly the
+  reviewed and authorized set -- no silent broadening.
+
+Option 2 is not to be classified as unsafe or rejected merely because it
+requires a larger implementation effort than Option 1; it remains an open,
+architecturally plausible alternative pending that analysis.
+
+No decision is made here between Option 1 and Option 2. Either must
+preserve `trusted_commit()`'s existing invariant that the Coordinator never
+commits a broader change set than what was explicitly authorized and
+explicitly reviewed before the Git write.
+
+== Expected regression tests (for whichever correction is eventually chosen)
+
+A future correction's test coverage must include at least:
+
+. An existing leaf-exact `CommitIntent` continues to succeed unchanged
+  (regression floor).
+. A newly created directory with multiple untracked leaf files reproduces
+  today's failure exactly as observed here, until/unless the chosen
+  correction changes that behavior deliberately.
+. A directory-shaped `authorized_scope` combined with a leaf-exact
+  `CommitIntent` succeeds (the combination this BUG's own triggering
+  Commission could have used, and which already works today).
+. Whichever option is chosen, the behavior for a directory-shaped
+  `CommitIntent` entry is unambiguous: either rejected early with a clear,
+  actionable diagnostic (Option 1), or safely and deterministically expanded
+  (Option 2) -- never a silent partial commit.
+. Under no variant may an out-of-scope file reach a trusted commit.
+. The Coordinator must fail closed before any disallowed Git write is
+  attempted, under every tested conflict shape.
+. The existing post-Hop Git/evidence observation protocol
+  (`observe_hop()`, post-evidence worktree-clean check) remains unchanged
+  and authoritative regardless of which option is chosen.
+
+== Evidence pointers
+
+* `src/workflow_coordinator/git_facts.py:412-422` (`_validated_intent_paths`,
+  prefix-match scope authorization), `:425-436` (`_changed_worktree_paths`,
+  leaf-file-only observation), `:684-760` (`trusted_commit`), `:717-726`
+  (the literal-equality reconciliation that raises `unexpected dirty path`
+  / `commit intent path has no worktree mutation`).
+* `src/workflow_coordinator/model.py:380-388` (`CommitIntent`, two
+  undifferentiated fields), `:10-22` (`EDIT_ACTION`/`COMMIT_ACTION`
+  semantics -- the worker never has Git authority of its own).
+* `src/workflow_coordinator/codex_adapter.py:192-196` (`commit_intent`
+  JSON-schema fragment, `paths` as a bare `string_array`).
+* `src/workflow_coordinator/vertical.py:391` (`trusted_commit()` call site,
+  before any evidence execution), `:406-412` (fallback to `observe_hop()`
+  when `error.delta is None`), `:430-439` (post-evidence worktree-clean
+  check), `:557-561` (`repository_anomaly` composition).
+* `src/workflow_coordinator/reducer.py:1632-1650` (`mechanical_errors`,
+  `mechanical_preemption:<error>` stop).
+* `docs/wfc_operator_manual.adoc`, "Commission mutation-scope granularity"
+  (directory-shaped `authorized_scope` is documented and recommended),
+  and section 22.1 ("`CommitIntent admission -> Coordinator-owned trusted
+  commit -> Coordinator-trusted evidence`" -- the ordering this incident
+  followed exactly).
+* `governance/self-development/prompts/worker.txt` (generic worker
+  component; silent on `CommitIntent` path granularity).
+* Run context: `RUN-b7a53a56286c4a3f85d9cf01d61d4bed`,
+  `WI-WFC-NESTED-CLAUDE-BWRAP-QUALIFICATION-001`, Hop H001, Development
+  baseline HEAD `36dcbee7bc6df082b868f44e73d7688865e46f34`, worker persona
+  `codex_cli:gpt-5.6-terra:high`. State root:
+  `~/wfc-state/wfc-nested-claude-bwrap-qualification-001-20261108-01`
+  (`checkouts/9bc7551c-387c-42dd-a88c-fc8b627ebe9e/result-message.json`,
+  `run.json`, `operator-summary.json`).
+
+== Lifecycle
+
+This BUG is *open*. No correction is commissioned. No implementation
+decision between Option 1 and Option 2 has been made. The unaccepted H001
+candidate from the triggering Run is separately preserved as explicitly
+non-authoritative maintainer salvage (see
+link:run-recovery-and-salvage.adoc[`run-recovery-and-salvage.adoc`]); that
+preservation records provenance only and closes nothing recorded here. Only
+an accepted review of a future correction Commission's implementation may
+close this BUG.
