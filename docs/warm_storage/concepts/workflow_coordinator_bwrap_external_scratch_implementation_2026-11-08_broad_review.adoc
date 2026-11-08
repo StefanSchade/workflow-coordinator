@@ -1,0 +1,277 @@
+= External WFC scratch bind-mount: independent broad review
+
+WorkItem:: WI-WFC-BUBBLEWRAP-EXTERNAL-SCRATCH-001
+Run:: RUN-a8bd39bfc11542199a2dccda755ebd84
+Hop:: H002
+Invocation:: INV-568c532776704428a8f3a81df4ae621e
+Candidate:: 455c2580b0c4da671da099cb091a6a810d4f9b57
+Reviewed range:: 5e732ee11999e6a6fc3bae5199404ad005735f63..455c2580b0c4da671da099cb091a6a810d4f9b57
+Execution base:: 455c2580b0c4da671da099cb091a6a810d4f9b57
+Disposition:: accept
+
+== Review basis and authority
+
+Read the complete extended `src/workflow_coordinator/execution_boundary.py`,
+both extended test files in full, the controlling
+`docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc` narrow-authorization
+sections, `BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION`, the
+2026-11-08 Claude adapter retrospective, the prior fs-isolation review
+artifacts, and the Commission's task, scope, and withheld authority.
+Inspected the actual candidate source and tests, not a diff summary.
+Independently executed the committed tests and additional adversarial probes
+against harmless synthetic fixtures under `$TMPDIR` with the host's real
+`/usr/bin/bwrap`.
+
+Only this broad-review artifact is changed in this Hop. No implementation or
+test file was mutated. No authoritative current-Run Finding IDs were
+projected, and none is proposed: no blocking concern was found.
+
+== Diff containment
+
+`git diff --name-only 5e732ee..455c258` lists exactly three paths:
+`src/workflow_coordinator/execution_boundary.py`,
+`tests/integration/test_execution_boundary_bwrap.py`, and
+`tests/unit/test_execution_boundary_config.py`. Every excluded file --
+`operator.py`, `codex_adapter.py`, `claude_adapter.py`, `git_facts.py`,
+`persistence.py`, `evidence.py`, `commissioning.py`, `serialization.py`,
+`model.py`, `reducer.py`, `slice4.py`, `vertical.py`, `proof_harness.py`,
+`scripts/wfc_op.py`, `pyproject.toml` -- is byte-identical to its pre-Attempt
+state. The source diff is purely additive: one enum member, one module
+constant, one optional dataclass field with a `None` default, one new helper
+`_check_no_overlap`, one keyword-only `validate()` parameter with a `None`
+default, one validation block appended after the existing
+exactly-one-private-scratch check, one `build_argv()` append, and the
+revalidation call widened to pass `external_scratch` through. No existing
+line of validation logic was altered or removed.
+
+`rg 'execution_boundary|ExecutionBoundary' src/` returns no matches: the
+module is still imported by nothing in `src`, so it remains opt-in library
+code and cannot change the behaviour of any existing dispatch path. The only
+other repository hit for the name, `tests/unit/test_slice4.py`, is an
+unrelated test-function name (`..._unclassified_execution_boundary_exception`)
+and that file passes unchanged (30 passed).
+
+Public surface is backward compatible: `validate()`'s new parameter is
+keyword-only with a default, and `ValidatedBoundary.external_scratch`
+defaults to `None`, so every pre-existing construction and call site is
+unaffected. `test_external_scratch_absent_by_default` pins that the argv for
+an unconfigured boundary contains no `/tmp/s` at all.
+
+== Substitution surface: the bind is genuinely restricted to one root
+
+The source can only come from `validate(..., external_scratch=...)`. A
+directly constructed `Mount` carrying `MountMode.EXTERNAL_SCRATCH` is
+rejected unconditionally at the top of the mounts loop
+(`execution_boundary.py:108-110`), before destination, source, or mode
+handling -- so the enum member exists only as a typed trap, never as a usable
+`Mount` mode. Probed independently; every attempted substitution route was
+rejected before any subprocess:
+
+* `Mount(repo_subdir, /repo/w, EXTERNAL_SCRATCH)` ->
+  `external scratch mounts must be requested via the external_scratch
+  parameter, not constructed directly`.
+* The same forged mount alongside a legitimate `external_scratch=` ->
+  same rejection (the parameter is not an escape hatch for the mounts list).
+* An ordinary `WRITABLE` mount aimed at the external destination,
+  `Mount(repo_subdir, /tmp/s, WRITABLE)` -> rejected by the pre-existing
+  destination-overlap rule, `overlapping destinations: /tmp/s`.
+* Any out-of-repository `READ_ONLY`/`WRITABLE` source still hits the
+  unchanged `source.relative_to(repository)` rule
+  (`execution_boundary.py:124-127`), and the destination must still equal
+  `/repo/<relative>` (`:128-129`). The repository-only bind-source rule is
+  provably unchanged for every other mount kind.
+
+`build_argv()` still revalidates (`:163`) and now passes
+`external_scratch=boundary.external_scratch`, so a hand-forged
+`ValidatedBoundary` cannot smuggle a root past validation. Verified by
+constructing `ValidatedBoundary(..., external_scratch=X)` directly for
+`X in {relative path, nonexistent path, /usr, a regular file}` and calling
+both `build_argv()` and `run()`: each raised `BoundaryConfigurationError`
+(`source must be an absolute real path`, `source does not exist`,
+`external scratch root overlaps a system mount`, `external scratch root must
+be a directory`) with no subprocess spawned.
+
+== Fail-closed behaviour for every named invalid configuration
+
+Independently observed rejections (all `BoundaryConfigurationError`, all
+before any spawn):
+
+[cols="2,3"]
+|===
+|Configuration |Observed rejection
+
+|external root is a parent of the repository |`external scratch root overlaps the repository`
+|external root equals the repository |`external scratch root overlaps the repository`
+|external root inside a repository subdir |`external scratch root overlaps the repository`
+|external root `= /` |rejected (overlap)
+|external root `= /usr` (system root) |`external scratch root overlaps a system mount`
+|external root is a relative path |`source must be an absolute real path`
+|external root is a symlink |`source must be an absolute real path`
+|external root does not exist |`source does not exist`
+|external root is a regular file |`external scratch root must be a directory`
+|hardlinked regular file inside the root |`writable entry has hardlink aliases: .../ext/alias`
+|hardlinked FIFO inside the root |`writable entry has hardlink aliases`
+|forged `EXTERNAL_SCRATCH` mount (one or two) |`...must be requested via the external_scratch parameter...`
+|external scratch with no private scratch |`exactly one private scratch mount is required`
+|===
+
+The ordering of checks matters and is correct: the
+exactly-one-private-`/tmp`-scratch invariant is evaluated *before* the
+external-scratch block (`:137-140`), so the external bind can never stand in
+for the private tmpfs. `_check_writable_aliases()` is applied to the external
+root with exactly the discipline every other writable grant already requires
+(`:156`), including under revalidation inside `build_argv()`/`run()`. There
+is no unsandboxed fallback anywhere: `run()` executes only
+`build_argv(...)`, which revalidates first.
+
+"More than one external scratch mount" is structurally impossible rather than
+merely checked: the only channel is a single optional parameter. The
+committed unit test asserts the rejection of the only expressible attempt
+(two forged `EXTERNAL_SCRATCH` mounts). I regard the typed impossibility as
+stronger than a count check and accept it.
+
+== Mount ordering actually nests the bind inside the private tmpfs
+
+Not accepted from argv shape. Observed with a real sandboxed subprocess, with
+the `SCRATCH` mount placed *first* in the mounts sequence and a writable
+repository mount after it, to defeat any accidental dependence on caller
+ordering:
+
+----
+... --tmpfs /tmp --bind <ext_root> /tmp/s --chdir /repo -- ...
+----
+
+Inside the sandbox: `stat -c %d /tmp` = 62 (the private tmpfs) while
+`stat -c %d /tmp/s` = 35, the same device as the host-backed writable bind.
+`/tmp/s` is therefore a distinct, host-backed mount nested *inside* the
+private tmpfs, not shadowed by it and not racing it. `printf ext > /tmp/s/f`
+appeared on the host at `<ext_root>/f`; `printf priv > /tmp/p` did not appear
+at `<ext_root>/p`. The `build_argv()` append happens after the mounts loop
+(`:178-181`), so this holds for any caller-supplied mount order.
+
+== Required-test audit
+
+Each required item, and whether it uses a real sandboxed subprocess where the
+Commission demands one:
+
+. *Permitted write visible on the host* -- satisfied by
+  `test_external_scratch_bind_coexists_with_private_tmp_tmpfs` (real `bwrap`;
+  asserts `(external_root / 'external-file').read_text() == 'external'`).
+. *Coexistence with the private tmpfs, no cross-visibility* -- same test,
+  real `bwrap`; the in-sandbox script fails with distinct exit codes 1/2 if
+  either file is visible at the other's path, and the host assertions confirm
+  the private write never reached the external root.
+. *Arbitrary host path cannot be substituted* -- unit-level
+  `test_external_scratch_arbitrary_host_path_cannot_be_substituted`, with
+  `patch('subprocess.run')` and `spawn.assert_not_called()`. The patch target
+  is correct: the module calls `subprocess.run` on the imported module
+  object.
+. *Symlink-based escape attempt* -- real subprocess in
+  `test_external_scratch_internal_symlink_escape_is_contained` for an entry
+  inside the root; the root-itself-is-a-symlink case is correctly unit-level,
+  since validation rejects it so no subprocess can exist. I probed the
+  containment claim harder than the committed test does, because pytest's
+  `tmp_path` lives under `/tmp` here and is therefore additionally shadowed by
+  the private tmpfs. With symlinks inside the external root pointing at
+  `/etc`, `/etc/hostname`, `/home/stefan`, and `..`, the sandbox root
+  contained only `bin dev lib lib64 repo sbin tmp usr`; `cat /tmp/s/hostname`
+  and `ls /etc`, `ls /home` all failed with `No such file or directory`;
+  `echo bad > /tmp/s/etc/wfc-probe` was blocked and `/etc/wfc-probe` does not
+  exist on the host; and `/tmp/s/up` resolved to the private tmpfs (`. .. s`),
+  not to the host parent of the external root. Containment is real, not an
+  artifact of `/tmp` shadowing.
+. *Hardlink/inode alias inside the external root* -- unit-level
+  `test_external_scratch_hardlink_alias_is_rejected`, asserting the raised
+  `hardlink aliases` error; independently reproduced for a hardlinked regular
+  file as well as the committed FIFO case.
+. *More than one external scratch mount, or overlap with the repository, a
+  system root, or another mount's destination* -- unit-level and asserted via
+  the raised error, no subprocess. See the table above and the note below on
+  the two overlap branches that are unreachable through the public API.
+. *Full existing suite unchanged* -- see Evidence.
+
+No existing security or admission test was weakened, skipped, or removed. The
+test diffs are additive apart from one import line in each file; every prior
+hardlink/inode-alias test from `WI-WFC-BUBBLEWRAP-FS-ISOLATION-001-REVIEW-001`
+(`test_writable_hardlink_alias_is_rejected_before_launch`,
+`test_sandbox_cannot_create_alias_to_protected_file`,
+`test_writable_symlink_hardlink_metadata_is_rejected`,
+`test_hardlinked_fifo_in_writable_tree_is_rejected`) is present verbatim and
+passing.
+
+== Evidence
+
+Agent-local exploratory runs with the repository virtualenv; Coordinator
+`task-check` is executed separately and is the authoritative gate.
+
+* `tests/unit/test_execution_boundary_config.py` -- 10 passed.
+* `tests/integration/test_execution_boundary_bwrap.py` -- 14 passed, real
+  `bwrap` subprocesses.
+* `tests/unit/test_slice4.py` -- 30 passed.
+* Full suite (`python -m pytest -q`) -- 19 failed, 13 errored, all in
+  `tests/unit/test_claude_adapter_conformance.py` and
+  `tests/unit/test_wfc_op.py`, none touching `execution_boundary`. Diagnosed
+  rather than assumed: the `wfc_op` cases fail on
+  `pip subprocess to install build dependencies did not run successfully`
+  with `deny network-outbound pypi.org:443` sandbox violations, and the
+  adapter cases fail at `claude_adapter.py:150`
+  `tmp_dir.mkdir(...)` -> `OSError: [Errno 30] Read-only file system:
+  '/tmp/wfc-claude-...'`, i.e. this review session's own read-only `/tmp`
+  breaking the adapter's short-`TMPDIR` mechanism. Both are agent-local
+  environment limitations of the reviewing session, not regressions, and
+  neither can be reached by a change confined to `execution_boundary.py` plus
+  its two test files. The counts match the implementer's independently
+  obtained stash/unstash comparison.
+
+== Non-blocking observations
+
+Recorded for the future wiring WorkItem; none is a blocking Finding and none
+is in this Commission's scope to fix.
+
+* Two branches of the external-scratch overlap check are unreachable through
+  the public API and therefore untested: overlap with another mount's
+  *destination* (any `/tmp` subtree destination is already rejected by the
+  pre-existing destination-overlap rule, confirmed by probe) and overlap with
+  another mount's *source* (all other sources must be repository-internal,
+  which the repository-overlap check already covers). They are harmless
+  defence in depth. The required-test item is satisfied by the reachable
+  cases.
+* `validate()` applies no classification model to the designated root beyond
+  repository, system-root, and other-mount overlap, which is exactly what the
+  Commission authorizes and what its withheld authority forbids extending.
+  Consequently `/opt` and `/srv` are accepted as external scratch roots in
+  this environment, and `/etc` and `/var` are rejected only incidentally, by
+  `cannot inspect writable source` permission errors during the alias scan
+  rather than by policy. Designation authority rests with the caller, and no
+  live caller exists in this WorkItem; whichever WorkItem wires this in owns
+  choosing and justifying a single WFC-controlled root.
+* `_check_writable_aliases()` walks the entire external root. For a
+  large-capacity scratch tree this is an O(entries) cost on every `validate()`
+  and again on every `build_argv()` revalidation. The same TOCTOU caveat the
+  module header already states applies; no new weakness, but relevant to
+  sizing the eventual real scratch root.
+* The `EXTERNAL_SCRATCH` enum member is never a legal `Mount.mode`. That is
+  deliberate and fail-closed, and the comment at `:30-32` explains the fixed
+  destination; worth keeping in mind if the enum is ever iterated over.
+
+== Scope and authority compliance
+
+No decision reserved to `FTR-WFC-EXECUTION-TRUST-BOUNDARIES` maintainer
+authority was taken or implied. Nothing was wired into provider dispatch; no
+network-policy, read-authority, credential, privileged, or nested-sandbox
+mechanism was introduced; no A1 scope-ceiling or repository-pin check was
+touched; and a provider-requested permission mode is nowhere represented as a
+Coordinator-verified OS boundary. `DEC-WFC-009`'s distinction between a
+provider's own sandbox request and WFC's deterministic post-Hop Git/scope
+observation is untouched and not represented as superseded.
+
+== Disposition
+
+Accept. The extension matches the Commission's required semantics and scope,
+every required test exists and exercises a real sandboxed subprocess where
+demanded, the external bind is genuinely restricted to one caller-designated
+root with no substitution route through the public API, the nesting inside the
+private tmpfs is proven by observed device identity and real filesystem
+effects rather than argv inspection, the repository-only bind-source rule and
+every pre-existing security test are provably unchanged, and no excluded file
+was touched. No blocking Finding is open.
