@@ -1,13 +1,187 @@
-= WFC Functional Model -- Workflow Program Use Cases
+= WFC Functional Model
 :toc:
 :toclevels: 2
 
 Status:: WORKING DRAFT / DISCUSSION RECORD -- not an accepted product contract.
-As-of:: 2026-10-27 (expanded maintainer discussion)
-Purpose:: Preserve the maintainer's use-case intent separately from the current YAML implementation and historical Commissions.
+As-of:: 2026-11-09 (added product vision, goal catalog, design principles and non-goals ahead of the existing use-case discussion)
+Purpose:: Preserve the maintainer's product vision, formal goals, design principles/non-goals, and use-case intent separately from the current YAML implementation and historical Commissions. Intended to grow into the product's Pflichtenheft (requirements specification); not yet accepted as one.
 Authority:: Non-authorizing. Does not replace `docs/README.adoc`, backlog, accepted FTRs or runtime contracts.
 
-== 1. User-facing purpose
+== 1. Product vision and origin
+
+WFC originated directly out of developing the `spreadsheet-handling` library.
+That project already practiced high-quality software development with LLM
+agents, independent reviews, and many iterative steps -- but the maintainer
+had to manually commission each agent, collect results, organize reviews, and
+trigger correction loops by hand.
+
+*The original product idea was to progressively automate that manual
+dispatch work without losing the development quality already achieved.*
+
+The approach is deliberately bottom-up:
+
+* Start by automating a single agent hop.
+* Then automate recurring workflow sequences.
+* Current focus: a controlled, deterministic review-and-correction cycle for
+  one development activity (see Section 4).
+* Long-term vision: orchestrate progressively larger development work with
+  growing autonomy.
+
+Overarching project planning or fully autonomous product development is
+*not* the current implementation focus (see Section 3's non-goals and
+Section 9's deliberately unresolved Level-1 question).
+
+=== 1.1 Development practices WFC exists to preserve
+
+Alongside automation itself, WFC was from the outset about carrying forward
+the practices that plausibly contributed most to `spreadsheet-handling`'s
+quality:
+
+Context management:: A project's memory lives in the repository, not in a
+volatile chat -- decisions and reasoning are documented, the resulting corpus
+is made discoverable/indexed, and "cold" information is deliberately
+forgotten by archiving it to cold storage. The original purpose was improving
+LLM working conditions and context quality, not auditability for its own
+sake (that follows separately, below).
+
+Small, clearly bounded steps:: Development proceeds in bounded hops with
+defined tasks and checkable results.
+
+Structured commissioning:: Precise tasks, change scope, relevant documents,
+roles/personas, and explicit result/review expectations. Parts of this
+practice are recognizable today in the Workflow Coordinator's prompt
+construction and in the history of `vertical.py`.
+
+Independent review and iterative correction:: Quality assurance is part of
+the automated development process itself, not merely a final check appended
+at the end.
+
+Traceability and auditability:: This need also grew out of practical
+experience with `spreadsheet-handling`: the maintainer needs an overview of
+which work was commissioned, executed, reviewed, accepted, or deferred.
+
+These practices are a deliberate methodological starting point for WFC, not a
+claim that they are proven causes of `spreadsheet-handling`'s quality.
+
+=== 1.2 Extension toward security capability
+
+Context management and tight authorization of change scope led to the
+insight that the same mechanisms could, in principle, also serve more
+demanding security requirements. Examples under consideration:
+
+* Hiding confidential content from model calls that are not correspondingly
+  authorized, potentially via controlled filesystem views.
+* Protecting critical areas -- for example Git hooks or security-relevant
+  infrastructure files -- from ordinary write operations.
+* Allowing a targeted authorization extension for such changes that then
+  triggers a mandatory defensive security review
+  (`FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW`).
+* Documenting the information and action scope actually granted, so it
+  remains traceable.
+
+The bubblewrap-based execution-boundary work grew out of this line of
+thinking and has been explored experimentally.
+
+*Important:* This document distinguishes existing technical building blocks,
+already-integrated functionality, and future product capability strictly by
+what the repository currently shows -- see `docs/architecture.md` for the
+normative statement. In particular, the existence of a bubblewrap primitive
+must not be read as claiming complete isolation of all provider calls; as of
+this writing `docs/architecture.md` states plainly that "WFC V1 provides
+neither hostile-code containment nor host isolation" and that no current
+Coordinator-owned or Coordinator-verified OS/environment containment boundary
+is claimed for any consumer repository.
+
+== 2. Formal goal catalog
+
+A small number of stably referenceable product goals, intended to be cited
+by ID (`GOAL-WFC-NNN`) from other documents and records rather than
+restated. These are product goals, not use cases -- Section 6's use cases
+remain the place that concretizes them; this catalog does not duplicate or
+replace that catalog.
+
+GOAL-WFC-001 -- Automate high-quality development work (primary goal)::
+Progressively reduce the maintainer's manual dispatch, review-organizing, and
+correction-triggering burden for LLM-agent development work, without
+reducing the development quality already achieved without automation. This
+is the primary goal; all other goals below serve it and are not independent
+maximization targets.
+
+GOAL-WFC-002 -- Preserve the proven development practices:: Carry forward
+context management, bounded hops, structured commissioning, independent
+review with iterative correction, and traceability/auditability as the
+methodological basis for automated development (Section 1.1), adapting their
+mechanics as needed rather than discarding them for automation's sake.
+
+GOAL-WFC-003 -- Provide scoped security capability in service of the primary
+goal:: Where development work requires it, protect confidential content and
+critical surfaces through authorized elevation and mandatory defensive
+review (Section 1.2), without this becoming an independent, open-ended
+security-hardening program (see Section 3's non-goals).
+
+GOAL-WFC-004 -- Preserve agent capability and productivity:: Keep ordinary
+agent capability -- including public internet access for research,
+documentation, dependency management, and experimentation -- as unrestricted
+as reasonably possible; justify every additional restriction against its
+cost to development quality and productivity rather than applying it by
+default (Section 3).
+
+== 3. Design principles and non-goals
+
+=== 3.1 Design principles
+
+* Ordinary agent capabilities should remain as unrestricted as possible.
+* Restrictions must be weighed against their effect on development quality
+  and productivity, not applied as a default stance.
+* Public internet access for research, documentation, dependency management,
+  and experimentation is an important agent capability. The current
+  restriction to an empty allowed-domain list and denied `WebFetch`/
+  `WebSearch` tools (as implemented in the Claude Code adapter; see
+  `docs/technical_model/claude_code_adapter_architecture.adoc`) is a
+  functional gap to investigate for Beta 1, not a deliberate target state.
+* Additional security restrictions should generally be justified by the
+  deployment context and the operator's own decisions. A later
+  Commission-driven configuration of such restrictions is conceivable but not
+  committed.
+* The integrity of WFC's own orchestration, authorization, state management,
+  and trusted operations remains non-negotiable regardless of the above.
+
+=== 3.2 Explicit non-goals
+
+WFC does *not* aim to build, without concrete need, a fully self-contained,
+watertight isolation layer that assumes zero trust in Codex's, Claude Code's,
+or their runtime's own security mechanisms. In particular, full additional
+provider isolation and a WFC-owned credential broker are *not* current
+general product requirements; such requirements can be reconsidered later if
+a concrete security need arises. Existing sandbox research findings are
+preserved regardless (`docs/architecture.md`'s
+`FTR-WFC-EXECUTION-TRUST-BOUNDARIES` pointer).
+
+This is a product-level, long-term non-goal about security scope. It is
+distinct from Section 10's near-term implementation non-goals for the
+current increment (no universal workflow DSL, no expanded orchestrator
+kernel, etc.) and from Section 9's deliberately unresolved question about a
+possible Level-1 orchestration layer -- neither of those is decided by this
+section, and this section does not decide them either.
+
+== 4. Current development focus
+
+The present, concrete development focus is UC-01/UC-02/UC-03 below: a
+controlled, deterministic review-and-correction cycle for one development
+activity -- independent review, focused re-review of known Findings, fresh
+broad review, and recognizing/escaping non-converging correction loops. This
+is the bottom-up step currently being built and dogfooded (see
+`docs/backlog/_open.adoc` for exact implementation/acceptance status of
+`direct@v1`, `robust@v1`, and the correction-convergence-escape slices).
+
+This is explicitly *not* the same as the long-term vision in Section 1 of
+orchestrating progressively larger development work with growing autonomy.
+Capabilities described elsewhere in this document as candidate, planned, or
+architectural (for example Section 8's governance/program-variant material,
+UC-04's elevated-privilege workflow, or UC-05's protected-context workflow)
+are future direction, not claims about the current increment's scope.
+
+== 5. User-facing purpose
 
 A maintainer commissions a bounded task, chooses a suitable reusable workflow program, authorizes the task and its limits, and starts a Run. The workflow program specifies the process; the Commission must not accidentally redefine it through copied YAML. The interpreter carries out the declared process and enforces its contracts. Independent assessment, repair, evidence, human stops, and auditability remain first-class features.
 
@@ -15,7 +189,7 @@ The near-term product problem is Commission authoring friction and unexpected di
 
 Workflow flexibility is an intended capability, not an accident to eliminate. The product goal is to preserve the ability to define specialized processes *without* letting ordinary Commission authoring silently rewrite process guarantees, generate incompatible one-offs, or make every Run expensive to reason about.
 
-== 2. Candidate workflow programs and test scenarios
+== 6. Candidate workflow programs and test scenarios
 
 The examples are *scenarios to preserve and analyze*, not a claim that each is already a supported, distinct reusable YAML program.
 
@@ -96,7 +270,7 @@ Work -> Complete
 
 A bounded single-agent task with no mandatory independent review, for cases in which WFC becomes the ordinary controlled gateway to LLM execution. This is a different workflow guarantee, not an invitation for a Commission to disable a required review in UC-01 or UC-04.
 
-== 3. Cross-cutting functional requirements
+== 7. Cross-cutting functional requirements
 
 * A Commission specifies its task, scope, authorization and the reusable program to execute.
 * Programs define mandatory phase relationships and safety/quality obligations; different Commissions can reuse the same reviewed program.
@@ -108,7 +282,7 @@ A bounded single-agent task with no mandatory independent review, for cases in w
 * A Run with open blocking Findings must not advance irreversibly into a no-repair branch. A clean-only branch must be guarded by proven cleanliness.
 * Keep user-visible diagnostic and recovery cost reasonable; no unsafe automatic retry of an uncertain provider execution.
 
-== 4. Governance, program variants and future deployment scenarios
+== 8. Governance, program variants and future deployment scenarios
 
 Functional requirements to investigate, not yet a product feature or syntax:
 
@@ -121,20 +295,24 @@ Functional requirements to investigate, not yet a product feature or syntax:
 
 The words "standard", "parameterized" and "custom" describe prospective authoring/admission classes. **They are not currently implemented WFC operating modes.** A future workflow pack should initially be treated as a declarative package/manifest, *not* a permission to load third-party Python into the trusted interpreter.
 
-== 5. Level 1 deliberately unresolved
+== 9. Level 1 deliberately unresolved
 
 The maintainer considered recursive, self-similar WFC reducer loops: a review loop inside a backlog-selection loop inside higher-level project preparation. Later work suggested the outer orchestration may be categorically different and could use, for example, LangGraph. Both remain hypotheses. No commitment is made to recursive WFC, LangGraph, program-authoring by Level 1, or a specific integration API. The only current boundary requirement is that any future caller must not silently weaken Level-0 workflow guarantees or confer execution authority by creating a Commission.
 
-== 6. Product non-goals for this step
+== 10. Product non-goals for this step
 
 No immediate universal workflow DSL, profile migration, expanded orchestrator kernel, speculative Level-1 planner, or rollout of all six example programs. First verify the profile corpus, implement one reusable real-life program, and measure reduced Commission authoring burden.
 
-== 7. Sources and open questions
+== 11. Sources and open questions
 
 * `docs/warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc`
 * `docs/warm_storage/concepts/workflow_coordinator_commissioning_service_concept_2026-10-11.adoc`
 * `docs/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc`
 * `docs/backlog/FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW.adoc`
+* `docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc` -- deferred; current standing restated normatively in `docs/architecture.md` (Section 1.2/3.2 above).
+* `docs/architecture.md` -- normative source for the current containment/isolation standing cited in Sections 1.2 and 3.2.
+* `docs/technical_model/claude_code_adapter_architecture.adoc` -- as-implemented network/tool restriction cited in Section 3.1.
+* `docs/backlog/_open.adoc` -- current implementation/acceptance status of the review-correction cycle cited in Section 4.
 * External run-evidence repository: `workflow-coordinator-run-evidence/project_memory/run_ledger.adoc` (selected historical runs, not exhaustive code history; path corrected -- this file does not exist under this repository's own `project_memory/`, see e.g. `docs/warm_storage/concepts/workflow_coordinator_operational_friction_evidence_2026-10-11.adoc:80`)
 
-Open: actual final-review chronology; actual v3 profile launches; model-binding granularity; boundary between program invariants and per-Commission binding values.
+Open: actual final-review chronology; actual v3 profile launches; model-binding granularity; boundary between program invariants and per-Commission binding values. Newly added by this revision: whether `GOAL-WFC-NNN` should also be cross-referenced from `docs/README.adoc` or the backlog once this document is promoted beyond draft status.
