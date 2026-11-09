@@ -1,0 +1,249 @@
+= Claude adapter TMPDIR scratch provisioning: independent broad review
+
+WorkItem:: WI-WFC-CLAUDE-ADAPTER-TMPDIR-SCRATCH-PROVISIONING-001
+Run:: RUN-d6bda249155a4ad9a2cda073039002d9
+Hop:: H002, independent reviewer
+Invocation:: INV-bf5f96e2ae6446f591e4c5a2a363e140
+Candidate:: `3102b659263c61e35cc798b4d34d5f81c2d74dce`
+Reviewed range:: `2f60eb2abd364841cfe24db3061890022520ccfc..3102b659263c61e35cc798b4d34d5f81c2d74dce`
+Base HEAD:: `3102b659263c61e35cc798b4d34d5f81c2d74dce`
+Disposition:: changes_required; request `correction`
+
+== Review basis and authority
+
+Read in full: the controlling record
+`docs/backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc`,
+the whole of `src/workflow_coordinator/claude_adapter.py` at the candidate,
+both test files at the candidate, and (read-only)
+`scripts/wfc_op.py:228-257` for the ambient scratch convention
+(`create_attempt_scratch()` defaulting to `Path.home() / "wfc-scratch"`,
+`scratch.mkdir(mode=0o700)` plus explicit `chmod(0o700)`, and
+`_scratch_environment()` exporting `TMPDIR`/`TMP`/`TEMP`). Also inspected
+the generated launch script's own `export TMPDIR=...` site
+(`scripts/wfc_op.py:630`). Line numbers in this artifact were re-verified
+against the candidate itself.
+
+Reviewed the actual implementation and test bodies, not a diff summary,
+and exercised production code directly with reviewer-local probes (below).
+Only this review artifact is changed in this Hop; no implementation or
+test file was touched. No authoritative current-Run Finding IDs were
+projected, so the blocking concern below is proposed without an allocated
+ID; no historical label is disposed here.
+
+== What the candidate does
+
+`_external_scratch_root()` (`claude_adapter.py:52-61`) returns the first
+non-empty ambient `TMPDIR`/`TMP`/`TEMP`, else `tempfile.gettempdir()`.
+`_invocation_token()` (`:142-146`) is unchanged in substance (sha256 of
+run/hop/invocation, first 16 hex). `_short_subprocess_tmp_dir()` (`:149-152`)
+keeps the short `/tmp/wfc-claude-<token>` path; the new
+`_external_scratch_dir()` (`:155-158`) derives `<ambient
+root>/wfc-claude-<token>`. `execute()` (`:191-200`) clears any leftover at
+both derived paths via `_supersede_or_reject_leftover()` (`:64-77`), creates
+the real target with `mkdir(parents=True, mode=0o700)` plus `chmod(0o700)`,
+resolves it, and symlinks the short path to it; `_settings()` (`:119-139`)
+now names that resolved target in `sandbox.filesystem.allowRead` (appended
+after the repository) and as the sole `allowWrite` entry. The `finally`
+block (`:238-243`) replaces the no-op `rmtree(tmp_dir)` with
+`tmp_dir.unlink(missing_ok=True)` followed by `rmtree(real_dir,
+ignore_errors=True)`.
+
+== What this review independently confirmed as correct
+
+Because this agent shell mounts `/tmp` read-only, production code was
+exercised with `_SHORT_TMP_ROOT` rebound to a writable stand-in root and a
+long, human-readable ambient `TMPDIR`/`TMP`/`TEMP` standing in for the
+FD-08 Attempt scratch. Driving real `ClaudeCliAdapter.execute()` with a
+fake executable that reported its own view of `$TMPDIR` observed:
+
+* `TMPDIR`, `TMP`, and `TEMP` identical, the value a symlink
+  (`os.path.islink` true), and its `realpath` under the ambient external
+  root -- not under the short root.
+* The real target's mode `0o700`, owned by the invoking uid -- matching
+  `create_attempt_scratch()`'s own restrictive convention. (No committed
+  test asserts this mode; see observations.)
+* `allowWrite == [realpath]` and `allowRead == [repository, realpath]`,
+  byte-equal to the child-observed `realpath` -- exactly the resolved
+  per-invocation target, never the symlink, never an ancestor, never the
+  Attempt scratch root.
+* After the call, the symlink gone, the real target gone, and both the
+  short root and the ambient root left empty.
+
+Also verified by inspection: `network.allowedDomains` stays `[]`;
+`permissions.allow`/`deny` and `blockReadsOutsideWorkingDirectories` are
+untouched; no bypass flag was added to `argv()`; the changed methods
+(`_settings`, `_short_subprocess_tmp_dir`) are adapter-private and have no
+caller outside the adapter and its own tests (repository-wide search); and
+the commit touches exactly the three authorized files
+(`git diff --stat 2f60eb2..3102b65` lists only `claude_adapter.py` and the
+two test files), so `codex_adapter.py`, `adapter.py`, `operator.py`,
+`model.py`, `reducer.py`, `vertical.py`, `git_facts.py`,
+`commissioning.py`, and `scripts/wfc_op.py` are byte-identical. No
+workflow/Hop/review semantics, Result Contract, or Trusted Commit
+behavior is affected.
+
+Required-test inventory is present and substantive rather than
+tautological: resource placement, the three cleanup outcomes, and both
+leftover branches are covered
+(`tests/unit/test_claude_adapter_conformance.py:212-270,273-291,294-311,313-342,344-362`),
+with the placement test comparing the grant against the
+*subprocess-observed* realpath rather than re-deriving it from production
+code, and the cleanup assertions checking `is_symlink()` as well as
+`exists()` so a dangling symlink cannot pass. Exactly one new
+`WFC_RUN_LIVE_CLAUDE_SMOKE=1`-gated live test was added
+(`tests/integration/test_claude_adapter_live_smoke.py:134-188`); it stays
+skipped by default and proves physical existence through the worker's own
+`test -f`, recording the proof outside the torn-down scratch. Pre-existing
+tests are intact in intent; only the two literal settings dictionaries
+were mechanically updated (`:85-86,113-116`).
+
+With `_SHORT_TMP_ROOT` relocated as described, 22 of the 23 tests in
+`tests/unit/test_claude_adapter_conformance.py` pass; the single failure is
+`assert 74 <= 40` in the short-path length assertion (`:248`), caused
+solely by the reviewer's own long stand-in root, not by the candidate.
+Unrelocated, every test that creates the real `/tmp/wfc-claude-<token>`
+path fails with `OSError: [Errno 30] Read-only file system`, an
+agent-local environmental limitation of this shell (the pre-change code
+also wrote under `/tmp`); Coordinator-owned `task-check` is separate and
+is not reported here.
+
+[[root-coincidence]]
+== Blocking finding: the scratch root is not guaranteed distinct from the short root, and the degenerate case fails hard, leaks, and escapes as a non-contract exception
+
+Locations:: `src/workflow_coordinator/claude_adapter.py:52-61,155-158,191-200,238-243`.
+Invariant:: The adapter must obtain a dedicated large-capacity external
+scratch target without a privileged host action and *as the ordinary
+case*, at minimum on Ubuntu under WSL; a leftover or derived-path
+coincidence must be handled deterministically rather than causing an
+unhandled exception or a new accumulation path; cleanup must remove both
+the symlink and its real target on success, local failure, and timeout.
+
+`_external_scratch_root()` has no guarantee of returning anything other
+than `_SHORT_TMP_ROOT` itself. When `TMPDIR`, `TMP`, and `TEMP` are all
+unset -- the default on a stock Ubuntu/WSL shell, and on any host where
+WFC's own launcher is not the parent -- `tempfile.gettempdir()` returns
+`/tmp` on an ordinary host, which is exactly `_SHORT_TMP_ROOT`. The same
+coincidence occurs whenever an operator or environment sets `TMPDIR=/tmp`
+explicitly. `_external_scratch_dir()` and `_short_subprocess_tmp_dir()`
+then derive the *same* path from the same token, and three things follow
+from one driving of production `execute()` (reviewer probe, roots made
+coincident; `/tmp` itself is unwritable in this shell, so a writable
+stand-in root was bound to both sides -- the only property under test is
+root equality):
+
+----
+short tmp dir : .../short/wfc-claude-9bf71f9d70463242
+external dir  : .../short/wfc-claude-9bf71f9d70463242
+paths equal   : True
+CASE A raised : IsADirectoryError [Errno 21] Is a directory: '.../short/wfc-claude-9bf71f9d70463242'
+CASE A cause  : None None
+leftovers short: ['wfc-claude-9bf71f9d70463242']
+----
+
+. *Every invocation fails.* `real_dir.mkdir()` succeeds, then
+  `tmp_dir.symlink_to()` necessarily raises `FileExistsError` on the path
+  just created. The adapter cannot launch at all in this configuration, so
+  the required "ordinary case" portability property does not hold: it
+  holds only where something upstream already exported `TMPDIR` -- i.e. it
+  still assumes the self-development launch layout, merely indirectly.
+. *A non-contract exception escapes `execute()`.* The intended
+  `ClaudeCliError` (`:225-226`) is raised, but the `finally` block then
+  calls `tmp_dir.unlink()` on what is now a directory, and the resulting
+  `IsADirectoryError` *replaces* it (note the empty `__cause__` above).
+  Callers see a raw `OSError` subclass that is neither `ClaudeCliError`
+  nor `ExecutionNotStartedError` -- precisely the "unhandled exception"
+  the mandate forbids for a derived-path collision.
+. *A new accumulation path is introduced.* Because the `unlink` raised,
+  `rmtree(real_dir, ignore_errors=True)` on the next line never runs, so
+  the created directory survives the invocation (`leftovers short` above).
+  The two cleanup operations are sequentially coupled: any failure of the
+  first silently forfeits the second and masks the in-flight exception.
+
+A related consequence of the same unvalidated root: in a sandboxed shell
+where `/tmp` is not writable, `tempfile.gettempdir()` falls back further
+down its candidate list and can return the *current working directory*.
+Confirmed in this shell: with `TMPDIR`/`TMP`/`TEMP` unset,
+`tempfile.gettempdir()` returned
+`/home/stefan/repos/spreadsheet-handling/workflow-coordinator` -- the
+repository checkout. In that case the adapter would create its untrusted
+scratch, grant `allowWrite` on it, and later `rmtree` it *inside the
+repository working tree*, which is both the wrong trust placement and a
+Git-status hazard mid-Hop. No privileged action is needed to fix this;
+`create_attempt_scratch()`'s own unprivileged default
+(`Path.home() / "wfc-scratch"`, `scripts/wfc_op.py:229`) shows the shape
+of a WFC-owned fallback.
+
+Suggested correction, kept inside the authorized three files: derive the
+real target so it can never equal the short symlink path (for example a
+distinct, WFC-owned subpath such as `<root>/wfc-claude-scratch/<token>`),
+and when the resolved root is `_SHORT_TMP_ROOT` -- or otherwise not usable
+as external scratch -- provision from an unprivileged WFC-owned root
+instead (e.g. `~/.wfc-claude-scratch`, mode `0o700`, mirroring the FD-08
+default) rather than silently placing bulk material back on the `tmpfs`
+this Commission exists to protect. Guard the two cleanup steps
+independently so neither can suppress the other or the original
+exception. Add deterministic coverage for the `TMPDIR`/`TMP`/`TEMP`-unset
+and `root == _SHORT_TMP_ROOT` cases; their absence is why this reached
+review -- every unit test and two of the three live tests inherit the
+ambient `TMPDIR` the harness happens to export
+(`tests/unit/test_claude_adapter_conformance.py` sets it only at
+`:212-224`; `tests/integration/test_claude_adapter_live_smoke.py:104,138`
+set none).
+
+== Non-blocking observations
+
+* No committed test asserts the real target's `0o700` mode or ownership;
+  the reviewer verified both directly. Worth a one-line assertion in the
+  placement test.
+* `_external_scratch_root()` validates nothing about the ambient value --
+  not that it exists, is a directory rather than a symlink, is writable,
+  or does not overlap the repository -- where `create_attempt_scratch()`
+  validates all of these before use. A same-shaped (but non-coincident)
+  bad ambient value therefore surfaces only as a generic
+  "local pre-acceptance executable launch failure".
+* An ambient `TMPDIR` that is itself *under* `/tmp` satisfies the current
+  code but leaves bulk subprocess material on the `tmpfs`; nothing in the
+  adapter distinguishes a large-capacity root from a small one. Acceptable
+  under the authorized candidate direction, but the degenerate case in the
+  finding above shows why a WFC-owned fallback is the safer default.
+* Supersession in `_supersede_or_reject_leftover()` is gated on uid only,
+  not on a WFC ownership marker, so a same-user non-WFC directory sitting
+  at exactly `/tmp/wfc-claude-<16 hex>` would be removed. The path is
+  WFC-namespaced and the mandate explicitly permits "safely superseded",
+  so this is residual, not blocking. Genuine concurrency is safe by
+  construction: the token derives from run/hop/invocation, so two
+  concurrent invocations cannot share a derived path, and the leftover
+  branch is reachable only for a repeated dispatch of the *same*
+  invocation.
+* `rmtree(..., ignore_errors=True)` in both the cleanup and the
+  supersession path can fail silently; a failed supersession is at least
+  caught downstream, since `mkdir()` is now exclusive (no `exist_ok`) and
+  turns into a deterministic `ClaudeCliError`.
+* All conformance tests share the invocation `("RUN-C", "H001", "INV-C")`
+  and therefore one derived path pair, so the file is not safe under
+  parallel test execution. The repository does not use `pytest-xdist`, so
+  this is an observation only.
+
+== Evidence
+
+* Candidate inspection: `claude_adapter.py` in full;
+  `tests/unit/test_claude_adapter_conformance.py` in full;
+  `tests/integration/test_claude_adapter_live_smoke.py` in full;
+  `scripts/wfc_op.py:220-257,630` read-only.
+* Scope check: `git diff --stat 2f60eb2..3102b65` -- three files only;
+  repository-wide search for the changed private helpers found no
+  out-of-adapter caller.
+* Reviewer probe A (root coincidence): production `execute()` with
+  `_SHORT_TMP_ROOT` and ambient `TMPDIR`/`TMP`/`TEMP` bound to one root --
+  `IsADirectoryError` escaped, leftover directory survived; control with
+  distinct roots returned `0` and left both roots empty.
+* Reviewer probe B (core guarantees): production `execute()` with a long
+  ambient root -- symlink, realpath off the short root, mode `0o700`,
+  uid-owned, exact `allowRead`/`allowWrite`, both paths removed.
+* Reviewer probe C: `tempfile.gettempdir()` with `TMPDIR`/`TMP`/`TEMP`
+  unset in this shell returned the repository working directory.
+* Test run (relocated short root): 22 passed, 1 failed on the
+  reviewer-induced path-length assertion only. Unrelocated: read-only
+  `/tmp` failures, an agent-local limitation, not a candidate regression.
+  These are exploratory agent-side results, not Coordinator-trusted
+  evidence.
