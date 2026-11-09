@@ -310,6 +310,91 @@ def test_subprocess_tmpdir_symlink_and_real_target_are_cleaned_up_on_launch_fail
     assert not Path(recorded["tmpdir_realpath"]).exists()
 
 
+def test_external_scratch_root_falls_back_when_ambient_default_coincides_with_short_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    # The stock Ubuntu/WSL default: no WFC launcher has exported
+    # TMPDIR/TMP/TEMP, so tempfile.gettempdir() is consulted -- and on an
+    # ordinary host that is _SHORT_TMP_ROOT itself. Without a distinct
+    # fallback this collapses the short symlink and its own real target
+    # onto one path, breaking every invocation (see the finding this
+    # correction addresses).
+    monkeypatch.delenv("TMPDIR", raising=False)
+    monkeypatch.delenv("TMP", raising=False)
+    monkeypatch.delenv("TEMP", raising=False)
+    monkeypatch.setattr(
+        claude_adapter_module.tempfile, "gettempdir",
+        lambda: str(claude_adapter_module._SHORT_TMP_ROOT),
+    )
+    fallback_root = tmp_path / "fallback-root"
+    monkeypatch.setattr(claude_adapter_module, "_WFC_FALLBACK_SCRATCH_ROOT", fallback_root)
+
+    observed = tmp_path / "coincidence_observed.json"
+    executable = fake(tmp_path, f'''\
+        import json, os, pathlib
+        pathlib.Path({str(observed)!r}).write_text(json.dumps({{
+            "tmpdir": os.environ.get("TMPDIR"),
+            "tmpdir_realpath": os.path.realpath(os.environ.get("TMPDIR", "")),
+        }}))
+        print('{{"type":"result","subtype":"success","is_error":false}}')
+    ''')
+    settings = tmp_path / "claude-closed-settings.json"
+    outcome = adapter(tmp_path, executable).execute(request(tmp_path))
+
+    # The degenerate case does not raise, does not launch against a
+    # collapsed path, and does not leave the real target un-granted.
+    assert outcome.returncode == 0 and not outcome.timed_out
+    observation = json.loads(observed.read_text())
+    granted = json.loads(settings.read_text())["sandbox"]["filesystem"]
+    tmpdir_path = Path(observation["tmpdir"])
+    realpath = Path(observation["tmpdir_realpath"])
+    short_root = claude_adapter_module._SHORT_TMP_ROOT.resolve()
+
+    assert realpath != tmpdir_path
+    assert realpath != short_root and short_root not in realpath.parents
+    assert str(realpath).startswith(str(fallback_root.resolve()) + os.sep)
+    assert granted["allowWrite"] == [str(realpath)]
+
+    # Cleaned up afterward like every other outcome.
+    assert not tmpdir_path.is_symlink() and not tmpdir_path.exists()
+    assert not realpath.exists()
+
+
+def test_external_scratch_root_falls_back_when_operator_sets_tmpdir_to_short_root_explicitly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    # The same coincidence occurs whenever an operator or environment sets
+    # TMPDIR=/tmp explicitly, independent of the gettempdir() platform
+    # default exercised above.
+    short_root = str(claude_adapter_module._SHORT_TMP_ROOT)
+    monkeypatch.setenv("TMPDIR", short_root)
+    monkeypatch.setenv("TMP", short_root)
+    monkeypatch.setenv("TEMP", short_root)
+    fallback_root = tmp_path / "fallback-root"
+    monkeypatch.setattr(claude_adapter_module, "_WFC_FALLBACK_SCRATCH_ROOT", fallback_root)
+
+    observed = tmp_path / "explicit_coincidence_observed.json"
+    executable = fake(tmp_path, f'''\
+        import json, os, pathlib
+        pathlib.Path({str(observed)!r}).write_text(json.dumps({{
+            "tmpdir": os.environ.get("TMPDIR"),
+            "tmpdir_realpath": os.path.realpath(os.environ.get("TMPDIR", "")),
+        }}))
+        print('{{"type":"result","subtype":"success","is_error":false}}')
+    ''')
+    outcome = adapter(tmp_path, executable).execute(request(tmp_path))
+
+    assert outcome.returncode == 0 and not outcome.timed_out
+    observation = json.loads(observed.read_text())
+    tmpdir_path = Path(observation["tmpdir"])
+    realpath = Path(observation["tmpdir_realpath"])
+    short_root_resolved = claude_adapter_module._SHORT_TMP_ROOT.resolve()
+
+    assert realpath != short_root_resolved and short_root_resolved not in realpath.parents
+    assert not tmpdir_path.is_symlink() and not tmpdir_path.exists()
+    assert not realpath.exists()
+
+
 def test_leftover_at_derived_paths_is_safely_superseded_when_owned_by_current_user(tmp_path: Path):
     instance = adapter(tmp_path, fake(tmp_path, '''\
         print('{"type":"result","subtype":"success","is_error":false}')

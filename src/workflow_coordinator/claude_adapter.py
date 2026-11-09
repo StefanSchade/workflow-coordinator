@@ -48,17 +48,33 @@ def _extra_environment_names() -> tuple[str, ...]:
 # subprocess a short, invocation-scoped TMPDIR instead of inheriting it.
 _SHORT_TMP_ROOT = Path("/tmp")
 
+# Unprivileged, WFC-owned fallback used only when the ambient TMPDIR/TMP/TEMP
+# (or, failing those, the platform tempfile default) resolves to
+# _SHORT_TMP_ROOT itself -- e.g. the stock Ubuntu/WSL default with none of
+# those set, or an operator explicitly setting TMPDIR=/tmp -- which would
+# otherwise make the short symlink and its own real target the same path.
+# Mirrors create_attempt_scratch()'s own unprivileged `~/wfc-scratch` default
+# (`scripts/wfc_op.py`).
+_WFC_FALLBACK_SCRATCH_ROOT = Path.home() / ".wfc-claude-scratch"
+
 
 def _external_scratch_root() -> Path:
     """The large-capacity, Attempt-isolated scratch WFC's own launch already
     exports via TMPDIR/TMP/TEMP ahead of the adapter shortening it for the
     subprocess (FD-08); falls back to the platform default outside WFC so
-    the adapter still works standalone, without assuming that layout."""
+    the adapter still works standalone, without assuming that layout. Never
+    returns a path that resolves to _SHORT_TMP_ROOT; falls back to
+    _WFC_FALLBACK_SCRATCH_ROOT instead in that degenerate case."""
     for name in ("TMPDIR", "TMP", "TEMP"):
         value = os.environ.get(name)
         if value:
-            return Path(value)
-    return Path(tempfile.gettempdir())
+            root = Path(value)
+            break
+    else:
+        root = Path(tempfile.gettempdir())
+    if root.resolve() == _SHORT_TMP_ROOT.resolve():
+        return _WFC_FALLBACK_SCRATCH_ROOT
+    return root
 
 
 def _supersede_or_reject_leftover(path: Path, description: str) -> None:
@@ -75,6 +91,20 @@ def _supersede_or_reject_leftover(path: Path, description: str) -> None:
         shutil.rmtree(path, ignore_errors=True)
     else:
         path.unlink(missing_ok=True)
+
+
+def _remove_scratch_path(path: Path) -> None:
+    """Best-effort removal of either the short TMPDIR symlink or the real
+    scratch directory it points at. Never raises, so a failure removing one
+    cleanup target can never suppress the other cleanup step or mask an
+    in-flight exception from the caller's try block."""
+    try:
+        if path.is_symlink():
+            path.unlink(missing_ok=True)
+        else:
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass
 
 
 def _bounded(value: str, limit: int = 16_384) -> str:
@@ -236,11 +266,14 @@ class ClaudeCliAdapter:
                     os.killpg(child.pid, signal.SIGKILL)
                     stdout, stderr = child.communicate()
         finally:
-            # tmp_dir is a symlink; shutil.rmtree() refuses to operate on one
-            # (and silently no-ops under ignore_errors=True), so the symlink
-            # and its real target must each be removed explicitly.
-            tmp_dir.unlink(missing_ok=True)
-            shutil.rmtree(real_dir, ignore_errors=True)
+            # tmp_dir is normally a symlink (shutil.rmtree() refuses to
+            # operate on one, silently no-oping under ignore_errors=True)
+            # but may be a plain directory if symlink creation itself never
+            # completed; remove each target independently so a failure
+            # removing one can never suppress the other or the exception
+            # already in flight from the try block above.
+            _remove_scratch_path(tmp_dir)
+            _remove_scratch_path(real_dir)
         stdout = stdout or ""
         stderr = stderr or ""
         candidate = None if timed_out or child.returncode != 0 else self._candidate_from_wrapper(stdout)
