@@ -8,7 +8,9 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,6 +47,34 @@ def _extra_environment_names() -> tuple[str, ...]:
 # limit, failing the sandbox bridge even for trivial commands. Give the
 # subprocess a short, invocation-scoped TMPDIR instead of inheriting it.
 _SHORT_TMP_ROOT = Path("/tmp")
+
+
+def _external_scratch_root() -> Path:
+    """The large-capacity, Attempt-isolated scratch WFC's own launch already
+    exports via TMPDIR/TMP/TEMP ahead of the adapter shortening it for the
+    subprocess (FD-08); falls back to the platform default outside WFC so
+    the adapter still works standalone, without assuming that layout."""
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        value = os.environ.get(name)
+        if value:
+            return Path(value)
+    return Path(tempfile.gettempdir())
+
+
+def _supersede_or_reject_leftover(path: Path, description: str) -> None:
+    """Deterministically clear a leftover at a WFC-derived, invocation-scoped
+    path (e.g. after an unclean prior shutdown of the same invocation),
+    without ever touching a path this process does not itself own."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if info.st_uid != os.geteuid():
+        raise ClaudeCliError(f"{description} already exists and is not owned by the current user: {path}")
+    if stat.S_ISDIR(info.st_mode):
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def _bounded(value: str, limit: int = 16_384) -> str:
@@ -86,7 +116,8 @@ class ClaudeCliAdapter:
         )
 
     @staticmethod
-    def _settings(request: AgentExecutionRequest) -> dict[str, object]:
+    def _settings(request: AgentExecutionRequest, external_scratch_dir: Path) -> dict[str, object]:
+        scratch = str(external_scratch_dir)
         return {
             "sandbox": {
                 "enabled": True,
@@ -94,7 +125,8 @@ class ClaudeCliAdapter:
                 "allowUnsandboxedCommands": False,
                 "filesystem": {
                     "denyRead": ["~/"],
-                    "allowRead": [str(request.repository.resolve())],
+                    "allowRead": [str(request.repository.resolve()), scratch],
+                    "allowWrite": [scratch],
                 },
                 "network": {"allowedDomains": []},
             },
@@ -107,13 +139,23 @@ class ClaudeCliAdapter:
         }
 
     @staticmethod
-    def _short_subprocess_tmp_dir(request: AgentExecutionRequest) -> Path:
-        """A short, deterministic per-invocation TMPDIR; see `_SHORT_TMP_ROOT`."""
-        token = hashlib.sha256(
+    def _invocation_token(request: AgentExecutionRequest) -> str:
+        return hashlib.sha256(
             f"{request.invocation.run_id}/{request.invocation.hop_id}/"
             f"{request.invocation.invocation_id}".encode()
         ).hexdigest()[:16]
-        return _SHORT_TMP_ROOT / f"wfc-claude-{token}"
+
+    @classmethod
+    def _short_subprocess_tmp_dir(cls, request: AgentExecutionRequest) -> Path:
+        """A short, deterministic per-invocation TMPDIR symlink path; see
+        `_SHORT_TMP_ROOT`. Its real target is `_external_scratch_dir()`."""
+        return _SHORT_TMP_ROOT / f"wfc-claude-{cls._invocation_token(request)}"
+
+    @classmethod
+    def _external_scratch_dir(cls, request: AgentExecutionRequest) -> Path:
+        """The dedicated, invocation-scoped real directory the short TMPDIR
+        symlink points at; see `_external_scratch_root()`."""
+        return _external_scratch_root() / f"wfc-claude-{cls._invocation_token(request)}"
 
     @staticmethod
     def _candidate_from_wrapper(stdout: str) -> str | None:
@@ -147,9 +189,15 @@ class ClaudeCliAdapter:
                 "current phase has no permitted routes; refusing to dispatch an unroutable invocation"
             )
         tmp_dir = self._short_subprocess_tmp_dir(request)
-        tmp_dir.mkdir(parents=True, exist_ok=True)
+        real_dir = self._external_scratch_dir(request)
+        _supersede_or_reject_leftover(real_dir, "external scratch target")
+        _supersede_or_reject_leftover(tmp_dir, "short TMPDIR symlink")
         try:
             try:
+                real_dir.mkdir(parents=True, mode=0o700)
+                real_dir.chmod(0o700)
+                real_dir = real_dir.resolve()
+                tmp_dir.symlink_to(real_dir, target_is_directory=True)
                 schema = self.result_directory / "structured-result.schema.json"
                 settings = self.result_directory / "claude-closed-settings.json"
                 schema_object = structured_result_envelope_schema(
@@ -157,7 +205,7 @@ class ClaudeCliAdapter:
                     permitted_routes=request.permitted_routes,
                 )
                 atomic_write_json(schema, schema_object)
-                atomic_write_json(settings, self._settings(request))
+                atomic_write_json(settings, self._settings(request, real_dir))
                 environment = {
                     name: os.environ[name]
                     for name in (*_ENVIRONMENT_NAMES, *self.extra_environment_names)
@@ -188,7 +236,11 @@ class ClaudeCliAdapter:
                     os.killpg(child.pid, signal.SIGKILL)
                     stdout, stderr = child.communicate()
         finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            # tmp_dir is a symlink; shutil.rmtree() refuses to operate on one
+            # (and silently no-ops under ignore_errors=True), so the symlink
+            # and its real target must each be removed explicitly.
+            tmp_dir.unlink(missing_ok=True)
+            shutil.rmtree(real_dir, ignore_errors=True)
         stdout = stdout or ""
         stderr = stderr or ""
         candidate = None if timed_out or child.returncode != 0 else self._candidate_from_wrapper(stdout)

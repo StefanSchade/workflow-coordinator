@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import stat
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from workflow_coordinator import claude_adapter as claude_adapter_module
 from workflow_coordinator.adapter import (
     ROUTING_RESULT_ENVELOPE_CONTRACT, AgentExecutionRequest, Invocation,
     ResultValidationError, validated_result,
@@ -79,7 +82,8 @@ def test_exact_closed_argv_profile_settings_cwd_prompt_and_environment(tmp_path:
     forbidden = ("codex", "--mcp-config", "--allowed-tools", "--fallback-model", "--resume", "--continue", "--add-dir", "--dangerously-skip-permissions")
     assert not any(item in argv for item in forbidden)
     assert observation["cwd"] == str(tmp_path) and observation["scrub"] is None
-    assert observation["settings"] == {"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False, "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path)]}, "network": {"allowedDomains": []}}, "permissions": {"allow": ["Edit", "Write"], "deny": ["WebFetch", "WebSearch"], "blockReadsOutsideWorkingDirectories": True}}
+    scratch = str(ClaudeCliAdapter._external_scratch_dir(request(tmp_path)).resolve())
+    assert observation["settings"] == {"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False, "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path), scratch], "allowWrite": [scratch]}, "network": {"allowedDomains": []}}, "permissions": {"allow": ["Edit", "Write"], "deny": ["WebFetch", "WebSearch"], "blockReadsOutsideWorkingDirectories": True}}
     assert outcome.returncode == 0 and not outcome.timed_out
     assert json.loads(outcome.candidate_result or "{}") == envelope(Invocation("RUN-C", "H001", "INV-C"))
 
@@ -106,8 +110,9 @@ def test_edit_grant_uses_only_resolved_repository_as_working_directory(tmp_path:
     assert "--restricted" in result["args"]
     assert "--add-dir" not in result["args"]
     assert result["settings"]["permissions"]["allow"] == ["Edit", "Write"]
+    scratch = str(ClaudeCliAdapter._external_scratch_dir(request(alias)).resolve())
     assert result["settings"]["sandbox"]["filesystem"] == {
-        "denyRead": ["~/"], "allowRead": [str(repository.resolve())],
+        "denyRead": ["~/"], "allowRead": [str(repository.resolve()), scratch], "allowWrite": [scratch],
     }
 
 
@@ -225,11 +230,15 @@ def test_subprocess_tmpdir_is_short_and_cleaned_up_regardless_of_ambient_tmpdir(
             "tmpdir": os.environ.get("TMPDIR"), "tmp": os.environ.get("TMP"),
             "temp": os.environ.get("TEMP"),
             "tmpdir_exists": os.path.isdir(os.environ.get("TMPDIR", "")),
+            "tmpdir_is_symlink": os.path.islink(os.environ.get("TMPDIR", "")),
+            "tmpdir_realpath": os.path.realpath(os.environ.get("TMPDIR", "")),
         }}))
         print('{{"type":"result","subtype":"success","is_error":false}}')
     ''')
+    settings = tmp_path / "claude-closed-settings.json"
     adapter(tmp_path, executable).execute(request(tmp_path))
     observation = json.loads(observed.read_text())
+    granted = json.loads(settings.read_text())["sandbox"]["filesystem"]
 
     # Same short value across all three variables, independent of the long
     # ambient one, with enough headroom for Claude Code's own
@@ -240,23 +249,117 @@ def test_subprocess_tmpdir_is_short_and_cleaned_up_regardless_of_ambient_tmpdir(
     assert observation["tmpdir"] != str(long_ambient)
     assert observation["tmpdir_exists"] is True
 
-    # Cleaned up again once the subprocess has exited; nothing litters /tmp.
-    assert not Path(observation["tmpdir"]).exists()
+    # The short TMPDIR is a symlink; its real target resolves under the
+    # dedicated external scratch location (the ambient long_ambient this
+    # test stands in for), not under the short root itself.
+    assert observation["tmpdir_is_symlink"] is True
+    assert observation["tmpdir_realpath"] != observation["tmpdir"]
+    assert observation["tmpdir_realpath"].startswith(str(long_ambient) + os.sep)
+
+    # The sandbox filesystem grant names exactly that real resolved target,
+    # never the symlink and never the external scratch's own ancestor.
+    assert granted["allowRead"][-1] == observation["tmpdir_realpath"]
+    assert granted["allowWrite"] == [observation["tmpdir_realpath"]]
+
+    # Cleaned up again once the subprocess has exited: neither the symlink
+    # itself nor its real target still exist (a dangling symlink would still
+    # report not-exists via Path.exists(), so is_symlink() is checked too).
+    tmpdir_path = Path(observation["tmpdir"])
+    assert not tmpdir_path.is_symlink()
+    assert not tmpdir_path.exists()
+    assert not Path(observation["tmpdir_realpath"]).exists()
 
 
 def test_subprocess_tmpdir_is_cleaned_up_even_on_timeout(tmp_path: Path):
     observed = tmp_path / "tmpdir_on_timeout.json"
     slow = fake(tmp_path, f'''\
         import json, os, pathlib, sys, time
-        pathlib.Path({str(observed)!r}).write_text(json.dumps({{"tmpdir": os.environ.get("TMPDIR")}}))
+        pathlib.Path({str(observed)!r}).write_text(json.dumps({{
+            "tmpdir": os.environ.get("TMPDIR"),
+            "tmpdir_realpath": os.path.realpath(os.environ.get("TMPDIR", "")),
+        }}))
         sys.stdout.write("partial")
         sys.stdout.flush()
         time.sleep(10)
     ''')
     outcome = adapter(tmp_path, slow).execute(request(tmp_path, timeout=0.05))
     assert outcome.timed_out
-    recorded_tmpdir = Path(json.loads(observed.read_text())["tmpdir"])
+    recorded = json.loads(observed.read_text())
+    recorded_tmpdir = Path(recorded["tmpdir"])
+    assert not recorded_tmpdir.is_symlink()
     assert not recorded_tmpdir.exists()
+    assert not Path(recorded["tmpdir_realpath"]).exists()
+
+
+def test_subprocess_tmpdir_symlink_and_real_target_are_cleaned_up_on_launch_failure(tmp_path: Path):
+    observed = tmp_path / "tmpdir_on_failure.json"
+    executable = fake(tmp_path, f'''\
+        import json, os, pathlib, sys
+        pathlib.Path({str(observed)!r}).write_text(json.dumps({{
+            "tmpdir": os.environ.get("TMPDIR"),
+            "tmpdir_realpath": os.path.realpath(os.environ.get("TMPDIR", "")),
+        }}))
+        sys.exit(7)
+    ''')
+    outcome = adapter(tmp_path, executable).execute(request(tmp_path))
+    assert outcome.returncode == 7
+    recorded = json.loads(observed.read_text())
+    recorded_tmpdir = Path(recorded["tmpdir"])
+    assert not recorded_tmpdir.is_symlink()
+    assert not recorded_tmpdir.exists()
+    assert not Path(recorded["tmpdir_realpath"]).exists()
+
+
+def test_leftover_at_derived_paths_is_safely_superseded_when_owned_by_current_user(tmp_path: Path):
+    instance = adapter(tmp_path, fake(tmp_path, '''\
+        print('{"type":"result","subtype":"success","is_error":false}')
+    '''))
+    pending = request(tmp_path)
+    tmp_dir = instance._short_subprocess_tmp_dir(pending)
+    real_dir = instance._external_scratch_dir(pending)
+    stale_target = real_dir.parent / "stale-unrelated-target"
+    try:
+        # A leftover real directory from an unclean prior shutdown, with
+        # stale content inside it that a naive non-recursive cleanup would
+        # miss.
+        real_dir.mkdir(parents=True)
+        (real_dir / "stale-leftover-file").write_text("from a previous attempt")
+        # A leftover short symlink pointing at a (now different, soon to be
+        # recreated) target, also from a prior invocation.
+        stale_target.mkdir()
+        tmp_dir.symlink_to(stale_target)
+
+        outcome = instance.execute(pending)
+
+        assert outcome.returncode == 0 and not outcome.timed_out
+        assert not tmp_dir.is_symlink() and not tmp_dir.exists()
+        assert not real_dir.exists()
+    finally:
+        shutil.rmtree(real_dir, ignore_errors=True)
+        shutil.rmtree(stale_target, ignore_errors=True)
+        if tmp_dir.is_symlink():
+            tmp_dir.unlink()
+
+
+def test_leftover_at_derived_path_not_owned_by_current_user_is_rejected_not_touched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    instance = adapter(tmp_path, tmp_path / "must-not-run")
+    pending = request(tmp_path)
+    real_dir = instance._external_scratch_dir(pending)
+    real_dir.mkdir(parents=True)
+    marker = real_dir / "not-wfc-owned-marker"
+    marker.write_text("do not touch")
+    try:
+        impostor_uid = os.geteuid() + 1
+        monkeypatch.setattr(claude_adapter_module.os, "geteuid", lambda: impostor_uid)
+        with pytest.raises(ClaudeCliError, match="not owned by the current user"):
+            instance.execute(pending)
+        # Rejected, not superseded: the unrelated leftover is left exactly
+        # as it was found.
+        assert marker.read_text() == "do not touch"
+    finally:
+        shutil.rmtree(real_dir, ignore_errors=True)
 
 
 def test_zero_exit_sandbox_refusal_does_not_retry_or_invent_transport_failure(tmp_path: Path):

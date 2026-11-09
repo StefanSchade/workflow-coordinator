@@ -129,3 +129,60 @@ def test_real_claude_worker_bash_creates_authorized_file(tmp_path: Path):
     result = json.loads(outcome.candidate_result)["result"]
     assert result["outcome"] == "completed", result["summary"]
     assert (repository / "smoke-output" / "result.txt").read_text() == "wfc-bash-ok"
+
+
+@pytest.mark.skipif(
+    not (_CLAUDE_EXECUTABLE and _OPT_IN),
+    reason="optional live-provider integration: set WFC_RUN_LIVE_CLAUDE_SMOKE=1 with authenticated claude",
+)
+def test_real_claude_worker_bash_file_physically_lands_under_the_real_external_scratch_target(
+    tmp_path: Path,
+):
+    # Regression coverage for the TMPDIR-scratch-provisioning correction:
+    # the Bash tool's command independently verifies (via `test -f`, not via
+    # Claude's own completion self-report) that a file it created under
+    # $TMPDIR physically exists, and records $TMPDIR's own realpath -- both
+    # into a repository-local file the adapter's cleanup never touches, so
+    # the proof survives past the adapter's own TMPDIR/scratch teardown.
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    results = tmp_path / "results"
+    results.mkdir()
+    adapter = ClaudeCliAdapter(results, model="claude-sonnet-5", reasoning_effort="low",
+                               executable=_CLAUDE_EXECUTABLE)
+    invocation = Invocation("RUN-LIVESCRATCH0000000000000000000", "H001", "INV-LIVESCRATCH000000000000000001")
+    request = AgentExecutionRequest(
+        invocation=invocation,
+        prompt=(
+            "Use the Bash tool to run exactly this command: "
+            'readlink -f "$TMPDIR" > scratch-realpath.txt && mkdir -p "$TMPDIR/live-smoke" '
+            '&& printf wfc-scratch-ok > "$TMPDIR/live-smoke/marker.txt" '
+            '&& test -f "$TMPDIR/live-smoke/marker.txt" && echo found >> scratch-realpath.txt\n'
+            "Return a JSON object matching the supplied schema, using its required correlation values. "
+            "Set result.outcome to completed only if the Bash command succeeded; otherwise set it "
+            "to blocked. Set requested_route to smoke_test, scope_changed and requires_human to false, "
+            "escalation and commit_intent to null, findings, claimed_commits and evidence_refs to [], "
+            "and summary to what happened."
+        ),
+        repository=repository, result_contract=ROUTING_RESULT_ENVELOPE_CONTRACT,
+        timeout_seconds=120, permitted_routes=("smoke_test",),
+    )
+    outcome = adapter.execute(request)
+    assert outcome.returncode == 0 and not outcome.timed_out, (outcome.stdout, outcome.stderr)
+    assert outcome.candidate_result is not None, outcome.stdout
+    result = json.loads(outcome.candidate_result)["result"]
+    assert result["outcome"] == "completed", result["summary"]
+
+    proof_lines = (repository / "scratch-realpath.txt").read_text().splitlines()
+    assert proof_lines[-1] == "found", "test -f did not confirm the marker file's physical existence"
+    recorded_realpath = proof_lines[0]
+    expected_real_dir = str(adapter._external_scratch_dir(request).resolve())
+    assert recorded_realpath == expected_real_dir
+    assert not recorded_realpath.startswith("/tmp/wfc-claude-"), (
+        "the file landed under the short /tmp symlink root, not the real external scratch target"
+    )
+
+    # The adapter's own reliable-cleanup guarantee applies here too: by now
+    # neither the short symlink nor the real external target still exist.
+    assert not adapter._short_subprocess_tmp_dir(request).exists()
+    assert not Path(expected_real_dir).exists()
