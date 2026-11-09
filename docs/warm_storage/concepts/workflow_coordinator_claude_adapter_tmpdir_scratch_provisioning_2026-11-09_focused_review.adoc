@@ -11,6 +11,9 @@ range `2f60eb2abd364841cfe24db3061890022520ccfc..48bb0c4e9bc0b8647aa8e6abcc28234
 Base HEAD:: `48bb0c4e9bc0b8647aa8e6abcc28234ab4cba306`
 Disposition:: accept; F001 resolved
 
+This artifact records two independent reviewer Hops under one Commission: H004
+(immediately below) and H006 (final section, after the H005 correction Hop).
+
 == Review basis and authority
 
 Read in full at the candidate: `src/workflow_coordinator/claude_adapter.py`,
@@ -260,4 +263,276 @@ out of scope and is not characterized further.
 * Live corroboration: `stat -c "%F %U %a %N"` on
   `/tmp/wfc-claude-562aca47248d1413`, its `claude-1000` child (mode `700`),
   and `/tmp`; this invocation's own `TMPDIR` as reported by the failing test
-  diagnostic above.
+  diagnostic above. (Re-examined and retracted in the H006 section below: the
+  dispatching Coordinator runs the *baseline* adapter, so this Run's own
+  review invocations do not corroborate the candidate mechanism.)
+
+'''
+
+== H006 independent focused review (second pass, after the H005 correction Hop)
+
+Hop:: H006, independent reviewer (focused review, gate)
+Invocation:: INV-4c2b647c36e94e3a95418ce019bd10bc
+Candidate:: `8d99341ca93b1200dc8439d7f4a0fb6d0eb33cfb` (unchanged by H005)
+Reviewed range:: `2f60eb2abd364841cfe24db3061890022520ccfc..8d99341ca93b1200dc8439d7f4a0fb6d0eb33cfb`
+(the whole Run; H005 produced no commit and changed no file)
+Base HEAD:: `8d99341ca93b1200dc8439d7f4a0fb6d0eb33cfb`
+Disposition:: accept; F002 resolved as an agent-shell environmental artifact,
+not a candidate defect
+
+=== What this Hop had to decide
+
+H004 accepted the candidate and resolved F001. H005 was a correction Hop; it
+changed nothing, having concluded that the failure signature it was given was
+an artifact of the agent shell rather than a defect, and opened F002 -- the
+only Finding projected open to this Hop -- asserting that the Commission's
+`task-check` acceptance criterion "may be unsatisfiable from within this
+Commission's authorized scope".
+
+F002 is therefore not a claim about the adapter's behavior at all; it is a
+claim about the *evidence environment*. This Hop re-reviewed the candidate
+independently (code read directly, not via H004's artifact or H005's prose)
+and then tested F002's two asserted failure classes against evidence
+obtainable from this session.
+
+=== Finding F002 -- resolved (environmental, not a candidate defect)
+
+==== Class 1: the bare-`/tmp` write failure is this reviewer's own sandbox
+
+Reproduced verbatim: every conformance test that calls `execute()` fails here
+with
+`OSError: [Errno 30] Read-only file system: '.../wfc-claude-99826285144f9d40' -> '/tmp/wfc-claude-99826285144f9d40'`
+raised at `claude_adapter.py:230` and correctly wrapped into `ClaudeCliError`
+at `:255-256`. The direct cause is visible with `findmnt -T /tmp`, which
+reports `/tmp tmpfs ro,nosuid,nodev` *inside this reviewer's Bash-tool
+sandbox*. Three independent facts establish that this is not a property of
+the candidate:
+
+. The dependency on a writable short root predates the correction. At the
+  base commit, `git show 2f60eb2:src/workflow_coordinator/claude_adapter.py`
+  shows `_SHORT_TMP_ROOT = Path("/tmp")` and
+  `tmp_dir.mkdir(parents=True, exist_ok=True)` (`:149-150`). Every
+  pre-existing test that called `execute()` needed a writable `/tmp` for
+  exactly the same reason; the correction neither adds nor widens that
+  requirement. It narrows the *consumption*: only a symlink inode is placed
+  there now, which is precisely this BUG's purpose.
+. The host `/tmp` the Coordinator itself runs against *is* writable. `ls -la
+  /tmp` shows `/tmp/wfc-claude-da9b42a1c8422bea`, owner `stefan`, created
+  `Nov 10 00:25` -- i.e. created by the Coordinator's own dispatch of this
+  very Run, outside the reviewer's sandbox. Short-root creation demonstrably
+  succeeds in the environment that executes trusted evidence.
+. Neutralizing only that artifact makes the suite pass. Rebinding
+  `_SHORT_TMP_ROOT` to a writable substitute root -- the same technique the
+  candidate's own coincidence tests use at
+  `tests/unit/test_claude_adapter_conformance.py:325-330` -- yields
+  `1 failed, 24 passed` for the conformance file and `1 failed, 843 passed,
+  3 skipped` for the whole suite with `tests/unit/test_wfc_op.py` excluded.
+  The single failure is `assert len(observation["tmpdir"]) <= 40` failing as
+  `75 <= 40`, caused by the 47-character substitute root; with the real root
+  the asserted path is `/tmp/wfc-claude-` + 16 hex = 32 characters, so the
+  assertion holds by construction. No other assertion in the file fails.
+
+==== Class 2: the `test_wfc_op.py` failures are denied PyPI egress
+
+Reproduced: `4 failed, 12 error`, every one terminating in
+`ProxyError('Cannot connect to proxy.', OSError('Tunnel connection failed:
+403 Forbidden'))` and `Could not find a version that satisfies the
+requirement setuptools>=68`, with the harness emitting 36 explicit
+`deny network-outbound pypi.org:443 (user denied)` sandbox violations. These
+tests provision an isolated runtime venv with pip build isolation; the
+denial is this agent shell's egress policy. `scripts/wfc_op.py` and
+`tests/unit/test_wfc_op.py` are outside this Commission's scope and are
+byte-identical across the whole Run (`git diff 2f60eb2..8d99341 --name-only`
+lists neither), so no correction inside scope could change their outcome
+either way, and this reviewer's operating contract classifies a nested
+dependency download failure as an agent-local environmental limitation
+rather than a production defect.
+
+==== Why `resolved` rather than `residual`
+
+F002's blocking content is the assertion that the candidate cannot satisfy
+`task-check` from within scope. On the evidence above, both failure classes
+are attributes of the reviewing agent's shell (read-only `/tmp`, denied
+`pypi.org`), one of them demonstrably pre-existing and one of them in files
+this Commission never touches; neither is a property of the candidate, and
+the host environment that actually executes trusted evidence is shown to
+support the short-root operation the candidate performs. The Finding is
+therefore disposed against the candidate, which is the only object a review
+Finding can bind to here.
+
+What this Hop explicitly does *not* claim: that Coordinator-trusted
+`task-check` passed. Trusted evidence is prepared and executed separately;
+no agent-side run in this artifact is trusted evidence, and this reviewer
+cannot observe the Coordinator's own execution. If trusted `task-check`
+fails again with the `pypi.org`/`setuptools>=68` signature, that is a
+Harness/dev-env egress matter for the maintainer -- outside this
+Commission's `scope` and `withheld authority` alike -- and not a defect this
+Commission could correct. It is recorded here, deliberately, as information
+rather than as a new blocking Finding or an operational escalation, because
+this reviewer's contract states that failure to execute the authored
+evidence command in the agent shell is not by itself a failure or
+unavailability of Coordinator-trusted evidence.
+
+=== Independent re-verification of the mandate (second pass)
+
+Re-derived from the code at this candidate, not from H004's artifact:
+
+* *Portable provisioning, no privileged action.* `_external_scratch_root()`
+  (`claude_adapter.py:61-77`) takes the first non-empty ambient
+  `TMPDIR`/`TMP`/`TEMP`, else `tempfile.gettempdir()`, and substitutes
+  `_WFC_FALLBACK_SCRATCH_ROOT` (`:58`) when the result `resolve()`s onto
+  `_SHORT_TMP_ROOT`. Every branch is an unprivileged, user-owned path: no
+  `/tmp` resize, no installed symlink, no mount. The real target is a
+  *dedicated subpath* of that root (`:185-188`), never the Attempt scratch
+  root itself, which is what the controlling record's follow-ups grant
+  access to ("one dedicated, explicitly-untrusted scratch subpath -- not
+  `wfc-scratch` itself, not any Attempt or Evidence directory").
+* *Permissions match the named convention.* `mkdir(parents=True,
+  mode=0o700)` plus an explicit `chmod(0o700)` (`:227-228`) is exactly
+  `create_attempt_scratch()`'s `scratch.mkdir(mode=0o700);
+  scratch.chmod(0o700)` (`scripts/wfc_op.py:248-249`, read-only), including
+  the same umask-dependent treatment of the root's own mode (`wfc_op.py:236`
+  uses a plain `mkdir(parents=True, exist_ok=True)` for its default root).
+  H004's residual note 2 is consistency with the cited convention, not a
+  deviation from it.
+* *Grant is exactly the resolved target.* `real_dir = real_dir.resolve()`
+  (`:229`) happens before `self._settings(request, real_dir)` (`:238`), and
+  `_settings()` (`:148-169`) emits `allowRead == [resolved repository,
+  resolved target]`, `allowWrite == [resolved target]`. The symlink appears
+  only in `TMPDIR`/`TMP`/`TEMP` (`:244`). `network.allowedDomains` is `[]`,
+  `permissions.allow`/`deny` and `blockReadsOutsideWorkingDirectories` are
+  untouched, and `argv()` (`:137-146`) carries no bypass flag.
+  `_settings()`'s changed signature is adapter-private: `grep -rn "_settings("
+  src/` finds no caller outside `claude_adapter.py` and the authorized tests.
+* *Concurrency and collision safety, re-argued adversarially.* The derived
+  token is `sha256(run/hop/invocation)[:16]` (`:171-176`), so distinct
+  concurrent invocations cannot collide. For the same derived path the
+  mechanism is fail-closed in every ordering: a leftover owned by another uid
+  raises a path-naming `ClaudeCliError` and is left untouched (`:88-89`); a
+  leftover owned by the invoking user is superseded without ever being
+  followed, because the dispatch is on `lstat()` and a symlink takes the
+  `unlink()` branch (`:84-93`); and anything that appears in the
+  TOCTOU window between superseding and `symlink_to()` (`/tmp` is sticky,
+  so an unprivileged third party *can* create a new entry there) makes
+  `symlink_to()` raise `FileExistsError`, wrapped into `ClaudeCliError` at
+  `:255-256`. The adapter never adopts or reuses a path it did not itself
+  create, which is the property the mandate asked for.
+* *Cleanup on every outcome, re-traced.* The `finally` (`:268-276`) encloses
+  provisioning, launch, `communicate()`, and both timeout kill paths, and
+  calls `_remove_scratch_path()` (`:96-107`) independently for the symlink
+  and the real target; that helper dispatches on `is_symlink()` (so a
+  dangling symlink is unlinked, not silently skipped by `rmtree`) and
+  swallows `OSError`, so neither removal can suppress the other or mask an
+  in-flight exception. The two pre-`try` leftover calls run before anything
+  is created, so there is no uncovered creation. No new accumulation path:
+  only the stable root (`~/.wfc-claude-scratch` or the ambient root)
+  survives, by design.
+* *Required tests exist and are non-tautological.* Placement, symlink-ness,
+  realpath-under-external-root and exact grant (`:212-270`); cleanup after
+  success (`:212-270`), after a non-zero exit (`:294-310`) and after a
+  timeout (`:273-291`), each asserting `is_symlink()` *and* `exists()` on
+  both paths; both leftover branches (`:398-426`, `:429-447`); both
+  coincidence triggers (`:313-360`, `:363-395`). The placement assertions
+  compare against values the *child process* observed (`os.path.realpath` of
+  its own `$TMPDIR`), not against a re-derivation from production code,
+  which is what makes them non-tautological. All six deleted lines in the
+  Run's test diff are the two literal settings dictionaries, one superseded
+  `/tmp`-centric cleanup assertion replaced by a strictly stronger pair, and
+  two fake-executable payload lines that now also record the realpath --
+  mechanically required, nothing relaxed.
+* *Live test convention.* `pytest -q tests/integration/test_claude_adapter_live_smoke.py
+  -rs` reports `sss`: all three tests skip, including the one new
+  `WFC_RUN_LIVE_CLAUDE_SMOKE=1`-gated test (`:134-188`), whose gate also
+  requires `shutil.which("claude")`. It proves physical existence through the
+  worker's own `test -f` and compares the recorded `readlink -f "$TMPDIR"`
+  against `_external_scratch_dir(request).resolve()`, so a report-only
+  success cannot pass it.
+* *Scope and semantics.* `git diff 2f60eb2..8d99341 --name-only` lists
+  exactly five paths: the adapter, the two authorized test files, and the two
+  review artifacts. `codex_adapter.py`, `adapter.py`, `operator.py`,
+  `model.py`, `reducer.py`, `vertical.py`, `git_facts.py`,
+  `commissioning.py`, and `scripts/wfc_op.py` are byte-identical (empty
+  `git diff --stat` for that path set). No workflow/Hop/review semantics,
+  Result Contract, or Trusted Commit behavior is touched.
+
+=== Correction to H004's "live corroboration" item
+
+H004 recorded this Run's own review invocation as live corroboration that the
+candidate mechanism operates, reading the path as the candidate's symlink
+rendered as a directory inside the reviewer's namespace. That inference does
+not hold, and the opposite is the case: the dispatching Coordinator runs the
+*baseline* adapter, not the candidate.
+
+Evidence from this session: `/tmp/wfc-claude-da9b42a1c8422bea` is a real
+directory with mode `775` (`drwxrwxr-x`, i.e. `mkdir` under a `002` umask --
+the baseline's `tmp_dir.mkdir(parents=True, exist_ok=True)`), whereas the
+candidate creates its target with `0700` and places only a symlink at the
+short path; and `df -h /tmp/wfc-claude-da9b42a1c8422bea/claude-1000` reports
+`tmpfs 9.8G`, the same filesystem as `/tmp`, so Claude's own session
+material (`cc-socks/`, `claude-1000/`, `srt-mux-*.sock`) is physically on the
+`/tmp` tmpfs rather than in any external scratch. A bind mount of an external
+target would report that target's filesystem instead.
+
+This is expected -- the Coordinator executes from the runtime pinned before
+the Attempt -- and it changes no verdict, but it removes one supporting item
+from the acceptance basis. Acceptance therefore rests on direct code
+inspection, the deterministic test suite, and the maintainer's recorded
+2026-11-07/08 live qualification of this exact mechanism (which the
+Commission instructs this Run to treat as given), plus the opt-in live test
+added for future regression coverage. No in-Run live corroboration is claimed
+by this Hop.
+
+=== Residual observations (non-blocking, no Finding delta)
+
+H004's residual list was re-checked and still stands as written; residual
+note 2 is reclassified above as convention-consistent rather than a tidiness
+gap. Two additions:
+
+. *`lstat()`/`unlink()` in the pre-`try` leftover handling can raise a raw
+  `OSError`.* `_supersede_or_reject_leftover()` is called at `:223-224`,
+  outside the `try` that converts `OSError` into the port's
+  `ExecutionNotStartedError` subclass, so an exotic failure there (an ambient
+  root that is a plain file; a leftover symlink under a read-only short root)
+  would escape as a bare `OSError` past `slice4.py:395`'s
+  `except ExecutionNotStartedError`. Non-blocking: the baseline had strictly
+  more exposure of this kind (its `mkdir` on the short root was also outside
+  the `try`), the candidate moves the far likelier failure -- creation --
+  inside it, and the remaining paths are not reachable in WFC dispatch.
+. *The short path's name is predictable.* `wfc-claude-<sha256 prefix>` under
+  a world-writable sticky `/tmp` can be pre-created by any local user.
+  Correctly fail-closed rather than exploitable (uid check, then
+  `FileExistsError`), so the worst case is a denial of that one invocation
+  with a clear local error; noted only because the mandate asks explicitly
+  about concurrency and leftovers.
+
+=== Evidence (H006)
+
+* Direct inspection at `8d99341`: `src/workflow_coordinator/claude_adapter.py`
+  in full; `tests/unit/test_claude_adapter_conformance.py` in full;
+  `tests/integration/test_claude_adapter_live_smoke.py` in full;
+  `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc`
+  (portability `:93-99`; both follow-ups `:139-199`, `:223-280`; the
+  still-open provisioning and symlink-lifecycle questions `:296-309`);
+  `scripts/wfc_op.py:228-257` read-only.
+* `git show 2f60eb2:src/workflow_coordinator/claude_adapter.py`
+  (`_SHORT_TMP_ROOT`, `:149-150` `mkdir`, `:191` `rmtree`) -- the pre-existing
+  writable-`/tmp` dependency and the absent `allowWrite` grant.
+* `git diff 2f60eb2..8d99341 --name-only` (five paths);
+  `git diff 2f60eb2..8d99341 --stat` over the nine out-of-scope files (empty);
+  deletion-only review of the conformance-test diff (six mechanical lines).
+* Agent-local exploratory runs (not Coordinator-trusted evidence):
+  `.venv/bin/python -m pytest -q tests/unit/test_claude_adapter_conformance.py`
+  -> 18 failures, all `Errno 30` on the `/tmp`-side symlink; the same file with
+  `_SHORT_TMP_ROOT` rebound to a writable substitute root -> `1 failed,
+  24 passed` (the substitute root's own length); whole suite with that rebind
+  and `--ignore=tests/unit/test_wfc_op.py` -> `1 failed, 843 passed,
+  3 skipped`; `tests/unit/test_wfc_op.py` -> `4 failed, 12 error`, all
+  `ProxyError ... 403 Forbidden` / `setuptools>=68` with 36
+  `deny network-outbound pypi.org:443` sandbox violations;
+  `tests/integration/test_claude_adapter_live_smoke.py -rs` -> `sss`.
+  The throwaway rebinding plugin was removed before this Hop completed; the
+  working tree carries only this artifact's change.
+* Environment facts: `findmnt -T /tmp` -> `tmpfs ro,nosuid,nodev` (this
+  reviewer's sandbox); `ls -la /tmp | grep wfc` -> `drwxrwxr-x ... Nov 10
+  00:25 wfc-claude-da9b42a1c8422bea` (host-side, Coordinator-created);
+  `df -h /tmp/wfc-claude-da9b42a1c8422bea/claude-1000` -> `tmpfs 9.8G`.
