@@ -3,11 +3,19 @@ SHEETS_RUN ?= sheets-run
 
 MEMORY_WORKBOOK := $(PYTHON) scripts/memory_workbook.py --sheets-run $(SHEETS_RUN)
 
-.PHONY: test lint format-check check build snapshot snapshot-multi
+.PHONY: test lint format-check check build snapshot snapshot-multi coverage coverage-html
 .PHONY: memory-setup memory-export memory-import memory-roundtrip-check
 
 test:
 	$(PYTHON) -m pytest -q
+
+coverage:
+	@mkdir -p build
+	COVERAGE_FILE=build/.coverage $(PYTHON) -m pytest --cov=workflow_coordinator --cov-report=term-missing
+
+coverage-html:
+	@mkdir -p build
+	COVERAGE_FILE=build/.coverage $(PYTHON) -m pytest --cov=workflow_coordinator --cov-report=html:build/htmlcov
 
 lint:
 	$(PYTHON) -m ruff check .

@@ -9,8 +9,11 @@ execution always requires separate consumer authority and is never implied by
 installation.
 
 For development, install `python3 -m pip install '.[dev]'`. The small Makefile
-provides `make test`, `make lint`, `make format-check`, `make check`, and
-`make build`. `make lint` runs repository-wide Ruff correctness checks;
+provides `make test`, `make lint`, `make format-check`, `make check`,
+`make coverage`, `make coverage-html`, and `make build`. Set `PYTHON` to the
+development interpreter when needed, for example `make coverage PYTHON=.venv/bin/python`.
+The coverage targets run the test suite with branch measurement; the terminal
+report shows missing lines and the HTML report is written to `build/htmlcov/`. `make lint` runs repository-wide Ruff correctness checks;
 `make format-check` covers the snapshot implementation and its architecture and
 unit tests. Use `make snapshot` (or `make snapshot-multi`) to create compact,
 line-numbered WFC-prefixed repository snapshots in `build/snapshots/`; the output
