@@ -4,8 +4,8 @@
 
 Maturity::  stable
 Authority:: informative
-Updated::   2026-11-05
-Owns::      The as-implemented `ClaudeCliAdapter` invocation mechanics, the write-permission-denial diagnosis and correction provenance, and the authenticated live-qualification observations against promoted Runtime `4eb69d9c038110f9885c05612927535c725a21e6`. Defers to `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc` for feature-implementation status (§1.6 of `ai_info/doc_conventions.adoc`), to `docs/architecture.md` and `docs/self-development.adoc` for the normative security-layering statements this document only restates for comprehension, and to the warm_storage design/review artifacts cited throughout for full evidentiary detail.
+Updated::   2026-11-10
+Owns::      The as-implemented `ClaudeCliAdapter` invocation mechanics -- including the write-permission-denial diagnosis/correction, the child-process environment allowlist, and the short-`TMPDIR`-symlink/external-scratch provisioning -- the authenticated live-qualification observations recorded to date, and the current status of WFC's own (not provider-dispatch-wired) `execution_boundary.py` primitive. Owns the accepted implementation identity through `workflow-coordinator@6c88e47646c697dfe4f7c4e83e474092609df1ba`, separately maintainer-accepted and Runtime-promoted 2026-11-10. Defers to `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc` and `docs/backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc` for feature-implementation status (§1.6 of `ai_info/doc_conventions.adoc`), to `docs/architecture.md` and `docs/self-development.adoc` for the normative security-layering statements this document only restates for comprehension, to `docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc` for the execution-boundary primitive's own authorization record, and to the warm_storage design/review artifacts and the Evidence-repository run ledger cited throughout for full evidentiary detail.
 
 This document consolidates technical findings already established elsewhere; it
 adopts no new contract and resolves no open governance question. Where a
@@ -14,111 +14,146 @@ statement here and a cited source could drift, the cited source controls.
 == 1. What this document is, and is not
 
 It explains how WFC's `claude_cli` adapter actually invokes the Claude Code
-CLI today, why the write-permission correction took the shape it did, and
-what a subsequent authenticated live qualification observed. It is not a
-competing architecture proposal: the accepted design remains
+CLI today -- including its child-process environment, its write-permission
+grant, and its short-`TMPDIR`-symlink/external-scratch mechanism -- why each
+took the shape it did, what authenticated live qualification has and has not
+observed, and the current, precise status of WFC's own (separate)
+`execution_boundary.py` primitive. It is not a competing architecture
+proposal: the accepted design remains
 link:../warm_storage/concepts/workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc[the
-Claude Code adapter design] and its reviews; the open defect record remains
+Claude Code adapter design] and its reviews. The controlling defect/feature-
+status records are
 link:../backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[the
-BUG record]; the correction's own review trail remains
-link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_broad_review.adoc[the
-broad review] and
-link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_focused_review.adoc[the
-focused review]. This document cites and summarizes those sources for
-durable Technical Model reference; it does not restate their full content.
+write-permission BUG] (open; see §7) and
+link:../backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc[the
+short-`TMPDIR` BUG] (resolved by separate maintainer acceptance 2026-11-10;
+see §7). This document cites and summarizes those sources, their review
+trails, and the Evidence repository's `project_memory/run_ledger.adoc` for
+durable Technical Model reference; it does not restate their full content,
+and the Hop-by-Hop chronology of any cited Run lives in the ledger, not here.
 
 == 2. As-implemented: how WFC invokes Claude Code noninteractively
 
 `src/workflow_coordinator/claude_adapter.py`'s `ClaudeCliAdapter` is WFC's
 only `claude_cli` execution-port implementation (selected by
-`operator.py::_execution_adapter`, `operator.py:85-91`).
+`operator.py::_execution_adapter`).
 
-`argv()` (`claude_adapter.py:50-59`) builds, as a tuple passed without a
+`argv()` (`claude_adapter.py:137-146`) builds, as a tuple passed without a
 shell: `-p --output-format json --json-schema <schema>` for structured
 output, `--model`/`--effort` from the role binding, `--restricted
 --safe-mode --strict-mcp-config --tools Read,Glob,Grep,Edit,Write,Bash` for
 the closed tool surface, `--settings <generated-file>
 --permission-mode acceptEdits --permission-prompts none
 --no-session-persistence`, and the task prompt as the final positional
-argument.
+argument. This shape is unchanged since the write-permission correction in
+§3's provenance.
 
-`_settings()` (`claude_adapter.py:61-82`) generates a settings file with:
-`sandbox.enabled: true`, `failIfUnavailable: true`,
-`allowUnsandboxedCommands: false`; `filesystem.allowRead` set to the single
-resolved repository path, `denyRead: ["~/"]`; `network.allowedDomains: []`;
-and `permissions.allow: ["Edit", "Write"]`, `deny: ["WebFetch",
-"WebSearch"]`, `blockReadsOutsideWorkingDirectories: true`.
+`_settings(request, external_scratch_dir)` (`claude_adapter.py:148-169`)
+generates a settings file with: `sandbox.enabled: true`,
+`failIfUnavailable: true`, `allowUnsandboxedCommands: false`;
+`filesystem.denyRead: ["~/"]`, `filesystem.allowRead` set to *two* entries --
+the resolved repository path and the resolved per-invocation external scratch
+directory (§5) -- and, new since the short-`TMPDIR` correction,
+`filesystem.allowWrite` set to that same single scratch directory;
+`network.allowedDomains: []`; and `permissions.allow: ["Edit", "Write"]`,
+`deny: ["WebFetch", "WebSearch"]`, `blockReadsOutsideWorkingDirectories: true`.
+The settings schema's `allowWrite` field, absent in every prior revision of
+this adapter, exists today *only* to grant that one resolved scratch path; it
+is not a general write-scope mechanism, and no other grant populates it.
 
-`execute()` (`claude_adapter.py:102-156`) writes the schema and settings
-files, builds the child environment as `{**os.environ,
-"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"}` (`:124`), and launches the
-subprocess with `cwd=request.repository.resolve()` (`:131`) -- the same
-resolved path used as the sandbox's `allowRead` root, so there is a single
-source of truth for "the repository" rather than two independently
+`execute()` (`claude_adapter.py:208-285`) derives the short symlink path and
+the real external scratch directory (§5), writes the schema and settings
+files, builds the child environment from an explicit allowlist (§3) with the
+`TMPDIR`/`TMP`/`TEMP` triplet set to the short symlink path, and launches the
+subprocess with `cwd=request.repository.resolve()` (`:251`) -- the same
+resolved path used as the sandbox's first `allowRead` entry, so there is a
+single source of truth for "the repository" rather than two independently
 maintained paths.
 
-== 3. Environment scrub x permission mode: why `Edit` alone was insufficient
+== 3. Child-process environment: explicit allowlist
 
-Setting `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` makes the installed CLI apply
-its own all-subprocess environment scrubbing (the accepted design's
-intended behavior). Both the original bug discovery and this document's
-§4 live qualification independently observed the installed CLI itself
-reporting the consequence: the requested `--permission-mode acceptEdits`
-is overridden back to the CLI's default permission mode when scrubbing is
-active, with the CLI's own hint to "declare allowedTools explicitly." Under
-default mode, `--permission-prompts none` denies, rather than asks
-approval for, any tool call that would otherwise prompt.
+The child environment is built as an explicit, minimal allowlist
+(`claude_adapter.py:239-244`): only `PATH`, `HOME`, `USER`, `LANG`
+(`_ENVIRONMENT_NAMES`, `:33`), plus whatever operator-configured
+`extra_environment_names` the adapter was constructed with, are copied from
+the orchestrating process's own environment -- each only if actually present
+-- and the `TMPDIR`/`TMP`/`TEMP` triplet is then set unconditionally to the
+per-invocation short symlink path. No other variable reaches the child by any
+path. `__post_init__` (`:124-135`) validates `extra_environment_names`
+eagerly: a name must be a bare `[A-Za-z_][A-Za-z0-9_]*` identifier, must not
+start with `CLAUDE_CODE_`, and must not be `TMPDIR`, `TMP`, or `TEMP` --
+construction itself raises `ValueError` otherwise. The operator-facing
+extension point is `WFC_CLAUDE_EXTRA_ENV_NAMES`, a comma-separated list of
+*names* read once at construction (`_extra_environment_names()`, `:36-39`);
+it can only ever widen which already-ambient variable *names* are copied, by
+value, at launch time -- never raw `key=value` pairs, never a scope grant.
 
-The first implementation candidate
-(`498c331c25a65198a849a228de495127cee3bb5b`, WI-WFC-CLAUDE-ADAPTER-WRITE-PERMISSIONS-004
-H001) added only `permissions.allow: ["Edit"]`. The independent broad
-review
-(`5d46d67fe938ec127e4abf6ec1086aabed1530dc`, Run `RUN-c84952c2d82344d08b4b2f5a7951a45f`
-H001; see
-link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_broad_review.adoc#blocking-write-grant[the
-artifact's "Blocking issue" section] for full byte-offset provenance)
-found, by reading -- not executing -- the installed CLI's own embedded
-source, that `Edit` and `Write` are parsed and matched as distinct tool
-names with no family relationship; a bare `Edit` allow-rule does not cover
-the `Write` tool. Both tools share one underlying write-permission check,
-but that check's path-scoped matching requires a rule carrying path
-content, which a bare tool-name rule does not provide; under default mode,
-an unmatched `Write` call still asks for approval, and `--permission-prompts
-none` converts that ask into an outright denial with no approval surface.
-The correction
-(`4eb69d9c038110f9885c05612927535c725a21e6`, H002) widened the rule to
-`permissions.allow: ["Edit", "Write"]` -- the narrowest change the
-reviewer's own evidence supported, adding no other tool, directory, or
-network allowance.
+This replaces an earlier mechanism, now fully superseded in production code:
+through `WI-WFC-CLAUDE-ADAPTER-WRITE-PERMISSIONS-004`, the child environment
+was `{**os.environ, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"}` -- a full copy
+of the orchestrating process's own environment, plus a variable that made the
+installed CLI apply its own all-subprocess scrubbing. Setting that variable
+had a documented side effect: the CLI itself reported, in both the original
+diagnosis and the §8.1 live qualification, that `--permission-mode
+acceptEdits` is overridden back to the CLI's default permission mode whenever
+scrubbing is active. Under default mode, `--permission-prompts none` denies,
+rather than asks approval for, any tool call that would otherwise prompt. The
+first write-permission correction candidate added only
+`permissions.allow: ["Edit"]`; independent broad review
+(`5d46d67fe938ec127e4abf6ec1086aabed1530dc`) found, by reading the installed
+CLI's own embedded source, that `Edit` and `Write` are parsed and matched as
+distinct tool names with no family relationship, so a bare `Edit` rule never
+covered `Write`. The correction (`4eb69d9c038110f9885c05612927535c725a21e6`)
+widened the rule to `["Edit", "Write"]` -- which is why both names are still
+listed explicitly today, independent of the scrubbing mechanism that
+originally made the gap visible. This tool-name-matching behavior is
+implementation-specific to the installed Claude Code CLI (`2.1.270`'s own
+embedded source), not a documented public contract.
 
-This mechanism is implementation-specific behavior of the installed Claude
-Code CLI (observed and cited against `2.1.270`'s own embedded source by
-both the H001 broad review and the H003 focused review), not a documented
-public CLI contract. A future CLI version could parse or match permission
-rules differently; nothing here claims otherwise.
+`WI-WFC-CLAUDE-ADAPTER-ENVIRONMENT-ALLOWLIST-001`
+(`464aefe3d3438bc66b110725de68def316238ffa`) then replaced the
+`{**os.environ, ...}` construction with today's explicit allowlist, and
+stopped setting `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` at all, in any form --
+removing both the scrub-induced permission-mode override and the
+full-environment copy in the same change. One consequence, confirmed by
+`__post_init__`'s own validation rather than merely by convention: a
+`CLAUDE_CODE_*`-prefixed variable from the orchestrating process's own
+environment (for example `CLAUDE_CODE_SESSION_ID`, relevant to a nested
+dispatch; see §8.1) can no longer reach the child by any path, including
+through the extra-names extension point, which rejects any such name outright
+at construction time. §9 records this as resolving, structurally, an open
+question §8's live qualification had raised against the pre-allowlist
+mechanism.
+link:../warm_storage/concepts/workflow_coordinator_claude_adapter_environment_allowlist_2026-11-07_broad_review.adoc[Broad
+review] and
+link:../warm_storage/concepts/workflow_coordinator_claude_adapter_environment_allowlist_2026-11-07_focused_review.adoc[focused
+review] record the implementation review trail; see §7 for this WorkItem's
+own acceptance disposition, which differs from an ordinary completed Run.
 
 == 4. Repository boundary, `--restricted`, sandbox settings, and Bash
 
 `--restricted` confines the file tools (`Edit`/`Write`/`Read`-family) to
 the working directory and removes code-running tools unless `--tools`
-names them explicitly; `_TOOLS` (`claude_adapter.py:27`) names `Bash`
+names them explicitly; `_TOOLS` (`claude_adapter.py:32`) names `Bash`
 alongside the file tools, so Bash remains available to the worker -- this
 is not a general Bash grant layered on top of the closed profile, it is the
 accepted design's own minimum built-in surface (see the design document,
 link:../warm_storage/concepts/workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc[§
 "Permissions and filesystem"]). The adapter never widens this: no
 `--add-dir`, no `excludedCommands`, no `--dangerously-skip-permissions` or
-`bypassPermissions` mode, no second working directory.
+`bypassPermissions` mode, no second working directory outside the
+single, narrowly-scoped scratch grant §5 describes.
 
-The generated settings have no `filesystem.allowWrite`/`denyWrite` field at
-all. `Edit`/`Write` confinement to the repository root rests entirely on
-`--restricted`'s own working-directory confinement plus the explicit
-`permissions.allow` rule, not on a settings-level write-scope list -- the
-adapter's settings schema only ever populated `allowRead`/`denyRead` (the
-read boundary), never a write-scope equivalent. This absence was recorded
-as an open, unexcluded alternative hypothesis throughout the bug record and
-every review Hop; §5 of this document records what the live qualification
-established about it.
+`Edit`/`Write` confinement to the repository root rests on `--restricted`'s
+own working-directory confinement plus the explicit `permissions.allow`
+rule; the settings-level `filesystem.allowWrite` field exists only for the
+one external scratch path (§5), never as a general write-scope list for the
+repository itself. This absence of a repository-scoped `allowWrite` was
+recorded as an open, unexcluded alternative hypothesis throughout the
+original write-permission bug record and every review Hop in that lineage;
+§8.1 records what the live qualification established about it, and that
+finding is unaffected by the later scratch-specific grant, which names a
+disjoint path.
 
 The accepted design already distinguishes Bash's own sandbox coverage from
 file-tool confinement rather than treating them as one uniform boundary:
@@ -126,26 +161,177 @@ file-tool confinement rather than treating them as one uniform boundary:
 children, while file tools, hooks, MCP, and other processes can run outside
 it" (design document, same section). `sandbox.enabled`/`failIfUnavailable`
 require Claude's own Bash sandbox and forbid an unsandboxed retry;
-`allowUnsandboxedCommands: false` removes the fallback path. This document's
-§5 records a live observation consistent with that distinction.
+`allowUnsandboxedCommands: false` removes the fallback path. §8.1 records a
+live observation consistent with that distinction.
 
-== 5. Division of protections: provider-owned vs. WFC-owned
+== 5. Short-`TMPDIR` symlink and external scratch provisioning
+
+This section documents the mechanism
+link:../backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc[the
+controlling BUG record] commissioned and `WI-WFC-CLAUDE-ADAPTER-TMPDIR-SCRATCH-PROVISIONING-001`
+implemented, as actually coded in `claude_adapter.py` today -- not only the
+design intent that motivated it.
+
+=== 5.1 Why Claude Code needs a short socket path
+
+Claude Code derives its own per-session IPC directory from `TMPDIR` (keyed
+by uid, the launch cwd with `/` replaced by `-`, and a session UUID) and
+binds `AF_UNIX` sockets inside it for the Bash tool's sandbox bridge.
+`AF_UNIX` socket paths are capped at 108 bytes (`sockaddr_un.sun_path`); a
+long, human-readable, Attempt-scoped `TMPDIR` -- exactly what WFC's own
+launch already exports for other purposes -- reliably pushes the derived
+path past that kernel limit, failing the sandbox bridge even for a trivial
+command. `_SHORT_TMP_ROOT = Path("/tmp")` (`:49`) exists to give the
+subprocess a short, invocation-scoped `TMPDIR` instead of inheriting the long
+one.
+
+=== 5.2 Why an entirely `/tmp`-rooted scratch is separately problematic
+
+A short *path* for socket purposes and a large-capacity, Attempt-isolated
+*filesystem* for bulk material are two different needs that a naive fix can
+conflate onto one `TMPDIR` value. Placing all of a Hop's scratch material --
+including whatever an agent's own exploratory test runs materialize -- under
+the short root risks exhausting the host's (often `tmpfs`-backed, inode- or
+byte-limited) `/tmp`, which is exactly the resource-exhaustion incident
+(1,048,576/1,048,576 inodes) the controlling BUG record discovered. The
+short root therefore needs to remain genuinely short, in bytes, without
+becoming the actual destination for bulk content.
+
+=== 5.3 The mechanism: short symlink, real scratch directory
+
+`execute()` resolves two distinct paths per invocation before launch
+(`:221-230`):
+
+* `_short_subprocess_tmp_dir()` (`:178-182`) -- `_SHORT_TMP_ROOT /
+  "wfc-claude-<token>"`, the short path the subprocess will see as `TMPDIR`.
+* `_external_scratch_dir()` (`:184-188`) -- `_external_scratch_root() /
+  "wfc-claude-<token>"` (§5.4), the real, large-capacity directory that path
+  actually points at.
+
+`<token>` is `_invocation_token()` (`:171-176`), the first 16 hex characters
+of `sha256(run_id/hop_id/invocation_id)` -- deterministic per invocation, so
+two concurrent invocations (distinct run/Hop/invocation identity) can never
+derive the same pair of paths. `execute()` creates the real directory first
+(`real_dir.mkdir(parents=True, mode=0o700)` then an explicit
+`real_dir.chmod(0o700)`, `:227-228`), resolves it, and only then symlinks the
+short path onto it (`tmp_dir.symlink_to(real_dir, target_is_directory=True)`,
+`:230`) -- so the short path is never anything but a symlink to an
+already-existing, correctly-permissioned real target.
+
+=== 5.4 Choosing the real scratch root, and the collision fallback
+
+`_external_scratch_root()` (`:61-77`) takes the first non-empty ambient
+`TMPDIR`, `TMP`, or `TEMP` -- the same large-capacity, Attempt-isolated
+scratch WFC's own launch already exports ahead of this adapter shortening it
+for the subprocess (FD-08's own Harness-level relocation; `scripts/wfc_op.py`'s
+`create_attempt_scratch()`/`_scratch_environment()`) -- or, absent all three,
+`tempfile.gettempdir()`. If that resolved root equals `_SHORT_TMP_ROOT`
+itself -- the stock Ubuntu/WSL default with none of those variables set, or
+an operator explicitly setting `TMPDIR=/tmp` -- the adapter does *not* use
+it: it falls back to `_WFC_FALLBACK_SCRATCH_ROOT`, `Path.home() /
+".wfc-claude-scratch"` (`:58`), an unprivileged, WFC-owned default mirroring
+`create_attempt_scratch()`'s own unprivileged `~/wfc-scratch` convention.
+This guard exists because, unguarded, the degenerate case would make the
+short symlink and its own real target the same path -- the exact finding
+(`F001`) an independent broad review raised against the first implementation
+candidate (`3102b65`), and which the correction (`48bb0c4`) closed. No branch
+of this function requires a privileged host action; it works, as the
+ordinary case, on a stock host with no WFC launcher present, degrading to
+the unprivileged home-rooted fallback rather than silently placing bulk
+material back on the `tmpfs` this mechanism exists to protect.
+
+=== 5.5 `TMPDIR`/`TMP`/`TEMP` and the paths actually used
+
+All three variables are always set identically, to the short symlink path
+(`environment.update(TMPDIR=str(tmp_dir), TMP=str(tmp_dir),
+TEMP=str(tmp_dir))`, `:244`) -- never to the real scratch directory
+directly, and never inherited from the orchestrating process's own ambient
+values (§3). A process that only consults `$TMPDIR` (or `TMP`/`TEMP`) sees a
+short path; the kernel transparently follows the symlink at `bind()` time
+for `AF_UNIX`, which does not canonicalize the path first, so the 108-byte
+limit is evaluated against the short string, not the real target's (longer)
+resolved path. This was live-qualified directly against the real,
+unmodified adapter before implementation (see §8.1 and the controlling BUG
+record's own 2026-11-07/08 follow-ups).
+
+=== 5.6 Sandbox grant scoped to the real resolved target
+
+`_settings()` (§2) names the real, resolved external scratch directory --
+never the symlink, never an ancestor, never WFC's own whole Attempt scratch
+root -- in both `filesystem.allowRead` (appended after the repository) and
+as the sole `filesystem.allowWrite` entry. `denyRead: ["~/"]`,
+`blockReadsOutsideWorkingDirectories: true`, `network.allowedDomains: []`,
+and the `permissions.allow`/`deny` rules are all unchanged by this
+mechanism. The grant is per-invocation: a fresh token, and therefore a fresh
+pair of paths and a fresh grant, is derived every time `execute()` runs.
+
+=== 5.7 Lifecycle and cleanup
+
+Before creating either path, `_supersede_or_reject_leftover()` (`:80-93`) is
+called for both the real directory and the short symlink (`:223-224`): it
+`lstat()`s the candidate path, and if something already exists there, clears
+it only when owned by the current effective uid (a directory via `rmtree`,
+anything else via `unlink`) -- raising `ClaudeCliError` and leaving the
+leftover untouched otherwise. This makes a repeated dispatch of the *same*
+invocation identity (for example after an unclean prior shutdown)
+deterministic without ever adopting or silently reusing a path this process
+did not itself create.
+
+On every exit path -- success, a local launch failure wrapped into
+`ClaudeCliError`, or a timeout (including the `SIGTERM`-then-`SIGKILL`
+escalation, `:260-267`) -- the `finally` block (`:268-276`) calls
+`_remove_scratch_path()` (`:96-107`) independently for the symlink and the
+real directory. That helper dispatches on `is_symlink()` (so a symlink is
+`unlink()`ed rather than handed to `rmtree`, which silently no-ops on a
+symlink) and swallows `OSError`, so a failure removing one target can never
+suppress the other removal or mask an exception already in flight from the
+`try` block above. Neither the short symlink nor the real scratch directory
+is expected to survive past the invocation that created it.
+
+=== 5.8 Error handling and known limits
+
+A failure creating the real directory, or a `FileExistsError` from
+`symlink_to()` (for example a sticky-`/tmp` third party racing the same
+short, predictable `wfc-claude-<token>` name between supersession and
+creation), is wrapped into `ClaudeCliError`
+(`:255-256`) rather than escaping as a raw `OSError`; the worst case for a
+same-user leftover is deterministic supersession, and for a different-uid or
+raced leftover is a clear, named-path denial of that one invocation, not
+privilege escalation or silent misdirection. Independent review of the
+accepted correction (`48bb0c4`) recorded several residual, explicitly
+non-blocking observations that remain accurate limits today, not
+blocking defects: `tempfile.gettempdir()` could in principle still resolve
+to the current working directory (the repository checkout) if `/tmp`,
+`/var/tmp`, and `/usr/tmp` were all unwritable -- judged non-blocking because
+ordinary WFC dispatch always exports `TMPDIR` and the targeted host classes
+(Ubuntu/WSL, typical corporate hosts) have a writable `/tmp`; the fallback
+root's own *parent* directory (`~`) is created with the ambient umask, not an
+explicit `0o700`, unlike the scratch directory itself; and an ambient
+`TMPDIR` that is itself a subdirectory *under* `/tmp` (rather than `/tmp`
+exactly) satisfies the coincidence guard while still placing bulk material on
+that `tmpfs` -- inherent to trusting WFC's own exported convention, not a
+defect this mechanism was scoped to close.
+
+== 6. Division of protections: provider-owned vs. WFC-owned
 
 Three layers, kept distinct per `docs/self-development.adoc`'s
 Commission-authoring section and `docs/architecture.md`'s generalized
-containment disclaimer (both from `36089fb`, §6 below):
+containment disclaimer (both from `36089fb`):
 
 . *Provider file-tool permission* -- the explicit `Edit`/`Write` allow
-  rule, operating under the scrub-induced default permission mode. Provider-
-  owned, not Coordinator-verified (`DEC-WFC-009`).
+  rule (§3, §4). Provider-owned, not Coordinator-verified (`DEC-WFC-009`).
 . *Provider execution isolation* -- the CLI's own sandbox (`--restricted`,
-  the generated `sandbox.*` settings, and whatever temp/scratch exceptions
-  the CLI's own sandbox profile grants by design; §7 records a live
-  instance of the latter). Also provider-owned, not Coordinator-verified.
+  the generated `sandbox.*` settings including the scratch-scoped
+  `allowWrite` of §5.6, and whatever temp/scratch exceptions the CLI's own
+  sandbox profile grants by design; §8.1 records a live instance of the
+  latter). Also provider-owned, not Coordinator-verified.
 . *WFC's trusted post-Hop Git/scope observation* -- Coordinator-owned and
   authoritative. This is what actually determines whether a candidate
   mutation becomes an accepted WFC commit, independent of what the
-  provider's own permission or sandbox layer did or did not prevent.
+  provider's own permission or sandbox layer did or did not prevent, and it
+  is WFC's own primary, actually-enforced protection goal: controlled,
+  reviewed acceptance of repository mutations -- not a general host- or
+  OS-level isolation guarantee.
 
 No provider permission or sandbox setting described in this document is an
 OS-level isolation guarantee WFC has verified. Per `docs/architecture.md`
@@ -156,7 +342,53 @@ closed profile is, in that same sense, "a transitional operational
 safeguard -- useful, not discarded without reason, but provider-owned and
 not Coordinator-verified."
 
-== 6. Implementation and review provenance
+=== 6.1 Status of WFC's own execution boundary (`execution_boundary.py`)
+
+A separate, WFC-owned primitive exists, independent of the Claude adapter
+described above: `src/workflow_coordinator/execution_boundary.py`, an opt-in
+Linux filesystem/namespace boundary built on `bwrap` (bubblewrap). It is
+*implemented and tested* -- `validate()`/`build_argv()`/`run()` construct and
+exercise a real `bwrap` invocation with a read-only `/usr`/`/bin`/`/sbin`/
+`/lib`/`/lib64` view, a protected, remounted-read-only `.git`, a private
+`/tmp` scratch, and one explicitly validated, caller-designated external
+scratch bind-mount at a fixed destination (`EXTERNAL_SCRATCH_DESTINATION =
+/tmp/s`) -- not a proposal or a future idea. Its own test suite
+(`tests/integration/test_execution_boundary_bwrap.py`,
+`tests/unit/test_execution_boundary_config.py`,
+`tests/integration/test_nested_claude_bwrap_qualification.py`) is 26 tests,
+all passing as of `6c88e47`, including real host-filesystem-verified `bwrap`
+subprocess behavior (not argv inspection alone) and a confirmed, syscall-level
+`AF_UNIX` bind succeeding through the external scratch mount (§7's
+provenance table; corrected 2026-11-10 in `e495b04` after an unaccepted,
+never-independently-reviewed qualification Hop had asserted the opposite).
+
+This primitive is, as of this writing, *not* wired into the regular provider
+dispatch path: `claude_adapter.py` and `codex_adapter.py` do not construct or
+invoke it, and `operator.py` does not route any Hop's execution through it.
+Its own authorizing record,
+link:../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[FTR-WFC-EXECUTION-TRUST-BOUNDARIES],
+explicitly scopes each of its narrow 2026-11-06/2026-11-08 implementation
+slices to the primitive itself, repeatedly stating that none of them
+authorizes wiring the module, or the external scratch mount, into
+`claude_adapter.py`, `codex_adapter.py`, or `operator.py` -- the broader
+provider-integration question (which the 2026-11-08 nested-Claude-in-bubblewrap
+qualification investigation probed, finding an unresolved `/proc` precondition
+for a second, nested `bwrap` layer) remains separately deferred. So: the
+primitive is real, tested, and available; its integration into live Hop
+dispatch is a distinct, not-yet-authorized step. WFC's layer-3 post-Hop
+Git/scope observation (above) remains the actually-enforced protection for
+every Hop dispatched today, regardless of `execution_boundary.py`'s own
+readiness.
+
+Whatever VM or host boundary currently limits the operational blast radius
+of running any of this is independent of, and does not by itself establish,
+repository-root isolation *inside* that VM; for a Hop dispatched through the
+Claude adapter today, Claude's own sandbox (§4, §5.6) is the only mechanism
+attempting the latter, and §8.1 records a live data point about where that
+mechanism's boundary actually sits for one tool (Bash) under one observed
+condition (a nested invocation).
+
+== 7. Implementation and review provenance
 
 [cols="1,4",options="header"]
 |===
@@ -166,155 +398,253 @@ not Coordinator-verified."
 |Generalized `docs/architecture.md`'s containment disclaimer beyond
 self-development and added `docs/self-development.adoc`'s Commission-
 authoring section requiring any stated security requirement to name its
-enforcement layer (provider sandbox vs. WFC's post-Hop observation). Not
-itself part of the adapter fix; the clarification this correction's own
-Commission authoring and review relied on.
+enforcement layer (provider sandbox vs. WFC's post-Hop observation).
 
 |`498c331`
-|First implementation candidate (WI-WFC-CLAUDE-ADAPTER-WRITE-PERMISSIONS-004
-H001): `permissions.allow: ["Edit"]` and `cwd=request.repository.resolve()`.
+|First write-permission implementation candidate
+(WI-WFC-CLAUDE-ADAPTER-WRITE-PERMISSIONS-004 H001):
+`permissions.allow: ["Edit"]` and `cwd=request.repository.resolve()`.
 Diagnosed the scrub-induced default-mode override as the leading mechanism;
 did not grant `Write`.
 
 |`5d46d67`
-|Independent broad review (WI-...-004-REVIEW-001 H001, Run
-`RUN-c84952c2d82344d08b4b2f5a7951a45f`): opened Finding F001 -- the bare
-`Edit` rule does not cover the distinct `Write` tool -- backed by read-only
-inspection of the installed CLI's embedded source (exact byte offsets cited
-in the artifact). Routed to `correction`.
+|Independent broad review (Run `RUN-c84952c2d82344d08b4b2f5a7951a45f` H001):
+opened Finding F001 -- the bare `Edit` rule does not cover the distinct
+`Write` tool -- backed by read-only inspection of the installed CLI's
+embedded source. Routed to `correction`.
 
 |`4eb69d9`
-|Correction (H002): `permissions.allow: ["Edit", "Write"]`. This is the
-Runtime SHA promoted and used for the live qualification in §7.
+|Correction (H002): `permissions.allow: ["Edit", "Write"]`. Runtime SHA used
+for the §8.1 live qualification; since superseded (below).
 
 |`fe4e6e0`
-|Focused review (H003): confirmed F001 resolved by the H002 diff; independent
-re-inspection of the CLI source, plus mutation testing of the conformance
-suite (six independently-introduced negative mutations -- missing `Edit`,
-missing `Write`, an added Bash grant, a widened `allowRead`, an added
-`allowWrite`, and a removed `--restricted` -- each correctly rejected by the
-existing tests). Proposed `renew_broad_review`.
+|Focused review (H003): confirmed F001 resolved; mutation-tested the
+conformance suite. Proposed `renew_broad_review`.
 
 |`698e334`
-|Renewed broad review (H004): accepted the deterministic implementation; F001
-already resolved, no new blocking Finding; recorded the Coordinator-owned
-`task-check` pass. Explicitly states that live-provider qualification
-"remains a separate, subsequent, maintainer-run step" and was not performed
-in H001-H004.
+|Renewed broad review (H004): accepted the deterministic implementation; no
+new blocking Finding; recorded the Coordinator-owned `task-check` pass.
+Live-provider qualification explicitly deferred as a separate, subsequent
+step.
+
+|`464aefe`
+|`WI-WFC-CLAUDE-ADAPTER-ENVIRONMENT-ALLOWLIST-001` H001: replaced
+`{**os.environ, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"}` with today's
+explicit, minimal allowlist (§3). The Run itself (`RUN-b435ab0c7e394eb5912330c38b5eca5b`)
+never reached a Hop-level `accept`: five successive independent-reviewer
+Hops (H002/H004/H006/H008/H010) each recorded "accept on deterministic
+implementation grounds, no blocking findings," but a persistently failing
+Coordinator `task-check` repeatedly forced `correction` routing under
+`robust@v1`'s evidence-gate rule regardless of reviewer disposition, and the
+Run exhausted its 10-Hop budget (`awaiting_human_budget`) before any route
+could apply. The maintainer separately promoted this exact commit to
+Runtime after directly live-qualifying it outside the Run (two existing
+opt-in live smoke tests plus minimal Sonnet/Opus high-reasoning probes, all
+passing under the new allowlist) -- the same separate-maintainer-acceptance
+pattern §7's later rows record again for the short-`TMPDIR` correction.
+Superseded by `6c88e47` below as the current promoted Runtime identity.
+
+|`3102b65`
+|`WI-WFC-CLAUDE-ADAPTER-TMPDIR-SCRATCH-PROVISIONING-001` H001: first
+implementation of §5's mechanism.
+
+|`b35d1bf`
+|Independent broad review (Run `RUN-d6bda249155a4ad9a2cda073039002d9` H002):
+opened Finding F001 -- the ambient-root/short-root coincidence case (§5.4)
+raised and left unguarded, causing an unwrapped exception and an
+accumulation path. Routed to `correction`.
+
+|`48bb0c4`
+|Correction (H003): the `_WFC_FALLBACK_SCRATCH_ROOT` guard and the
+independent, order-safe dual cleanup of §5.4/§5.7. `src/` has been
+byte-identical to this commit through every later commit in this table.
+
+|`8d99341`
+|Focused review (H004): independently re-verified F001 resolved against the
+code; recorded the Coordinator-owned trusted `task-check` as `status=fail`
+(cause not yet established at this Hop).
+
+|`e5e812c`
+|Focused review (H006, after a no-op correction Hop H005 that opened Finding
+F002 asserting the `task-check` criterion might be unsatisfiable from
+within scope): independently re-derived the candidate a second time,
+reproduced both locally-observed failure classes, and resolved F002 as an
+agent-shell environmental artifact, not a candidate defect -- while
+explicitly not claiming the Coordinator's own trusted `task-check` had
+passed. Final committed state of Run `RUN-d6bda249155a4ad9a2cda073039002d9`.
+
+|(H007, no commit)
+|The same Run's seventh Hop (`worker`, `correct` phase) ended in a
+provider-transport failure: the real Claude CLI invocation returned an
+authenticated-account HTTP 429 ("session limit" reached), with no valid
+Result Contract produced. The Coordinator charged the Hop conservatively
+and stopped `run_status=reconcile_required` -- a mechanical, fail-closed
+stop, not a semantic or implementation defect. This Run remains archived
+and unmodified at that status; none of its three recorded trusted
+`task-check` observations (H002/H004/H006, all `status=fail`) is reclassified
+by anything below.
+
+|`e495b04`
+|Maintainer-direct correction (outside this WorkItem's own scope and outside
+any WFC Hop): `tests/integration/test_nested_claude_bwrap_qualification.py`'s
+`AF_UNIX`-bind assertion had asserted an `EPERM` denial that traced to an
+unaccepted, never-independently-reviewed qualification Hop (preserved only
+as non-authoritative salvage, `4b13dc22`) whose own reproduction had itself
+run inside that Hop's own agent sandbox, not a bare host. Reproduced
+directly on a genuinely unsandboxed host, the same unchanged
+`execution_boundary.py` lets the bind succeed; the test now asserts that
+(§6.1).
+
+|`6c88e47`
+|Maintainer-direct correction (same status as `e495b04`):
+`tests/unit/test_claude_adapter_conformance.py`'s two
+`..._falls_back_when_...` coincidence tests (§5.4) rebound only
+`_WFC_FALLBACK_SCRATCH_ROOT`, not `_SHORT_TMP_ROOT`, to a `tmp_path`
+subdirectory -- which coincidentally lands under the host's real `/tmp`
+whenever no WFC launcher has relocated the test process's own ambient
+`TMPDIR`, contradicting the tests' own path-separation assertion for a
+reason unrelated to the adapter. Both tests now rebind `_SHORT_TMP_ROOT`
+too, to a sibling path under the same `tmp_path`, making the coincidence
+they isolate fully self-contained. **Separately, explicitly maintainer-accepted
+2026-11-10** as the final implementation state for
+`WI-WFC-CLAUDE-ADAPTER-TMPDIR-SCRATCH-PROVISIONING-001` -- `src/`
+byte-identical to `48bb0c4`; full `python -m pytest -q` exit `0` under both
+a regular host `TMPDIR` and an external WFC-Harness-style `TMPDIR`;
+Claude-adapter conformance 25/25; execution-boundary suite 26/26 -- and
+**Runtime-promoted** to this exact commit the same day
+(`docs/self-development.adoc`'s runbook; postconditions verified: exact HEAD,
+clean, detached, `remote.origin.pushurl=DISABLED`). This acceptance is a
+separate maintainer decision based on evidence gathered after the Run
+stopped; it is not a retroactive WFC acceptance of
+`RUN-d6bda249155a4ad9a2cda073039002d9`, whose own historical facts above are
+unchanged.
 |===
 
-Across `498c331`..`698e334`, `src/workflow_coordinator/claude_adapter.py` is
-the only production source changed; the conformance-test extensions are
-confined to `tests/unit/test_claude_adapter_conformance.py`. Deterministic
-implementation acceptance was complete as of `698e334`. Live-provider
-qualification is the separate, non-blocking step §7 records.
+Across every row in this table, `src/workflow_coordinator/claude_adapter.py`
+and, separately, `src/workflow_coordinator/execution_boundary.py` are the
+only production source files any commit changes; test and documentation
+changes are confined to the files named above. The full Hop-by-Hop record
+for both WorkItems, including every Finding's exact evidence references,
+lives in the Evidence repository's `project_memory/run_ledger.adoc`
+(`workflow-coordinator-run-evidence`), not duplicated here.
 
-== 7. Live-provider qualification (2026-11-05, operator-reported)
+== 8. Live-provider qualification and autonomous-use history
 
-Performed directly in a maintainer chat session against Runtime pinned at
-`4eb69d9c038110f9885c05612927535c725a21e6`, Claude Code CLI `2.1.270`. This
-was explicitly *not* a Coordinator-mediated WFC Run: no existing facility
-supports pointing WFC's self-referential Commission/Run machinery at a
-disposable, non-self-referential target repository without inventing
-significant new infrastructure (the existing
-`tests/unit/test_codex_adapter_smoke.py`/`codex_adapter_smoke.py` one-shot
-pattern was reused instead, adapted to actually exercise file tools, which
-that existing smoke deliberately does not). A disposable git workspace,
-outside every WFC repository, was the sole target; the real, unmodified
-`ClaudeCliAdapter.execute()` was invoked directly against it. Coordinator
-trusted-commit/accept was therefore not exercised, and this qualification
-does not demonstrate authenticated Claude-to-WFC trusted commit acceptance.
+=== 8.1 2026-11-05 live qualification (historical; superseded Runtime)
 
-=== 7.1 Positive invocation
+Performed directly in a maintainer chat session against Runtime then pinned
+at `4eb69d9c038110f9885c05612927535c725a21e6`, Claude Code CLI `2.1.270` --
+*not* a Coordinator-mediated WFC Run; a disposable git workspace outside
+every WFC repository was the sole target, with the real, unmodified
+`ClaudeCliAdapter.execute()` invoked directly against it. Coordinator
+trusted-commit/accept was not exercised. This Runtime identity has since
+been superseded twice (§7: `464aefe`, then `6c88e47`); the observations below
+are retained as historical record, not as a description of today's Runtime.
 
-`Write` created a new file inside an existing authorized directory; `Write`
-created a new file inside a previously nonexistent nested directory without
-any Bash `mkdir`; `Edit` modified an existing file. All three were confirmed
-against actual filesystem contents, not only the model's self-report. The
-CLI's own JSON result reported `permission_denials: []`. The CLI reproduced,
-in a real authenticated invocation, the exact scrub-forces-default-mode
-warning the design and review chain in §3 predicted statically -- the first
-live confirmation that this mechanism actually occurs in practice, not only
-in the installed CLI's embedded source.
-
-=== 7.2 Negative invocation
-
-A `Write` attempt targeting a path outside the resolved repository root was
-denied, with an explicit boundary error citing `--restricted`'s
-working-directory confinement -- consistent with §4. A `Bash` shell
-redirection (`echo ... > <path outside the repository root>`) succeeded;
-the written file was independently confirmed on disk. Follow-up,
-side-effect-free inspection in the same session established that the
-written path was inside the *outer*, already-running Claude Code session's
-own documented scratchpad directory (`/tmp/claude-<uid>/<session-id>/scratchpad/...`),
-and that the nested invocation had inherited `CLAUDE_CODE_SESSION_ID` and
-related `CLAUDE_CODE_*` variables from that outer session, because
-`ClaudeCliAdapter.execute()` builds the child environment as
-`{**os.environ, ...}` (`claude_adapter.py:124`) without removing them.
-
-This supports, without conclusively establishing, that the observed Bash
-write used Claude's own documented scratchpad exception -- consistent with
-§4's point that Bash's sandbox coverage and file-tool confinement are not
-one uniform boundary -- rather than demonstrating an arbitrary, unconfined
-host-filesystem escape. An independent clean-session re-test (invoked
-without any ambient `CLAUDE_CODE_*` environment) has *not* been performed
-and would be needed to rule out, rather than merely make less likely, an
-unrelated filesystem-isolation failure. No generic Bash containment
-guarantee is established by this qualification either way.
-
-=== 7.3 Evidentiary status
+`Write` created a new file inside an existing authorized directory and
+inside a previously nonexistent nested directory without any Bash `mkdir`;
+`Edit` modified an existing file; all three were confirmed against actual
+filesystem contents. The CLI's own JSON result reported `permission_denials:
+[]`, and reproduced live the scrub-forces-default-mode warning §3 describes
+as historical. A `Write` outside the resolved repository root was denied
+with an explicit boundary error; a `Bash` redirection outside the repository
+root succeeded, independently confirmed on disk, and follow-up inspection
+established that the written path was inside the outer, already-running
+Claude Code session's own documented scratchpad directory
+(`/tmp/claude-<uid>/<session-id>/scratchpad/...`), reached because the
+then-current `{**os.environ, ...}` child-environment construction inherited
+`CLAUDE_CODE_SESSION_ID` and related variables from that outer session. This
+supported, without conclusively establishing, that the observed write used
+Claude's own documented scratchpad exception rather than an arbitrary,
+unconfined host-filesystem escape; no generic Bash containment guarantee was
+established either way, and an independent clean-session re-test was never
+performed under this Runtime identity. §3 records that the later
+environment-allowlist correction (`464aefe`) closes the specific mechanism
+this observation flagged -- a `CLAUDE_CODE_*` variable can no longer reach
+the child at all -- as a structural property of the allowlist, not as a
+re-test of this exact scenario; whether Claude's own scratchpad exception
+itself still exists under the current allowlist, independent of inherited
+session identity, is unaffected by that closure and was not re-examined.
 
 These observations are operator-reported from a live chat session, backed
-by captured stdout and independently-checked filesystem state preserved in
-a local scratchpad outside any WFC repository. They are *not* archived as
-Coordinator-trusted Run Evidence in `workflow-coordinator-run-evidence`, and
-this document does not claim otherwise. Archiving them, if wanted, is a
-separate maintainer step this document does not perform.
+by captured stdout and independently-checked filesystem state outside any
+WFC repository; they are not archived as Coordinator-trusted Run Evidence.
 
-== 8. Residual security-model distinctions and deferred work
+=== 8.2 Autonomous use during the short-`TMPDIR` development Run (historical)
 
-The three-layer split in §5 holds with the §7.2 observation folded in under
-layer 2 (provider execution isolation): the scratchpad write is provider
-sandbox behavior, not a WFC-verified control, and it does not change what
-layer 3 (WFC's own post-Hop Git/scope observation) actually enforces for
-acceptance into a trusted commit.
+Separately, `RUN-d6bda249155a4ad9a2cda073039002d9` (§5, §7) itself dispatched
+seven real, authenticated Claude CLI invocations end to end -- worker
+(`claude-sonnet-5`, high) and independent reviewer (`claude-opus-5`, high) --
+under the adapter mechanism §2-§5 describe, through Hop H006 inclusive, with
+no adapter- or sandbox-level failure of the kind either BUG lineage in this
+document describes. The one provider-level failure in that Run (H007) was an
+account-level usage-limit transport error (§7), external to the adapter
+mechanism itself. This is real, historical evidence that the mechanism
+operates under genuine autonomous WFC dispatch -- including the independent
+reviewers' own observation (§6.1's provenance) that their own Bash-tool
+sandbox's `TMPDIR` was itself a `wfc-claude-<token>` short path during that
+same Run, i.e. the mechanism governing their own session. It is not a
+substitute for a dedicated, targeted live end-to-end qualification of the
+specific commit now promoted to Runtime (§8.3).
 
-Whatever VM or host boundary currently limits the operational blast radius
-of running any of this is independent of, and does not by itself establish,
-repository-root isolation *inside* that VM; Claude's own sandbox is the only
-mechanism attempting the latter today, and §7.2 is a live data point about
-where that mechanism's boundary actually sits for one tool (Bash) under one
-observed condition (a nested invocation).
+=== 8.3 Outstanding: authenticated live end-to-end qualification under the promoted Runtime
 
-Provider-specific sandbox behavior -- Claude's `bwrap`/scratchpad mechanics
-specifically -- should not become a foundational WFC security assumption.
-A WFC-owned, provider-independent execution-isolation layer remains the
-intended future direction, not an implemented control today; see
-link:../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[FTR-WFC-EXECUTION-TRUST-BOUNDARIES]
-for its current (deferred) standing.
+**Not yet performed.** The authenticated, end-to-end qualification of
+`6c88e47646c697dfe4f7c4e83e474092609df1ba` as the executing Runtime identity
+-- a real Claude CLI invocation dispatched by that exact promoted Runtime,
+exercising the short-symlink/external-scratch mechanism and the environment
+allowlist together under production conditions -- has not been run and is
+not claimed by anything in this document. §8.1 and §8.2 are historical
+evidence against different, since-superseded Runtime identities and a
+different (development-time) dispatch context respectively; neither
+establishes, and this document does not represent either as establishing,
+that the now-promoted Runtime has itself been live-qualified. This remains a
+separate, planned maintainer step.
 
-Any future isolation design should explicitly consider inherited
-provider-session environment variables (`CLAUDE_CODE_SESSION_ID`,
-`CLAUDE_CODE_CHILD_SESSION`, and related `CLAUDE_CODE_*` names) as a factor
-in how a nested or nested-like invocation resolves its own sandbox/scratch
-boundaries. Indiscriminately stripping all `CLAUDE_CODE_*` variables from
-the child environment is *not* assumed, by this document, to be safe or
-sufficient -- it has not been evaluated against the authentication path or
-any other behavior that may depend on them, and any such change would need
-its own bounded, separately authorized test.
+== 9. Residual security-model distinctions and deferred work
 
-Finally: §7.2 does not establish that Claude's sandbox is broken. The
-observed Bash behavior is consistent with a documented product feature (a
-session-scoped scratchpad write allowance) evaluated against a
+The three-layer split in §6 holds with §8.1's observation folded in under
+layer 2 (provider execution isolation): a session-scoped scratchpad write is
+provider sandbox behavior, not a WFC-verified control, and it does not
+change what layer 3 (WFC's own post-Hop Git/scope observation) actually
+enforces for acceptance into a trusted commit.
+
+The specific mechanism §8.1 flagged -- inherited `CLAUDE_CODE_*` session
+variables reaching a nested child -- is resolved as of `464aefe` (§3):
+`__post_init__`'s validation makes it structurally impossible for any
+`CLAUDE_CODE_*`-prefixed name to reach the child environment, through the
+fixed allowlist or through the operator extension point, regardless of what
+the orchestrating process's own environment contains. This closes the
+specific propagation path; it is not a claim that Claude's own scratchpad
+exception (if it still applies under the current allowlist) has been
+re-examined, nor a general statement about nested-session isolation beyond
+that one variable family.
+
+Provider-specific sandbox behavior -- Claude's own `bwrap`/scratchpad
+mechanics -- remains something WFC has not verified and should not become a
+foundational WFC security assumption. §6.1 records `execution_boundary.py`'s
+actual, current status precisely: implemented, tested, and available as a
+primitive, but not wired into any provider-dispatch path today, and the
+broader provider-integration and execution-trust-boundary architecture
+remains deferred under
+link:../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[FTR-WFC-EXECUTION-TRUST-BOUNDARIES]'s
+own standing authorization scope.
+
+Finally: §8.1 does not establish that Claude's sandbox is broken. The
+observed Bash behavior there is consistent with a documented product
+feature (a session-scoped scratchpad write allowance) evaluated against a
 stricter-than-documented WFC objective (repository-root-only containment),
 not with an absent or defective isolation mechanism.
 
-== 9. Cross-references
+== 10. Cross-references
 
 * link:../architecture.md[Architecture] -- generalized containment disclaimer (`36089fb`).
-* link:../self-development.adoc[Self-development] -- Commission-authoring, enforcement-layer naming (`36089fb`).
-* link:../backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH] -- controlling feature-status record; open as of this writing.
-* link:../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[FTR-WFC-EXECUTION-TRUST-BOUNDARIES] -- future WFC-owned execution-isolation layer; deferred.
+* link:../self-development.adoc[Self-development] -- Commission-authoring, enforcement-layer naming (`36089fb`); Runtime promotion runbook (§7's `464aefe`/`6c88e47` promotions).
+* link:../backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH] -- controlling write-permission feature-status record; open as of this writing.
+* link:../backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc[BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION] -- controlling short-`TMPDIR`/scratch record; resolved by separate maintainer acceptance 2026-11-10.
+* link:../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[FTR-WFC-EXECUTION-TRUST-BOUNDARIES] -- `execution_boundary.py`'s own narrow 2026-11-06/2026-11-08 implementation authorizations; broader provider-integration architecture remains deferred.
 * link:../warm_storage/concepts/workflow_coordinator_claude_code_adapter_design_2026-11-01.adoc[Claude Code adapter design] and its broad/focused review artifacts -- accepted design provenance.
-* link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_broad_review.adoc[Write-permission correction: broad review] and
-  link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_focused_review.adoc[focused review] -- full Finding/evidence detail for §3 and §6.
+* link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_broad_review.adoc[Write-permission correction: broad review] and link:../warm_storage/concepts/workflow_coordinator_claude_adapter_write_permission_correction_2026-11-05_focused_review.adoc[focused review].
+* link:../warm_storage/concepts/workflow_coordinator_claude_adapter_environment_allowlist_2026-11-07_broad_review.adoc[Environment allowlist: broad review] and link:../warm_storage/concepts/workflow_coordinator_claude_adapter_environment_allowlist_2026-11-07_focused_review.adoc[focused review].
+* link:../warm_storage/concepts/workflow_coordinator_claude_adapter_tmpdir_scratch_provisioning_2026-11-09_broad_review.adoc[TMPDIR scratch provisioning: broad review] and link:../warm_storage/concepts/workflow_coordinator_claude_adapter_tmpdir_scratch_provisioning_2026-11-09_focused_review.adoc[focused review].
+* `workflow-coordinator-run-evidence/project_memory/run_ledger.adoc` (Evidence repository, not a relative link from here) -- the full curated Hop-by-Hop chronology for every Run cited in §7-§8, including the separate maintainer-acceptance and Runtime-promotion entries dated 2026-11-10.
