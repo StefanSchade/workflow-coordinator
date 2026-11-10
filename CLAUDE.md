@@ -9,7 +9,7 @@ the controlling operator contracts, and the active-work manifest.
 If the task is not covered there, read `docs/README.adoc`, the standalone
 authority index, next.
 
-Do not treat `docs/cold_storage/` or `docs/imported/` as normal reading;
+Do not treat `docs/cold_storage/` as normal reading;
 they are non-authorizing historical provenance, consulted only when a
 current source explicitly asks for it.
 
