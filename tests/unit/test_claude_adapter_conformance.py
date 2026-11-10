@@ -319,6 +319,16 @@ def test_external_scratch_root_falls_back_when_ambient_default_coincides_with_sh
     # fallback this collapses the short symlink and its own real target
     # onto one path, breaking every invocation (see the finding this
     # correction addresses).
+    #
+    # _SHORT_TMP_ROOT is rebound to a dedicated tmp_path sibling, distinct
+    # from _WFC_FALLBACK_SCRATCH_ROOT below. The real constant is the host's
+    # actual /tmp, which pytest's own tmp_path fixture may itself sit under
+    # when no WFC launcher has relocated TMPDIR for this test process --
+    # exactly the coincidence this test isolates, not a path this test's own
+    # fixture should reproduce by accident.
+    short_root_dir = tmp_path / "short-root"
+    short_root_dir.mkdir()
+    monkeypatch.setattr(claude_adapter_module, "_SHORT_TMP_ROOT", short_root_dir)
     monkeypatch.delenv("TMPDIR", raising=False)
     monkeypatch.delenv("TMP", raising=False)
     monkeypatch.delenv("TEMP", raising=False)
@@ -352,6 +362,7 @@ def test_external_scratch_root_falls_back_when_ambient_default_coincides_with_sh
 
     assert realpath != tmpdir_path
     assert realpath != short_root and short_root not in realpath.parents
+    assert short_root == short_root_dir.resolve()
     assert str(realpath).startswith(str(fallback_root.resolve()) + os.sep)
     assert granted["allowWrite"] == [str(realpath)]
 
@@ -366,10 +377,18 @@ def test_external_scratch_root_falls_back_when_operator_sets_tmpdir_to_short_roo
     # The same coincidence occurs whenever an operator or environment sets
     # TMPDIR=/tmp explicitly, independent of the gettempdir() platform
     # default exercised above.
-    short_root = str(claude_adapter_module._SHORT_TMP_ROOT)
-    monkeypatch.setenv("TMPDIR", short_root)
-    monkeypatch.setenv("TMP", short_root)
-    monkeypatch.setenv("TEMP", short_root)
+    #
+    # _SHORT_TMP_ROOT is rebound to a dedicated tmp_path sibling, distinct
+    # from _WFC_FALLBACK_SCRATCH_ROOT below, for the same reason as the
+    # preceding test: pytest's own tmp_path fixture may itself sit under the
+    # host's real /tmp when no WFC launcher has relocated TMPDIR, which must
+    # not be mistaken for the coincidence this test means to isolate.
+    short_root_dir = tmp_path / "short-root"
+    short_root_dir.mkdir()
+    monkeypatch.setattr(claude_adapter_module, "_SHORT_TMP_ROOT", short_root_dir)
+    monkeypatch.setenv("TMPDIR", str(short_root_dir))
+    monkeypatch.setenv("TMP", str(short_root_dir))
+    monkeypatch.setenv("TEMP", str(short_root_dir))
     fallback_root = tmp_path / "fallback-root"
     monkeypatch.setattr(claude_adapter_module, "_WFC_FALLBACK_SCRATCH_ROOT", fallback_root)
 
@@ -390,6 +409,7 @@ def test_external_scratch_root_falls_back_when_operator_sets_tmpdir_to_short_roo
     realpath = Path(observation["tmpdir_realpath"])
     short_root_resolved = claude_adapter_module._SHORT_TMP_ROOT.resolve()
 
+    assert short_root_resolved == short_root_dir.resolve()
     assert realpath != short_root_resolved and short_root_resolved not in realpath.parents
     assert not tmpdir_path.is_symlink() and not tmpdir_path.exists()
     assert not realpath.exists()
