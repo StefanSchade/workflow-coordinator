@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 from dataclasses import fields, replace
+from pathlib import Path
 
 import pytest
 
@@ -389,6 +390,29 @@ def test_prompt_places_complete_contract_once_after_header_before_consumers_and_
         "Return one JSON structured_result_v1 envelope; prose cannot replace fields."
     )
     assert package.agent_operating_contract == contract.provenance()
+
+
+def test_current_worker_completion_guidance_reaches_assembled_prompt():
+    worker_path = Path(__file__).resolve().parents[2] / "governance/self-development/prompts/worker.txt"
+    worker_text = worker_path.read_text(encoding="utf-8")
+    workflow = profile({"work": phase({"done": route("complete")})})
+    package = assemble_prompt(
+        run_for(workflow),
+        workflow.phases["work"],
+        {
+            "worker": PromptComponent("worker", "governance/self-development/prompts/worker.txt", "HEAD", worker_text),
+            "testing": PromptComponent("testing", "testing.txt", "HEAD", "testing"),
+        },
+        agent_operating_contract=load_agent_operating_contract(),
+        invocation=Invocation("RUN-1", "H001", "INV-1"),
+        persona="fixture persona", task_payload="semantic task",
+    )
+
+    assert package.omissions == ()
+    assert worker_text in package.text
+    assert "Do not end the current invocation merely because the task is unfinished" in package.text
+    assert "Reserve `blocked` for a concrete obstacle" in package.text
+    assert "Report `completed` only when the assigned" in package.text
 
 
 def test_review_prompt_separates_current_hop_authority_from_correct_route_target():
