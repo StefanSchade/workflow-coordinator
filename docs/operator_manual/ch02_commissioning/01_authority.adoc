@@ -1,0 +1,248 @@
+ifndef::assembled[]
+= WFC Operator Manual -- Commission authority
+:operator-docs: ../..
+
+Maturity::  stable
+Authority:: informative
+Updated::   2026-11-11
+Owns::      Commission inputs and lifetime, mutation-scope choices, and the human mechanism-admission heuristic; governing inputs and code retain execution authority.
+endif::[]
+
+[[inputs-and-ownership]]
+== Inputs and ownership/lifetime
+
+Two kinds of input are easy to conflate:
+
+*WFC / Commission authority* (what may happen; reviewed and committed before
+mechanics begin): WorkItem, Profile, RepositoryPolicy, Components, Task.
+
+*Provider/execution choice* (how authorized work is concretely performed):
+`--executable`, each `--role-binding`'s adapter/model/reasoning.
+
+The concrete model binding is intentionally *not* the semantic authority of
+the WorkItem itself. A Commission may remain semantically the same while its
+execution bindings differ, if separately authorized -- rerunning an
+identical Commission under a different model for cost/availability reasons
+is an execution-choice decision, not a re-commissioning.
+
+[cols="2,2,3,2",options="header"]
+|===
+|Input |Owner |Lifetime |Kind
+
+|`--development` / `--runtime` / `--evidence`
+|Maintainer (repo identity)
+|Path long-lived; HEAD pinned per Attempt (Runtime HEAD stable across many
+Runs, changes only at promotion)
+|Mechanics (identity pin)
+
+|`--work-item`
+|Commission / maintainer review
+|One per WorkItem; carries `max_autonomous_hops`, scope, authorized actions
+|*Authority*
+
+|`--profile`
+|Commission / maintainer review
+|Phases/roles/review structure/`finding_authority`; often reused across a
+lineage
+|*Authority*
+
+|`--policy`
+|Commission / maintainer review
+|RepositoryPolicy: evidence commands, ceilings; repository-lifetime
+|*Authority*
+
+|`--components`
+|Commission / maintainer review
+|Scope declarations authorized paths resolve against; repository-lifetime
+|*Authority*
+
+|`--task`
+|Commission / maintainer review
+|Concrete task text; one per WorkItem
+|*Authority*
+
+|`--executable`, `--role-binding`, `--timeout-seconds`
+|Maintainer (execution choice)
+|Chosen per Attempt; may change between otherwise-identical Runs
+|Execution mechanics
+
+|`--attempt`
+|Maintainer (naming)
+|Unique per prepared Attempt; deterministically derives OPS/STATE
+|Mechanics (identity)
+
+|OPS (`~/wfc-ops/<attempt>`)
+|Harness
+|Created by `prepare`; one per Attempt, never reused
+|Mechanics
+
+|STATE (`~/wfc-state/<attempt>`)
+|WFC
+|Created only by `launch`; remains as persisted execution state after the Run. Archiving preserves evidence from STATE but does not delete STATE.
+|Mechanics (content WFC-owned, Harness-opaque)
+|===
+
+[[mutation-scope]]
+== Commission mutation-scope granularity
+
+`WorkItem.scope` and each phase's `authorized_scope` are *authority
+boundaries* -- what this Commission may mutate -- not an implementation
+plan predicting which files a correct implementation will touch.
+
+The path model Harness already enforces accepts repository-relative
+*directory* scopes, not only exact file paths: an authorized_scope entry
+matches itself exactly or any path beginning with `<entry>/`. File-exact
+scope and directory scope are the same existing prefix-match authority
+check; nothing new is introduced by using one over the other. File-exact
+mutation authority is therefore a Commission-author *choice*, not a
+generic WFC requirement.
+
+This directory-shaped authority is distinct from `CommitIntent.paths`:
+list every actually changed normalized repository-relative *leaf* exactly,
+not a directory or an unchanged file. The proposed set must equal the
+nonignored Git dirty set; a directory scope does not make a directory
+CommitIntent entry reconcilable.
+
+For ordinary implementation/correction work, the recommended default is
+bounded area/directory-level authority sufficient for the semantic task,
+for example:
+
+[source,yaml]
+----
+authorized_scope:
+  - src/workflow_coordinator
+  - tests
+----
+
+or, where repository architecture provides meaningful boundaries:
+
+[source,yaml]
+----
+authorized_scope:
+  - src/domain
+  - src/adapters
+  - tests
+----
+
+A Commission may still intentionally choose narrower, file-exact scope
+when that is semantically justified: a single durable review artifact; a
+deliberately surgical correction whose exact carrier is already known; a
+governance/document correction whose specific artifact identity is part
+of the authority decision; or another genuine trust boundary where the
+exact file matters.
+
+*Least privilege means granting only the repository areas and actions
+appropriate to the task -- it does not mean predicting every file a
+correct implementation will touch before the implementing agent
+investigates.* Treating it as the latter duplicates implementation/
+discovery work into Commission authoring, often forces the Commission
+author to use an LLM merely to discover the file list, makes
+human-authored Commissions unnecessarily difficult, can make required
+evidence impossible to satisfy when the real change touches files outside
+the predicted set, and takes legitimate dependency/impact discovery away
+from the worker.
+
+This also means a coding Commission needs no generic `may_modify_tests`
+boolean. Whether test maintenance is authorized is simply whether the
+repository's test area is included in `authorized_scope`:
+
+[source,yaml]
+----
+authorized_scope:
+  - src/workflow_coordinator
+  - tests
+----
+
+Omit that area, or bound it differently, when tests must remain immutable
+for the task. The same generic workspace/scope mechanism authorizes
+bounded mutation space identically in a non-code task, e.g.
+
+[source,yaml]
+----
+authorized_scope:
+  - course/current
+  - exercises
+----
+
+while leaving `source_material` and `grading_policy` outside scope. The
+framework models bounded mutation space, not programming-language
+concepts.
+
+The opposite extreme is equally wrong: do not make the whole repository
+writable merely to avoid prediction risk. Scope should remain meaningfully
+bounded by the semantic task and repository policy. Governing inputs,
+authority-defining material, historical evidence, and comparable trust
+surfaces remain separately protected by existing WFC rules regardless of
+how an authorized_scope entry is written.
+
+*Motivating incident:* `RUN-90c24baad80645b0958ed96ae0a2cc3f`
+(`WI-WFC-PROJECTED-RESULT-CONTRACTS-P2`, Development candidate H001
+`25861f2c19d438c82144d1aed742c48ea038f352`) used a deliberately file-exact
+implement/correction `authorized_scope` -- exactly fifteen named
+source/test paths -- while the governing RepositoryPolicy's evidence
+command simultaneously required trusted full-repository
+`python -m pytest -q`. H001 implemented the P2 result-family change and
+its own focused validation passed, but the trusted full-suite run failed;
+the contract change affected additional legacy test consumers outside
+that predicted file set. The Coordinator correctly stopped
+(`required_evidence_failed_without_route`) before independent review could
+run -- this is fail-closed behavior working as designed (link:{operator-docs}/wfc_operator_manual.adoc#_13_terminal_states_and_awaiting_human[terminal states]), not
+the Coordinator malfunctioning and not evidence checks being too strict.
+The durable lesson is narrow: the Commission attempted to predict
+implementation impact at individual-file granularity, and that prediction
+proved incomplete. This Run was not accepted or promoted, and this section
+does not reinterpret it as such; see the link:{operator-docs}/wfc_operator_manual.adoc#_19_worked_example[worked example]
+for the discipline this manual applies to real Runs.
+
+[[mechanism-admission]]
+== Mechanism admission and design economy
+
+An adversarial or architecture-oriented development process can keep
+discovering additional conceivable edge cases, guards, authority concepts,
+states, schema fields, lifecycle transitions, or other machinery. Many such
+additions are locally defensible in isolation while still making the
+overall system unnecessarily complex. *"Could this be modeled or guarded
+more completely?" is not, by itself, sufficient justification for adding
+new WFC mechanics.*
+
+A new Coordinator mechanism -- a guard, authority concept, persisted state,
+schema field or result-family concept, lifecycle transition, persistence/
+history structure, reducer mechanic, routing machinery, trusted
+effect/execution mechanic, or other comparable Coordinator architecture --
+should normally be introduced only when it addresses at least one of:
+
+. a concrete *observed* failure mode; or
+. a concrete *imminent authorized* use case that existing mechanics cannot
+  adequately support.
+
+Before adding such mechanics, the design/Commission-authoring process
+should ask:
+
+a. What concrete observed harm or blocked authorized use drives this?
+b. Why are existing mechanics insufficient?
+c. Could Commission authoring, Profile/Policy configuration, bounded
+   authority/scope, review purpose/breadth, evidence configuration, or
+   documentation/operator convention handle this adequately instead?
+d. If new mechanics are genuinely necessary, what is the smallest
+   mechanism that solves the concrete problem?
+e. What is the stop condition -- what evidence would make this problem
+   sufficiently solved, rather than inviting indefinite further hardening?
+
+A merely *conceivable* failure mode does not answer (a). Absent a concrete
+driver, prefer a backlog entry, observation, or operator convention over
+new architecture. A concrete imminent authorized use case is a valid driver
+even when no production failure has occurred yet -- the operative
+distinction is concrete driver versus speculative completeness for its own
+sake, not present failure versus future risk.
+
+The link:{operator-docs}/operator_manual/ch02_commissioning/01_authority.adoc#mutation-scope[Commission mutation-scope]
+and link:{operator-docs}/operator_manual/ch02_commissioning/03_review.adoc#review-breadth[bounded-rereview] guidance are
+instances of the same pattern: each apparent gap was checked against
+existing Commission-authoring/review mechanics before any Coordinator
+change was considered, and neither turned out to need one.
+
+This is an operating heuristic for Commission-authoring and design
+judgment, not a machine-enforced WFC invariant, schema requirement,
+admission gate, reviewer severity, or governance artifact type -- it is
+deliberately left to human/Commission-author judgment rather than solved
+by inventing mechanics that enforce it.

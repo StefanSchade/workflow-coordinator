@@ -5,11 +5,11 @@
 Maturity::  stable
 Authority:: informative
 Updated::   2026-11-11
-Owns::      Remaining Harness v0 operating guidance; handed-over orientation sections are pointers to the partial Operator Manual.
+Owns::      Remaining Harness v0 operating guidance; handed-over orientation and commissioning sections are pointers to the partial Operator Manual.
 
 Start with the link:operator_manual/operator_manual.adoc[partial Operator
-Manual and its reading path]. Only orientation has handed over; its old
-headings below point to the current sections. All remaining bodies retain
+Manual and its reading path]. Orientation and commissioning have handed
+over; their old headings below point to the current sections. All remaining bodies retain
 their existing standing as current Harness v0 / WFC operational reference.
 The dedicated link:run-preparation.adoc[preparation],
 link:self-development.adoc[self-development], and
@@ -30,320 +30,19 @@ See link:operator_manual/ch01_orientation/01_model.adoc#repositories-and-trust-b
 
 == 4. Inputs and ownership/lifetime
 
-Two kinds of input are easy to conflate:
-
-*WFC / Commission authority* (what may happen; reviewed and committed before
-mechanics begin): WorkItem, Profile, RepositoryPolicy, Components, Task.
-
-*Provider/execution choice* (how authorized work is concretely performed):
-`--executable`, each `--role-binding`'s adapter/model/reasoning.
-
-The concrete model binding is intentionally *not* the semantic authority of
-the WorkItem itself. A Commission may remain semantically the same while its
-execution bindings differ, if separately authorized -- rerunning an
-identical Commission under a different model for cost/availability reasons
-is an execution-choice decision, not a re-commissioning.
-
-[cols="2,2,3,2",options="header"]
-|===
-|Input |Owner |Lifetime |Kind
-
-|`--development` / `--runtime` / `--evidence`
-|Maintainer (repo identity)
-|Path long-lived; HEAD pinned per Attempt (Runtime HEAD stable across many
-Runs, changes only at promotion)
-|Mechanics (identity pin)
-
-|`--work-item`
-|Commission / maintainer review
-|One per WorkItem; carries `max_autonomous_hops`, scope, authorized actions
-|*Authority*
-
-|`--profile`
-|Commission / maintainer review
-|Phases/roles/review structure/`finding_authority`; often reused across a
-lineage
-|*Authority*
-
-|`--policy`
-|Commission / maintainer review
-|RepositoryPolicy: evidence commands, ceilings; repository-lifetime
-|*Authority*
-
-|`--components`
-|Commission / maintainer review
-|Scope declarations authorized paths resolve against; repository-lifetime
-|*Authority*
-
-|`--task`
-|Commission / maintainer review
-|Concrete task text; one per WorkItem
-|*Authority*
-
-|`--executable`, `--role-binding`, `--timeout-seconds`
-|Maintainer (execution choice)
-|Chosen per Attempt; may change between otherwise-identical Runs
-|Execution mechanics
-
-|`--attempt`
-|Maintainer (naming)
-|Unique per prepared Attempt; deterministically derives OPS/STATE
-|Mechanics (identity)
-
-|OPS (`~/wfc-ops/<attempt>`)
-|Harness
-|Created by `prepare`; one per Attempt, never reused
-|Mechanics
-
-|STATE (`~/wfc-state/<attempt>`)
-|WFC
-|Created only by `launch`; remains as persisted execution state after the Run. Archiving preserves evidence from STATE but does not delete STATE.
-|Mechanics (content WFC-owned, Harness-opaque)
-|===
+See link:operator_manual/ch02_commissioning/01_authority.adoc#inputs-and-ownership[Inputs and ownership/lifetime].
 
 === Commission mutation-scope granularity
 
-`WorkItem.scope` and each phase's `authorized_scope` are *authority
-boundaries* -- what this Commission may mutate -- not an implementation
-plan predicting which files a correct implementation will touch.
-
-The path model Harness already enforces accepts repository-relative
-*directory* scopes, not only exact file paths: an authorized_scope entry
-matches itself exactly or any path beginning with `<entry>/`. File-exact
-scope and directory scope are the same existing prefix-match authority
-check; nothing new is introduced by using one over the other. File-exact
-mutation authority is therefore a Commission-author *choice*, not a
-generic WFC requirement.
-
-For ordinary implementation/correction work, the recommended default is
-bounded area/directory-level authority sufficient for the semantic task,
-for example:
-
-[source,yaml]
-----
-authorized_scope:
-  - src/workflow_coordinator
-  - tests
-----
-
-or, where repository architecture provides meaningful boundaries:
-
-[source,yaml]
-----
-authorized_scope:
-  - src/domain
-  - src/adapters
-  - tests
-----
-
-A Commission may still intentionally choose narrower, file-exact scope
-when that is semantically justified: a single durable review artifact; a
-deliberately surgical correction whose exact carrier is already known; a
-governance/document correction whose specific artifact identity is part
-of the authority decision; or another genuine trust boundary where the
-exact file matters.
-
-*Least privilege means granting only the repository areas and actions
-appropriate to the task -- it does not mean predicting every file a
-correct implementation will touch before the implementing agent
-investigates.* Treating it as the latter duplicates implementation/
-discovery work into Commission authoring, often forces the Commission
-author to use an LLM merely to discover the file list, makes
-human-authored Commissions unnecessarily difficult, can make required
-evidence impossible to satisfy when the real change touches files outside
-the predicted set, and takes legitimate dependency/impact discovery away
-from the worker.
-
-This also means a coding Commission needs no generic `may_modify_tests`
-boolean. Whether test maintenance is authorized is simply whether the
-repository's test area is included in `authorized_scope`:
-
-[source,yaml]
-----
-authorized_scope:
-  - src/workflow_coordinator
-  - tests
-----
-
-Omit that area, or bound it differently, when tests must remain immutable
-for the task. The same generic workspace/scope mechanism authorizes
-bounded mutation space identically in a non-code task, e.g.
-
-[source,yaml]
-----
-authorized_scope:
-  - course/current
-  - exercises
-----
-
-while leaving `source_material` and `grading_policy` outside scope. The
-framework models bounded mutation space, not programming-language
-concepts.
-
-The opposite extreme is equally wrong: do not make the whole repository
-writable merely to avoid prediction risk. Scope should remain meaningfully
-bounded by the semantic task and repository policy. Governing inputs,
-authority-defining material, historical evidence, and comparable trust
-surfaces remain separately protected by existing WFC rules regardless of
-how an authorized_scope entry is written.
-
-*Motivating incident:* `RUN-90c24baad80645b0958ed96ae0a2cc3f`
-(`WI-WFC-PROJECTED-RESULT-CONTRACTS-P2`, Development candidate H001
-`25861f2c19d438c82144d1aed742c48ea038f352`) used a deliberately file-exact
-implement/correction `authorized_scope` -- exactly fifteen named
-source/test paths -- while the governing RepositoryPolicy's evidence
-command simultaneously required trusted full-repository
-`python -m pytest -q`. H001 implemented the P2 result-family change and
-its own focused validation passed, but the trusted full-suite run failed;
-the contract change affected additional legacy test consumers outside
-that predicted file set. The Coordinator correctly stopped
-(`required_evidence_failed_without_route`) before independent review could
-run -- this is fail-closed behavior working as designed (section 13), not
-the Coordinator malfunctioning and not evidence checks being too strict.
-The durable lesson is narrow: the Commission attempted to predict
-implementation impact at individual-file granularity, and that prediction
-proved incomplete. This Run was not accepted or promoted, and this section
-does not reinterpret it as such; see section 19 for the general worked-
-example discipline this manual applies to real Runs.
+See link:operator_manual/ch02_commissioning/01_authority.adoc#mutation-scope[Commission mutation-scope granularity].
 
 === Review breadth and bounded rereview convergence
 
-*Fresh context does not mean broad review.* A rereviewer can and normally
-should receive `context: fresh` (no memory of prior invocations) while
-still receiving a deliberately narrow falsification surface. These are
-independent axes: freshness is about provider/conversation memory;
-breadth is about the intended search surface. Conflating them turns every
-rereview back into a full adversarial rediscovery pass merely because the
-reviewer's context happens to be fresh.
-
-Normal review progression for an `independent_review` -> `correction` ->
-`rereview` loop should usually be:
-
-[source,text]
-----
-initial independent review  -> establish the Finding set
-correction                  -> address known Findings
-rereview                    -> disposition known Findings
-                                + inspect direct regressions from correction
-----
-
-The initial independent review should be broad enough for its declared
-implementation/design/closure responsibility -- that is where adversarial
-discovery belongs. Once the Finding set is established, a rereview should
-normally narrow rather than repeatedly reopening the complete adversarial
-search space. It carries stable Finding identity forward and asks: was
-each blocking Finding actually corrected; is the correction mechanism
-sound, not cosmetic; did the correction directly regress surrounding
-behavior?
-
-A genuinely new MATERIAL issue supported by concrete new material evidence
-may still escape the bounded surface and stop/reopen the loop, exactly as
-existing WFC semantics already permit -- bounding the surface narrows
-*intended* search, it does not forbid a real new defect. An unrelated,
-newly noticed MINOR observation should normally not reset the review
-cycle; it may become a residual, observation, or separately governed
-follow-up depending on current authority. "Narrow rereview" never means
-telling a reviewer to ignore evidence, forcing `accept`, hiding a known
-blocker, forbidding a real new MATERIAL defect, or lowering acceptance
-criteria for a known Finding -- it means controlling the intended
-falsification surface after an initial discovery pass has already run.
-
-This is distinct from Correction Convergence Escape. Review narrowing
-prevents moving goalposts caused by repeated broad rediscovery after every
-correction. Correction Convergence Escape handles a stable problem/Finding
-set that is genuinely failing to converge under ordinary correction and
-may require diagnosis/reframe/strategy change. Convergence Escape is not a
-substitute for bounded rereview, and bounded rereview does not make
-Convergence Escape obsolete -- they address different failure shapes.
-
-Broad rereview may still be deliberately chosen again when, for example:
-the correction materially changed architecture; the prior Finding set no
-longer truthfully represents the risk surface; a prerequisite/reframe
-changed semantic ownership; or an explicit closure/counterexample search
-is being commissioned for some other concrete reason. Such broadening
-should be intentional and visible in the Commission/profile -- an
-authored choice, not something that happens automatically because the
-reviewer has fresh context.
-
-A concrete wording pattern for a bounded rereview's `review.purpose`:
-
-[source,text]
-----
-Fresh independent disposition of the known Findings after correction.
-Re-test those Findings and direct correction regressions. Do not reopen
-general discovery merely because context is fresh. Report a genuinely
-new MATERIAL defect when supported by new material evidence.
-----
-
-*Precedent already in this repository's own manual-prompting practice*
-(not a WFC Run -- directly prompted review/correction commits): the
-Projected Result Contracts roadmap revision review sequence
-`965d14d` (`docs(wfc): refine projected result contract roadmap`) ->
-`c8c973` (`docs(wfc): review projected result contract roadmap revision`,
-verdict `MATERIAL_REVISION_REQUIRED`) -> `f31a423` (`docs(wfc): correct
-P3.5 conformance criteria`) -> `5979d75` (`docs(wfc): close projected
-result contract roadmap review`, verdict `ACCEPT`). `c8c973`'s review
-identified two MATERIAL findings plus one IMPORTANT and one MINOR;
-`f31a423` corrected only the MATERIAL finding surfaces; `5979d75`'s
-closure review used fresh reviewer context but deliberately did not
-reopen a broad adversarial review -- it checked whether the two MATERIAL
-findings were actually closed and whether the narrow correction
-introduced direct regressions, left the known IMPORTANT sequencing
-question and MINOR vocabulary issue open and non-blocking, and reached
-verdict `ACCEPT` without pretending every observation in the surrounding
-design had disappeared. This is the operating principle in concrete
-form, not a Projected Result Contracts-specific rule.
+See link:operator_manual/ch02_commissioning/03_review.adoc#review-breadth[Review breadth and bounded rereview convergence].
 
 === Mechanism admission and design economy
 
-An adversarial or architecture-oriented development process can keep
-discovering additional conceivable edge cases, guards, authority concepts,
-states, schema fields, lifecycle transitions, or other machinery. Many such
-additions are locally defensible in isolation while still making the
-overall system unnecessarily complex. *"Could this be modeled or guarded
-more completely?" is not, by itself, sufficient justification for adding
-new WFC mechanics.*
-
-A new Coordinator mechanism -- a guard, authority concept, persisted state,
-schema field or result-family concept, lifecycle transition, persistence/
-history structure, reducer mechanic, routing machinery, trusted
-effect/execution mechanic, or other comparable Coordinator architecture --
-should normally be introduced only when it addresses at least one of:
-
-. a concrete *observed* failure mode; or
-. a concrete *imminent authorized* use case that existing mechanics cannot
-  adequately support.
-
-Before adding such mechanics, the design/Commission-authoring process
-should ask:
-
-a. What concrete observed harm or blocked authorized use drives this?
-b. Why are existing mechanics insufficient?
-c. Could Commission authoring, Profile/Policy configuration, bounded
-   authority/scope, review purpose/breadth, evidence configuration, or
-   documentation/operator convention handle this adequately instead?
-d. If new mechanics are genuinely necessary, what is the smallest
-   mechanism that solves the concrete problem?
-e. What is the stop condition -- what evidence would make this problem
-   sufficiently solved, rather than inviting indefinite further hardening?
-
-A merely *conceivable* failure mode does not answer (a). Absent a concrete
-driver, prefer a backlog entry, observation, or operator convention over
-new architecture. A concrete imminent authorized use case is a valid driver
-even when no production failure has occurred yet -- the operative
-distinction is concrete driver versus speculative completeness for its own
-sake, not present failure versus future risk.
-
-The Commission mutation-scope and bounded-rereview rules above are
-instances of the same pattern: each apparent gap was checked against
-existing Commission-authoring/review mechanics before any Coordinator
-change was considered, and neither turned out to need one.
-
-This is an operating heuristic for Commission-authoring and design
-judgment, not a machine-enforced WFC invariant, schema requirement,
-admission gate, reviewer severity, or governance artifact type -- it is
-deliberately left to human/Commission-author judgment rather than solved
-by inventing mechanics that enforce it.
+See link:operator_manual/ch02_commissioning/01_authority.adoc#mechanism-admission[Mechanism admission and design economy].
 
 == 5. Attempt / OPS / STATE identity
 
@@ -351,86 +50,11 @@ See link:operator_manual/ch01_orientation/01_model.adoc#attempt-ops-state[Attemp
 
 == 6. Normal operator workflow
 
-[source,text]
-----
-author / accept concept or task intent
-    -> author Commission (WorkItem, Profile, Policy, Components, Task)
-    -> commit Commission
-    -> wfc-op prepare                  [deterministic Harness mechanics]
-    -> inspect PREPARED / NOT LAUNCHED [maintainer decision point]
-    -> wfc-op launch                   [mechanics; crosses provider boundary]
-    -> wfc-op status                   [read-only, any time, any shell]
-    -> terminal Run state              [WFC-owned semantic/mechanical fact]
-    -> wfc-op archive                  [deterministic, delegating mechanics]
-    -> semantic ledger curation        [maintainer/LLM-assisted judgment,
-                                         never automated by Harness v0]
-    -> Runtime promotion, separately, if accepted
-    -> push, separately, if authorized
-----
-
-[cols="2,3",options="header"]
-|===
-|Step |Nature
-
-|Commission authoring/commit |Semantic -- maintainer-owned, reviewed
-|`prepare` |Deterministic mechanics (section 7), plus one provider-free
-preflight *validation* seam that refuses rather than decides
-|PREPARED / NOT LAUNCHED |Maintainer decision point: go or don't go
-|`launch` |Mechanics up to starting the Run; Hops themselves are WFC-owned
-semantic execution, not Harness mechanics
-|`status` |Deterministic, read-only projection
-|Interpreting a terminal state |Semantic -- maintainer judgment (13-14)
-|`archive` |Deterministic, delegating mechanics
-|Ledger curation |Semantic -- maintainer/LLM-assisted, never Harness-automated
-|Runtime promotion / push |Explicit maintainer action, never automatic
-|===
+See link:operator_manual/ch02_commissioning/02_authoring.adoc#normal-workflow[Normal operator workflow].
 
 === Direct-v1 Commission quickstart
 
-`commission render` is a closed-program, *non-authoritative* projection:
-it turns a maintainer-authored Direct-v1 Intent into ordinary governing
-files, but neither admits a Run nor invokes a provider. From the Development
-repository root, render an Intent and inspect its provenance-labelled report:
-
-[source,shell]
-----
-COMMISSION=example-direct-v1-001
-INTENT="governance/commissions/$COMMISSION/intent.yaml"
-OUT_DIR="governance/commissions/$COMMISSION"
-
-python3 scripts/wfc_op.py commission render \
-  --intent "$INTENT" \
-  --out-dir "$OUT_DIR" \
-  --check
-----
-
-The render writes `work-item.yaml`, `profile.yaml`, `policy.yaml`,
-`task.md`, and `render-manifest.json` below `OUT_DIR`. The manifest records
-the Intent digest and the pinned program, policy-basis, component-manifest,
-and selected-component source commits and digests. Review both the Intent
-and those rendered governing artifacts, then commit them. A commit is
-required between rendering and checking because checking admits a clean,
-named Git tree:
-
-[source,shell]
-----
-git add "$INTENT" "$OUT_DIR"
-git commit -m "chore: add $COMMISSION Commission"
-HEAD="$(git rev-parse HEAD)"
-
-python3 scripts/wfc_op.py commission check \
-  --intent "$INTENT" \
-  --repository "$PWD" \
-  --expected-head "$HEAD" \
-  --out-dir "$OUT_DIR"
-----
-
-`commission check` re-renders from the recorded source pins, requires each
-committed rendered byte to match, and then calls canonical, provider-free
-operator preflight. It is therefore an admission check, not an authorization
-to execute. After it succeeds, use the rendered paths with
-`prepare`; inspect `PREPARED / NOT LAUNCHED`; and launch only under separate
-maintainer authorization (sections 7-8).
+See link:operator_manual/ch02_commissioning/02_authoring.adoc#direct-v1-quickstart[Direct-v1 Commission quickstart].
 
 == 7. PREPARE
 
@@ -603,33 +227,7 @@ mechanical facts -- not automated by `wfc-op archive` or designed here.
 
 == 12. max_autonomous_hops
 
-*This is a safety ceiling, not an estimate of expected Run length.* It is
-the single most commonly misapplied piece of operator judgment here.
-
-`max_autonomous_hops` is a WorkItem field, capped by the repository policy's
-own ceiling and a hard Coordinator maximum. At Run creation it becomes
-`Run.hop_limit`; `status` reports it alongside `hop_used`.
-
-Common mistake: expecting a task to need implementation, review,
-correction, and rereview -- maybe 2-4 Hops normally -- and concluding
-`max_autonomous_hops` should therefore be 4. That does not follow. The same
-task may legitimately need an additional review/correction cycle if a fresh
-reviewer finds another real Finding; a too-tight ceiling then converts
-healthy convergence into an unnecessary `awaiting_human` stop. Conversely,
-an excessively high ceiling enlarges cost and autonomous blast radius if
-agents genuinely fail to converge.
-
-Choose the value as a *bounded worst-case safety ceiling* against repeated
-symptom treatment, review/correction oscillation, an agent failing to
-recognize a legitimate stop condition, or other genuine convergence
-failures -- not as an *expected Hop count*. The probability of a convergence
-defect does not shrink merely because the task seems easy; a "simple" task
-does not justify an artificially tiny ceiling.
-
-For the current bounded self-development workflow, `8` -- the value used in
-section 18's worked example, which converged in 4 Hops with 4 unused -- is a
-reasonable illustration of this principle, not a universal recommendation.
-Set the value per WorkItem from this reasoning, not by copying `8`.
+See link:operator_manual/ch02_commissioning/02_authoring.adoc#hop-budget[max_autonomous_hops].
 
 == 13. Terminal states and awaiting_human
 

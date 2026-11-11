@@ -1,0 +1,146 @@
+ifndef::assembled[]
+= WFC Operator Manual -- Commission authoring
+:operator-docs: ../..
+
+Maturity::  stable
+Authority:: informative
+Updated::   2026-11-11
+Owns::      Commission workflow, Direct-v1 rendering/source pins and admission checking, and Hop-budget mechanics; defers to governing inputs/code and dedicated contracts.
+endif::[]
+
+[[normal-workflow]]
+== Normal operator workflow
+
+[source,text]
+----
+author / accept concept or task intent
+    -> author Commission (WorkItem, Profile, Policy, Components, Task)
+    -> commit Commission
+    -> wfc-op prepare                  [deterministic Harness mechanics]
+    -> inspect PREPARED / NOT LAUNCHED [maintainer decision point]
+    -> wfc-op launch                   [mechanics; starts provider-capable Run]
+    -> wfc-op status                   [read-only, any time, any shell]
+    -> terminal Run state              [WFC-owned semantic/mechanical fact]
+    -> wfc-op archive                  [deterministic, delegating mechanics]
+    -> semantic ledger curation        [maintainer/LLM-assisted judgment,
+                                         never automated by Harness v0]
+    -> Runtime promotion, separately, if accepted
+    -> push, separately, if authorized
+----
+
+[cols="2,3",options="header"]
+|===
+|Step |Nature
+
+|Commission authoring/commit |Semantic -- maintainer-owned, reviewed
+|`prepare` |Deterministic mechanics (link:{operator-docs}/run-preparation.adoc[preparation contract]
+and link:{operator-docs}/wfc_operator_manual.adoc#_7_prepare[Harness reference]), plus one provider-free
+preflight *validation* seam that refuses rather than decides
+|PREPARED / NOT LAUNCHED |Maintainer decision point: go or don't go
+|`launch` |Mechanics up to starting the Run; Hops themselves are WFC-owned
+semantic execution, not Harness mechanics
+|`status` |Deterministic, read-only projection
+|Interpreting a terminal state |Semantic -- maintainer judgment (link:{operator-docs}/wfc_operator_manual.adoc#_13_terminal_states_and_awaiting_human[terminal states]
+and link:{operator-docs}/wfc_operator_manual.adoc#_14_successor_runs[successors])
+|`archive` |Deterministic, delegating mechanics
+|Ledger curation |Semantic -- maintainer/LLM-assisted, never Harness-automated
+|Runtime promotion / push |Explicit maintainer action, never automatic
+|===
+
+Trusted publication, evidence and acceptance follow the ordering in
+link:{operator-docs}/wfc_operator_manual.adoc#_22_trusted_evidence_worker_completion_and_correction_routing[trusted evidence, worker completion and correction routing].
+The link:{operator-docs}/self-development.adoc[self-development contract]
+retains the specialization and Runtime-promotion procedure.
+
+[[direct-v1-quickstart]]
+=== Direct-v1 Commission quickstart
+
+`commission render` is a closed-program, *non-authoritative* projection:
+it turns a maintainer-authored Direct-v1 Intent into ordinary governing
+files, but neither admits a Run nor invokes a provider. From the Development
+repository root, render an Intent and inspect its provenance-labelled report:
+
+[source,shell]
+----
+COMMISSION=example-direct-v1-001
+INTENT="governance/commissions/$COMMISSION/intent.yaml"
+OUT_DIR="governance/commissions/$COMMISSION"
+
+python3 scripts/wfc_op.py commission render \
+  --intent "$INTENT" \
+  --out-dir "$OUT_DIR" \
+  --check
+----
+
+Here `--check` prints the provenance-labelled render report; it does not
+perform the separate admission check below.
+
+The render writes `work-item.yaml`, `profile.yaml`, `policy.yaml`,
+`task.md`, and `render-manifest.json` below `OUT_DIR`. The manifest records
+the Intent digest and the pinned program, policy-basis, component-manifest,
+and selected-component source commits and digests. Source commits are full
+lowercase 40-character SHAs; program and policy records are loaded from
+those Git objects, and selected components from the pinned component-manifest
+commit, rather than from mutable working-tree copies. Review both the Intent
+and those rendered governing artifacts, then commit them. A commit is
+required between rendering and checking because checking admits a clean,
+named Git tree:
+
+[source,shell]
+----
+git add "$INTENT" "$OUT_DIR"
+git commit -m "chore: add $COMMISSION Commission"
+HEAD="$(git rev-parse HEAD)"
+
+python3 scripts/wfc_op.py commission check \
+  --intent "$INTENT" \
+  --repository "$PWD" \
+  --expected-head "$HEAD" \
+  --out-dir "$OUT_DIR"
+----
+
+`commission check` re-renders from the recorded source pins, requires each
+committed rendered byte to match, including the manifest. It also requires
+the reused component manifest and selected-component bytes at the checked
+HEAD to equal their pinned source objects, and then calls canonical,
+provider-free operator preflight. It is therefore an admission check, not
+an authorization to execute. After it succeeds, use the rendered paths with
+`prepare`; inspect `PREPARED / NOT LAUNCHED`; and launch only under separate
+maintainer authorization (link:{operator-docs}/run-preparation.adoc[preparation contract]
+and link:{operator-docs}/wfc_operator_manual.adoc#_8_launch[LAUNCH]).
+
+[[hop-budget]]
+== max_autonomous_hops
+
+*This is a safety ceiling, not an estimate of expected Run length.* It is
+the single most commonly misapplied piece of operator judgment here.
+
+`max_autonomous_hops` is a WorkItem field, capped by the repository policy's
+own ceiling and a hard Coordinator maximum. At Run creation it becomes
+`Run.hop_limit`; `status` reports it alongside `hop_used`.
+
+Common mistake: expecting a task to need implementation, review,
+correction, and rereview -- maybe 2-4 Hops normally -- and concluding
+`max_autonomous_hops` should therefore be 4. That does not follow. The same
+task may legitimately need an additional review/correction cycle if a fresh
+reviewer finds another real Finding; a too-tight ceiling then converts
+healthy convergence into an unnecessary `awaiting_human` stop. Conversely,
+an excessively high ceiling enlarges cost and autonomous blast radius if
+agents genuinely fail to converge.
+
+Choose the value as a *bounded worst-case safety ceiling* against repeated
+symptom treatment, review/correction oscillation, an agent failing to
+recognize a legitimate stop condition, or other genuine convergence
+failures -- not as an *expected Hop count*. The probability of a convergence
+defect does not shrink merely because the task seems easy; a "simple" task
+does not justify an artificially tiny ceiling.
+
+For the current bounded self-development workflow, `8` -- the value used in
+the link:{operator-docs}/wfc_operator_manual.adoc#_19_worked_example[worked example],
+which recorded 4 Hops with 4 unused -- is a reasonable illustration of this
+principle, not a universal recommendation.
+Set the value per WorkItem from this reasoning, not by copying `8`.
+
+For the provisional self-development recommendation, see the
+link:{operator-docs}/self-development.adoc#_commission_hop_budget_max_autonomous_hops[self-development Hop-budget guidance];
+its task-specific constraints and applicable ceilings still govern.
