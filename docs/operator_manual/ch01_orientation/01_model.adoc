@@ -1,0 +1,128 @@
+ifndef::assembled[]
+= WFC Operator Manual -- Mental model
+:operator-docs: ../..
+
+Maturity::  stable
+Authority:: informative
+Updated::   2026-11-11
+Owns::      Purpose, operator vocabulary, repositories and trust boundaries, and Attempt/OPS/STATE identity.
+endif::[]
+
+[[purpose-and-audience]]
+== Purpose and audience
+
+The operator manual reading path is for a maintainer returning months
+later, with no memory of the surrounding concept papers or chat history,
+to operate a WFC self-development Run: prepare it, launch it, check on it,
+archive it, and correctly interpret a stop.
+
+It is not another architecture concept (the
+link:{operator-docs}/cold_storage/backlog/pre-0.1.0b1/operator-harness-v0/wfc_operator_harness_v0_concept_2026-10-06.adoc[historical Harness v0 concept],
+`docs/wfc_projected_result_contracts_concept_2026-10-07.adoc`), not a
+restatement of the generic deterministic-preparation contract
+(`docs/run-preparation.adoc`), not a restatement of the Runtime-N/
+Development-N+1 topology and promotion runbook
+(`docs/self-development.adoc`), and not a restatement of the four
+maintainer-chosen recovery outcomes (`docs/run-recovery-and-salvage.adoc`).
+Where this manual overlaps one of those, the dedicated document is
+authoritative; this manual summarizes only enough to operate correctly and
+links there for rationale.
+
+[[mental-model]]
+== Five-minute mental model
+
+[source,text]
+----
+COMMISSION / GOVERNING INPUTS
+    = What may this Run do?
+      (WorkItem, Profile, RepositoryPolicy, Components, Task -- reviewed
+       and committed before any mechanics begin)
+
+EXECUTION BINDINGS
+    = Which adapter/model/reasoning configuration performs each role?
+      (--role-binding, written to execution-bindings.yaml)
+
+ATTEMPT
+    = The identity of one concrete prepared execution attempt.
+      (a name; deterministically maps to OPS and STATE paths)
+
+OPS
+    = Harness-owned prepared execution envelope.
+      Pins identities/environment/bindings/launch mechanics.
+      Created by PREPARE. Lives at ~/wfc-ops/<attempt>.
+
+STATE
+    = WFC-owned persisted Run state.
+      Created only when LAUNCH actually starts a Run.
+      Lives at ~/wfc-state/<attempt>.
+
+EVIDENCE
+    = Durable archived evidence derived from the Run after execution.
+      Today: the sibling workflow-coordinator-run-evidence repository.
+
+RUNTIME
+    = The accepted WFC implementation used to execute Runs.
+      Separate from Development; promoted only by explicit maintainer
+      action; never "latest main".
+----
+
+Two distinctions matter most operationally:
+
+* *OPS vs. STATE* -- OPS is Harness's own prepared envelope and exists the
+  moment `prepare` succeeds. STATE is WFC's own Run state and must *not*
+  exist yet at that point; it is created only when `launch` actually starts
+  a Run. Confusing "prepared" with "launched" is the most common misreading
+  of this system.
+* *Commission authority vs. execution choice* -- WorkItem/Profile/Policy/
+  Components/Task is *what may happen*; `--role-binding` is *which concrete
+  adapter/model/reasoning performs it*. A Commission may stay semantically
+  identical while its execution bindings differ, if separately authorized
+  (link:{operator-docs}/wfc_operator_manual.adoc#_4_inputs_and_ownershiplifetime[inputs and ownership/lifetime]).
+
+[[repositories-and-trust-boundaries]]
+== Repositories and trust boundaries
+
+[cols="1,3,2",options="header"]
+|===
+|Repository |Role |Mutability from Harness
+
+|`workflow-coordinator` (Development)
+|Evolving candidate implementation and Commission inputs.
+|Harness only reads it (pins HEAD, requires clean); `launch` invokes the
+pinned *Runtime's* executable against it.
+
+|`workflow-coordinator-runtime` (Runtime)
+|The accepted WFC implementation that executes Runs. Detached, clean,
+`remote.origin.pushurl=DISABLED`.
+|Never mutated by Harness or a Run. Changed only by explicit maintainer
+promotion (link:{operator-docs}/wfc_operator_manual.adoc#_15_runtime_promotion[Runtime promotion]).
+
+|`workflow-coordinator-run-evidence` (Evidence)
+|Durable mechanical archive plus the curated semantic run ledger.
+|Never mutated by `prepare`/`launch`/`status`. `archive` delegates to its
+own canonical wrapper, which commits into it.
+|===
+
+Harness v0 (`scripts/wfc_op.py`, living in Development, outside the
+`workflow_coordinator` package) is the deterministic mechanical layer that
+operates across all three. It owns none of their semantic content.
+
+[[attempt-ops-state]]
+== Attempt / OPS / STATE identity
+
+[source,text]
+----
+attempt = <work-item-slug>-<date>-<counter>
+          # e.g. wfc-projected-result-contracts-p1-20261007-01
+
+OPS   = ~/wfc-ops/<attempt>
+STATE = ~/wfc-state/<attempt>
+----
+
+This mapping is deterministic and holds *before STATE actually exists*: the
+Attempt name alone determines where OPS will be created and where STATE will
+later materialize -- no registry or database. `wfc-op`'s own
+`ops_root()`/`state_root()` and the canonical `wfc-archive-run` wrapper's
+`attempt_id=${state_root##*/}` derivation are the same convention, reused,
+not duplicated.
+
