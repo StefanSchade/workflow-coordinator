@@ -5,10 +5,10 @@
 Maturity::  stable
 Authority:: informative
 Updated::   2026-11-11
-Owns::      Remaining Harness v0 operating guidance; handed-over orientation, commissioning and running sections are pointers to the partial Operator Manual.
+Owns::      Remaining Harness v0 operating guidance; handed-over orientation, commissioning, running and evidence sections are pointers to the partial Operator Manual.
 
 Start with the link:operator_manual/operator_manual.adoc[partial Operator
-Manual and its reading path]. Orientation, commissioning and running have handed
+Manual and its reading path]. Orientation, commissioning, running and evidence have handed
 over; their old headings below point to the current sections. All remaining bodies retain
 their existing standing as current Harness v0 / WFC operational reference.
 The dedicated link:run-preparation.adoc[preparation],
@@ -70,45 +70,11 @@ See link:operator_manual/ch03_running/02_launch_status.adoc#status[STATUS].
 
 == 10. ARCHIVE
 
-[source,shell]
-----
-python3 scripts/wfc_op.py archive "$ATTEMPT" --dry-run
-python3 scripts/wfc_op.py archive "$ATTEMPT"
-----
-
-A deterministic, delegating wrapper around the canonical
-`workflow-coordinator-run-evidence/scripts/wfc-archive-run`. Harness derives
-the wrapper's two positional arguments -- STATE root and Evidence repository
--- from the Attempt's own preparation facts, refusing if the two preparation
-records disagree on the Evidence path. Default behavior is always
-*canonical dry-run, then canonical real archive*; passing `--dry-run` to
-`wfc-op archive` stops after the plan. `--semantic-json`, if given, is
-forwarded verbatim. Harness implements none of the copying, hashing,
-manifest, or fact-extraction logic itself.
-
-Three layers stay conceptually separate:
-
-[source,text]
-----
-STATE              live/persisted WFC execution state
-mechanical archive deterministic archived evidence, committed by the
-                    canonical wrapper -- a faithful copy-with-manifest
-semantic ledger     curated semantic interpretation/history
-                    (project_memory/run_ledger.adoc in Evidence)
-----
-
-Harness v0 performs only the mechanical archive; it never writes, updates,
-or interprets the semantic ledger.
+See link:operator_manual/ch04_evidence/02_archive.adoc#archive[ARCHIVE].
 
 == 11. Semantic ledger curation
 
-After a mechanical archive exists, current project convention adds a
-curated entry to `workflow-coordinator-run-evidence/project_memory/
-run_ledger.adoc`: Runtime version, domain exercised, what happened across
-Hops, model/role bindings, related commits/BUGs, predecessor/successor
-links, lessons, evidence location. This is maintainer-owned, commonly
-LLM-assisted, and performed separately against the already-archived
-mechanical facts -- not automated by `wfc-op archive` or designed here.
+See link:operator_manual/ch04_evidence/02_archive.adoc#semantic-ledger[Semantic ledger curation].
 
 == 12. max_autonomous_hops
 
@@ -166,41 +132,7 @@ manual exists to prevent.
 
 == 16. Evidence architecture: current state vs. future direction
 
-*Current state (implemented today).* For self-development, mechanical
-archive evidence lives in the sibling `workflow-coordinator-run-evidence`
-repository under `archive/<classification>/<attempt>/`, each with a
-`manifest.json` of copied files and SHA-256 digests. The curated semantic
-ledger lives in the same repository at `project_memory/run_ledger.adoc`.
-`wfc-op archive` delegates to its `scripts/wfc-archive-run`; Harness owns
-none of its copy/manifest/commit logic.
-
-One practical limitation of the current archive, confirmed by the
-link:cold_storage/backlog/pre-0.1.0b1/projected-result-contracts/wfc_p2_stagnation_audit_2026-10-09.adoc[historical P2 stagnation audit]: a trusted evidence
-observation persists its exit classification, exit code, and byte-count/
-SHA-256 digests of stdout and stderr, but not the full output body. A failed
-(`"fail"`-status) observation additionally carries a bounded, explicitly
-untrusted diagnostic capture (at most a 16 KiB tail of each of stdout/
-stderr, with truncation metadata), giving a subsequent correction Hop
-(section 22.4) a recoverable signal of *which* assertions or tests failed
-without re-running the command itself. This capture is never produced for a
-`"pass"` observation, is never fabricated for an `"error"` observation that
-captured no real bytes, and is never merged into or treated as trusted A2
-evidence -- it does not change what WFC-EVID-08 requires of the digest/
-body-omission fields above. Beyond this bounded tail, the full output body
-still is not persisted; a correction Hop may still need to re-run the
-command itself for anything the tail does not cover.
-
-*Future direction (design intent only -- not implemented).* Evidence
-archival should eventually be a WFC *product capability*, not merely a
-self-development add-on: a consumer repository might configure durable
-archival as disabled, repository-local, or external (a sibling/central
-Evidence repository, as self-development already uses). Motivation:
-long-term auditability favors curated, machine-readable records over
-uncontrolled raw logs; future retrieval tooling may be as simple as
-deterministic `jq`/scripts before anything more elaborate is justified.
-Nothing here designs or implements this; it is recorded so a future
-maintainer does not mistake today's self-development-specific arrangement
-for the final product shape.
+See link:operator_manual/ch04_evidence/02_archive.adoc#evidence-architecture[Evidence architecture: current state vs. future direction].
 
 == 17. Troubleshooting
 
@@ -389,328 +321,28 @@ explicitly, consider Runtime promotion (section 15) and push.
 
 == 22. Trusted evidence, worker completion, and correction routing
 
-*A Commission that conflates worker completion with trusted acceptance, or
-that omits `failed_evidence_route` from a review gate, can turn a declared
-evaluator/optimizer correction loop into a one-shot acceptance gate --
-silently, because the omission is syntactically valid.* This section
-documents the current mechanics precisely enough to author around that
-trap. The motivating observed failure is recorded in the
-link:cold_storage/backlog/pre-0.1.0b1/projected-result-contracts/wfc_p2_stagnation_audit_2026-10-09.adoc[historical P2 stagnation audit]; read this section for the
-generic mechanism, that audit for one concrete case history.
+See link:operator_manual/ch04_evidence/01_acceptance.adoc#trusted-acceptance[Trusted evidence, worker completion, and correction routing].
 
 === 22.1 The trusted ordering within a Hop
 
-Reconstructed from `vertical.py::run_one_hop` and
-`reducer.py::reduce_result`. This ordering governs every Hop and is the
-basis for everything else in this section:
-
-[source,text]
-----
-semantic agent result
-    -> CommitIntent admission
-    -> Coordinator-owned trusted commit
-    -> Coordinator-trusted evidence
-    -> route reduction / application
-----
-
-Each stage, briefly:
-
-* *Semantic agent result* -- the provider returns a structured result (a
-  `WorkResult` for a `worker` phase, a `ReviewVerdict` for a review gate).
-  It carries the agent's requested route and, optionally, a `CommitIntent`.
-* *CommitIntent admission* -- a non-null `CommitIntent` is admitted only
-  when the result's outcome is `completed` (or, for a gate, `changes_required`
-  committing only to that phase's own durable review artifact), scope is
-  unchanged, `requires_human` is false, `escalation` is null, and the phase
-  grants both the `edit` and `commit` actions. The agent never runs Git
-  itself; `CommitIntent` is a proposal, never proof that anything was
-  committed.
-* *Coordinator-owned trusted commit* -- if admitted, the Coordinator itself
-  materializes one bounded local commit. This is *publication of bounded
-  work, not acceptance*.
-* *Coordinator-trusted evidence* -- only now does the Coordinator execute
-  the phase's required evidence commands (`phase.evidence`), after the
-  result and after any commit (see section 16 for a persistence
-  limitation on this evidence). An agent cannot have proven this outcome at
-  result-authoring time; the fact does not exist yet when the result is
-  authored.
-* *Route reduction* -- the reducer resolves the applied route from the
-  requested route and the evidence disposition (22.3), then persists the
-  checkpoint.
+See link:operator_manual/ch04_evidence/01_acceptance.adoc#trusted-hop-order[The trusted ordering within a Hop].
 
 === 22.2 Five concepts that must not be conflated
 
-[cols="1,1,3",options="header"]
-|===
-|Concept |Owner |Meaning
-
-|Worker completion
-|agent (semantic)
-|`status: completed` -- the bounded candidate for this phase is coherent
-and ready for its declared next step. Gates `CommitIntent` admission;
-nothing else.
-
-|Trusted commit
-|Coordinator
-|One bounded local commit materialized from an admitted `CommitIntent`.
-Publication, not acceptance.
-
-|Trusted evidence
-|Coordinator
-|Independent, post-commit, Coordinator-executed observation of
-`phase.evidence`: `pass`, clean `fail`, or `error`/`not_run`. Agent-side
-test runs are never this, however diagnostic they are.
-
-|Review acceptance
-|gate phase (semantic)
-|`verdict: accept` from a phase with sufficient Finding-disposition
-authority over any open blocking Finding.
-
-|Run completion
-|reducer
-|A `complete`-effect route actually applied, with no open blocking Finding
-and required evidence not cleanly failing.
-|===
-
-All five must align for a Run to complete; no single one implies any
-other. Review acceptance (a gate's own semantic verdict) and trusted
-evidence (the Coordinator's independent mechanical observation) are
-separate authorities over the same gate -- 22.3 explains how the reducer
-combines them.
-
-In particular, worker `completed` does *not* mean "I have already proven
-every downstream Coordinator-required acceptance criterion" -- that
-reading is unsatisfiable, because trusted evidence executes after the
-result is parsed (22.1), so no worker can truthfully assert its outcome at
-authoring time. A worker that downgrades to `blocked` to avoid asserting
-that is not being honest about a red downstream gate -- it is destroying
-its own trusted-commit path and leaving otherwise-good work uncommitted.
-Reserve `blocked` for when the current Hop itself lacks authority, scope,
-or a capability it needs -- never for a downstream gate that has not run
-yet.
+See link:operator_manual/ch04_evidence/01_acceptance.adoc#five-acceptance-concepts[Five concepts that must not be conflated].
 
 === 22.3 `failed_evidence_route`
 
-`failed_evidence_route` is a field of a phase's `review:` descriptor --
-`review.failed_evidence_route` -- and only a *gate* review
-(`review.authority: gate`) may declare it; a `worker` phase (`review:
-null`) structurally cannot. When declared, it must name one of that phase's
-own routes whose effect is `goto` or `await_human`; the loader refuses an
-unknown target or every other effect. An `await_human` route uses its normal
-mandatory authored `question`.
-
-For a *new launch* (including a prepared successor), every phase with
-non-empty Coordinator-required `evidence:` must be a gate and must declare
-this field. Thus a `goto` target is the explicit correction disposition,
-while an `await_human` target is the explicit human-disposition choice. A
-worker, advisory, or other non-gate phase with required evidence is
-inadmissible for a new launch; worker phases with `evidence: []` remain the
-canonical shape. Agent-side diagnostic test execution is unaffected.
-
-This is a new-launch admission rule, not a historical parsing rule. Existing
-profiles, replay, and recovery remain readable without revalidation under it;
-in particular, `_export_salvage()` intentionally reloads predecessor profiles
-without applying this new-launch admission check.
-
-Its effect at reduction:
-
-[source,text]
-----
-required evidence: pass
-    -> ordinary reduction of the agent's requested route
-
-required evidence: clean fail, gate declares a valid failed_evidence_route
-    -> that route REPLACES the agent's requested route
-       (a reviewer's `accept` can be deterministically overridden)
-
-required evidence: clean fail, no valid failed_evidence_route on this gate
-    -> Run stops awaiting_human / required_evidence_failed_without_route
-
-required evidence: error / not_run
-    -> hard mechanical stop, preempting even the semantic result
-----
-
-So `failed_evidence_route` is the *only* mechanism that lets a mechanical
-evidence failure be absorbed into a correction loop rather than stopping
-the Run. A gate carrying required evidence but no `failed_evidence_route`
-can still route a semantic `changes_required` Finding to correction -- but
-a clean mechanical evidence failure at that same gate has nowhere to go.
-If a Run stops this way, see the troubleshooting entry in section 17.
-
-Do not read this as "every evidence failure should route to correction."
-A Commission may deliberately choose an `await_human` route, with its
-authored question, instead. The admission rule requires that the choice be
-explicit rather than represented by omission.
+See link:operator_manual/ch04_evidence/01_acceptance.adoc#failed-evidence-route[`failed_evidence_route`].
 
 === 22.4 Canonical converging review topology
 
-The current mechanics already support a genuine autonomous
-evaluator/optimizer correction loop. The canonical shape:
-
-[source,text]
-----
-integration / implementation [worker]
-    evidence: []
-    completed -> independent_review
-
-independent_review [gate]
-    evidence: [pytest or other acceptance evidence]
-    review.failed_evidence_route: correction
-    accept            -> complete
-    changes_required  -> goto correction
-
-correction [worker]
-    evidence: []
-    completed -> rereview
-
-rereview [gate]
-    evidence: [pytest or other acceptance evidence]
-    review.failed_evidence_route: correction
-    accept            -> complete
-    changes_required  -> goto correction
-----
-
-Properties this shape gives you, all already executable under the
-currently accepted mechanics, with no Core change:
-
-* An imperfect candidate can still be committed and handed to independent
-  review, because the worker phase carries no required evidence to fail.
-* It remains impossible to *complete* while required evidence is red,
-  because both `complete` routes sit behind gates carrying that evidence.
-* A reviewer's semantic `accept` is deterministically overridden by a
-  clean trusted-evidence failure, routing to `correction` instead.
-* `rereview` can repeat the same gate after correction, producing a
-  genuine multi-Hop autonomous loop, bounded by the ordinary Hop budget
-  (section 12) rather than looping indefinitely.
-
-Worker phases *may* still run the same evidence command themselves,
-diagnostically -- `phase.evidence` governs only what the *Coordinator*
-requires, never what an agent is permitted to run in its own shell. The
-distinction that matters:
-
-[source,text]
-----
-agent diagnostic execution  !=  Coordinator-required evidence attached to that phase
-----
-
-The first is useful input the worker can use to improve its candidate
-before handing it to the gate. The second is what the reducer actually
-trusts, and it belongs on the gate, not the worker.
-
-This canonical shape composes with the existing review-breadth guidance
-(section 4, "Review breadth and bounded rereview convergence"): a worker
-may make a small bounded correction and still hand the *complete current
-candidate* to review -- latest mutation scope and review scope are
-different concepts. The first `independent_review` of a candidate should
-be broad, inspecting the entire accumulated candidate rather than only the
-latest diff. A subsequent `rereview` should normally narrow to the known
-current-Run Findings, the corresponding correction, direct regressions,
-and the gate's own trusted evidence; a genuinely new MATERIAL defect
-supported by concrete new evidence may still escape that bounded surface.
+See link:operator_manual/ch04_evidence/01_acceptance.adoc#review-topology[Canonical converging review topology].
 
 === 22.5 Commission-authoring anti-patterns
 
-[cols="2,3,3",options="header"]
-|===
-|Anti-pattern |Shape |Why dangerous
-
-|Full acceptance evidence on a worker phase
-|A normal (non-gate) worker phase in a converging correction workflow
-declares the full/global acceptance evidence as `phase.evidence`.
-|A `worker` phase (`review: null`) structurally cannot declare
-`failed_evidence_route` (22.3). A clean evidence failure there has no
-absorbing route and is terminal -- the worker Hop becomes an accidental
-one-shot acceptance gate.
-
-|Gate without `failed_evidence_route`
-|A review/rereview gate carries required acceptance evidence and has a
-`correction` route available, but does not declare
-`review.failed_evidence_route`.
-|A semantic `changes_required` Finding can still route to `correction`,
-but a mechanical evidence failure cannot. The profile advertises a
-correction loop it cannot actually exercise from an evidence failure.
-
-|Task prose demanding full-suite proof before `completed`
-|Commission/task text tells a worker not to report `status: completed`
-until the downstream full acceptance suite is green.
-|Conflates worker completion with trusted acceptance (22.2). It can force
-useful, commit-ready work into `blocked`, which suppresses that work's own
-trusted-publication path instead of letting the gate's evidence do its
-job.
-
-|Escalating on a sandbox-only tooling gap
-|An agent cannot execute a trusted evidence command in its own sandbox
-(for example, a networked install its environment blocks) and escalates
-for that reason alone.
-|The worker should report that diagnostic limitation in its `summary` and
-continue, provided its bounded work can otherwise be completed --
-Coordinator execution, not the agent's shell, is the trusted authority.
-Escalating here is an unjustified scope/authority claim, not a correct
-refusal.
-
-|Unsatisfiable prerequisite
-|Mandate or acceptance text makes continuing, or being accepted,
-conditional on a fact or confidence level that cannot be reached using
-only the evidence-gathering means this Commission's own grant actually
-provides -- regardless of the specific wording used to state it. Most
-acute when the one decisive evidence source is explicitly withheld by
-the same Commission's `withheld_authority`.
-|No Worker skill resolves a deadlock the Commission itself created; the
-same stop recurs identically across successor Commissions. Worked case:
-`docs/backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`,
-Attempts `wfc-claude-adapter-write-permissions-001`
-(`RUN-dcdf990244dd4e9cba19e40dea2d2400`), `-002`
-(`RUN-878fbc45e9454cef93cccea7423475ee`), and `-003`
-(`RUN-19d5cc40915d466b8790171f3308a4f4`) -- all three stopped at H001
-with zero candidate on a variant of the same unresolved demand.
-
-|Unverifiable acceptance conditions
-|Acceptance or durable-artifact wording requires an artifact to
-demonstrate a fact that a cited governing source (a BUG record, a design
-document) already states cannot be established within the Commission's
-granted authority.
-|Guarantees either a stall or an artifact that overclaims. Check
-acceptance wording against any cited source's own stated limitation
-before committing, not only against the Commission's own prose.
-
-|Constraint accumulation across successor Commissions
-|A successor authored after a predecessor's *clean* stop
-(`worktree_clean: true`, no candidate) adds new provenance narrative and
-withheld-authority clauses, restating predecessor history, without
-removing or restructuring the demand that produced the stop.
-|Task length and apparent specificity grow every iteration while the
-actual deadlock is untouched -- 16.4KB, 22.6KB, then 28.1KB across the
-three Attempts above -- consuming Hop budget on historical re-reading
-and creating a false impression of narrowing progress toward a
-resolution that was never addressed.
-|===
+See link:operator_manual/ch04_evidence/01_acceptance.adoc#acceptance-anti-patterns[Commission-authoring anti-patterns].
 
 === 22.6 Semantic Commission-preflight checklist
 
-A short operator reading check before committing a Commission -- in
-addition to 22.5 above and the successor-continuation runbook's
-mechanical validation step. This is something an Operator applies while
-reading the drafted Commission; it does not require the Commission's own
-task text to contain any particular boilerplate.
-
-. Trace every Mandate/acceptance sentence that makes continuing, or
-  being accepted, conditional on a fact. Confirm the Commission's own
-  granted authority actually provides a way to reach that fact, or a
-  reasoned judgment about it from available evidence -- not merely that
-  the sentence sounds rigorous.
-. If a cited governing source states its own limitation on what can be
-  established by the means this Commission grants, check the
-  Commission's acceptance wording against that stated limitation.
-. If this Commission succeeds a predecessor that stopped clean on an
-  unresolved demand, confirm this Intent removes or restructures that
-  demand rather than adding another narrowed carve-out or provenance
-  paragraph on top of it.
-
-Experimental implementation within a Commission's granted authority is
-the ordinary default (`self-development.adoc`, "Commission authoring")
--- a Worker may choose, try, and record residual uncertainty about a
-technical approach without that becoming a missing-authority escalation,
-and task text need not restate this default. Write an explicit exception
-into the task only when one genuinely applies: a fact the Commission
-deliberately withholds authority to establish, or a prerequisite the
-Worker must not attempt to resolve by investigation.
+See link:operator_manual/ch04_evidence/01_acceptance.adoc#commission-preflight[Semantic Commission-preflight checklist].
