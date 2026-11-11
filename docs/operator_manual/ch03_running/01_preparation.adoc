@@ -1,0 +1,336 @@
+ifndef::assembled[]
+= WFC Operator Manual -- Run preparation
+:operator-docs: ../..
+
+Maturity::  stable
+Authority:: normative
+Updated::   2026-11-11
+Owns::      The unchanged generic deterministic Run-preparation contract across WFC-operated repositories; the Harness subsection describes its current self-development implementation.
+endif::[]
+
+[[run-preparation]]
+== Run preparation
+
+This is the generic WFC operator contract for preparing and launching a Run
+once a semantic commission has been reviewed and committed. It is not a
+general CLI manual and does not authorize a Run.
+
+It applies uniformly across every WFC-operated repository -- WFC
+self-development, Core as a consumer repository, Latin as a foreign-domain
+consumer, and any future consumer -- and does not assume any particular
+target repository's topology. A repository's own documentation may specialize
+this contract (for example, WFC self-development's separate Runtime/target
+clones and promotion rules in link:{operator-docs}/self-development.adoc[self-development.adoc]),
+but ordinary Run-preparation mechanics are defined once, here.
+
+This anchors an existing operating practice against a recurring operator
+mistake: after a semantic WorkItem commission has been reviewed and committed,
+the next step -- preparing a Run for launch -- keeps getting reframed as
+another LLM/agent task. It is not. This document is not a new CLI design, a
+new orchestration feature, or a Project Memory entry; it documents an
+already-established procedure precisely enough that it stops being
+rediscovered or accidentally changed.
+
+=== What preparation is, and is not
+
+Preparation follows the reviewed, committed Commission (WorkItem, Profile,
+RepositoryPolicy, Components and Task). The boundaries and sequence below
+own the generic procedure; the Harness subsection supplies the concrete
+command and its self-development substrate distinction.
+
+[[three-boundaries]]
+== Three boundaries
+
+Run preparation crosses three distinct boundaries. Keep them separate:
+
+Commission commit::
+  Semantic authority is fixed. The WorkItem, profile, RepositoryPolicy, task,
+  and any commission-scoped governance are reviewed and committed. Later
+  execution-binding selection may choose how authorized work is executed, but
+  cannot widen that authority.
+
+`launch.sh` execution::
+  Only the maintainer's explicit execution of `launch.sh` enters the
+  provider-capable execution path and may cross the provider boundary. A
+  launched WFC process may perform preflight, materialize Run/state, and
+  register the checkout, and still fail on a mechanical condition before ever
+  reaching a provider.
+
+First real provider invocation::
+  The provider boundary itself is crossed only when WFC actually dispatches
+  the first real provider invocation. A Run may begin to materialize and
+  still fail before that boundary is reached.
+
+Executing `launch.sh` does not itself cross the provider boundary; do not
+conflate the second boundary with the third.
+
+[[deterministic-preparation]]
+== Ordinary preparation is deterministic, not a Hop
+
+Once the repository-backed semantic commission has been committed, ordinary
+Run preparation is deterministic maintainer/operator mechanics: selecting
+already-known exact commits, creating fresh OPS directories, exporting pinned
+commits, creating virtual environments, installing frozen exports, writing
+already-selected execution bindings, assembling `PATH`, running provider-free
+preflight, and writing `launch.sh`.
+
+It is not another semantic agent Hop. It does not require an LLM to decide or
+author the next steps. An LLM may be used when the preparation procedure
+itself is being designed, changed, debugged, or reviewed -- that is not part
+of normal execution of the established procedure.
+
+[[ops-and-state]]
+== OPS root versus state root
+
+Select a fresh, initially absent OPS root and a fresh state root.
+
+The OPS root is then created and populated by deterministic preparation: it
+comes to contain the Runtime export/environment, the target/evidence
+export/environment, `execution-bindings.yaml`, preparation logs, and
+`launch.sh`.
+
+The state root must remain absent throughout preparation. Its freshness is a
+WFC launch precondition (the `--state-root` argument), not a preparation side
+effect, and it is not the same requirement as the OPS root's initial absence.
+
+[[canonical-sequence]]
+== Canonical sequence
+
+After the repository-backed commission has been reviewed and committed,
+semantic preparation is complete. From this point until launch, Run
+preparation is deterministic maintainer/operator mechanics; it is not an
+agent Hop and does not require an LLM to decide or author the next steps.
+
+. Pin exact target and Runtime commits.
+. Require clean target and Runtime checkouts.
+. Select a fresh, initially absent OPS root and a fresh state root; the state
+  root must remain absent throughout preparation.
+. Export the exact Runtime commit and install it into a fresh environment.
+. Export the exact target baseline and build the separate evidence
+  environment.
+. Write `execution-bindings.yaml` from maintainer-selected role bindings.
+. Construct and inspect the controlled `PATH`.
+. Run provider-free readiness/preflight checks.
+. Materialize deterministic `launch.sh`.
+. Stop.
+
+Do not commission another LLM merely to perform steps 1-9. Only the
+maintainer's explicit execution of `launch.sh` enters the provider-capable
+execution path and may cross the provider boundary; the provider boundary
+itself is crossed only when WFC actually dispatches the first real provider
+invocation.
+
+A repository specializing this contract may add its own preconditions on top
+of this sequence (for example, WFC self-development's requirement that the
+Runtime checkout satisfy a detached / push-disabled invariant); such additions
+narrow, and never replace, the sequence above.
+
+[[target-export-rule]]
+== Target export rule
+
+Current preparation practice strengthens the older separate-evidence-
+environment rule by deriving that environment from a `git archive`/export of
+the exact pinned target baseline commit, not merely installing from an
+ambient checkout. Older material that does not spell this out is not thereby
+wrong; it simply predates this stronger, now-preferred form of the same
+separate-evidence-environment rule.
+
+[[illustrative-shape]]
+== Illustrative shape
+
+The following is illustrative, not a second launcher implementation. It shows
+the shape of the reusable preparation pattern, not a specific commission's
+values.
+
+[source,shell]
+----
+TARGET=...           # repository this Run operates on -- e.g. a
+                      # self-development Development N+1 clone, or a
+                      # consumer repository such as Core or Latin
+RUNTIME=...            # WFC engine checkout at the accepted Runtime commit
+TARGET_HEAD=...        # exact pinned target commit
+RUNTIME_HEAD=...       # exact accepted Runtime commit
+OPS=...                # fresh, initially absent
+STATE_ROOT=...         # fresh; must remain absent throughout preparation
+
+test ! -e "$OPS"
+test ! -e "$STATE_ROOT"
+
+# exact HEAD / cleanliness checks against $TARGET_HEAD and $RUNTIME_HEAD
+
+mkdir -p "$OPS"
+
+mkdir -p "$OPS/runtime-src"
+git -C "$RUNTIME" archive "$RUNTIME_HEAD" | tar -x -C "$OPS/runtime-src"
+python3 -m venv "$OPS/runtime-env"
+"$OPS/runtime-env/bin/pip" install "$OPS/runtime-src"
+
+mkdir -p "$OPS/target-src"
+git -C "$TARGET" archive "$TARGET_HEAD" | tar -x -C "$OPS/target-src"
+python3 -m venv "$OPS/target-env"
+"$OPS/target-env/bin/pip" install "$OPS/target-src[dev]"
+
+# write "$OPS/execution-bindings.yaml" from maintainer-selected role bindings
+
+# PATH="$OPS/target-env/bin:$OPS/runtime-env/bin:<remaining trusted base PATH>"
+# command -v checks against the controlled PATH
+
+# provider-free readiness/preflight: "$OPS/runtime-env/bin/wfc" --help, and
+# snapshot_environment() / prepare_evidence_commands()
+
+# materialize "$OPS/launch.sh", which invokes the absolute runtime wfc with
+# --repository, --expected-head, --state-root, --execution-bindings, etc.
+
+# stop here -- the maintainer executes launch.sh explicitly and separately
+----
+
+The concrete flags and checks are those of the `wfc` operator CLI
+(`--repository`, `--expected-head`, `--state-root`, `--execution-bindings`,
+and related arguments); this skeleton does not restate or replace them.
+
+[[harness-preparation]]
+== Today's mechanism: Harness v0
+
+Authority:: informative
+
+The generic sequence and preferred export shape above remain the contract.
+The following describes `scripts/wfc_op.py prepare` (`DEC-WFC-016`), the
+current repo-local mechanism for WFC self-development. Run it from the
+Development repository root as `python3 scripts/wfc_op.py ...`.
+`pyproject.toml` packages only `workflow_coordinator*` from `src/`; there is
+no installed `wfc-op` console command. A pip-installable, consumer-neutral
+Operator Harness and Front Door usable against an unrelated consumer
+repository without a WFC source checkout remains a product target, not an
+available path; see the
+link:{operator-docs}/warm_storage/concepts/wfc_documentation_consolidation_plan.adoc#_maintainer_decisions_2026_11_04[maintainer decisions].
+
+=== Self-development specialization, in one line
+
+For self-development, `TARGET` is the Development N+1 clone (this checkout)
+and `RUNTIME` is the separately promoted Runtime N clone, with its detached /
+push-disabled invariant. Read the normative
+link:{operator-docs}/self-development.adoc[self-development contract] and the
+informative link:{operator-docs}/operator_guide/ch08_self_development.adoc[self-development guide]
+for topology, Hop-budget guidance and promotion before preparing a first Run.
+
+*Distinguish source identity from evidence substrate.* `export_runtime`
+exports the exact Runtime commit using `git archive` and installs that
+export non-editably into a fresh `runtime-env`. In contrast,
+`prepare_development_environment` builds the separate `dev-env` from the
+*live pinned Development checkout*, installing `<Development>[dev]`.
+It does not make the `target-src` export shown in the generic illustration:
+that export would strip `.git` from the self-development evidence substrate.
+The generic preferred target-export practice is preserved above; it is not
+a claim about how the current Harness installs Development, nor is the
+Harness behavior a replacement for that generic preference.
+
+Harness pins the exact Development/Runtime/Evidence HEADs from their live
+checkouts rather than asking the maintainer to re-type them. It requires
+clean Development/Evidence worktrees and a clean, detached Runtime with
+`remote.origin.pushurl=DISABLED`. It refuses if either OPS or STATE already
+exists. It creates OPS, derives the STATE path without creating it, writes
+`execution-bindings.yaml` from explicit role bindings with no automatic
+model/provider choice, and assembles and checks
+`PATH=<dev-env>/bin:<runtime-env>/bin:<trusted base PATH>` so that `python3`
+resolves to the development/evidence interpreter.
+
+Provider-free preflight is one narrow isolated seam: the pinned Runtime's
+own `operator._preflight()` runs under its own interpreter. Harness does
+not reimplement admission semantics. The seam reads governing inputs and
+resolves evidence executables without executing evidence commands; it
+allocates no Run, creates no STATE, registers no checkout, constructs no
+adapter and invokes no provider. Preparation persists
+`preparation-pins.txt` and `harness-prepared.json` (pins, paths and launch-
+artifact digests), materializes `launch.sh`, revalidates every repository
+pin, checks STATE is still absent, then stops. Drift is a named refusal,
+never a guess. It never launches.
+
+The current Harness also creates a fresh private per-Attempt scratch
+directory (default `~/wfc-scratch/$ATTEMPT`, mode `0700`), separate from
+repositories, OPS and STATE. Optional `--scratch-root` selects an existing
+absolute directory; its Attempt child must be fresh. The scratch path is
+recorded in both preparation records. Preflight receives that path in
+`TMPDIR`, `TMP` and `TEMP`; `launch.sh` freezes those values and the controlled
+`PATH` as literals, so a later shell's environment does not replace them.
+
+=== The command
+
+The paths and role/model values below are illustrative maintainer inputs,
+not authorization to execute:
+
+[source,shell]
+----
+ATTEMPT=wfc-<work-item-slug>-<date>-<counter>
+
+python3 scripts/wfc_op.py prepare \
+  --attempt         "$ATTEMPT" \
+  --development     /home/stefan/repos/spreadsheet-handling/workflow-coordinator \
+  --runtime         /home/stefan/repos/spreadsheet-handling/workflow-coordinator-runtime \
+  --evidence        /home/stefan/repos/spreadsheet-handling/workflow-coordinator-run-evidence \
+  --work-item       governance/work-items/<work-item-slug>.yaml \
+  --profile         governance/self-development/<work-item-slug>-profile.yaml \
+  --policy          governance/self-development/<work-item-slug>-policy.yaml \
+  --components      governance/self-development/components.yaml \
+  --task            governance/work-items/<work-item-slug>-task.txt \
+  --executable      <absolute path to the provider CLI> \
+  --timeout-seconds 3600 \
+  --role-binding    worker=<adapter>:<model>:<reasoning> \
+  --role-binding    independent_reviewer=<adapter>:<model>:<reasoning>
+----
+
+`--work-item`/`--profile`/`--policy`/`--components`/`--task` are
+Development-relative paths. The example follows the existing
+`governance/work-items/` and `governance/self-development/` naming convention:
+`<work-item-slug>-profile.yaml`, `<work-item-slug>-policy.yaml`, a shared
+`components.yaml`, and a repository-wide `repository-policy.yaml` baseline.
+A rendered Commission may instead supply its committed bundle paths; see
+link:{operator-docs}/operator_manual/ch02_commissioning/02_authoring.adoc#direct-v1-quickstart[Commission authoring].
+Harness checks path shape and existence, not semantic content; that is the
+canonical preflight seam's job, and ultimately the reducer's.
+
+For `--executable`, verify the absolute path on this host with `which codex`
+or `which claude`; do not assume `/usr/local/bin/codex` or another fixed
+location. `<adapter>` is `codex_cli` or `claude_cli`; use one binding per
+profile role, with the maintainer-selected model and reasoning. For example,
+the older concrete illustration used
+`worker=codex_cli:gpt-5.6-terra:medium` and
+`independent_reviewer=codex_cli:gpt-5.6-terra:high`; these are illustrative
+values, not a current model recommendation. The canonical preflight
+requires bindings to match the profile roles exactly and to use one adapter
+for the single scalar executable. `--timeout-seconds` must be positive.
+
+=== Expected result
+
+[source,text]
+----
+PREPARED / NOT LAUNCHED
+----
+
+`~/wfc-ops/$ATTEMPT` now exists. STATE does *not* exist yet: that absence is
+required, not a defect. If `prepare` refuses, read the named mismatch and
+consult link:{operator-docs}/wfc_operator_manual.adoc#_17_troubleshooting[troubleshooting].
+Never hand-edit OPS or preparation records; correct the input and re-run
+`prepare` with a fresh Attempt where the earlier preparation left OPS or
+scratch behind. Continue to
+link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#launch[launch and monitoring];
+archiving remains at
+link:{operator-docs}/wfc_operator_manual.adoc#_10_archive[ARCHIVE].
+
+[[recovery-relation]]
+== Relation to Run recovery and salvage
+
+This document owns deterministic preparation before launch, up to and
+including `launch.sh`. It does not cover what happens when a Run or Hop
+later fails to cleanly complete; that maintainer procedure -- same-Run
+reconcile/resume, maintainer salvage plus a fresh successor Run, forensic
+preservation, or discard -- is owned separately by
+link:{operator-docs}/run-recovery-and-salvage.adoc[Run recovery and maintainer salvage].
+
+[[future-ux]]
+== Relation to future UX
+
+Today's documented Bash/operator procedure is the current implementation of
+this deterministic preparation contract. A future wrapper or CLI may collapse
+the mechanics into one command, but should preserve the same pinning,
+freshness, Runtime freeze, evidence-environment, preflight, and explicit
+provider-boundary semantics.

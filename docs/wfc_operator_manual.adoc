@@ -5,10 +5,10 @@
 Maturity::  stable
 Authority:: informative
 Updated::   2026-11-11
-Owns::      Remaining Harness v0 operating guidance; handed-over orientation and commissioning sections are pointers to the partial Operator Manual.
+Owns::      Remaining Harness v0 operating guidance; handed-over orientation, commissioning and running sections are pointers to the partial Operator Manual.
 
 Start with the link:operator_manual/operator_manual.adoc[partial Operator
-Manual and its reading path]. Orientation and commissioning have handed
+Manual and its reading path]. Orientation, commissioning and running have handed
 over; their old headings below point to the current sections. All remaining bodies retain
 their existing standing as current Harness v0 / WFC operational reference.
 The dedicated link:run-preparation.adoc[preparation],
@@ -58,130 +58,15 @@ See link:operator_manual/ch02_commissioning/02_authoring.adoc#direct-v1-quicksta
 
 == 7. PREPARE
 
-`prepare` performs every deterministic preparation mechanic
-`docs/run-preparation.adoc` and `docs/self-development.adoc` already
-document, nothing else:
-
-. Pins exact Development/Runtime/Evidence commit identities from the live
-  checkouts, never re-typed by the maintainer.
-. Requires clean Development/Evidence worktrees, and a clean, detached,
-  push-disabled Runtime.
-. Refuses an Attempt whose OPS or STATE already exists.
-. Creates OPS; derives (but never creates) the STATE path -- STATE's absence
-  is a WFC launch precondition, not a `prepare` side effect.
-. Exports the exact Runtime commit via `git archive` into a fresh runtime
-  venv; builds a separate development/evidence venv from the *live* pinned
-  Development checkout (never an export -- exporting would strip `.git`,
-  exactly the substrate mistake this tool prevents by construction).
-. Writes `execution-bindings.yaml` from the explicit `--role-binding` values
-  given; no automatic model/provider selection.
-. Assembles the controlled `PATH` and verifies it resolves `python3` to the
-  development/evidence interpreter.
-. Runs provider-free preflight through one narrow, isolated seam calling the
-  *pinned Runtime's own* `operator._preflight()` under its own interpreter --
-  never a Harness reimplementation of admission/preflight semantics.
-. Persists `preparation-pins.txt` and `harness-prepared.json` (pins, paths,
-  launch-artifact digests).
-. Materializes `launch.sh`; re-revalidates every pin; stops; prints:
-
-[source,text]
-----
-PREPARED / NOT LAUNCHED
-----
-
-It never launches. Drift between what was pinned and what is now true is a
-named refusal, never a guess.
-
-[source,shell]
-----
-python3 scripts/wfc_op.py prepare \
-  --attempt   wfc-<work-item-slug>-<date>-<counter> \
-  --development /home/stefan/repos/spreadsheet-handling/workflow-coordinator \
-  --runtime      /home/stefan/repos/spreadsheet-handling/workflow-coordinator-runtime \
-  --evidence     /home/stefan/repos/spreadsheet-handling/workflow-coordinator-run-evidence \
-  --work-item    governance/work-items/<work-item>.yaml \
-  --profile      governance/self-development/<profile>.yaml \
-  --policy       governance/self-development/<policy>.yaml \
-  --components   governance/self-development/components.yaml \
-  --task         governance/work-items/<task>.txt \
-  --executable   /usr/local/bin/codex \
-  --timeout-seconds 3600 \
-  --role-binding worker=codex_cli:gpt-5.6-terra:medium \
-  --role-binding independent_reviewer=codex_cli:gpt-5.6-terra:high
-----
-
-`--work-item`/`--profile`/`--policy`/`--components`/`--task` are
-Development-relative paths; Harness checks only that they exist and are
-repository-relative. It does not semantically validate their content -- that
-is the canonical preflight seam's job, and ultimately the reducer's.
+See link:operator_manual/ch03_running/01_preparation.adoc#harness-preparation[PREPARE].
 
 == 8. LAUNCH
 
-[source,shell]
-----
-python3 scripts/wfc_op.py launch "$ATTEMPT"
-----
-
-`launch` does *not* reconstruct operator CLI inputs from scratch. It locates
-OPS/STATE from the Attempt name; refuses if preparation never completed or
-STATE already exists (fail closed, never silently reused); re-digests
-`launch.sh`/`execution-bindings.yaml` against what `prepare` recorded,
-refusing on drift; re-revalidates Development/Runtime/Evidence HEAD and
-cleanliness; only then executes the already-materialized `launch.sh`
-unmodified, preserving stdout/stderr/return code verbatim.
-
-STATE is materialized at `~/wfc-state/<attempt>` only once the pinned
-Runtime's own process actually starts the Run; Hops then execute until a
-terminal state. `launch` may run for a long time before returning, and
-prints `LAUNCH RETURN CODE: <n>` to stderr. *A non-zero return code does not
-by itself mean provider or Harness failure* -- `awaiting_human` and other
-legitimate terminal states can produce one too (section 13). Always inspect
-persisted facts via `status`, never the return code alone.
+See link:operator_manual/ch03_running/02_launch_status.adoc#launch[LAUNCH].
 
 == 9. STATUS
 
-[source,shell]
-----
-python3 scripts/wfc_op.py status "$ATTEMPT"
-python3 scripts/wfc_op.py status "$ATTEMPT" --json
-----
-
-Strictly read-only; never creates, mutates, retries, reconciles, or launches
-anything. Safe and useful from a second shell while a Run executes in the
-first. Always exits `0`: an unknown Attempt, incomplete preparation, or a
-mechanical inconsistency are reportable facts, not command failures.
-
-It projects, in priority order, whatever persisted files exist:
-`preparation-pins.txt`/`harness-prepared.json` (what was prepared),
-`operator-plan.json` (what was admitted), `operator-summary.json`/
-per-checkout `run.json` (what happened). Where two sources each carry their
-own non-empty value for a field and disagree, `status` *surfaces the
-disagreement* rather than picking one -- the same discipline
-`wfc-archive-run`'s `agree()` helper enforces. It never invokes the pinned
-Runtime's own `wfc status` (that would be Runtime-version-coupled); reading
-only persisted JSON keeps it correct across Runtime-N/Development-N+1 drift.
-
-Fields to read: `lifecycle`, `run_id`, `work_item_id`, `checkout_id`,
-`run_status`, `current_phase`, `hop_used`/`hop_limit`, `stop_reason`,
-`human_question`, `final_head`, `worktree_clean`, `anomalies`/
-`inconsistencies`/`corrupt_sources`.
-
-Real example (worked attempt, section 18):
-
-[source,text]
-----
-attempt: wfc-projected-result-contracts-p1-20261007-01
-lifecycle: RUN_RECORDED
-run_id: RUN-157080a2fa7b44de8429aa9b8fba53ab
-run_status: awaiting_human
-current_phase: rereview
-hop_used: 4
-hop_limit: 8
-stop_reason: completion_blocked_by_open_blocking_findings
-final_head: 84fba1653738214bc49d0eabfeefeb4deb03023f
-worktree_clean: True
-anomalies: []
-----
+See link:operator_manual/ch03_running/02_launch_status.adoc#status[STATUS].
 
 == 10. ARCHIVE
 
@@ -231,16 +116,7 @@ See link:operator_manual/ch02_commissioning/02_authoring.adoc#hop-budget[max_aut
 
 == 13. Terminal states and awaiting_human
 
-`awaiting_human` is *not* synonymous with provider failure, implementation
-failure, or failed review. It means the current Run's authority/mechanics
-cannot legally continue -- the trusted reducer correctly refused rather than
-fabricate or assume authority it does not have.
-
-When a Run stops `awaiting_human`, inspect in order: `stop_reason`; any
-`human_question`; open Findings and which phase, if any, holds
-`finding_authority` over them; the last recorded phase/result; `anomalies`;
-durable review artifacts the Run references. This is correct fail-closed
-behavior, not a malfunction.
+See link:operator_manual/ch03_running/02_launch_status.adoc#terminal-states[Terminal states and awaiting_human].
 
 == 14. Successor Runs
 

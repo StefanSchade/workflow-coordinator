@@ -1,0 +1,128 @@
+ifndef::assembled[]
+= WFC Operator Manual -- Launch, status and terminal states
+:operator-docs: ../..
+
+Maturity::  stable
+Authority:: informative
+Updated::   2026-11-11
+Owns::      Current Harness launch/status mechanics and interpretation of terminal states; governing inputs, code and the normative preparation contract retain authority.
+endif::[]
+
+[[launch]]
+== LAUNCH
+
+[source,shell]
+----
+python3 scripts/wfc_op.py launch "$ATTEMPT"
+----
+
+`launch` does *not* reconstruct operator CLI inputs from scratch. It locates
+OPS/STATE from the Attempt name; refuses if preparation never completed or
+STATE already exists (fail closed, never silently reused); re-digests
+`launch.sh`/`execution-bindings.yaml` against what `prepare` recorded,
+refusing on drift; re-revalidates Development/Runtime/Evidence HEAD and
+cleanliness; only then executes the already-materialized `launch.sh`
+unmodified, preserving stdout/stderr/return code verbatim.
+
+Executing the prepared launcher enters the provider-capable execution
+path. It does not itself cross the provider boundary: the first real
+provider dispatch does. Preflight, Run/state materialization or checkout
+registration can fail before any provider invocation; this distinction also
+applies to shorthand comments in older command examples. See the normative
+link:{operator-docs}/operator_manual/ch03_running/01_preparation.adoc#three-boundaries[three-boundary contract].
+
+STATE is materialized at `~/wfc-state/<attempt>` only once the pinned
+Runtime's own process actually starts the Run; Hops then execute until a
+terminal state. `launch` may run for a long time before returning, and
+prints `LAUNCH RETURN CODE: <n>` to stderr. *A non-zero return code does not
+by itself mean provider or Harness failure* -- `awaiting_human` and other
+legitimate terminal states can produce one too (see terminal states below). Always inspect
+persisted facts via `status`, never the return code alone.
+
+[[status]]
+== STATUS
+
+[source,shell]
+----
+python3 scripts/wfc_op.py status "$ATTEMPT"
+python3 scripts/wfc_op.py status "$ATTEMPT" --json
+----
+
+Strictly read-only; never creates, mutates, retries, reconciles, or launches
+anything. Safe and useful from a second shell while a Run executes in the
+first. For a syntactically valid Attempt, the projection exits `0`: an unknown
+Attempt, incomplete preparation or a reported mechanical inconsistency is
+a fact, not a command failure. An invalid Attempt identifier is still a
+Harness refusal.
+
+It reads whatever persisted files exist: `preparation-pins.txt` and
+`harness-prepared.json` (what was prepared), `operator-plan.json` (what was
+admitted), `operator-summary.json` and per-checkout `run.json` (what happened),
+and `checkout-association.json` (checkout identity). Disagreeing non-empty
+`run_id`, `work_item_id` or `checkout_id` values produce `inconsistencies`
+instead of a chosen identity -- the identity-agreement discipline also used
+by `wfc-archive-run`'s `agree()` helper.
+
+Other fields use explicit source precedence, not a general disagreement
+check: `run_status` comes from the summary's `run_status`, falling back to
+`run.json`'s `status`; `current_phase` comes from `run.json`'s `phase`.
+Hop counts, stop reason, human question and anomalies prefer the summary,
+then `run.json`; final HEAD and worktree cleanliness come from the summary.
+A persisted `null` is retained rather than treated as a missing value.
+Corrupt JSON is reported in `corrupt_sources`. Missing facts stay absent;
+`status` does not infer completion. It never invokes the pinned Runtime's
+own `wfc status` (which would be Runtime-version-coupled); persisted JSON
+keeps the projection usable across Runtime-N/Development-N+1 drift.
+
+Fields to read: `lifecycle`, `run_id`, `work_item_id`, `checkout_id`,
+`run_status`, `current_phase`, `hop_used`/`hop_limit`, `stop_reason`,
+`human_question`, `final_head`, `worktree_clean`, `anomalies`/
+`inconsistencies`/`corrupt_sources`.
+
+Additional fields include `attempt`, `ops`, `state`, `scratch_path`,
+`preparation_present`, `prepared_development_head`, `prepared_runtime_head`,
+`prepared_evidence_head`, `state_present`, `operator_status` and
+`operator_error`, when persisted/applicable. Lifecycle distinguishes
+`UNKNOWN_ATTEMPT`, `PREPARATION_INCOMPLETE_OR_UNREADABLE`,
+`PREPARED_NOT_LAUNCHED`, `STATE_PRESENT_NO_RECOGNIZABLE_WFC_STATE` and
+`RUN_RECORDED`; the last does not itself mean success.
+
+Real persisted example (historical illustration, not a current Run; see the
+link:{operator-docs}/wfc_operator_manual.adoc#_19_worked_example[worked example]):
+
+[source,text]
+----
+attempt: wfc-projected-result-contracts-p1-20261007-01
+lifecycle: RUN_RECORDED
+run_id: RUN-157080a2fa7b44de8429aa9b8fba53ab
+run_status: awaiting_human
+current_phase: rereview
+hop_used: 4
+hop_limit: 8
+stop_reason: completion_blocked_by_open_blocking_findings
+final_head: 84fba1653738214bc49d0eabfeefeb4deb03023f
+worktree_clean: True
+anomalies: []
+----
+
+[[terminal-states]]
+== Terminal states and awaiting_human
+
+`awaiting_human` is *not* synonymous with provider failure, implementation
+failure, or failed review. It means the current Run's authority/mechanics
+cannot legally continue -- the trusted reducer correctly refused rather than
+fabricate or assume authority it does not have.
+
+When a Run stops `awaiting_human`, inspect in order: `stop_reason`; any
+`human_question`; open Findings and which phase, if any, holds
+`finding_authority` over them; the last recorded phase/result; `anomalies`;
+durable review artifacts the Run references. This is correct fail-closed
+behavior, not a malfunction.
+
+For the next maintainer decision, use the normative
+link:{operator-docs}/run-recovery-and-salvage.adoc[recovery and salvage contract]
+and the existing
+link:{operator-docs}/successor_continuation_runbook_2026-10-10.adoc[successor-continuation runbook]
+§§3–4. Preserve the stopped Run's truth; a successor needs separate authority.
+For mechanical archiving, use
+link:{operator-docs}/wfc_operator_manual.adoc#_10_archive[ARCHIVE].

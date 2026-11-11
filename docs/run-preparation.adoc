@@ -1,182 +1,21 @@
 = WFC Run preparation
 
-This is the generic WFC operator contract for preparing and launching a Run
-once a semantic commission has been reviewed and committed. It is not a
-general CLI manual and does not authorize a Run.
+Maturity::  stable
+Authority:: informative
+Updated::   2026-11-11
+Owns::      Compatibility navigation to the canonical Run-preparation section.
 
-It applies uniformly across every WFC-operated repository -- WFC
-self-development, Core as a consumer repository, Latin as a foreign-domain
-consumer, and any future consumer -- and does not assume any particular
-target repository's topology. A repository's own documentation may specialize
-this contract (for example, WFC self-development's separate Runtime/target
-clones and promotion rules in link:self-development.adoc[self-development.adoc]),
-but ordinary Run-preparation mechanics are defined once, here.
+anchor:preamble[]
+anchor:_three_boundaries[]
+anchor:_ordinary_preparation_is_deterministic_not_a_hop[]
+anchor:_ops_root_versus_state_root[]
+anchor:_canonical_sequence[]
+anchor:_target_export_rule[]
+anchor:_illustrative_shape[]
+anchor:_relation_to_run_recovery_and_salvage[]
+anchor:_relation_to_future_ux[]
 
-This anchors an existing operating practice against a recurring operator
-mistake: after a semantic WorkItem commission has been reviewed and committed,
-the next step -- preparing a Run for launch -- keeps getting reframed as
-another LLM/agent task. It is not. This document is not a new CLI design, a
-new orchestration feature, or a Project Memory entry; it documents an
-already-established procedure precisely enough that it stops being
-rediscovered or accidentally changed.
-
-== Three boundaries
-
-Run preparation crosses three distinct boundaries. Keep them separate:
-
-Commission commit::
-  Semantic authority is fixed. The WorkItem, profile, RepositoryPolicy, task,
-  and any commission-scoped governance are reviewed and committed. Later
-  execution-binding selection may choose how authorized work is executed, but
-  cannot widen that authority.
-
-`launch.sh` execution::
-  Only the maintainer's explicit execution of `launch.sh` enters the
-  provider-capable execution path and may cross the provider boundary. A
-  launched WFC process may perform preflight, materialize Run/state, and
-  register the checkout, and still fail on a mechanical condition before ever
-  reaching a provider.
-
-First real provider invocation::
-  The provider boundary itself is crossed only when WFC actually dispatches
-  the first real provider invocation. A Run may begin to materialize and
-  still fail before that boundary is reached.
-
-Executing `launch.sh` does not itself cross the provider boundary; do not
-conflate the second boundary with the third.
-
-== Ordinary preparation is deterministic, not a Hop
-
-Once the repository-backed semantic commission has been committed, ordinary
-Run preparation is deterministic maintainer/operator mechanics: selecting
-already-known exact commits, creating fresh OPS directories, exporting pinned
-commits, creating virtual environments, installing frozen exports, writing
-already-selected execution bindings, assembling `PATH`, running provider-free
-preflight, and writing `launch.sh`.
-
-It is not another semantic agent Hop. It does not require an LLM to decide or
-author the next steps. An LLM may be used when the preparation procedure
-itself is being designed, changed, debugged, or reviewed -- that is not part
-of normal execution of the established procedure.
-
-== OPS root versus state root
-
-Select a fresh, initially absent OPS root and a fresh state root.
-
-The OPS root is then created and populated by deterministic preparation: it
-comes to contain the Runtime export/environment, the target/evidence
-export/environment, `execution-bindings.yaml`, preparation logs, and
-`launch.sh`.
-
-The state root must remain absent throughout preparation. Its freshness is a
-WFC launch precondition (the `--state-root` argument), not a preparation side
-effect, and it is not the same requirement as the OPS root's initial absence.
-
-== Canonical sequence
-
-After the repository-backed commission has been reviewed and committed,
-semantic preparation is complete. From this point until launch, Run
-preparation is deterministic maintainer/operator mechanics; it is not an
-agent Hop and does not require an LLM to decide or author the next steps.
-
-. Pin exact target and Runtime commits.
-. Require clean target and Runtime checkouts.
-. Select a fresh, initially absent OPS root and a fresh state root; the state
-  root must remain absent throughout preparation.
-. Export the exact Runtime commit and install it into a fresh environment.
-. Export the exact target baseline and build the separate evidence
-  environment.
-. Write `execution-bindings.yaml` from maintainer-selected role bindings.
-. Construct and inspect the controlled `PATH`.
-. Run provider-free readiness/preflight checks.
-. Materialize deterministic `launch.sh`.
-. Stop.
-
-Do not commission another LLM merely to perform steps 1-9. Only the
-maintainer's explicit execution of `launch.sh` enters the provider-capable
-execution path and may cross the provider boundary; the provider boundary
-itself is crossed only when WFC actually dispatches the first real provider
-invocation.
-
-A repository specializing this contract may add its own preconditions on top
-of this sequence (for example, WFC self-development's requirement that the
-Runtime checkout satisfy a detached / push-disabled invariant); such additions
-narrow, and never replace, the sequence above.
-
-== Target export rule
-
-Current preparation practice strengthens the older separate-evidence-
-environment rule by deriving that environment from a `git archive`/export of
-the exact pinned target baseline commit, not merely installing from an
-ambient checkout. Older material that does not spell this out is not thereby
-wrong; it simply predates this stronger, now-preferred form of the same
-separate-evidence-environment rule.
-
-== Illustrative shape
-
-The following is illustrative, not a second launcher implementation. It shows
-the shape of the reusable preparation pattern, not a specific commission's
-values.
-
-[source,shell]
-----
-TARGET=...           # repository this Run operates on -- e.g. a
-                      # self-development Development N+1 clone, or a
-                      # consumer repository such as Core or Latin
-RUNTIME=...            # WFC engine checkout at the accepted Runtime commit
-TARGET_HEAD=...        # exact pinned target commit
-RUNTIME_HEAD=...       # exact accepted Runtime commit
-OPS=...                # fresh, initially absent
-STATE_ROOT=...         # fresh; must remain absent throughout preparation
-
-test ! -e "$OPS"
-test ! -e "$STATE_ROOT"
-
-# exact HEAD / cleanliness checks against $TARGET_HEAD and $RUNTIME_HEAD
-
-mkdir -p "$OPS"
-
-mkdir -p "$OPS/runtime-src"
-git -C "$RUNTIME" archive "$RUNTIME_HEAD" | tar -x -C "$OPS/runtime-src"
-python3 -m venv "$OPS/runtime-env"
-"$OPS/runtime-env/bin/pip" install "$OPS/runtime-src"
-
-mkdir -p "$OPS/target-src"
-git -C "$TARGET" archive "$TARGET_HEAD" | tar -x -C "$OPS/target-src"
-python3 -m venv "$OPS/target-env"
-"$OPS/target-env/bin/pip" install "$OPS/target-src[dev]"
-
-# write "$OPS/execution-bindings.yaml" from maintainer-selected role bindings
-
-# PATH="$OPS/target-env/bin:$OPS/runtime-env/bin:<remaining trusted base PATH>"
-# command -v checks against the controlled PATH
-
-# provider-free readiness/preflight: "$OPS/runtime-env/bin/wfc" --help, and
-# snapshot_environment() / prepare_evidence_commands()
-
-# materialize "$OPS/launch.sh", which invokes the absolute runtime wfc with
-# --repository, --expected-head, --state-root, --execution-bindings, etc.
-
-# stop here -- the maintainer executes launch.sh explicitly and separately
-----
-
-The concrete flags and checks are those of the `wfc` operator CLI
-(`--repository`, `--expected-head`, `--state-root`, `--execution-bindings`,
-and related arguments); this skeleton does not restate or replace them.
-
-== Relation to Run recovery and salvage
-
-This document owns deterministic preparation before launch, up to and
-including `launch.sh`. It does not cover what happens when a Run or Hop
-later fails to cleanly complete; that maintainer procedure -- same-Run
-reconcile/resume, maintainer salvage plus a fresh successor Run, forensic
-preservation, or discard -- is owned separately by
-link:run-recovery-and-salvage.adoc[Run recovery and maintainer salvage].
-
-== Relation to future UX
-
-Today's documented Bash/operator procedure is the current implementation of
-this deterministic preparation contract. A future wrapper or CLI may collapse
-the mechanics into one command, but should preserve the same pinning,
-freshness, Runtime freeze, evidence-environment, preflight, and explicit
-provider-boundary semantics.
+See link:operator_manual/ch03_running/01_preparation.adoc[Run preparation] for the
+normative generic contract and current Harness guidance, and
+link:operator_manual/ch03_running/02_launch_status.adoc[launch, status and terminal states]
+for Run operation.
