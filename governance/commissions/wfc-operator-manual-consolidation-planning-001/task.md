@@ -23,7 +23,8 @@ The later Operator Manual has its entry point at
 `_chapter.adoc` wrappers that include stand-alone section files, structured
 like the Developer Guide of the sibling Core repository (read-only model:
 `../core/docs/developer_guide/developer_guide.adoc` and its
-`ch*/_chapter.adoc`; `include::...[leveloffset=+1]`). It must teach the
+`ch*/_chapter.adoc`; `include::...[leveloffset=+1]`). If the Core files cannot be read, plan from
+`docs/ai_info/doc_conventions.adoc` alone and say so in the charter. It must teach the
 whole practical operator workflow to a technically competent reader without
 WFC project history: repositories, authority model, Commission authoring and
 validation, prepare, launch, monitoring, evidence, acceptance, archiving,
