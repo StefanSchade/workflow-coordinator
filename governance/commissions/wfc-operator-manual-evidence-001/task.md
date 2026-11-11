@@ -1,0 +1,34 @@
+# Implement FTR04: consolidate trusted acceptance, evidence and archiving
+
+Implement only FTR04 as one complete Worker candidate. Read fully, as read-only task references, docs/backlog/operator-manual-consolidation/FTR-WFC-OPERATOR-MANUAL-CONSOLIDATION.adoc and docs/backlog/operator-manual-consolidation/FTR-WFC-OPERATOR-MANUAL-04-EVIDENCE.adoc at accepted planning commit e01a4084595ff0923f4a6dbebf056e76267f2d1c, and the accepted FTR03 implementation and its broad review at 3d3584acbfc406452eda08e36c5ff821acb4f049. Follow all applicable charter allocation, quality, metadata, invariants, shared validation and review rules. Inspect pinned sources with read-only git show.
+
+Create exactly docs/operator_manual/ch04_evidence/_chapter.adoc, docs/operator_manual/ch04_evidence/01_acceptance.adoc, docs/operator_manual/ch04_evidence/02_archive.adoc. Modify exactly docs/wfc_operator_manual.adoc, docs/operator_guide/operator_guide.adoc, docs/operator_manual/operator_manual.adoc. Review artifacts belong only to their configured review phases. Preserve ch01–ch03 byte-identically, all unassigned source bodies and withheld files.
+
+Move OM section 22 including introduction and all six numbered H3s to 01_acceptance; rewrite presentation for a reader without project history while preserving every warning, anti-pattern row, example and preflight checklist. Move OM sections 10–11 and 16 to 02_archive. Distinguish STATE, mechanical archive and semantic ledger, and archive delegation versus separate ledger judgment. Replace assigned legacy OM bodies with redirects retaining every heading and rendered anchor; ch02 links to old section 22 anchors must continue working through redirects. Reduce guide entry Launch, monitor, and archive section to navigation to ch03 launch/status and ch04 archive/acceptance. Add ch04 to entry; include only extant ch01–ch04, no future chapter targets. Recovery and self-development remain existing owners.
+
+Preserve semantic result → admitted Coordinator commit → Coordinator evidence → reduction ordering, gate-only failed_evidence_route new-launch rule, historical parsing exception, completed candidate versus completed Run, five distinct concepts, clean fail versus error/not_run, and bounded untrusted diagnostics versus trusted digests. Do not imply a Worker observed post-commit trusted evidence. Archive retains canonical dry-run-then-real behavior and semantic-json passthrough. No new failure modes or FTR09 diagnostic expansion.
+
+Read src/workflow_coordinator/vertical.py run_one_hop, reducer.py reduce_result, evidence.py, tests/unit/test_a2_evidence_commands.py, scripts/wfc_op.py cmd_archive and tests/unit/test_wfc_op.py, plus applicable loader behavior and help. Inspect only; do not run archive, mutate Evidence, invoke providers or perform operational commands. Record exact duplicate merges and actual checks and limits.
+
+Apply charter shared validation: snapshot predecessor headings, anchors and substance; compare all assigned bodies, warnings, examples, anti-pattern rows and checklist, unassigned bodies and withheld files byte-for-byte; render entry and current wrappers standalone and assembled and changed sections standalone, metadata and heading levels; resolve includes and links/xrefs including rendered fragments, duplicate IDs and inbound legacy anchors across repository text; verify code/help and archive options, redirect content, exact dirty leaves, no deletion/rename and committed-range diff hygiene. Scratch and output outside repository. No downloads, providers or Git writes by Worker. Local checks do not claim Coordinator evidence or reviewer acceptance.
+
+CommitIntent lists every actual changed normalized repository-relative leaf exactly, no directory or unchanged file; reconcile with actual dirty set. Subject is a single Conventional Commit line with WI-WFC-OPERATOR-MANUAL-EVIDENCE-001 and actual Hop ID as separate bounded tokens. Incomplete work alone is not blocked; blocked carries no CommitIntent.
+
+Independent reviewer: independently check every FTR04 and charter acceptance criterion, complete substantive transfer, ordering and evidence distinctions against code/tests, archive syntax, exact scope, preserved ch01–ch03 and unassigned bodies, old anchors, links, rendering and committed-range diff hygiene. Only declared review artifact may change; append rounds for repeated review and propose a leaf-exact CommitIntent with actual identities. Open blocking Findings for material defects or failed mandatory checks, not editorial preference. Follow robust correction, focused re-review and renewed fresh broad review; final acceptance requires fresh broad review without open blocking Findings. Worker and reviewer use the same model in separate fresh invocations.
+
+## Acceptance
+
+1. Exactly three specified new leaves and three modified leaves; no deletion or rename; ch01–ch03 byte-identical.
+2. All assigned OM sections 10–11, 16 and 22 including six H3s, warnings, anti-pattern rows, examples and preflight checklist are covered once; old headings/anchors remain with redirects; guide launch/archive section is navigation only.
+3. Acceptance explanation preserves result/commit/evidence/reduction order, five concepts, clean fail versus error/not_run, gate-only failed_evidence_route, historical parsing exception and trusted versus untrusted evidence in agreement with code and tests.
+4. Archive syntax agrees with help and retains dry-run then real and semantic-json passthrough; no archive, ledger or Evidence mutation. Entry includes only existing ch01–ch04; remaining sources and legacy anchors resolve with no future chapter target.
+5. All applicable FTR04 and charter shared validation pass: assigned substance, warnings/examples, standalone/assembled renders, metadata, includes, links and inbound fragments, preserved anchors and files, redirects, exact dirty leaves and committed-range diff hygiene; report actual checks and limitations.
+6. Only declared scope changes; Coordinator trusted task-check passes and fresh independent broad review accepts without open blocking Findings.
+
+## Withheld authority
+
+No FTR05–10, changes to ch01–ch03, other implementation leaves, product semantics changes, deletion or rename, source code, scripts, tests, governance, backlog FTRs, project memory, historical records, Runtime or Evidence mutations, archive or ledger operations by agents, agent Git writes, provider calls outside WFC, downloads, push, Runtime promotion, successor or extra Commission. Review artifacts belong only to their configured review phases.
+
+## Default escalation
+
+Escalate only for a concrete obstacle requiring authority or unresolved normative contradiction not settled by source and code. Incomplete work alone is not a blocker; continue authorized work within this invocation and report actual operational limits truthfully.
