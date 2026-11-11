@@ -1,0 +1,386 @@
+# Plan the Operator Manual consolidation as an ordered series of FTRs in the backlog
+
+## Objective
+
+The WFC operator documentation is scattered over several documents. It is
+to be consolidated LATER into one modular, consistent, professionally
+readable Operator Manual. This Commission does not do that. Its entire
+deliverable is a PLANNING record: an ordered, coherent series of FTRs in
+the backlog, each describing one later, separately authorized migration
+work package precisely enough that a future Commission can be written from
+it and judged on that package alone.
+
+A missing later implementation is never a defect of this Commission. The
+FTR series itself is the complete subject. Do the work in this Hop: read,
+analyse, write the FTR files, verify, then report. The deliverable is
+prose and tables in about a dozen files at most; do not try to prototype,
+pre-write or dry-run any manual content.
+
+## Target architecture the series must plan for
+
+The later Operator Manual has its entry point at
+`docs/operator_manual/operator_manual.adoc` and consists of chapters with
+`_chapter.adoc` wrappers that include stand-alone section files, structured
+like the Developer Guide of the sibling Core repository (read-only model:
+`../core/docs/developer_guide/developer_guide.adoc` and its
+`ch*/_chapter.adoc`; `include::...[leveloffset=+1]`). If the Core files cannot be read, plan from
+`docs/ai_info/doc_conventions.adoc` alone and say so in the charter. It must teach the
+whole practical operator workflow to a technically competent reader without
+WFC project history: repositories, authority model, Commission authoring and
+validation, prepare, launch, monitoring, evidence, acceptance, archiving,
+failure diagnosis, recovery, successor Runs and self-development. It must
+read as one professional manual, not as juxtaposed governance notes.
+Existing normative contracts must not change in meaning during the later
+migration. Documentation conventions: `docs/ai_info/doc_conventions.adoc`.
+
+## Sources to analyse (read-only)
+
+Documentation to be consolidated or aligned:
+`docs/wfc_operator_manual.adoc` (about 1360 lines, 22 numbered sections),
+`docs/operator_guide/` (entry plus `ch02_run_preparation.adoc` and
+`ch08_self_development.adoc`), `docs/run-preparation.adoc`,
+`docs/self-development.adoc`, `docs/run-recovery-and-salvage.adoc`,
+`docs/successor_continuation_runbook_2026-10-10.adoc` (about 660 lines),
+`docs/README.adoc` (index and moved-path map), `docs/ai_info/`
+(`_ai_info.adoc` router, `doc_conventions.adoc`) and
+`docs/warm_storage/concepts/wfc_documentation_consolidation_plan.adoc`
+("Current execution status", the §5 operator-guide fold, the 71 frozen
+governance citations, the moved-path map, appendix inventory).
+
+Existing planning inputs, to be used and referenced instead of duplicated:
+`docs/warm_storage/concepts/wfc_operator_manual_p2_planned_scope_2026-11-10.adoc`
+(planned failure-mode content, admission gate, walkthrough basis: Attempt
+`wfc-claude-haiku-live-smoke-20261110-03`, Commission
+`wfc-claude-haiku-live-smoke-003`, Development commit `aac9ae5c`),
+`docs/backlog/FTR-WFC-PROGRESSIVE-WORKER-EXECUTION.adoc`,
+`docs/backlog/BUG-WFC-COMMIT-INTENT-DIRECTORY-PATH-RECONCILIATION.adoc`,
+`docs/backlog/_open.adoc` and `docs/backlog/README.adoc` (backlog
+conventions), and the committed Commissions
+`governance/commissions/wfc-operator-manual-consolidation-001/` and
+`governance/commissions/wfc-operator-manual-structure-migration-002/`
+(the earlier, failed packaging of the same work; read their `intent.yaml`
+and `task.md` for what was attempted, do not modify them).
+
+Verify concrete technical statements you put into FTRs against `src/`,
+`scripts/wfc_op.py` (`python3 scripts/wfc_op.py --help` and subcommand
+help) and `tests/`. Those are read-only references. In particular verify the
+CommitIntent rules in `src/workflow_coordinator/git_facts.py`
+(`commit_subject_error`, `trusted_commit`) rather than quoting them from
+prose.
+
+## Hard constraints the series must respect (state each where it applies)
+
+1. Consistent, independently reviewable repository state after EVERY
+   later FTR. Each FTR must leave all `include::` targets, links and
+   cross-references valid, and every operational fact with exactly ONE
+   canonical home. Nothing in the repository may be left pointing at a
+   target a later FTR creates.
+2. An old document may be replaced by a pointer stub only in the SAME
+   later work package that places its relevant content in the new canonical
+   source, and only when ALL of its relevant content has moved. The plan
+   must say, for a document that cannot move in one step (the 1360-line
+   operator manual is the main case), how authority is handed over without
+   ever splitting it between two competing sources, and what readers and
+   the router (`docs/README.adoc`, `docs/ai_info/_ai_info.adoc`) are told
+   about a manual that is only partly populated at that point. Compare at
+   least (a) migrating whole source documents per package and (b) section-
+   level handover with an in-place pointer line in the old document, and
+   choose one with a stated reason.
+3. The six legacy paths `docs/wfc_operator_manual.adoc`,
+   `docs/operator_guide/operator_guide.adoc` (and its chapter files),
+   `docs/run-preparation.adoc`, `docs/self-development.adoc`,
+   `docs/run-recovery-and-salvage.adoc` and
+   `docs/successor_continuation_runbook_2026-10-10.adoc` are cited by
+   `scripts/wfc_op.py`, by `tests/` and by immutable governance under
+   `governance/`. Establish by search which citations exist and what the
+   tests actually assert about those paths (path existence, text content
+   or scope membership) and plan accordingly. The later work must not
+   delete or rename them, and it must not edit `governance/`.
+4. WFC CommitIntent limits. A Worker never runs Git write commands; the
+   Coordinator commits. `commit_intent.paths` must list every changed
+   file as an exact, normalized, repository-relative LEAF path (new files
+   and deleted files individually; never a directory), and the set must
+   equal the set Git reports as dirty. Git rename detection reports a
+   deleted file plus a similar new file only under the new name, which
+   fails commit admission. Therefore a later FTR must not delete or
+   `git mv` a tracked file in the same Hop in which similar new files are
+   created; pointer stubs are in-place modifications; if any file ever has
+   to be removed or renamed, say in which separate, dissimilar, standalone
+   FTR that happens and why admission still works. A later Commission also
+   cannot attach a CommitIntent body (see
+   `docs/backlog/FTR-WFC-COMMIT-INTENT-BODY.adoc`) and the subject must
+   carry the WorkItem ID and the Hop ID.
+5. Worker-Hop product boundary. `robust@v1` takes ONE complete implementation
+   candidate from the Worker in the first Hop; there is no planned/progress
+   continuation and `blocked` carries no CommitIntent (see
+   `docs/backlog/FTR-WFC-PROGRESSIVE-WORKER-EXECUTION.adoc`). Each later
+   FTR must therefore be sized so that a Worker can finish it completely in
+   one Hop: state the expected number of files created and modified and the
+   approximate volume of source text to be read and moved, and keep it
+   bounded. Prefer a few coherent work packages over many trivial steps,
+   but split anything that is not realistically completable in one Hop. A
+   later Commission's `completed` means every acceptance criterion is met;
+   the FTR's criteria must be measurable and satisfiable with a Hop's own
+   tools (asciidoctor, grep, a throwaway link-check script outside the
+   repository); the Coordinator's trusted `python -m pytest -q` is the
+   repository test gate.
+6. Acceptance independence. Each FTR's acceptance must be decidable from
+   the repository state after that FTR alone, with its predecessors
+   accepted, and must not depend on any later FTR having been implemented.
+7. No permanent migration map, inventory or history artifact is to be added
+   to the manual or to the legacy documents by the later work. (A
+   source-to-target allocation table inside the planning FTRs of this
+   series is allowed and required; it is planning content and is retired
+   with the series.)
+
+## Deliverable
+
+Create ONLY the following files:
+
+- A series charter FTR
+  `docs/backlog/operator-manual-consolidation/FTR-WFC-OPERATOR-MANUAL-CONSOLIDATION.adoc`
+  holding what the individual FTRs share, so it is not duplicated: the
+  problem and goal, the target architecture and chapter outline (chapters,
+  their purpose, which source sections feed them), the series-wide
+  invariants and constraints above with their source-code verification,
+  the ordered FTR list with the dependency graph, the source-to-target
+  allocation table (EVERY H2/H3 of the operator manual and every section of
+  each other source document is assigned to exactly one FTR, or explicitly
+  to "stays as is" or "new content" with the reason), the shared
+  validation methods, the relation to the existing P1/P2 planning
+  (`wfc-operator-manual-structure-migration-002`, the P2 planned-scope
+  document, the earlier failed Runs) and which of its statements the
+  series replaces, series-level risks and open decisions.
+- One FTR per later work package,
+  `docs/backlog/operator-manual-consolidation/FTR-WFC-OPERATOR-MANUAL-<NN>-<SLUG>.adoc`
+  with a two-digit execution number from `01` and an uppercase slug. The
+  number of work packages and their cut follows from the dependencies you
+  actually find; justify the cut in the charter. Execution order must be
+  unambiguous and every FTR names its predecessors.
+- A compact edit of `docs/backlog/_open.adoc` that adds the series with a
+  clear order and dependencies (see below).
+
+Each FTR (not only the charter) uses the backlog header schema of
+existing records (`Type::`, `Status::`, `Current controlling source::`,
+`Next action::`, `Not authorized here::`, `Priority::`, `Date:: 2026-11-11`
+-- see `docs/backlog/FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION.adoc`),
+with `Status::` stating plainly that it is planned and NOT commissioned,
+and contains at least these sections:
+
+1. Goal and concrete deliverable.
+2. Dependencies on previous FTRs (and what each must have delivered).
+3. Source documents affected and the target documents.
+4. Planned changes and explicitly excluded changes (including what stays
+   untouched in the old documents).
+5. Requirements for documentation quality, completeness and normative
+   correctness (what must be preserved verbatim in meaning, what may be
+   restructured, what technical statements must be re-verified against
+   code and how).
+6. Verifiable acceptance criteria, each measurable.
+7. Validation methods (AsciiDoc rendering of the entry document and each
+   chapter standalone and assembled, include-target and link/xref
+   resolution, heading-coverage comparison against the originals, command
+   and option check against `scripts/wfc_op.py --help`, stub-content
+   check, untouched-file check) and, for the repository state, an explicit
+   "state after this FTR" statement: which documents are canonical for
+   what, what readers are told, which links exist.
+8. Risks and open decisions, plainly labelled; do not decide a genuinely
+   open maintainer question silently, but do not leave a decision open that
+   the evidence settles.
+9. A recommended Worker/Reviewer brief note: what a later Commission should
+   put into its scope, its CommitIntent path expectations (which files it
+   creates, which it modifies in place) and its withheld authority.
+
+## Backlog manifest
+
+`docs/backlog/_open.adoc` is the sole backlog view; follow its existing
+conventions: one compact entry linking to the controlling source instead of
+restating it, readiness grouping, wording that the entries are planned and
+NOT commissioned and grant no execution authority. Present the series as
+one ordered entry (or one entry per FTR if that is clearer) with the
+execution order and the predecessor of each, placed in the section that
+fits the existing readiness convention (state in the charter why; an item
+blocked on a predecessor's acceptance is not "ready to commission" except
+possibly the first). Change nothing else in `_open.adoc` except factual
+navigation needed for this. If `docs/backlog/README.adoc` needs a one-line
+pointer, you may add it; do not create it otherwise.
+
+## Quality bar
+
+- Write for the maintainer who will turn each FTR into a Commission: be
+  concrete (exact paths, exact section numbers, counts), not generic.
+- Do not paraphrase source documents at length; assign, verify and plan.
+- Facts you cite (file paths, section numbers, line numbers, CLI
+  subcommands, function names) must exist as written; verify them.
+- Do not duplicate content that exists in the P2 planned-scope document, the
+  consolidation plan or the backlog records: link and conclude in one
+  sentence. If a statement of those documents is wrong or superseded, say
+  so in the charter; do not edit them.
+- AsciiDoc that renders cleanly; one `=` title; metadata header with a blank
+  line after the title as the conventions require where they apply.
+
+## Validation you perform (report results in `summary`)
+
+- `asciidoctor` (/usr/bin/asciidoctor): render every new file and
+  `docs/backlog/_open.adoc` to a location outside the repository
+  (`-o /dev/null`); no errors or warnings you caused.
+- A throwaway script outside the repository (a scratch directory is fine)
+  that checks: every relative `link:`/`xref:` target in the files you wrote
+  or changed exists; every repository path, section number and function
+  name you cite exists; every H2/H3 heading of the operator manual and
+  every section of the other source documents appears in the allocation
+  table exactly once; the FTR dependency graph is acyclic and the stated
+  execution order is a topological order.
+- A written state-after-each-FTR walk-through in the charter that, for each
+  FTR in order, lists links and includes that would dangle if the series
+  were stopped after it (there must be none).
+- You need not run the full test suite: the Coordinator runs
+  `python -m pytest -q` itself after your commit. If a tool is missing or
+  blocked, say so.
+
+## Result and commit rules (read exactly)
+
+- Report `status: completed` ONLY when every acceptance criterion below is
+  met by your own checks. Never report `completed` for unfinished work.
+  Keep working until it is finished; the scope is sized for that. If,
+  despite that, a criterion truly cannot be met, report `blocked` and name
+  exactly which criterion and why; do not claim completion and do not add
+  remainder lists to a `completed` result.
+- Never run Git write commands (`add`, `commit`, `mv`, `rm`, `stash`,
+  `reset`); the Coordinator owns the commit. Read-only git is fine.
+- Change only the files named under "Deliverable". The scope also lists two
+  review artifacts; they belong to the independent reviewer's phases.
+  Never create or modify them yourself.
+- `commit_intent.subject`: one line, Conventional Commit syntax, containing
+  the exact WorkItem ID `WI-WFC-OPERATOR-MANUAL-CONSOLIDATION-PLANNING-002`
+  and the actual current Hop ID from the invocation context as separate
+  tokens, for example
+  `docs(backlog): WI-WFC-OPERATOR-MANUAL-CONSOLIDATION-PLANNING-002 H001 plan operator manual consolidation FTRs`
+  (the real Hop ID in any later Hop; confirm it from the invocation
+  context).
+- `commit_intent.paths`: every changed leaf file as an exact, normalized,
+  repository-relative path (forward slashes, no `./`, no duplicates), each
+  new and modified file individually, never a directory. The set must
+  equal the set of files whose worktree state differs from HEAD (new
+  untracked files count). Leave no stray or scratch files in the
+  repository; put scratch work outside it.
+
+## Independent reviewer
+
+Review the actual files. Judge the planning on its own terms: whether it is
+factually complete, free of contradiction, implementable and cut into
+sensibly sized work packages. Check, with evidence:
+
+- Coverage: the allocation table assigns every H2/H3 heading of
+  `docs/wfc_operator_manual.adoc` and every section of the other named
+  source documents exactly once; nothing in the sources is orphaned;
+  target chapters are all fed.
+- Consistency: dependency graph, execution numbers, `_open.adoc` entry,
+  charter and FTR cross-references agree; no FTR requires a later FTR.
+- Intermediate states: for each FTR, confirm independently that the state
+  after it has no dangling include or link, no fact with two canonical
+  homes, no premature stub, and that readers are directed correctly; pick
+  at least three FTRs and walk them concretely.
+- CommitIntent and Git constraints: confirm against `git_facts.py` that
+  the stated rules are correct and that every FTR's expected path set and
+  stub strategy is admissible (no delete/rename next to similar new files).
+- Frozen citations: confirm the claims about `scripts/` and `tests/`
+  citations of the legacy paths by search.
+- Feasibility: each FTR is plausibly finishable as ONE complete Worker
+  candidate; acceptance criteria are measurable and do not depend on later
+  FTRs or on tools a Hop lacks.
+- Technical correctness of cited commands, functions, paths and section
+  numbers; the target architecture matches the stated requirement
+  (`docs/operator_manual/operator_manual.adoc`, `_chapter.adoc` wrappers,
+  section files, normative contracts unchanged).
+- Scope: only the deliverable files changed; neither the Worker nor the
+  commission touched `src/`, `scripts/`, `tests/`, `governance/`,
+  Runtime, Evidence, the review artifacts (by the Worker), the manual
+  sources or any operator document.
+
+A missing later implementation is NOT a finding. Open a blocking Finding
+only for a material defect (an unplannable or contradictory cut, a
+dangling intermediate state, a competing canonical source, an unverified or
+wrong technical claim, an uncovered source section, an inadmissible
+CommitIntent strategy, a size that cannot be one Hop, an out-of-scope
+change); editorial preferences are nonblocking and must not cause
+correction cycles. Do not make acceptance depend on tests, tools or
+evidence outside your authority; state what you could not check. Follow the
+ordinary Robust correction, focused re-review and renewed broad-review
+mechanics; final acceptance must come from a fresh broad review.
+
+Each review Hop must create or update ONLY its own declared durable review
+artifact (see `durable_artifacts`) with a section for that round (on a
+repeated review append a new dated round section so the file really
+changes) and propose a CommitIntent whose `subject` follows the rule above
+with the actual Hop ID and whose `paths` is exactly that one leaf file. Do
+not modify the FTRs or any other file.
+
+
+## Acceptance
+
+1. `docs/backlog/operator-manual-consolidation/` contains exactly one series
+   charter FTR and the ordered work-package FTRs
+   (`FTR-WFC-OPERATOR-MANUAL-<NN>-<SLUG>.adoc`, numbered from 01), every
+   one with `Status::` stating planned / not commissioned, and
+   `docs/backlog/_open.adoc` lists the series with unambiguous order and
+   predecessors, linking to the FTRs without restating them and without
+   granting execution authority.
+2. Every work-package FTR contains the nine required sections of the
+   Deliverable list, with measurable acceptance criteria and a stated
+   "state after this FTR".
+3. The charter's allocation table assigns every H2/H3 heading of
+   `docs/wfc_operator_manual.adoc` and every section of the other named
+   source documents to exactly one FTR (or an explicit "stays" / "new
+   content" with a reason); the dependency graph is acyclic and the
+   execution order is a topological order.
+4. For every FTR the stated post-state has no dangling include or link, no
+   premature pointer stub and no fact with two canonical homes; the
+   strategy for the partly migrated manual and the router is stated and
+   justified; the frozen-citation constraint and the CommitIntent and
+   rename-detection constraint are verified against the code and applied
+   in every FTR's file plan.
+5. Every FTR is sized to be completable as one complete Worker candidate,
+   with stated file counts and source volume, and none depends on a later
+   FTR for its acceptance.
+6. All cited paths, sections, functions and commands exist as written; every
+   new file and `_open.adoc` render with asciidoctor without errors; the
+   charter records the validation actually performed.
+7. All changes are inside the declared scope and the Worker touched no
+   review artifact, `src/`, `scripts/`, `tests/`, `governance/`, Runtime,
+   Evidence or operator-documentation source; the Coordinator's
+   `task-check` (`python -m pytest -q`) passes; the independent broad
+   review accepts with no blocking Finding open.
+
+
+## Withheld authority
+
+No migration, rewriting or stubbing of any operator documentation, no
+creation of `docs/operator_manual/` or of any manual chapter, and no edit of
+`docs/wfc_operator_manual.adoc`, `docs/operator_guide/`,
+`docs/run-preparation.adoc`, `docs/self-development.adoc`,
+`docs/run-recovery-and-salvage.adoc`, the successor continuation runbook,
+`docs/README.adoc`, `docs/ai_info/`, the consolidation plan, the P2
+planned-scope document, `docs/project_memory.adoc` or any existing backlog
+record. No change to `src/`, `scripts/`, `tests/`, `governance/` (other than
+this Commission's own rendered files, authored by the maintainer's operator),
+the Runtime or Evidence repositories, immutable workflow programmes,
+historical Commissions, archives, evidence or project memory. No change to
+the semantics of any normative contract or WFC product contract. No Runtime
+promotion, push, nested provider invocation outside WFC, additional Attempt,
+successor Run or later implementation Commission. No Git write commands by
+an agent.
+
+
+## Default escalation
+
+Escalate only for a genuine authority problem: a required change outside
+the declared scope, a normative contract whose meaning would have to change,
+or two authoritative sources that contradict each other where the code
+cannot decide (record it in `summary` and keep the code-verified
+statement). A genuinely open maintainer decision is recorded in the FTR as
+an open decision, not escalated. A missing local tool or sandbox-blocked
+diagnostic is a reported limitation. Unfinished work is not an authority
+escalation: finish it, or report `blocked` naming the unmet criterion (see
+"Result and commit rules").
+
