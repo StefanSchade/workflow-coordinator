@@ -1,0 +1,160 @@
+= BUG-WFC-WORKER-PREMATURE-BLOCKED-CONTRACT-AMBIGUITY -- A Worker May End H001 With `blocked` Because Work Is Unfinished, Not Because Something Blocks It
+
+Type:: bug (suspected) -- agent-facing Worker completion contract / possible ambiguity of `status=blocked` (not a Coordinator defect: the Coordinator reacted contract-conformantly in every observed case)
+Status:: open -- investigation required; hypothesis not proven; no correction authorized by this record
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
+Next action:: Run the controlled A/B experiment described under "Proposed verification" under a separately authorized Commission or operator task, then decide whether any contract change is warranted.
+Not authorized here:: Any change to `governance/self-development/prompts/worker.txt`, the Agent Operating Contract, `prompt.py`, the result schema, the reducer or any other source; any Commission, Run or Runtime promotion; any choice between the candidate remediations below.
+Date:: 2026-11-11
+Related, distinct records:: link:FTR-WFC-PROGRESSIVE-WORKER-EXECUTION.adoc[FTR-WFC-PROGRESSIVE-WORKER-EXECUTION] (distributing work over several Worker Hops; not a prerequisite for this BUG) and link:BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc[BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS] (inadmissible completing results; this record concerns the non-completing `blocked` exit).
+
+== Suspected defect (hypothesis, not established)
+
+In the first implementation Hop the Worker's result vocabulary offers two statuses, `completed` and `blocked`, while the contract forbids claiming a false completion. A Worker may read this as: *acceptance criteria not yet met, so `completed` is forbidden, so `blocked` is the permitted result.* The step that would stop that inference is not stated anywhere in the projected prompt: *while no concrete obstacle prevents further authorized work, the Worker keeps working inside the same invocation and does not return a final result yet.*
+
+If that is the mechanism, it is a misreading of the completion contract, not a capability limit of the model. The evidence does not prove it. Alternatives that fit the same observations: the model stops early for reasons unrelated to the wording (for example a perceived task-size or effort budget) and merely uses `blocked` because it is the available non-completing result; or the wording of the three Commission tasks (see below) contributed. The investigation has to separate these.
+
+== Observed behavior
+
+`codex_cli:gpt-6.1-terra:high` as Worker ended H001 with `status: blocked` in three real `robust@v1` Runs. All three provider invocations exited 0, none timed out, and no provider diagnostics were recorded. Each stop was contract-conformant.
+
+[cols="2,2,3,3"]
+|===
+|Run |Commission |Result |Coordinator stop
+
+|`RUN-deb3a4f3765346c6ae247488c5efddae` (attempt `wfc-operator-manual-consolidation-001-20261110-01`)
+|`wfc-operator-manual-consolidation-001`, baseline `17c6c05`
+|`blocked` with an `operational` escalation whose question asks the human to "continue the implementation before requesting broad review"; worktree unchanged
+|`awaiting_human`, `mechanical_preemption:human_authority:operational`
+
+|`RUN-278851ab5c704354a1c4f089d27cd8cd` (attempt `wfc-operator-manual-structure-migration-002-20261110-01`)
+|`wfc-operator-manual-structure-migration-002`, baseline `0b0a2b7` (reduced scope)
+|`blocked`, no escalation; summary: migration "unfinished: acceptance criteria 1-5 have not been met"; no repository change
+|`awaiting_human`, `result_blocked`, `human_question: None`
+
+|`RUN-01ca4244447846d59fecc5ac6d937683` (attempt `wfc-operator-manual-consolidation-planning-001-20261111-01`)
+|`wfc-operator-manual-consolidation-planning-001`, baseline `b328881` (planning only, about a dozen small files)
+|`blocked`, no escalation; summary: planning deliverable "incomplete ... acceptance criteria 1-6 are therefore unmet"; one 72-line partial draft left in the worktree, no CommitIntent
+|`awaiting_human`, `mechanical_preemption:non-ignored untracked state` (the dirty worktree preempted the `blocked` stop, so no semantic stop was recorded)
+|===
+
+In all three summaries the stated reason is unfinished work or unmet criteria; none names an obstacle such as missing authority, a missing prerequisite or capability, or an execution limit. (Run 1 names a missing `../core` guide only in the replay below, not in the Run.) The Run 3 prompt has not been replayed.
+
+External replays of the reconstructed H001 prompts, outside WFC, in disposable clones (details and limits: `experiments/operator-manual-h001-model-replays-20261111/README.adoc` in the sibling evidence repository `workflow-coordinator-run-evidence`):
+
+* Terra high: `blocked`, no repository change, in 3 of 3 replays, after about 7-10 read-only commands, 52-120 s and about 2,000 output tokens.
+* Sol (`gpt-6.1-sol` high): `completed` in 2 of 2, 43 and 55 changed files, 22,000-37,000 output tokens, CommitIntent formally valid.
+* Claude Sonnet 5.5 high: `completed` in 1 of 1, 54 changed files, formally valid.
+
+Known confounds of those replays: one run per configuration; Terra replays differed in `../core` availability (present only in terra-002b, which still stopped); providers differ in sandbox and tools; the generated documentation was not reviewed. They show that task size and sandbox write access alone did not stop Terra on the same prompt where other models proceeded. They do not identify the cause.
+
+The real Runs preserved no tool trace (Codex runs `--ephemeral`; WFC persists output tails only for failed invocations), so what Terra did between prompt and result in the real Runs is known only from its own summary.
+
+== Expected behavior
+
+A Worker does not end an invocation merely because its work is still incomplete. `blocked` names an actual obstacle that prevents further authorized work, for example missing authority, an unsatisfiable prerequisite, a missing required capability, or an execution limit actually reached. Unfinished work with no such obstacle means: keep working. `completed` keeps its strict meaning (all acceptance criteria met); this record does not propose weakening it.
+
+== Existing contract position
+
+Verified against the sources at `b328881`.
+
+[cols="2,4"]
+|===
+|Source |What it says about ending a Hop
+
+|`governance/self-development/prompts/worker.txt` (pin `5b7e610`, sha256 `25a2f58c...`)
+|Silent on `blocked` and on incomplete work. Its only continue-versus-escalate rule is scoped to agent-local environmental limitations (no network, failed nested install): "Continue authorized work when the limitation is nonblocking; escalate only when completing or accepting the current task actually requires the missing capability."
+
+|Agent Operating Contract v6 (`src/workflow_coordinator/resources/agent_operating_contract_v6.txt`, sha256-pinned as `REVIEWED_SHA256` in `prompt.py`)
+|Closing paragraph: if scope, authority, a prerequisite or an operational capability is missing, "use the existing escalation vocabulary. Do not claim false completion or widen scope." It requires an honest result envelope. It never says what to do when work is simply not finished and nothing is missing.
+
+|`prompt.py` `[result_output_contract]` (`assemble_prompt`)
+|For the work-result family: "Use status=completed|blocked; do not emit review verdict vocabulary." No definition of either value.
+
+|Result schema (`structured_result_schema.py` `projected_result_schema`, `model.py` `WorkResult`; persisted per Run as `structured-result.schema.json`)
+|`status` is an enum `completed|blocked`. `escalation` is nullable and `requires_human` a boolean; no rule ties `blocked` to a reason. `requested_route` is still required and, in the three Runs, was `broad_review`, which a `blocked` result does not use.
+
+|CommitIntent admission (`vertical.py`, the `permitted_intent` rule) and the operator projection (`operator.py`, durable-artifact obligation text for review phases)
+|A CommitIntent is admitted only for `completed` (or a gate review's `changes_required` limited to its review artifact), never with `requires_human`, an escalation or `scope_changed`. A `blocked` result therefore carries no CommitIntent and any work already in the worktree is stranded, as in Run 3.
+
+|Reducer (`reducer.py`)
+|Mechanical errors (dirty worktree, evidence, policy) are checked first and stop as `mechanical_preemption:<error>`. Then `requires_human`/`escalation` stops as `mechanical_preemption:human_authority[:kind]` with the Worker's question. Then `failed`, `scope_changed`. A plain `blocked` is reduced at line 1738 to `_stop_for_human(..., "result_blocked")`, which carries no question.
+|===
+
+The four situations the contract has to keep apart, and how the current text covers them:
+
+[cols="2,3,3"]
+|===
+|Situation |Intended result |Currently stated
+
+|Unfinished work, no obstacle
+|None yet: keep working in the invocation
+|Not stated. Only the prohibition on false completion exists.
+
+|Genuine blocker
+|`blocked`, ideally with the obstacle named
+|The escalation vocabulary covers missing scope, authority, prerequisite or capability; `blocked` itself is undefined.
+
+|Human escalation
+|`requires_human` and/or `escalation` with a question
+|Stated (contract v6 closing paragraph; reducer human-authority path).
+
+|Successful completion
+|`completed` with a CommitIntent
+|Stated, including strict meaning in each Commission's task text.
+|===
+
+Commission task text is a further surface. The three Commissions tell the Worker, in different words, to report `blocked` for what cannot be done: Run 1 "Use `blocked` only if this Hop genuinely lacks authority, scope or a capability it needs"; Runs 2 and 3 "Keep working until it is finished ... If, despite that, a criterion truly cannot be met, report `blocked` and name exactly which criterion and why". The latter wording may itself invite `blocked` when a criterion is merely not yet met. This is a confound for any experiment, and it is outside the Worker component.
+
+An operability observation, not a defect claim: `wfc_op.py status` shows `human_question: None` for a plain `blocked`; the Worker's summary is only in the persisted `result-message.json`.
+
+== Candidate remediation (none selected)
+
+. *Explicit Worker instruction.* State that `blocked` does not replace `completed` when work is merely open; if the task is incomplete and no concrete obstacle exists, continue working rather than return a final result. Open placement questions: the worker component (changes its digest and the Commission pins), the Agent Operating Contract (sha256-pinned in code, shared with reviewer roles), the `result_output_contract` line, or Commission task text. The choice is part of the investigation.
+. *Conditional schema requirement* (possible later extension): when `status=blocked`, require a concrete blocking reason, for example a non-null `escalation` or a dedicated field. Risks to weigh: a stricter schema may only produce invented blocking reasons without changing the stopping behavior; it changes the persisted schema and the Codex/Claude adapter schemas (whether the provider schema subsets support the needed conditional was not checked); it does not address the underlying early stop.
+. *Task-text hygiene*: reword the Commission "Result and commit rules" so that `blocked` is tied to an obstacle, not to an unmet criterion. Cheap, but changes no contract and so cannot be the sole remediation if the hypothesis is about the platform text.
+
+Not candidates: new Worker statuses such as `planned` or `progress`, a changed workflow topology, or a new reducer state. They belong to the separate progressive-execution record and are not prerequisites here.
+
+== Proposed verification
+
+A controlled A/B experiment, run outside a WFC Run, designed so that a mere change of status is not counted as success.
+
+* *Arms.* A: the historical, unmodified H001 prompt. B: the same prompt with exactly one added element, the proposed contract clarification, at one fixed position. Same task text, model (`gpt-6.1-terra`, high), CLI version, sandbox mode, result schema and baseline commit in both arms.
+* *Runtime.* Both arms under the same explicitly documented Runtime (the Runtime used by the original Runs was `6c88e47646c697dfe4f7c4e83e474092609df1ba`; the experiment does not have to use it, but must name what it uses, and prompt reconstruction must use that code). Component, contract and persona digests recorded per arm; the historical prompts and pin commits are preserved (`experiments/operator-manual-h001-model-replays-20261111/prompts/`, component pin `5b7e610`).
+* *Prompts and repetitions.* All three H001 prompts (Run 3's has to be reconstructed first), several repetitions per prompt and arm (the earlier n=1 per configuration is too small), arm order randomized. `../core` present and readable in every clone, to remove the earlier uncontrolled difference. Optional control: one arm B replay with Sol, to see whether the clarification disturbs a model that already completes.
+* *Isolation.* Separate throwaway clones per replay; no Coordinator, reducer or commit.
+* *Traces.* Persisted tool-event streams (`codex exec --json`), compacted and sanitized before archiving as in the earlier experiment (raw streams contained file contents and an e-mail address).
+
+Observed quantities per replay: tool calls and kinds, repository changes (files, bytes), time to the first write attempt, wall time and output tokens against the earlier early stop, the final status and its stated reason (classified as concrete obstacle or unfinished work), and completeness and formal validity of the candidate (CommitIntent equals changed files, scope, rendering, plus an independent check of each acceptance criterion).
+
+Reading the result:
+
+* B behaves like A (early `blocked`, little tool activity): the clarification does not address the cause; the hypothesis is weakened.
+* B continues working, writes and finishes with every acceptance criterion independently verified: supports the misreading hypothesis. Because arm A shows the model's capability unchanged, productive continuation is the effect of interest.
+* B flips to `completed` without the criteria being met: a false completion, not a success, and evidence that the clarification is insufficient or harmful.
+* B continues but ends `blocked` with a concrete, checkable obstacle: acceptable; record whether the obstacle is real.
+* Task-text effect (optional third arm): the same prompt with the "criterion cannot be met" sentence reworded, to separate platform text from task text.
+
+Sample sizes will stay small; the outcome is a qualified indication, not a model ranking.
+
+== Scope and non-goals
+
+In scope: the possible misreading of `blocked`, its evidence, and a verified decision whether a clarification (and where) is justified.
+
+Not in scope: introducing `planned` or `progress` results, a changed workflow topology, a new reducer state without separate justification, a ranking of models, a weakening of the `completed` semantics, or any change to a Run already recorded. Distributing work over several Worker Hops is the subject of link:FTR-WFC-PROGRESSIVE-WORKER-EXECUTION.adoc[FTR-WFC-PROGRESSIVE-WORKER-EXECUTION] and is neither a prerequisite for investigating nor for fixing this BUG.
+
+== Evidence pointers
+
+The evidence repository is the sibling checkout `workflow-coordinator-run-evidence`; all paths below are relative to it unless stated.
+
+* Run 1 and Run 2 mechanical archives: `archive/unclassified/wfc-operator-manual-consolidation-001-20261110-01/` (commit `a03cace`) and `archive/unclassified/wfc-operator-manual-structure-migration-002-20261110-01/` (commit `ad2c871`); results in `run/checkouts/*/result-message.json`.
+* Run 3 mechanical archive: `archive/unclassified/wfc-operator-manual-consolidation-planning-001-20261111-01/` (commit `6b5056a`).
+* Run 3 partial draft, preserved byte-identically and unaccepted: `forensics/self-development/wfc-operator-manual-consolidation-planning-001-20261111-01/` (commit `4b755b9`).
+* External replays: `experiments/operator-manual-h001-model-replays-20261111/` (commit `0bce740`).
+* Semantic ledger, `project_memory/run_ledger.adoc` (commit `f4fa663`): section "Operator Manual H001 model-behavior investigation (2026-11-11)" and the entries for the two first Runs. Run 3 has no ledger entry yet.
+* Commissions in this repository: `governance/commissions/wfc-operator-manual-consolidation-001/`, `.../wfc-operator-manual-structure-migration-002/`, `.../wfc-operator-manual-consolidation-planning-001/` (`b328881`).
+
+== Lifecycle
+
+This BUG is *open*. It records observed behavior, a hypothesis and a verification design only. No correction, experiment, Commission or Run is authorized by this record; a later maintainer decision is required for each.
