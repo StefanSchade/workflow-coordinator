@@ -1,0 +1,65 @@
+= BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS -- Timed-Out Evidence Command Leaves No Recoverable Output Diagnostic
+
+Type:: bug -- evidence-command timeout observability
+Status:: open / investigation required
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest].
+Next action:: Investigate timeout observability and its boundaries under separate authorization; no solution is selected here.
+Not authorized here:: Implementation, tests, a new Run, changing timeout or reduction semantics, or changing the trusted A2 evidence contract.
+Date:: 2026-11-12
+
+== Observed Run
+
+In FTR05 review-continuation Run `RUN-4ffabb5371c04888b997569a22c63233`,
+attempt `wfc-operator-manual-self-development-review-001-20261111-01`, H001
+returned `changes_required` with a proposed blocking budget-state finding.
+The Coordinator committed the review artifact as
+`9e3e7b313fc8ce035e26062cb952bd976584abd3`, then its `task-check`
+(`python -m pytest -q`) reached the configured 900-second timeout. The trusted
+observation records `status=error`, `error_class=timeout`, `exit_code=null`,
+`summary=timeout after 900s`, null stdout/stderr facts and
+`untrusted_diagnostic=null`. The Run stopped `awaiting_human` with
+`mechanical_preemption:timeout after 900s`; no Finding was allocated in the
+Run register and no correction route applied. The review artifact and result
+still record the proposed finding; the candidate is not accepted.
+
+No persisted output identifies the test or subprocess active at timeout,
+whether the command was progressing, or why it exceeded the limit. The
+later sandbox diagnostic reproduced a DNS/index failure during nested
+installation, but it used a different execution environment and does *not*
+establish the cause of this Coordinator timeout. See
+link:BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION.adoc[the nested-prepare BUG].
+The 900-second budget itself may be too short; a stall or environment issue
+are also unverified possibilities.
+
+== Boundary and scope
+
+At the recorded Runtime `6c88e47646c697dfe4f7c4e83e474092609df1ba`,
+`ProductionEvidenceRunner.observe` catches `subprocess.TimeoutExpired`,
+kills and waits for the process, closes its pipes, and returns a timeout
+observation without stdout/stderr or untrusted diagnostic capture. Thus the
+record cannot establish whether any output existed before termination. This
+is narrower than the earlier clean nonzero-exit diagnostics gap in
+link:BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS.adoc[BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS],
+whose bounded untrusted capture was implemented and independently accepted;
+the timeout path is not that `fail` branch. Executable lookup failures before
+spawn are separately covered by
+link:BUG-WFC-EVIDENCE-COMMAND-RESOLUTION-DIAGNOSTICS.adoc[the command-resolution BUG].
+
+Investigate what information, if any, should be available for diagnosing a
+timed-out evidence command while respecting the existing distinction between
+trusted observation and untrusted diagnostics. This record selects no
+capture method, storage, timeout value or routing change, and does not decide
+whether a timeout should be treated as a clean test failure. It neither
+changes the original Run nor asserts a root cause.
+
+== Evidence
+
+* Live Run state: `/home/stefan/wfc-state/wfc-operator-manual-self-development-review-001-20261111-01/`, `operator-summary.json` and `checkouts/56d948da-2b0b-4fc4-81a2-171b87665a59/execution-evidence.json` and `result-message.json`.
+* Review artifact: link:../warm_storage/concepts/wfc_operator_manual_self_development_review_001_broad_review_2026-11-11.adoc[review at `9e3e7b3`].
+* `src/workflow_coordinator/evidence.py::ProductionEvidenceRunner.observe` timeout and clean-failure branches; `src/workflow_coordinator/vertical.py::run_one_hop` and `reducer.py::reduce_result` for evidence-error preemption.
+
+== Lifecycle
+
+Open; documentation only. No implementation, test or Run is authorized by
+this record. The original historical Run and its unallocated proposed
+Finding remain unchanged.

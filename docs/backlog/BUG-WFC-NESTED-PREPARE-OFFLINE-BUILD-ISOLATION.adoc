@@ -1,4 +1,4 @@
-= BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION -- Nested `prepare` Package Installation Is Untested Under an Offline Agent Shell
+= BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION -- Nested `prepare` Fixture Installs Can Depend on the Package Index
 
 Type:: bug -- test-execution-environment gap (pre-beta operational hardening;
 not a Coordinator fail-closed defect, not a characterization of the Simple
@@ -15,6 +15,45 @@ first real Simple dogfood, informed by the new offline-execution guidance
 added to the Worker/Reviewer role prompts
 (link:../../governance/self-development/prompts/worker.txt[worker.txt],
 link:../../governance/self-development/prompts/reviewer.txt[reviewer.txt]).
+
+== Update: sandbox reproduction and current limits (2026-11-12)
+
+A maintainer-requested, separate agent-side full pytest diagnostic reproduced
+this class of failure in a network-restricted sandbox. The module-scoped
+`prepared` fixture called the real Harness `prepare`; its Runtime export's
+`pip install` attempted to resolve the isolated build dependency
+`setuptools>=68` at the package index. The captured test output showed
+repeated DNS failures (`Name or service not known`) for `/simple/setuptools/`,
+then `No matching distribution found for setuptools>=68`, surfaced as a
+Harness refusal. Fixture-dependent tests consequently errored. Other tests
+also failed in that diagnostic, but the complete output was not retained and
+their individual causes have not been established here. This is an observed
+sandbox diagnostic, not Coordinator-trusted evidence; it used the prepared
+Development interpreter but different sandbox, PATH, temporary-directory and
+pytest-cache conditions. No claim is made that every offline configuration
+fails: a sufficiently provisioned local source/cache and pip configuration may
+satisfy resolution without an external index.
+
+Beyond `prepared`, `test_wfc_op.py` has a separate real `completed_run`
+fixture and individual drift, pinned-preflight, frozen-PATH, shell-quoting
+and optional real-wrapper tests that invoke real preparation. Both Runtime
+and Development environment builders install into fresh venvs. Some early
+refusal tests stop before installation, and other scratch tests monkeypatch
+the environment builders; not every `prepare` call reaches pip. Development's
+`[dev]` dependencies can require resolution too. No external-index request is
+required if all needed candidates are available through the configured local
+sources; ordinary local Git clones alone do not make the nested installs
+offline-independent.
+
+The later FTR05 review Run `RUN-4ffabb5371c04888b997569a22c63233` had a
+Coordinator-owned `task-check` timeout after 900 seconds, but persisted no
+command output. Its execution was outside the diagnostic agent sandbox, so
+network/DNS or pip retries are *possible*, not established causes. See
+link:BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS.adoc[the separate timeout-diagnostics BUG].
+The earlier observations and hypotheses below are retained as historical
+context; assertions that the offline fixture failure had not been reproduced
+are superseded by this update. The sandbox reproduction does not establish
+that the Coordinator timeout had the same cause.
 
 == What is verified (test implementation and dependency facts)
 
@@ -57,7 +96,7 @@ because a usable wheel happens to already be cached locally. No code in
 this repository pins, vendors, or stages a local `setuptools` wheel, nor
 configures an index-lookup bypass, for this path.
 
-== What was reported (agent-shell failure observations)
+== Earlier report and observations (historical)
 
 This record's Discovery context is the newly added Worker/Reviewer
 role-prompt guidance on offline agent execution (Part A of this same
@@ -87,7 +126,7 @@ record's hypothesis; it only establishes that reproducing the failure
 requires a shell that can perform neither the index lookup nor fall back to
 an already-cached equivalent of it, which this session is not.
 
-== What remains a hypothesis requiring reproduction
+== Earlier hypothesis (now reproduced in the sandbox case above)
 
 That an intentionally offline agent shell (no network, no relevant local
 `pip` cache entry) running `tests/unit/test_wfc_op.py`'s `prepared` fixture
@@ -128,11 +167,12 @@ dependency installation can never fail independently elsewhere -- the two
 incidents are not shown to share a cause, and must not be treated as
 interchangeable.
 
-== Why this is pre-beta hardening, not a current blocker
+== Earlier pre-beta classification (historical)
 
-Coordinator-owned trusted evidence for Simple and Robust does not route
-through an agent's own shell and is unaffected by whether that shell has
-network access (see the preceding section). The gap recorded here is about
+Coordinator-owned trusted evidence does not route through an agent's own
+shell; the agent-shell network restriction alone does not establish its
+network conditions. The later Coordinator timeout remains unexplained (see
+the update above). The gap recorded here is about
 agent-side exploratory/diagnostic test execution specifically -- a worker or
 reviewer wanting to run `tests/unit/test_wfc_op.py` locally inside a
 sandboxed, offline invocation -- not about any currently authorized
@@ -206,8 +246,9 @@ This record authorizes no implementation. A future correction must not:
 
 == Lifecycle
 
-This BUG is *open*. This record documents an untested, offline-agent-shell
-packaging-installation gap and candidate directions only. It authorizes no
+This BUG is *open*. The offline agent-shell failure has now been observed as
+described above; its relationship to the later Coordinator timeout is
+unproven. Candidate directions remain unselected. It authorizes no
 implementation, no test change, no dependency change, no network-access
 grant, no Runtime change, and no WFC Run. A future correction requires its
 own separately authorized maintainer Commission/WorkItem, scoped at minimum
