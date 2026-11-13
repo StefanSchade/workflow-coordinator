@@ -4,8 +4,8 @@ ifndef::assembled[]
 
 Maturity::  stable
 Authority:: informative
-Updated::   2026-11-11
-Owns::      Trusted publication, acceptance and evidence-routing explanation; governing inputs and implemented Coordinator behavior retain authority.
+Updated::   2026-11-13
+Owns::      Trusted publication, exact CommitIntent admission, acceptance and evidence-routing explanation; governing inputs and implemented Coordinator behavior retain authority.
 endif::[]
 
 [[trusted-acceptance]]
@@ -44,13 +44,9 @@ Each stage, briefly:
   `WorkResult` for a `worker` phase or a `ReviewVerdict` for an independent
   review gate; the admitted profile selects the result contract).
   It carries the agent's requested route and, optionally, a `CommitIntent`.
-* *CommitIntent admission* -- a non-null `CommitIntent` is admitted only
-  when the result's outcome is `completed` (or, for a gate, `changes_required`
-  committing only to that phase's own durable review artifact), scope is
-  unchanged, `requires_human` is false, `escalation` is null, and the phase
-  grants both the `edit` and `commit` actions. The agent never runs Git
-  itself; `CommitIntent` is a proposal, never proof that anything was
-  committed.
+* *CommitIntent admission* -- the Coordinator checks the
+  link:{operator-docs}/operator_manual/ch04_evidence/01_acceptance.adoc#commit-intent-admission[exact admission rules below].
+  `CommitIntent` is a proposal, never proof that anything was committed.
 * *Coordinator-owned trusted commit* -- if admitted, the Coordinator itself
   materializes one bounded local commit. This is *publication of bounded
   work, not acceptance*.
@@ -115,6 +111,93 @@ its own trusted-commit path and leaving otherwise-good work uncommitted.
 Reserve `blocked` for when the current Hop itself lacks authority, scope,
 or a capability it needs -- never for a downstream gate that has not run
 yet.
+
+[[commit-intent-admission]]
+=== Exact CommitIntent and publication rules
+
+These are current implementation rules from `vertical.py::run_one_hop`
+and `git_facts.py::commit_subject_error` / `trusted_commit`, not a promise
+of review acceptance. A Worker finishes its whole bounded candidate before
+returning `completed`; unfinished work alone is not a blocker. A genuine
+current-Hop obstacle may require `blocked`, which carries no CommitIntent.
+A clean observation-only result can omit intent; dirty work without an
+admitted intent does not become a trusted commit. Agents perform no Git
+writes and do not claim the future Coordinator commit in `claimed_commits`.
+
+A non-null intent requires all of the following before trusted commit:
+
+* Outcome `completed`, or the narrow gate-review exception:
+  `changes_required` from a phase with `review.authority: gate`, with every
+  intended path in that phase's declared durable-artifact set.
+* `scope_changed: false`, `requires_human: false`, `escalation: null`.
+* Both `edit` and `commit` in the current phase's `authorized_actions`.
+  Either action alone is insufficient, including for a required artifact.
+* Every intended path within the unchanged current phase scope. A
+  directory-shaped scope permits its descendants; it does not expand
+  directory-shaped intent entries into files.
+
+`CommitIntent` has only `paths` and `subject`, with no commit-body field.
+The subject must be trimmed, one nonempty line with no CR or LF. Its
+Conventional Commit prefix matches this expression (`[ ]` denotes one space):
+
+[source,text]
+----
+^[a-z][a-z0-9-]*(?:\([^)]+\))?!?:[ ]
+----
+
+The prefix has a lowercase type, optional nonempty parenthesized scope,
+optional `!`, then colon and space. The subject must contain
+the exact projected WorkItem ID and actual Hop ID as separately bounded
+tokens: an adjacent letter, digit, underscore or hyphen fails that token's
+boundary. Thus `H001-extra` cannot supply `H001`, and a longer WorkItem ID
+cannot supply its shorter prefix. Use the current invocation's identities.
+
+`paths` is nonempty and names every actually changed normalized
+repository-relative leaf exactly once: modified tracked files, new
+nonignored untracked files, and deleted tracked files where deletion is
+separately authorized. No absolute
+path, backslash, surrounding whitespace, `.` / `..` component, doubled
+separator, trailing separator, duplicate, directory or unchanged file is a
+valid substitute. The normalization check requires the POSIX spelling to
+equal the supplied spelling; the later exact-set check compares it with
+Git's dirty leaf names. Ignored material is not swept into that set.
+
+For example, suppose the current WorkItem is `WI-MANUAL-DIAGNOSIS-001`,
+the Hop is `H001`, both actions and exactly the two leaves below are
+authorized, the first leaf is modified and the second newly created, and
+there are no other dirty paths. This is an illustrative intent fragment,
+not an authorization or a complete result envelope:
+
+[source,json]
+----
+{
+  "paths": [
+    "docs/operator_manual/ch04_evidence/01_acceptance.adoc",
+    "docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc"
+  ],
+  "subject": "docs(manual): WI-MANUAL-DIAGNOSIS-001 H001 explain failure diagnosis"
+}
+----
+
+Trusted commit also verifies repository identity, unchanged base HEAD,
+resolved submodules and absence of configured external clean/process
+filters. It rejects pre-existing staged state. The intent set must equal
+the complete nonignored dirty set (HEAD diff plus untracked leaves), then
+the staged set, then the observed one-commit path set and exact subject.
+It stages only the explicit paths and creates one local subject-only
+commit; it neither publishes remotely nor grants acceptance.
+
+Deletion is not universally rejected by this implementation, but detection
+of a similar added/deleted pair as a rename can make staged `--name-only`
+report only the destination. That differs from an intent naming both
+leaves and fails admission with `staged paths differ from commit intent`.
+This depends on Git/configuration and similarity; exact paths alone do not
+guarantee success for that shape. A documentation handover should preserve
+old paths as in-place stubs and add new leaves, with no delete or rename in
+the same Hop. Neither this example nor that implementation capability
+authorizes a deletion, rename, Git configuration change or agent Git write.
+Diagnosis and retained-work boundaries are in
+link:{operator-docs}/operator_manual/ch07_diagnostics/02_failure_modes.adoc#failure-matrix[the failure matrix].
 
 [[failed-evidence-route]]
 === 3. `failed_evidence_route`

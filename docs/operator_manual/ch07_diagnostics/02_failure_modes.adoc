@@ -1,0 +1,311 @@
+ifndef::assembled[]
+= WFC Operator Manual -- Failure-mode diagnosis
+:operator-docs: ../..
+
+Maturity::  stable
+Authority:: informative
+Updated::   2026-11-13
+Owns::      Source-verified candidate, stop, provider and scratch diagnosis; acceptance and recovery procedures retain their canonical owners.
+endif::[]
+
+[[failure-modes]]
+== Failure-mode diagnosis
+
+Start with the persisted Attempt and Run identities, then identify which
+boundary refused progress. Provider success, a usable result, publication,
+trusted evidence, review acceptance and Run completion are different facts.
+The exact completion/publication contract is explained once in
+link:{operator-docs}/operator_manual/ch04_evidence/01_acceptance.adoc#commit-intent-admission[CommitIntent admission];
+this section diagnoses failures without changing that contract.
+
+Current behavior below is verified against
+link:{operator-docs}/../src/workflow_coordinator/vertical.py[Hop execution],
+link:{operator-docs}/../src/workflow_coordinator/operator.py[operator persistence]
+and link:{operator-docs}/../src/workflow_coordinator/claude_adapter.py[Claude transport],
+with deterministic examples in
+link:{operator-docs}/../tests/unit/test_slice4b_git_authority.py[Git authority tests]
+and link:{operator-docs}/../tests/unit/test_operator.py[operator tests].
+Historical observations are labelled separately below.
+
+Use the read-only
+link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#status[Harness status projection]
+to locate the Attempt's OPS, STATE, scratch and recorded identities. Inspect
+`operator-summary.json` at the STATE root and `run.json`, `checkpoint.json`
+and, where published, `execution-evidence.json` under its associated checkout
+state directory. Correlate Run, Hop, invocation, base/end HEAD and phase;
+do not combine facts from different Attempts. Missing/corrupt sources and
+identity inconsistencies are limits to diagnosis, not permission to repair
+state files. A summary's committed `changed_paths` does not enumerate
+uncommitted WIP; compare read-only Git status and diffs as well.
+
+[[failure-matrix]]
+=== Symptom, persisted observation, action and limit
+
+In this matrix, reading persisted records and inspecting Git are diagnostic
+actions. Changes to a Commission, provider configuration or a stopped Run's
+candidate require the appropriate separate maintainer authority. Recovery,
+salvage and successor decisions follow
+link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc#recovery-outcomes[the four recovery outcomes]
+and the existing
+link:{operator-docs}/operator_manual/ch06_recovery/02_successors.adoc[current successor procedure];
+there is no second recovery recipe here.
+
+[cols="2,3,3,3",options="header"]
+|===
+|Symptom |Persisted observation to verify |Bounded authorized action |Knowledge or authority limit
+
+|Worker repeatedly stops before producing a candidate
+|Compare the pinned task/acceptance text with the Hop summary, any
+`semantic_stop` kind/question/source Hop, actual commits and
+`worktree_clean`. In the historical permission case, three Commissions
+required causal certainty while withholding live qualification and left no
+candidate (see provenance below).
+|Trace each required fact to a means the current Hop actually has, using
+link:{operator-docs}/operator_manual/ch04_evidence/01_acceptance.adoc#commission-preflight[semantic Commission preflight].
+If authority really is missing, preserve the stop/question for the
+maintainer to remove or restructure that demand in separately authorized
+work. If only a future gate is pending, finish the bounded candidate.
+|A larger task or unfinished work is not by itself a blocker. Do not
+quietly weaken binding criteria, invent certainty or run withheld tools.
+The existing
+link:{operator-docs}/operator_manual/ch04_evidence/01_acceptance.adoc#acceptance-anti-patterns[acceptance anti-patterns]
+own the authoring explanation.
+
+|A Worker reports `blocked` but expects its changes to be published
+|Compare the recorded Hop outcome, actual commits and stop/anomaly text.
+An attempted intent can produce
+`trusted_commit:commit intent is not permitted for this result disposition`;
+Git may still show the candidate as dirty.
+|Apply the linked admission contract when authoring a result in an active
+authorized Hop. For an already stopped Run, inspect the retained work and
+refer the next decision to the recovery owner.
+|Changing the result after the event or calling incomplete work complete
+cannot repair historical admission. No automatic continuation or
+retroactive trusted commit follows from useful dirty work.
+
+|Intent rejected for subject or path representation
+|Read `stop_reason` / `anomalies` for the `trusted_commit:` detail, such as
+`commit subject lacks WorkItem/Hop identity`, `unexpected dirty path`,
+`commit intent path has no worktree mutation`, or
+`staged paths differ from commit intent`. Compare actual Git leaf names
+and the recorded invocation identities with
+link:{operator-docs}/operator_manual/ch04_evidence/01_acceptance.adoc#commit-intent-admission[the exact subject/path rules and example].
+|Inspect `git status --porcelain=v1 --untracked-files=all`,
+`git diff --name-status HEAD` and `git diff --cached --name-status`.
+Use the canonical rules for any newly authorized candidate; leave a
+stopped candidate's preservation decision to the maintainer.
+|A directory scope is not a directory intent. Similar added/deleted files
+can trigger rename detection; do not delete, move, change Git configuration
+or reset the index to bypass a refusal. The detailed limits belong to
+acceptance, not a new recovery mechanism.
+
+|Provider exits successfully, but the Coordinator rejects its output
+|`provider.returncode: 0` and `timed_out: false` can coexist with
+`candidate_result_present: false`, result-validation diagnostics, or a
+later `trusted_commit:` anomaly. Inspect `run_status`, the last Hop outcome,
+actual commits, requested/applied routes where present, and `stop_reason`.
+|Locate the first failed boundary: wrapper/result validation, commit
+admission, trusted evidence or reduction. Compare the result contract and
+scope with the pinned phase; use the existing owner for any correction.
+|Process exit zero proves neither a valid correlated result nor admission.
+Invalid/missing results can leave `reconcile_required`; a validated result
+can instead stop `awaiting_human` after mechanical preemption. Neither
+state is inferred from the provider exit code alone.
+
+|Worktree is dirty after admission rejection, or a repository is unexpectedly dirty
+|The summary can show `worktree_clean: false`, no new actual commit and
+`trusted_commit:` / dirty-state anomalies. Independently inspect HEAD,
+tracked diff, nonignored untracked leaves and cached diff. Check which of
+Development, Runtime or Evidence is affected before attributing provenance.
+|Investigate before further mutation. For stopped candidate work, defer
+preservation/discard to the recovery owner; for unexpected dirt elsewhere,
+establish its cause without overriding cleanliness/trust checks.
+|Rejection does not roll back candidate bytes. A failure after staging can
+leave staged changes; a post-commit verification failure can even leave a
+commit. Do not assume either a clean index or unchanged HEAD, clean away
+the evidence, or treat WIP as accepted work.
+
+|`launch` returns nonzero, or `awaiting_human` is mistaken for provider failure
+|Read `run_status`, `stop_reason`, `human_question`, `anomalies`, last phase
+and referenced artifacts. Inspect `semantic_stop` in Run/checkpoint/summary
+where present: its kind, question and source Hop record the correlated
+agent authority request separately from a controlling mechanical stop.
+|Classify the actual stop with
+link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#terminal-states[terminal-state interpretation].
+For layered stops, carry both the semantic request and mechanical anomaly
+to the maintainer decision; retain the stopped records unchanged.
+|A nonzero launch exit alone proves no provider/Harness defect. The reducer
+can retain a semantic stop even when repository or evidence mechanics
+preempt it. Absence of `semantic_stop`, especially in legacy records, does
+not authorize reconstructing one or imply successor eligibility.
+
+|Review appears accepting but the Run is not `completed`
+|Inspect the requested versus applied route where recorded, stop reason,
+open blocking Findings and the phase's `finding_authority`. A correct
+rereview without disposition authority can leave
+`completion_blocked_by_open_blocking_findings` and `awaiting_human`.
+Also compare the required trusted-evidence observations.
+|Read the referenced review artifact and phase authority; send the
+unresolved decision to its configured owner. For evidence routing use
+link:{operator-docs}/operator_manual/ch07_diagnostics/01_troubleshooting.adoc#troubleshooting[the existing troubleshooting questions]
+and link:{operator-docs}/operator_manual/ch04_evidence/01_acceptance.adoc#failed-evidence-route[the acceptance owner].
+|Semantic acceptance alone cannot close Findings, override a mechanical
+failure or complete a Run. Historical Finding labels are not current-Run
+disposition authority.
+
+|An authorized provider tool operation is denied without an approval surface
+|Compare the Hop summary/semantic stop and dirty set with pinned phase
+authority. For Claude, inspect persisted `claude-closed-settings.json` and
+available untrusted invocation diagnostics. A summary claiming a denied
+Write or Bash operation is a report, not a full tool transcript.
+|Record the denied operation and available version/configuration facts;
+distinguish provider permission from WFC authority. Refer a required
+configuration change or qualification to separately scoped maintainer work.
+|Claude requests `acceptEdits` with `--permission-prompts none`; settings
+grant Edit/Write and keep sandbox enforcement. Those requests do not prove
+every effective operation succeeds. Do not bypass permissions, broaden
+grants or retry unsandboxed. Historical cause hypotheses are not guarantees.
+
+|Selected model/effort or CLI options are incompatible
+|Compare `operator-plan.json` role bindings and execution-evidence
+adapter/executable/model/reasoning with the prepared binding file. Read
+available diagnostics for the actual CLI's rejection rather than assuming
+a model name or effort value is supported.
+|Inspect the selected executable's side-effect-free help/version under the
+relevant environment, within current authority. Prepare different bindings
+only through the normal separately authorized preparation path.
+|Claude's adapter checks nonempty single-line model/effort strings and
+passes `--model` / `--effort`; it does not negotiate support. The operator
+requires exact role coverage and rejects mixed adapters with one scalar
+executable; there is no automatic model/provider fallback.
+
+|An executable exists but effective provider integration fails
+|Compare the prepared executable and pinned Runtime with provider
+returncode/timeout/candidate presence and diagnostics. `operator_error`
+may identify local setup failure before a result; the last dispatch/Run
+facts distinguish that from failed transport after dispatch.
+|Verify the selected binary, its help/version and required local setup
+without starting a provider experiment. Preserve the failure and ask for
+separate qualification if actual authenticated behavior must be established.
+|Existence or help success proves neither authentication, model access,
+sandbox startup, effective writes nor end-to-end WFC acceptance. Offline
+fake-executable tests verify construction/handling, not those live facts.
+
+|The claimed provider failure cannot be reconstructed from saved output
+|Check whether `provider.diagnostics_artifact` actually names a local
+`invocation-diagnostics` file and correlate its identities. Compare its
+bounded tails with the Hop summary and execution-evidence classifications;
+record missing artifacts explicitly.
+|Report only what these persisted records support. Retain any available
+diagnostic as untrusted operational material; state which tool sequence,
+denial or cause cannot be verified.
+|No full transcript is guaranteed. Successful invocations do not receive
+that failure artifact merely because a later commit is rejected. A missing
+tail cannot prove that a tool ran, succeeded or was never denied. See the
+persistence limits below.
+
+|Temporary storage fills, scratch is inaccessible, or socket setup fails
+|Read persisted `operator_error`, provider diagnostics/tails and recorded
+`scratch_path`; inspect the generated Claude settings' exact scratch grant.
+Correlate any retained ENOSPC/socket/path error with the actual filesystem,
+not merely the spelling `/tmp`. Compare trusted evidence separately.
+|Inspect space and inode capacity on the recorded filesystem, with
+read-only `df -h` and `df -i` against that path. Report an agent-local
+limit accurately and continue bounded work where possible; refer required
+environment repair to its owner. The current scratch layout is below.
+|No capacity, cleanup-after-crash or provider-permission guarantee follows
+from a configured path. Do not change security settings, install/download,
+delete another process's scratch or rerun bulk tests to qualify the prose.
+Agent-local failure does not itself invalidate Coordinator-trusted evidence.
+|===
+
+[[provider-persistence-limits]]
+=== Provider diagnostics and what was not persisted
+
+`operator.py` publishes compact provider facts, not a full audit of tools.
+For a failed invocation with an execution outcome but no completed vertical
+result, it attempts a local `invocation-diagnostics/<invocation-id>.json`.
+The pointer is emitted only if the artifact exists; writing it is best
+effort. It is labelled `untrusted_operational_diagnostic` with
+`evidence_authority: none`. Both CLI adapters bound returned stdout/stderr
+to their last 16,384 characters. Those tails can omit the decisive event.
+Claude additionally requests `--no-session-persistence`; a successful
+wrapper's structured-output member is extracted in memory, not promised
+as a separately saved raw result/tool transcript. Codex's result-message
+file likewise is not a tool transcript.
+
+Treat provider summaries, stdout/stderr tails and self-reported checks as
+untrusted diagnosis. Trusted command classifications and bounded failure
+captures have their separate
+link:{operator-docs}/operator_manual/ch04_evidence/02_archive.adoc#evidence-architecture[evidence persistence rules].
+Where the Run did not persist full tool calls, exact denial sequences,
+command-content heuristics and causal explanations remain unverifiable
+unless separately recorded evidence establishes them. Do not infer absence
+of a denial from exit zero or from an empty diagnostics list.
+
+[[scratch-diagnosis]]
+=== Current scratch layout and bounded historical evidence
+
+Harness preparation chooses a private per-Attempt scratch directory,
+records it and freezes `TMPDIR`, `TMP` and `TEMP` into the launcher. Its
+parent is selected with `--scratch-root ABSOLUTE_DIRECTORY`, defaulting to
+`$HOME/wfc-scratch`; use
+link:{operator-docs}/operator_manual/ch03_running/01_preparation.adoc#harness-preparation[the preparation owner]
+for the command. This does not mean Claude's subprocess receives that long
+path literally. Current `claude_adapter.py` creates a deterministic short
+`/tmp/wfc-claude-` symlink with a 16-hex invocation-derived suffix, pointing
+to a dedicated mode-0700 directory under the external scratch root. It
+sets all three temporary environment variables to the short path and grants
+read/write access to the resolved real scratch directory in its settings.
+Bulk bytes therefore target the external filesystem through that link,
+while the short spelling accommodates Unix socket path limits.
+
+The external root is selected from the first nonempty ambient `TMPDIR`,
+`TMP`, `TEMP`, then the platform tempfile default. If that root resolves
+to `/tmp` itself, the adapter uses `$HOME/.wfc-claude-scratch` instead to
+avoid a self-targeting link. This is a fallback location, not a capacity
+guarantee. The adapter attempts independent best-effort cleanup of link
+and real directory in `finally`; interrupted processes can leave material.
+Scratch is ephemeral, untrusted execution material, not Run evidence or a
+place for a durable artifact. Merely passing another environment variable
+does not grant filesystem access; `TMPDIR`/`TMP`/`TEMP` are reserved from
+`WFC_CLAUDE_EXTRA_ENV_NAMES` overrides.
+
+*Historical observations (provenance, not new qualification):*
+
+* The
+  link:{operator-docs}/backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[permission record]
+  describes an older CLI `2.1.270` session that exited zero but denied the
+  first authorized Write and Bash directory creation, with no approval
+  surface and no candidate. Its later reconciliation separates accepted
+  deterministic configuration from outstanding targeted live acceptance
+  cases; the older mechanism hypotheses do not establish current behavior.
+* The
+  link:{operator-docs}/backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc[scratch record]
+  describes a 2026-11-07 host `/tmp` inode exhaustion from agent-launched
+  tests under the old real-directory layout. That Run's trusted task-check
+  was unaffected. Its later experiments reported short-symlink writes into
+  external scratch under specific conditions; command-shape observations
+  were not universal permission rules, and TMPDIR-specific approval-layer
+  and session-wide-cascade explanations were retracted. Current provisioning
+  and cleanup above are verified from source, not inferred from those
+  experiments. The record's later acceptance does not retroactively turn
+  the correction Run's failed evidence or terminal state into success.
+* The separate
+  link:{operator-docs}/cold_storage/backlog/pre-0.1.0b1/infrastructure-and-incidents/2026-10-28_tmpfs_exhaustion.adoc[2026-10-28 incident]
+  was observed once, producing `operator_error` with `[Errno 28] No space left on device` at
+  `/tmp/wfc-observe-index-*`, `reconcile_required` and a charged
+  `uncertain_dispatch`. As recorded in the 2026-10-29 operational note,
+  unrelated pytest accumulation filled `/tmp`, rather than a Commission or
+  Coordinator defect; a maintainer's 12-GiB
+  remount was mitigation, not a product fix or a current prerequisite.
+  Current `observe_repository()` uses `tempfile.mkstemp` to copy the index
+  for read-only observation (`GIT_INDEX_FILE`, optional locks disabled);
+  its filesystem follows process temp settings, not a hard-coded `/tmp`.
+  Check the actual filesystem and retain the recovery/reconcile boundary.
+  The incident motivated FD-08, recorded in the
+  link:{operator-docs}/warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc[Front Door plan] §9.
+
+The controlling BUG records retain their lifecycle decisions. These
+historical reports and source inspection establish neither a new live
+qualification nor Runtime promotion.
