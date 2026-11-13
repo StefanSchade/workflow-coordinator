@@ -1,0 +1,1693 @@
+= WFC Beta 1 -- Architecture Review, Second Pass and Implementation Blueprint
+:toc:
+:toclevels: 2
+:sectnums:
+
+Maturity::  in-review
+Authority:: exploratory
+Updated::   2026-11-13
+Owns::      A second independent assessment of the Beta-1 product boundary, with a target architecture, illustrative interface contracts, a migration strategy and an ordered implementation plan. A proposal; nothing in it is adopted.
+
+== Reviewed state and method
+
+[horizontal]
+Development:: `workflow-coordinator@f6824f7997586bc8c06bd9064e5d7514bfa81af3` (`main`, clean worktree).
+Evidence:: `workflow-coordinator-run-evidence@e5df27dc923514698b98a4ba4ef963bb5c79859a` (read-only).
+Runtime:: `workflow-coordinator-runtime@6c88e47646c697dfe4f7c4e83e474092609df1ba` (read-only; identity only).
+First pass:: link:wfc_beta1_product_boundary_review.adoc[the first review], written against `a1648bb`. *[V]* `git diff a1648bb f6824f7 -- src tests scripts pyproject.toml governance/workflow-programs governance/policy-bases governance/self-development` is empty: every change since is documentation or a Commission bundle, so the first review's source observations were re-checked against unchanged code rather than assumed.
+Product direction:: Sections 1-3 of link:../../functional_model/workflow_program_use_cases.adoc[the Functional Model] (`GOAL-WFC-001` to `GOAL-WFC-004`) are treated as accepted, as instructed for this assignment.
+Method:: Source inspection of the three repositories. `pytest --collect-only` was used to count tests; no test, Run, provider, archive or promotion was executed.
+
+Claim markers:
+
+[horizontal]
+*[V]*:: verified in the cited source at the reviewed state.
+*[E]*:: taken from a persisted record (archive, ledger, backlog, decision); not re-derived.
+*[I]*:: inference from verified facts; plausible, not demonstrated.
+*[R]*:: recommendation of this review.
+
+Labels: `R1-D1` to `R1-D9` are the first review's decisions. `BP1` to `BP9` are this review's implementation packages. `Q1` to `Q8` are the open Maintainer decisions.
+
+== Verdict
+
+The first review's diagnosis stands: the Level-0 engine is payload-agnostic, and everything a third party touches is not. Its remedy does not stand. It chose the path of least change to existing source resolution, and three of its nine decisions follow from that choice rather than from the product.
+
+. *Product resources should be owned by the package and frozen by the compiler, not copied by `wfc init` and not resolved by the engine.* *[V]* The engine reads every governing input, including prompt components, from the payload repository's Git tree at the expected HEAD (`operator._preflight`, `_pinned_text`), and re-reads them between Hops (`_governing_inputs_unchanged`). The compiler can therefore write the effective role texts into the Commission directory it already creates. The engine is untouched, nothing is duplicated per repository, an upgrade changes nothing already committed, and the exact bytes that governed a Run are in the payload's own history. The first review's two options (materialize at `init`, or change engine resolution) missed this third one. It is the central design choice of this document (<<resources>>).
+. *One command is achievable with existing mechanics, but only the controller can be made restartable, not the Run.* *[V]* `operator.main` always calls `_preflight`, which refuses an existing state root. The dispatch marker and `recover_uncertain_dispatch` exist, but no production entry point re-enters a Run after its process dies. *[E]* The backlog says the same (`FTR-WFC-ATOMIC-HOP-RECOVERY`: "no production operator entry point"). The end-to-end controller therefore has exactly one non-repeatable step, the launch; every other step can be made idempotent by observing Git, STATE and the Evidence repository. An interrupted Run is a terminal outcome to archive, never something to relaunch (<<lifecycle>>).
+. *A separate Evidence repository is the right default, and the audit projection is what makes it shareable.* *[V]* In the archived Run sampled, eight of twelve files contain absolute home-directory paths, and the archive also holds the full frozen `PATH`, role personas and the agent's result message. The archive wrapper is also not retry-safe: a failure between copy and commit leaves a destination that the next attempt refuses twice over. Port first, project second (<<evidence>>).
+. *The user-facing surface shrinks to one file and one command.* `.wfc/config.yaml` carries the authority ceiling, the check command, role bindings and optional guidance. The RepositoryPolicy record, the three 40-character source pins, the component manifest, the review-artifact paths and the withheld-authority boilerplate become compiler output (<<config>>).
+. *Self-development becomes an ordinary consumer plus one rule.* The three-repository topology is replaced, for the product, by a recorded package identity and a refusal to operate on the repository the running package is imported from. The Runtime clone remains a Maintainer practice for producing that installation (<<preparation>>).
+
+Where this review disagrees with the Maintainer's revised direction:
+
+* "Package-owned resource resolution" is right as ownership and wrong as a Coordinator feature. Resolution belongs in the compiler; the Coordinator should keep reading only pinned Git blobs.
+* "Restartable" must be stated narrowly. A design that implies an interrupted agent invocation can be continued would contradict `DEC-WFC-014` and the engine as built.
+* Dropping the exported-baseline evidence environment removes a step the normative preparation contract lists. *[V]* The only current implementation already does not perform it (`prepare_development_environment`: "installed from the LIVE Development checkout (never an export)"), and the contract's own Harness subsection says so. The generic contract should state what the product actually guarantees (<<preparation>>).
+* The separate Evidence repository reverses the stated preference of `DEC-WFC-023` (repository-local `.wfc/archive/`). That is a decision to record, not a detail (Q3).
+
+Size of the work *[R]*: nine packages, of which six are on the critical path (<<packages>>). No reducer, persistence, adapter or result-contract change. Two small additive engine changes: an extracted admission function and an implementation identity in `operator-plan.json`.
+
+[[current-state]]
+== Current state: what this pass adds
+
+The first review's inventory (its sections 2 and 3) is not repeated. The following facts are new or correct it.
+
+[cols="1,4,3",options="header"]
+|===
+|# |Fact |Source
+
+|F1
+|No production path continues a Run after process death. `main` allocates a new `RUN-<uuid>`, requires an absent state root, and runs the serial loop in-process until a terminal status. A crash mid-Hop leaves `dispatch.json` and a `run.json` that still says `ready`.
+|*[V]* `operator.main` (ll. 1725-1876), `operator._preflight` ("state root already exists"), `slice4.run_real_one_hop` (ll. 308-320).
+
+|F2
+|The Harness launches in the foreground and blocks: `subprocess.run(("bash", launch_sh))`. If the calling shell dies, nothing records whether the engine survived.
+|*[V]* `scripts/wfc_op.py` `cmd_launch`.
+
+|F3
+|The archive wrapper has no Run-status gate. It needs only a Run ID from `operator-summary.json`, `operator-plan.json` or `checkouts/*/run.json`. An interrupted Run is therefore archivable as it stands.
+|*[V]* Evidence `scripts/wfc-archive-run` (facts probe).
+
+|F4
+|The archive is not retry-safe. It refuses an existing destination and a dirty Evidence repository. A failure after `archive_run.py` copied files and before `git commit` produces both conditions.
+|*[V]* `wfc-archive-run` ll. 423-431, 474-511.
+
+|F5
+|Archived files carry absolute local paths: `manifest.json` (`sources`, every `copied_files[].source`, `facts.ops_source`, pinned path values), `operator-plan.json` (`repository`, `state_root`, `executable`, `execution_bindings_source`, evidence `invocation_path`), `preparation-pins.txt`, `launch.sh` (complete frozen `PATH`), `checkout-association.json`, `checkpoint.json`, `execution-evidence.json`, `operator-summary.json`.
+|*[V]* `archive/unclassified/wfc-operator-manual-walkthrough-001-20261113-01/`; `grep -rl /home/` lists eight of its twelve files.
+
+|F6
+|Provider output enters the archive through `result-message.json` and through `execution-evidence.json` (persona text, diagnostics, and for a failed check up to 16 KiB of each output stream). `invocation-diagnostics/` (provider stdout and stderr tails) is not on the allow-list and stays in STATE.
+|*[V]* Evidence `archive_run.py` allow-lists; `operator._write_invocation_diagnostics`; `evidence._untrusted_diagnostic_capture`.
+
+|F7
+|`operator-plan.json` records the operating-contract digest but no identity of the executing implementation. The Runtime commit exists only in the Harness's `preparation-pins.txt`.
+|*[V]* `operator.main` plan literal; archived plan keys.
+
+|F8
+|The evidence executable's stat fingerprint is recorded at admission and at each observation. Nothing compares the two.
+|*[V]* `evidence.prepare_evidence_commands`, `ProductionEvidenceRunner.observe`; no other reader of `admission_resolution` outside `operator._prepared_evidence_plan`.
+
+|F9
+|The 40 historical bundle tests do not assert launch compatibility. Their shared wrapper first asserts that production preflight *refuses* the bundle ("has required evidence but is not a gate review"), then replaces `_admit_evidence_disposition` with a no-op and inspects the result. The first review's statement that they "prove that a past Commission is still launch-compatible" is not what the code does.
+|*[V]* `tests/architecture/test_self_development_governance.py` ll. 33-54; 86 call sites of that wrapper.
+
+|F10
+|That file is frozen, not growing. Its last change that added a bundle test is dated 2026-10-26. None of the 44 Commission directories under `governance/commissions/` (43 of them compiler-rendered from an Intent) added one.
+|*[V]* `git log -- tests/architecture/test_self_development_governance.py`.
+
+|F11
+|The compiler's ceiling check is the only effective one. The rendered `policy.yaml` sets `work_item_scope_ceiling` to the Intent's own scope, so the engine's ceiling comparison is satisfied by construction.
+|*[V]* `commissioning.render_commission` (`"work_item_scope_ceiling": list(intent.scope)`).
+
+|F12
+|Every Intent must carry three full commit SHAs (program, policy basis, components) and a free-text `authority_source`. The sampled task body restates operating-contract clauses (leaf-exact `CommitIntent`, no agent Git, "incomplete work alone is not blocked") in prose.
+|*[V]* `commissioning.commission_intent_from_yaml`; `governance/commissions/wfc-operator-manual-walkthrough-001/intent.yaml`.
+
+|F13
+|Suite composition: 897 collected tests in 27 files. The self-development governance file holds 45 of them (5 %) in 8,003 of about 28,400 lines (28 %).
+|*[V]* `pytest --collect-only -q`; `wc -l`.
+
+|F14
+|`_admit_a1`, `_admit_evidence_disposition`, `_selected_evidence_names` and `prepare_evidence_commands` are already separate functions of parsed objects. The role, persona, binding and durable-artifact relations are inline in `_preflight` after the Git reads.
+|*[V]* `operator.py` ll. 140-237, 343-454.
+|===
+
+Two consequences frame everything below. F1 to F4 bound what "durable lifecycle" can honestly mean. F5 to F7 are the concrete reasons for an audit projection and an identity record.
+
+[[architecture]]
+== Target architecture
+
+=== Responsibilities and their homes
+
+Three responsibilities, one package, one dependency direction: the Front Door imports the kernel, the kernel never imports the Front Door. A sub-package makes that rule a testable import guard next to the existing `tests/architecture/test_package_boundaries.py`. Nothing else about the flat layout needs to change.
+
+[cols="2,3,3,2",options="header"]
+|===
+|Component |Responsibility |Module |Status
+
+|CLI
+|`wfc init`, `run`, `plan`, `resume`, `status`, `archive`, `report`; passes today's bare engine flags through unchanged.
+|`frontdoor/cli.py` (new entry point)
+|new
+
+|Input and configuration
+|Read `.wfc/config.yaml` from Git at HEAD; parse the request (task file and flags, or a request file).
+|`frontdoor/config.py`, `frontdoor/request.py`
+|new
+
+|Composition
+|Combine product resources, repository guidance and the request into one complete, explicit Commission.
+|`commissioning.py` (`compile_commission`, `verify_commission`)
+|adapted: v1 functions stay until cutover
+
+|Admission
+|Schema, A1 authority relations, evidence-command resolution, role and binding coherence. Same code before and after the Commission commit.
+|`operator.py` (`admit_parsed` extracted from `_preflight`)
+|adapted: extraction only
+
+|Lifecycle controller
+|Authorization, bounded Commission commit, launch envelope, engine supervision, archive, report, resume.
+|`frontdoor/lifecycle.py`, `frontdoor/envelope.py`, `frontdoor/identity.py`
+|new; reuses Harness functions from `scripts/wfc_op.py`
+
+|Bounded Git writes outside a Run
+|One commit of new files under one directory, hooks disabled, nothing else staged, never a push.
+|`git_facts.py` (`bounded_path_commit`, built on `_trusted_git`)
+|new function beside `trusted_commit`
+
+|Level-0 Coordinator
+|Serial Hops, trusted commits, evidence, Findings, stop routing, persistence.
+|`operator`, `slice4`, `vertical`, `reducer`, `persistence`, `serialization`, `model`, `evidence`, `prompt`, `git_facts`
+|unchanged, except one additive key in `operator-plan.json`
+
+|Provider adapters
+|`codex_cli`, `claude_cli` behind `AgentExecutionPort`.
+|`adapter`, `codex_adapter`, `claude_adapter`
+|unchanged
+
+|Mechanical archiver
+|Allow-listed copy, manifest, self-consistency refusals, one Evidence commit.
+|`frontdoor/archive.py`
+|moved from Evidence `scripts/archive_run.py` and `wfc-archive-run`
+
+|Audit projection and report
+|Portable, versioned record derived from the raw archive; consolidated operator result.
+|`frontdoor/audit.py`, `frontdoor/report.py`
+|new
+
+|Product resources
+|Operating contract (existing), role texts, self-check modifier.
+|`resources/roles/*.txt` beside `resources/agent_operating_contract_v6.txt`
+|copied from `governance/self-development/prompts/`
+
+|Self-development Harness
+|Three-repository pinning, per-attempt Runtime and evidence environments.
+|`scripts/wfc_op.py`
+|unchanged until cutover, then retired
+|===
+
+=== Data and control flow
+
+[source,text]
+----
+wfc run task.md --scope cmd/list --scope internal/render
+  |
+  |  PURE (nothing written, nothing persisted)
+  v
+resolve     config@HEAD + request + package resources + machine facts
+compile     -> Commission bundle in memory (engine inputs + frozen role texts + commission.json)
+admit       schema, A1, role/binding coherence, evidence executables resolved
+probe       optional: run task-check once on the clean baseline
+summarize   effective scope, actions, program, bindings, check, branch
+  |
+  |  AUTHORIZATION (once): confirm on a terminal, or --yes
+  v
+journal     OPS/<attempt>/lifecycle.json + the exact bundle bytes     <- first persisted state
+commit      bounded commit of .wfc/commissions/<id>/ only
+admit       engine _preflight against the committed bundle at HEAD
+launch      engine subprocess, same interpreter, frozen environment   <- the one non-repeatable step
+monitor     wait; project progress from STATE read-only
+terminal    completed | awaiting_human | stopped | reconcile_required | interrupted
+archive     raw copy + manifest + audit.json -> Evidence repository, one commit
+report      consolidated result, exit code
+----
+
+Everything above the authorization line is a pure function of committed configuration, the request, the installed package and the machine environment. Nothing needs cleaning up if the user declines, and `wfc plan` is that half of the pipeline on its own. Everything below it runs without returning control, and each step is recorded in a journal so that `wfc resume` can finish it.
+
+=== Room for later capabilities
+
+The boundary that keeps later features cheap is already in the flow: the Front Door *resolves*, the Commission *records resolved values*, the Coordinator *executes what is recorded*. A task class that selects models, different worker and reviewer providers, or tool integrations each add a resolution rule in the Front Door and, where the user must be able to see the result, a field under `execution` in `commission.json` with a new schema version. The kernel changes only when it has to enforce something new. Nothing here builds any of them.
+
+=== Reuse map
+
+[cols="1,4",options="header"]
+|===
+|Disposition |Code
+
+|Unchanged
+|Reducer, persistence, serialization, model, vertical, slice4, evidence, prompt assembly, adapters, `trusted_commit`, the A3 contract and its loader, all engine input schemas (WorkItem v2, Profile v2, RepositoryPolicy v3, component manifest v1, execution bindings v1).
+
+|Adapted
+|`commissioning.py`: new compile path reading package resources and configuration; program literals (`_simple_template`, `_robust_template`) reused as they are. `operator.py`: admission extracted into a callable; one identity key added to the plan.
+
+|Moved into the package
+|From `scripts/wfc_op.py`: attempt validation, scratch creation, execution-bindings writer, status projection (`cmd_status` and its helpers), launch-envelope writer. From Evidence: `archive_run.py` and the logic of `wfc-archive-run`.
+
+|Retired after cutover
+|`_repository_standard_v1_record`, the four path constants and the v1 Intent parser in `commissioning.py`; `scripts/wfc_op.py`; the dry-run-then-real archive delegation and its report parsing; `governance/workflow-programs/*.yaml` as a live compiler input (the files stay as history).
+|===
+
+== Design areas
+
+[[resources]]
+=== Product-owned resources and prompt composition
+
+==== Three ways to deliver product records
+
+[cols="2,3,3",options="header"]
+|===
+|Option |What it costs |Verdict
+
+|Materialize into `.wfc/product/` at `init`, equality-check against the package (first review)
+|About six product files in every payload repository, re-materialized on every upgrade. An upgrade and a stale copy disagree until the user acts. Ownership looks shared.
+|Rejected. It preserves Intent v1 at the user's permanent expense.
+
+|Engine resolves components from the package
+|Changes `_preflight` component loading and the inter-Hop re-read, and adds a second resolution mechanism to the trusted kernel. A Run's governing bytes then depend on what is installed while it runs.
+|Rejected. It moves product configuration rules into the Coordinator.
+
+|*Compiler freezes package resources into the Commission bundle*
+|A few kilobytes per Commission (the three role texts total 3,088 bytes *[V]*). The compiler changes; the Intent schema advances.
+|*Recommended.*
+|===
+
+Under the recommended option the Commission directory is self-contained. The engine receives `--components .wfc/commissions/<id>/components.yaml`, whose entries point at `.wfc/commissions/<id>/components/*.txt`. These are ordinary tracked files inside a governance path, read at the expected HEAD exactly as today *[V]*.
+
+==== Ownership and resolution
+
+* *Programs.* *[V]* The closed program records already live in package code (`_simple_template`, `_robust_template`, `_direct_template`); the YAML catalogue under `governance/workflow-programs/` is compared against them. *[R]* The in-code literal becomes the single definition. The compiler records the SHA-256 of its canonical JSON form as `program.record_sha256`.
+* *Role texts.* *[R]* Package data under `resources/roles/`, loaded through `importlib.resources` and admitted against digests pinned in code, the pattern `prompt.load_agent_operating_contract` and `REVIEWED_SHA256` already use *[V]*. A changed role text is a new digest and a new package release.
+* *Operating contract.* Unchanged: loaded by the engine, never by the compiler, never frozen into a bundle.
+
+==== Composition and precedence
+
+*[V]* `prompt.assemble_prompt` already composes in a fixed order: identity header, operating contract, role components, modifier components, repository-policy components, persona, workflow policy, task, context, result contract. *[V]* The contract text states that consumer material "may narrow them but may not widen, replace, disable, or contradict them". The composition rule for Beta 1 is this existing order with three sources assigned to its slots. It adds no mechanism.
+
+[cols="1,2,3,2",options="header"]
+|===
+|Layer |Source |Slot in the assembled prompt |Frozen as
+
+|Product
+|Program literal, role texts, modifier
+|role and modifier components
+|`components/<id>.txt`
+
+|Repository
+|Files listed under `guidance` in the configuration; one persona string per role
+|repository-policy components, in configured order; persona block
+|`components/guidance-<n>.txt`; `work-item.yaml`
+
+|Invocation
+|Task title, body, acceptance
+|task block
+|`task.md`
+|===
+
+Precedence is positional. A later layer cannot remove or replace an earlier one; there is no override key, no inheritance and no template language. A project cannot edit product role text, because there is no project copy to edit.
+
+Binding guidance into the repository-policy slot changes a list the v1 program literals show as empty. *[R]* Treat it as a slot binding, like scope `S`, artifact `A` and evidence `E` today: roles, routes, review descriptors, Finding authority and actions are untouched, and the engine sees only the rendered profile. If the Maintainer prefers to call it a program revision, the slot ships empty in Beta 1 and nothing else in this design changes (Q2).
+
+Two refusals at compile time, both existing limits made visible: a guidance file larger than `COMPONENT_LIMIT_BYTES` (65,536), and a total above `CONTEXT_LIMIT_BYTES` (196,608). *[V]* Today the engine omits an oversized component and records the omission; a silently omitted project rule is the worse failure.
+
+==== Composition cannot extend authority
+
+No new rule is needed. Scope, actions, routes and Finding authority come from the rendered profile and policy. *[V]* `trusted_commit` and the post-Hop observation enforce them regardless of prompt text. The compiler writes guidance only into component files; it has no path from a guidance file to `authorized_scope` or `authorized_actions`.
+
+Freezing a copy also removes a friction the first review documented. *[V]* A selected component is a governing input, so A1 refuses any phase scope that contains it or lies inside it. With the original file selected, a Run scoped to `docs` is refused when `docs/ARCHITECTURE.md` is guidance. With a frozen copy selected, the original is an ordinary file again and can be in scope; the Run is governed by the bytes as they were when it was authorized.
+
+==== Freezing, digests and audit after an upgrade
+
+`commission.json` (<<contract-commission>>) lists every frozen resource with its layer, origin, digest and frozen path, plus the identity of the package that compiled it. After a package upgrade:
+
+* A committed Commission is unaffected. Its governing bytes are Git blobs.
+* `wfc commission verify` re-checks internal consistency (listed digests against blobs) with any version, and byte-exact re-compilation only when the installed identity equals `compiled_by`. A different identity is reported as such, not as a mismatch.
+* A lifecycle resumed after an upgrade is refused before launch (<<lifecycle>>).
+
+==== Compatibility with the existing programs
+
+`simple@v1` and `robust@v1` are compiled from the same literals; the acceptance test for the new compiler is that the rendered profile equals the v1 rendering field for field, apart from the guidance slot and the component paths (BP2). *[V]* The verification gate of `direct@v1` has `finding_authority: []`; *[E]* its acceptance is unreconciled in the active-work manifest. It stays out of the Beta-1 set (R1-D5 unchanged).
+
+One opportunity falls out of the compiler deriving review-artifact paths itself. If the worker phases receive only the requested scope and the reviewer phases only the artifact paths, worker and reviewer write scopes become disjoint with no engine change. *[E]* `FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION` reserves that for a future program version. This review only notes that the new compiler makes it a two-line decision; it is not part of the plan.
+
+[[frontdoor]]
+=== One-command Front Door and authorization
+
+==== What the user authorizes
+
+A `wfc run` invocation authorizes one Commission: this task, this scope, this program, these role bindings, this check, on this branch. Each of those is either typed in the invocation or read from configuration the user committed. Three properties keep that honest without a sequence of approvals:
+
+. *No authority-bearing value is defaulted silently.* Scope is required per request and never defaults to the ceiling. Role bindings have no built-in default; `init` asks for them once.
+. *The ceiling moves only by a human commit.* `.wfc/config.yaml` is a governance path. *[V]* A1 forbids any phase scope overlapping one, so no Run can widen the ceiling. `wfc run` never edits it.
+. *Authorization binds to the effective contract.* The summary shows the compiled Commission, and the journal records the SHA-256 of `commission.json` together with how authorization was given.
+
+*[R]* On a terminal, `wfc run` prints the summary and asks once. `--yes` skips the question and is a first-class flag, required when standard input is not a terminal. After that point there is no further prompt, including for the archive. This differs from the first review in two ways. It called `--yes` something not to offer by default; an outer agent or a script has no other way to use the product. And it committed the Commission *before* asking, which leaves a commit behind when the user declines; here nothing is written until authorization.
+
+The alternative, no prompt at all, is defensible: nothing `wfc run` does is pushed, and every effect is a local commit or provider spend. It is Q1.
+
+The shell-approval behaviour of an outer Codex or Claude session is unrelated. That session approves the single `wfc run --yes ...` command; WFC's own authorization is the recorded act above.
+
+==== Commands
+
+[cols="2,4",options="header"]
+|===
+|Command |Behaviour
+
+|`wfc init`
+|Write a `.wfc/config.yaml` skeleton and `.wfc/.gitignore`; create or adopt the Evidence repository. Asks only for what cannot be defaulted.
+
+|`wfc plan <task> --scope ...`
+|The pure half: resolve, compile, admit, summarize. Writes nothing. `--out DIR` writes the bundle outside the repository for inspection.
+
+|`wfc run <task> --scope ...`
+|The whole lifecycle. `--until committed`, `--until prepared` stop after that step for stepwise operation; `--request FILE` takes a complete request (the machine interface of `DEC-WFC-020`).
+
+|`wfc resume [attempt]`
+|Continue an unfinished lifecycle from its journal.
+
+|`wfc status [attempt]`
+|Read-only projection, as `wfc_op.py status` today; without an argument, the repository's latest attempt.
+
+|`wfc archive <attempt>`, `wfc report <attempt>`
+|The last two steps on their own; both idempotent.
+
+|`wfc commission verify <id>`
+|Check a committed Commission's listed digests against its files, and re-compile byte for byte when the installed identity matches.
+
+|`wfc --repository ... --state-root ...`
+|Today's engine flags, passed to `operator.main` unchanged, so prepared `launch.sh` files and Runtime N keep working.
+|===
+
+The segmented path is the same controller stopped early, not a second implementation.
+
+[[lifecycle]]
+=== Durable lifecycle
+
+==== What can and cannot be restarted
+
+[cols="2,2,4",options="header"]
+|===
+|Step |Repeatable? |How completion is decided on resume
+
+|Compile, admit, probe, summarize
+|Yes (pure)
+|Not resumed at all. Nothing is persisted before authorization; a crash here is as if the command had not run.
+
+|Commission commit
+|Yes, by observation
+|HEAD equals the recorded baseline and the tree is clean: write the stored bundle and commit. HEAD is one commit ahead, its parent is the baseline and its tree adds exactly the stored bundle bytes: adopt it. Anything else: refuse; the repository changed after authorization.
+
+|Committed admission
+|Yes (provider-free)
+|Re-run.
+
+|*Launch*
+|*No*
+|STATE absent and engine lock free: launch. STATE present: it was launched, whatever the journal says. *[V]* The engine itself refuses an existing state root, so a double launch cannot produce a second Run.
+
+|Monitor
+|Yes
+|Engine lock held: wait. Lock free and `operator-summary.json` present: terminal. Lock free and no summary: `interrupted`.
+
+|Archive
+|Yes, by observation
+|Destination tracked in the Evidence repository with the same Run ID: done. Staging directory present: delete and redo. Destination present but untracked: re-verify digests against STATE, then commit.
+
+|Report
+|Yes (pure)
+|Recompute.
+|===
+
+This is what distinguishes a restartable process from a script that works while everything succeeds: each step's completion is read from the world (Git, STATE, the Evidence repository), and the journal contributes only the frozen inputs and the intent. A journal that says "launched" is never trusted over an absent state root, and the reverse.
+
+==== The smallest persistent mechanism
+
+One JSON file per attempt, `lifecycle.json` in the existing OPS directory, written with the existing `atomic_write_json`, plus the bundle bytes stored beside it at authorization (<<contract-lifecycle>>). Three supporting facts:
+
+* *Engine lock.* The controller opens `engine.lock` in OPS, takes an exclusive `flock`, passes the descriptor to the engine child and closes its own copy. The lock lasts exactly as long as the engine process. A later `wfc resume` probes it without blocking. No PID guessing.
+* *Detached engine.* The engine child starts in its own session with output to `run.log` in OPS. It survives the controller and the terminal. `wfc resume` attaches by waiting on the lock.
+* *One active lifecycle per checkout.* A pointer file keyed by the repository's canonical path names the unfinished attempt. A second `wfc run` in that checkout refuses and prints the `resume` command. Justification: two lifecycles on one worktree would interleave commits on one branch and make every Hop's HEAD check fail (*[V]* `preflight_hop`); the pointer turns a confusing mid-Run stop into a refusal before any spend.
+
+==== The five failure modes the assignment names
+
+[cols="2,4",options="header"]
+|===
+|Failure |Prevention
+
+|Duplicate Commission from a retried command
+|An unfinished lifecycle blocks a new `wfc run`. Resume reuses the stored bundle and adopts an already-made commit.
+
+|Duplicate provider dispatch
+|Launch is never repeated once STATE exists. An interrupted Run is terminal. *[V]* Inside the engine, the dispatch marker already prevents re-dispatch of an uncertain Hop.
+
+|Double archive or duplicate archive commit
+|Deterministic destination keyed by attempt; tracked-destination check before any write; staging directory renamed into place only after verification.
+
+|Reinterpreting an authorized Commission under changed configuration
+|Resume never re-reads configuration or re-compiles. It writes the bytes stored at authorization, whose digest the authorization record names.
+
+|Silently continuing with different execution identities
+|Package identity, provider executable fingerprint and the frozen environment digest are recorded at authorization and compared before launch. A difference refuses the launch. After launch the engine process already holds its code; a changed package is recorded in the report as an anomaly and cannot be acted on.
+|===
+
+==== Terminal outcomes
+
+`completed`, `awaiting_human`, `stopped` and `reconcile_required` are the engine's own statuses and are archived as they are. `interrupted` is the controller's classification of a Run whose engine process ended without a summary. It is archived too (F3), with `dispatch.json` noted when present, because the provider's outcome is then unknown. The report states that the working tree may be dirty and that a provider child process may still be running (<<risks>>).
+
+No outcome triggers a successor. *[E]* `DEC-WFC-014`: continuation is a fresh, separately authorized Run. In this product that is simply the next `wfc run`.
+
+Semantic ledger curation, Runtime promotion and push stay outside the controller. The mechanical archive commit is inside it.
+
+[[evidence]]
+=== Evidence storage and audit projection
+
+==== Three layers, unchanged
+
+Transient operational state (OPS, STATE, scratch) stays where it is. Durable mechanical evidence goes to an Evidence repository. Semantic interpretation stays a Maintainer practice with no product support. The home-directory layout gains one override (`WFC_HOME`) and a project slug in attempt names; it is not redesigned.
+
+==== Destination
+
+*[R]* A Git repository separate from the payload, created by `wfc init`.
+
+* Default location: `<WFC_HOME>/evidence/<project>`, so a first user configures nothing and never sees a second repository unless they look.
+* Override: `evidence.repository` in the configuration, relative to the payload root or absolute. Self-development sets `../workflow-coordinator-run-evidence`.
+* Layout: `archive/<prefix...>/<attempt>/`, the existing shape. The prefix defaults to the project name; self-development keeps `unclassified` or domain and workstream from `--semantic-json`.
+
+Repository-local storage remains an alternative, not the default. The arguments against it as a default are concrete: archive commits would land on the feature branch the Run is working on; *[I]* the Runs most worth archiving are stopped ones, whose tree is dirty; and (F5) today's files would put a user's home directory and provider binary path into shared history. The audit projection removes the third objection only.
+
+==== What is committed
+
+[cols="1,3,3",options="header"]
+|===
+|Setting `evidence.raw` |Committed to the Evidence repository |Raw files
+
+|`local` (default)
+|`audit.json` only
+|Kept beside it on disk, excluded by the repository's `.gitignore`.
+
+|`commit`
+|`audit.json`, `manifest.json`, `run/`, `ops/`
+|Versioned, as self-development does today.
+
+|`discard`
+|`audit.json` only
+|Not copied; they remain in STATE until the user removes it.
+|===
+
+The default makes the durable, shareable record the sanitized one, while keeping the raw files in a stable place for debugging. A user who later pushes the Evidence repository shares no local path, persona or provider output unless they chose `commit`.
+
+==== Audit projection
+
+`audit.json` (<<contract-audit>>) is derived from the raw archive after the copy is verified. Rules:
+
+* *Portable.* Absolute paths are replaced by symbolic roots (`<repository>`, `<state>`, `<ops>`, `<home>`) or dropped. Executables appear as authored name plus fingerprint digest, not as a path.
+* *No provider prose.* No result message, persona text, diagnostic tail or Finding text. Findings appear as identifier, status and blocking flag.
+* *Original digests preserved.* The projection lists every raw file with its SHA-256 and size exactly as the raw manifest recorded them. Raw files are never rewritten to sanitize them.
+* *Versioned.* `"schema": "wfc.audit/1"`. A later schema adds a new version; old records are not migrated.
+
+==== What stays verifiable without the raw files
+
+[cols="2,3",options="header"]
+|===
+|Fact |Verifiable from
+
+|The Commission that governed the Run, byte for byte
+|Payload Git: the bundle at the Commission commit, against the digests in `audit.json`.
+
+|Every Hop's commit, subject and changed paths
+|Payload Git.
+
+|Review artifacts
+|Payload Git.
+
+|Which product role texts and program were used
+|Bundle digests against the published package of the recorded version and tree digest.
+
+|That the audit record was not altered after archiving
+|The Evidence repository's own commit.
+
+|Trusted evidence outcomes (exit classification, output digests)
+|Not independently re-verifiable. They are the Coordinator's attested observation; *[V]* the output bodies were never stored.
+
+|Content of a raw file
+|Only by producing the file and matching its listed digest.
+|===
+
+==== Commit ownership, idempotency and integrity
+
+* The controller is the only writer of archive commits. One commit touches one attempt directory, made with the same bounded commit function as the Commission commit. Never a push.
+* The copy goes to a staging directory inside the Evidence repository and is renamed into place only after the existing verification (manifest parses, every listed file present, counts agree). A partial copy is never at the destination, which closes F4.
+* The clean-repository requirement narrows to: nothing staged, and nothing dirty outside the attempt's own destination and staging directory.
+* All existing self-consistency refusals are kept: state root against the plan's own `state_root`, agreement of Run ID, WorkItem ID, checkout ID and repository across sources, OPS coherence, destination isolation.
+
+==== Reuse and sequencing
+
+*[V]* `archive_run.py` derives its archive root from `__file__`; the wrapper locates OPS at `$HOME/wfc-ops/<attempt>` and is 517 lines of shell around an embedded Python probe. *[E]* Two of its three reviews concerned the shell and TSV protocol. *[R]* Two packages, deliberately separate:
+
+. *BP5, port.* `archive_run.py` into the package with the root and OPS directory as parameters; wrapper logic in Python; manifest byte-compatible apart from `archived_at`. The 61 Evidence tests (21 helper, 40 wrapper) are ported first and serve as the specification. Adds staging and idempotent retry, nothing else.
+. *BP6, projection.* `audit.json`, the `raw` setting, the report.
+
+The existing 119 manifests are not rewritten and receive no `audit.json`. An archive directory without one is, by that fact, a pre-projection archive; <<identity>> gives the reading rule.
+
+[[config]]
+=== Configuration and first use
+
+==== What the user must supply
+
+[cols="2,1,4",options="header"]
+|===
+|Input |Required? |Why it cannot be defaulted or inferred
+
+|Scope ceiling
+|Yes, once
+|It is the project's standing authority limit. Inferring it would be WFC granting itself authority.
+
+|Check command (`task-check`)
+|Yes, once
+|Detecting a build system is the provisioning framework Beta 1 excludes. *[V]* `simple@v1` and `robust@v1` each admit exactly one evidence profile, which selects `task-check`.
+
+|Role bindings (adapter, model, reasoning per role)
+|Yes, once
+|There is no safe default model. *[E]* Worker completion has been model-dependent (ledger, Operator Manual series synthesis).
+
+|Scope of this task
+|Yes, per request
+|The authorization itself.
+
+|Task text
+|Yes, per request
+|The work. *[E]* `DEC-WFC-019` excludes professional task authoring from what the Front Door minimizes.
+
+|Default program, hop limit
+|No
+|`robust@v1`, 8.
+
+|Personas
+|No
+|A neutral product default per role.
+
+|Project guidance
+|No
+|Empty.
+
+|Evidence destination
+|No
+|Under `WFC_HOME`.
+
+|Provider executable, `PATH` additions
+|No
+|The adapter's conventional name on the ambient `PATH`.
+|===
+
+Everything the user needed to know in the first review's walkthrough and no longer does: RepositoryPolicy schema v3, `governance_paths`, the component manifest, the materialized product directory, review-artifact paths, the three source pins, and the Runtime and Evidence topology.
+
+==== One file
+
+`.wfc/config.yaml` (<<contract-config>>) is the only file a user authors. It is one schema with a strict key set, read from Git at HEAD, never from the working tree. It is not a second authority format beside RepositoryPolicy: the policy record the engine admits is generated from it into each Commission bundle, so there is one authored source and one enforced form.
+
+There is no machine-local settings file. Machine facts (the resolved provider executable, the frozen `PATH`) are resolved when the request is authorized and recorded in the lifecycle journal.
+
+*[V]* The engine requires a clean tree including untracked files, so a task file cannot sit untracked inside the repository. `init` therefore writes a `.wfc/.gitignore` that ignores `.wfc/tasks/`, giving task drafts a place in the repository that does not dirty it; a task file anywhere outside the repository works as well.
+
+`.wfc/` holds `config.yaml`, `commissions/` and `reviews/`. The generated policy lists `.wfc/config.yaml` and `.wfc/commissions` as governance paths and leaves `.wfc/reviews` free, because *[V]* A1 forbids a phase scope from overlapping a governance path in either direction and the reviewer must write its artifact. The user never sees this list.
+
+==== Making authority visible without the internal schema
+
+The summary printed by `plan` and `run` is the authority view (<<contract-report>>): requested scope, the per-phase scopes and actions the program derives from it, the hop limit, the check command and where its executable resolved, the role bindings, the branch that will receive commits. It is rendered from `commission.json`, so what the user reads and what is committed cannot differ.
+
+[[preparation]]
+=== Generic preparation and runtime identity
+
+==== What preparation becomes
+
+*[V]* Today's `prepare` does seven things that are not about the payload: pin a Runtime clone, pin an Evidence clone, export and pip-install the Runtime per attempt, build a venv, pip-install the payload with `[dev]`, require `python3` to resolve into that venv, and run the Runtime's preflight under its own interpreter. For the product, all seven go:
+
+* The installed package is the executing implementation. Its identity is recorded instead of a Runtime HEAD.
+* The Evidence repository is validated at archive time, when it is used.
+* No environment is built.
+
+What remains is small: resolve the provider executable, freeze the environment, write the execution bindings, create the scratch directory, run admission.
+
+==== The evidence environment contract
+
+*[V]* The engine runs each evidence command with `shell=False`, working directory at the repository root, and the environment snapshot taken at admission (`coordinator-inherited-environment-v1`). The contract for Beta 1 states that and adds two things.
+
+. *The user provides the environment; WFC records it.* The frozen `PATH` is the configured `path_prepend` entries followed by the ambient `PATH` at authorization. Its digest, the resolved executable and its stat fingerprint are already in `operator-plan.json` *[V]*.
+. *A baseline probe demonstrates suitability.* Before authorization, WFC runs `task-check` once on the clean baseline, in the frozen environment, through the existing `ProductionEvidenceRunner`. A non-passing baseline refuses the run and shows the output tail.
+
+The probe answers the assignment's point that an executable on `PATH` proves nothing about its dependencies. Its justification under the governance-economy rule:
+
+[horizontal]
+Failure scenario:: The check cannot pass in this environment, for reasons unrelated to the task. The Run discovers that only after paying for an implementation Hop. *[E]* This has happened repeatedly: a 900-second timeout in FTR05, and whole Hop budgets lost to the same gate ("Claude Adapter Environment Allowlist", "TMPDIR Scratch Provisioning" in the ledger).
+Goal at risk:: `GOAL-WFC-001`: wasted provider spend and a stop the user must diagnose.
+Why existing controls are insufficient:: Admission resolves the executable but does not run it.
+Cost:: One execution of the check, at most its timeout. No human step. `environment.baseline_check: false` turns it off for a project whose baseline is intentionally red.
+
+*[V]* The Evidence allow-list already names `baseline-*.log` and `baseline-*.exitcode`: a baseline run was an established manual practice before the Harness. This mechanizes it.
+
+WFC provisions nothing. A project that needs a virtual environment, a toolchain or a container prepares it and puts it on `PATH`.
+
+==== The normative preparation contract
+
+*[V]* The canonical sequence in `ch03_running/01_preparation.adoc` includes "Export the exact target baseline and build the separate evidence environment", illustrated with `pip install "$OPS/target-src[dev]"`. The same file's Harness subsection states that the only current implementation does not do this and installs from the live checkout. *[E]* The September Latin Run did neither. *[R]* When BP7 lands, steps 4 and 5 of that sequence are amended to what the product guarantees: a recorded implementation identity, and a user-provided environment whose identity is recorded and whose suitability is probed. This is a change to a normative document and needs the Maintainer's assent (Q5); it is one section, not a reopening of the manual.
+
+==== Self-development without the topology
+
+The purpose of Runtime N and Development N+1 (`DEC-WFC-001`) is that the code executing a Run is not the code the Run is changing. One consumer-neutral rule preserves exactly that:
+
+*WFC refuses to operate on a repository that contains the package it is running from.*
+
+[horizontal]
+Failure scenario:: An editable install from the payload checkout. A worker Hop edits `reducer.py`; the next Hop's evidence subprocess, or a re-import, runs the edited code inside the Run that is supposed to judge it.
+Goal at risk:: Integrity of WFC's own orchestration and trusted operations (Functional Model 3.1).
+Why existing controls are insufficient:: Today the protection is the three-repository check, which the product path drops.
+Cost:: One path comparison at resolve time. It affects only people developing WFC itself.
+
+With that rule, self-development is an ordinary consumer: the Maintainer installs WFC N from the Runtime clone into a dedicated environment and runs it against the Development checkout, whose `.wfc/config.yaml` names the check, a maintained development environment on `path_prepend`, and the existing Evidence repository. Detached HEAD and disabled push URL remain checks of the *promotion* procedure, where they belong, instead of preconditions of every Run. *[E]* The per-attempt `pip install` they replace is the source of `BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION`.
+
+[[identity]]
+=== Identity and historical reconstructability
+
+==== A minimal identity model
+
+link:../../backlog/FTR-WFC-CONTRACT-HISTORICAL-RECONSTRUCTABILITY.adoc[`FTR-WFC-CONTRACT-HISTORICAL-RECONSTRUCTABILITY`] waits for the first advance of a governance `schema_version`. The request schema proposed here is that advance, so this design meets its activation criterion and must answer it. Five facts, each recorded where it is cheapest to keep true:
+
+[cols="2,3,3",options="header"]
+|===
+|Dimension |Value |Recorded in
+
+|Product release
+|Distribution name and version (`workflow-coordinator 0.1.0b1`)
+|`commission.json` (`compiled_by`), journal, `operator-plan.json`, `audit.json`
+
+|Exact implementation
+|`package_tree_sha256`: SHA-256 over the sorted list of (relative path, file SHA-256) for every file of the installed `workflow_coordinator` package, bytecode caches excluded; plus the source commit when known
+|same four places
+
+|Contract revisions
+|The `schema` or `schema_version` each emitted artifact already carries; program `id@revision` and record digest; operating-contract version and digest
+|`commission.json`
+
+|Effective resources
+|Layer, origin, digest and frozen path of every role text and guidance file
+|`commission.json`; the bytes themselves in the bundle
+
+|Documentation applicability
+|An `Applies-to::` line naming the release series
+|The consumer quickstart and any agent skill, nowhere else
+|===
+
+A PyPI version does not establish bytes: the same version string can come from a wheel, an sdist build, a local checkout or an editable install. The tree digest does, for about twenty files, in milliseconds, independent of the installer.
+
+The source commit needs no build system: a package resource containing `$Format:%H$` and an `export-subst` attribute make `git archive` write the commit into it. *[V]* The Harness already installs the Runtime from a `git archive` export. A build from a plain checkout leaves the placeholder, and the identity then reports the commit as unknown, which is the truth.
+
+This is a record, not a framework: no compatibility matrix, no migration, no version negotiation.
+
+==== Reading historical evidence
+
+Three eras, distinguishable from the artifacts alone and never rewritten:
+
+[cols="1,3,3",options="header"]
+|===
+|Era |Recognizable by |Implementation identity
+
+|Hand-authored profiles
+|`governance/self-development/*-profile.yaml`; no `intent.yaml`
+|Runtime commit in the archive's pin file, where one exists
+
+|Intent v1
+|`intent.yaml` with `schema_version: 1` and `render-manifest.json` with source commits
+|`runtime_head` in `preparation-pins.txt`
+
+|Request v2
+|`commission.json` with `"schema": "wfc.commission/2"`; `audit.json` in the archive
+|`compiled_by` and the plan's `coordinator` block
+|===
+
+One short table of this kind, kept in the Evidence repository's README, is the whole "historical interpretation" mechanism. Old Commissions stay intelligible as evidence. They do not need to compile or launch under a later release, and (F9) most already do not.
+
+==== Automatically rendered provenance in documentation
+
+*[R]* Lower priority, with one exception. The concrete mismatch to prevent is an agent skill or runbook that tells a fresh agent to run `python3 scripts/wfc_op.py ...` after the Front Door has replaced it. *[V]* The Operator Manual's entry document and its running, evidence and example chapters do that today. The remedy is small: `wfc --version --json` prints the identity above, and the quickstart and skill carry an `Applies-to::` line that one test compares with the package version. Rendering provenance into every manual chapter is hygiene with no failure behind it.
+
+[[contracts]]
+== Proposed interface contracts
+
+Illustrative. Field names are chosen to expose inconsistencies, not to be adopted as they stand.
+
+[[contract-config]]
+=== Project configuration
+
+[source,yaml]
+----
+# .wfc/config.yaml -- the only file a user authors
+schema: 1
+project: tidemark                      # repository name in records; slug in attempt names
+
+authority:
+  scope_ceiling: [cmd, internal, docs, README.md, go.mod, go.sum]
+  max_hops: 10
+
+checks:
+  task-check:
+    argv: [go, test, ./...]
+    timeout_seconds: 600               # product ceiling: 900
+
+defaults:
+  program: robust@v1
+  hops: 8
+
+roles:
+  worker:
+    adapter: claude_cli
+    model: claude-sonnet-5-5
+    reasoning: high
+    persona: "Go engineer for a small CLI; table-driven tests; no new dependencies."
+  independent_reviewer:
+    adapter: claude_cli
+    model: claude-sonnet-5-5
+    reasoning: high
+
+guidance: [docs/ARCHITECTURE.md]       # optional; copied into each Commission
+
+providers:                             # optional; keyed by adapter from the start
+  claude_cli: {executable: claude, invocation_timeout_seconds: 1800}
+
+environment:                           # optional
+  path_prepend: [/usr/local/go/bin]
+  baseline_check: true
+
+evidence:                              # optional
+  repository: ../tidemark-evidence     # default: <WFC_HOME>/evidence/tidemark
+  raw: local                           # local | commit | discard
+----
+
+Keying `providers` by adapter costs nothing now and is what a later mixed-adapter Run needs. *[V]* Today the engine refuses mixed adapters because it takes one scalar `--executable`.
+
+=== Request
+
+[source,yaml]
+----
+# what `wfc run task.md --scope cmd/list --scope internal/render` builds;
+# also the machine-submittable file for `wfc run --request`
+schema: 2
+task:
+  title: Add --json output to `tidemark list`
+  body: |
+    ...
+  acceptance: |                        # optional; from an "## Acceptance" section
+    ...
+scope: [cmd/list, internal/render]
+program: robust@v1                     # optional
+hops: 6                                # optional
+roles:                                 # optional per-request override
+  worker: {adapter: claude_cli, model: claude-sonnet-5-5, reasoning: high}
+commission_id: list-json-001           # optional; default: slug of the title + next free number
+----
+
+Compared with Intent v1 *[V]*, the request drops `work_item_id` (derived), `authority_source` (replaced by the recorded authorization), `program.source_commit`, `policy_basis`, `components_ref`, `durable_artifacts` (derived from the program), `evidence_profile` (each shipped program has one) and the `withheld_authority` and `escalation_default` texts (product-owned standard clauses).
+
+=== Compilation
+
+[source,python]
+----
+def compile_commission(
+    request: RunRequest,
+    *,
+    config: ProjectConfig,          # parsed .wfc/config.yaml
+    config_ref: BlobRef,            # path, commit, sha256 of that file
+    guidance: Mapping[str, str],    # path -> text, read from Git at the same commit
+    resources: ProductResources,    # program literals and role texts from the package
+    compiled_by: PackageIdentity,
+) -> CompiledCommission:
+    """Pure and deterministic: no Git, no clock, no environment."""
+
+@dataclass(frozen=True)
+class CompiledCommission:
+    commission_id: str
+    directory: str                  # ".wfc/commissions/list-json-001"
+    files: Mapping[str, str]        # repository-relative path -> text
+    engine_inputs: EngineInputs     # paths for --work-item/--profile/--policy/--components/--task
+    bindings_text: str              # execution-bindings.yaml content, schema 1
+    digest: str                     # sha256 of commission.json
+----
+
+Refusals, all before anything is written: scope outside the ceiling or overlapping a governance path; a path that is not A1-shaped; hops above the ceiling; a role without a binding; an unknown program; guidance above the component limits.
+
+[[contract-commission]]
+=== Effective Commission and its provenance
+
+[source,text]
+----
+.wfc/commissions/list-json-001/
+  request.yaml            the request, verbatim
+  commission.json         the effective contract and its provenance
+  work-item.yaml          engine input, schema 2      (unchanged format)
+  profile.yaml            engine input, schema 2      (unchanged format)
+  policy.yaml             engine input, schema 3      (unchanged format)
+  task.md                 engine input
+  components.yaml         engine input, schema 1      (unchanged format)
+  components/worker.txt  reviewer.txt  guidance-1.txt
+----
+
+[source,json]
+----
+{
+  "schema": "wfc.commission/2",
+  "commission_id": "list-json-001",
+  "work_item_id": "WI-LIST-JSON-001",
+  "request_sha256": "…",
+  "program": {"id": "robust", "revision": "v1", "record_sha256": "…"},
+  "authority": {
+    "scope": ["cmd/list", "internal/render"],
+    "review_artifacts": {
+      "broad_review": [".wfc/reviews/list-json-001/broad_review.md"],
+      "focused_review": [".wfc/reviews/list-json-001/focused_review.md"]
+    },
+    "max_hops": 6,
+    "phases": {
+      "implement":      {"role": "worker", "scope": "request", "actions": ["edit", "commit"]},
+      "broad_review":   {"role": "independent_reviewer", "scope": "broad_review", "actions": ["review", "edit", "commit"], "evidence": ["task-check"]},
+      "correct":        {"role": "worker", "scope": "request", "actions": ["edit", "commit"]},
+      "focused_review": {"role": "independent_reviewer", "scope": "focused_review", "actions": ["review", "edit", "commit"], "evidence": ["task-check"]}
+    },
+    "evidence": {"task-check": {"argv": ["go", "test", "./..."], "timeout_seconds": 600}}
+  },
+  "execution": {
+    "roles": {
+      "worker":               {"adapter": "claude_cli", "model": "claude-sonnet-5-5", "reasoning": "high"},
+      "independent_reviewer": {"adapter": "claude_cli", "model": "claude-sonnet-5-5", "reasoning": "high"}
+    }
+  },
+  "resources": [
+    {"id": "worker", "layer": "product", "origin": "workflow_coordinator/resources/roles/worker.txt",
+     "sha256": "…", "frozen_as": ".wfc/commissions/list-json-001/components/worker.txt"},
+    {"id": "guidance-1", "layer": "repository", "origin": "docs/ARCHITECTURE.md",
+     "origin_commit": "4c1e9a2…", "sha256": "…",
+     "frozen_as": ".wfc/commissions/list-json-001/components/guidance-1.txt"}
+  ],
+  "operating_contract": {"version": 6, "sha256": "7abf57ab…"},
+  "config": {"path": ".wfc/config.yaml", "commit": "4c1e9a2…", "sha256": "…"},
+  "compiled_by": {"distribution": "workflow-coordinator", "version": "0.1.0b1",
+                  "package_tree_sha256": "…", "source_commit": null},
+  "files": {"work-item.yaml": "…", "profile.yaml": "…", "policy.yaml": "…",
+            "task.md": "…", "components.yaml": "…"}
+}
+----
+
+Two points this example forces into the open.
+
+* *Role bindings are inside the committed Commission.* Today they live outside it, in OPS, on the principle that a binding chooses how authorized work is executed and cannot widen authority. That principle still holds for the engine, which keeps receiving a bindings file. But the model that will spend the user's money is part of what the user authorizes once, so it belongs in the record the authorization names. Consequence: a different model is a different Commission. In a one-command product that costs one more small commit. A future Front Door that resolves a task class into bindings writes the resolved bindings here; the Coordinator never sees the class.
+* *The provider executable path is not in it.* It is a machine fact and goes into the journal.
+
+=== Pinned execution identity
+
+Recorded in the journal at authorization and compared before launch.
+
+[source,json]
+----
+{
+  "coordinator": {"distribution": "workflow-coordinator", "version": "0.1.0b1",
+                  "package_tree_sha256": "…", "source_commit": null,
+                  "python": {"version": "3.12.4", "executable": "<home>/.local/pipx/venvs/workflow-coordinator/bin/python"}},
+  "provider": {"adapter": "claude_cli", "executable": "/usr/local/bin/claude",
+               "stat_fingerprint": {"st_size": 0, "st_mtime_ns": 0, "st_ino": 0, "st_dev": 0, "st_mode": 0},
+               "reported_version": "… (untrusted; output of --version)"},
+  "environment": {"path_prepend": ["/usr/local/go/bin"], "path_sha256": "…",
+                  "scratch": "<home>/wfc-scratch/tidemark-list-json-001-20261113-01"},
+  "repository": {"canonical_path": "…", "branch": "feature/list-json",
+                 "baseline_head": "4c1e9a2…"}
+}
+----
+
+The engine adds one key to `operator-plan.json`, `"coordinator"`, with the same four identity fields computed by itself. The engine is launched as `<same python> -m workflow_coordinator.operator`, not as `wfc` from `PATH`, so the two identities are of the same files; a difference is an anomaly in the report.
+
+[[contract-lifecycle]]
+=== Lifecycle journal
+
+[source,json]
+----
+{
+  "schema": "wfc.lifecycle/1",
+  "attempt_id": "tidemark-list-json-001-20261113-01",
+  "phase": "launched",
+  "request_sha256": "…",
+  "commission": {"id": "list-json-001", "sha256": "…",
+                 "directory": ".wfc/commissions/list-json-001",
+                 "bundle": "commission-bundle/"},
+  "authorization": {"mode": "interactive", "at": "2026-11-13T19:02:11Z", "commission_sha256": "…"},
+  "identity": {"…": "as above"},
+  "engine": {"argv_sha256": "…", "state_root": "<home>/wfc-state/tidemark-list-json-001-20261113-01"},
+  "steps": {
+    "committed": {"commit": "9f3c2ab…"},
+    "admitted":  {"at": "…"},
+    "launched":  {"at": "…"},
+    "terminal":  null,
+    "archived":  null
+  }
+}
+----
+
+`phase` takes the values `authorized`, `committed`, `admitted`, `launched`, `terminal`, `archived`. The `steps` entries are convenience. On resume the controller decides from the world, as the table in <<lifecycle>> states, and repairs the journal to match.
+
+Exit codes of `wfc run` and `wfc resume`:
+
+[horizontal]
+0:: Run `completed`, working tree clean, archived.
+1:: Run ended in any other terminal outcome; archived.
+2:: Refused before launch; no provider was invoked.
+3:: Lifecycle unfinished (for example the archive commit failed); `wfc resume` continues it.
+
+[[contract-audit]]
+=== Archive destination and audit projection
+
+[source,text]
+----
+<evidence repository>/
+  .gitignore                              raw exclusions when evidence.raw is "local"
+  archive/tidemark/tidemark-list-json-001-20261113-01/
+    audit.json                            committed
+    manifest.json  run/  ops/             raw; committed only with evidence.raw: commit
+----
+
+[source,json]
+----
+{
+  "schema": "wfc.audit/1",
+  "attempt_id": "tidemark-list-json-001-20261113-01",
+  "project": "tidemark",
+  "run": {"run_id": "RUN-…", "work_item_id": "WI-LIST-JSON-001", "status": "completed",
+          "stop_reason": null, "lifecycle_outcome": "completed",
+          "hops_used": 2, "hop_limit": 6,
+          "baseline_head": "9f3c2ab…", "final_head": "71d0e55…", "worktree_clean": true},
+  "commission": {"id": "list-json-001", "sha256": "…", "commit": "9f3c2ab…",
+                 "directory": ".wfc/commissions/list-json-001",
+                 "program": "robust@v1"},
+  "coordinator": {"distribution": "workflow-coordinator", "version": "0.1.0b1",
+                  "package_tree_sha256": "…", "source_commit": null},
+  "authorization": {"mode": "interactive", "at": "2026-11-13T19:02:11Z"},
+  "hops": [
+    {"hop_id": "H001", "phase": "implement", "role": "worker",
+     "adapter": "claude_cli", "model": "claude-sonnet-5-5", "reasoning": "high",
+     "outcome": "completed", "applied_route": "broad_review",
+     "commits": ["71a…"], "usage": null,
+     "evidence": []},
+    {"hop_id": "H002", "phase": "broad_review", "role": "independent_reviewer",
+     "adapter": "claude_cli", "model": "claude-sonnet-5-5", "reasoning": "high",
+     "outcome": "completed", "applied_route": "accept",
+     "commits": ["71d…"], "usage": null,
+     "evidence": [{"command_name": "task-check", "argv_sha256": "…", "status": "pass",
+                   "exit_code": 0, "stdout_sha256": "…", "stderr_sha256": "…",
+                   "executable_identity_stable": true}]}
+  ],
+  "findings": [],
+  "anomalies": [],
+  "raw": {"retention": "local", "manifest_sha256": "…",
+          "files": [{"path": "run/operator-plan.json", "sha256": "…", "bytes": 3966}]}
+}
+----
+
+`executable_identity_stable` is the comparison F8 says nobody makes: admission fingerprint against observation fingerprint, computed once, here. `usage` is reserved for provider-reported token consumption and is `null` until an adapter supplies it.
+
+[[contract-report]]
+=== Consolidated result
+
+[source,text]
+----
+WFC RUN  tidemark-list-json-001-20261113-01
+
+outcome     completed                       run RUN-…  robust@v1  2 of 6 hops
+commission  list-json-001 @ 9f3c2ab         .wfc/commissions/list-json-001
+branch      feature/list-json  9f3c2ab -> 71d0e55      working tree clean
+commits     H001 implement     71a…  feat(list): WI-LIST-JSON-001 H001 add --json output
+            H002 broad_review  71d…  docs(review): WI-LIST-JSON-001 H002 broad review
+evidence    task-check  pass  exit 0  (H002)
+findings    none open
+review      .wfc/reviews/list-json-001/broad_review.md
+archive     <evidence repository> @ a81…  archive/tidemark/tidemark-list-json-001-20261113-01/audit.json
+not done    nothing was pushed
+----
+
+For a stop, `outcome` carries the status and `stop_reason`; the block adds the human question, open blocking Findings by identifier, a dirty-path listing when the tree is not clean, and one line naming the next human choice. `--json` emits the same content. The report is computed from STATE, Git and `audit.json`; it interprets nothing the engine did not persist.
+
+== Governance economy
+
+=== What this design removes and adds
+
+[cols="3,3",options="header"]
+|===
+|Removed from the routine path |Replaced by
+
+|Three 40-character source pins per Intent
+|Bytes frozen in the bundle and listed with digests
+
+|Free-text `authority_source` ("... No additional run, push, merge or Runtime promotion")
+|A structured authorization record bound to the Commission digest
+
+|Program catalogue YAML compared against an in-code literal
+|The in-code literal alone
+
+|Runtime detached and push-disabled checks at every prepare and launch
+|Package identity, plus the same-repository refusal
+
+|Evidence repository pinned and required clean at prepare
+|Validation when the archive is written
+
+|Separate human boundaries for render, commit, check, prepare, launch, archive dry-run, archive
+|One authorization
+
+|Contract clauses restated in each task body (F12)
+|Product-owned role text and standard clauses
+|===
+
+Added, each justified in place: the baseline probe (<<preparation>>), the same-repository refusal (<<preparation>>), one active lifecycle per checkout (<<lifecycle>>), and identity comparison before launch (<<lifecycle>>). All four are mechanical refusals before any spend. None is a human gate.
+
+=== Major examples of redundant governance
+
+Named so they can be weighed, not a cleanup plan.
+
+. *Disclaimers the conventions already abolished.* link:../../ai_info/doc_conventions.adoc[The writing conventions] say the runtime-authority fact is stated once and "no other document carries a non-authorization disclaimer". *[V]* A phrase search finds one in 43 of the 142 documents outside `cold_storage/`.
+. *A status manifest that cannot keep up.* *[V]* `docs/backlog/_open.adoc` still lists the Operator Manual series as "planned / NOT commissioned", and `docs/README.adoc` still describes the additional failure-mode breadth and the successful walkthrough as separately planned, at a HEAD where all ten packages are accepted and recorded in the project history. Status is kept in the manifest, the FTR records, the history chapter and the ledger; the sole "active-work manifest" is the copy that went stale.
+. *Tests as per-Commission review records* (F9, F10). Forty tests froze the scope tuples and routes of forty hand-authored Commissions. The practice stopped once the compiler made the check structural. The tests remain and now assert a refusal.
+. *Ceremony per unit of work.* *[V]* Each of FTR06 to FTR10 completed cleanly in two Hops (`git log a1648bb..f6824f7`: one Commission commit and two Hop commits each). *[E]* Each also produced an archive commit and a ledger entry, and the sampled Commission (FTR10) carries a task body of several dozen lines. The Run itself was the cheap part.
+. *Delegation guarded by string scans.* *[V]* `test_harness_implements_no_archive_mechanics` forbids the words `shutil.copy`, `manifest.json` and `sha256_of` in the Harness source to protect "one implementation", which it does by freezing where that implementation lives.
+
+=== Document authority and the adoption of product direction
+
+*[V]* The Functional Model is indexed as `draft` and `exploratory`, and still carries a pre-convention `Status::` line. The conventions define `exploratory` as "nothing may be built on it without separate adoption", then state that no approval workflow exists. This assignment had to declare three of its sections accepted by instruction. So the classification says the product goals are unadopted, the Maintainer says they are adopted, and no described act connects the two.
+
+*[R]* Minimal clarification, no new framework:
+
+* One sentence in the conventions: *adoption is the Maintainer's commit that changes a document's or section's `Authority::` value.* That is already how every other header changes.
+* Apply it once: give Sections 1 to 3 of the Functional Model a section-level `Authority:: normative` using the existing mixed-document rule (conventions 1.4), and replace its `Status::` line with the four-line header. The use cases keep the document default.
+
+== The completed Operator Manual series
+
+The first review called FTR06 to FTR10 work "on the wrong path for Beta 1". They are now implemented and accepted (*[V]* 28 files, 4,098 lines; each of the five completed in one two-Hop Run). Reassessed:
+
+* *The priority objection is moot, and was half right.* The series did not move the product boundary: *[V]* no source file changed between the two reviews. It was never meant to. Its value for Beta 1 is different from what the first review weighed.
+* *It is the specification the controller automates.* The eleven transitions of `ch08_examples/03_commission_to_archive.adoc` map one to one onto the lifecycle steps in <<architecture>>. The manual's own account of that path, eight commands and a `prepare` invocation with twelve flags, is also the clearest statement of why a single command is needed.
+* *The failure-mode chapter is the report's test matrix.* *[V]* `ch07_diagnostics/02_failure_modes.adoc` is a source-verified diagnosis of candidate, stop, provider and scratch failures: the cases the consolidated report must explain.
+* *Most of it is engine semantics and survives unchanged.* Orientation, authority and admission, review mechanics, trusted acceptance, recovery outcomes and failure modes describe the Coordinator, which this design does not alter.
+* *The Harness-bound sections need bounded edits at cutover, not a new series.* `ch03_running` (both sections), `ch04_evidence/02_archive.adoc`, `ch05_self_development` and the command index in `ch08_examples`. That is ordinary maintenance inside BP7, the package that changes the behaviour.
+* *It is not the first-user document and should not become one.* *[V]* The manual states its own audience: "a maintainer returning months later ... to operate a WFC self-development Run". The consumer quickstart is a separate, short document (BP9) that links into the manual for semantics.
+
+== Test debt
+
+Classification of `tests/architecture/test_self_development_governance.py` (45 tests):
+
+[cols="2,1,4",options="header"]
+|===
+|Class |Count |Disposition *[R]*
+
+|Universal invariants
+|5
+|Move to a consumer-neutral file on synthetic fixtures: `test_work_item_mapping_cannot_enlarge_review_phase_authority`, `test_production_preflight_rejects_consumed_isolated_state_root`, `test_production_preflight_identifies_different_python_interpreter_identity`, and the two `test_bootstrap_..._route_is_legal_with_empty_finding_set` cases.
+
+|Historical fixture compatibility
+|40
+|No product obligation, and (F9) no launch-compatibility content. Quarantine under a `historical` marker excluded from the default selection; replace with one parametrized test that every retained historical bundle still parses. Delete the file at cutover.
+
+|Current self-development behaviour
+|0
+|The current path is covered by `tests/unit/test_wfc_op.py` and `tests/unit/test_commissioning.py`.
+
+|Obsolete
+|0 distinct
+|The 40 above become obsolete at cutover.
+|===
+
+What is lost by retiring the forty: per-Commission assertions about historical scope tuples and routes. Those facts remain in the committed bundles and the archives, which is where evidence belongs. What must not be lost is in the five.
+
+Other files:
+
+* `tests/unit/test_commissioning.py` (31 tests). *[V]* Its fixture clones WFC itself and its Intents pin `repository-standard@v1`. The invariants are universal (literal program rendering, tamper refusal, renewal trace, A1 path refusal). BP2 writes their v2 equivalents against a neutral fixture; the v1 tests stay until the v1 path is removed.
+* `tests/unit/test_wfc_op.py` (49 tests). Self-development Harness. The status, scratch, quoting and frozen-`PATH` cases move with the code they test. The Runtime and Evidence pin refusals and the string-scan test end with the script.
+* Evidence `tests/` (61 tests). Ported first in BP5; they are the archiver's specification.
+
+A neutral fixture repository is the single most valuable test asset for this work: a throwaway Git repository with no Python in it, a shell script as `task-check`, and a fake provider executable (*[V]* the pattern exists in `test_launch_executes_prepared_artifact_exactly_once_with_fake_executable`). BP2 creates it; every later package uses it.
+
+== First-pass decisions revisited
+
+Each entry gives: the original recommendation; what remains correct; what changes; the preferred architecture; alternatives and cost; what is affected; the long-term consequence; whether Beta 1 needs it; the remaining decision.
+
+=== R1-D1 Delivery of product records
+
+[horizontal]
+Original:: Materialize into `.wfc/product/` at `init`, equality-check; defer package resolution and Intent v2.
+Still correct:: Do not build both. Role texts need the equality discipline programs have. Project guidance belongs in the repository-policy slot.
+Changes:: Minimizing user friction now outranks preserving Intent v1.
+Preferred:: Compile-time freeze into the Commission bundle (<<resources>>).
+Alternatives:: Materialize (permanent duplication and upgrade friction). Engine resolution (kernel change; governing bytes tied to the installed version).
+Affected:: `commissioning.py`, package data, request schema, `commission.json`; `test_commissioning.py`; no engine module.
+Long-term:: Upgrades never touch payload repositories. Every Commission is self-describing.
+Beta 1:: Required.
+Decision:: Q2, the guidance-slot label only.
+
+=== R1-D2 May `wfc run` create the Commission commit?
+
+[horizontal]
+Original:: Yes, one path-limited commit, refused if anything else is staged or dirty.
+Still correct:: All of it.
+Changes:: Order and mechanism. The commit follows authorization instead of preceding the prompt. It uses a function built on the hook-free trusted Git helpers. The archive commit is a second instance of the same function, in the Evidence repository.
+Preferred:: `git_facts.bounded_path_commit` (<<architecture>>).
+Alternatives:: User commits by hand (the one-command flow does not exist). Reuse `trusted_commit` (*[V]* it requires a WorkItem and Hop identity in the subject and an agent `CommitIntent`; bending it would weaken the Hop commit's contract).
+Affected:: `git_facts.py`; `tests/unit/test_git_facts.py`.
+Long-term:: Two Coordinator-side write surfaces instead of one, both closed and path-exact. The statement that `trusted_commit` is the sole Git write surface narrows to: the sole write surface inside a Run.
+Beta 1:: Required.
+Decision:: None.
+
+=== R1-D3 Local archive
+
+[horizontal]
+Original:: Commit into the payload by default, with `--no-commit`; leave manifest fields unchanged.
+Still correct:: Do not alter manifest fields in the migration step. Its own objection 4 (paths, personas, dirty trees) was right and argued against its own default.
+Changes:: The default reverses.
+Preferred:: Separate Evidence repository, audit projection committed, raw local (<<evidence>>).
+Alternatives:: Payload-local raw archive (leaks, pollutes feature branches). Payload-local projection only (safe to share, still commits onto the working branch). No Git, directory only (loses tamper evidence and history).
+Affected:: New `frontdoor/archive.py`, `frontdoor/audit.py`; Evidence scripts and tests; `DEC-WFC-023`.
+Long-term:: Evidence can be shared or pushed without review of its content. One more repository exists, invisible by default.
+Beta 1:: Port and projection both required for an archive a third party can keep.
+Decision:: Q3.
+
+=== R1-D4 May a project edit role prompts?
+
+[horizontal]
+Original:: No; equality with the packaged text.
+Still correct:: The answer.
+Changes:: The question dissolves. No project copy exists to edit, and `verify` re-derives the frozen bytes.
+Preferred:: Product text from the package only; project material through guidance and persona.
+Alternatives:: A project override layer (a prompt framework; lets a project weaken role semantics the program's guarantees assume).
+Affected:: None beyond R1-D1.
+Long-term:: Role behaviour is a property of the release.
+Beta 1:: Follows from R1-D1.
+Decision:: None.
+
+=== R1-D5 Program set
+
+[horizontal]
+Original:: Ship `simple@v1` and `robust@v1`; withhold `direct@v1`.
+Still correct:: Yes. *[V]* The verification gate of `direct@v1` has empty Finding authority; *[E]* its acceptance is still unreconciled.
+Changes:: Nothing.
+Preferred:: As original. The compiler refuses `direct@v1` in a request until it is reconciled.
+Alternatives:: Ship it labelled experimental (a first user who meets an unclosable Finding stops at `awaiting_human` with no remedy).
+Affected:: Request validation.
+Long-term:: None.
+Beta 1:: Required as a decision.
+Decision:: Q7 if the Maintainer wants it shipped.
+
+=== R1-D6 Token-consumption evidence as a gate
+
+[horizontal]
+Original:: Fast-follow unless it is a few days of adapter work.
+Still correct:: No third party is blocked without it.
+Changes:: One-command autonomous spend raises its value: the user now authorizes a Run without watching it.
+Preferred:: Reserve `usage` in `wfc.audit/1` and the report now; fill it when an adapter can.
+Alternatives:: Gate Beta 1 on it (an undesigned capability on the critical path). Ignore it (the schema then changes at the first fill).
+Affected:: `audit.py`, later the adapters.
+Long-term:: Cost becomes a first-class reported fact without a schema break.
+Beta 1:: The field, yes. The data, no.
+Decision:: Q8. *[E]* It is recorded as a MUST-HAVE; only the Maintainer can demote it.
+
+=== R1-D7 Self-development during the transition
+
+[horizontal]
+Original:: Keep `scripts/wfc_op.py` as a thin specialization over packaged mechanics through Beta 1.
+Still correct:: Keep the script working throughout; the move is the riskiest step.
+Changes:: Do not refactor the script into a wrapper. It is the production tool that builds every package below, and rewriting it mid-flight is the risk the first review itself named.
+Preferred:: The script stays byte-for-byte until cutover. The Front Door reuses its functions by copying them into the package. After one promoted Runtime carries the Front Door and has completed self-hosted Runs, the script is retired outright (<<migration>>).
+Alternatives:: Thin wrapper now (two moving parts under one production path). Permanent specialization (two Front Doors forever).
+Affected:: `scripts/wfc_op.py`, `tests/unit/test_wfc_op.py`, manual chapters 3, 4, 5, 8.
+Long-term:: One Front Door. Self-development is a configuration, not a code path.
+Beta 1:: The bridge is required. The cutover is recommended before the tag (Q6).
+Decision:: Q6.
+
+=== R1-D8 Standing of the historical bundle tests
+
+[horizontal]
+Original:: Not needed for Beta 1; decide after relocating the universal tests.
+Still correct:: Relocate first.
+Changes:: F9. They are not launch-compatibility regressions, so there is less to preserve than assumed.
+Preferred:: Quarantine now, delete at cutover.
+Alternatives:: Keep as permanent regression (8,003 lines defending parse behaviour of profiles the product no longer produces). Delete now (loses the five until they are moved).
+Affected:: The file, `pyproject.toml` markers.
+Long-term:: Product tests run without the historical governance tree.
+Beta 1:: The relocation, yes. The deletion, no.
+Decision:: None before implementation.
+
+=== R1-D9 The 900-second evidence ceiling
+
+[horizontal]
+Original:: Keep and document.
+Still correct:: Yes.
+Changes:: The baseline probe now reveals a check that cannot finish in time before any spend, which removes most of the surprise.
+Preferred:: As original.
+Alternatives:: Raise or parameterize (a product-invariant change with no consumer evidence yet).
+Affected:: Quickstart limitations list.
+Long-term:: Revisit on the first consumer who hits it.
+Beta 1:: Documentation only.
+Decision:: None.
+
+[[migration]]
+== Migration strategy
+
+=== Constraint
+
+Every package below is built by WFC operating on itself with today's tools: `scripts/wfc_op.py`, Runtime `6c88e476`, Intent v1, `repository-standard@v1`, and a `task-check` that is the whole test suite within 900 seconds. Nothing may break that path until its replacement has run.
+
+=== Bridges
+
+[cols="3,2,3",options="header"]
+|===
+|Bridge |Kind |Ends when
+
+|`scripts/wfc_op.py` unchanged; v1 functions and constants in `commissioning.py` unchanged; the new compile path added beside them
+|Temporary
+|Cutover (BP7)
+
+|Role texts exist twice: `governance/self-development/prompts/` and `resources/roles/`; one test asserts byte equality
+|Temporary
+|Cutover. The governance copies then stay as frozen history; they are inputs of past Commissions.
+
+|`wfc` with today's bare flags passes through to `operator.main`
+|Temporary
+|One Runtime promotion after cutover, when no prepared `launch.sh` of the old shape can remain
+
+|Evidence `scripts/wfc-archive-run` unchanged and in use
+|Temporary
+|Cutover. It then becomes a shim or is frozen.
+
+|Existing Evidence layout `archive/<prefix>/<attempt>/` and manifest shape
+|Permanent
+|--
+
+|Engine input schemas (WorkItem 2, Profile 2, Policy 3, manifest 1, bindings 1)
+|Permanent
+|--
+
+|`governance/` tree, historical Commissions, 119 archive manifests
+|Permanent as evidence, never as compiler input
+|--
+|===
+
+=== Cutover
+
+. BP1 to BP6 are implemented and accepted through the current path.
+. The Maintainer promotes a Runtime that contains them and installs it into a dedicated environment. From then on that installed `wfc` is "Runtime N".
+. Development gains `.wfc/config.yaml`: ceiling `src`, `tests`, `scripts`, `docs`; check `python -m pytest -q`; a maintained development environment on `path_prepend`; `evidence.repository: ../workflow-coordinator-run-evidence` with `raw: commit`.
+. One self-hosted `wfc run` on a small real task, archived into the existing Evidence repository. Its raw files must match what the old wrapper would have produced for the same STATE (BP5's equivalence test, repeated live).
+. After that Run and one more: retire `scripts/wfc_op.py`, remove the v1 compile path and the literal policy check, delete the quarantined test file, update the Harness-bound manual sections and the preparation contract.
+
+If step 4 fails, nothing is lost: the old path is intact and the failure is a finding against a package.
+
+=== What is not a compatibility constraint
+
+Historical Commissions do not need to compile under the new compiler. Historical archives do not get projections. Intent v1 is not accepted by `wfc run`. *[E]* This follows the recorded lifecycle principle of 2026-10-31: provenance and intelligibility are required, indefinite executable compatibility is not.
+
+[[packages]]
+== Implementation packages
+
+Effort: S is one Commission of about a day's agent work, M is two to three, L is four or more. "Delegable" means a less capable model can implement it from this section and the cited contracts without making an architectural choice.
+
+=== BP1 -- Packaging skeleton and identity
+
+[horizontal]
+Objective:: An installable `wfc` that reports what it is and still does everything it does today.
+Scope:: `frontdoor/` sub-package with `cli.py` and `identity.py`; entry point moved to the dispatcher with bare-flag pass-through; `wfc --version --json`; role texts copied into `resources/roles/` with code-pinned digests; source-commit stamp resource and `export-subst`; `"coordinator"` key in `operator-plan.json`; version `0.1.0b1`.
+Depends on:: Nothing.
+Steps:: (1) Dispatcher and pass-through. (2) Tree digest and identity. (3) Resources and loader, modelled on `load_agent_operating_contract`. (4) Plan key.
+Risks:: A changed entry point breaks a prepared `launch.sh`: the pass-through test must run a real bare-flag preflight refusal. A wheel-build test needs the package index; mark it so it is skipped offline and never becomes part of `task-check` (*[E]* `BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION`).
+Tests:: Import-direction guard (kernel never imports `frontdoor`); identity stable across two calls and changed by a one-byte edit; resource digest mismatch refuses; equality of the two role-text copies; existing suite green.
+Acceptance:: From an unrelated working directory in a clean environment: `wfc --version --json` prints the identity; a bare-flag invocation reaches `_preflight`; an archived `operator-plan.json` from a test Run contains `coordinator`.
+Effort:: S. Uncertainty low.
+Delegable:: Yes.
+
+=== BP2 -- Configuration, request and compiler
+
+[horizontal]
+Objective:: A Commission compiled for any repository from package-owned resources.
+Scope:: `frontdoor/config.py`, `frontdoor/request.py`; `commissioning.compile_commission` and `verify_commission`; `operator.admit_parsed` extracted from `_preflight`; neutral fixture repository.
+Depends on:: BP1.
+Steps:: (1) Extract admission with no behaviour change; the 106 tests of `test_operator.py` are the guard. (2) Configuration schema with a strict key set. (3) Compiler reusing the program literals. (4) Guidance binding and limits. (5) `verify`.
+Risks:: The extraction touches the most-tested function in the kernel; do it as its own Commission. Generated governance paths must satisfy A1 for every program; cover by test, not by reasoning.
+Tests:: For `simple@v1` and `robust@v1`, the compiled profile equals the v1 rendering field for field apart from guidance slot and component paths. Every refusal in <<contracts>>. Tampering with any frozen file is refused by `verify` and by the engine. The compiled bundle, committed in the neutral fixture, passes unmodified `_preflight`.
+Acceptance:: In a repository with no Python and a shell-script check, a request compiles, commits by hand, and passes `_preflight` with no flag or file referring to `governance/`.
+Effort:: M. Uncertainty low to medium.
+Delegable:: Steps 2 to 5 yes. Step 1 should be reviewed by a stronger model. Q2 must be answered first.
+
+=== BP3 -- Bounded commit, `init`, `plan`
+
+[horizontal]
+Objective:: The pure half of the pipeline as a command, and the write primitive the rest needs.
+Scope:: `git_facts.bounded_path_commit`; `wfc init`; `wfc plan` with the summary renderer.
+Depends on:: BP2.
+Steps:: (1) Commit function: repository identity, HEAD equals expected, nothing staged, dirty set equals exactly the given new files under one directory, hook-free environment, post-commit observation. (2) `init`. (3) `plan`.
+Risks:: Small. The commit function must refuse modification or deletion of existing files, so it can never be used to change a committed Commission.
+Tests:: Mirror `tests/unit/test_slice4b_git_authority.py` for the new function: staged state, extra dirty path, moved HEAD, existing file, hooks not run. `plan` writes nothing (tree and index identical before and after).
+Acceptance:: `wfc init` then `wfc plan task.md --scope ...` in the neutral fixture prints the summary and leaves the repository byte-identical. This also resolves `BUG-WFC-COMMISSION-RENDER-CHECK-WRITES-BUNDLE` for the new path.
+Effort:: S. Uncertainty low.
+Delegable:: Yes.
+
+=== BP4 -- Lifecycle controller through the terminal state
+
+[horizontal]
+Objective:: `wfc run` from request to terminal Run, restartable at every step but launch.
+Scope:: `frontdoor/lifecycle.py`, `frontdoor/envelope.py`; `run`, `resume`, `status`; journal; engine subprocess, lock, detachment; baseline probe; same-repository refusal; active-lifecycle pointer. No archive yet: the lifecycle ends at `terminal`.
+Depends on:: BP3.
+Steps:: (1) Envelope: frozen environment, bindings file, scratch, provider resolution, reusing the Harness functions. (2) Journal and step functions, each with a "decide from the world" predicate. (3) Engine launch and supervision. (4) `resume`. (5) Probe and refusals. (6) Progress display from STATE.
+Risks:: Process supervision is the least certain part of the plan (<<risks>>). Attempt names must carry the project slug so two projects cannot collide under one home directory.
+Tests:: With the fake provider: a completed Run; an `awaiting_human` Run; a refusal before launch leaves the repository untouched. A crash-injection matrix kills the controller after each step boundary and asserts that `resume` reaches the same end state with exactly one Commission commit and exactly one engine launch. Engine killed mid-Hop yields `interrupted` and no relaunch. A changed package identity or provider binary between authorization and launch is refused.
+Acceptance:: The scenario of <<acceptance>> up to the terminal state passes in the neutral fixture, including the two interruption cases. No `pip` invocation occurs anywhere in the path.
+Effort:: L. Uncertainty medium.
+Delegable:: Steps 1, 5, 6 yes. The crash matrix (which boundaries, which predicates) should be specified by a stronger model before a cheaper one implements it.
+
+=== BP5 -- Archive port
+
+[horizontal]
+Objective:: The canonical archiver as an installed capability, byte-compatible and retry-safe.
+Scope:: `frontdoor/archive.py`; `wfc archive`; staging and atomic placement; idempotent retry; narrowed cleanliness rule.
+Depends on:: BP1 only. It can run alongside BP2 to BP4.
+Steps:: (1) Port the 61 Evidence tests to drive the new module. (2) Move `archive_run.py` with root and OPS directory as parameters. (3) Port the wrapper's probes and commit to Python on `bounded_path_commit`. (4) Staging and retry.
+Risks:: A semantic change smuggled into a port. The guard is the equivalence test below.
+Tests:: The ported 61. Equivalence: archive one retained STATE root with the old wrapper and with the new module into two temporary repositories and compare `copied_files` digests and `facts`, ignoring `archived_at`. Kill between copy and commit, then retry: one commit, identical content. A second archive of the same attempt is a no-op.
+Acceptance:: The equivalence test passes on a real retained Run; the retry test produces exactly one commit.
+Effort:: M. Uncertainty low.
+Delegable:: Yes, fully. The tests are the specification.
+
+=== BP6 -- Audit projection, report, and the complete lifecycle
+
+[horizontal]
+Objective:: A durable record a third party can keep and share, and the consolidated result.
+Scope:: `frontdoor/audit.py` (`wfc.audit/1`); `evidence.raw`; `frontdoor/report.py`; `wfc report`; archive and report wired into the lifecycle; Evidence repository creation in `init`.
+Depends on:: BP4, BP5.
+Steps:: (1) Projection from the raw copy. (2) Retention setting and `.gitignore`. (3) Report from STATE, Git and `audit.json`. (4) Lifecycle steps and exit codes.
+Risks:: Schema choices made without a consumer. Keep the first version to facts already persisted; the Findings shape in particular was not examined in depth (<<risks>>).
+Tests:: Privacy property: for a Run whose home directory, user name and scratch path are known, `audit.json` contains none of them and no absolute path. Every raw digest in the projection equals the raw manifest's. A stopped and an interrupted Run both project. Report content against the failure-mode chapter's cases.
+Acceptance:: The whole of <<acceptance>> passes with the fake provider. With `raw: local`, `git ls-files` in the Evidence repository shows only `audit.json` files and `.gitignore`.
+Effort:: M. Uncertainty medium.
+Delegable:: Steps 2 to 4 yes. The projection's field list should be fixed by the Maintainer or a stronger model first.
+
+=== BP7 -- Self-development cutover
+
+[horizontal]
+Objective:: WFC develops itself through the product Front Door; the old path ends.
+Scope:: The sequence in <<migration>>.
+Depends on:: BP6 and a Runtime promotion.
+Risks:: Bootstrapping. Mitigated by leaving the old path intact until two self-hosted Runs have completed.
+Tests:: The self-hosted Run itself. After removal: suite green without `scripts/wfc_op.py`, without the v1 compile path and without the quarantined file.
+Acceptance:: Two self-hosted Runs archived into the existing Evidence repository; `scripts/wfc_op.py` gone or a stub; manual sections updated.
+Effort:: M. Uncertainty medium to high.
+Delegable:: The removals and manual edits, yes. The promotion and first Runs are the Maintainer's.
+
+=== BP8 -- Test extraction
+
+[horizontal]
+Objective:: Product tests independent of the historical governance tree.
+Scope:: Move the five universal tests; marker and default deselection for the forty; one parse-smoke test.
+Depends on:: Nothing. Parallel from the start.
+Acceptance:: The default selection passes with `governance/self-development/` and `governance/work-items/` absent.
+Effort:: S. Uncertainty low.
+Delegable:: Yes.
+
+=== BP9 -- Beta gate
+
+[horizontal]
+Objective:: Evidence that a stranger can use it.
+Scope:: End-to-end acceptance test with the fake provider as a permanent test; local integration scenario; one live Run per supported adapter from an installed wheel on a non-WFC repository; a two-page quickstart with a limitations list.
+Depends on:: BP6.
+Acceptance:: A person who has not read the Operator Manual completes <<acceptance>> from the quickstart alone.
+Effort:: S to M. Uncertainty medium (*[E]* live Claude qualification is still open under `BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH`).
+Delegable:: The test and the quickstart, yes. The live Runs are the Maintainer's.
+
+=== Sequence and critical path
+
+[source,text]
+----
+BP1 --> BP2 --> BP3 --> BP4 --+--> BP6 --> BP9 --> 0.1.0b1
+  \                           |      \
+   +--> BP5 ------------------+       +--> BP7 (cutover)
+BP8 (parallel, independent)
+----
+
+Critical path: BP1, BP2, BP3, BP4, BP6, BP9. The first usable external Run exists after BP4, without automatic archive. BP5 is off the critical path only because it can start immediately after BP1.
+
+Not split further on purpose. BP4 is the largest and could be cut into "linear run" and "resume", but a controller designed without its recovery predicates gets redesigned when they arrive.
+
+[[acceptance]]
+== Beta-1 acceptance scenario
+
+Proposed behaviour, not existing behaviour. Payload: `tidemark`, a Go command-line tool with `go test ./...`, no Python in the repository. The operator's machine has Python 3.10 or later, Git, Go and an authenticated provider CLI.
+
+=== Install and initialize
+
+[source,shell]
+----
+pipx install workflow-coordinator==0.1.0b1
+wfc --version --json
+
+cd ~/src/tidemark
+wfc init --adapter claude_cli --model claude-sonnet-5-5 --reasoning high
+$EDITOR .wfc/config.yaml        # two edits: scope_ceiling, checks.task-check.argv
+git add .wfc && git commit -m "chore: add wfc configuration"
+----
+
+`init` writes the skeleton, `.wfc/.gitignore` and an empty Evidence repository under `WFC_HOME`. It detects nothing. The real setup is therefore: install, one command, two edits, one commit.
+
+Friction that remains and belongs on the quickstart's limitations list, each *[V]* in current source: the working tree must be completely clean at launch; root-level files (`go.mod`, `README.md`) must be listed in the ceiling one by one, because a scope path may not be the repository root; agents have no network under the Claude adapter, so dependencies must be present before the Run; commits land on the checked-out branch with a Conventional-Commit subject carrying WorkItem and Hop identifiers; one adapter per Run; a check may take at most 900 seconds; a stopped Run is continued only by a new `wfc run`.
+
+=== Inspect, then run
+
+[source,shell]
+----
+wfc plan ~/tasks/list-json.md --scope cmd/list --scope internal/render
+wfc run  ~/tasks/list-json.md --scope cmd/list --scope internal/render
+----
+
+`plan` is optional. `run` resolves, compiles from the package's role texts and `docs/ARCHITECTURE.md`, admits, runs `go test ./...` once on the clean baseline, and prints:
+
+[source,text]
+----
+COMMISSION  list-json-001            robust@v1   up to 6 hops
+task        Add --json output to `tidemark list`
+scope       cmd/list, internal/render                      (ceiling: cmd, internal, docs, ...)
+  worker    edit, commit   in scope
+  reviewer  review, edit, commit   in .wfc/reviews/list-json-001/ only
+check       task-check: go test ./...   600 s   /usr/local/go/bin/go   baseline: pass (38 s)
+worker                claude_cli  claude-sonnet-5-5  high
+independent_reviewer  claude_cli  claude-sonnet-5-5  high   (fresh context; same model)
+guidance    docs/ARCHITECTURE.md
+branch      feature/list-json @ 4c1e9a2    WFC commits here and never pushes
+archive     <WFC_HOME>/evidence/tidemark   audit record committed, raw files kept locally
+Proceed? [y/N]
+----
+
+`y` is the only authorization. WFC then commits `.wfc/commissions/list-json-001/`, admits the committed bundle, launches, and shows progress as Hops complete: implement, broad review with the trusted `go test ./...`, and correction, focused review and renewed broad review if Findings are opened. It archives and prints the consolidated result of <<contract-report>>, exit code 0.
+
+=== Inspect and debug
+
+[source,shell]
+----
+wfc status                                   # latest attempt of this repository
+wfc report tidemark-list-json-001-20261113-01 --json
+git log --oneline 4c1e9a2..                  # Commission commit, then one commit per Hop
+cat .wfc/commissions/list-json-001/commission.json
+wfc commission verify list-json-001
+wfc archive tidemark-list-json-001-20261113-01   # idempotent: reports the existing archive commit
+wfc run task.md --scope ... --until prepared # stepwise: stop before launch, inspect, then wfc resume
+----
+
+=== Failure and retry
+
+[cols="2,3,3",options="header"]
+|===
+|Event |What WFC does |What the user does
+
+|`go` is not on `PATH`
+|Refuses in the pure half; exit 2. No commit, no journal, no spend.
+|Fixes `PATH` or `path_prepend`; runs the same command again.
+
+|Baseline `go test` fails
+|Refuses with the output tail; exit 2.
+|Fixes the baseline, or disables the probe knowingly.
+
+|Terminal closed during H001
+|The engine continues detached. Nothing is lost.
+|`wfc resume`: attaches, waits, archives, reports.
+
+|Machine restarted during H001
+|`wfc resume` finds STATE, a free lock and no summary. Outcome `interrupted`; it does not relaunch. Archives, reports the dirty paths and that the provider's outcome is unknown; exit 1.
+|Discards or keeps the working-tree changes; issues a new `wfc run`.
+
+|Run stops `awaiting_human` (open blocking Finding at the hop limit)
+|Archives the stopped Run; report shows stop reason, Finding identifiers and the review artifact; exit 1.
+|Reads the review; issues a new `wfc run` with an adjusted task. No resume of the old Run.
+
+|Evidence repository write fails after the copy
+|Run outcome is already final and reported as such; lifecycle unfinished; exit 3.
+|`wfc resume`: completes the archive with exactly one commit.
+
+|A second `wfc run` while one is unfinished
+|Refuses and names the attempt.
+|`wfc resume`.
+|===
+
+=== What must be demonstrated where
+
+[cols="3,1,1,1",options="header"]
+|===
+|Property |Automated test |Local integration |Provider smoke
+
+|Install from a wheel into a clean environment; `wfc` usable from any directory
+|yes (skipped offline)
+|yes
+|yes
+
+|`init`, `plan` and compilation in a repository with no Python
+|yes
+|yes
+|--
+
+|Package-owned role texts frozen into the bundle; digests in `commission.json`
+|yes
+|--
+|--
+
+|Refusals before launch leave the repository untouched
+|yes
+|--
+|--
+
+|One authorization, then no further prompt through archive
+|yes (fake provider)
+|yes
+|yes
+
+|Bounded Commission commit; one commit per Hop by `trusted_commit`
+|yes
+|yes
+|yes
+
+|Independent review in a fresh invocation; correction loop
+|yes (scripted fake)
+|--
+|yes, if Findings occur
+
+|Trusted `task-check` executed by the Coordinator with a non-Python toolchain
+|yes (shell check)
+|yes (`go test`)
+|yes
+
+|Stop at `awaiting_human` archived and explained
+|yes
+|--
+|--
+
+|Controller killed at every step boundary; single Commission, single launch, single archive commit
+|yes
+|one manual interruption
+|--
+
+|Engine killed mid-Hop gives `interrupted`, no relaunch
+|yes
+|--
+|--
+
+|Archive equivalence with the old wrapper
+|yes
+|yes, once, on a retained Run
+|--
+
+|`audit.json` free of local paths and provider prose
+|yes
+|yes (inspect)
+|yes (inspect)
+
+|Real provider accepts the adapter's invocation and returns an admissible result
+|--
+|--
+|yes, per adapter
+|===
+
+The local integration scenario is the whole walkthrough on a real Go repository with the fake provider executable. The provider smoke test is the same with a real provider and `simple@v1`, then `robust@v1`, once per supported adapter.
+
+[[decisions]]
+== Decision register and unresolved risks
+
+=== Decisions that must precede implementation
+
+[cols="1,3,3,3",options="header"]
+|===
+|# |Decision |Recommended default |If decided otherwise
+
+|Q1
+|Authorization: one confirmation on a terminal with `--yes` to skip, or no prompt at all.
+|One confirmation; `--yes` first-class.
+|No prompt: one keystroke less; authorization then binds to the typed inputs, not to the displayed contract. Nothing else in the design changes.
+
+|Q2
+|Is binding project guidance into the repository-policy slot of a v1 program a binding or a new program revision?
+|A binding.
+|A revision: Beta 1 ships with the slot empty and personas plus task text carry project context, as in September. BP2 loses one step.
+
+|Q3
+|Evidence default: separate repository with a committed audit projection and local raw files. This revises the stated preference of `DEC-WFC-023`.
+|As described; amend the decision record.
+|Payload-local: archive commits on working branches, and BP6's privacy property becomes a release blocker, not a default.
+
+|Q4
+|Do role bindings belong in the committed Commission?
+|Yes.
+|Outside, as today: the Commission no longer states which model was authorized, and re-running one Commission with another model becomes possible. The journal and the plan still record the binding.
+|===
+
+=== Decisions that can wait for their package
+
+[cols="1,3,3,2",options="header"]
+|===
+|# |Decision |Recommended default |Package
+
+|Q5
+|Amend steps 4 and 5 of the normative preparation sequence to recorded identity and a user-provided, probed environment.
+|Amend at cutover.
+|BP7
+
+|Q6
+|Cutover before or after the `0.1.0b1` tag.
+|Before. Shipping with two Front Doors in the tree invites fixes to the wrong one.
+|BP7
+
+|Q7
+|`direct@v1` in the Beta-1 program set.
+|Withheld.
+|BP2
+
+|Q8
+|Token-consumption evidence: release gate or fast-follow.
+|Fast-follow; field reserved.
+|BP6
+|===
+
+Not open, though they might look it: whether to change the engine (no); whether to keep Intent v1 for new work (no); whether to provision environments (no); whether to resume an interrupted Run (no; `DEC-WFC-014` and F1).
+
+[[risks]]
+=== Unresolved risks and limits of this review
+
+* *Process supervision is designed, not tested.* The lock, the detached engine and attachment by `resume` rest on ordinary POSIX behaviour. *[V]* The adapters start provider processes in their own sessions. *[I]* If the engine dies, a provider process may survive it and keep writing to the working tree. The report says so; nothing in this design stops it. BP4 should establish the facts by experiment before fixing the design.
+* *Agents have no network.* *[V]* Claude adapter settings; *[E]* `FTR-WFC-AGENT-PUBLIC-INTERNET-CAPABILITY` calls it a gap under `GOAL-WFC-004`. A first user in an ecosystem that fetches dependencies during work will meet it in their first Run. It is outside this blueprint and inside Beta-1 risk.
+* *One adapter per Run.* "Independent" review means fresh context, not a different provider. The configuration is shaped for mixed adapters; the engine's single `--executable` is not.
+* *Audit schema without a consumer.* The Findings and convergence structures in `run.json` and `checkpoint.json` were sampled from one clean Run with no Findings. The Findings part of `wfc.audit/1` is the least grounded field list here.
+* *Platforms.* Everything inspected assumes POSIX and was exercised on Linux. macOS and Windows were not assessed.
+* *The same-repository refusal covers the obvious case only.* It detects a package imported from inside the payload. It does not detect an environment that some other process rebuilds from the payload mid-Run.
+* *`interrupted` leaves STATE as the engine left it.* `run.json` then says `ready` with a dispatch marker. The audit record carries the controller's classification; whether the engine should gain a way to close such a Run itself is `FTR-WFC-ATOMIC-HOP-RECOVERY`, deliberately not pulled in.
+* *Not examined:* individual archived Runs beyond one recent sample and the first review's Latin citation; `docs/cold_storage/`; the reducer, serialization and adapters beyond what admission and dispatch required; token-usage availability in either provider CLI. No test suite was run.
+
+== Sources
+
+Development repository::
+`src/workflow_coordinator/{operator,commissioning,slice4,persistence,evidence,prompt,git_facts,model,serialization,claude_adapter,codex_adapter}.py`;
+`src/workflow_coordinator/resources/agent_operating_contract_v6.txt`;
+`scripts/wfc_op.py`; `pyproject.toml`;
+`governance/{policy-bases,workflow-programs,self-development/components.yaml,self-development/prompts}`;
+`governance/commissions/wfc-operator-manual-walkthrough-001/`;
+`tests/architecture/*`, `tests/unit/{test_commissioning,test_wfc_op}.py`;
+`docs/architecture.md`, `docs/README.adoc`, `docs/ai_info/*`, `docs/backlog/_open.adoc`,
+`docs/backlog/{FTR-WFC-CONTRACT-HISTORICAL-RECONSTRUCTABILITY,BUG-WFC-EVIDENCE-COMMAND-CONSUMER-NEUTRALITY}.adoc`;
+`docs/functional_model/workflow_program_use_cases.adoc`;
+`docs/operator_manual/**`;
+`docs/warm_storage/concepts/{wfc_beta1_product_boundary_review,workflow_coordinator_front_door_mvp_decisions_2026-10-27,workflow_coordinator_program_capabilities_and_version_lifecycle_decisions_2026-10-31}.adoc`;
+`project_memory/canonical/decisions.json` (`DEC-WFC-001`, `-014`, `-016`, `-019`, `-020`, `-023`).
+
+Evidence repository::
+`scripts/archive_run.py`, `scripts/wfc-archive-run`; `tests/test_archive_helpers.py`, `tests/test_wfc_archive_run.py`;
+`archive/unclassified/wfc-operator-manual-walkthrough-001-20261113-01/`;
+`project_memory/run_ledger.adoc` (Operator Manual series entries).
