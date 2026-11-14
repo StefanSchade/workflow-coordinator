@@ -1,0 +1,343 @@
+= ASE × WFC: Higher-Order Orchestration and Unified Execution
+:toc:
+:toclevels: 2
+:sectnums:
+
+Maturity::  in-review
+Authority:: exploratory
+Updated::   2026-11-14
+Owns::      Whether ASE can act as the higher-order (Level-1) orchestration above WFC's bounded Level-0 execution, how ASE selects `simple@v1` or `robust@v1`, and who owns qualification. A companion to link:ase_wfc_integration_concept.adoc[the ASE × WFC integration concept], which keeps its inventory, comparison and option analysis; not an accepted design, not a roadmap change.
+
+[horizontal]
+Reviewed state:: ASE `rse/ase` at `870e191b48df56dbdd59a7279343c0941eb131e1`, the same revision as the first concept (fresh clone, upstream unchanged on 2026-11-14). WFC `main` at `10edd17`.
+Method:: Source inspection only. No ASE agent, WFC Run or provider was started. Markers as in the first concept: *[V]* verified in source, *[P]* planned for WFC Beta 1, *[N]* new proposal.
+
+[[proposition]]
+== Revised two-sided product proposition
+
+The first concept treats WFC as an optional executor of ASE's implementation phase. This companion widens the frame. There are two products, and each has what the other deliberately lacks:
+
+* *ASE has Level 1, structurally.* A task store with dependencies, epics, claiming, fleets, qualification and integration. *[V]*
+* *WFC has a uniform Level 0.* Every attempt, whether a chore or a risky change, runs with Coordinator-owned scope, commits and checks and leaves a pinned record. The review is optional: `simple@v1` runs no review, `robust@v1` runs one. *[V]*
+
+The proposition:
+
+____
+ASE orchestrates the business tasks of an objective. WFC executes each task as one or more audited attempts. ASE selects the attempt's program through the assignee and never selects a model. A `robust@v1` attempt's review may stand in for ASE qualification under stated, mechanically checkable conditions. A `simple@v1` attempt never does.
+____
+
+Value for ASE users: per-task, audit-grade execution with one uniform record and no new ASE concept, plus a way to avoid paying for two reviews of the same changeset. Value for WFC users: a working backlog, dependency, fleet and integration layer. WFC's Functional Model deliberately leaves this layer open (link:../functional_model/workflow_program_use_cases.adoc[section 9]) and WFC does not have to build it.
+
+The limit, stated up front: neither system plans adaptively (<<orchestration>>). The combined system is *supervised* autonomy. Humans gate planning and the triage of failures.
+
+[[orchestration]]
+== ASE higher-order orchestration: demonstrated capabilities and genuine gaps
+
+Classes: *I* implemented in ASE; *C* obtainable by composing existing ASE mechanisms (untested); *B* needs a bounded ASE change; *G* needs a genuinely new orchestration capability.
+
+[cols="3,1,7",options="header"]
+|===
+|Step |Class |Evidence and assessment
+
+|Hold a backlog and an objective
+|I
+|Task store with the `enterprise` model, and epics: an explicit epic task (`Group:` equal to its own `Id`) implicitly comes `After` all its members (`plugin/meta/ase-format-task.md`). *[V]*
+
+|Decompose an objective into tasks
+|I (interactive), C (headless)
+|`ase-task-dissect` splits a plan into part tasks and writes their `Group:` and `After:` keys (`plugin/skills/ase-task-dissect/SKILL.md`). It is an interactive skill; no shipped agent runs it. A custom agent with `prompt.skill` could, but nothing has validated headless decomposition. *[V]*/*[N]*
+
+|Refine and estimate plans
+|I
+|`rebooter`, `condenser` and `researcher` cycle `DRAFTED → PLANNING → DRAFTED`. `estimator` writes `Effort:` on `PLANNED` tasks (`ase-agent-definition-builtin/`). *[V]*
+
+|Release work for execution
+|I (human)
+|No shipped agent moves a task from `DRAFTED` to `PLANNED`; the planning agents above all return to `DRAFTED`. Release is a human status change or a board move. *[V]*
+
+|Dependencies and order
+|I
+|A phase agent claims a task only once all its `After:` predecessors have "passed" the phase. Dependency cycles, unknown predecessors and cancelled predecessors are reported (`ase-agent-runtime-phase.ts`, dependency check near line 180). The `order` hook re-prioritizes the dispatchable tasks; the default is natural id order (`ase-agent-definition-api.ts`). *[V]*
+
+|Commission a task through WFC
+|B
+|The `exec.run` addition of link:ase_wfc_integration_concept.adoc#pr[the first concept]; a lab shim without it (<<prototype>>).
+
+|Observe outcomes, including stops
+|I + C
+|`settle` chooses state, tag and assignee per outcome. `finish` stores the result as an attachment. `STALLED` is a first-class state (`STALLED → PLANNED \| CANCELLED`). *[V]* WFC's result must carry enough facts (<<prerequisites>>).
+
+|Generate follow-up work
+|C (mechanism), G (judgement)
+|Hooks cannot create tasks: `ctx.update` changes existing tasks only and may not set `Status` or `Assignee`. *[V]* A hook could call `ase task newid` and `ase task save --create` through `ctx.exec`, which is limited to 240 s. *[V]* Deciding *which* follow-up is right after a failure is planning, and ASE ships nothing that does it.
+
+|Coordinate several tasks toward the objective
+|I
+|Fleet supervision, parallel agents and serial integration. The implementer's `passes` hook lets a successor start only after its predecessor is `INTEGRATED`, or once `IMPLEMENTED` when stacked on the predecessor's branch (`implementer.ts`, lines 32–53). *[V]*
+
+|Decide that the objective is complete
+|I (structural), G (semantic)
+|The explicit epic becomes dispatchable only after all members pass; the objective is complete when the epic is `INTEGRATED`. A cancelled member blocks the epic until a human edits `After:` (reported by the runtime). Whether the members together *achieve* the objective is not judged by anything. *[V]*
+|===
+
+*Verdict.* ASE supplies genuine higher-order *workflow* orchestration: dependency-ordered dispatch, supervision, qualification and integration of many tasks toward an epic. That is more than task-store lifecycle management. ASE does not supply *adaptive planning*: creating tasks from an objective without a human, re-planning after failures, or judging that the objective has been achieved. These are the G rows. They are not WFC's job either, and WFC has none of them. Neither project needs a new Level-1 system, because the hosting mechanism for any later adaptive step exists: a custom ASE agent definition that consumes `STALLED` tasks. Only the policy inside it would be new (<<objections>>).
+
+[[unified]]
+== Unified WFC execution using `simple@v1` and `robust@v1`
+
+[cols="2,4,4",options="header"]
+|===
+| |`simple@v1` |`robust@v1`
+
+|Shape
+|One phase, `implement`. Route `accept → complete` only; no `goto` route. A `simple-self-check` modifier (Worker guidance, no evidence authority). `commissioning._simple_template` *[V]*
+|`implement → broad_review → correct → focused_review` with routes `correction` and `renew_broad_review`. `commissioning._robust_template` *[V]*
+
+|Trusted check
+|`task-check`, run by the Coordinator in the implement phase. *[V]*
+|`task-check` in each review phase. *[V]*
+
+|On a failing check
+|Stop for a human (`required_evidence_failed_without_route`; `reducer.py` near line 1743): no correction. *[V]*
+|Routed to correction (`failed_evidence_route`). *[V]*
+
+|Review claim
+|*None.* A passing check means only that the check passed.
+|Independent-context review with gate authority and a Finding ledger; no completion with an open blocking Finding. *[V]*
+|===
+
+Both programs give the same base guarantees: enforced scope, Coordinator-owned commits, Coordinator-run checks and a pinned record. That base is the uniform product. The review is the only priced extra, and no new assurance taxonomy is needed: the task chooses one of two closed programs.
+
+*Selection through the assignee.* Run two fleet members of the same definition kind, `wfc-simple` and `wfc-robust`, differing only in the parameter `program`. ASE's default assignee name is the agent's own name (`assign-name` in `ase-agent-definition-core.ts`) *[V]*, so `ase task assign EXP-2 wfc-simple` *is* the program choice. The choice is visible on the board and changeable before the claim, and it needs no task key and no ASE change. Combining two fleet members of one kind is untested. *[N]*
+
+A project may automate the choice by an `estimator`-like assignment rule, for example `Effort:` S or M to `wfc-simple`. That rule is project policy and does not belong in either tool.
+
+*No models in ASE.* The adapter passes a program, never a binding. Model and provider choice stay with WFC's Front Door and its execution envelope. The Beta-1 plan keeps that choice out of the Commission's identity (link:../backlog/beta1_productization.adoc#bp2[BP2]). *[P]*
+
+[[qualification]]
+== Qualification and review ownership
+
+*ASE's actual qualification.* `qualifier` claims `IMPLEMENTED` tasks that are unassigned or assigned to it and have no verdict tag yet. It runs `ase-repo-review` and either tags a verdict for a human (`judge`, the *default* mode) or decides `QUALIFIED`/`DECLINED` (`qualify`) (`qualifier.ts`). *[V]* `DECLINED` leads only to `IMPLEMENTED` or `CANCELLED`. *[V]*
+
+*Correction to the first concept.* The first concept says `IMPLEMENTING` cannot reach `QUALIFIED`. That is wrong. `TaskFormat.checkStatus` accepts any state reachable through *one or more* transitions (`ase-task-format.ts`, near line 96). Both definition validation (`ase-agent-definition-core.ts`, near line 703) and settling (`ase-agent-runtime-phase.ts`, near line 468) use it. So an implementing agent *may* settle a task as `QUALIFIED`. *[V]* The lifecycle does not keep implementation and qualification apart; only a convention does. This raises the stakes of the design choice below.
+
+Alternatives:
+
+[cols="3,4,2",options="header"]
+|===
+|Alternative |Effect |Verdict
+
+|Keep ASE's qualifier for every task
+|Correct for `simple@v1`; pays twice for `robust@v1`.
+|Default for `simple@v1`
+
+|WFC agent settles `robust@v1` completions directly as `QUALIFIED`
+|Allowed by ASE. But one agent then records two roles, skips `QUALIFYING`, and overrides a project whose qualifier runs in `judge` mode.
+|Rejected
+
+|Lighter ASE lifecycle (`team`: no qualification state)
+|`project.task.lifecycle` is per project, not per task (`ase-config-schema.ts`). *[V]* Suitable only for a project that is entirely made of chores.
+|Niche
+
+|*Evidence qualifier:* `robust@v1` completions handed to a separate deterministic qualification agent that accepts WFC's review under conditions
+|Qualification stays a distinct ASE phase with its own agent, tag and record; no second semantic review.
+|*Recommended*
+|===
+
+*The recommended routing* uses only existing ASE semantics:
+
+* The WFC agent's `settle` hook always yields `IMPLEMENTED`, never `QUALIFIED`.
+* A `simple@v1` completion is *unassigned* and tagged `ase-agent-wfc:checked`. ASE's `qualifier` (or a human) claims it like any implementer output. The only semantic review is ASE's, so nothing is duplicated and nothing is overstated.
+* A `robust@v1` completion is *handed over* to the assignee `wfc-qualifier` and tagged `ase-agent-wfc:reviewed`. ASE's `qualifier` ignores tasks assigned to someone else. *[V]*
+* `wfc-qualifier` is a phase agent: `incoming: IMPLEMENTED`, `activity: QUALIFYING`, verdicts `APPROVE=QUALIFIED`, `assign.required`. Its processing is a command (`exec.run`) that verifies the attached report. Its `verdict` hook returns `APPROVE` only if *all* of the following hold, and otherwise returns no verdict, which makes the qualifier unassign the task back to `IMPLEMENTED` for ASE's qualifier or a human. *[N]*
+. The report's program is `robust@v1`, its outcome is `completed`, and it has zero open blocking Findings.
+. The trusted check passed in the final review Hop.
+. *Coverage:* the attempt's `baseline_head` equals the changeset's base. An attempt that began on top of earlier, unreviewed attempts did not review the whole changeset. The Beta-1 map states the same principle for successors: retained work must be reviewed "against its real assurance baseline" (link:../backlog/beta1_productization.adoc[later continuation]).
+. *Freshness:* the changeset head equals the report's `final_head`, or differs only by the record-removal commit of <<architecture>>. The digest of the plan recorded in the request equals the digest of the current plan.
+. The audit digest verifies against the Evidence repository.
+
+The tag reads `ase-agent-wfc-qualifier:approve`, never `ase-agent-qualifier:approve`, so the board shows what kind of assurance it is. A project in `judge` posture simply does not run `wfc-qualifier`, and a human qualifies from the attached report.
+
+*Ownership.* Business task and its acceptance: ASE. Bounded attempt, trusted evidence and Finding disposition: WFC. Recognizing a WFC review as qualification: an explicit, opt-in ASE-side agent under checkable conditions. Integration: ASE's integrator only.
+
+[[architecture]]
+== Recommended minimal integration architecture
+
+*The optional agent remains the right integration point.* The broader frame strengthens the case for it. The same generic `exec.run` now carries two different uses: the execution agent and the evidence qualifier. Neither needs WFC code in ASE. Options B to D of link:ase_wfc_integration_concept.adoc#options[the first concept] stay rejected for the same reasons.
+
+[source,text]
+----
+objective (epic) ── dissect (interactive) ── tasks DRAFTED ── human ──> PLANNED
+                                                                         │ assign
+                            ┌───────────── wfc-simple / wfc-robust ──────┘
+                            │ claim (After: gating, passes hook)
+                            │ exec.run: wfc run --request … --yes --json   [one attempt]
+                            ▼
+ STALLED ◄─ stop ─ settle ─ completed ─► IMPLEMENTED
+   │ human triage             simple: unassigned ──► qualifier ──► QUALIFIED
+   │ (retry | revise | split) robust: wfc-qualifier ─ verdict ───► QUALIFIED
+   ▼                                   (no verdict → back to qualifier)
+ PLANNED / CANCELLED / new DRAFTED tasks          integrator ──► INTEGRATED ──► epic
+----
+
+*Attempts per task.* One ASE task maps to N WFC attempts, each a separate Run with its own `commission_id` (`ase-<task>-a<n>`) and report attachment (`attach` with `replace: false`). A `wfc-attempt` marker and `attach.skip` prevent re-dispatch after an interrupt. A human authorizes a further attempt by removing the marker and moving `STALLED → PLANNED`. *[N]* on *[V]* mechanisms. Neither system starts a second attempt on its own.
+
+*Stopped tasks and follow-ups.* Follow-up tasks are always created in `DRAFTED`. That state is not an incoming state of any execution agent, so a follow-up cannot be dispatched before a human releases it. When a follow-up is a prerequisite, the stalled task gets `After: <follow-up>`. When a task is split, it is `CANCELLED`, and its successors' `After:` keys are edited; otherwise ASE reports them as waiting forever. *[V]*
+
+*Dependency gating for the WFC agent.* Without a `passes` hook, a WFC-implemented predecessor would count as passed once it is `IMPLEMENTED` and tagged. Its successor would then start from a `Source:` that does not yet contain the predecessor's work (`passes` default, `ase-agent-runtime-phase.ts` near line 151). *[V]* The definition must reproduce the implementer's `passes` rule: `INTEGRATED`, or stacked and `IMPLEMENTED`. The first concept's draft lacks this.
+
+*Changesets and WFC commits.* ASE owns the `cs-<id>` branch and its worktree; WFC appends Coordinator commits during one attempt and never pushes or merges. ASE's integrator squashes by default (`integrator.ts`) *[V]*. On the target this leaves one product commit; the per-Hop provenance stays on the changeset branch and in the Evidence archive.
+
+*Keeping WFC records out of product history.* Today the Commission bundle (`governance/commissions/<id>/`) and the `robust@v1` review artifacts are committed on the payload branch *[V]*, because they are governing inputs pinned in payload Git. Recommended:
+
+* Commit these records under one directory, `.wfc/`, that the consumer configures.
+* After the Run has been archived and verified, the adapter's `finish` hook appends one commit that removes `.wfc/`.
+* The squash then carries only product changes.
+* Freshness condition 4 accepts exactly this one difference.
+
+This needs no WFC engine change for the Run itself. Whether a later WFC version keeps such records outside the payload branch altogether is a separate design question (link:../backlog/FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc[artifact isolation]).
+
+*Unattended operation.* `ase agent fleet start` supervises the agents. WFC runs with `--yes`. ASE's `--timeout` must exceed WFC's Hop budget. An interrupt releases the task untagged, and the attempt marker keeps it parked. Fleet restarts are therefore safe, but stops wait for a human. That is intended: unattended operation is fail-stop, not self-healing.
+
+*Independence.* ASE without WFC: no change, since the definitions are not installed. WFC without ASE: no change, since the `origin` block is opaque and confers no authority, as the Functional Model's section 9 requires.
+
+[[scenario]]
+== Multi-task scenario with failure and follow-up
+
+Project `tidemark`, `enterprise` lifecycle, branch changesets, fleet: `wfc-simple`, `wfc-robust`, `wfc-qualifier`, `qualifier` (mode `qualify`), `integrator`. Objective: JSON output for the CLI.
+
+. A human dissects the epic `EXP` into `EXP-1` (shared JSON schema module), `EXP-2` (`list --json`, `After: EXP-1`) and `EXP-3` (`show --json`, `After: EXP-1`). `EXP` itself carries the documentation and changelog plan. The human assigns `EXP-1 → wfc-robust` and the rest `→ wfc-simple`, then releases all tasks to `PLANNED`.
+. `EXP-1` (robust, attempt a1): one correction loop, completed, zero open Findings, baseline equal to the changeset base. It is handed to `wfc-qualifier`; the five conditions hold; `QUALIFIED`, then `INTEGRATED`. One review was paid for, not two.
+. `EXP-2` and `EXP-3` become dispatchable (`passes`: predecessor `INTEGRATED`). `EXP-3` (simple, a1) completes. It is unassigned, so ASE's `qualifier` reviews it, approves it, and the integrator lands it.
+. `EXP-2` (simple, a1): the trusted check fails because the schema lacks a field that `list` needs. WFC stops (`awaiting_human`, `required_evidence_failed_without_route`). The task becomes `STALLED`, tag `ase-agent-wfc:awaiting`, report and attempt marker attached. Nothing re-dispatches it. The epic `EXP` keeps waiting.
+. Triage (human; later perhaps an agent that only *proposes*). The failure reveals a missing prerequisite. The human creates `EXP-4` (add the field) in `DRAFTED`, releases it with `wfc-simple`, and sets `EXP-2` to `After: EXP-4`. The human then deletes the a1 commits by removing the changeset branch, so that the next attempt starts from the new base. Finally the human removes the marker and moves `EXP-2` to `PLANNED`.
+. `EXP-4` runs and is qualified by ASE's qualifier, because it ran as simple. After its integration, `EXP-2` a2 runs from a `Source:` that contains `EXP-4` and completes. One task, two attempts, two reports.
+. Variant: if the human had kept the a1 commits and reassigned `EXP-2 → wfc-robust`, then a2's `baseline_head` would not equal the changeset base. `wfc-qualifier` would give no verdict and ASE's `qualifier` would review instead. This is the coverage rule in action.
+. `EXP` becomes dispatchable once all four members pass, runs as simple, and is integrated. The objective is structurally complete. Nobody but the final human decides whether it is *semantically* complete.
+
+[[prerequisites]]
+== WFC Beta-1 prerequisites versus post-Beta work
+
+Nothing here changes the Beta-1 plan. Today's Commission compiler accepts only WFC's own repository policy: `repository-standard@v1`, with scope `workflow-coordinator` and `pytest` as the check (`commissioning._repository_standard_v1_record`) *[V]*. A consumer repository therefore depends entirely on the Beta-1 packages.
+
+[cols="4,2,4",options="header"]
+|===
+|Needed |Where |Note
+
+|Installed `wfc`, non-WFC repository, unattended `--yes`, archive, report
+|BP1–BP6 *[P]*
+|As in the first concept.
+
+|`simple@v1` and `robust@v1` both shippable
+|Q7 *[P]*
+|The reviews recommend exactly these two programs; the catalogue decision is open (link:../backlog/beta1_productization.adoc[Beta-1 map]).
+
+|Report states `program`, Finding counts by disposition, and the trusted-check result per review Hop
+|BP6 design input
+|`operator._summary` (schema 2) carries neither the program nor Findings today; `Run` has `profile_id` and `findings` (`model.py`). *[V]* Without these fields, condition 1 cannot be checked mechanically.
+
+|Report states the reviewed range (`baseline_head`, `final_head`) and echoes the opaque `origin`, including the plan digest
+|BP6 design input
+|`baseline_head` already exists. *[V]* The `origin` block is *[N]* (first concept).
+
+|Honest termination contract for the foreground `wfc run`
+|BP4 *[P]*
+|First concept's prerequisites, item 3; it still has the most design weight.
+|===
+
+Post-Beta, on the WFC side only: the two definition files and the report verifier used by `wfc-qualifier`; a configurable record directory; a test of parallel Runs in sibling worktrees; usage reporting (Q8); and successor continuation with a defined review baseline (`wfc continue`, "fast-follow" in the Beta-1 map).
+
+[[prototype]]
+== Smallest useful prototype and possible ASE upstream PR
+
+*Prototype, no ASE change.* The scenario of <<scenario>> on a throwaway repository, using:
+
+* ASE's local store and fleet;
+* the lab-only `codex` shim of link:ase_wfc_integration_concept.adoc#path[the first concept] as a stand-in for `exec.run`;
+* WFC's fake provider with scripted outcomes: one correction loop for `EXP-1`, one failing check for `EXP-2` a1.
+
+It must demonstrate:
+
+* that dependency gating works with the replicated `passes` hook;
+* that the program is selected by assignee;
+* routing to ASE's `qualifier` versus `wfc-qualifier`, including a refusal under the coverage rule;
+* no duplicate dispatch under interrupt and fleet restart;
+* record removal followed by a squash integration that contains only product paths.
+
+Stop condition: if any of the five qualification conditions cannot be checked from the report, the evidence qualifier is dropped. `robust@v1` then simply goes to ASE's qualifier, and the cost is a double review, which is still not a false claim.
+
+*What works with no ASE change at all.* Manual operation: a human runs `wfc run` in the ASE worktree and moves states, using the `judge` qualification posture. This is honest and useful for chores, but it is not orchestration.
+
+*Upstream PR.* `exec.run` alone, unchanged from link:ase_wfc_integration_concept.adoc#pr[the first concept]. The second use, a deterministic qualifier that checks an attached report, gives a WFC-neutral example that fits ASE's own vocabulary. Nothing else upstream: `passes`, routing and both definitions live in WFC's repository. A possible later ASE suggestion, only if the maintainer finds it useful, is to export the implementer's `passes` rule as a helper so that custom implementers do not copy it.
+
+[[objections]]
+== Strongest technical objections and unresolved decisions
+
+. *"ASE already is Level 0 and Level 1."* True. For `simple@v1` the delta over ASE's implementer plus a `finish.success` check is enforced scope, a Coordinator-run check and a pinned record. That is only worth a second runtime to a user who needs uniform audit. Answer: opt-in per task; no value is claimed for anyone else.
+. *Translation fidelity.* WFC's reviewer judges the Commission, not the ASE plan. If the request is not the plan verbatim, an `APPROVE` means less than ASE's review. Mitigation: verbatim plan, plan digest in `origin`, the freshness condition.
+. *Auto-qualification weakens ASE's default `judge` posture.* Only for projects that run `wfc-qualifier`, with its own tag.
+. *Same provider, fresh context, is not organizational independence.* Neither tool claims more than independent context; reports must say exactly that.
+. *Adaptive Level 1 is missing on both sides.* Correct (<<orchestration>>, G rows). A triage agent that proposes `DRAFTED` follow-ups is composable, but its quality is unproven; until evidence exists, a human releases its proposals.
+. *Records in product history and squash semantics.* <<architecture>> proposes a removal commit. Whether ASE's integrator deletes changeset branches after landing, and so drops the commits referenced by audits, was not verified.
+. *ASE velocity.* Mitigated by the stable definition API; every other coupling sits in WFC-owned files.
+
+Unresolved decisions: the WFC maintainer's acceptance of the report fields as BP6 design input; the record directory and removal commit versus engine-side placement; whether `wfc-qualifier` ships at all or `judge` stays the only supported posture; and whether the plan digest is the right freshness anchor.
+
+[[brief]]
+== Maintainer discussion brief
+
+For ASE's maintainer:
+
+. ASE remains the orchestrator. WFC is an optional executor that gives each task attempt one uniform, auditable record. The review is included only when the task is assigned to the robust executor.
+. The upstream request is still one generic option: a definition may process a task with a command. It has two neutral uses, external execution and deterministic qualification from attached evidence.
+. Program choice is assignment; ASE never sees models or WFC phases.
+. Qualification stays an ASE phase. A WFC review can satisfy it only through a separate, opt-in agent under five mechanical conditions. A simple run is never presented as reviewed.
+. A finding for ASE regardless of WFC: transitive status reachability lets an implementing agent settle `QUALIFIED`. Is that intended?
+. Questions: is `exec.run` acceptable; should the implementer's `passes` rule be reusable; does the integrator delete changeset branches; is a `DRAFTED`-only follow-up convention in line with ASE's intent?
+
+For WFC's maintainer: accept ASE as one answer to Level 1 without committing WFC to it; consider the report fields of <<prerequisites>> when BP6 is designed; settle the termination contract in BP4.
+
+[[answer]]
+== Answer
+
+*Can ASE plausibly become WFC's higher-order orchestration environment, with WFC providing a uniform audit-oriented execution path for both simple and reviewed tasks?*
+
+*Yes, for structural orchestration, with human-gated planning.* ASE already implements backlog, epics, dependency-ordered dispatch, supervision, qualification, integration and structural objective completion. WFC's two closed programs give one uniform execution record, with or without a review. Neither side supplies adaptive planning. This does not block the combination; it defines it as supervised.
+
+Minimum missing capabilities:
+
+. WFC Beta-1 BP1–BP6, with `simple@v1` and `robust@v1` in the shipped program set.
+. A report that states program, Finding disposition, trusted-check result, reviewed range and the opaque `origin` including the plan digest.
+. A termination contract for `wfc run`.
+. ASE `exec.run`, upstream and generic. A lab shim is enough until then.
+. WFC-owned definitions for `wfc-simple`, `wfc-robust` (with the implementer's `passes` rule) and `wfc-qualifier`.
+
+Credible first experiment: the four-task scenario of <<scenario>>, after Beta 1, with the fake provider and the `codex` shim. It succeeds if dispatch follows the dependencies, the failed task stalls without re-dispatch, its follow-up is released only by a human, the robust task is qualified once, and the target branch receives only product commits.
+
+:sectnums!:
+
+== Sources
+
+ASE at the reviewed revision:
+
+* `tool/src/ase-task-format.ts` (`taskLifecycles`, `checkStatus`)
+* `ase-agent-definition-core.ts` (state validation, `assign-name`)
+* `ase-agent-definition-api.ts` (hooks, `AgentHookUpdate`, `AgentHookSettlement`)
+* `ase-agent-runtime-phase.ts` (`passes`, dependency waiting, `settle`)
+* `ase-agent-definition-builtin/{implementer,qualifier,integrator,rebooter,condenser,researcher,estimator}.ts`
+* `ase-config-schema.ts`
+* `tool/man/ase-agent-fleet.md`, `ase-task.md`, `ase-task-request.md`
+* `plugin/meta/ase-format-task.md`
+* `plugin/skills/ase-task-dissect/SKILL.md`, `ase-meta-workflow/workflow.txt`
+
+WFC at the reviewed revision:
+
+* `src/workflow_coordinator/commissioning.py` (program templates, `_repository_standard_v1_record`)
+* `reducer.py` (evidence failure routing)
+* `operator.py` (`_summary`)
+* `model.py` (`Run`, `RunStatus`)
+* link:../../governance/workflow-programs/simple/v1.yaml[`simple@v1` record]
+* link:../backlog/beta1_productization.adoc[Beta-1 map]
+* link:../functional_model/workflow_program_use_cases.adoc[Functional Model]
+* link:README.adoc#r5[research topics R5] and link:README.adoc#r6[R6]
+* link:ase_wfc_integration_concept.adoc[first concept]
