@@ -2,16 +2,13 @@
 
 Type:: bug -- test-infrastructure resource-exhaustion defect (not a
 Coordinator, Runtime, or Commission-design defect)
-Status:: open, disposition LATER -- revisit as part of test consolidation
-after the MVP (see link:_open.adoc[the active-work manifest] for its current
-card)
+Status:: open -- near-term self-development infrastructure work; see
+link:_open.adoc[the active-work manifest].
 Current controlling source:: This record.
-Next action:: None authorized here. A bounded investigation into the actual
-retention cause, and only then a bounded correction, each require their own
-separately authorized maintainer Commission.
-Not authorized here:: Any claim that a specific fixture, test, or `pytest`
-itself is the cause; any cleanup of existing `/tmp` material; any change to
-test code, fixtures, or `pytest` configuration; any WFC Run.
+Next action:: Measure a small representative reproduction to identify the
+actual source and lifetime of temporary files before selecting a correction.
+Priority:: suitable for BP8, or earlier if recurring failures continue to block work;
+a general scratch-management framework is not a Beta-1 prerequisite.
 Date:: 2026-10-29.
 Classification:: test-infrastructure resource-exhaustion finding, surfaced
 while diagnosing the 2026-10-28 operational incident recorded in
@@ -43,6 +40,58 @@ copies `.git/index` to a `tempfile.mkstemp()` path under the ambient system
 `/tmp`) failed with `ENOSPC`, and the Run stopped `reconcile_required`
 rather than completing. Full facts are in the incident report; this BUG
 record does not repeat them beyond what is needed to state the defect.
+
+== Recurrence and current evidence (2026-11-14)
+
+`WI-WFC-MINIMAL-DOCUMENTATION-LIFECYCLE-001`,
+`RUN-c20a6f5556404b339c2876aebb032c11`, stopped `reconcile_required` after
+H002 returned a blocking Finding and H003 failed during resource exhaustion.
+The committed candidate remains unaccepted. The
+link:../warm_storage/concepts/wfc_minimal_documentation_lifecycle_001_broad_review_2026-11-14.adoc[H002 review]
+records the Finding and candidate; the resource-exhaustion account is the
+reported Run outcome, not a diagnosis of its source.
+
+The desired behavior is that test-heavy WFC self-development does not
+repeatedly exhaust a host's small default `/tmp` when suitable external
+scratch is available. Static inspection establishes the following boundaries:
+
+* `scripts/wfc_op.py` sets `TMPDIR`, `TMP` and `TEMP` to the fresh Attempt
+  scratch during preparation and freezes them in `launch.sh`; the default
+  root is `~/wfc-scratch`. Existing `tests/unit/test_wfc_op.py` checks
+  preparation and launch propagation.
+* `codex_adapter.py` starts Codex without an `env` override, so the CLI
+  inherits the Coordinator environment, including Harness scratch when
+  launched that way. This does not establish what an agent-launched command
+  actually receives after any Codex or sandbox changes.
+* `evidence.py` snapshots the Coordinator environment and supplies that
+  snapshot to Coordinator-owned evidence subprocesses; the selected policy
+  determines the command. This supports propagation, but is not an
+  observation of the incident's pytest process.
+* The Claude adapter separately uses a short `/tmp` symlink to an
+  invocation-specific backing directory selected from ambient scratch (or a
+  fallback); its conformance tests inspect that arrangement. The resolved
+  link:BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc[Claude BUG]
+  does not establish the cause of this recurrence.
+* The repository's `pyproject.toml` pytest settings do not specify a `/tmp`
+  base directory. Some sandbox tests explicitly use a private `/tmp`; that
+  alone does not identify host pytest retention as their effect. Command-line
+  options, environment, subprocesses and external configuration may differ.
+* Earlier retained pytest directories and their size and file count are
+  documented above. Their existence does not establish which files were present
+  or active at this latest failure, or which execution created them.
+
+Possible contributors include old retained files, independent test processes,
+agent or sandbox environment changes, explicit temp settings, and evidence
+execution. None is established as the latest cause; in particular, a missing
+Codex-specific short-path mechanism is not evidence that Codex bypassed
+Harness scratch. For a bounded reproduction, record space and inode counts
+and inventory existing user-owned pytest directories before and after one
+representative small check; capture the effective temp variables and resolved
+temp location separately in the Coordinator evidence process and an
+agent-launched command, including relevant pytest options and sandbox mounts.
+Compare ownership and timestamps without deleting files, then identify the
+specific propagation, configuration or retention boundary that accounts for
+any growth before selecting a fix.
 
 == What this is not
 
@@ -82,30 +131,15 @@ that can recur with any process that writes there, not only a WFC Run; this
 particular incident happened to surface it, but the underlying resource
 pressure is a test-infrastructure concern independent of WFC.
 
-== Non-scope
-
-This record does not authorize:
-
-* any claim about the specific fixture, test, or configuration responsible;
-* any cleanup of the currently retained `/tmp/pytest-of-stefan` material;
-* any change to `pytest` configuration, fixtures, or test code;
-* any change to `src/workflow_coordinator/git_facts.py` or any other
-  production source;
-* the FD-08 scratch-space management requirement recorded separately in
-  link:../warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc[the
-  Front Door priority and Profile/Commission boundary plan] §9 (that record
-  addresses where the Coordinator/Harness/Evidence stage scratch files;
-  this BUG addresses test-infrastructure temp-file retention, which is a
-  different surface even though both are motivated by the same incident);
-* a WorkItem, profile, policy, or WFC Run of any kind.
-
 == Disposition
 
-`LATER`. This is recorded for test consolidation after the MVP, alongside
-the existing test-burden finding above, rather than for immediate bounded
-correction. No investigation or correction Commission is authorized by this
-record; one becomes eligible only when test consolidation is actually
-prioritized, per the active-work manifest.
+Near-term infrastructure work, suitable for BP8, or earlier if repeated
+failures continue to block work. Investigate the concrete mechanism before
+choosing a correction. The broader
+link:FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT.adoc[execution integration debt]
+retains its separate, deferred evaluation scope; this BUG owns the recurring
+pytest resource-exhaustion outcome. The operator's selective stale-artifact
+cleanup is a workaround, not a permanent solution.
 
 == Evidence pointers
 
@@ -126,10 +160,6 @@ prioritized, per the active-work manifest.
 
 == Lifecycle
 
-This BUG is *open*, disposition `LATER`. This record documents the observed
-resource-exhaustion finding and its open causal questions only. It
-authorizes no investigation, no cleanup, no test or fixture change, and no
-WFC Run. A future bounded investigation, and only subsequently a bounded
-correction, each require their own separately authorized maintainer
-Commission/WorkItem. Committing this documentation record does not itself
-commission, prepare, or launch any Run, and does not invoke any provider.
+This BUG remains open. This update records the recurrence and prioritizes a
+bounded investigation; it does not itself start a Run, accept a candidate,
+change execution behavior, or authorize cleanup of existing material.
