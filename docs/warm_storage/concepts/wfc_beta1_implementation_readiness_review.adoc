@@ -1,0 +1,1035 @@
+= WFC Beta 1 -- Implementation Readiness Review (Third Pass): Recovery and Contract Boundaries
+:toc:
+:toclevels: 2
+:sectnums:
+
+Maturity::  in-review
+Authority:: exploratory
+Updated::   2026-11-14
+Owns::      Corrections and extensions to the second-pass Beta-1 blueprint: the Commission/execution-binding boundary, unattended execution, the plan/probe boundary, process supervision, candidate preservation and Continuation, and their effect on BP1-BP9. An exploratory architecture review; not an accepted implementation contract.
+
+== Reviewed state and method
+
+[horizontal]
+Development:: `workflow-coordinator@d5c7982bf1cdee393778a09b3dc04fd990253773` (`main`, clean worktree). *[V]* `git diff f6824f7 d5c7982` adds only the second-pass review, so source, tests and governance are unchanged since both earlier passes.
+Evidence:: `workflow-coordinator-run-evidence@e5df27dc923514698b98a4ba4ef963bb5c79859a` (read-only, clean).
+Runtime:: `workflow-coordinator-runtime@6c88e47646c697dfe4f7c4e83e474092609df1ba` (read-only; identity only).
+Builds on:: link:wfc_beta1_product_boundary_review.adoc[the first review] (R1) and link:wfc_beta1_product_boundary_review_second_pass.adoc[the second review] (R2). Both are unchanged. This document is read together with R2: whatever it does not mention stands as R2 wrote it.
+Product direction:: Sections 1-3 of link:../../functional_model/workflow_program_use_cases.adoc[the Functional Model] (`GOAL-WFC-001` to `GOAL-WFC-004`), treated as accepted.
+Method:: Source inspection of the three repositories. No test, Run, provider invocation, archive operation or experiment was executed. Statements about process behaviour are read from source and marked *[I]* where they depend on operating-system or provider behaviour that was not exercised.
+
+Claim markers as in R2: *[V]* verified in the cited source at the reviewed state; *[E]* taken from a persisted record; *[I]* inference; *[R]* recommendation.
+
+Labels: `C1` to `C7` are this review's findings. `G1` to `G16` are additional source facts. `X1` to `X5` are experiments. `M1` to `M6` are new Maintainer decisions. `BP1` to `BP9` and `Q1` to `Q8` are R2's packages and decisions. `BP4a`, `BP4b` and `RP1` are introduced in <<packages>>.
+
+== Verdict
+
+R2's architecture holds. Seven points need correction or extension before implementation; none reopens the package structure.
+
+[cols="1,3,4",options="header"]
+|===
+|# |R2 position |Disposition
+
+|C1
+|Role bindings are a field of the committed Commission; a different model is a different Commission (Q4: yes).
+|*Reversed.* The engine already receives bindings as a separate file, freezes them before the first dispatch and records them per Hop. The Commission stays binding-free; the Front Door freezes an execution envelope beside it. One authorization names both digests (<<c1>>).
+
+|C2
+|`--yes` is first-class; Q1 left "one confirmation or none" open.
+|*Confirmed and closed* by Maintainer decision. Three residual points where an unattended lifecycle could still stall or fail late are closed (<<c2>>).
+
+|C3
+|The pre-authorization half is "pure" and includes the baseline probe; `wfc plan` is that half.
+|*Corrected.* `plan` executes no project command. The probe runs after authorization and before the Commission commit, and additionally asserts that the check leaves the tree clean (<<c3>>).
+
+|C4
+|Engine detached, `flock` held for the engine's lifetime; a surviving provider is reported as a risk.
+|*Extended.* A lock cannot attest that providers have stopped. A small supervising host process makes quiescence an observed fact in every case but its own abnormal death, which is classified as unknown (<<c4>>).
+
+|C5
+|No preservation: after a stop the user discards or keeps the working-tree changes.
+|*Added.* Automatic, non-authoritative preservation of the uncommitted candidate under `refs/wfc/candidates/`, by Git plumbing on a private index, with a classified fallback (<<c5>>).
+
+|C6
+|"No outcome triggers a successor ... simply the next `wfc run`."
+|*Extended.* Beta 1 records lineage and the assurance baseline for a successor started with `--continues`; `wfc continue` follows as package RP1 (<<c6>>, <<disposition>>).
+
+|C7
+|`wfc.audit/1` with `lifecycle_outcome`; an interrupted Run is archived as it stands.
+|*Extended* by five blocks, added before the schema first ships, that keep observed facts apart from the controller's classification (<<c7>>).
+|===
+
+Recommended disposition *[R]*: alternative B of the assignment. Beta 1 ships supervision, truthful classification, automatic preservation and the lineage record. `wfc continue` ships shortly afterwards as RP1. The critical path keeps its shape and grows by roughly one small-to-medium unit of work.
+
+[[facts]]
+== Additional source facts
+
+[cols="1,4,3",options="header"]
+|===
+|# |Fact |Source
+
+|G1
+|The engine reads execution bindings from a filesystem path outside the payload tree, never from Git. It parses them once into an immutable `RunExecutionConfiguration`, requires the role set to equal the profile's roles, and requires one adapter.
+|*[V]* `operator._preflight` (`binding_source.read_text`, "Run execution bindings must exactly match roles used by the profile", "mixed execution adapters ...").
+
+|G2
+|Bindings are not among the governing digests re-read between Hops. They are held in memory for the life of the engine process, so they cannot drift inside a Run.
+|*[V]* `operator._governing_inputs_unchanged`, `run_serial_hops`.
+
+|G3
+|`operator-plan.json` is written before checkout registration and the first dispatch and contains `role_bindings`, `execution_bindings_source`, `executable` and `timeout_seconds`. Every attempt row of `execution-evidence.json` carries `adapter`, `executable`, `model` and `reasoning`.
+|*[V]* `operator.main` plan literal, `_binding_evidence`; archived `wfc-operator-manual-walkthrough-001-20261113-01`.
+
+|G4
+|The Harness writes `execution-bindings.yaml` into OPS from explicit `--role-binding ROLE=ADAPTER:MODEL:REASONING` flags, pins its SHA-256 in `harness-prepared.json` and refuses to launch on drift. The archive allow-list copies the file.
+|*[V]* `wfc_op.write_execution_bindings`, `cmd_launch`; Evidence `archive_run.py` `OPS_ROOT_ALLOW`.
+
+|G5
+|The accepted Intent contract forbids "a model/adapter/binding" in an Intent and states that "execution bindings are Runtime-owned". A compiler test rejects `model:` and `adapter:` keys.
+|*[E]* `workflow_coordinator_front_door_commission_contract_design_2026-10-28.adoc` (sections 3, 7); *[V]* `tests/unit/test_commissioning.py` (forbidden-key list).
+
+|G6
+|Both adapters start the provider with `start_new_session=True` and block in `communicate()`. Only a timeout signals the provider's process group. The provider's process identifier is recorded nowhere.
+|*[V]* `claude_adapter.ClaudeCliAdapter.execute`, `codex_adapter.CodexCliAdapter.execute`; `model.DispatchMarker` fields.
+
+|G7
+|No `Popen` call in the package passes `pass_fds` or disables `close_fds`. A descriptor inherited by the engine is therefore closed in every provider and evidence child.
+|*[V]* `grep` for `close_fds`, `pass_fds` over `src/` and `scripts/`: no match.
+
+|G8
+|An engine interrupted by a signal writes no terminal state. `slice4.run_real_one_hop` and `operator.main` catch `Exception`; `KeyboardInterrupt` passes through both, and `SIGTERM` has no handler. `dispatch.json` then remains and `run.json` still says `ready`. On that path the Claude adapter's `finally` removes the invocation scratch directory while the provider may still be running.
+|*[V]* `slice4.py` (`except Exception: return recover_uncertain(None)`), `operator.main`, `claude_adapter.execute`.
+
+|G9
+|A summary file does not imply an engine-terminal status. `_write_failure_summary` writes `operator-summary.json` with `operator_status: failed`, the last known `run_status` (possibly `ready`) and the error text.
+|*[V]* `operator._best_effort_failure_summary`.
+
+|G10
+|The evidence runner starts the check in the engine's own session and, on timeout, kills only the direct child.
+|*[V]* `evidence.ProductionEvidenceRunner.observe` (`process.kill()`).
+
+|G11
+|Hop order is: write `run.json`, write `dispatch.json` with `base_head` equal to the Run's current HEAD, invoke, trusted commit, evidence, write `run.json`, write `checkpoint.json`, remove `dispatch.json`. Every dispatch is preceded by `preflight_hop`, which requires the expected HEAD and a tree clean of tracked and non-ignored untracked changes.
+|*[V]* `slice4.run_real_one_hop`, `vertical.run_one_hop`, `git_facts.preflight_hop`.
+
+|G12
+|`export-salvage`, `prepare-successor` and `--successor-continuation` are implemented in the package operator and unit-tested. They are not wired into the Harness or the compiler, and their implementation is not independently accepted (requirement R1A open).
+|*[V]* `operator._export_salvage`, `_prepare_successor`, `_successor_context`; `scripts/wfc_op.py` has no reference; *[E]* `docs/backlog/_open.adoc`, `FTR-WFC-SCOPE-ESCALATION-CONTINUATION`.
+
+|G13
+|`prepare-successor` admits only a schema-2 predecessor in `awaiting_human` with a frozen semantic stop. It re-reads the predecessor state root at successor launch, binds the salvage manifest to an absolute path, and renders at most 65,536 bytes of selected text into the successor prompt. Salvage export refuses entirely if any changed path lies outside the Hop's scope.
+|*[V]* `operator._predecessor_for_successor`, `_validated_successor_descriptor`, `_SALVAGE_RENDER_LIMIT`; `git_facts._salvage_inventory_with_index`.
+
+|G14
+|Same-Run resume exists only as `reducer.resume_after_reconcile`; no entry point calls it. The Intent renderer hard-codes `initial_phase: implement` and the Intent parser rejects an `initial_phase` key, while the engine admits any declared phase.
+|*[V]* `grep resume_after_reconcile`; `commissioning.py` (WorkItem literal); `test_intent_rejects_forbidden_workflow_semantics_before_render`; *[E]* `FTR-WFC-ATOMIC-HOP-RECOVERY`, `FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION`.
+
+|G15
+|`refs/wfc/candidates/<run-id>/<hop-id>` is a manual convention. Two such refs exist, each a hand-made `wip(...)` commit. The normative recovery section states that WFC does not automatically create salvage commits, and Project Memory records that the convention is deliberately kept outside the product.
+|*[V]* `git for-each-ref refs/wfc`; `docs/operator_manual/ch06_recovery/01_outcomes.adoc` ("Non-automation boundary"); `project_memory/canonical/concern_event_xrefs.json`.
+
+|G16
+|`trusted_commit` runs every Git command through `_trusted_git`: inherited `GIT_*` variables removed, `core.hooksPath` set to the null device, signing and fsmonitor off. It refuses when any clean or process filter is configured. The archive allow-list already names `+H*-worker-dirty.patch+`, `+H*-worker-status.txt+`, `+failed-h*-artifacts+`, `+baseline-*.log+` and `+baseline-*.exitcode+`.
+|*[V]* `git_facts._run_git`, `_trusted_git`, `_configured_external_filters`; Evidence `archive_run.py`.
+|===
+
+== Focused findings
+
+[[c1]]
+=== C1 -- The Commission and the execution bindings are separate artifacts
+
+[horizontal]
+Second pass:: `commission.json` carries `execution.roles`; the request accepts a per-request `roles` override; `CompiledCommission` has a `bindings_text` member; Q4 recommends "yes", with the consequence that "a different model is a different Commission".
+Evidence:: G1 to G5. The boundary the Maintainer asks for is the one the engine implements and three earlier records state: the 2026-10-28 contract design, `DEC-WFC-016` (the Harness writes bindings from explicit inputs) and R1's own list of interfaces worth preserving ("execution bindings outside the Commission, keyed by role"). *[E]* `DEC-WFC-020` requires that the operator can *see*, before and after execution, which bindings entered it. That is a visibility requirement and says nothing about co-location. *[V]* Functional Model UC-02 calls model choices "illustrative commercial bindings, not the definition of the workflow program".
+Corrected design:: Five things in four places, below. The Commission names roles; it never names an adapter, model, reasoning level or executable.
+Why it matters:: A caller that commissions work, whether a person or a later orchestrator, supplies task, scope and program and nothing about providers. One committed Commission can be executed more than once under different envelopes from the same baseline, which is how a controlled model comparison has to work. *[E]* The Maintainer has already run one by hand (`experiments/operator-manual-h001-model-replays-20261111` in the Evidence repository). R2's attempt identifiers end in an attempt counter, which already presumes several attempts per Commission.
+Remaining uncertainty:: Where project-level binding defaults live. A user-level default (models are an account and machine fact as much as a repository fact) is plausible later; it is additive because the envelope, not the configuration, is what gets recorded.
+
+[cols="2,3,3",options="header"]
+|===
+|Responsibility |Artifact |Owner and lifetime
+
+|Commissioned work: task, scope, program, roles, personas, evidence, actions
+|`.wfc/commissions/<id>/` in payload Git; digest of `commission.json`
+|Whoever commissions. Immutable once committed.
+
+|Execution configuration: the inputs to selection
+|`execution.bindings` in `.wfc/config.yaml` as project default; `--bind ROLE=ADAPTER:MODEL:REASONING` per invocation (the Harness grammar, G4)
+|The Front Door reads it. It is not part of any Commission.
+
+|Frozen Run execution envelope
+|`OPS/<attempt>/execution-bindings.yaml` (schema 1, unchanged) and the `envelope` block of the lifecycle journal
+|The Front Door, at authorization. One per attempt.
+
+|The Coordinator's actual bindings
+|`--execution-bindings <file>`, parsed once (G1, G2)
+|The engine. Unchanged.
+
+|Audit record of what executed
+|`operator-plan.json` `role_bindings`; per-attempt rows in `execution-evidence.json`; `audit.json`
+|The engine writes; the archiver projects.
+|===
+
+Consequences for R2's contracts:
+
+* `commission.json` loses `execution`. It gains nothing: the role set is already implied by the program and present in the rendered profile.
+* The request (`schema: 2`) loses `roles`. A binding override is an option of the invocation, beside the request and never inside it.
+* `compile_commission` does not receive bindings and `CompiledCommission` has no `bindings_text`. A separate `resolve_execution(config, overrides, roles)` produces the envelope. `admit_parsed` takes the parsed bundle and the parsed bindings as two arguments, mirroring `_preflight`.
+* The authorization record names two digests, `commission_sha256` and `envelope_sha256`. One confirmation, or one `--yes`, covers both. Nothing here adds an approval: selection is a Front-Door responsibility, and the requirement is only that the selected identities are frozen and recorded before dispatch. G3 shows the engine already does this for its own record.
+* In `.wfc/config.yaml`, personas (commissioned content, rendered into the WorkItem) and bindings (execution configuration) sit under separate keys so that the two responsibilities are not interleaved in one `roles` block.
+
+Effect on the properties the assignment lists:
+
+[cols="2,5",options="header"]
+|===
+|Property |With the corrected boundary
+
+|Commission schema and compilation
+|Smaller. Compilation is independent of provider availability, so `wfc commission verify` can re-compile without knowing any model.
+
+|Run identity and provenance
+|Commission to attempt is one to many. An attempt is identified by its own identifier, Run ID, Commission digest and envelope digest.
+
+|One-command use
+|Unchanged. `wfc run task.md --scope ...` resolves both and shows both in one summary.
+
+|Repeated execution, model comparison
+|Same Commission commit, different envelope, separate attempt. Because Hop commits land on the checked-out branch, a second attempt from the same baseline needs its own worktree or branch. Beta 1 provides the boundary and no command for this.
+
+|Historical reconstructability
+|Commission bytes from payload Git; executed bindings from `operator-plan.json` and `audit.json` (R2 already lists adapter, model and reasoning per Hop there).
+
+|Admission and execution contracts
+|Unchanged (G1).
+
+|BP2 and BP4
+|See <<packages>>.
+|===
+
+[[c2]]
+=== C2 -- Unattended execution is the normal case
+
+[horizontal]
+Second pass:: One confirmation on a terminal; `--yes` first-class and required without a terminal; no further prompt through the archive. Q1 offered "no prompt at all" as an alternative.
+Evidence:: *[V]* Both adapters already run providers without interaction (`--ask-for-approval never`; `--permission-prompts none`). Nothing in the engine reads standard input.
+Corrected design:: Q1 is closed by Maintainer decision: an interactive invocation confirms once, `wfc run ... --yes` runs the complete authorized mechanical lifecycle. Three additions make that hold in practice.
+Why it matters:: A script or an outer agent sees exactly one command and one exit code. A lifecycle that can only finish after a human looks at it is not unattended.
+Remaining uncertainty:: None architectural.
+
+. *No terminal and no `--yes` is a refusal, not a wait.* Exit 2, before anything is written. `wfc init` takes every answer as a flag and never asks when standard input is not a terminal.
+. *Everything knowable is checked before authorization.* R2 validates the Evidence repository only when the archive is written. An unattended Run would then spend its whole budget and end unfinished (exit 3) for a reason that was visible beforehand. The destination is checked provider-free in the read-only half (exists or can be created, is a Git repository, nothing staged) and checked again when written.
+. *Every post-launch step is prompt-free and has a deterministic outcome.* This includes the two steps this review adds, quiescence and preservation (<<c4>>, <<c5>>). A step that cannot complete ends the command with exit 3 and a single named remedy.
+
+A need for more authority never widens anything silently. It surfaces as one of three mechanical outcomes: a refusal before launch (exit 2; for example a changed provider binary between authorization and launch), a Run that stops with a human question (exit 1, archived, reported), or a Continuation that is refused for lack of a required input (<<c6>>). The exit codes of R2 stand; `report --json` carries the distinctions an orchestrator needs.
+
+Interrupting the foreground command does not stop the Run: the engine is detached. The command says so and names `wfc stop` and `wfc resume`. `wfc stop <attempt>` is the one command this review adds to the Beta-1 surface (<<c4>>).
+
+[[c3]]
+=== C3 -- `plan` executes nothing; the probe follows authorization
+
+[horizontal]
+Second pass:: The flow labels resolve, compile, admit, *probe*, summarize as "PURE (nothing written, nothing persisted)" and defines `wfc plan` as "that half of the pipeline on its own". A failing baseline "refuses in the pure half".
+Evidence:: *[V]* An evidence command is an arbitrary consumer-authored argv run with `shell=False` at the repository root in the inherited environment, with no containment (`ProductionEvidenceRunner.observe`). It may write files, contact services and run for up to 900 seconds; on timeout only its direct child is killed (G10). *[V]* The engine requires a tree clean of non-ignored untracked files before every Hop (G11).
+Corrected design:: Two operations with different natures, kept apart by the authorization line.
+Why it matters:: A command documented as an inspection must not run project code. The corrected placement also gives the probe a second job that the first placement could not do: catching a check that dirties the tree.
+Remaining uncertainty:: The probe runs on the baseline before the Commission bundle is committed, so a check that scans every file in the tree does not see `.wfc/commissions/<id>/`. Stated as a limitation; see the alternatives below.
+
+[cols="2,4",options="header"]
+|===
+|Operation |Definition
+
+|Read-only planning (`wfc plan`, and the first half of `wfc run`)
+|Reads Git, configuration, package resources and file metadata. Resolves evidence and provider executables and records their fingerprints. Executes no project command and no provider. Writes nothing (`--out DIR` outside the repository excepted).
+
+|Baseline probe (inside `wfc run`, after authorization)
+|Executes `task-check` once through `ProductionEvidenceRunner`, in the frozen environment, on the clean baseline. A project command; covered by the same single authorization, whose summary states that it will run and for how long at most.
+|===
+
+Sequence after authorization: journal, *probe*, Commission commit, committed admission, launch. The probe passes only if the check passes *and* the repository is afterwards at the same HEAD with a clean tree and nothing staged.
+
+[horizontal]
+Failure scenario for the cleanliness assertion:: A check writes a non-ignored file (a coverage database, an updated snapshot, a generated source). In a Run this surfaces after the first gate review as `inter_hop_git_validation_failed` or as a dirty tree at the end, after the provider spend. *[V]* `preflight_hop`.
+Cost:: One `observe_repository` call.
+
+Failure reporting, all exit 2 with nothing committed and no provider invoked:
+
+* Check fails or times out: status, exit code and the bounded output tail; the log and exit code are written to `OPS/<attempt>/baseline-task-check.log` and `.exitcode` (names the archive allow-list already admits, G16).
+* Check passes but leaves the tree dirty: the offending paths are listed. WFC does not remove them; they are the project command's output.
+* Either way the journal is closed with outcome `not_launched` and the reason, and the active-lifecycle pointer is cleared. R2 did not define how a lifecycle that was authorized but never launched ends; this is that definition, and it also covers a failed committed admission (there the Commission commit remains and is reported).
+
+Alternatives considered:
+
+* *Probe after the Commission commit.* Exactly the launch state, but every probe failure leaves an inert Commission commit, and probe failures are the common first-use failure. Rejected.
+* *No probe.* Simplest. Loses the protection R2 justified with recorded evidence, and the new cleanliness check. Rejected; `environment.baseline_check: false` remains for a project whose baseline is intentionally red.
+* *A probing `plan` mode.* Unnecessary. `wfc run ... --until probed` is the same controller stopped early, in the style of R2's `--until committed`; it needs the same authorization because it executes project code.
+
+The probe is skipped, and recorded as skipped, when a successor starts from an adopted unaccepted candidate, which may legitimately be red (<<c6>>).
+
+[[c4]]
+=== C4 -- Process supervision and quiescence
+
+[horizontal]
+Second pass:: The controller takes an exclusive `flock`, passes the descriptor to a detached engine and closes its copy; "the lock lasts exactly as long as the engine process". Monitoring rule: lock free with a summary is terminal, lock free without one is `interrupted`. A surviving provider is noted as an unresolved risk.
+Evidence:: G6 to G11. By G7 the lock is released when the engine dies whatever the provider is doing, so "lock free" proves nothing about providers. By G6 no record identifies the provider process afterwards. By G9 "summary present" does not prove an engine-terminal status.
+Corrected design:: A supervising host process between controller and engine, with a completion record. The engine and both adapters stay unchanged.
+Why it matters:: Three later steps depend on knowing that nothing is still writing: preservation would otherwise capture a half-written candidate, the archive could be overtaken (*[V]* Codex writes its last message into STATE through `--output-last-message`), and a successor launched in the same checkout would have a predecessor's provider writing into its Hop, to be committed under the successor's identity if the paths are in scope.
+Remaining uncertainty:: Operating-system and provider behaviour not exercised here; see the experiments.
+
+==== Mechanism
+
+[source,text]
+----
+wfc run (controller, foreground)
+  +- host   own session; stdin null; output to OPS/run.log; holds engine.lock
+       +- engine   python -m workflow_coordinator.operator ...   (inherits the lock descriptor)
+            +- provider   own session per invocation (G6); does not hold the lock (G7)
+            +- evidence command   engine's session (G10)
+----
+
+The host does five things and nothing else:
+
+. Marks itself a child subreaper (`prctl(PR_SET_CHILD_SUBREAPER)`), so every descendant orphaned by the engine's death is re-parented to the host instead of leaving the tree, whatever session it is in. *[V]* The package already calls Linux-only primitives through `ctypes` and refuses where they are missing (`operator._rename_no_replace`).
+. Writes `host.json` (its own and the engine's process identifier and start time, and the boot identifier), starts the engine, waits for it.
+. After the engine exits, terminates whatever descendants remain: `SIGTERM` to each remaining child's process group, a short grace period, `SIGKILL`, repeated until it has no children. A provider that outlives its engine cannot have its result admitted, so letting it run only costs money and mutates the tree.
+. Writes `host-exit.json`: the engine's exit code or signal, how many descendants remained, which were signalled, and `quiescent: true`.
+. On `SIGTERM` (sent by `wfc stop`) it terminates the engine and proceeds with steps 3 and 4.
+
+The lock is held by host and engine together, so "lock held" means one of them is alive. The engine's behaviour on signals (G8) is left as it is; a stopped Run is classified by the controller, not by the engine.
+
+==== The six cases
+
+[cols="3,3,3",options="header"]
+|===
+|Case |Observed facts |Result
+
+|1. Controller interrupted, engine alive
+|Lock held; `host.json` processes alive.
+|Running. `wfc resume` re-attaches by waiting on the lock. Nothing is reclassified.
+
+|2. Engine terminated after a completed Hop
+|Lock free; `host-exit.json` present; no engine-terminal summary; no `dispatch.json`, or its Hop is recorded in `run.json`; HEAD equals the Run's current HEAD; tree clean.
+|`interrupted`, class `at_hop_boundary`. No provider outcome is pending and nothing needs preserving: every completed Hop is a commit.
+
+|3. Engine crash between Hops
+|As 2. If the crash fell between the trusted commit and the `run.json` write (G11): `dispatch.json` present, Hop not recorded, HEAD one or more commits past the marker's `base_head`.
+|As 2; or class `during_hop` with `head_moved`. The commits are listed as facts. The controller does not decide whether the Hop "counted".
+
+|4. Engine crash during a provider invocation
+|Lock free; `host-exit.json` shows descendants terminated; `dispatch.json` present, Hop not recorded; HEAD equals `base_head`; tree possibly dirty.
+|`interrupted`, class `during_hop`; provider outcome `unknown`; candidate preservation applies (<<c5>>).
+
+|5. Provider alive after engine termination
+|As 4 while the host is working: lock still held by the host.
+|Not yet terminal. The host ends it and the case becomes 4.
+
+|6. Uncertain dispatch, partial persistence
+|Engine-written `reconcile_required` with an `uncertain_dispatch` Hop (the engine's own conservative path); or a failure summary (G9) with `operator_status: failed`.
+|The first is an engine status and is reported as such. The second is `interrupted`, class `engine_error`, with the error text as a fact, and is then read by the marker rows above.
+|===
+
+An engine that never reached its first dispatch (STATE holds a plan and no `run.json`) is `interrupted`, class `before_first_dispatch`. In every row the launch is not repeated: *[V]* the engine refuses an existing state root, and the controller never removes one.
+
+==== What the host cannot attest
+
+If the host itself is killed, no completion record exists.
+
+[cols="3,4",options="header"]
+|===
+|Observation |Quiescence
+
+|`host-exit.json` present with `quiescent: true`
+|`attested`: the host observed that it had no descendants left.
+
+|No `host-exit.json`; boot identifier differs from `host.json`
+|`reboot`: no process of that boot exists.
+
+|No `host-exit.json`; lock held; host process gone
+|Engine running unsupervised. Reported as such. `wfc stop` signals the engine directly.
+
+|No `host-exit.json`; lock free; same boot; engine wrote a terminal summary
+|`not_attested`: the engine waited for every provider it started (G6), but nothing observed their descendants.
+
+|No `host-exit.json`; lock free; same boot; no terminal summary
+|`unknown`.
+|===
+
+With `not_attested` or `unknown`, preservation and archive do not run and a new launch in that checkout is refused; the command ends with exit 3. The remedies are a probe, if the experiments show one to be reliable, or `wfc resume --assume-quiescent`, which records `asserted` with the operator as the source. This is the honest floor for a rare case (a `SIGKILL` aimed at one small process); it is deliberately not disguised as a detection.
+
+==== Experiments and tests
+
+The experiments need a real provider or a real kernel behaviour and precede the design freeze of BP4a. None is authorized by this review.
+
+[cols="1,4,3",options="header"]
+|===
+|# |Question |Decides
+
+|X1
+|When the engine dies mid-invocation, does `claude -p` or `codex exec` stop by itself once its output pipes have no reader, and how long does it keep writing the worktree?
+|How much the host's step 3 matters in practice, and the grace period.
+
+|X2
+|Does subreaper adoption capture the provider's whole tree for both CLIs, including the sandbox helpers each starts and a process that double-forks? Does killing a sandbox's first process end everything inside it?
+|Whether step 3 is sufficient or a cgroup scope is needed on the supported platform.
+
+|X3
+|Can a marker in the environment (for example an attempt identifier, admitted for Claude through the existing `WFC_CLAUDE_EXTRA_ENV_NAMES`) be found in every descendant by scanning `/proc`?
+|Whether the `unknown` case can get a reliable probe in place of the operator assertion.
+
+|X4
+|Do descendants of a timed-out evidence command survive (G10), and do they keep writing?
+|Whether the evidence runner should start checks in their own process group and signal the group, as the adapters do. A small additive engine change, recommended if X4 confirms survivors.
+
+|X5
+|Does a completed worker Hop with no change and no `CommitIntent` route normally in `robust@v1` and `simple@v1`?
+|Whether a successor may enter at `implement` on an already complete candidate (<<c6>>).
+|===
+
+Deterministic tests, all with a scripted fake provider in the neutral fixture and no real provider:
+
+* Kill the controller during a Hop; `resume` re-attaches; one launch.
+* Kill the engine at each point of G11 (before the marker, during the invocation, after the commit, after `run.json`, before marker removal). Assert the classification row, that `host-exit.json` exists, and that no relaunch occurs.
+* A fake provider that ignores `SIGTERM` and starts a detached writer: the host kills both; no write to the tree occurs after `host-exit.json`.
+* The provider process does not hold the lock descriptor.
+* Kill the host during an invocation: status reports an unsupervised engine; after the engine is killed, quiescence is `unknown`, no candidate ref is created and `wfc run` refuses.
+* `SIGINT` to the engine leaves `dispatch.json` and no summary. This pins G8 so that a later engine change is noticed.
+* The classifier as a pure function over fixture STATE directories and Git facts, table-driven from the rows above, including G9.
+* `wfc stop` yields `interrupted` with a `stop_requested` fact.
+
+[[c5]]
+=== C5 -- Automatic candidate preservation
+
+[horizontal]
+Second pass:: None. After an interruption the report "states that the working tree may be dirty"; the user "discards or keeps the working-tree changes".
+Evidence:: G11, G13, G15, G16. *[E]* The normative recovery section defines four maintainer-chosen outcomes and an exact manual procedure whose invariant is "salvage commit delta == frozen dirty candidate delta". *[V]* The existing `export-salvage` serves a different purpose (prompt context for a successor), refuses the whole export on one out-of-scope path and is limited to one stop kind (G13).
+Corrected design:: A lifecycle step, `preserve`, between quiescence and archive. It creates a commit object from the dirty tree with a private index and publishes it under `refs/wfc/candidates/<run-id>/<hop-id>`. It touches neither the working tree, nor the real index, nor any branch.
+Why it matters:: `GOAL-WFC-001`. The next `wfc run` refuses a dirty tree, and the quickest way for a user to get past that refusal destroys the work the Run paid for.
+Remaining uncertainty:: Line-ending and attribute normalization on unusual repositories (the implementation choice below); size caps.
+
+==== What can be known about the dirty tree
+
+The engine supplies one strong fact and WFC must not claim more than it. By G11 the tree was clean at the Hop's `base_head` when the Hop was dispatched. Therefore every non-ignored difference between `base_head` and the tree arose during or after that Hop's execution window. That window contains the provider, its descendants, the trusted check if it ran, and anything a person did in the same checkout meanwhile. WFC cannot tell these apart by content.
+
+Consequences:
+
+* Changes that existed before the Run cannot be present: launch requires a clean tree.
+* "Produced by the agent" is never recorded. What is recorded is `origin: hop_window` plus whether the capture happened inside the supervised lifecycle (quiescence `attested`, capture immediately after) or after an unsupervised interval (`reboot`, `asserted`).
+* Ignored files are outside the candidate, as they are outside every trusted commit.
+
+==== Candidate predicates
+
+All are observations. If all hold, the result is class `candidate`.
+
+. Quiescence is `attested`, `reboot` or `asserted` (<<c4>>).
+. The repository is the registered checkout, and HEAD equals the Run's current HEAD as persisted in `run.json` (for an interrupted Hop this equals the marker's `base_head`, G11).
+. The real index equals HEAD; no merge, rebase or cherry-pick is in progress; submodules are resolved.
+. Every changed path (the enumeration `trusted_commit` uses: differences from HEAD plus non-ignored untracked files) lies inside the stopped Hop's phase scope, read from the profile at the Run's baseline as `_export_salvage` does, and is a regular file or a deletion.
+. No clean or process filter is configured (the `trusted_commit` rule, G16).
+. The change set is within a size cap.
+. The tree computed from the working tree is identical in two consecutive passes.
+
+Predicate 7 is the normative exactness check and a minimal stability check at once: two equal tree identifiers show that the preserved tree is the working tree and that it did not change during capture.
+
+==== Creation
+
+[source,text]
+----
+private index  <-  read-tree <HEAD>
+private index  <-  add/remove exactly the enumerated paths
+tree           =   write-tree                       (twice; identifiers must match)
+commit         =   commit-tree <tree> -p <HEAD>     (fixed identity; subject wip(wfc): ...; trailers below)
+ref            =   update-ref refs/wfc/candidates/<run-id>/<hop-id> <commit>   (create-only)
+----
+
+* Every command runs through the `_trusted_git` policy (G16) with the private index named explicitly. This matters for more than commit hooks: a ref update can trigger a `reference-transaction` hook, and staging can run configured filters.
+* Staging uses the same semantics as `trusted_commit`, so the preserved tree is byte for byte what a trusted commit of the same paths would have contained. Hashing raw bytes without Git's normalization would bypass filters by construction but can make an adopted candidate appear modified on repositories with line-ending attributes. This is a local implementation choice with that constraint.
+* Trailers: `WFC-Attempt`, `WFC-Run`, `WFC-Hop`, `WFC-Base`, `WFC-Status: unaccepted-candidate`. The subject follows the two existing precedents (G15) and deliberately does not satisfy the Hop-commit subject rule.
+* The same change as a binary-safe patch (`git diff --binary <HEAD> <commit>`) is written to `OPS/<attempt>/H<nnn>-worker-dirty.patch`, with the status listing beside it. Both names are already on the archive allow-list (G16), so the raw archive holds a copy that does not depend on the payload repository.
+
+Idempotent by observation: ref present, its tree equal to the working tree and its parent equal to HEAD means done. Ref present and tree clean means done (the user adopted or discarded since). Ref present and the working tree different and dirty means `changed_after_preservation`: the ref is never moved, and the state is reported.
+
+==== Fallback
+
+If predicate 1 fails, the step is deferred (<<c4>>). If any of 2 to 7 fails, no commit and no ref are created. The result is class `forensic`: the status listing and `git diff --binary HEAD` are written to OPS under the same names, untracked files are listed with size and SHA-256, the failed predicates are recorded, and the report states that the working tree holds the only complete copy. This is the existing outcome 3 ("forensic preservation only ... a patch is appropriate"), reached mechanically. A `forensic` result is never offered to a Continuation as a starting point.
+
+==== What preservation is not
+
+It decides nothing about value, review or acceptance. It does not clean, reset or stash. It does not put anything on a branch. It is the third bounded Front-Door Git write after the Commission commit and the archive commit, and the only one that turns agent-written bytes into a Git object without a `CommitIntent`, which is why it is confined to a ref namespace no ordinary push or checkout uses.
+
+It does contradict one sentence of a normative document and one Project Memory note (G15): WFC "does not automatically ... create salvage commits". The Maintainer has stated the desired behaviour; amending that section is the act of adoption (M1). The rest of that section stands and is what this design implements: salvage preserves work, not authority.
+
+One related fact belongs in the quickstart, not in a new mechanism. Hop commits of a Run that does not complete are already on the checked-out branch (R1, product limits). "Unaccepted work" therefore has two forms: commits in the range baseline to final HEAD, recorded by reference, and the uncommitted remainder, which this step preserves.
+
+[[c6]]
+=== C6 -- Continuation semantics
+
+[horizontal]
+Second pass:: Continuation is "simply the next" invocation of `wfc run`; resuming an interrupted Run is "not open" (`DEC-WFC-014`, F1).
+Evidence:: G12 to G14. *[E]* `DEC-WFC-014`: a successor is a fresh, separately authorized Run. *[E]* The recovery section: "execution starting point != assurance baseline"; "the fresh reviewer evaluates the complete resulting product against the real assurance baseline, including salvaged ancestry". *[V]* The engine gives a reviewer only the prior Hop range of its own Run (`operator._reconstructed_context`), so a successor's reviewer is not told about earlier work unless the task says so.
+Corrected design:: Six operations, kept distinct; one lineage record; one product-owned clause.
+Why it matters:: Without the lineage record, related Runs cannot be found again. Without the assurance-baseline clause, a successor's review silently covers only the successor's own changes, which is the one way preserved work could gain credit it has not earned.
+Remaining uncertainty:: X5; the composition of the successor task has never been automated.
+
+[cols="2,3,2",options="header"]
+|===
+|Operation |What it is |Authorization
+
+|Mechanical preservation
+|<<c5>>. A lifecycle step.
+|None beyond the Run's own; it grants nothing.
+
+|Front-Door resume
+|`wfc resume`: finishes the authorized mechanical lifecycle. Never a second dispatch for a launched Run.
+|The original one.
+
+|Recovery of the interrupted Run itself
+|Same-Run reconcile and resume. A library seam with no entry point (G14).
+|Not offered. Stays with `FTR-WFC-ATOMIC-HOP-RECOVERY`; the host of <<c4>> supplies the liveness fact that record requires.
+
+|Successor Commission
+|A new Commission and Run that names its predecessor.
+|New, single, as for any Run.
+
+|Scope escalation
+|A successor whose scope differs from its predecessor's.
+|The new scope must be typed in the invocation. It is never derived from the predecessor's question or from paths an agent asked for.
+
+|Independent review
+|The successor program's own review phases, over the range from the assurance baseline.
+|None; it is the program.
+|===
+
+==== Lineage and the assurance clause (Beta 1)
+
+`wfc run ... --continues <attempt>` resolves the predecessor from its lifecycle journal, or from its `audit.json` when OPS is gone, checks that it belongs to the same repository, and records a `lineage` block in `commission.json` (<<contracts>>). Two values in it are observed, not chosen:
+
+* `starts_from` is `candidate` if the successor's baseline equals the predecessor's candidate commit, `predecessor_head` if it equals the predecessor's final HEAD, else `other`.
+* `assurance_baseline` is the predecessor's own assurance baseline, or its Run baseline if it had none, so the value is constant along a chain.
+
+When a lineage is present the compiler adds one product-owned clause to the task: the commits in the range from the assurance baseline to the successor's baseline are unaccepted work of the named Run; every line is unverified and may be kept, changed or removed; review covers the whole range; earlier review artifacts are informative only. No engine change is involved.
+
+==== `wfc continue` (RP1)
+
+`wfc continue <attempt>` is a convenience over `--continues`. It builds the successor request from the predecessor's committed `request.yaml`, the same program, the same scope unless `--scope` is given, a product-owned continuation block (stop reason, the human question verbatim and labelled, candidate and review-artifact references) and an optional additional task file. It then shows the ordinary plan and runs the ordinary lifecycle. Three questions need decisions.
+
+*How the successor receives the preserved work.*
+
+[cols="2,4,2",options="header"]
+|===
+|Way |Mechanics |Assessment
+
+|Adopt as starting point
+|If the working tree still equals the candidate tree: advance the checked-out branch to the candidate commit by compare-and-swap and refresh the real index. No file changes; the tree becomes clean. The successor's baseline is the candidate commit.
+|*Recommended* (M4). It is the canonical manual procedure with the manual step removed. The summary names the commit the branch will advance to.
+
+|Reference only
+|The successor starts at the predecessor's HEAD on a tree the user has cleaned; the task names the candidate ref, and the worker reads it with read-only Git and re-applies it. *[E]* Done once by hand (`wfc-claude-code-adapter-implementation-continuation-001`).
+|Works in Beta 1 with no mechanism. Costs a re-implementation Hop.
+
+|Untrusted context
+|The existing descriptor path (G13).
+|Not used by the Front Door: one stop kind, 65,536 bytes, text only, dependent on predecessor STATE and absolute paths, and not independently accepted.
+|===
+
+Adoption does not make the candidate trusted. Its commit keeps the `unaccepted-candidate` trailer, lies inside the assurance range and is reviewed like every other line.
+
+*Where the successor enters.* `implement` by default. For `robust@v1`, `broad_review` when the predecessor stopped in a review phase with a clean tree, which is the motivating case of `FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION`. Never `correct` or `focused_review`: *[E]* Findings are local to a Run and do not transfer, so those phases would start without the state they exist to dispose of. Entering at broad review cannot skip a review, so the program's guarantee holds. The entry phase is derived by the Front Door from predecessor facts and a per-program constant; it does not become a free request field. This lifts, for one case, the 2026-10-28 rule against initial-phase selection (M5).
+
+*What an unattended Continuation requires.* `wfc continue --yes` never widens scope. If the predecessor stopped with a semantic question, an answer must be supplied (`--answer`), or the command is refused with exit 2: a successor to a question that nobody answered would stop at the same place after the same spend. The answer enters the task under its own label.
+
+The Front Door records lineage in the Commission, for every stop kind, and does not use the engine's descriptor (G12, G13). Reconciling the two, by widening the descriptor's eligibility or retiring it, can wait (M6).
+
+[[c7]]
+=== C7 -- Archive and audit consequences
+
+[horizontal]
+Second pass:: `wfc.audit/1` carries `status`, `stop_reason`, `lifecycle_outcome` and per-Hop facts. An interrupted Run is archived with `dispatch.json` noted.
+Evidence:: *[V]* An archived `reconcile_required` Run already represents an uncertain provider outcome as engine facts: a Hop with role `uncertain_dispatch`, outcome `uncertain`, stop reason `interrupted_after_dispatch_marker`, and the retained `dispatch.json` (`wfc-claude-adapter-write-permissions-004-20261105-01`). *[E]* Archives are per Run and a predecessor is never rewritten.
+Corrected design:: Five blocks added to `wfc.audit/1` before it first ships, so no version changes. Illustrated in <<contracts>>.
+Why it matters:: A reader of the record must be able to tell what the engine persisted, what the host observed and what the controller concluded.
+Remaining uncertainty:: R2's caveat stands: the Findings part of the schema is the least grounded.
+
+[cols="2,3,3",options="header"]
+|===
+|Situation |Observed facts in the record |Classification, kept apart
+
+|Completed Run
+|Engine status `completed`; Hops; commits; evidence.
+|None.
+
+|Normally stopped Run
+|Engine status and stop reason; semantic stop kind and source Hop (not the question text); open blocking Finding identifiers.
+|None. The engine classified it.
+
+|Coordinator interruption
+|Engine exit code or signal; marker fields or their absence; whether the marker's Hop is recorded; HEAD at observation against the Run's HEAD; tree state.
+|`classification.class` and the names of the facts it rests on.
+
+|Uncertain provider outcome
+|Engine-recorded: the `uncertain_dispatch` Hop as it is. Controller-observed: `pending_dispatch` copied from `dispatch.json`. No Hop is synthesized.
+|`provider_outcome: unknown`.
+
+|Preserved unaccepted candidate
+|Class, commit, tree, ref, base, Hop, path count, origin, failed predicates. Never the bytes.
+|None; the class follows from the predicates.
+
+|Successor and predecessor
+|The successor's `lineage` block.
+|None. The predecessor's record is not touched; the forward relation is found by searching.
+
+|Series for one user task
+|`lineage.root_attempt`, equal on every member.
+|None. No series record exists.
+|===
+
+Also recorded: `execution` (bindings digest and the source of each role's binding, <<c1>>), `baseline_probe` (<<c3>>) and `quiescence` (state and source, <<c4>>).
+
+Three boundaries:
+
+* The candidate patch and the journal are raw files. They follow `evidence.raw` and never enter `audit.json`, which keeps R2's privacy property.
+* The raw allow-list grows by `lifecycle.json`, `host.json` and `host-exit.json`. That is BP6 work; BP5 remains a byte-compatible port.
+* None of this is a ledger. Lineage fields are identifiers. Whether a series "resolved" its task is a semantic statement and stays a Maintainer practice.
+
+The consolidated report gains four lines when they apply: `interrupted` (class and facts), `provider` (outcome and quiescence), `candidate` (class, ref, path count) and `next` (the exact continuation command; in Beta 1 also the one Git command that adopts the candidate).
+
+[[lifecycle]]
+== Revised lifecycle
+
+[source,text]
+----
+wfc run task.md --scope cmd/list --scope internal/render [--bind ROLE=...] [--continues ATTEMPT] [--yes]
+
+  READ-ONLY  (no project command, no provider, nothing written)
+resolve     config@HEAD, request, package resources, machine facts
+compile     Commission bundle in memory                       (contains no binding)
+select      execution envelope: binding and source per role, provider executable, timeout, frozen PATH
+admit       admit_parsed(bundle, bindings); evidence executables resolved, not run
+precheck    Evidence destination usable; no unfinished lifecycle in this checkout; package not inside the payload
+summarize   Commission, envelope, what will execute (probe, providers), branch
+  |
+  |  AUTHORIZATION  terminal: one confirmation | --yes | neither: refuse, exit 2
+  v
+journal     OPS/<attempt>/lifecycle.json, bundle bytes, execution-bindings.yaml       <- first write
+probe       task-check once on the clean baseline; tree must be clean afterwards       <- project command
+commit      bounded commit of .wfc/commissions/<id>/ only
+admit       engine admission against the committed bundle
+launch      host (lock, subreaper) -> engine                                           <- the one non-repeatable step
+supervise   wait on the lock; progress from STATE, read-only
+terminal    engine status | interrupted (classified from facts)
+quiesce     attested | reboot | asserted;  not_attested or unknown: stop, exit 3
+preserve    dirty tree: candidate ref | forensic files;  clean tree: nothing
+archive     raw copy + audit.json -> Evidence repository, one commit
+report      consolidated result; exit 0 | 1
+----
+
+A failure at `probe`, `commit` or the second `admit` closes the lifecycle as `not_launched` with exit 2. `wfc plan` is the read-only half. `wfc continue` (RP1) builds the request and, if a candidate is adopted, advances the branch between `journal` and `commit`; everything else is this flow.
+
+[cols="2,2,4",options="header"]
+|===
+|Step |Safe to repeat? |Completion decided by
+
+|Read-only half
+|Yes
+|Not resumed. Nothing is persisted before authorization.
+
+|Probe
+|Yes, with care
+|Result recorded in the journal. It executes project code, so it is repeated only while HEAD equals the recorded baseline and the tree is clean.
+
+|Commission commit
+|Yes, by observation
+|R2's rule, unchanged.
+
+|Committed admission
+|Yes
+|Re-run.
+
+|*Launch*
+|*No*
+|STATE absent and lock free: launch. STATE present: launched. Never repeated.
+
+|Supervise
+|Yes
+|Lock held: wait.
+
+|Terminal classification
+|Yes
+|A pure function of STATE, Git facts and `host-exit.json`.
+
+|Quiesce
+|Yes
+|`host-exit.json`; boot identifier; or the recorded operator assertion.
+
+|Preserve
+|Yes, by observation
+|The ref's tree and parent against the working tree and HEAD. The ref is created once and never moved.
+
+|Adopt (RP1)
+|Yes, by observation
+|Branch at the candidate's parent and tree equal to the candidate: advance. Branch already at the candidate: done. Anything else: refuse.
+
+|Archive
+|Yes, by observation
+|R2's rule, unchanged.
+
+|Report
+|Yes
+|Recomputed.
+|===
+
+Not safe to repeat under any circumstances: the launch, and with it every provider dispatch. Not offered at all: resuming the engine of a launched Run.
+
+[[contracts]]
+== Boundary contracts
+
+Illustrative. Only what an implementer needs in order not to re-derive the boundary.
+
+=== Commission and execution bindings
+
+The interface is the role set. The Commission states which roles its program uses; the envelope must bind exactly those roles (G1).
+
+[source,json]
+----
+{
+  "schema": "wfc.lifecycle/1",
+  "attempt_id": "tidemark-list-json-001-20261114-01",
+  "commission": {"id": "list-json-001", "sha256": "…", "directory": ".wfc/commissions/list-json-001"},
+  "envelope": {
+    "bindings_file": "execution-bindings.yaml",
+    "bindings_sha256": "…",
+    "roles": {
+      "worker":               {"adapter": "claude_cli", "model": "claude-sonnet-5-5", "reasoning": "high", "source": "config"},
+      "independent_reviewer": {"adapter": "claude_cli", "model": "claude-opus-5-5",   "reasoning": "high", "source": "flag"}
+    },
+    "provider": {"executable": "/usr/local/bin/claude", "stat_fingerprint": {"…": "as in R2"}},
+    "invocation_timeout_seconds": 1800,
+    "environment": {"path_sha256": "…"},
+    "coordinator": {"…": "as in R2"}
+  },
+  "authorization": {"mode": "flag", "at": "2026-11-14T10:02:11Z",
+                    "commission_sha256": "…", "envelope_sha256": "…"}
+}
+----
+
+Test that fixes the boundary: two invocations that differ only in `--bind` produce byte-identical Commission bundles and different envelope digests.
+
+=== Front Door and Level-0 Coordinator
+
+[horizontal]
+Into the engine:: Today's flags, unchanged: repository, state root, expected HEAD, the five governing paths, `--execution-bindings`, `--executable`, `--timeout-seconds`. The frozen environment.
+Out of the engine:: The files it writes under STATE and its exit code (0 completed and clean, 1 otherwise after registration, 2 refused before a Run existed).
+Rules:: The Front Door never writes under STATE. The engine reads nothing under OPS but the bindings file. The controller's classification lives in the journal and in `audit.json`, never in `run.json`.
+Engine changes:: R2's two (extracted admission, identity key in the plan). Conditionally a third: process-group handling in the evidence runner (X4).
+
+=== Lifecycle controller and process supervision
+
+Files in `OPS/<attempt>/`, local to one installation and not an interface for other tools:
+
+[source,json]
+----
+{
+  "host":   {"pid": 4702, "start_ticks": 881234, "boot_id": "…"},
+  "engine": {"pid": 4711, "start_ticks": 881240}
+}
+----
+
+[source,json]
+----
+{
+  "engine": {"exit_code": null, "signal": 9},
+  "descendants_after_engine_exit": 2,
+  "terminated": [{"pid": 4720, "signal": "TERM"}, {"pid": 4733, "signal": "KILL"}],
+  "quiescent": true,
+  "at": "2026-11-14T10:31:40Z"
+}
+----
+
+Plus `engine.lock` and `run.log`. The controller reads these files and probes the lock; it sends the host one signal, `SIGTERM`, for `wfc stop`.
+
+=== Run state and candidate preservation
+
+[horizontal]
+Reads:: `checkout-association.json`; `run.json` (current HEAD, Hops); `dispatch.json`; the profile path from `operator-plan.json`, read at the Run's baseline; `host-exit.json`; the repository.
+Writes:: One commit object and one ref in the payload repository; two files in OPS; the `preserved` step of the journal. Nothing under STATE, nothing in the working tree or the real index.
+
+=== Archived predecessor and successor Commission
+
+In the successor's `commission.json`:
+
+[source,json]
+----
+"lineage": {
+  "root_attempt": "tidemark-list-json-001-20261114-01",
+  "continues": {"attempt_id": "tidemark-list-json-001-20261114-01", "run_id": "RUN-…",
+                "commission_id": "list-json-001", "outcome": "awaiting_human",
+                "final_head": "71a…",
+                "candidate": {"commit": "3a1…", "ref": "refs/wfc/candidates/RUN-…/H002"}},
+  "starts_from": "candidate",
+  "assurance_baseline": "9f3c2ab…"
+}
+----
+
+Resolved from the predecessor's journal or `audit.json`, plus its `request.yaml` at its Commission commit in payload Git. The predecessor's STATE is not needed, so its retention is not coupled to the successor.
+
+=== Additions to `wfc.audit/1`
+
+[source,json]
+----
+"execution":      {"bindings_sha256": "…", "sources": {"worker": "config", "independent_reviewer": "flag"}},
+"baseline_probe": {"status": "pass", "exit_code": 0, "seconds": 38, "tree_clean_after": true},
+"interruption":   {"engine_exit": {"code": null, "signal": 9},
+                   "pending_dispatch": {"hop_id": "H002", "invocation_id": "INV-…", "base_head": "71a…"},
+                   "marker_hop_recorded": false, "head_equals_run_head": true, "worktree_clean": false,
+                   "classification": {"class": "during_hop", "provider_outcome": "unknown",
+                                      "basis": ["engine_exit", "pending_dispatch", "marker_hop_recorded"]}},
+"quiescence":     {"state": "attested", "source": "host-exit"},
+"candidate":      {"class": "candidate", "commit": "3a1…", "tree": "…", "base": "71a…",
+                   "ref": "refs/wfc/candidates/RUN-…/H002", "hop_id": "H002", "paths": 7,
+                   "origin": "hop_window", "failed_predicates": []},
+"lineage":        null
+----
+
+`interruption` is `null` for an engine-terminal Run. Everything outside `classification` is copied or observed.
+
+[[disposition]]
+== Beta-1 and Beta-2 disposition
+
+[cols="2,3,3,3",options="header"]
+|===
+|Criterion |A: preservation and `wfc continue` in Beta 1 |B: preservation and foundations in Beta 1, `continue` right after |C: all recovery in Beta 2
+
+|Cost and uncertainty
+|B plus RP1 (medium). RP1's task composition, adoption and entry phase have never run as automation and need two decisions (M4, M5).
+|Host and classifier (inside BP4 anyway), one Git primitive (small), one lifecycle step, audit fields. Low to medium; the uncertainty is X1 to X4.
+|Lowest now.
+
+|Beta-1 promise
+|Complete.
+|"A failed Run never costs you its work, and the record says truthfully what happened." Continuation is one printed Git command and one `wfc run --continues`.
+|"One command" holds only while everything succeeds.
+
+|Friction after a failed Run
+|One command.
+|Two commands and a follow-up task written by hand.
+|The manual runbook: status, diff, staging, commit, ref.
+
+|Risk of losing work
+|Low.
+|Low.
+|Real. A user blocked by the dirty-tree refusal cleans the tree.
+
+|Rework if postponed
+|None.
+|None: RP1 adds a command and uses records that already exist.
+|Journal steps, the monitoring rule and `wfc.audit/1` change after release; a truthful `interrupted` needs <<c4>> regardless.
+
+|BP4 and BP6
+|As B.
+|BP4 split; BP6 gains fields (<<packages>>).
+|As R2, with the known gap in <<c4>>.
+
+|Tests and acceptance
+|As B, plus RP1's acceptance on the path to the tag.
+|The tests of <<c4>> and <<packages>>.
+|R2's.
+|===
+
+*Recommendation: B.* *[R]*
+
+* Against C: supervision and truthful classification are not optional even without Continuation, because R2's monitoring rule misclassifies G9 and cannot see a live provider. Once the host exists, preservation is one bounded function and one step. Deferring it would save little and leave the most valuable artifact of a failed Run outside the automatic lifecycle.
+* Against A: `wfc continue` adds a medium package and two semantic decisions to the path to the tag for a convenience on the failure path. Its natural proving ground is self-development, where successor Commissions are frequent, and that comes with or after the cutover. Its residual cost under B is small and stated.
+
+Minimum foundations Beta 1 needs under any alternative:
+
+. The host, the completion record and the classifier (<<c4>>).
+. The lifecycle steps `quiesce` and `preserve` in the journal's step list, even if `preserve` were to ship as a no-op.
+. The `interruption`, `quiescence`, `candidate` and `lineage` blocks in `wfc.audit/1`, `null` where unused.
+. The `not_launched` closure.
+
+Usability limits of B, for the quickstart:
+
+* No `wfc continue`. To carry a preserved candidate forward: `git reset --mixed <candidate>` (moves the branch, changes no file), then `wfc run <follow-up task> --scope ... --continues <attempt>`. To drop it, the user cleans the tree; the ref remains.
+* A successor always enters at `implement`.
+* A `forensic` result needs a person.
+* After a `SIGKILL` of the host without a reboot, `wfc resume --assume-quiescent` is required.
+* An interrupted Run is never resumed. The successor pays for a new Hop.
+* Supported platform: Linux (M3).
+
+[[packages]]
+== Impact on BP1 to BP9
+
+[cols="1,1,5,2",options="header"]
+|===
+|Package |Change |Scope and acceptance changes |Dependencies, critical path
+
+|BP1
+|Unchanged
+|--
+|--
+
+|BP2
+|Modified
+|`commission.json` without `execution`; request without `roles`; configuration separates personas from `execution.bindings`; `compile_commission` without bindings; `admit_parsed(bundle, bindings)`; optional `lineage` block and the assurance clause. New tests: the byte-identity test of <<contracts>>; a request containing a binding key is refused; the lineage values `starts_from` and `assurance_baseline` for a chain of three. Q4 is answered (no). Q2 still precedes it.
+|Unchanged.
+
+|BP3
+|Modified, supplemented
+|`plan` executes no project command (test: a `task-check` that would create a file is not run; tree and index identical before and after). The summary shows the envelope and what will execute. Supplement: `git_facts.preserve_candidate` beside `bounded_path_commit`. Tests mirror the trusted-commit tests: the seven predicates one by one; hooks, including `reference-transaction`, not run; a configured filter refused; real index and working tree byte-identical afterwards; idempotent second call; ref never moved.
+|Adds a small unit to the critical path.
+
+|BP4
+|Split
+|*BP4a, supervision:* host, lock sharing, completion record, classifier, `wfc stop`. Preceded by X1 to X4. Tests: <<c4>>. *BP4b, controller:* R2's BP4 with these changes: envelope and two-digest authorization; `--bind`; `--continues`; refusal without a terminal and without `--yes`; pre-authorization checks (<<c2>>); probe after authorization with the cleanliness assertion and `--until probed`; `not_launched`; steps `quiesce` and `preserve`. R2's crash-injection matrix gains the boundaries after `probe`, `terminal`, `quiesce` and `preserve`. Acceptance adds: the whole lifecycle from a non-terminal with `--yes` and no prompt; an engine killed mid-Hop ends with `host-exit.json`, a candidate ref and an untouched working tree.
+|BP4a depends on BP1 only and runs beside BP2 and BP3. BP4b depends on BP3 and BP4a. The critical path passes through BP4b.
+
+|BP5
+|Unchanged
+|Byte-compatible port. No allow-list change here.
+|--
+
+|BP6
+|Modified
+|The blocks of <<c7>>; three allow-list additions; four report lines. Acceptance adds: every row of the table in <<c7>> projects from a fixture; the candidate's bytes and the journal never appear in `audit.json`; facts and classification are separable by key.
+|Depends on BP4b and BP5 (was BP4, BP5).
+
+|BP7
+|Modified
+|Cutover additionally amends the recovery chapters of the manual to the automatic preservation step and records M1. The first self-hosted stop that leaves a dirty tree is the live check of <<c5>>.
+|Unchanged. RP1 may land before or after it.
+
+|BP8
+|Unchanged
+|--
+|--
+
+|BP9
+|Modified
+|The acceptance scenario's "machine restarted during H001" row becomes: `interrupted`, candidate preserved, report names the two continuation commands. The limitations list takes the items of <<disposition>>. One unattended invocation from a script is part of the local integration scenario.
+|Unchanged.
+
+|RP1
+|New, after Beta 1
+|`wfc continue <attempt>`: request composition from the predecessor, adoption, entry phase, `--answer`. Depends on BP6, M4, M5, X5. Tests: adoption changes no file byte and leaves a clean tree; a changed working tree refuses; a semantic-stop predecessor without an answer refuses under `--yes`; entry at `broad_review` produces a bundle that passes unmodified `_preflight`; the review clause names the assurance range. Acceptance: in the neutral fixture, a Run stopped by a scripted escalation is continued with one command and completes, and both archives carry the lineage. Effort medium; uncertainty medium.
+|Off the critical path.
+|===
+
+[source,text]
+----
+BP1 --> BP2 --> BP3 --> BP4b --+--> BP6 --> BP9 --> 0.1.0b1
+  \                      ^     |      \
+   +--> BP4a ------------+     |       +--> BP7 (cutover)
+   +--> BP5 -------------------+       +--> RP1 (wfc continue)
+BP8 (parallel, independent)
+----
+
+Critical path: BP1, BP2, BP3, BP4b, BP6, BP9. Its shape is R2's. It grows by the preservation primitive in BP3 and the two lifecycle steps in BP4b; BP4a is new work but runs in parallel from BP1.
+
+[[handoff]]
+== Implementation handoff
+
+=== Recommended sequence
+
+. Maintainer: M1 to M3 below, and R2's Q2 and Q3.
+. BP1 as R2 specifies. In parallel, BP8.
+. X1 to X4, by the Maintainer or under a Commission that authorizes provider use. A short note of results fixes BP4a's design.
+. BP2 (admission extraction as its own Commission, as R2 advises), BP4a and BP5 in parallel.
+. BP3, including `preserve_candidate`.
+. BP4b. The crash matrix and the classifier table are specified by a stronger model first; this document's tables are the starting point.
+. BP6, then BP9 and the tag.
+. M4, M5, X5; then RP1. BP7 as R2 sequences it.
+
+Suitable for a less expensive model without an architectural choice: BP1; BP2 steps 2 to 5; `preserve_candidate` against its test list; the classifier as a pure function against its table; BP5; BP6 once the field list above is confirmed; BP8; the quickstart. Needing a stronger model or the Maintainer: admission extraction; the host; the crash matrix; RP1's task composition.
+
+=== Decision classes
+
+Already decided by the Maintainer::
+* Commissioning and model selection are separate responsibilities; the Commission carries no binding (Q4: no).
+* Explicit bindings suffice for Beta 1; dynamic routing is deferred.
+* One confirmation interactively; `--yes` first-class; the unattended lifecycle is a normal capability (Q1 closed).
+* A stopped Run's candidate should be preserved automatically where mechanically safe, without implying acceptance.
+* A separate Evidence repository with a sanitized projection and automatic mechanical archive is the preferred direction.
+* The governance-economy principles; pre-1.0 interfaces may change deliberately.
+
+Needing Maintainer attention before implementation::
++
+[cols="1,4,3,2",options="header"]
+|===
+|# |Decision |Recommended |Before
+
+|M1
+|Amend the "Non-automation boundary" of the recovery chapter, and the matching Project Memory note, to allow automatic non-authoritative preservation by the Front Door.
+|Amend. One sentence changes; the authority statement stands.
+|BP4b
+
+|M2
+|Disposition A, B or C.
+|B.
+|BP4b
+
+|M3
+|Beta-1 supervision supports Linux only.
+|Yes. Elsewhere quiescence is never attested and the operator assertion applies.
+|BP4a
+
+|M4
+|`wfc continue` adopts a candidate by advancing the checked-out branch to it.
+|Yes, shown in the summary and covered by the one authorization.
+|RP1
+
+|M5
+|A `robust@v1` successor may enter at `broad_review`, derived from predecessor facts.
+|Yes, for that one phase.
+|RP1
+
+|M6
+|Future of the engine's `prepare-successor` descriptor beside Commission-level lineage.
+|Leave it untouched and unused by the Front Door; decide with R1A.
+|Beta 2
+|===
++
+R2's Q2, Q3 and Q5 to Q8 are unchanged and still open.
+
+Local design choices for the implementing agent::
+Module layout of the host; journal and file field names; the `--bind` spelling (the Harness grammar is the obvious one); the configuration key for bindings; commit subject and trailer spelling; grace period; size cap; whether staging uses `git add` semantics or an equivalent that meets the constraint in <<c5>>; file names in OPS within the existing allow-list patterns.
+
+Technical uncertainties that need an experiment first::
+X1 to X4 before BP4a is fixed; X5 before RP1. Whether the `unknown` quiescence case can be probed (X3) decides whether `--assume-quiescent` stays the only remedy.
+
+Can wait until Beta 2::
+Same-Run reconcile and resume (`FTR-WFC-ATOMIC-HOP-RECOVERY`); a graceful stop inside the engine; closing an interrupted Run in STATE; user-level binding defaults, dynamic routing and mixed adapters; a command that re-executes an existing Commission under another envelope; a command that discards a verified-preserved dirty tree; a series view over lineage; a Git bundle of the candidate in the Evidence repository; M6.
+
+=== Governance economy
+
+Added by this review, each a mechanical step or refusal with the failure it prevents stated in place: the tree-cleanliness assertion after the probe (<<c3>>); the quiescence requirement before preservation, archive and a new launch (<<c4>>); the answer requirement for an unattended Continuation after a question (<<c6>>). One operator override exists, `--assume-quiescent`, for one rare state.
+
+Removed relative to R2: bindings from the Commission and the request; the idea that changing a model requires a new Commission; project code from the planning path.
+
+Deliberately not added: an approval for model selection; a policy for which models a role may use; a second ref namespace; a state machine for recovery; a series or ledger record; any change to the reducer, to persistence or to the result contract.
+
+== Limits of this review
+
+* Nothing was executed. Every statement about signals, sessions, subreaping and descriptor inheritance beyond what G6 to G10 read from source is *[I]* until X1 to X4 and the tests of <<c4>> run.
+* Provider CLIs were read only through the adapters' argv. Their process trees and sandbox helpers were not inspected.
+* The `export-salvage` and `prepare-successor` code was read for eligibility, binding and limits (G13), not reviewed for correctness; its open requirement R1A was not examined.
+* `git_facts` staging semantics on repositories with line-ending attributes, sparse checkouts, submodules or large files were not analysed beyond the refusals named in <<c5>>.
+* The Findings and convergence structures remain as unexamined as R2 left them.
+* macOS and Windows were not assessed.
+
+== Sources
+
+Development repository::
+`src/workflow_coordinator/{operator,slice4,vertical,persistence,git_facts,evidence,model,serialization,commissioning,claude_adapter,codex_adapter}.py`;
+`scripts/wfc_op.py`;
+`tests/unit/test_commissioning.py` (forbidden Intent keys);
+`docs/operator_manual/ch06_recovery/{01_outcomes,02_successors,03_reference_case}.adoc`;
+`docs/backlog/{_open,FTR-WFC-SCOPE-ESCALATION-CONTINUATION,BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP,FTR-WFC-ATOMIC-HOP-RECOVERY,FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION}.adoc`;
+`docs/functional_model/workflow_program_use_cases.adoc`; `docs/architecture.md`; `docs/ai_info/doc_conventions.adoc`;
+`docs/warm_storage/concepts/{wfc_beta1_product_boundary_review,wfc_beta1_product_boundary_review_second_pass,workflow_coordinator_front_door_commission_contract_design_2026-10-28,workflow_coordinator_front_door_mvp_decisions_2026-10-27}.adoc`;
+`governance/commissions/wfc-claude-code-adapter-implementation-continuation-001/task.md`;
+`project_memory/canonical/{decisions,concern_event_xrefs}.json` (`DEC-WFC-001`, `-014`, `-016`, `-020`, `-023`);
+`refs/wfc/candidates/` (two refs).
+
+Evidence repository::
+`scripts/archive_run.py` (allow-lists);
+`archive/unclassified/wfc-claude-adapter-write-permissions-004-20261105-01/`;
+`archive/unclassified/wfc-operator-manual-walkthrough-001-20261113-01/` (`operator-plan.json`, `execution-evidence.json`);
+`experiments/` (directory listing only).
