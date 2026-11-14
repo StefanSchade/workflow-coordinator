@@ -1,0 +1,664 @@
+= ASE × WFC Integration Concept
+:toc:
+:toclevels: 2
+:sectnums:
+
+Maturity::  in-review
+Authority:: exploratory
+Updated::   2026-11-14
+Owns::      A source-grounded comparison of ASE (Agentic Software Engineering, `rse/ase`) and WFC, the evaluation of integration options, and one proposed minimal integration with its upstream contribution. A research concept for discussion with the maintainers of both projects; not an accepted design, not a roadmap change and not a compatibility claim.
+
+== Reviewed state and method
+
+[horizontal]
+ASE:: `https://github.com/rse/ase` at `870e191b48df56dbdd59a7279343c0941eb131e1` (2026-11-14; `git describe`: `2.0.12-9-g870e191b`; package version 2.0.12). Fresh read-only clone. Paths below are relative to that repository.
+WFC:: `workflow-coordinator@607308fd3943f4b97975aaccf6ab1b1884d5c286` (`main`, clean worktree). Paths below are relative to this repository.
+Method:: Source and documentation inspection of both repositories. Nothing was built, started or executed: no ASE agent, no WFC Run, no provider call, no task record touched. Every statement about the two systems working together is therefore *untested*.
+
+Claim markers: *[V]* verified in the cited source at the reviewed revision. *[P]* planned for WFC Beta 1 in link:../backlog/beta1_productization.adoc[the productization map] or proposed in the Beta-1 reviews; not implemented. *[N]* a new proposal of this document. Unmarked sentences are argument.
+
+This document also answers the open identity question of link:README.adoc#r5[research topic R5]: "ASE" is the project named above.
+
+[[proposition]]
+== Executive proposition
+
+ASE already performs autonomous, headless software engineering. Declarative agents claim tasks from a task store and drive them through a lifecycle; three built-in agents (`implementer`, `qualifier`, `integrator`) take a task of the `enterprise` lifecycle model from `PLANNED` to `INTEGRATED` without a human, supervised as a fleet and visible on task boards. *[V]* ASE does not need an execution engine, and this concept does not offer one.
+
+WFC is a narrower thing: a deterministic interpreter for *one bounded development attempt*. Inside that attempt the Coordinator, not the agent, owns four things: the path scope that may change, every commit, the execution of the project's check, and a ledger of review Findings that must be dispositioned before the attempt may complete. *[V]*
+
+The proposition is correspondingly narrow:
+
+____
+An ASE project may route the Implementation phase of *selected* tasks to WFC by assigning those tasks to an optional agent kind. ASE sees one externally executed implementation attempt that ends `IMPLEMENTED` or `STALLED` and carries a link to WFC's evidence. Planning, qualification and integration stay with ASE, unchanged.
+____
+
+Why the ASE maintainer might care:
+
+. *It needs no WFC knowledge inside ASE.* The one upstream change proposed is generic: let an agent definition process a task with a *command* instead of a headless agent tool (<<pr>>). That is independently useful for deterministic lifecycle steps such as build gates or scanners, and for any other external runner.
+. *It gives users a per-task choice that ASE deliberately does not impose.* For a risky task, an implementation whose changed paths are enforced, whose check is run by the coordinator, and whose review findings are closed in a bounded loop, with a pinned record of what executed.
+. *Nothing changes for anyone who does not opt in.* No dependency, no default, no new lifecycle state.
+
+Why the maintainer might reasonably decline: the functional overlap is large (<<comparison>>), three of WFC's four properties can be approximated with ASE's existing hooks, and WFC's installable entry point does not exist yet. Remaining separate is a legitimate outcome and is the recommended state *today*. The recommendation in <<options>> is staged for that reason.
+
+What this is not: a replacement for ASE's implementer, a second task lifecycle, or an orchestration layer between the two tools.
+
+[[comparison]]
+== Current-system comparison
+
+Classification: *1* ASE covers it sufficiently. *2* WFC adds a distinct capability. *3* Different approaches with different trade-offs. *4* Integration would mainly duplicate. *5* Neither offers it.
+
+[cols="2,5,5,1",options="header"]
+|===
+|Dimension |ASE |WFC |Class
+
+|Task planning and decomposition
+|Skills for editing, grilling, dissecting, rebooting, condensing, researching and estimating plans; planning agents `rebooter`, `condenser`, `researcher`, `estimator`. *[V]* `plugin/skills/ase-task-*`, `tool/src/ase-agent-definition-builtin/`.
+|None. A maintainer authors a Commission Intent (`commissioning.commission_intent_from_yaml`). An outer planning level is deliberately unresolved (link:../functional_model/workflow_program_use_cases.adoc[Functional Model] section 9). *[V]*
+|1
+
+|Task lifecycle and assignment
+|Three lifecycle models with checked transitions (`taskLifecycles` in `tool/src/ase-task-format.ts`); task store with conditional saves and a REST API (`docs/task-api.md`); claiming by tag and assignee; `After:` and `Group:` predecessors. *[V]*
+|No task store. `RunStatus` (`model.py`) describes one attempt, not a business task. *[V]*
+|1
+
+|Autonomous implementation
+|`implementer`: one headless session of the skill `ase-task-implement`, in a worktree, required to implement the whole plan. *[V]* `ase-agent-definition-builtin/implementer.ts`.
+|The `implement` phase of `simple@v1`, `direct@v1`, `robust@v1` through the `codex_cli` and `claude_cli` adapters (`adapter.AgentExecutionPort`). *[V]*
+|4
+
+|Independent review
+|`qualifier`: a fresh session of the skill `ase-repo-review`; verdict `APPROVE` or `REJECT` read from an output label (`verdictOf`, `ase-agent-runtime-tool.ts`); mode `judge` leaves the decision to a human, `qualify` decides by verdict. *[V]*
+|`robust@v1`: `broad_review` and `focused_review` by a separate role in a fresh invocation, with gate authority and a schema-validated `ReviewVerdict`. *[V]* `commissioning._robust_template`, `model.ReviewVerdict`.
+|3
+
+|Correction loop and finding disposition
+|`REJECT` puts the task into the rest state `DECLINED`, from which the model allows only `IMPLEMENTED` or `CANCELLED`. No shipped agent returns declined work to implementation; findings are text in the review output and the `agent` log attachment. A project could assemble a loop from a custom definition and the `settle` hook; none is provided. *[V]*
+|Routes `correction -> correct -> focused_review -> renew_broad_review`; a Finding ledger with states and disposition authority (`model.Finding`, `reducer.apply_finding_deltas`); no completion with an open blocking Finding (`reducer._has_open_blocker`); detection of non-converging loops (`reducer.derive_convergence_facts`). *[V]* `robust@v1` still has outstanding implementation review work (link:../architecture.md[architecture]).
+|2
+
+|Execution authorization and scope
+|The agent tool runs with automatic permission handling (`toolArgs`: `--permission-mode auto`, `--allow-all-tools`, `--approve-for-me`). Isolation is one Git worktree per task. The task format has no path scope and the agent engine checks none. *[V]* `plugin/meta/ase-format-task.md`.
+|Phase scope admitted before launch (`operator._admit_a1`); independent Git observation after every Hop (`git_facts.observe_hop`); only the Coordinator commits, and only intent paths inside scope (`git_facts.trusted_commit`). No operating-system containment is claimed. *[V]*
+|2
+
+|Agent, model and provider selection
+|`--tool` claude, copilot or codex; `--model` verbatim or per `Effort:` size; hook `model`; pools of differently configured agents. *[V]* `tool/man/ase-agent-adhoc.md`.
+|One `ExecutionBinding` (adapter, model, reasoning) per workflow role, read from a file outside the Commission, frozen before the first dispatch and recorded per Hop; one adapter per Run. *[V]* `operator._preflight`.
+|3
+
+|Evidence and result provenance
+|Per task: processing log attachment (at most 20 lines per agent message), change set snapshot, usage attachment, verdict tag. Verification bullet points are ticked by the implementing agent itself. *[V]* `tool/man/ase-agent.md`, `ase-task-implement/help.md`.
+|The check is executed by the Coordinator (`evidence.ProductionEvidenceRunner.observe`: argv digest, exit code, stream digests, executable fingerprint). `operator-plan.json` pins every governing input by digest; `execution-evidence.json` records each attempt. *[V]*
+|2
+
+|Changeset and Git ownership
+|`Source:`, `Changeset:`, `Target:` flow values (working copy, branch, attachment); ASE worktrees; commit and publication of branches; rescue branches; serial integration by merge, rebase or squash. *[V]* `tool/man/ase-agent.md`.
+|Bounded Hop commits onto the checked-out branch of one repository, from a clean tree at an expected HEAD. Never pushes, never merges. Cannot produce an uncommitted or attachment changeset. *[V]*
+|1
+
+|External project checks
+|`prepare.run`, `finish.success`, `finish.failure` commands and the `success` hook gate a processing; their result is pass or fail of the processing, not a record. *[V]*
+|Named evidence commands bound by policy, run at gate phases; failed evidence routes to correction (`failed_evidence_route`). *[V]*
+|3
+
+|Crash handling and recovery
+|Run locks and claim records; tasks of a dead agent are put back on the next start; an interrupted task returns untagged to its incoming state and is claimed again; the fleet restarts members with backoff. *[V]* `ase-agent-runtime-claim.ts`, `ase-agent-fleet.ts`.
+|Fail-stop. A dispatch marker and `persistence.recover_uncertain_dispatch` exist, but no production entry point re-enters a Run; an interrupted Run is terminal and a continuation is a separately authorized new Run. *[V]*
+|3
+
+|Audit and reconstructability
+|The current, mutable task record plus Git history. Live agent presence is in memory only (`ase-agent-relay-core.ts`). *[V]*
+|Governing inputs pinned in payload Git and re-checked between Hops (`operator._governing_inputs_unchanged`); state roots are never overwritten. Archiving exists as a repository-local wrapper (`scripts/wfc_op.py archive`); an installable archive and a sanitized `audit.json` are *[P]*.
+|2
+
+|Human interaction and unattended operation
+|Interactive skills inside the agent tool session, task boards in terminal and browser, and fully headless agents. *[V]*
+|No interactive surface. A human stop is a terminal Run outcome carrying a question. One-command unattended `wfc run --yes` is *[P]*.
+|1
+
+|Usage accounting
+|Tokens and cost decoded from the agent tool's event stream (`toolCosts`) and booked onto the task. *[V]*
+|None. A `usage` field is reserved; whether it gates Beta 1 is undecided. *[P]*
+|1
+
+|Parallelism and supervision
+|`--parallel`, agent pools, fleet supervisor, agent relay. *[V]*
+|Serial Hops; one Run per checkout. *[V]*
+|1
+
+|Enterprise use
+|Gated `enterprise` pipeline; remote task store with TLS and bearer token; GitHub, GitLab and Gitea issue stores; `--repo` clone mode; a container image. *[V]*
+|Approved-program catalogues, elevated-privilege review and protected-context execution are candidate use cases, not implemented (Functional Model sections 6 and 8).
+|1
+|===
+
+*The most important overlap.* Both systems run a headless coding agent in a Git checkout, then run a second, independent agent session to review the result. ASE's `implementer` plus `qualifier` and WFC's `robust@v1` are the same idea at different granularity. An integration that ran both reviews on every task would mostly pay twice.
+
+*WFC's genuine differentiators.* Four, all implemented in the engine today:
+
+. Coordinator-enforced path scope and Coordinator-owned commits.
+. A closed correction loop with a Finding ledger and a completion gate.
+. Coordinator-executed checks, recorded as evidence.
+. A pinned, immutable record of what governed and what executed in one attempt.
+
+*How much of that could ASE do alone.* A `success` hook can compare `git diff --name-only` against a list; `finish.success` can run the project check; a custom qualifier definition can send rejected work back. That reproduces the first three *as gates*. It does not reproduce the Finding ledger with focused re-review of known findings, the bounded loop with a convergence guard, or the pinned record. Whether those are worth an integration is the actual question for the ASE maintainer, and a "no" is defensible.
+
+[[options]]
+== Integration options
+
+[cols="1,3,3,3,2",options="header"]
+|===
+|Option |Design |Advantages |Costs and risks |Verdict
+
+|A
+|WFC as an optional ASE agent kind. A definition file gives the claim, settle, recovery and board presence of every ASE agent; its processing runs WFC.
+|Reuses ASE's extension point as designed. One lifecycle controller. Opt-in per task by assignment. WFC stays independent.
+|ASE's definition mechanism is *almost* sufficient, see below. One generic upstream addition.
+|*Recommended*, staged.
+
+|B
+|WFC as a selectable backend built into ASE's implementer, or replacing implementer plus qualifier.
+|One switch for the user.
+|ASE core would know WFC. Replacing the qualifier is impossible without a lifecycle change: `IMPLEMENTING` cannot reach `QUALIFIED` in `taskLifecycles.enterprise` *[V]*, and it would equate WFC's review with ASE's qualification. WFC cannot integrate.
+|Rejected. A already gives the selection; a project that wants WFC for every task can shadow `implementer` with its own definition file. *[V]* shadowing rule, `tool/man/ase-agent.md`.
+
+|C
+|WFC consumes ASE tasks through the REST API or the `ase task` CLI and writes results back.
+|No ASE change.
+|WFC would re-implement claiming, conditional saves, tagging and crash recovery, and hold a bearer token that "grants full access to all projects" *[V]* `docs/task-api.md`. It would track an API documented as unversioned in a repository with 466 commits in the 60 days before the reviewed revision. Two lifecycle participants.
+|Rejected. The one useful part, translating a task plan into a WFC request, is a pure function that lives in the adapter under A.
+
+|D
+|An ASE skill or MCP tool that calls the WFC Front Door.
+|No fleet involvement; works in an interactive session.
+|A skill makes a language model relay a shell command, which nests WFC's provider CLI inside another provider's tool sandbox (below). An MCP tool would put WFC into ASE's service.
+|Rejected for execution. Possibly useful later for read-only display of a WFC report.
+
+|E
+|No integration.
+|No cost, no coupling.
+|The per-task choice does not exist.
+|The correct state until WFC Beta 1 ships, and the fallback if the upstream addition is declined.
+|===
+
+*Why ASE's custom-agent mechanism is almost, but not quite, sufficient for A.* *[V]*
+
+* Every definition must process its task through a headless agent tool. Validation requires "exactly one of `--prompt-skill`, `--prompt-text`, or `--prompt-file`" (`tool/src/ase-agent-definition-core.ts`), and `invoke` in `tool/src/ase-agent-runtime.ts` always spawns `toolSpecs[tool].cli`, that is `claude`, `copilot` or `codex`.
+* Hooks cannot carry a Run. Preparing and finishing a job are each limited to 240 seconds (`jobTimeout`, `tool/src/ase-agent-runtime-exec.ts`), and `ctx.exec` has the same limit.
+* The remaining workaround is a prompt that tells the agent tool to run `wfc run` in its shell. WFC would then start its own provider CLI inside the outer provider's command sandbox. WFC's own record of a nested experiment observed a provider tool's shell child with network access blocked once that provider's sandbox was enabled (link:../warm_storage/concepts/workflow_coordinator_nested_claude_live_qualification_2026-11-08.adoc[nested qualification record], phase A); whether a given ASE installation runs with that sandbox is a user setting. A language model would also sit between ASE and WFC's exit code. This is not a basis for an integration.
+
+*Recommendation.* Option A, realized as a definition file that lives outside ASE, enabled by one generic ASE addition, and staged behind option E:
+
+. Now: nothing. WFC's Front Door is not shipped.
+. After WFC Beta 1: one private prototype without any ASE source change (<<path>>).
+. Then, if the prototype holds: one small upstream pull request (<<pr>>).
+
+[[scenario]]
+== Concrete execution scenario
+
+The project `tidemark` uses the `enterprise` lifecycle model, has `project.task.default.changeset` set to `+branch:cs-{id}+`, and runs ASE's usual fleet plus one agent of the definition kind `wfc`. It has been initialized for WFC once (`.wfc/config.yaml`, committed by a human). *[P]*
+
+. Task `LIST-12` is `PLANNED`. A human adds a `Scope:` key to its frontmatter and assigns it: `ase task assign LIST-12 wfc`. *[V]* command exists; *[N]* the key.
+. The `wfc` agent claims the task like any phase agent: status `IMPLEMENTING`, tag `ase-agent-wfc:active`, a clean ASE worktree on branch `cs-LIST-12` created from the task's `Source:`. The built-in implementer leaves the task alone because it is assigned to somebody else. *[V]*
+. The definition's `prepare` hook composes a WFC request from the plan and writes it outside the repository. *[N]*
+. The agent runs `wfc run --request <file> --yes --json` in the worktree. *[N]* command processing; *[P]* the command.
+. WFC resolves its configuration, compiles a binding-free Commission, selects the execution bindings from its own configuration, commits the Commission, executes `robust@v1` with Coordinator-owned commits on `cs-LIST-12`, archives its audit record and prints one result. *[P]*
+. The agent settles the task from WFC's exit code, attaches the result, and ASE attaches its usual change set snapshot. The task is `IMPLEMENTED` and unassigned.
+. ASE's qualifier, or a human, decides on `QUALIFIED`. ASE's integrator lands the branch on `Target:`.
+
+=== Boundary contract
+
+[cols="2,4,1",options="header"]
+|===
+|Item |Value and owner |Status
+
+|ASE entry point
+|Assignment of a `PLANNED` task to the assignee `wfc`; the agent definition sets `assign.required`.
+|*[V]* mechanism
+
+|WFC entry point
+|`wfc run --request FILE --yes`, result as `wfc report --json` content on standard output.
+|*[P]*
+
+|Task fields crossing
+|Task id; title; plan body, with its `VERIFICATION (WHEN)` section as acceptance; `Scope:`.
+|*[N]* mapping
+
+|Scope
+|Explicit per task. WFC never defaults scope (second review, Front Door). ASE has no such field, so the key `Scope:` is a convention of this adapter, passed through as an unknown header key (`docs/task-api.md`: "Unknown keys are passed through as plain strings"). A task without it is not claimed (`ready` hook).
+|*[N]*
+
+|Project location and repository identity
+|The job's working directory: the ASE worktree of the changeset branch. WFC identifies a repository across linked worktrees (`operator._repository_store_identity`). ASE's `project.id` travels as an opaque reference only.
+|*[V]* each side; untested together
+
+|Workflow program
+|Agent parameter `program`; empty means WFC's project default. ASE never needs to know the program's phases.
+|*[N]*
+
+|Provider and model bindings
+|WFC, from `.wfc/config.yaml` or its own flags. The ASE side passes none; ASE's `--model` and `Effort:` mapping are not used for this agent.
+|*[P]* binding-free Commission
+
+|Identities
+|ASE task id; WFC `commission_id` derived from it (`ase-list-12`); WFC `attempt_id` and `run_id` returned in the result. One task may have several attempts over time; each is a separate Run.
+|*[N]* derivation
+
+|Start and outcome reporting
+|One synchronous child process. WFC's output lines become ASE processing log lines; its exit code is the outcome.
+|*[N]*
+
+|Links to changes and evidence
+|Changes: the changeset branch itself plus ASE's snapshot attachment. Evidence: repository, commit, path and SHA-256 of WFC's `audit.json`, in one task attachment.
+|*[N]*
+
+|Changeset ownership
+|During the attempt WFC adds commits to the branch. Before and after, the branch is ASE's.
+|
+
+|Integration authority
+|ASE's integrator or a human. WFC never pushes or merges.
+|*[V]*
+|===
+
+=== Example request
+
+The request schema is the one proposed in the second Beta-1 review as corrected by the third (no role bindings in a request). The `origin` block is an addition proposed here.
+
+[source,yaml]
+----
+schema: 2
+task:
+  title: Add --json output to `tidemark list`
+  body: |
+    <SPECIFICATION and DESIGN sections of the plan of LIST-12, verbatim>
+  acceptance: |
+    <VERIFICATION (WHEN) section of the plan, verbatim>
+scope: [cmd/list, internal/render]      # from the task's Scope: key
+program: robust@v1                      # from the agent parameter; optional
+commission_id: ase-list-12
+origin:                                 # [N] opaque caller reference; confers no authority
+  system: ase
+  project: tidemark
+  task: LIST-12
+----
+
+=== Example result
+
+Most fields exist today in `operator-summary.json` (`operator._summary`: `run_id`, `run_status`, `hop_used`, `hop_limit`, `stop_reason`, `human_question`, `baseline_head`, `final_head`, `worktree_clean`, `commits`). The envelope, the `audit` pointer and `origin` are *[P]* or *[N]*.
+
+[source,json]
+----
+{
+  "schema": "wfc.report/1",
+  "attempt_id": "tidemark-ase-list-12-20261120-01",
+  "run_id": "RUN-4be1...",
+  "outcome": "completed",
+  "stop_reason": null,
+  "human_question": null,
+  "program": "robust@v1",
+  "hops_used": 4,
+  "hop_limit": 8,
+  "branch": "cs-LIST-12",
+  "baseline_head": "9f3c2ab...",
+  "final_head": "71d0e55...",
+  "worktree_clean": true,
+  "evidence": [{"command_name": "task-check", "status": "pass", "exit_code": 0, "hop_id": "H004"}],
+  "findings": {"open_blocking": 0, "resolved": 2, "residual": 0},
+  "audit": {"repository": "../tidemark-evidence", "commit": "a81c...",
+            "path": "archive/tidemark/tidemark-ase-list-12-20261120-01/audit.json",
+            "sha256": "5d02..."},
+  "origin": {"system": "ase", "project": "tidemark", "task": "LIST-12"}
+}
+----
+
+The adapter stores this document unchanged as a task attachment of type `application/json; kind="wfc"`.
+
+[[status]]
+=== Status mapping
+
+[cols="2,1,2,4",options="header"]
+|===
+|WFC outcome |Exit |ASE task afterwards |What it does and does not mean
+
+|`completed`, tree clean
+|0
+|`IMPLEMENTED`, tag `ase-agent-wfc:completed`
+|Candidate commits exist on the changeset branch; WFC's check passed and its internal review accepted. It is *not* qualified and *not* integrated.
+
+|`awaiting_human`, `awaiting_human_budget`
+|1
+|`STALLED`, tag `ase-agent-wfc:awaiting`
+|WFC stopped with a question, carried in the attachment. Accepted Hop commits may already be on the branch.
+
+|`stopped`, `suspended`, `reconcile_required`
+|1
+|`STALLED`, tag `ase-agent-wfc:stopped`
+|The attempt ended without completing. The worktree may be dirty; ASE preserves a worktree that is not clean. *[V]*
+
+|Interrupted (controller classification *[P]*)
+|1 or 3
+|`STALLED`, tag `ase-agent-wfc:interrupted`
+|A provider's outcome is unknown. Nothing is retried.
+
+|Refused before launch
+|2
+|`STALLED`, tag `ase-agent-wfc:refused`
+|No provider ran and nothing was committed. Typical causes: missing `.wfc/config.yaml`, scope outside the ceiling, a failing baseline check.
+|===
+
+Exit codes 0, 1 and 2 are the engine's today (`operator.main`) *[V]*; exit 3 and the interrupted classification are *[P]*. The tag values are illustrative.
+
+Four different facts stay apart because they live in different places. *Technical success* is WFC's exit code. *Accepted review* is WFC's Finding ledger, inside the attempt. *Completed task* does not exist at this boundary: the best outcome is `IMPLEMENTED`, a state ASE itself defines as "ready for qualification". *Integrated* is only ever written by ASE's integrator. The lifecycle model enforces the separation: no agent that claims a task into `IMPLEMENTING` can settle it as `QUALIFIED` or `INTEGRATED`. *[V]*
+
+=== Failure behaviour
+
+* *WFC not installed.* The definition's `start` hook runs `wfc --version` and throws; ASE then refuses to start the agent and reports the reason ("a thrown error refuses the start of the agent", `ase-agent-definition-api.ts`). *[V]* No task is touched.
+* *Task without scope, or with a non-branch changeset.* Not claimed; ASE reports the reason once per change (`ready` hook). *[V]*
+* *ASE timeout or `ase agent wfc stop`.* ASE terminates the child process. WFC must stop and leave an honest record (<<prerequisites>>). ASE would put an interrupted task back into `PLANNED` untagged and claim it again; the adapter prevents that re-dispatch with an attempt marker (<<architecture>>).
+* *WFC stops with a dirty tree.* The adapter does not set `finish.commit`, so ASE does not turn unaccepted work into a commit.
+
+[[architecture]]
+== Minimal architecture
+
+[source,text]
+----
+ASE task store / boards / fleet                      WFC
+-------------------------------                      ---
+task LIST-12  PLANNED, Assignee: wfc
+   |
+ase agent wfc   (definition kind, ASE agent engine)
+   | claim: IMPLEMENTING, :active, worktree cs-LIST-12
+   | prepare hook: plan -> request file
+   | process: one child process -----------------> wfc run --request ... --yes --json
+   |                                                  compile, admit, commit Commission
+   |                                                  Hops: worker, reviewer, correction
+   |                                                  Coordinator commits on cs-LIST-12
+   |                                                  archive audit.json (Evidence repo)
+   | <------------- exit code, result on stdout ---  report
+   | settle: IMPLEMENTED | STALLED, tag, attachment
+qualifier / human -> QUALIFIED
+integrator        -> INTEGRATED
+----
+
+=== Ownership
+
+[cols="2,2,5",options="header"]
+|===
+|Concern |Owner |Rule
+
+|The business task
+|ASE
+|Plan, priority, dependencies, assignee, lifecycle status. WFC stores none of it.
+
+|The active implementation attempt
+|ASE claims, WFC executes
+|ASE's claim (activity state, `:active` tag, run record) marks that an attempt is in flight. Exactly one WFC Run is that attempt.
+
+|The worker and reviewer workflow
+|WFC
+|Program, phases, routes, Findings. To ASE it is an implementation detail that appears as log lines.
+
+|Retry
+|Split
+|Inside a Run: WFC's correction routes, bounded by the Hop limit. A further attempt: a human decision on the ASE side. Neither system starts a second Run automatically.
+
+|Cancellation
+|ASE decides, WFC complies
+|Agent stop, timeout or `CANCELLED` are ASE events. A cancelled Run is terminal.
+
+|Git changesets and integration
+|ASE, with one delegated window
+|ASE creates and publishes the branch and integrates it. WFC appends commits only during the attempt.
+
+|Final success or failure
+|Split by level
+|Of the attempt: WFC's exit code. Of the task: ASE's lifecycle.
+
+|Authoritative record of execution
+|WFC
+|WFC's state root and Evidence archive. ASE holds a pointer and a digest, not a copy.
+|===
+
+=== Mechanism: one-shot invocation
+
+A synchronous child process is the simplest suitable mechanism, and it is the one ASE already uses for agent tools. ASE's `--timeout` is the outer bound and must be set above WFC's Hop budget (for example `-T 4h`; the default is 60 minutes *[V]*). No events, no polling, no callback endpoint, no WFC client inside ASE and no ASE client inside WFC.
+
+=== No second state machine
+
+The adapter is stateless. Everything it writes into ASE is: one attempt-marker attachment before launch, one result attachment after, and the settling tag. It mirrors no WFC phase, Hop or Finding into task state. Progress is visible on ASE's boards as ordinary processing log lines.
+
+=== Where the two recovery philosophies collide
+
+ASE recovers for availability; WFC stops for certainty. Three settings keep them from fighting. *[V]* for each ASE mechanism named:
+
+* *No automatic re-dispatch.* `attach.skip` leaves a task that already carries the attempt marker unclaimed. A human removes the marker to authorize another attempt. `tag.retry` stays off.
+* *No laundering of unaccepted work.* `finish.commit` stays off; WFC's Coordinator is the only committer during the attempt.
+* *No concurrency assumption.* `serial: true` until WFC Runs in parallel worktrees of one repository have been tested.
+
+=== The adapter, as a definition file
+
+Illustrative and untested. `exec` is the proposed addition of <<pr>>; everything else is ASE's existing definition API (`tool/src/ase-agent-definition-api.ts`).
+
+[source,typescript]
+----
+import type { AgentDefinition } from "@rse/ase"
+
+export default {
+    title:     "Implement assigned tasks through WFC",
+    type:      "phase",
+    lifecycle: "enterprise",
+    workdir:   "changeset",
+    serial:    true,
+    state:     { incoming: "PLANNED", activity: "IMPLEMENTING", success: "IMPLEMENTED",
+                 failure: "STALLED", passed: "IMPLEMENTED" },
+    tag:       { name: "ase-agent-wfc" },
+    assign:    { name: "wfc", required: true },
+    attach:    { skip: "wfc-attempt", changeset: "changeset" },
+    params:    { program: { desc: "WFC workflow program (empty: project default)", default: "" } },
+    exec:      { run: "wfc run --request \"${TMPDIR:-/tmp}/ase-wfc/$ASE_TASK_ID.yaml\" --yes --json" },
+    success:   { criterion: [ "exit" ] },
+    hooks: {
+        start:   async (ctx) => {
+            if ((await ctx.exec("wfc", [ "--version" ])).code !== 0)
+                throw new Error("WFC (\"wfc\") not found in $PATH")
+        },
+        ready:   (task, ctx) =>
+            ctx.flow(task, "Changeset")?.type !== "branch" ? "a \"branch:\" changeset" :
+            (task.keys.Scope ?? "") === ""                 ? "a \"Scope:\" key"        : true,
+        prepare: async (task, _job, ctx) => { /* ctx.plan(task) -> request file; attach "wfc-attempt" */ },
+        settle:  (_task, outcome)        => ({ tag: /* outcome word from the result */ "completed" }),
+        finish:  async (task, outcome, _job, ctx) => { /* ctx.update: attach kind "wfc" */ }
+    }
+} satisfies AgentDefinition
+----
+
+The file belongs to the project (`.ase/agents/wfc.mts`) and would be distributed from WFC's repository, not from ASE's.
+
+[[pr]]
+== Upstream PR proposal
+
+=== The smallest independently useful contribution
+
+*Command processing for agent definitions* *[N]*: a definition may name a command that processes the task *instead of* the headless agent tool. Working title of the option: `exec.run` (`--exec-run`), following the existing `prepare.run`. The name and shape are the maintainer's to choose.
+
+Semantics, each reusing something ASE already has:
+
+* Mutually exclusive with `prompt.skill`, `prompt.text` and `prompt.file`; exactly one of the four is required.
+* Runs in the job's working directory with the environment of `prepare.run` (`ASE_TASK_ID`, `ASE_TASK_TITLE`, `ASE_TASK_SOURCE`, `ASE_TASK_CHANGESET`, `ASE_TASK_TARGET`, `ASE_AGENT_*`).
+* Bounded by `--timeout` and the interrupt signal, exactly like the agent tool.
+* Its output lines are the output of the processing, so `success.match`, `verdict.label`, `attach.output` and the hooks work unchanged. Exit code 0 meets the criterion `exit`.
+* The agent tool is neither required in `$PATH` nor started. `--model` and the hooks `prompt` and `model` are refused for such a definition.
+* Usage: wall time only; tokens and cost are "n/a", which the log format already supports.
+
+It belongs in ASE's custom-agent mechanism, not in a skill, the plugin or a new CLI command. It contains no reference to WFC.
+
+=== Expected files
+
+From source inspection; line numbers at the reviewed revision.
+
+[cols="3,5",options="header"]
+|===
+|File |Change
+
+|`tool/src/ase-agent-definition-api.ts`
+|Optional `exec?: { run?: string }` on `AgentDefinition`. Additive in the public types of `@rse/ase`.
+
+|`tool/src/ase-agent-definition-core.ts`
+|One entry in `definitionOptions` (near line 165); the exclusivity table (near line 492); the "exactly one of" validation (near line 721); the resolved definition.
+
+|`tool/src/ase-agent-runtime-engine.ts`
+|`prepare` (line 428) returns a job carrying the rendered command instead of a skill or prompt.
+
+|`tool/src/ase-agent-runtime.ts`
+|`AgentJob` (line 83); `invoke` (line 1052) spawns the command when the job carries one; `setup` (near line 1278) skips the agent tool lookup for such a definition.
+
+|`tool/man/ase-agent-adhoc.md`, `tool/man/ase-agent.md`
+|The option, the PROCESSING paragraph, one neutral example.
+
+|`AGENTS.md`, `CHANGELOG.md`
+|One sentence each: the module description of the agent engine and the change log entry.
+|===
+
+`tool/src/ase-agent-fleet.ts` should need nothing, because fleet sections are flattened through `flattenDefinition` against the same option table *[V]*; to be confirmed. No new dependency: `execa` and the helper `shellJob` are already in use *[V]*.
+
+=== Configuration, compatibility, tests
+
+[horizontal]
+Opt-in:: A definition that does not use the key behaves exactly as before. There is no configuration key, no default and no change to any built-in agent.
+Backward compatibility:: One optional field in a public type; one validation message that now names four alternatives.
+Tests:: ASE has no test target ("No test target is defined anywhere", `AGENTS.md`) *[V]*. Appropriate verification is therefore `npm start lint` in `tool/` (ESLint plus type checks) and a manual recipe in the pull request: a throwaway repository with the local `ase:` task store, `ase agent adhoc start --foreground --one-shot --state-incoming PLANNED --exec-run 'echo ok'`, and its counterparts for a failing command, a timeout and an interrupt.
+Discovery of WFC:: None in ASE. The WFC definition file checks for `wfc` in its `start` hook.
+When WFC is absent or not permitted:: The definition file is not installed, or its agent refuses to start with a clear message. ASE itself is unaffected.
+
+=== Presentation
+
+The pull request should present command processing as *deterministic and external lifecycle steps*, with an example that has nothing to do with implementation (a build or licence-scan gate between `IMPLEMENTED` and `QUALIFIED`). WFC appears, if at all, as one sentence of motivation. The built-in implementer, qualifier and integrator are untouched and remain the default path.
+
+=== Not in the minimum PR
+
+* Any WFC-specific code, documentation page or built-in agent kind.
+* A `--tool wfc`: WFC is not an agent tool and does not interpret ASE skills.
+* A reporting protocol for token usage of command agents.
+* Passing the rendered prompt to the command on standard input.
+* A first-class scope key in the task format.
+
+Each is a possible later enhancement, to be raised only if the maintainer sees value in the direction.
+
+[[prerequisites]]
+== WFC prerequisites
+
+Nothing in this section changes WFC's Beta-1 plan. The first table lists what the integration would consume from it; the second lists work the plan does not contain.
+
+[cols="3,2,3",options="header"]
+|===
+|Needed by the integration |Beta-1 package |State
+
+|Installed `wfc` usable outside its source checkout
+|BP1
+|*[P]* The current entry point is the repository-local `scripts/wfc_op.py`. *[V]*
+
+|A machine-submittable request and a binding-free Commission
+|BP2
+|*[P]* Today's Commission Intent requires source pins and personas (`commissioning.CommissionIntent`). *[V]*
+
+|`wfc run ... --yes` from request to terminal outcome, unattended
+|BP3, BP4
+|*[P]* Today: render, check, prepare and launch are separate maintainer steps. *[V]*
+
+|Archive and sanitized `audit.json`
+|BP5, BP6
+|*[P]*
+
+|`wfc report --json`
+|BP6
+|*[P]* `operator-summary.json` already holds most fields. *[V]*
+|===
+
+Additional WFC-side work, all *[N]* and none of it required for Beta 1:
+
+. *A versioned result document and documented exit codes* as a stable machine interface. Small.
+. *An opaque `origin` block* accepted in a request and copied into the audit record. It must confer no authority. Small.
+. *Defined behaviour on termination of the foreground command.* ASE stops work by terminating its child. The third review describes a detached engine that survives the foreground command; the later planning basis drops comprehensive supervision. For an outer caller the rule must be explicit: either terminating `wfc run` stops the Run, or the adapter calls a stop command. This is the one prerequisite with design weight.
+. *A test in a linked worktree created by another tool* (an ASE worktree below `.ase/worktree/`), and with two Runs in two worktrees of one repository.
+. *A position on WFC records inside a foreign branch.* The Commission bundle and review artifacts are committed to the payload branch by design, so they become part of ASE's changeset and, on integration, of the target. Whether an ASE project wants that is a question for its maintainer, not something WFC should silently change.
+
+[[objections]]
+== Alternatives and objections
+
+Credible reasons for ASE to reject the proposal, with the most honest available answer.
+
+. *"ASE agents are language-model agents; a command agent blurs the concept."* A fair design position. ASE already runs commands around every job (`prepare.run`, `finish.success`); the proposal moves one into the middle. If the maintainer holds the line, the integration stays at option E.
+. *"I can build the correction loop and a scope check with hooks."* Largely true (<<comparison>>). What remains is the Finding ledger and the pinned record. If those are not valued, there is no case.
+. *"This is a second orchestrator inside mine."* It is, internally. The mitigation is structural: ASE sees one process and one exit code, and the lifecycle model prevents WFC from settling anything beyond `IMPLEMENTED`.
+. *"Review runs twice."* Yes, if the qualifier also runs. A project can keep the qualifier in `judge` mode as a cheap second opinion, or let a human qualify WFC-implemented tasks. ASE cannot skip qualification, and should not.
+. *"WFC is pre-beta, Python, Linux-oriented and single-maintainer."* Correct. That is why nothing WFC-specific is proposed for ASE's repository and why the prototype waits for Beta 1.
+. *"My users cannot see cost for these tasks."* Correct today. WFC reports no usage.
+. *"WFC commits its own records into my changeset branch."* Correct, and a matter of taste for an ASE project (<<prerequisites>>, item 5).
+. *"ASE changes quickly; an external definition file will break."* The definition API is the part ASE declares stable ("every incompatible change of it is a breaking change of the package", `ase-agent-definition-api.ts`) *[V]*. The adapter depends on nothing else.
+
+The alternative to all of the above is option E with a short interoperability note in WFC's documentation. It costs nothing and loses only the per-task choice.
+
+[[brief]]
+== Maintainer discussion brief
+
+Talking points:
+
+. ASE is the lifecycle and fleet; WFC is one optional way to execute one phase of one task. Nothing is replaced.
+. The entire ASE-side request is: may an agent definition run a command instead of an agent tool? Four source files, no dependency, no behaviour change.
+. Selection is per task by assignment, using `assign.required`. The built-in implementer already ignores tasks assigned to someone else.
+. The best result WFC can report is `IMPLEMENTED`. Qualification and integration remain ASE decisions, and the lifecycle model enforces that.
+. ASE never selects a model for WFC and never needs WFC's phases; WFC never touches the task store.
+. Not tested together. The first step is a private prototype that changes no ASE source.
+
+Open questions for the ASE maintainer:
+
+. Is a non-agent-tool processing step acceptable in the agent engine at all, and if so under which option name and group?
+. Should a command agent be able to report token usage, or is "n/a" the intended answer?
+. Is an unknown frontmatter key such as `Scope:` safe across all task store plugins, including the issue-tracker stores, or is a tag the better carrier?
+. Without `finish.commit`, is a changeset branch that received commits during the processing published in `--repo` mode? The manual suggests yes; it was not verified.
+. Is an attachment the right carrier for an external result and evidence pointer, or does ASE prefer a link key?
+. Does ASE intend a shipped path from `DECLINED` back to implementation? If so, the overlap with WFC's correction loop grows and the case for integration shrinks.
+
+Open questions for the WFC maintainer:
+
+. Is an outer lifecycle tool such as ASE an acceptable answer to the unresolved outer orchestration level for some users, without WFC committing to it?
+. Should the `origin` reference and a versioned report schema be considered when the Beta-1 report is designed, so they need not be retrofitted?
+. What is the termination contract of the foreground `wfc run` (<<prerequisites>>, item 3)?
+
+[[path]]
+== Post-Beta implementation path
+
+One prototype and one pull request. Nothing starts before WFC Beta 1 provides `wfc run --request ... --yes` and `wfc report --json`.
+
+=== Prototype (private, no ASE source change)
+
+[horizontal]
+Technique:: ASE's engine treats any output line that is not a JSON event as plain output and takes success from the exit code (`toolEntries`, `invoke`) *[V]*. A local executable named `codex`, placed first in `$PATH` for one agent process started with `-t codex`, can therefore stand in for command processing: it receives the rendered prompt as its last argument and runs `wfc`. This is a laboratory device, not something to ship or to propose.
+Setup:: A throwaway repository, ASE's local task store, the `enterprise` model, branch changesets, the definition file of <<architecture>> with `prompt.text` in place of `exec`, and WFC with its fake provider adapter so that no provider is called.
+Demonstrates:: Claim, worktree, request translation, Coordinator commits on an ASE branch, each row of <<status>>, the attempt marker under interrupt, and ASE's qualifier and integrator operating on the result.
+Answers:: Prerequisites 3 to 5 and the first compatibility facts this document could only read from source.
+Stop condition:: If WFC cannot run cleanly inside an ASE worktree, or the termination contract cannot be made honest, the path ends here with option E and a written finding.
+
+=== Initial pull request
+
+The change of <<pr>>, offered only after the prototype and after a conversation with the maintainer about question 1 of <<brief>>. Its description should carry the manual verification recipe and one neutral example. The WFC definition file is published from WFC's repository with a note on the ASE versions it was tried against.
+
+Anything further, including usage reporting, a documented WFC example in ASE's manual, or parallel Runs, is decided only after both steps exist and have been used.
+
+== Sources
+
+ASE, at the reviewed revision:
+
+* `AGENTS.md`; `README.md`; `NEWS.md`; `docs/task-api.md`.
+* `tool/man/ase-agent.md`, `ase-agent-adhoc.md`, `ase-agent-fleet.md`, `ase-agent-implementer.md`, `ase-agent-qualifier.md`, `ase-agent-integrator.md`, `ase-task.md`, `ase-task-request.md`.
+* `tool/src/ase-agent-definition-api.ts`, `ase-agent-definition-core.ts`, `ase-agent-definition-builtin/{implementer,qualifier,integrator}.ts`.
+* `tool/src/ase-agent-runtime.ts`, `ase-agent-runtime-engine.ts`, `ase-agent-runtime-tool.ts`, `ase-agent-runtime-exec.ts`, `ase-agent-runtime-claim.ts`, `ase-agent-fleet.ts`.
+* `tool/src/ase-task-format.ts`, `ase-config-schema.ts`, `ase-setup-common.ts`.
+* `plugin/meta/ase-format-task.md`; `plugin/skills/ase-task-implement`, `ase-repo-review`, `ase-task-integrate`, `ase-meta-workflow`.
+
+WFC, at the reviewed revision:
+
+* link:../architecture.md[Architecture]; link:../functional_model/workflow_program_use_cases.adoc[Functional Model]; link:../backlog/beta1_productization.adoc[Beta-1 productization map]; link:README.adoc[research register].
+* link:../warm_storage/concepts/wfc_beta1_product_boundary_review.adoc[First], link:../warm_storage/concepts/wfc_beta1_product_boundary_review_second_pass.adoc[second] and link:../warm_storage/concepts/wfc_beta1_implementation_readiness_review.adoc[third] Beta-1 reviews. Exploratory; used here only as the source of planned interfaces.
+* `src/workflow_coordinator/operator.py`, `commissioning.py`, `reducer.py`, `model.py`, `git_facts.py`, `evidence.py`, `persistence.py`, `adapter.py`, `claude_adapter.py`, `codex_adapter.py`; `scripts/wfc_op.py`.
