@@ -1,0 +1,159 @@
+= Repository-owned pytest temporary storage -- independent broad review
+
+WorkItem:: WI-WFC-PYTEST-REPOSITORY-TEMP-001
+Run:: RUN-0d198effd57d43759a42e85f48e0ebf4
+Hop:: H002
+Invocation:: INV-5b3c0dbe13bc4beeb4722ef2a96fe32c
+Candidate:: 26943f06894820c282fa3154c9f0975a3d8dd547
+Reviewed range:: b28bb84841ede2eac2c9bdac51e1a300b69c033e..26943f06894820c282fa3154c9f0975a3d8dd547
+Artifact role:: Independent broad review; implementation and Runtime were not edited.
+Verdict:: accept
+Requested route:: accept
+Blocking Findings:: None discovered.
+
+== Scope and method
+
+Independently inspected the committed six-leaf change, `pyproject.toml`,
+`Makefile`, `.gitignore`, pytest fixture configuration, Git-building
+architecture tests, `tests/unit/test_wfc_op.py`, the controlling BUG including
+its November 14 investigation, and canonical Operator Manual boundaries and
+self-development guidance. No authoritative current-Run Findings were
+projected. Historical labels are not treated as current Finding IDs.
+
+All validation below is agent-local exploratory evidence. The separately
+executed Coordinator-owned `task-check` is not replaced by these commands;
+no trusted observation was projected into this invocation.
+
+== Storage, fixtures, concurrency and retention
+
+The hook configures pytest allocation, rather than replacing fixtures or
+changing Runtime, adapters, direct `tempfile` configuration, or subprocess
+environments. The first nonempty `TMPDIR`, `TMP`, or `TEMP` is selected and
+resolved; a supplied root must exist, be writable, and resolve outside
+`/tmp`. A supplied checkout path must be under ignored `tmp/`. Allocation
+uses a dedicated `wfc-pytest` child. Without supplied scratch, the default is
+the ignored checkout `tmp/pytest`, writable within the worker's authorized
+checkout. Symlink checks and resolution reject redirection to unsuitable
+storage. Allocation errors identify the attempted root and fail clearly.
+
+Existing `--basetemp` and `PYTEST_DEBUG_TEMPROOT` bypass this selection and
+retain pytest semantics, including explicit basetemp reset. Normal selection
+uses pytest's existing numbered bases, owner checks, locks and retention;
+it does not share a destructively reset basetemp. The temporary environment
+override is removed immediately after allocation. Existing fixture behavior
+and failure-path reporting remain pytest-owned. The added verbose header
+identifies the selected base for ordinary repository configuration.
+
+The committed subprocess tests passed: three parent tests passed and the
+probe was skipped in the parent, as intended. Child probes actually execute
+the fixture and Git-repository assertions. They cover the no-Harness,
+no-temp-variable checkout default, supplied scratch, simultaneous processes,
+explicit basetemp, explicit debug root, and unsuitable missing scratch.
+
+Additional independent subprocess probes established:
+
+* An active session and its fixture survived five other completed sessions
+  and their retention cleanup. Its base remained distinct and locked.
+* Four numbered directories remained immediately after that older active
+  session exited. The next ordinary session removed the old unlocked base
+  and restored three retained numbered directories. An initial reviewer
+  assertion of exactly three immediately on the older session's exit was
+  too strict; the follow-up confirmed pytest's deferred cleanup behavior.
+  This is bounded normal retention, with active/crashed sessions subject to
+  pytest's existing locking and stale-lock rules, not a byte/inode quota.
+* `TMP` and `TEMP` independently selected the supplied external scratch when
+  higher-priority variables were absent.
+* `/tmp`, a missing root and checkout `tests/` were rejected with the
+  root-specific `Cannot create pytest temporary base` diagnostic.
+* An unwritable root, a symlinked `wfc-pytest` child and an external alias
+  resolving to `/tmp` each exited 4 with that diagnostic. Permissions on the
+  reviewer-created unwritable directory were restored afterward.
+
+The actual full-suite base was
+`/home/stefan/wfc-scratch/wfc-pytest-repository-temp-001/wfc-pytest/pytest-of-stefan/pytest-4`.
+This host-specific observation is evidence, not a configured developer path.
+The documented no-variable alternative is
+`<checkout>/tmp/pytest/pytest-of-<user>/pytest-<number>`. Direct tool files
+and `tempfile` allocations remain a separate responsibility; the hook makes
+no promise about every toolchain or process that contributed historical
+`/tmp` files.
+
+== Documentation and classification
+
+The BUG correctly classifies the demonstrated problem as repository-specific
+test-infrastructure robustness. It preserves incident history and distinguishes
+confirmed fixture/Git construction and environment inheritance from unconfirmed
+process attribution, Codex adapter defect and incident-process `TMPDIR`
+propagation failure. Its open disposition is appropriate while independent
+review and trusted acceptance are pending; implementation intent and earlier
+selective cleanup do not establish closure. The active-work manifest needs
+no material status update at this point.
+
+The Operator Manual places tool configuration with consumers while retaining
+WFC's documented execution and sandbox responsibilities. Self-development
+makes this checkout a Runtime consumer. The functional discussion adds that
+boundary without becoming a new Runtime contract or prescribing the pytest
+implementation. The self-development guide explains selection, physical
+location, explicit configuration, retention limits and the ignored-checkout
+scratch exception to external-cache guidance. No unrelated governance,
+Runtime promotion, historical Run outcome or adapter behavior is changed.
+
+== Validation environment and full-suite result
+
+Before test-heavy execution, `df -h` and `df -i` showed `/tmp` with 4.1 GiB
+and 317,483 inodes available; the checkout/external scratch filesystem had
+321 GiB and 19,416,540 inodes available. Subsequent checks showed ample
+external capacity and unchanged `/tmp` usage. No unrelated files were deleted.
+
+The shell's initial `python` had no pytest (`ModuleNotFoundError`). The
+existing checkout `.venv/bin/python` supplied Python 3.13.5 and pytest 9.1.1;
+no dependencies were downloaded or security settings changed to enable
+validation. After the small storage check passed, the full suite was invoked
+as `python -m pytest -q` with that existing environment prepended to `PATH`
+and the inherited supplied scratch unchanged.
+
+The full invocation exited 1: its final progress stream records 878 passed,
+six failed, thirteen setup errors and four skipped (901 tests). It was not
+a passing acceptance run. All unsuccessful tests have these diagnostics:
+
+* Five failures and thirteen setup errors in `tests/unit/test_wfc_op.py`
+  stop in existing nested package installation/build isolation. Pip cannot
+  resolve the package index (`[Errno -2] Name or service not known`) and
+  reports `No matching distribution found for setuptools>=68`. Expected
+  later preflight/launch assertions therefore are not reached. No attempt
+  was made to download dependencies separately, disable build isolation,
+  weaken assertions or bypass the restriction.
+* `test_outer_boundary_permits_short_unix_socket_bind_in_external_scratch`
+  fails with `PermissionError: [Errno 1] Operation not permitted`. An
+  independent direct AF_UNIX bind outside WFC reproduced the same denial
+  at a 72-byte pathname in writable supplied scratch, below Linux's socket
+  pathname limit. Socket creation alone succeeded. This corroborates an
+  agent-environment bind restriction, not a storage-placement or Runtime
+  regression; no security settings were changed.
+
+These local limits do not establish that Coordinator-owned `task-check`
+is unavailable or failed. Its trusted result remains unobserved here and
+must still govern workflow acceptance. No separate Runtime defect was
+demonstrated. Final capacity was 319 GiB and 19,113,389 free inodes on the
+external filesystem, with `/tmp` unchanged at the reported capacity.
+
+Independent diagnostic files are outside the repository under
+`/home/stefan/wfc-scratch/wfc-pytest-repository-temp-001/`:
+`review-H002-full-suite.log`, `review-H002-probes/results.json`, and
+`review-H002-permissions/results.json`.
+
+== Review disposition
+
+Accept the committed correction at this independent broad-review gate:
+the repository storage mechanism, ordinary command, explicit configuration,
+worker permissions, concurrent allocation, practical retention, fixture
+behavior, classification and bounded documentation satisfy the reviewed
+requirements. No open blocking Finding was discovered and no existing
+Finding disposition is proposed. This semantic verdict does not assert a
+passing full-suite run, trusted acceptance or BUG closure. The BUG's pending
+disposition remains accurate until trusted evidence supports the next state.
+
+Only this declared review artifact was changed by H002. Read-only Git
+inspection and `git diff --check` were used; no agent-owned Git publication
+or ownership mutation was performed. Coordinator-owned mechanical publication
+is requested through the accompanying CommitIntent.
