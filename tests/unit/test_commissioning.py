@@ -674,3 +674,102 @@ def test_component_tampering_refuses_before_preflight(repository: Path, monkeypa
     with pytest.raises(CommissionError, match="reused component differs"):
         verify_render_manifest(intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"))
     assert calls == []
+
+
+@pytest.fixture
+def v2_policy_head(repository: Path) -> str:
+    """Pin the working v2 record in the isolated test repository."""
+    path = Path("governance/policy-bases/repository-standard-v2.yaml")
+    (repository / path).write_text((REPO / path).read_text(encoding="utf-8"), encoding="utf-8")
+    git(repository, "add", str(path))
+    if git(repository, "status", "--porcelain", "--", str(path)):
+        git(repository, "commit", "-m", "test: add v2 policy basis")
+    return git(repository, "rev-parse", "HEAD")
+
+
+def with_policy_revision(text: str, revision: str) -> str:
+    return text.replace("policy_basis: {id: repository-standard, revision: v1,", f"policy_basis: {{id: repository-standard, revision: {revision},")
+
+
+@pytest.mark.parametrize("root_file", ("README.md", "Makefile"))
+def test_v2_allows_each_root_file_and_v1_refuses_it(repository: Path, v2_policy_head: str, root_file: str) -> None:
+    text = intent_text(v2_policy_head, scope=root_file)
+    with pytest.raises(CommissionError, match="scope exceeds"):
+        render_commission(commission_intent_from_yaml(text), repository=repository)
+    rendered = render_commission(commission_intent_from_yaml(with_policy_revision(text, "v2")), repository=repository)
+    assert yaml.safe_load(rendered.texts[rendered.paths["work_item"]])["scope"] == [root_file]
+    assert yaml.safe_load(rendered.texts[rendered.paths["policy"]])["work_item_scope_ceiling"] == [root_file]
+
+
+@pytest.mark.parametrize("path", ("pyproject.toml", "package.json", ".git", ".git/config", ".env", ".aws", ".npmrc", "governance", "other", "README.md/child", "Makefile/child"))
+def test_v2_refuses_unlisted_or_nested_root_paths(repository: Path, v2_policy_head: str, path: str) -> None:
+    text = with_policy_revision(intent_text(v2_policy_head, scope=path), "v2")
+    with pytest.raises(CommissionError, match="scope exceeds"):
+        render_commission(commission_intent_from_yaml(text), repository=repository)
+
+
+def test_v2_robust_projection_and_real_preflight(repository: Path, v2_policy_head: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
+    scope = ["README.md", "Makefile", "docs"]
+    text = with_policy_revision(robust_intent_text(v2_policy_head, scope=", ".join(scope)), "v2")
+    intent = commission_intent_from_yaml(text)
+    rendered = render_commission(intent, repository=repository)
+    assert rendered.texts == render_commission(intent, repository=repository).texts
+    assert yaml.safe_load(rendered.texts[rendered.paths["work_item"]])["scope"] == scope
+    policy = yaml.safe_load(rendered.texts[rendered.paths["policy"]])
+    assert policy["revision"] == "v2"
+    assert policy["work_item_scope_ceiling"] == scope
+    profile = yaml.safe_load(rendered.texts[rendered.paths["profile"]])["phases"]
+    assert profile == robust_expected_phases(scope, ["docs/reviews/robust-broad.adoc"], ["docs/reviews/robust-focused.adoc"])
+    source = rendered.manifest["sources"]["policy_basis"]
+    assert source == {
+        "id": "repository-standard", "revision": "v2", "source_commit": v2_policy_head,
+        "path": "governance/policy-bases/repository-standard-v2.yaml",
+        "sha256": hashlib.sha256((repository / "governance/policy-bases/repository-standard-v2.yaml").read_bytes()).hexdigest(),
+    }
+    intent_path = "governance/commissions/robust-commission-test/intent.yaml"
+    (repository / intent_path).parent.mkdir(parents=True)
+    (repository / intent_path).write_text(text, encoding="utf-8")
+    rendered.write_to(repository)
+    git(repository, "add", "governance/commissions/robust-commission-test")
+    git(repository, "commit", "-m", "test: materialize v2 robust projection")
+    verify_render_manifest(intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"), evidence_runner=NoOpEvidenceRunner())
+    manifest_path = repository / rendered.paths["manifest"]
+    altered = json.loads(manifest_path.read_text(encoding="utf-8"))
+    altered["sources"]["policy_basis"]["revision"] = "v1"
+    manifest_path.write_text(json.dumps(altered, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    git(repository, "add", str(manifest_path.relative_to(repository)))
+    git(repository, "commit", "-m", "test: tamper v2 policy manifest")
+    with pytest.raises(CommissionError, match="projection equivalence mismatch"):
+        verify_render_manifest(intent_path, repository=repository, expected_head=git(repository, "rev-parse", "HEAD"))
+
+
+@pytest.mark.parametrize("revision", ("v1", "v2"))
+@pytest.mark.parametrize("old,new", (("max_autonomous_hops: 10", "max_autonomous_hops: 9"), ("  - docs\n", "  - docs\n  - pyproject.toml\n"), ("timeout_seconds: 900", "timeout_seconds: 899")))
+def test_each_policy_basis_is_immutable_and_pinned(repository: Path, v2_policy_head: str, revision: str, old: str, new: str) -> None:
+    policy_path = repository / f"governance/policy-bases/repository-standard-{revision}.yaml"
+    original = policy_path.read_text(encoding="utf-8")
+    assert old in original
+    policy_path.write_text(original.replace(old, new), encoding="utf-8")
+    git(repository, "add", str(policy_path.relative_to(repository)))
+    git(repository, "commit", "-m", "test: tamper pinned policy")
+    changed_head = git(repository, "rev-parse", "HEAD")
+    # A later working tree cannot change the old pin; a pin to the changed
+    # record itself is rejected even if its identity is unchanged.
+    good = with_policy_revision(intent_text(v2_policy_head), revision)
+    assert render_commission(commission_intent_from_yaml(good), repository=repository).manifest["sources"]["policy_basis"]["source_commit"] == v2_policy_head
+    bad = with_policy_revision(intent_text(changed_head), revision)
+    with pytest.raises(CommissionError, match=f"immutable repository-standard@{revision}"):
+        render_commission(commission_intent_from_yaml(bad), repository=repository)
+
+
+def test_v2_missing_source_and_unsupported_revision_fail_closed(repository: Path) -> None:
+    path = repository / "governance/policy-bases/repository-standard-v2.yaml"
+    if path.exists():
+        git(repository, "rm", str(path.relative_to(repository)))
+        git(repository, "commit", "-m", "test: remove v2 policy basis")
+    head = git(repository, "rev-parse", "HEAD")
+    with pytest.raises(CommissionError, match="policy basis"):
+        render_commission(commission_intent_from_yaml(with_policy_revision(intent_text(head), "v2")), repository=repository)
+    with pytest.raises(CommissionError, match="requires repository-standard@v1 or @v2"):
+        render_commission(commission_intent_from_yaml(with_policy_revision(intent_text(head), "v3")), repository=repository)

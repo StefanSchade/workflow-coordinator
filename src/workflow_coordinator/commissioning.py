@@ -41,7 +41,10 @@ _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _COMPONENT_MANIFEST_PATH = "governance/self-development/components.yaml"
 _PROGRAM_PATH = "governance/workflow-programs/direct/v1.yaml"
 _ROBUST_PROGRAM_PATH = "governance/workflow-programs/robust/v1.yaml"
-_POLICY_PATH = "governance/policy-bases/repository-standard-v1.yaml"
+_POLICY_PATHS = {
+    "v1": "governance/policy-bases/repository-standard-v1.yaml",
+    "v2": "governance/policy-bases/repository-standard-v2.yaml",
+}
 
 
 class _IntentLoader(yaml.SafeLoader):
@@ -305,8 +308,8 @@ def _simple_template() -> dict[str, Any]:
     }
 
 
-def _repository_standard_v1_record(policy: Any) -> bool:
-    """Return whether a parsed basis is the one immutable Direct-v1 basis.
+def _repository_standard_record(policy: Any, revision: str) -> bool:
+    """Return whether a parsed basis matches its immutable supported record.
 
     Identity alone is deliberately insufficient: every policy field below is a
     closed input to Direct-v1.  The render may narrow only the work-item scope
@@ -316,10 +319,13 @@ def _repository_standard_v1_record(policy: Any) -> bool:
     return (
         policy.schema_version == 3
         and policy.policy_id == "repository-standard"
-        and policy.revision == "v1"
+        and policy.revision == revision
         and policy.scope == ("workflow-coordinator",)
         and policy.governance_paths == ("governance",)
-        and policy.work_item_scope_ceiling == ("src", "tests", "scripts", "docs")
+        and policy.work_item_scope_ceiling == (
+            ("src", "tests", "scripts", "docs") if revision == "v1"
+            else ("src", "tests", "scripts", "docs", "README.md", "Makefile")
+        )
         and policy.max_autonomous_hops == 10
         and policy.actions == ("edit", "commit", "review")
         and set(policy.evidence_commands) == {"task-check"}
@@ -338,12 +344,13 @@ def _load_sources(intent: CommissionIntent, repository: Path) -> tuple[dict[str,
         program_path, expected_template, required_components = program_specs[(intent.program.id, intent.program.revision)]
     except KeyError as error:
         raise CommissionError("only the closed direct@v1, robust@v1, and simple@v1 programs are supported") from error
-    if (intent.policy_basis.id, intent.policy_basis.revision) != ("repository-standard", "v1"):
-        raise CommissionError(f"{intent.program.id}@{intent.program.revision} requires repository-standard@v1")
+    if intent.policy_basis.id != "repository-standard" or intent.policy_basis.revision not in _POLICY_PATHS:
+        raise CommissionError(f"{intent.program.id}@{intent.program.revision} requires repository-standard@v1 or @v2")
+    policy_path = _POLICY_PATHS[intent.policy_basis.revision]
     if intent.components_ref.path != _COMPONENT_MANIFEST_PATH:
         raise CommissionError(f"{intent.program.id}@{intent.program.revision} requires the fixed self-development component manifest")
     program_text = _git_text(repository, intent.program.source_commit, program_path, context="program catalogue")
-    policy_text = _git_text(repository, intent.policy_basis.source_commit, _POLICY_PATH, context="policy basis")
+    policy_text = _git_text(repository, intent.policy_basis.source_commit, policy_path, context="policy basis")
     components_text = _git_text(repository, intent.components_ref.source_commit, intent.components_ref.path, context="component manifest")
     program = _yaml_load(program_text, context="pinned program")
     if not isinstance(program, dict):
@@ -359,8 +366,10 @@ def _load_sources(intent: CommissionIntent, repository: Path) -> tuple[dict[str,
         manifest = component_manifest_from_yaml(components_text)
     except ValidationError as error:
         raise CommissionError(str(error)) from error
-    if not _repository_standard_v1_record(policy):
-        raise CommissionError("pinned policy basis does not equal the immutable repository-standard@v1 record")
+    if not _repository_standard_record(policy, intent.policy_basis.revision):
+        raise CommissionError(
+            f"pinned policy basis does not equal the immutable repository-standard@{intent.policy_basis.revision} record"
+        )
     if missing_components := required_components - set(manifest):
         raise CommissionError("fixed component manifest does not define " + ", ".join(sorted(missing_components)))
     return program, {"policy": policy, "manifest": manifest}, program_text, policy_text, components_text, program_path
@@ -411,7 +420,13 @@ def render_commission(intent: CommissionIntent, *, repository: Path | str, targe
         raise CommissionError("Intent durable-artifact paths must be contained in Intent scope")
     if intent.max_autonomous_hops > policy.max_autonomous_hops:
         raise CommissionError("Intent hop limit exceeds the policy-basis ceiling")
-    if any(not _within(path, tuple(policy.work_item_scope_ceiling)) for path in intent.scope):
+    # Root whitelist entries are files, not directory-shaped scope grants.
+    # The four existing directory ceilings retain their original prefix behavior.
+    if any(
+        not (_within(path, ("src", "tests", "scripts", "docs"))
+             or (policy.revision == "v2" and path in ("README.md", "Makefile")))
+        for path in intent.scope
+    ):
         raise CommissionError("Intent scope exceeds the policy-basis work-item ceiling")
     if any(_within(path, tuple(policy.governance_paths)) for path in intent.scope):
         raise CommissionError("Intent scope overlaps repository governance paths")
@@ -475,7 +490,7 @@ def render_commission(intent: CommissionIntent, *, repository: Path | str, targe
         "intent": {"sha256": source_digests["intent"]},
         "sources": {
             "program": {"id": intent.program.id, "revision": intent.program.revision, "source_commit": intent.program.source_commit, "path": program_path, "sha256": source_digests["program"]},
-            "policy_basis": {"id": intent.policy_basis.id, "revision": intent.policy_basis.revision, "source_commit": intent.policy_basis.source_commit, "path": _POLICY_PATH, "sha256": source_digests["policy_basis"]},
+            "policy_basis": {"id": intent.policy_basis.id, "revision": intent.policy_basis.revision, "source_commit": intent.policy_basis.source_commit, "path": _POLICY_PATHS[intent.policy_basis.revision], "sha256": source_digests["policy_basis"]},
             "components": {"path": intent.components_ref.path, "source_commit": intent.components_ref.source_commit, "sha256": source_digests["components"]},
             "selected_components": [{"id": name, "path": path, "source_commit": intent.components_ref.source_commit, "sha256": source_digests[f"component:{name}"]} for name, path in selected_components.items()],
         },
