@@ -2,27 +2,525 @@
 :toc:
 :toclevels: 2
 
-Status:: WORKING DRAFT; current observations and target hypotheses, not a replacement for accepted contracts.
-As-of:: 2026-10-27 (expanded maintainer discussion)
-Purpose:: Describe current mechanics, desired ownership boundaries and options that remain to be designed.
+Authority:: Explanatory. This model explains how the implemented pieces fit
+together; it grants no authority and replaces no accepted contract. Package
+source, package resources and tests define executable behavior.
+Standing:: Sections up to and including <<implemented-p1-p3>> describe
+*current implemented mechanics*, with the owning module named for each claim.
+<<target>> onward remains a *working draft* of target hypotheses, deferred
+design options and archaeology questions.
+Updated:: 2026-11-15 -- current mechanics re-verified against
+`src/workflow_coordinator/`, `governance/workflow-programs/` and the unit
+tests; the earlier target discussion is retained and relabelled.
 
-== 1. As-is: confirmed from current source
+== How to read this model
 
-=== 1.1 Interpreter (Python)
+link:../architecture.md[Architecture] gives the one-page responsibility
+overview. This model is the next level down: which module owns which decision,
+in what order, and what each layer can and cannot prove. Meaning of the
+vocabulary belongs to
+link:../semantic_model/workflow_execution_semantics.adoc[the Semantic Model];
+operating procedures belong to
+link:../operator_manual/operator_manual.adoc[the Operator Manual] and are linked
+to rather than restated here.
 
-`src/workflow_coordinator/` currently contains `model.py`, `serialization.py`, `reducer.py`, `operator.py`, `vertical.py`, adapter modules and supporting services. The reducer interprets declared phases/routes, validates authorized deltas and enforces global completion blockers. The canonical result contracts and OpenAI strict projection live in provider-neutral/adapter boundaries rather than in a Commission-authored schema file.
+[[current]]
+== Current implemented mechanics
 
-=== 1.2 Current workflow profile
+=== The package and its deterministic core
 
-Current `WorkflowProfile` holds `schema_version`, `profile_id`, `revision`, `phases`, and optional `convergence`. `Phase` contains role, component selectors, durable-artifact requirement, authorized scope/actions, evidence, review descriptor and routes. `Route` has `effect`, optional `target` and `question`, and `supervisor`; there is currently no `require_no_open_blocking_findings` field in the source model.
+`src/workflow_coordinator/` is a flat `src`-layout package. That flatness is
+observed current state, not a canonized organization. The division that matters
+is between the *deterministic core* -- pure functions over admitted values --
+and the *effect shell* that touches the provider, Git, the filesystem and the
+clock:
 
-The profile corpus under `governance/self-development/` demonstrates the drift: many self-development Commissions each have copied profile YAML carrying both genuine workflow semantics and their own scope, review purpose, evidence configuration and permissions. The actual number of reusable semantics-equivalent programs is **not established** by simply counting graph shapes.
+[cols="1,2,2",options="header"]
+|===
+|Layer |Modules |Owns
 
-=== 1.3 Current Commission and authority
+|Values
+|`model.py`, `serialization.py`, `structured_result_schema.py`
+|Frozen dataclasses and closed enums; parsing/validation of every governing
+input and every agent result; the provider-neutral projection of the closed
+result envelope.
 
-Existing consumers own their governing WorkItems, profile files and policies under the current `docs/architecture.md`. An admitted WorkItem and profile are pinned for a Run; the policy is the independent ceiling for authorized behavior. The planned move toward product-owned reusable workflow programs is a **target change**, not an already implemented product feature. Maintain all existing signing/pinning/replay/evidence and maintainer-authorization boundaries.
+|Deterministic decisions
+|`reducer.py`, `prompt.py`, parts of `model.py`
+|Reduction of a result against persisted state; Finding lifecycle and
+authority; route selection and refusal; prompt assembly with bounded, visible
+omissions; result-contract selection.
 
-== 2. Target architecture (proposed, intentionally small)
+|Effect shell
+|`operator.py`, `vertical.py`, `git_facts.py`, `evidence.py`,
+`persistence.py`, `commissioning.py`
+|Admission against real repository state, serial Hop progression, Git
+observation and the single trusted commit surface, evidence execution, atomic
+persistence, Front Door rendering.
+
+|Provider transport
+|`adapter.py`, `codex_adapter.py`, `claude_adapter.py`
+|The provider-neutral execution port and the two implemented CLI adapters,
+including each provider's strict-schema dialect and process handling.
+|===
+
+`adapter.py` also holds `FakeAdapter` and `SubprocessAdapter`, which are
+deliberately fixture adapters rather than provider SDKs.
+`execution_boundary.py` (opt-in Linux filesystem boundary primitives),
+`slice4.py`, `proof_harness.py` and `codex_adapter_smoke.py` are bounded,
+self-described auxiliary surfaces; their own docstrings state what they are not
+-- in particular, `execution_boundary.py` is explicitly not an authority
+resolver and not a replacement for post-Hop scope checks.
+
+=== Programs, Commissions and the Front Door
+
+Three closed program records live at
+`governance/workflow-programs/{simple,direct,robust}/v1.yaml`. Each is
+hand-authored governance: `operator.py:_admit_a1` unconditionally forbids any
+WorkItem or profile `authorized_scope` from overlapping the repository policy's
+`governance_paths`, so no Run can ever write one. A correction is a new
+revision.
+
+`commissioning.py` turns a maintainer-authored Commission Intent into ordinary
+governing inputs:
+
+[source,text]
+----
+governance/commissions/<id>/intent.yaml
+   | commission_intent_from_yaml  (closed key sets, duplicate-key rejection)
+   v
+_load_sources: read program/policy/components at their pinned source commits,
+   then require the program to equal the in-source literal template exactly
+   (minus its `source` provenance block), and the policy basis to equal the
+   immutable repository-standard@v1 record
+   v
+render_commission: substitute declared slots only
+   scope slot S   -> the Intent's normalized scope
+   artifact slot A -> exactly durable_artifacts[artifact_key], never unioned
+   evidence slot E -> evidence_profiles[<selected profile>].evidence
+   v
+governance/commissions/<id>/{work-item,profile,policy}.yaml, task.md,
+render-manifest.json
+----
+
+Three facts follow from that code and matter for understanding:
+
+* Program identity is checked against an *in-source template*
+  (`_direct_template`, `_robust_template`, `_simple_template`), not only against
+  the file. `program_specs` admits exactly the three `(id, revision)` pairs and
+  rejects everything else, so editing a catalogue file alone cannot change an
+  admitted program.
+* The rendered profile carries `schema_version: 2` and
+  `profile_id: <commission_id>-<program>-<revision>`, so one profile *file*
+  still exists per Commission -- but it is a deterministic projection of a closed
+  program rather than a hand-copied process. The hand-authored schema-v2 profiles
+  under `governance/self-development/` predate this path.
+* An Intent has no write path to phases, routes or review descriptors. It
+  supplies scope, durable-artifact paths, personas, an evidence-profile
+  selection and a hop limit, each separately bounded by the policy basis.
+
+`commission check` re-renders and compares, then asks the provider-free operator
+preflight to admit the bundle; it selects no provider and admits no Run. The
+maintainer then prepares, inspects and authorizes launch. Procedures for all of
+this are owned by
+link:../operator_manual/ch02_commissioning/_chapter.adoc[the commissioning chapter].
+
+=== Admission (A1/A2/A3)
+
+`operator.py:_preflight` runs before any Run exists and fails closed on the
+first violation. In order of what it establishes:
+
+. *Repository reality.* The path is a Git top-level, `--expected-head` is a full
+  40-character lowercase SHA, observed HEAD equals it, and the worktree is clean
+  with resolved submodules. The state root must not already exist; one-shot
+  operator roots are never overwritten.
+. *Pinned governing inputs.* WorkItem, Profile, Policy, Components and Task are
+  read *from the pinned commit*, not the worktree, and each is parsed by
+  `serialization.py` with closed key sets. `WorkItem.profile_ref` must name the
+  supplied profile path. Each input's SHA-256 is recorded, and
+  `_governing_inputs_unchanged` re-checks them later.
+. *Role coherence.* `WorkItem.personas` must exactly equal the set of roles the
+  profile's phases use, and the Run execution bindings must cover exactly the
+  same roles. Mixed adapters across roles are rejected, because one scalar
+  executable is launched.
+. *Scope and action containment.* `_preflight` itself normalizes every scope
+  path, requires each phase's `authorized_actions` to be a subset of the policy
+  actions, and requires each phase's scope to lie inside the WorkItem scope. It
+  also requires `WorkItem.initial_phase` to exist in the profile.
+. *A1 authority relations* (`_admit_a1`, pure, no external state): every
+  WorkItem, phase and governing path must have valid normalized A1 shape;
+  governing inputs must lie inside `governance_paths`; no phase scope may
+  overlap `governance_paths` in either direction; WorkItem scope must lie inside
+  `work_item_scope_ceiling`; and the hop limit must respect both the policy
+  maximum and the Coordinator hard maximum of 20.
+. *A2 evidence admission.* Every evidence name a phase references must be
+  defined in the policy (`_selected_evidence_names`), and
+  `evidence.py:prepare_evidence_commands` resolves the executable, snapshots the
+  environment and records the authored-argv digest, timeout and stat
+  fingerprint. `_admit_evidence_disposition` additionally requires that any
+  phase with required evidence is a *gate* review declaring a
+  `failed_evidence_route` -- the single exception being the closed terminal
+  Worker shape of `simple@v1`.
+. *A3 operating contract.* `prompt.py:load_agent_operating_contract` loads the
+  package resource `resources/agent_operating_contract_v6.txt` through
+  `importlib.resources` and admits it only if its SHA-256 equals the reviewed
+  constant. It cannot be selected, overridden or replaced by a consumer, and
+  `assemble_prompt` re-checks the digest before every prompt.
+
+=== Projection: result contract selection and schema
+
+Selection is a deterministic function of admitted facts, never a phase-name
+switch (`model.py:select_result_contract`). It reads one explicit selection key
+-- phase role, whether a review descriptor exists, its `finding_authority`, the
+convergence role, and the profile/Run schema versions -- and returns a
+`ResultContractKind`:
+
+[cols="2,3",options="header"]
+|===
+|Admitted shape |Selected kind
+
+|Any convergence role other than `none`
+|`generic-routing-result`
+
+|The closed terminal Worker shape (`simple@v1`: one phase, no review, the
+`simple-self-check` modifier, `task-check` evidence, a single `accept` route
+with `effect: complete`)
+|`generic-routing-result`
+
+|`worker` role with no review descriptor
+|`work-result`
+
+|`independent_reviewer` role with a review descriptor
+|`review-verdict`
+
+|Anything else currently admissible
+|`generic-routing-result`
+|===
+
+`model.py:result_contract_version` then maps the kind and profile/phase facts to
+a wire version: `work-result`/`review-verdict` are version 3 under profile
+schema 3 and version 1 otherwise; the generic contract is version 2 under
+profile schema 3 or any convergence role, and version 1 otherwise.
+`admits_result_contract_version` is the single predicate for which pairs exist.
+
+`structured_result_schema.py` builds the provider-neutral closed envelope:
+`{schema_version, run_id, hop_id, invocation_id, result}` with every identity
+field pinned to a single-member enum of the dispatched value, and `result`
+projected for the selected kind. Three properties are worth naming:
+
+* Every object is `additionalProperties: false` with an explicit `required`
+  list, so an unknown field is unrepresentable rather than ignored.
+* `requested_route` is an enum of the current phase's permitted routes, taken
+  from `reducer.py:permitted_route_keys` -- the very function the reducer uses --
+  and an empty permitted-route set raises rather than meaning "unconstrained".
+* The family projections are *subtractions and additions on one shape*:
+  `work-result` drops `outcome` and adds `status: completed|blocked`;
+  `review-verdict` drops `outcome` and adds `verdict: accept|changes_required`;
+  both drop the convergence fields. A Worker therefore has no field that could
+  hold a review verdict, and vice versa.
+
+`codex_adapter.py` re-projects that envelope into OpenAI Structured Outputs and
+asserts the strict subset itself (`assert_openai_strict_schema`);
+`claude_adapter.py` passes the serialized schema through `--json-schema` and
+extracts only the successful structured-output member of Claude's wrapper.
+Neither adapter infers workflow semantics: each receives an already-selected
+kind and version.
+
+=== One Hop end to end
+
+`vertical.py:run_one_hop` is the single ordering that matters:
+
+[source,text]
+----
+select result contract kind + version      (model.py)
+preflight_hop: repository identity, HEAD, cleanliness   (git_facts.py)
+allocate hop_id = H{hop_used+1:03d}
+assemble_prompt: A3 digest check, [identity] header, selected components,
+    persona (authority=none), workflow_policy, task, bounded context/diff
+    with visible omissions                              (prompt.py)
+adapter.execute(AgentExecutionRequest with permitted_routes)  (adapter.py)
+transport check: returncode/timeout, candidate present
+validated_result: envelope keys, version, exact run/hop/invocation match,
+    then family-specific parse                          (adapter.py)
+CommitIntent (if any): disposition permitted? phase grants edit AND commit?
+    -> trusted_commit, else observe_hop                 (git_facts.py)
+post-acceptance anomalies: commit subject, durable artifact
+evidence: run each phase evidence command, re-validate each Observation
+post-evidence: HEAD unmoved, worktree still clean
+reduce_result(run, result, profile, facts=MechanicalFacts(...))  (reducer.py)
+checkpoint_projection + atomic persistence              (persistence.py)
+----
+
+Two deliberate properties: the transport outcome is separated from semantic
+acceptance (`ExecutionResultValidationError` carries the completed outcome with
+the rejection), and evidence runs *after* the trusted commit but its result can
+still override the requested route, so a failing check cannot be committed away.
+
+=== Reduction order
+
+`reducer.py:reduce_result` applies mandatory preemption before any Finding or
+route authority. The order is itself the contract:
+
+. *Contract identity.* The persisted Hop's recorded `result_contract_kind` and
+  `result_contract_version` must be complete, supported and equal to the actual
+  result family and version. An unpersisted non-generic family is unsupported.
+. *Correlation.* The Run must be `running` and the result must correlate to the
+  last recorded Hop. Under profile schema 3, an evaluator phase additionally
+  requires a trusted qualification index with exactly one staged attempt whose
+  hop, sequence and pre-route anchor match.
+. *Semantic observation, then mechanical preemption.* A requested human stop or
+  escalation is captured as a `SemanticStop` *before* mechanical stops are
+  selected, and every controlling mechanical fact (profile error, result-state
+  error, repository anomaly, policy anomaly, required-evidence error) is also
+  appended to `Run.anomalies`, so a captured semantic stop can never hide the
+  dirty/evidence/policy condition that preempted it.
+. *Terminal and scope guards.* A `failed` outcome discards every proposal; a
+  `scope_changed` claim stops.
+. *Route legality.* A reserved escape route requested directly fails closed; an
+  unknown route fails closed; `changes_required` from a phase with no review
+  fails closed; an advisory review cannot take `complete`.
+. *Finding deltas,* applied atomically under the phase's derived authority
+  (`gate` with the descriptor's `finding_authority`, otherwise `agent`). Any
+  `ReductionError` stops the Run without partial mutation.
+. *Route resolution.* A `blocked` result stops with deltas retained;
+  required-evidence failure substitutes `failed_evidence_route`; a convergence
+  goalpost substitutes the reserved escape route;
+  `changes_required` cannot take `complete`; an exhausted hop budget blocks a
+  `goto` but still permits a deterministic completion; a supervisor route parks
+  the Run; and `_apply_route` refuses `complete` while any Finding is open and
+  blocking.
+
+See link:../semantic_model/workflow_execution_semantics.adoc#finding-identity[the
+Semantic Model] for what that authority *means*, including Coordinator-allocated
+Finding identity versus authorized disposition.
+
+=== Git observation and the single trusted commit surface
+
+`git_facts.py` is the only module that writes Git, and `trusted_commit` is its
+only write path. Its own docstring states the intent; the code enforces it:
+repository identity must match, configured external clean/process filters are
+refused, HEAD must equal the expected base, submodules must be resolved, and the
+commit subject must pass `commit_subject_error` -- one non-empty line,
+Conventional-Commit-compatible, containing the WorkItem ID and Hop ID as
+separately bounded tokens. `CommitIntent.paths` are normalized, deduplicated and
+required to lie inside the phase's authorized scope; the actual changed-worktree
+set must equal them exactly, with both unexpected dirty paths and
+intent-without-mutation rejected. Staging is an explicit pathspec, the commit
+uses `--no-verify`, and the post-commit observation must show exactly one commit
+whose changed paths and subject match the intent, or the whole thing is an error.
+
+`vertical.py` additionally refuses a `CommitIntent` whose phase lacks *both*
+`edit` and `commit`, and refuses one paired with a disposition that may not
+commit. A review phase may commit only its declared durable artifact paths.
+When no commit is made, `observe_hop` records base/end HEAD, actual commits,
+changed paths and anomalies anyway, so agent-made mutation stays observable.
+
+This is the concrete content of WFC's repository-acceptance integrity: the
+Coordinator's own post-Hop Git observation, not a provider sandbox, is the
+authoritative enforcement of a phase's `authorized_scope`.
+
+=== Evidence processing
+
+Evidence authority is admitted once, at preparation, and never re-derived from a
+name at execution time. `evidence.py` separates the two: a
+`PreparedEvidenceCommand` carries the authored argv, its digest, timeout,
+canonical repository root, environment snapshot and admission-time executable
+fingerprint; the `EvidenceRunner` seam only *executes*. The default runner is
+`FailClosedEvidenceRunner`, which executes nothing and raises.
+
+`ProductionEvidenceRunner.observe` re-resolves the executable, spawns with
+`shell=False`, stdin at `DEVNULL`, the snapshotted environment and the canonical
+cwd, and classifies the outcome into exactly one `Observation` status:
+`pass` (exit 0), `fail` (positive exit code), `error` (resolution, spawn,
+timeout, signal or communication failure) or `not_run`. Stream bodies are
+reduced to byte counts and SHA-256 digests. A bounded stdout/stderr tail may be
+attached as `UntrustedDiagnosticCapture`, which `model.py` documents as never
+trusted A2 evidence: not digested, not an identity or outcome fact, and not
+consulted by any routing decision.
+
+`evidence.py:observation_error` then re-validates the returned Observation
+against the prepared command -- provider/command-name identity, status
+membership, argv digest, authored `argv[0]`, executed argv tail, timeout,
+exit-code/signal coherence per status and the stream-fact invariants -- so a
+runner cannot report a passing observation belonging to a different command.
+Any such error becomes `MechanicalFacts.required_evidence_error`, and a `fail`
+becomes `required_evidence_failed`, which the reducer turns into the declared
+failure route or a stop.
+
+Which evidence a Run owes is fixed by the program's declared evidence profiles,
+not by the Commission: `robust@v1` and `simple@v1` define only `task-check-v1`,
+so they always require `task-check`, while `direct@v1` additionally defines a
+`none` profile and may therefore run with no evidence. `task-check` is defined
+by `governance/policy-bases/repository-standard-v1.yaml` as `python -m pytest -q`
+with a 900-second timeout, bounded by
+`model.py:COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS`.
+
+=== Persistence
+
+`persistence.py` publishes complete files or leaves the previous file untouched
+(`atomic_write_text`/`atomic_write_json`). Per Run, under the state root's
+`checkouts/<id>/`, it maintains `run.json` (the authoritative Run snapshot),
+`checkpoint.json` (a generated projection that records the exact
+`run_json_sha256` it projects, so a later rewrite of `run.json` cannot silently
+become new predecessor truth) and `execution-evidence.json` (append-only rows,
+each append preserving all predecessors). `operator.py` additionally writes
+`operator-plan.json` and `operator-summary.json` at the state root, and bounded
+per-invocation provider diagnostics when a transport outcome exists without an
+accepted result.
+
+`persistence.py` also provides the dispatch-marker mechanism:
+`recover_uncertain_dispatch` conservatively charges a marked Hop, never replays
+it, and rejects a marker whose Run identity, base HEAD, sequence or budget
+conflicts with persisted state. Note the boundary precisely: markers are written
+and recovered by `slice4.py`, the bounded local Codex proof boundary. The
+production serial driver `operator.py:run_serial_hops` deliberately runs
+"without reserving a future Hop" and charges each Hop as it is appended, so
+same-Run marker recovery is modeled and unit-tested rather than wired into the
+normal path -- link:../backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc[the atomic
+hop-recovery record] owns that gap.
+
+`trusted_qualification_index_for_run` and `validate_checkpoint_inputs` bind an
+evidence document to exactly one valid Run/evidence pair and exclude abandoned
+staged rows, which is what makes convergence facts replay-derivable rather than
+mutable shadow state.
+
+=== Adapters
+
+Both implemented adapters sit behind `AgentExecutionPort` and return transport
+facts only.
+
+`codex_adapter.py` launches `codex ... exec --ephemeral --json --sandbox
+workspace-write --output-schema <file> --output-last-message <file>`, writes the
+projected strict schema to a file and reads the last message back.
+
+`claude_adapter.py` launches `claude -p --output-format json --json-schema
+<serialized> --restricted --safe-mode --strict-mcp-config --tools
+Read,Glob,Grep,Edit,Write,Bash --permission-mode acceptEdits
+--permission-prompts none --no-session-persistence`, with a generated settings
+file enabling the provider sandbox (`failIfUnavailable: true`,
+`allowUnsandboxedCommands: false`), denying reads of `~/`, allowing reads of the
+repository and an invocation-scoped scratch directory, allowing writes only to
+that scratch, setting `network.allowedDomains` to the empty list and denying
+`WebFetch`/`WebSearch`. It also constructs a short, invocation-scoped `TMPDIR`
+symlink because Claude Code derives AF_UNIX socket paths from `TMPDIR` and the
+108-byte `sun_path` limit would otherwise break its Bash sandbox bridge. The
+environment is reduced to `PATH`, `HOME`, `USER`, `LANG` plus an explicit,
+validated allowlist.
+
+Per-role execution bindings (`RunExecutionConfiguration`) select adapter, model
+and reasoning effort by *workflow role*. `operator.py:_preflight` requires one
+adapter across all roles. Both provider sandboxes are provider-owned and not
+Coordinator-verified (`DEC-WFC-009`); see link:../architecture.md[architecture]
+for the standing containment statement.
+
+[[implemented-p1-p3]]
+== Implemented Projected Result Contracts: P1--P3
+
+P1--P3 are implemented, independently accepted and Runtime-promoted; their
+current disposition is owned by link:../backlog/_open.adoc[the active-work
+manifest]. This section distils what they actually built so the mechanism is
+understandable without reading the design chronology in
+link:../wfc_projected_result_contracts_concept_2026-10-07.adoc[the concept],
+which remains the definition source for the *unfinished* slices only.
+
+The problem they solved:: A category of mechanical contract failures was being
+rejected after the fact -- a Worker emitting a review-style disposition, a
+fabricated route, a re-authored immutable Finding field. Projection makes those
+*unrepresentable before authority is even checked*, rather than merely invalid.
+
+P1 -- projection infrastructure:: One deterministic selection seam. The
+permanent concepts are `ResultContractKind` and `select_result_contract`
+reading an explicit tuple of admitted facts. The selected kind and version are
+persisted on the Hop, so reduction and replay use the recorded identity rather
+than re-deriving it. Nothing below the semantic-type line was new: the adapter
+projection stage already existed.
+
+P2 -- distinct result families:: `WorkResult` and `ReviewVerdict` exist as
+separate types next to `RoutingResult`, with separate parsers
+(`serialization.py:work_result_from_data` / `review_verdict_from_data`) and
+separate projections. `WorkResult.status` has only `completed|blocked`;
+`ReviewVerdict.verdict` has only `accept|changes_required`. The prompt states
+the family and its vocabulary explicitly (`prompt.py`: "do not emit review
+verdict vocabulary" / "do not emit worker status vocabulary"), and
+`reduce_result` refuses a result whose family does not match the persisted
+contract identity.
+
+P3 -- Finding authorship projection:: What a model may author about a Finding is
+now typed. A new Finding is authored with `finding_id: null` typed as `null`
+plus `invariant`, `blocking`, `proposed_state`, evidence and optional successor;
+an existing Finding is addressed by `finding_id` with a proposed state and
+evidence only. Immutable trusted fields are never re-authored from a result.
+Under contract version 3 the Finding array becomes a closed `anyOf` of three
+alternatives -- new authoring, an evidence-only *citation*, and a *transition*
+whose target is a tagged union (`resolved` / `residual` / `superseded` with a
+required `successor_ref` / `open` with `new_material_evidence`). Authority is
+still checked at reduction: projection bounds what can be *said*, never what is
+allowed to *stick*.
+
+What P1--P3 deliberately did not do:: They did not change the reducer's
+stateful authority checks, and they did not add any cross-phase or
+whole-program reasoning. That is exactly the boundary where the remaining
+slices sit.
+
+[CAUTION]
+====
+P3.5 (Commission/authority conformance), P4 (Coordinator-owned
+effects/mechanics, including CommitIntent canonicalization) and P5 (provider
+capability/projection cleanup) are *unimplemented concept direction*. They
+authorize nothing, and their presence in the same concept document as P1--P3
+does not make them delivered. P3.5's concrete observed defect is owned by
+link:../backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc[the gate
+Finding-authority BUG]; P4/P5 standing is in
+link:../backlog/_open.adoc[the active-work manifest].
+====
+
+[[routing-layers]]
+== Routing safety: four layers, not one catch-all validator
+
+[cols="1,3,3",options="header"]
+|===
+|Layer |What can be checked |Cannot prove by itself
+
+|Program/admission (before Run)
+|Graph shape; route targets; declared role/phase capabilities; mandatory review
+barriers; legal disposer reachability against an abstract state model
+|Future agent judgment, future actual Finding mutations, whether a reviewer
+finds new defects
+
+|Typed dispatch (before each Hop)
+|Current-phase route enum, projected WorkResult/ReviewVerdict family, known
+identity and, where sound, already-determined state restrictions
+|A future post-Hop state that depends on unknown Finding deltas from that same
+Hop
+
+|Semantic acceptance (when result arrives)
+|Correlated identity, declared operations, legal Finding lifecycle, actual
+Git/evidence/authorization facts
+|A legitimate replacement route the agent did not select
+
+|Route reduction (after lawful deltas)
+|`complete` cleanliness today; proposed `goto` cleanliness as a future P3.5
+option; safe stop rather than invented semantic routing
+|Progress/convergence/quality beyond stated contracts
+|===
+
+Layers one through four are all implemented *except* the admission-time
+disposer-reachability check in row one and the `goto` guard in row four; those
+are the P3.5 question. `robust@v1` instead obtains its renewed-broad-review
+guarantee *structurally*: its closed record places the only `complete` route on
+`broad_review.accept`, both review phases are `context: fresh`, and no Intent
+can add a route -- so re-entering `broad_review` after a correction is
+necessarily a fresh independent review, with no general reachability validator
+involved.
+
+[[target]]
+== Target architecture (proposed, intentionally small)
+
+[IMPORTANT]
+====
+From here on this document records target hypotheses, deferred design options
+and read-only archaeology questions. None of it is implemented or selected.
+====
 
 [source,text]
 ----
@@ -46,145 +544,143 @@ Existing consumers own their governing WorkItems, profile files and policies und
     NOT implemented or selected architectures.
 ----
 
-This schematic is about responsibilities, not a final disk layout. Program packaging, selection syntax, binding grammar, immutable pin, ownership, migrations and compatibility are undecided.
+This schematic is about responsibilities, not a final disk layout. Program
+packaging, selection syntax, binding grammar, immutable pin, ownership,
+migrations and compatibility are undecided. The three closed programs plus the
+Front Door compiler are a fixed, name-recognized set, not a step toward a
+catalogue service.
 
-=== 2.1 Binding invariants to preserve
+=== Binding invariants to preserve
 
-* A Commission selects a *specific reviewed program revision*. In-flight and archived Run semantics never silently change when a program evolves.
-* A Commission supplies concrete task parameters, repository-relative scopes, evidence/material targets and requested provider bindings only through approved slots.
-* A parameter cannot remove required gates, bypass mandatory defensive review, widen permissions, or grant access to a protected inference context.
-* The trusted boundary derives effective capabilities as an intersection/composition of applicable ceilings; never treat phase names, provider selection, or path strings as permissions.
-* Program reuse must not weaken reviewer independence, Finding identity or evidence provenance.
-* No historical profile bulk migration is a prerequisite. First prove one newly commissioned instance with one reusable program.
+* A Commission selects a *specific reviewed program revision*. In-flight and
+  archived Run semantics never silently change when a program evolves.
+* A Commission supplies concrete task parameters, repository-relative scopes,
+  evidence/material targets and requested provider bindings only through
+  approved slots.
+* A parameter cannot remove required gates, bypass mandatory defensive review,
+  widen permissions, or grant access to a protected inference context.
+* The trusted boundary derives effective capabilities as an intersection of
+  applicable ceilings; never treat phase names, provider selection or path
+  strings as permissions.
+* Program reuse must not weaken reviewer independence, Finding identity or
+  evidence provenance.
+* No historical profile bulk migration is a prerequisite.
 
-=== 2.2 Possible deployment / governance arrangements (not selected)
+=== Possible deployment / governance arrangements (not selected)
 
 * The WFC distribution might ship reviewed standard program YAML.
-* An installation could choose an approved special-purpose catalogue, potentially including separately reviewed consumer-maintained programs.
-* A program may declare typed, bounded parameters. Only validated values that preserve mandatory guarantees are admissible; a free-form `override` that mutates the phase graph would reintroduce Commission-scoped profile drift.
-* A novel one-off program is a separately reviewed candidate, **not** a Commission setting. Its exact immutable content would need to be pinned with the Run, regardless of whether it is reusable.
-* A future packaging mechanism should not be assumed to allow arbitrary Python plugin execution inside the trusted WFC interpreter. Deployment policy, execution authorization and program-package installation are separate trust boundaries.
+* An installation could choose an approved special-purpose catalogue, possibly
+  including separately reviewed consumer-maintained programs.
+* A program may declare typed, bounded parameters. Only validated values that
+  preserve mandatory guarantees are admissible; a free-form `override` that
+  mutates the phase graph would reintroduce Commission-scoped profile drift.
+* A novel one-off program is a separately reviewed candidate, **not** a
+  Commission setting. Its exact immutable content would need pinning with the
+  Run regardless of reuse.
+* A future packaging mechanism should not be assumed to permit arbitrary Python
+  plugin execution inside the trusted interpreter. Deployment policy, execution
+  authorization and program-package installation are separate trust boundaries.
 
-None of the above requires a new catalogue service or plugin framework for the first Front Door slice. Use the profile archaeology to identify where genuine safe variation already exists and where product-level distinct programs are necessary.
+None of this requires a catalogue service or plugin framework now.
 
-=== 2.3 Level-1 placement intentionally undecided
+=== Level-1 placement intentionally undecided
 
-A higher level might compose multiple bounded Level-0 Runs, use recursively similar reducer machinery, use LangGraph, or apply a different orchestration model. Current evidence is insufficient to choose. Do not build a Level-1 recursive graph engine, integration API or special program-authoring rights as a prerequisite for Front Door. Preserve only the Level-0 authority/immutability interface needed by *any* future caller.
+A higher level might compose multiple bounded Level-0 Runs, use recursively
+similar reducer machinery, use LangGraph, or apply a different orchestration
+model. Current evidence is insufficient to choose. Do not build a Level-1
+recursive graph engine, integration API or special program-authoring rights.
+Preserve only the Level-0 authority/immutability interface any future caller
+needs.
 
-== 3. Routing safety: four layers, not one catch-all validator
+=== Deferred ahead-of-time design alternatives
 
-[cols="1,3,3",options="header"]
-|===
-|Layer |What can be checked |Cannot prove by itself
-
-|Program/admission (before Run)
-|Graph shape; route targets; declared role/phase capabilities; mandatory review barriers; legal disposer reachability against an abstract state model
-|Future agent judgment, future actual Finding mutations, whether a reviewer finds new defects
-
-|Typed dispatch (before each Hop)
-|Current-phase route enum, projected WorkResult/ReviewVerdict family, known identity and, where sound, already-determined state restrictions
-|A future post-Hop state that depends on unknown Finding deltas from that same Hop
-
-|Semantic acceptance (when result arrives)
-|Correlated identity, declared operations, legal Finding lifecycle, actual Git/evidence/authorization facts
-|A legitimate replacement route the agent did not select
-
-|Route reduction (after lawful deltas)
-|`COMPLETE` cleanliness today; proposed `GOTO` cleanliness as future P3.5 option; safe stop rather than invented semantic routing
-|Progress/convergence/quality beyond stated contracts
-|===
-
-=== 3.1 Illustrative historical P3.5 route guard
-
-[source,yaml]
-----
-# DESIGN EXAMPLE ONLY -- unsupported in current runtime.
-phases:
-  review:
-    routes:
-      enter_audit_trail:
-        effect: goto
-        target: audit_trail
-        require_no_open_blocking_findings: true
-----
-
-Location and ownership:: Under the target separation this is a *workflow program* route guarantee; the Commission cannot opt it out. The interpreter enforces the condition after lawful same-Hop Finding deltas. This is not a WorkItem binding, a Model prompt, or a source of authority.
-
-Existing source facts:: `src/workflow_coordinator/model.py:Route` has no such field. `src/workflow_coordinator/reducer.py:_apply_route` currently checks blocker-cleanliness on `COMPLETE`, not on ordinary `GOTO`. The historical P3.5 design proposes it for `GOTO` and specifies stop-without-advance behavior. The design is deferred and subject to explicit revision.
-
-=== 3.2 Ahead-of-time design alternatives
-
-Problem:: Projected `requested_route` is already an enum of declared phase routes. But in a review Hop with Finding mutations, whether an exit route is legal can depend on the *same* result. A static enum of all phase routes cannot express all those dependencies automatically.
+Problem:: Projected `requested_route` is already an enum of the current phase's
+permitted routes. But in a review Hop with Finding mutations, whether an exit
+route is legal can depend on the *same* result, and a static enum cannot express
+that dependency.
 
 Options to assess through minimal executable counterexamples:
 
-. Derive narrower permitted-route sets from *known pre-Hop persisted state* where the phase cannot legally change the relevant property. Do not discard a route that is enabled by valid same-Hop Finding disposition.
-. Refine the result algebra into typed per-outcome variants (e.g., accepted-clean vs changes-required), and project them to the provider's supported strict dialect. Avoid accidental claims that a string `status=clean` proves persisted Finding cleanliness.
-. Split finding/result production and next-route selection when a genuinely post-commit state is necessary; quantify the extra Hop and cost.
-. Keep the simple guarded `GOTO` for dynamic enforcement, potentially with an earlier dispatch restriction when it is sound.
+. Derive narrower permitted-route sets from *known pre-Hop persisted state*
+   where the phase cannot legally change the relevant property. Do not discard a
+   route enabled by valid same-Hop disposition.
+. Refine the result algebra into typed per-outcome variants (accepted-clean
+   versus changes-required) and project them to the provider's supported strict
+   dialect. Avoid claiming that a string `status=clean` proves persisted Finding
+   cleanliness.
+. Split finding/result production from next-route selection when a genuinely
+   post-commit state is necessary; quantify the extra Hop and cost.
+. Keep the simple guarded `goto` for dynamic enforcement, possibly with an
+   earlier dispatch restriction where sound.
 
-The existing strict OpenAI schema subset supports `anyOf`, fixed object keys and enum members, but not general unrestricted dependent validation. Regardless of projection, the trusted reducer must check real persisted Finding identity/state/authority. Choosing among these options is a deferred design decision, not a reason to expand the reducer now.
+The strict OpenAI schema subset supports `anyOf`, fixed object keys and enum
+members, but not general dependent validation. Regardless of projection, the
+trusted reducer must still check real persisted Finding identity, state and
+authority. Choosing among these options is a deferred design decision, not a
+reason to expand the reducer now.
 
-=== 3.3 Liveness / 'no dead ends' question
+=== Liveness / 'no dead ends' question
 
-The owner intent is not to impose "a disposer on every topological path." A clean-only audit/documentation branch is legitimate. The target is to avoid *entering* that branch with unresolved blockers and no legitimate repair continuation. Two concerns must be separated:
+The owner intent is not "a disposer on every topological path." A clean-only
+audit or documentation branch is legitimate. The target is to avoid *entering*
+that branch with unresolved blockers and no legitimate repair continuation. Two
+concerns must stay separate:
 
-* Global completion safety (`OPEN && blocking` forbids `COMPLETE`) -- implemented.
-* Admission-time repair availability and clean-only branch entry -- requirements under P3.5 reconsideration.
+* Global completion safety (`open && blocking` forbids `complete`) --
+  implemented.
+* Admission-time repair availability and clean-only branch entry --
+  requirements under P3.5 reconsideration.
 
-The exact candidate-requirement wording and its caution against conflating it with the maintainer's narrower 2026-10-26 existential P3.5 direction are owned by the semantic model (`../semantic_model/workflow_execution_semantics.adoc`, "The P3.5 problem, without ambiguous quantifiers"); this technical view does not restate that wording, only the layer boundary it falls on. The quantifiers, treatment of human stops, self-loops, carried Findings and proof boundary require explicit review there. Do not present this as the already-accepted P3.5 design.
+The candidate-requirement wording, and its caution against conflating it with
+the maintainer's narrower 2026-10-26 existential direction, are owned by
+link:../semantic_model/workflow_execution_semantics.adoc#p35-problem[the Semantic
+Model's P3.5 section]; this view states only the layer boundary it falls on. Do
+not present it as the already-accepted P3.5 design.
 
-== 4. Program catalogue scenarios to verify with current profile inventory
+== Remaining archaeology and owner decisions
 
-[cols="2,3,3",options="header"]
-|===
-|Program scenario |Distinct topology / mandatory semantics |Implementation evidence
+These questions predate the Front Door and still apply to the legacy
+hand-authored profiles under `governance/self-development/`, not to the three
+closed programs.
 
-|Standard review loop
-|Independent review, correction/rereview with blocker lifecycle, clean completion
-|Current schema-v2 self-development profiles; duplicated by Commission
+. Which apparent Commission-level alterations to `routes`, `phases`, review
+  barriers and `finding_authority` in legacy profiles are genuine program
+  variants, and which are task bindings accidentally placed in a copied profile?
+. Which candidate bindings can vary without affecting topology or guarantees?
+  Which switches (for example a final adversarial review) inherently change the
+  flow and so need a separately reviewed program?
+. What is the smallest evidence needed to treat a consumer-maintained
+  special-purpose profile as executable, without inventing a deployment plugin
+  platform?
+. For Level 1, collect requirements only; do not infer a recursive reducer or a
+  LangGraph choice from the existence of nested work.
 
-|Staged adversarial review
-|Broad independent initial review, economical focused correction loop, fresh broad final review; potentially phase-specific model bindings
-|Historic variants need Git/Run-Ledger reconstruction; no stable reusable product program yet proven
+One earlier question is now answered rather than open: *can one real Commission
+use a reviewed reusable program revision without a new profile copy and without
+relaxing effective policy?* Yes -- that is exactly what the Front Door compiler
+does for the three closed programs, and the rendered per-Commission profile file
+is its deterministic output rather than a divergent copy.
 
-|Convergence escape
-|When repeated repairs stagnate, a bounded diagnosis/strategy path rather than endless repeated local fixes
-|Slices 1-4 accepted; v3 models/typed convergence records and tests present; actual consumer adoption verify
+A read-only census should normalize graph topology without inferring semantic
+equivalence, compare review purposes, Finding/gate semantics, capability
+boundaries, evidence obligations and authorized scopes separately, reconstruct
+*effective* authority while keeping Policy, WorkItem and Profile distinct, and
+produce cited counterexamples instead of implementing anything. The existing
+link:../cold_storage/backlog/pre-0.1.0b1/front-door/workflow_program_profile_archaeology_2026-10-27.adoc[2026-10-27 profile archaeology]
+holds the prior inventory.
 
-|Elevated privilege + defensive review
-|Authorized elevated writes followed on *every successful continuation* by mandatory defensive review
-|Existing future FTR; not a deployed sandbox/phase stack
+The planning sequence this model was written against was: documentation
+consolidation, then read-only archaeology, then a reviewed binding contract,
+then one concrete Commission using a reusable standard program, then an
+assessment of measured ergonomic benefit. The reusable-program step has since
+happened for three programs; the *measured* ergonomic benefit has not been
+assessed, and no kernel refactor, mass profile conversion or new P3.5 validator
+was built. The per-scenario implementation evidence that an earlier revision
+kept here as a catalogue table now lives with each use case in
+link:../functional_model/workflow_program_use_cases.adoc[the Functional Model],
+so there is one home per scenario rather than two.
 
-|Protected-context program
-|Restricted information and egress, approved inference provider, auditable trust boundary
-|Scenario/architecture only; no complete enforcement claim
-
-|Simple task
-|Single bounded agent work phase, no mandatory independent review
-|Proposed scenario only
-|===
-
-== 5. Additional evidence questions for the profile archaeology
-
-. Which apparent Commission-level alterations to `routes`, `phases`, review barriers and `finding_authority` are genuine program variants, and which are task bindings accidentally placed in a copied profile?
-. Which candidate bindings can vary without affecting topology or guarantees? Which proposed switches (e.g., final adversarial review) inherently change the flow and therefore need a separately reviewed program variant?
-. Can one real Commission use a reviewed reusable profile revision without a new profile copy and without relaxing effective policy?
-. What is the smallest evidence needed to treat a consumer-maintained special-purpose profile as executable, without inventing a deployment plugin platform now?
-. For Level 1, collect requirements only; do not infer a recursive reducer or LangGraph choice from the existence of nested work.
-
-== 6. Read-only archaeology evidence checklist
-
-. All Profile/ProfileRevision/WorkItem references, including historical and test-only uses.
-. Normalized graph topology without automatically inferring semantic equivalence.
-. Separately compare review purposes, findings/gate semantics, capability/role boundaries, evidence obligations and authorized scopes.
-. Reconstruct *effective* authority when applicable Policy and WorkItem are known; keep the three sources distinct.
-. Compare final adversarial-review variants through commits and archived Run evidence; distinguish phase semantic change from simple reviewer prompt change.
-. Verify convergence v3 implementation, acceptance tests, profile adoption and actually executed routes separately.
-. Produce cited counterexamples to unsafe merging; do not implement anything during this census.
-
-== 7. Integration and owner decisions
-
-First documentation consolidation; then read-only archaeology; then reviewed binding contract; then *one* concrete new Commission using a reusable standard program; then assess measured ergonomic benefit. No kernel refactor, no automatic mass conversion, no new P3.5 validator before the boundary stabilizes.
-
-Controlling references remain `docs/README.adoc`, `docs/architecture.md`, the applicable backlog/FTRs, and `docs/warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc`. This draft changes none of them.
+Controlling references remain link:../README.adoc[the authority index],
+link:../architecture.md[architecture], the applicable backlog records, and
+link:../warm_storage/concepts/workflow_coordinator_front_door_priority_and_profile_commission_boundary_plan_2026-10-26.adoc[the Front Door priority and boundary plan].
+This model changes none of them.
