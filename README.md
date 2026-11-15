@@ -8,6 +8,7 @@ The supported package requires Python 3.10 or newer. Install it with
 execution always requires separate consumer authority and is never implied by
 installation.
 
+For detailed setup, test selection and code navigation, see the [Developer Guide](docs/developer_guide/developer_guide.adoc).
 For development, install `python3 -m pip install '.[dev]'`. The small Makefile
 provides `make test`, `make lint`, `make format-check`, `make check`,
 `make coverage`, `make coverage-html`, and `make build`. Set `PYTHON` to the
