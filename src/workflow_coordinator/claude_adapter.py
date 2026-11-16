@@ -1,4 +1,4 @@
-"""Claude Code CLI transport adapter with a closed noninteractive profile."""
+"""Claude Code CLI transport with a restricted noninteractive profile."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class ClaudeCliError(ExecutionNotStartedError, RuntimeError):
     """A local pre-launch Claude setup or launch failure."""
 
 
-_TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
+_TOOLS = "Read,Glob,Grep,Edit,Write,Bash,WebFetch,WebSearch"
 _ENVIRONMENT_NAMES = ("PATH", "HOME", "USER", "LANG")
 
 
@@ -158,12 +158,15 @@ class ClaudeCliAdapter:
                     "allowRead": [str(request.repository.resolve()), scratch],
                     "allowWrite": [scratch],
                 },
+                # Claude 2.1.322 merges WebFetch(domain:*) below into the Bash
+                # proxy allowlist. This requests broad networking, including
+                # potential intranet access, not public-only containment.
                 "network": {"allowedDomains": []},
             },
             "permissions": {
                 # Restricted mode confines file tools to the working directory.
-                "allow": ["Edit", "Write"],
-                "deny": ["WebFetch", "WebSearch"],
+                "allow": ["Edit", "Write", "WebFetch(domain:*)", "WebSearch"],
+                "deny": [],
                 "blockReadsOutsideWorkingDirectories": True,
             },
         }

@@ -1,4 +1,4 @@
-"""Offline conformance tests for the closed Claude Code CLI adapter."""
+"""Offline conformance tests for the restricted Claude Code CLI adapter."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def adapter(tmp_path: Path, executable: Path) -> ClaudeCliAdapter:
     return ClaudeCliAdapter(tmp_path, model="claude-model", reasoning_effort="high", executable=str(executable))
 
 
-def test_exact_closed_argv_profile_settings_cwd_prompt_and_environment(tmp_path: Path):
+def test_exact_network_argv_profile_settings_cwd_prompt_and_environment(tmp_path: Path):
     observed = tmp_path / "observed.json"
     executable = fake(tmp_path, f'''\
         import json, os, pathlib, sys
@@ -61,7 +61,7 @@ def test_exact_closed_argv_profile_settings_cwd_prompt_and_environment(tmp_path:
     assert argv[:4] == ["-p", "--output-format", "json", "--json-schema"]
     schema = observation["schema"]
     assert argv[4] == json.dumps(schema, separators=(",", ":"), sort_keys=True)
-    assert argv[5:] == ["--model", "claude-model", "--effort", "high", "--restricted", "--safe-mode", "--strict-mcp-config", "--tools", "Read,Glob,Grep,Edit,Write,Bash", "--settings", str(tmp_path / "claude-closed-settings.json"), "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--no-session-persistence", "make the bounded change"]
+    assert argv[5:] == ["--model", "claude-model", "--effort", "high", "--restricted", "--safe-mode", "--strict-mcp-config", "--tools", "Read,Glob,Grep,Edit,Write,Bash,WebFetch,WebSearch", "--settings", str(tmp_path / "claude-closed-settings.json"), "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--no-session-persistence", "make the bounded change"]
     assert schema["type"] == "object" and schema["additionalProperties"] is False
     assert schema["required"] == ["schema_version", "run_id", "hop_id", "invocation_id", "result"]
     assert set(schema["properties"]) == set(schema["required"])
@@ -79,11 +79,14 @@ def test_exact_closed_argv_profile_settings_cwd_prompt_and_environment(tmp_path:
         "completed", "changes_required", "blocked", "failed",
     ]
     assert result_schema["properties"]["requested_route"]["enum"] == ["broad_review"]
-    forbidden = ("codex", "--mcp-config", "--allowed-tools", "--fallback-model", "--resume", "--continue", "--add-dir", "--dangerously-skip-permissions")
+    forbidden = ("codex", "--mcp-config", "--allowed-tools", "--fallback-model", "--resume", "--continue", "--add-dir", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "bypassPermissions")
     assert not any(item in argv for item in forbidden)
     assert observation["cwd"] == str(tmp_path) and observation["scrub"] is None
     scratch = str(ClaudeCliAdapter._external_scratch_dir(request(tmp_path)).resolve())
-    assert observation["settings"] == {"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False, "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path), scratch], "allowWrite": [scratch]}, "network": {"allowedDomains": []}}, "permissions": {"allow": ["Edit", "Write"], "deny": ["WebFetch", "WebSearch"], "blockReadsOutsideWorkingDirectories": True}}
+    # The permission-rule wildcard is intentional. A bare WebFetch grant
+    # does not feed the sandbox proxy; a raw allowedDomains=["*"] is a
+    # distinct setting with a conflicting exported runtime schema.
+    assert observation["settings"] == {"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False, "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path), scratch], "allowWrite": [scratch]}, "network": {"allowedDomains": []}}, "permissions": {"allow": ["Edit", "Write", "WebFetch(domain:*)", "WebSearch"], "deny": [], "blockReadsOutsideWorkingDirectories": True}}
     assert outcome.returncode == 0 and not outcome.timed_out
     assert json.loads(outcome.candidate_result or "{}") == envelope(Invocation("RUN-C", "H001", "INV-C"))
 
@@ -109,7 +112,7 @@ def test_edit_grant_uses_only_resolved_repository_as_working_directory(tmp_path:
     assert result["scrub"] is None
     assert "--restricted" in result["args"]
     assert "--add-dir" not in result["args"]
-    assert result["settings"]["permissions"]["allow"] == ["Edit", "Write"]
+    assert result["settings"]["permissions"]["allow"] == ["Edit", "Write", "WebFetch(domain:*)", "WebSearch"]
     scratch = str(ClaudeCliAdapter._external_scratch_dir(request(alias)).resolve())
     assert result["settings"]["sandbox"]["filesystem"] == {
         "denyRead": ["~/"], "allowRead": [str(repository.resolve()), scratch], "allowWrite": [scratch],
@@ -178,16 +181,76 @@ def test_malformed_extracted_envelope_is_not_repaired_or_accepted(tmp_path: Path
         validated_result(outcome.candidate_result, Invocation("RUN-C", "H001", "INV-C"))
 
 
-def test_mismatched_correlation_is_never_repaired(tmp_path: Path):
+@pytest.mark.parametrize("field", ["run_id", "hop_id", "invocation_id"])
+def test_mismatched_correlation_is_never_repaired(tmp_path: Path, field: str):
     invocation = Invocation("RUN-C", "H001", "INV-C")
+    mismatched = envelope(invocation)
+    mismatched[field] = "OTHER"
     executable = fake(tmp_path, f'''\
         import json
-        print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "structured_output": {envelope(invocation, run_id="RUN-OTHER")!r}}}))
+        print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "structured_output": {mismatched!r}}}))
     ''')
     outcome = adapter(tmp_path, executable).execute(request(tmp_path, invocation))
-    assert json.loads(outcome.candidate_result or "{}")["run_id"] == "RUN-OTHER"
+    assert json.loads(outcome.candidate_result or "{}")[field] == "OTHER"
     with pytest.raises(ResultValidationError, match="does not correlate"):
         validated_result(outcome.candidate_result or "", invocation)
+
+
+@pytest.mark.parametrize("mode", ["success", "refused", "nonzero", "timeout"])
+def test_network_profile_never_retries_with_weaker_permissions(tmp_path: Path, mode: str):
+    observed = tmp_path / "launches.jsonl"
+    wrapper = {"type": "result", "subtype": "success", "is_error": False,
+               "structured_output": envelope(Invocation("RUN-C", "H001", "INV-C"))}
+    if mode == "refused":
+        wrapper.update(subtype="error", is_error=True)
+    executable = fake(tmp_path, f'''\
+        import json, os, pathlib, sys, time
+        args = sys.argv[1:]
+        settings = json.loads(pathlib.Path(args[args.index("--settings") + 1]).read_text())
+        with pathlib.Path({str(observed)!r}).open("a") as stream:
+            stream.write(json.dumps({{"argv": args, "settings": settings,
+                "tmpdir": os.environ["TMPDIR"],
+                "scratch": os.path.realpath(os.environ["TMPDIR"]),
+                "scratch_mode": os.stat(os.environ["TMPDIR"]).st_mode & 0o777}}) + "\\n")
+        print({json.dumps(wrapper)!r}, flush=True)
+        print("transport diagnostic", file=sys.stderr, flush=True)
+        if {mode!r} == "timeout":
+            time.sleep(10)
+        sys.exit(7 if {mode!r} == "nonzero" else 0)
+    ''')
+    outcome = adapter(tmp_path, executable).execute(request(tmp_path, timeout=0.3))
+    launches = [json.loads(line) for line in observed.read_text().splitlines()]
+    assert len(launches) == 1
+    launch = launches[0]
+    args, settings = launch["argv"], launch["settings"]
+    assert args[args.index("--tools") + 1].split(",") == [
+        "Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch",
+    ]
+    assert args[args.index("--permission-mode") + 1] == "acceptEdits"
+    assert args[args.index("--permission-prompts") + 1] == "none"
+    assert settings["permissions"] == {
+        "allow": ["Edit", "Write", "WebFetch(domain:*)", "WebSearch"],
+        "deny": [], "blockReadsOutsideWorkingDirectories": True,
+    }
+    assert settings["sandbox"] == {
+        "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
+        "network": {"allowedDomains": []},
+        "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path), launch["scratch"]],
+                       "allowWrite": [launch["scratch"]]},
+    }
+    assert launch["scratch_mode"] == 0o700
+    assert not Path(launch["tmpdir"]).is_symlink()
+    assert not Path(launch["tmpdir"]).exists() and not Path(launch["scratch"]).exists()
+    assert "transport diagnostic" in outcome.stderr
+    assert outcome.timed_out is (mode == "timeout")
+    assert outcome.diagnostics == (
+        ("Claude CLI timed out",) if mode == "timeout" else
+        ("Claude CLI exited 7",) if mode == "nonzero" else ()
+    )
+    if mode == "success":
+        assert validated_result(outcome.candidate_result or "", Invocation("RUN-C", "H001", "INV-C")).summary == "done"
+    else:
+        assert outcome.candidate_result is None
 
 
 def test_nonzero_valid_looking_output_and_timeout_partial_output_are_transport_only(tmp_path: Path):
