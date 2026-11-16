@@ -338,7 +338,8 @@ class CodexCliAdapter:
         return (
             self.executable, "--ask-for-approval", "never", "exec", "--ephemeral", "--json",
             "--color", "never", "--sandbox", "workspace-write", "--model", self.model,
-            "-c", f'model_reasoning_effort="{self.reasoning_effort}"', "--cd", str(request.repository.resolve()),
+            "-c", f'model_reasoning_effort="{self.reasoning_effort}"',
+            "-c", "sandbox_workspace_write.network_access=true", "--cd", str(request.repository.resolve()),
             "--output-schema", str(schema), "--output-last-message", str(result), "-",
         )
 

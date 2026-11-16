@@ -65,14 +65,29 @@ def test_fake_success_uses_one_execution_and_disposable_git_workspace(tmp_path: 
         + _dynamic_valid_writer()
         + "\nworkspace = Path(sys.argv[sys.argv.index('--cd') + 1])\n"
         + "subprocess.run(['git', '-C', str(workspace), 'rev-parse', '--git-dir'], check=True)\n"
-        + f"Path({str(marker)!r}).write_text('one')\n",
+        + f"Path({str(marker)!r}).write_text(json.dumps({{'argv': sys.argv[1:], 'prompt': prompt}}))\n",
     )
     root = tmp_path / "smoke"
 
-    assert run_smoke(root, executable=str(fake), timeout_seconds=1) == 0
+    assert run_smoke(
+        root, executable=str(fake), timeout_seconds=1, model="smoke-model", reasoning_effort="high"
+    ) == 0
 
     summary = _summary(root)
-    assert marker.read_text() == "one"
+    captured = json.loads(marker.read_text())
+    assert captured["argv"] == [
+        "--ask-for-approval", "never", "exec", "--ephemeral", "--json",
+        "--color", "never", "--sandbox", "workspace-write", "--model", "smoke-model",
+        "-c", 'model_reasoning_effort="high"',
+        "-c", "sandbox_workspace_write.network_access=true", "--cd", str((root / "workspace").resolve()),
+        "--output-schema", str(root / "result" / "structured-result.schema.json"),
+        "--output-last-message", str(root / "result" / "result-message.json"), "-",
+    ]
+    assert sum("sandbox_workspace_write.network_access" in arg for arg in captured["argv"]) == 1
+    for field in ("run_id", "hop_id", "invocation_id"):
+        assert f"{field}={summary[field]}" in captured["prompt"]
+    assert summary["model"] == "smoke-model"
+    assert summary["reasoning_effort"] == "high"
     assert summary["smoke_status"] == "succeeded"
     assert summary["invocation_attempted"] is True
     assert summary["semantic_validation_succeeded"] is True

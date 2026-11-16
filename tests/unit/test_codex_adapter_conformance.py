@@ -223,10 +223,71 @@ def test_codex_argv_is_adapter_owned_and_request_is_provider_neutral(tmp_path: P
         tmp_path, model="explicit-model", reasoning_effort="high", executable="fake-codex"
     )
     argv = adapter.argv(request, tmp_path / "schema.json", tmp_path / "result.json")
-    assert argv[:4] == ("fake-codex", "--ask-for-approval", "never", "exec")
-    assert "--output-schema" in argv and "--output-last-message" in argv
+    assert argv == (
+        "fake-codex", "--ask-for-approval", "never", "exec", "--ephemeral", "--json",
+        "--color", "never", "--sandbox", "workspace-write", "--model", "explicit-model",
+        "-c", 'model_reasoning_effort="high"',
+        "-c", "sandbox_workspace_write.network_access=true", "--cd", str(tmp_path.resolve()),
+        "--output-schema", str(tmp_path / "schema.json"),
+        "--output-last-message", str(tmp_path / "result.json"), "-",
+    )
+    assert sum("sandbox_workspace_write.network_access" in arg for arg in argv) == 1
     assert "codex" not in request.result_contract
     assert not hasattr(adapter, "outcome")
+
+
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_execute_preserves_cwd_input_environment_and_results(tmp_path: Path, monkeypatch, returncode: int):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("WFC_CODEX_TEST_INHERITED", "synthetic-parent-value")
+    captured = tmp_path / "captured.json"
+    candidate = json.dumps({
+        "schema_version": 1, "run_id": "RUN", "hop_id": "H001", "invocation_id": "INV",
+        "result": {"schema_version": 1, "outcome": "completed", "requested_route": "accept",
+                   "scope_changed": False, "requires_human": False, "escalation": None,
+                   "findings": [], "claimed_commits": [], "commit_intent": None,
+                   "evidence_refs": [], "summary": "synthetic result"},
+    })
+    executable = tmp_path / "fake-codex"
+    executable.write_text(
+        "#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\n"
+        f"Path({str(captured)!r}).write_text(json.dumps({{\n"
+        "'argv': sys.argv[1:], 'cwd': os.getcwd(), 'prompt': sys.stdin.read(),\n"
+        "'inherited': os.environ.get('WFC_CODEX_TEST_INHERITED')}))\n"
+        "output = Path(sys.argv[sys.argv.index('--output-last-message') + 1])\n"
+        f"output.write_text({candidate!r})\n"
+        "print('synthetic stdout')\nprint('synthetic stderr', file=sys.stderr)\n"
+        f"raise SystemExit({returncode})\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    request = AgentExecutionRequest(
+        Invocation("RUN", "H001", "INV"), "exact prompt\nsecond line\n", repository,
+        ROUTING_RESULT_ENVELOPE_CONTRACT, 5, permitted_routes=_PERMITTED_ROUTES,
+    )
+    adapter = CodexCliAdapter(
+        tmp_path, model="explicit-model", reasoning_effort="high", executable=str(executable)
+    )
+
+    outcome = adapter.execute(request)
+
+    observed = json.loads(captured.read_text(encoding="utf-8"))
+    assert observed == {
+        "argv": list(adapter.argv(
+            request, tmp_path / "structured-result.schema.json", tmp_path / "result-message.json"
+        )[1:]),
+        "cwd": str(tmp_path), "prompt": request.prompt, "inherited": "synthetic-parent-value",
+    }
+    assert observed["argv"][observed["argv"].index("--cd") + 1] == str(repository.resolve())
+    assert outcome.candidate_result == candidate
+    assert validated_result(outcome.candidate_result, request.invocation).requested_route == "accept"
+    assert outcome.returncode == returncode
+    assert outcome.timed_out is False
+    assert outcome.stdout == "synthetic stdout\n"
+    assert outcome.stderr == "synthetic stderr\n"
+    assert outcome.diagnostics == (() if returncode == 0 else ("Codex CLI exited 7",))
 
 
 def test_adapter_rejects_an_unsupported_result_contract_before_launch(tmp_path: Path):
