@@ -1,0 +1,246 @@
+= WFC Agent Public Internet Claude P3-002 Live Qualification
+:toc:
+
+== Scope and identity
+
+* WorkItem: `WI-WFC-AGENT-PUBLIC-INTERNET-CLAUDE-P3-002`
+* Run: `RUN-16e852021ce649efb6a709a9ff51f3ba`
+* Hop: `H001` (phase `implement`, `workflow_role` `worker`)
+* Invocation: `INV-50d2e04428d54b158e4ceb89b2b94edb`
+* Base HEAD: `6443725d11709f0aab9e99bb4e6c1b831d94970c`
+* Authorized URL for agent-side network use: `https://example.com/` only.
+* This Run is a *successor* to `RUN-c5971877b9374b04b71066666cfe37d7` (P3-001).
+  It qualifies the corrected Claude Bash HTTPS permission under the newly
+  promoted Runtime, and does not amend or supersede the P3-001 qualification
+  or its reviews, which remain the historical record of that prior, partial
+  outcome.
+
+This report records one Worker attempt. It is not a reviewer artifact, not a
+Coordinator `task-check` result, and not Coordinator-trusted network evidence.
+Independent reviewer and trusted task-check results are pending at the
+publication of this Hop and are not anticipated here.
+
+== Invocation identity actually observed
+
+* Role (projected by the Coordinator for this Hop): `worker`.
+* Model/CLI binding requested by this Run: `claude_cli:claude-sonnet-5:high`.
+  This is a real Sonnet invocation; the environment-exposed session facts
+  below are consistent with a single, non-fallback, non-substituted binding
+  for the duration of this Hop. No part of this Hop observed a model switch.
+* Exposed session environment (`printenv`, read-only): `CLAUDE_EFFORT=high`,
+  `CLAUDE_CODE_ENTRYPOINT=sdk-cli`, `CLAUDE_CODE_SAFE_MODE=1`,
+  `CLAUDE_CODE_CHILD_SESSION=1`, `CLAUDE_CODE_SESSION_ATTENDED=0`,
+  `SANDBOX_RUNTIME=1`, `CLAUDE_CODE_EXECPATH=/home/stefan/.local/share/claude/versions/2.1.322`,
+  and a session id. The version component `2.1.322` matches the executable
+  version the accepted P2 and P3-001 records document for the installed
+  `claude` CLI; the symlink and binary itself are not visible from inside this
+  namespace (see below), so the version match rests on the environment
+  variable only, not on independently reading the binary.
+* No model-identity field is readable from a settings file in this namespace
+  (see masking below); the model binding is taken from the Coordinator-
+  projected invocation facts and from this session's own effort/entrypoint
+  environment, not independently re-derived from provider-side state.
+
+== Runtime and binding verification
+
+Result: *not independently verified from inside the agent namespace*, for the
+same structural reason recorded by the P3-001 qualification and its reviews.
+This is a mount-scope and nesting limit, not evidence that the named paths
+are absent from the host.
+
+* `ls -ld /home/stefan` shows mode `drwx------`, and `ls /home/stefan` lists
+  exactly `repos` and `wfc-scratch`. The host's `/home/stefan` is restricted to
+  two bind-mounted subtrees in this invocation's mount namespace.
+* `/home/stefan/.local/bin/claude`, `/home/stefan/.local/share/claude` and
+  `/home/stefan/wfc-state` each returned `No such file or directory` when
+  listed directly. Consistent with the P3-001 correction (`H003`) and its
+  independent re-observations (`H004`, `H005`): this is non-visibility from
+  inside the restricted namespace, not nonexistence on the host. This report
+  does not claim these paths do not exist.
+* The operator-supplied preflight provenance for this Run states that the
+  selected Runtime was clean, detached, push-disabled at
+  `f6de099c96d62d2807983ba679162602c7299b77`, and that its adapter contained
+  `Bash(curl:*)` with sandbox and web grants preserved. This Hop treats that
+  statement as operator-supplied provenance. It is corroborated by the
+  repository's own committed history, which this Hop *can* read directly:
+  `git show f6de099c96d62d2807983ba679162602c7299b77` is exactly the commit
+  titled `fix: allow Claude curl WI-WFC-CLAUDE-BASH-CURL-PERMISSION-001 H001`,
+  and its diff to `src/workflow_coordinator/claude_adapter.py` adds exactly
+  `"Bash(curl:*)"` to the existing `permissions.allow` list alongside the
+  unchanged `Edit`, `Write`, `WebFetch(domain:*)` and `WebSearch` grants. The
+  corresponding `docs/backlog/FTR-WFC-AGENT-PUBLIC-INTERNET-CAPABILITY.adoc`
+  history (commits `dcc785f`, `04c966f`) records the Maintainer's acceptance of
+  that implementation after independent broad review (`6fa529e`, no blocking
+  Finding) and Coordinator `task-check` pass, and records promotion of exactly
+  `f6de099c96d62d2807983ba679162602c7299b77` to the local detached Runtime.
+  This Hop did not itself re-run that promotion check or re-inspect the live
+  Runtime checkout, push URL or clean state directly; it is reading the
+  committed record of that operator action, which is distinct from observing
+  the Runtime from inside this namespace.
+* `.claude/settings.json` and `.claude/settings.local.json` are present in
+  this working directory as `crw-rw-rw-` character devices (device `1,3`)
+  owned by `nobody:nogroup`, i.e. masked to `/dev/null`. The live installed
+  adapter settings (the actual effective `permissions.allow` list, sandbox
+  flags, and web grants in force for this invocation) could not be read from
+  this namespace. This Hop's own Bash HTTPS attempt below is therefore the
+  direct behavioral evidence of the live `Bash(curl:*)` grant for *this*
+  invocation; the masked settings files are not that evidence.
+* Inherited provider-side and managed policy remain unobservable from this
+  invocation and are stated as uncertain, consistent with every prior Hop in
+  this lineage.
+
+== Attempt 1: local Bash HTTPS request (curl)
+
+Result: *executed; admitted by the permission gate and completed
+successfully.* This is the first successful live Bash network observation in
+this lineage; the three P3-001 attempts (Worker, `H002`, `H004`, `H005`) were
+all refused before execution under the prior permission state.
+
+Preparation (separate commands, before the network request):
+
+* `install -d -m 0700 tmp/p3002-h001-probe-INV-50d2e044` created a
+  collision-free private directory under the already git-ignored repository
+  `tmp/` tree. Readback: `stat -c '%a %n'` reported `700`.
+* `install -m 0600 /dev/null tmp/p3002-h001-probe-INV-50d2e044/response.html`
+  created the empty response file. Readback: `600`.
+* UTC start bound, from a separately permitted `date -u +%Y-%m-%dT%H:%M:%SZ`
+  immediately before the request: `2026-11-16T20:00:45Z`.
+
+Exact command executed, literal `curl` (not `/usr/bin/curl`), the
+pre-created repository-relative path, no shell variables, pipes, redirects,
+command substitution, compound commands, `-L`, `--retry`, or certificate
+disabling:
+
+[source]
+----
+curl --silent --show-error --fail --connect-timeout 5 --max-time 20 \
+  --output tmp/p3002-h001-probe-INV-50d2e044/response.html \
+  --write-out http_code=%{http_code}/ssl_verify_result=%{ssl_verify_result}/url_effective=%{url_effective}/remote_ip=%{remote_ip}/size_download=%{size_download} \
+  https://example.com/
+----
+
+(Shown above wrapped for readability; the actual invocation was a single
+unwrapped line with no line continuations, matching the task-specified
+construction exactly, sole destination `https://example.com/`.)
+
+* Permission gate: *admitted*. No refusal text was produced. The Bash tool
+  call executed under the declared sandbox allowance for `example.com`
+  requested alongside the command.
+* Sandbox: *executed*. No `<sandbox_violations>` block was produced.
+* Reported result, from curl's own `--write-out`:
+  `http_code=200/ssl_verify_result=0/url_effective=https://example.com//remote_ip=127.0.0.1/size_download=577`.
+  Exit status: curl produced its normal `--write-out` output and no error
+  text under `--fail`/`--show-error`, which with those flags means the
+  request did not fail (HTTP status in the success range, no transport or
+  TLS error); no separate `$?` capture was taken in this same shell
+  invocation, so the exit code is inferred from `--fail` behavior rather than
+  separately recorded as a literal integer.
+* UTC end bound, from a separately permitted `date -u` immediately after:
+  `2026-11-16T20:00:56Z`.
+* `url_effective` is `https://example.com/`, confirming no redirect was
+  followed (none was requested) and the scheme actually negotiated was HTTPS.
+  `ssl_verify_result=0` indicates normal certificate verification succeeded.
+* `remote_ip=127.0.0.1` is almost certainly the local filtering proxy's
+  loopback address, not an edge address for `example.com`. This session's
+  environment defines `https_proxy`/`HTTPS_PROXY` (and the other standard
+  proxy variables) pointing at an authenticated loopback proxy on
+  `127.0.0.1:3128`, with `no_proxy` covering loopback/link-local/RFC1918
+  ranges. `curl` honors these variables by default and was not told to bypass
+  them, so the reported peer is best read as the proxy hop. Proxy credentials
+  are deliberately not reproduced in this report. This matches the P3-001
+  `H002` non-blocking observation about proxy-mediated local egress, now
+  confirmed directly rather than predicted, because this Hop's request
+  actually ran.
+* `size_download=577` matches the downloaded file's size exactly (see
+  read-only inspection below).
+
+Read-only inspection after execution (separate commands, response body never
+printed):
+
+* `stat -c '%a %s %n' tmp/p3002-h001-probe-INV-50d2e044/response.html` →
+  `600 577 tmp/p3002-h001-probe-INV-50d2e044/response.html`. Mode unchanged
+  from preparation; size matches `size_download`.
+* `sha256sum tmp/p3002-h001-probe-INV-50d2e044/response.html` →
+  `25ddf2c883e0d1958ea971d279a7e4f0fd446724ee3db7db19dadabd4a62e484`.
+
+No other URL, host, DNS probe, internal/private/localhost/metadata address,
+upload, credential inspection, package install, or downloaded-code execution
+was attempted. The command was not retried or reworded; one literal `curl`
+invocation was made and it succeeded on the first attempt.
+
+Claude Bash HTTPS egress to the sole authorized URL is therefore *qualified
+as a direct agent-local observation in this invocation*: the permission gate
+admitted the `curl` network operation, the OS sandbox allowed the connection,
+and the process completed with a normal HTTP 200 response and verified TLS.
+This is the first such positive observation in the P3 lineage; it supersedes
+none of the P3-001 record, which remains accurate for the permission state
+that was in force at that time.
+
+== Cleanup
+
+* `rm -rf tmp/p3002-h001-probe-INV-50d2e044` removed the private directory and
+  its response file. No response body was printed or committed at any point.
+* `git status --porcelain --untracked-files=no` was empty before and after
+  this Hop's commands. `git status --porcelain --ignored=matching -- tmp/`
+  showed `tmp/` itself as git-ignored throughout, confirming the probe
+  directory was never a tracked-tree concern.
+* No file outside the private probe directory and this report was created or
+  modified by this Hop.
+
+== Classification
+
+* Bash HTTPS (`curl`) to `https://example.com/`: *qualified, positive, direct
+  agent-local observation.* The permission gate admitted the request, the
+  sandbox executed it, and the HTTPS transaction completed with
+  `http_code=200` and `ssl_verify_result=0`.
+* This is *not* Coordinator-trusted network evidence. It is a single Worker-
+  invocation observation, not a persisted provider transcript, and not a
+  `task-check` result. Coordinator `task-check` and independent review are
+  pending at the publication of this Hop.
+* The observed `remote_ip=127.0.0.1` most plausibly reflects proxy mediation,
+  not a direct path to `example.com`'s edge. This Hop does not claim
+  unmediated reachability to the public internet, only that the local
+  Bash/curl/sandbox/permission chain, as configured for this invocation,
+  completed one authorized HTTPS request end to end.
+* This result does not establish general Bash network reachability beyond
+  the sole authorized URL, does not establish public-only containment, and
+  does not establish that the broader `Bash(curl:*)` grant is safe for
+  destinations other than the one this Hop was authorized to use. The grant
+  itself can permit uploads and other destinations and protocols, as the
+  accepted FTR record states; this Hop exercised none of that.
+* Runtime promotion and the accepted curl-permission review are read from
+  the committed repository history in this Hop (see above) and treated as
+  operator-supplied provenance for the live Runtime state; they are not
+  independently re-verified against the live Runtime checkout from inside
+  this namespace.
+
+== Limitations
+
+* No claim is made that all destinations or protocols are restricted for
+  Claude Bash. The command-prefix grant `Bash(curl:*)` is broader than the
+  single authorized request this Hop made.
+* No claim is made of public-only enforcement or of WFC-owned, provider-
+  independent containment. Containment is not integrated.
+* This Hop's successful observation is a single sample. It does not
+  establish that every future `curl` invocation under this permission state
+  will be admitted or will reach `example.com` under the same conditions
+  (proxy state, managed policy, or sandbox configuration could all vary).
+* The live installed adapter settings, the Runtime checkout's HEAD, clean
+  state and push URL, and inherited provider/managed policy remain
+  unobservable from inside this namespace and are not independently
+  re-verified here; they are accepted as operator-supplied provenance,
+  consistent with the task's instruction to treat them as such.
+* Agent-side results are exploratory. `pytest` and other local tests do not
+  validate network access and were not run or relied on by this report.
+
+== Authority
+
+* Edits: this report only. No Runtime, implementation, source, test,
+  adapter, settings, or policy change was made.
+* Network: one `curl` request to `https://example.com/`. No other
+  destination, protocol, or probe was attempted.
+* Filesystem: a private `0700` directory and `0600` response file under the
+  already git-ignored repository `tmp/` tree, created and removed by this
+  Hop; no other path was touched.
+* Git: no agent-side Git write operations. All Git use in this Hop was
+  read-only inspection (`git status`, `git show`, `git log`).
