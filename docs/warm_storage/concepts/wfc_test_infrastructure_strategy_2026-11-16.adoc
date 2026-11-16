@@ -1,0 +1,837 @@
+= WFC Test Infrastructure -- Lessons Learned, Current Mitigation and Pre-Beta-1 Strategy
+:toc:
+:toclevels: 3
+:sectnums:
+
+Status:: Exploratory engineering concept, warm storage. Not an accepted design,
+not an implementation authorization and not a new normative contract.
+Authority:: Exploratory. It grants no Run, Commission, provider, Runtime,
+promotion or repository-mutation authority and changes no release gate.
+Updated:: 2026-11-16
+Owns:: The reconstructed experience of the recurring test-infrastructure
+failures, their separated evidence classes, a comparison with the sibling Core
+repository, an assessment of the external wheelhouse mitigation, and a *proposed*
+pre-Beta-1 test-infrastructure epic. The controlling records stay with
+link:../../backlog/BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION.adoc[the nested-prepare BUG],
+link:../../backlog/BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS.adoc[the timeout-diagnostics BUG] and
+link:../../backlog/BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc[the pytest-temporary-material BUG];
+current priority stays with link:../../backlog/_open.adoc[the backlog overview].
+Reviewed state:: Development branch `docs/documentation-followup` at
+`7f759e3f2bfdfa5b1e32b7e33ba54154b06b90dc` (candidate head of the stopped planning
+Run). `pyproject.toml`, `Makefile`, `scripts/wfc_op.py`, `tests/` and
+`src/workflow_coordinator/evidence.py` are identical in content to the accepted
+Development state this branch started from; only documentation differs.
+Method:: Source and Run-state inspection, plus one maintainer-authorized timing
+diagnostic. Nothing in this concept was executed against the Coordinator Runtime
+and nothing here changes a test, a package file or a governing input.
+
+Claim markers separate what is known from what is explained:
+
+[horizontal]
+*[V]*:: Verified directly in a repository file at the reviewed state, or in a
+host file or command output named in the text.
+*[E]*:: Trusted persisted Coordinator evidence (Run state: operator summary,
+`execution-evidence.json`).
+*[X]*:: External, untrusted diagnostic: host-local logs or a separately executed
+run. Informative, never Coordinator evidence.
+*[I]*:: Inference or plausible explanation. Not observed.
+*[U]*:: Unresolved. No source established it.
+*[R]*:: Recommendation or proposal.
+
+[[summary]]
+== Summary
+
+* Three Coordinator `task-check` runs (`python -m pytest -q`, 900 s) timed out in
+  five days -- FTR05 review (2026-11-11), C3 (2026-11-15) and documentation-memory
+  planning (2026-11-16) -- each *after* the independent review had already accepted
+  the candidate. Each stopped `awaiting_human` and needed a maintainer decision. *[E]*
+* Nested `prepare` tests build real virtual environments and run real `pip install`
+  with PEP 517 build isolation. Six tests accounted for about 678 of 777 seconds
+  without offline settings and about 56 of 153 seconds with them. *[X]*
+* The verified mitigation is an external, manually built wheelhouse plus
+  `PIP_NO_INDEX=1` and `PIP_FIND_LINKS`. It keeps every real install and build and
+  is effective, but depends on one host, one interpreter tag and an unrecorded
+  provisioning step. It is not a sustainable project-level solution. *[X]* *[V]*
+* The exact cause of the original 900 s timeouts is still unproven: the timeout path
+  retains no output, no elapsed time and no environment values. *[E]* *[U]*
+* The Core repository is not a hermetic reference. It shows useful test taxonomy
+  and stamped reuse of one maintained environment, but its tests never create
+  fresh environments and its dependency resolution is network-dependent and
+  unpinned. *[V]*
+* Proposal: a small epic of three workstreams (suite structure, sharing and
+  visibility; controlled offline provisioning; bounded timeout diagnostics),
+  roughly three implementation Commissions. It is a self-development throughput
+  prerequisite in practice, not proposed as a Beta-1 release gate. The
+  classification stays a Maintainer decision. See <<epic>>.
+
+[[experience]]
+== Engineering experience and friction
+
+[[chronology]]
+=== Chronology
+
+The table keeps trusted Run evidence and external diagnostics apart. Dates are
+those recorded in the cited records or commits.
+
+[cols="2,5,1",options="header"]
+|===
+|Date |Event |Class
+
+|2026-10-28/29
+|`/tmp` (a tmpfs) filled by retained `pytest` temporary trees and interrupted Run
+`RUN-c358b544417c4a33a0d040a0d8c38656`. Recorded in
+link:../../backlog/BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc[the BUG]. The
+repository pytest-scratch correction is `26943f0` (2026-11-14) with review
+`beebac4`; `tests/conftest.py` now places pytest temporary trees on a scratch
+outside `/tmp`. That BUG record remains open and is not closed by this concept.
+|V
+
+|2026-11-01
+|Nested-prepare BUG recorded after the first Simple dogfood
+(`RUN-e28bd75fe52f4118b3b33a0f1f944c62`): its Worker reported an unsuccessful
+agent-local full-suite diagnostic implicating `setuptools` availability, while the
+Coordinator-owned `task-check` of the same Run passed.
+|V
+
+|2026-11-10
+|`6c88e47` decouples the TMPDIR-coincidence fixtures' short root from pytest's own
+`tmp_path` -- an earlier, separate temp-handling correction in the same test area.
+|V
+
+|2026-11-11
+|FTR05 review Run `RUN-4ffabb5371c04888b997569a22c63233` (attempt
+`wfc-operator-manual-self-development-review-001-20261111-01`): H001 published the
+review commit `9e3e7b3`; the Coordinator `task-check` returned `status=error`,
+`error_class=timeout`, `exit_code=null`; stop reason
+`mechanical_preemption:timeout after 900s`. No output retained. The
+timeout BUG followed on 2026-11-12.
+|E
+
+|2026-11-12
+|A network-restricted agent sandbox reproduced a *different-environment* failure of
+the nested install: repeated DNS failures for `/simple/setuptools/`, then
+`No matching distribution found for setuptools>=68`. Not Coordinator evidence and
+not shown to be the cause of the FTR05 timeout.
+|X
+
+|2026-11-15
+|C3 Run `RUN-3c6db523e1e64755b04b678f402aa563`: candidate `9930622` (17:13 +01:00),
+independent review `ed212d2` accepted (17:16). `task-check` timed out; Run stopped
+`awaiting_human` with 2 of the budgeted Hops used. A host diagnostic of the full
+suite took 896.96 s with two nested pip-download failures; the same unchanged suite
+with the offline wheelhouse took 171 s (918 passed, four skipped).
+|E for the Run; X for both timings
+
+|2026-11-15
+|Verification Run `RUN-d776734b22584592a9c49fe70371449a`: one Hop, no repository
+mutation, `task-check` `status=pass`, `exit_code=0`, Run `completed`. A separate
+host note records `observed_seconds=169` for that evidence phase. The trusted
+observation does not state the elapsed time or the pip settings in force.
+|E for pass; X for 169 s
+
+|2026-11-16
+|Documentation-memory planning Run `RUN-b99adac75ad34eae8704c6175bfd5bfc`: H001
+candidate `2d4d84e`, H002 independent broad review `7f759e3` (accept, no blocking
+Findings); `task-check` timed out; Run stopped `awaiting_human`. Timing diagnostic
+on the unchanged `7f759e3`: A (no offline settings) 777 s with one failure; B
+(wheelhouse, offline) 153 s, exit 0.
+|E for the Run; X for A and B
+|===
+
+Other Runs in the same period -- among them C1, C2, C4 and the Claude `curl`
+correction -- passed their `task-check`. Trusted observations record pass or
+failure but *no elapsed time*, so it is not known how close those passes came to
+900 s. *[V]* (`execution-evidence.json` observation fields contain `status`,
+`exit_code`, `error_class`, digests and `timeout_seconds`; no duration.)
+
+[[cost]]
+=== Why a late timeout is particularly costly
+
+A `task-check` timeout is classified `error`, not `fail`. A `fail` routes to a
+correction Hop; a timeout is a mechanical preemption that stops the Run for a human
+(`mechanical_preemption:timeout after 900s`). *[E]* That is correct behavior --
+infrastructure slowness is not a content defect a Worker can correct -- but it has
+specific consequences for autonomous execution:
+
+* The expensive, already-reviewed work is stranded. The independent review has
+  accepted the candidate, yet WFC cannot reach `completed` without a passing trusted
+  check. Review acceptance and trusted evidence are separate gates, as they should be.
+* Recovery is a new governed cycle: a maintainer decision, a successor Commission
+  (the C3 precedent was a one-Hop read-only verification Commission), a fresh
+  Attempt with its own preparation, a provider invocation whose only purpose is to
+  carry a `task-check`, and a new Run. No prior Run is retroactively completed.
+* The signal is poor. The timeout leaves no output, no active test and no elapsed
+  time, so the maintainer cannot tell a hang from a slow-but-progressing suite from
+  an environment change. *[E]* Each recurrence therefore starts the diagnosis again.
+* The 900 s ceiling is not a safety margin for this suite: diagnostic timings of
+  777 s and 896.96 s sit just under it. A suite that passes only just below its limit
+  turns ordinary variance into a Run stop. *[X]*
+* Per-Run provider cost is wasted when the evidence gate, not the work, is what
+  fails, and each stop consumes maintainer attention that is the scarcest input in
+  self-development.
+
+[[evidence-classes]]
+=== Trusted evidence versus external diagnostics
+
+The separation is deliberate and this concept preserves it:
+
+* Trusted: the Coordinator's observation of its own `task-check` (`pass`, `fail`,
+  `error`/`timeout`), persisted under the Run state. *[E]*
+* External: every wall-clock figure from a separately launched `pytest`, the
+  wheelhouse measurements, the sandbox reproduction and the November 16 timing
+  diagnostic. They explain and bound hypotheses; they do not complete, fail or
+  accept any Run. *[X]*
+
+Two provenance gaps follow from the current evidence shape, and are the reason the
+proposed epic includes a diagnostics workstream:
+
+* The trusted observation names its environment policy
+  (`coordinator-inherited-environment-v1`) but records neither environment values
+  nor which package-index settings were active. For the C3 verification Run that
+  passed in about 169 s, the persisted state therefore cannot show whether the
+  wheelhouse variables were set. A search of its state directory and ops files finds
+  no `PIP_NO_INDEX`. *[V]*
+* No duration is recorded for passing or timed-out checks. *[V]*
+
+[[cause]]
+== Technical root-cause analysis
+
+[[nested-prepare]]
+=== What a nested `prepare` is
+
+`scripts/wfc_op.py prepare` is the Harness's preparation entry. Each real call
+builds two private environments and installs this package into them:
+
+. `prepare_runtime_environment` exports the pinned Runtime commit with `git archive`
+  into `<ops>/runtime-src`, creates `<ops>/runtime-env` with `python -m venv`, and
+  runs `pip install <export>` (non-editable). *[V]*
+. `prepare_development_environment` creates `<ops>/dev-env` and runs
+  `pip install <Development checkout>[dev]`. The `[dev]` extra is
+  `build>=1.2`, `pytest>=8.2`, `pytest-cov>=5`, `ruff>=0.6`. *[V]*
+
+`pip_install` passes no index, no `--no-input`, no timeout and no explicit cache
+option, and captures output. A failure surfaces as
+`HarnessRefusal("pip install ... failed: ...")`. *[V]* (`build_venv`,
+`pip_install` in `scripts/wfc_op.py`.)
+
+`pyproject.toml` declares `[build-system] requires = ["setuptools>=68"]` with no
+override of PEP 517 build isolation. pip therefore creates an ephemeral build
+environment for each local-path install and resolves `setuptools>=68` into it, an
+unpinned range that normally requires an index lookup even when a wheel is cached
+locally. *[V]* (`pyproject.toml`; reasoning recorded in
+link:../../backlog/BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION.adoc[the BUG].)
+So one `prepare` is: two `venv` creations, two outer installs, two isolated
+build-environment resolutions, and the `[dev]` closure of ten further wheels
+(`build`, `pytest`, `pytest-cov`, `ruff` and their transitive packages).
+
+`tests/unit/test_wfc_op.py` exercises this for real in several places: the
+module-scoped `prepared` fixture (every LAUNCH test reuses it), the independent
+module-scoped `completed_run` fixture (real prepare plus launch, for the STATUS
+tests), the drift-during-preparation test, the sentinel-Runtime preflight test, the
+frozen-`PATH` test and the shell-quoting test. *[V]* Other tests in the file stop
+before installation or monkeypatch the environment builders (for example
+`test_prepare_preflight_inherits_scratch_and_frozen_path`), so not every `prepare`
+reaches pip. *[V]*
+
+[[where-time-went]]
+=== Where the time went (diagnostic of 2026-11-16)
+
+Method *[X]*: one scratch clone of the unchanged candidate `7f759e3`; the attempt's
+`dev-env` Python 3.13.5; scratch `TMPDIR`; the launcher's frozen `PATH` and temp
+variables; `pytest -q --durations=25`; run A then run B, sequentially. Run A had no
+`PIP_*` variables; run B added `PIP_NO_INDEX=1` and
+`PIP_FIND_LINKS=/home/stefan/wfc-scratch/wheelhouse-wfc-py313-20261115`. Logs:
+`~/wfc-scratch/memory-planning-timing-diagnostic-20261116/`. The stopped Run, its
+evidence and the candidate commits were not touched. 930 tests are collected at
+this head.
+
+[cols="4,1,1",options="header"]
+|===
+|Test (fixture setup is charged to its first test) |A, online |B, offline
+
+|`test_prepare_final_revalidation_refuses_on_drift_during_preparation` |203.6 s |8.9 s
+|`test_prepare_positive_produces_complete_envelope_and_leaves_state_absent` (`prepared` setup) |147.0 s |9.9 s
+|`test_launch_uses_the_frozen_prepared_path_not_a_later_ambient_path` |112.8 s |9.4 s
+|`test_launch_sh_safely_quotes_shell_significant_paths` |110.4 s |9.5 s
+|`test_status_completed_run` (`completed_run` setup) |71.8 s |10.0 s
+|`test_canonical_preflight_refusal_propagates_and_proves_pinned_runtime_code` |32.7 s (failed) |8.7 s
+|*Six tests* |*678.4 s* |*56.4 s*
+|*Whole suite* |*777 s, 1 failure* |*153 s, exit 0*
+|===
+
+Every other test took about two seconds or less in both runs. The one failure in A
+was the sentinel test: `REFUSED: pip install '...' ... See above for output.
+note: This error originates from a subprocess, and is likely not a problem with pip.`
+The full pip text was truncated in the retained pytest output, so the specific
+download or resolution error behind it was not captured. *[X]* *[U]*
+
+Process samples every 30 s in A (at most eight `pip`/`venv`/build matches per
+sample, so indicative only) all fall under the nested-prepare fixture homes --
+`prepared-home0`, `completed-home0`, `home-drift0` and three other fixture homes --
+and none under another test's tree. *[X]*
+
+[[what-is-established]]
+=== What is and is not established
+
+[cols="2,5",options="header"]
+|===
+|Statement |Standing
+
+|The six nested-prepare tests dominate suite time when package resolution is
+online, and fall to about 56 s in total with the offline settings
+|Direct, as an external measurement. *[X]*
+
+|The offline settings preserve real `venv` creation, real `pip install` and PEP 517
+build isolation
+|Recorded in the C3 nested-pip log (`Looking in links: ...wheelhouse...`,
+`Processing ...`) and consistent with run B. *[X]*
+
+|Run A completed in 777 s, below 900 s
+|It did not reproduce the Run's timeout. The real Run's check exceeded 900 s, so it
+was slower than run A, or stopped progressing. *[X]* *[I]*
+
+|The slowness is caused by network/index latency and retries of nested pip installs
+|The strongest explanation: it matches the sandbox DNS failures, C3's two download
+failures, the 12x online-versus-offline ratio on identical tests and the offline
+fix. It is not proven for the three Coordinator timeouts: no output survived them.
+*[I]* *[U]*
+
+|Other contributors (CPU or disk contention, a stalled subprocess, lingering
+grandchildren after the timeout kill)
+|Not observed and not excluded. On timeout the Coordinator kills the direct child
+only; whether nested processes survive was not examined. *[V]* (`evidence.py`
+`observe`) *[U]*
+|===
+
+[[isolation-vs-downloads]]
+=== Isolation is not repeated downloading
+
+The trust-boundary tests need isolation: a fresh `runtime-env` and `dev-env`, an
+exported Runtime that is not the live checkout, a `PATH` that resolves `python3` to
+the development interpreter, a sentinel-patched Runtime whose own code must be the
+code that runs. Those properties require real `venv` creation and a real install of
+that exact source *per scenario*. They do not require re-downloading the same
+wheels from the network for every scenario.
+
+One verified fact makes the distinction concrete. The test helper runs every
+Harness subprocess with a fresh per-fixture `HOME`:
+`env = {**os.environ, "HOME": str(home)}` (`run_wfc_op`, `tests/unit/test_wfc_op.py`).
+pip's cache location follows `HOME`: with the dev-env interpreter,
+`pip cache dir` reports `/home/stefan/.cache/pip` normally and
+`<fixture-home>/.cache/pip` when `HOME` is overridden. *[V]* The maintainer's
+ambient cache (about 356 MB, 514 HTTP entries) is therefore *invisible to every
+nested install*, and each fixture home starts cold. *[I]* A cold per-test cache
+repeats downloads that a shared cache location would perform once; it does not make
+the environments less isolated. How much of the online cost this explains is not
+measured here. It is the cheapest hypothesis to test (see <<epic>>, TI-1).
+
+[cols="3,2,3",options="header"]
+|===
+|What is intrinsic to the tests |Sharable safely? |Reasoning
+
+|Fresh `venv` per prepared Attempt
+|No
+|The per-Attempt, non-relocatable substrate is what `prepare` produces and what the
+tests assert about.
+
+|Install of the exported Runtime / live Development checkout into that venv
+|No (per scenario), but the *download and build inputs* yes
+|The package under test must be installed for real. Its dependency wheels are inputs.
+
+|Resolution and download of dependency wheels (setuptools, PyYAML, `[dev]`)
+|Yes
+|A shared cache, a wheelhouse or a mirror changes where bytes come from, not what
+is built or installed.
+
+|A real full pipeline for every scenario (drift, quoting, frozen `PATH`)
+|Partly
+|`prepare` and `launch` properties that do not depend on the environment contents
+could run on stub builders, as `test_prepare_preflight_inherits_scratch_and_frozen_path`
+already does. The drift test's docstring deliberately keeps the whole real pipeline;
+reducing that is a judgment call, not a free win.
+
+|Reusing one prepared venv across tests
+|Only as read-only fixtures
+|`prepared` already does this; tests that mutate state undo it. Venvs cannot be
+copied between paths, so mutation-heavy scenarios need their own prepare.
+|===
+
+[[wheelhouse]]
+== Wheelhouse assessment
+
+[[wheelhouse-what]]
+=== What it is
+
+`/home/stefan/wfc-scratch/wheelhouse-wfc-py313-20261115` holds 12 wheels for
+Python 3.13 on Linux x86_64 (`cp313` `manylinux` wheels for PyYAML and coverage, a
+`manylinux` x86_64 wheel for ruff, `py3-none-any` for the rest), `SHA256SUMS`, and
+`download.log`. *[V]* The
+mitigation requires both of:
+
+[source,shell]
+----
+PIP_NO_INDEX=1
+PIP_FIND_LINKS=/home/stefan/wfc-scratch/wheelhouse-wfc-py313-20261115
+----
+
+Verified against the current state on 2026-11-16: all 12 checksums match; the
+attempt `dev-env` is Python 3.13.5; every installed development dependency is at
+the wheelhouse version (pytest 9.2.0, pytest-cov 7.1.0, build 1.6.1, ruff 0.17.5,
+PyYAML 6.0.3, coverage 7.17.3 and the transitive packages); `setuptools>=68` is
+satisfied by 84.2.1; `pyproject.toml` has no dependency change since C3. *[V]* With
+the settings, run B passed in 153 s. *[X]* The wheelhouse is suitable for the
+current interpreter and dependency set.
+
+[[wheelhouse-both]]
+=== Why the variables must reach both `prepare` and `launch`
+
+Under the current workflow *[V]*:
+
+* The generated `launch.sh` exports only `PATH`, `TMPDIR`, `TMP` and `TEMP`. It does
+  not clear the environment, so the launching shell's other variables pass through.
+* The Coordinator builds the `task-check` environment from its own `os.environ`
+  (`snapshot_environment`; policy `coordinator-inherited-environment-v1`), and the
+  tests' `run_wfc_op` copies that environment into each nested `prepare` apart from
+  `HOME`. The variables therefore must be present in the shell that runs `launch`;
+  there is no other place the Coordinator would get them from.
+* `prepare` is a separate process. Its own two `pip install` calls (the Attempt's
+  `runtime-env` and `dev-env`) read the preparing shell's environment. The
+  variables are not needed for the `task-check` outcome there, but without them
+  `prepare` itself depends on the index, and any version differences between what
+  `prepare` resolves online and what the wheelhouse holds can make the Attempt's
+  `dev-env` differ from the dependency set the nested installs use. In the current
+  Attempt they do not (see above). *[I]* The BUG's guidance to supply both is the
+  conservative reading of this.
+* Neither `preparation-pins.txt` nor `harness-prepared.json` records the pip
+  settings, and the trusted observation records only the policy name. *[V]*
+
+[[wheelhouse-assess]]
+=== Strengths, limits and why it is not the solution
+
+Strengths *[X]*:
+
+* It removes the dominant cost without removing any test, build or install.
+* Real PEP 517 build isolation, real `venv` creation and real installs stay in the
+  path, so the trust-boundary properties are still exercised.
+* Fail-closed: a missing wheel produces `No matching distribution`, not a silent
+  network fallback.
+* It requires no change to Python, tests, Runtime or governance, and is available now.
+
+Limits *[V]* *[I]*:
+
+* *Portability.* One host, one interpreter tag (`cp313`), one platform
+  (`manylinux` x86_64). `requires-python` is `>=3.10`; other interpreters, architectures
+  and macOS cannot use it. External Beta users cannot use it.
+* *Dependency updates.* `pyproject.toml` uses open ranges. The wheelhouse is a
+  snapshot of "latest at 2026-11-15 plus the versions installed that day". A new
+  dependency, a raised lower bound or a new transitive requirement makes offline
+  resolution fail until someone rebuilds it by hand.
+* *Provenance.* `download.log` shows the requested pins (exact, copied from the
+  environment of the day; `setuptools>=68` unpinned) and "Using cached" lines, so the
+  files came from the maintainer's pip cache. `SHA256SUMS` was computed afterwards
+  and proves the files did not change since, not that they match the index. The
+  index, date, requirement set digest and resolver version are not recorded; there
+  is no hash-pinned requirements file. A different maintainer cannot reproduce it.
+* *Unrecorded use.* No Run record shows it was in force (see <<evidence-classes>>).
+* *Ambient dependence.* It works only if a person remembers to export the variables
+  in two commands. An omission yields exactly the 777-900 s behavior again, with a
+  stop and no explanation.
+
+It is a verified, environment-specific mitigation and the right way to continue now.
+It is not a sustainable project-level solution, and it must not be mistaken for the
+closure criterion of
+link:../../backlog/BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION.adoc[the BUG]:
+required tests provisioned reproducibly offline without reliance on one maintainer's
+cache, shell session or hand-built wheelhouse.
+
+[[core]]
+== Comparison with spreadsheet-handling/core
+
+Read-only inspection of the sibling repository (`core`, `main` at `4acca3d`).
+Core is not a hermetic reference and was not treated as one.
+
+[cols="2,3,3",options="header"]
+|===
+|Aspect |Core |WFC today
+
+|Development environment
+|One persistent `.venv` at the repo root, created by `make venv`. `make setup` /
+`deps-dev` installs `.[dev]` *editable* through `tools/pip_install_spec.sh`. *[V]*
+|A fresh `dev-env` and `runtime-env` per Attempt, created by the Harness `prepare`;
+`<Development>[dev]` is installed from the live checkout. *[V]*
+
+|Reuse of installed environments
+|Stamp files under `.venv/.stamp/` (`deps`, `dev`, optional-tool stamps) make
+Make reinstall only when `pyproject.toml` (or a requirements file) changed. *[V]*
+|None by design: a new venv per Attempt is the object under test.
+
+|Dependency reproducibility
+|`pyproject.toml` ranges only (`pandas>=2.0`, `pytest>=8.2`, ...); no lock file or
+constraints file. Setup resolves against the index. One exact pin exists:
+`requirements/workflow-coordinator.txt` (Git commit). *[V]* A maintainer note of
+2026-10-15 records the resulting drift risk: the local venv ran pandas 3.x while the
+package declares `pandas>=2.0`, hiding pandas-2-only defects. That note was not
+re-verified here. *[I]*
+|Same open ranges; one optional pinned tooling file
+(`requirements/spreadsheet-handling.txt`). No test-dependency pin.
+
+|Network assumptions
+|`make setup` and CI (`pip install -e '.[dev]'`) use the index. Tests themselves
+run in the installed environment and need no index. *[V]*
+|The *tests* need an index (or a wheelhouse), because they create environments.
+
+|Suite organization
+|`tests/unit`, `integration`, `architecture`, `roundtrip`; markers `unit`, `integ`,
+`arch`, `slow`, `smoke`, `libreoffice` and others; `make test` = active layers
+without `slow`/prehex, `make test-fast` = unit only, `make test-full` includes slow;
+a README states placement and lifecycle rules. *[V]*
+|`tests/unit`, `integration`, `architecture`; markers `ftr` and `guardrail`; a
+single `python -m pytest -q`; no fast/slow split, no opt-in marker for expensive
+real-install tests. *[V]*
+
+|Subprocess and environment tests
+|Subprocess use is narrow: an isolated-mode (`-I`) probe for installed-package
+freshness; Git fixtures; an opt-in LibreOffice interoperability test that skips when
+the tool is absent. No test I found creates a venv or runs `pip install`. *[V]*
+|Real venv creation and real `pip install` inside the default suite. *[V]*
+
+|Opt-in expensive tests
+|Marker plus automatic skip when the dependency is missing (`libreoffice`). *[V]*
+|The live Claude smoke tests are opt-in through an environment variable and
+`skipif` (`WFC_RUN_LIVE_CLAUDE_SMOKE=1`), not a marker. The bubblewrap and nested
+Claude qualification tests under `tests/integration/` contain no skip handling; what
+they do when `bwrap` is unavailable was not examined. *[V]* *[U]*
+|===
+
+Ideas WFC could adopt:
+
+* *Marker taxonomy and layer targets* -- `make test-fast`, a layer for real-install
+  tests, markers for opt-in provider or network tests.
+* *Stamped reuse for the outer maintained environment and for any generated
+  wheelhouse*: rebuild only when the input requirements change, detect staleness
+  mechanically.
+* *Isolated-mode probes* to assert which code a subprocess actually imports -- WFC's
+  sentinel test is the same idea applied to the Runtime.
+* *Pinning precedent*: an exact requirements file already exists in both repositories.
+
+Unsuitable for the tests that matter here:
+
+* A single persistent, editable, stamp-reused environment as the thing under test:
+  WFC deliberately tests creation of pinned, fresh, non-editable Runtime and
+  Development environments and the preservation of `.git` in the Development
+  substrate.
+* Index-resolved, open-range setup as the dependency story: it is the failure mode
+  being fixed, and Core's own version-gap lesson shows that unpinned resolution hides
+  defects.
+* Treating the existence of `make setup` as reproducibility. The stamp avoids
+  reinstalling; it does not make the first install reproducible.
+
+[[target]]
+== Target test infrastructure
+
+[[requirements]]
+=== Requirements
+
+. Reproducible, controlled dependency provisioning, not tied to one person's cache.
+. The required suite runs offline by default; network and provider tests are
+  explicit, separately selected and skip or fail with a clear reason.
+. Real packaging, installation, build-isolation, admission and Harness integration
+  coverage is preserved. No test is removed or bypassed to save time.
+. Safe prerequisites are reused (dependency bytes, indexes, caches); isolation
+  of the environments under test is not.
+. Bounded, predictable execution with substantial headroom below the 900 s
+  Coordinator timeout.
+. A timeout leaves bounded, explicitly untrusted diagnostics and does not alter the
+  trusted classification (still `status=error`, `error_class=timeout`).
+. Compatibility with the Development / Runtime / Evidence separation: nothing is
+  written into the Runtime checkout, the Evidence repository or governing inputs;
+  provisioning data lives outside all three; the Runtime-N / Development-N+1
+  promotion path is unchanged.
+
+[[options]]
+=== Options compared
+
+[cols="3,3,3,2",options="header"]
+|===
+|Option |Benefit |Cost and risk |Assessment
+
+|O1. Keep the manual wheelhouse and the two environment variables
+|Available now; effective; fail-closed.
+|One host and tag; unrecorded; drifts with `pyproject.toml`; person-dependent.
+|Keep as the bridge. Not a solution.
+
+|O2. Repo-owned, hash-pinned requirements for the test dependency closure and a
+documented, scripted wheelhouse build with a provenance manifest
+|Reproducible and reviewable; staleness detectable from the pin digest; works on any
+machine that can run the build once; keeps all real installs.
+|Needs a resolution policy (which interpreters, which platforms), a place for the
+generated wheelhouse, and an update routine. Hash-pinned files must be refreshed on
+dependency changes.
+|Core of the target.
+
+|O3. Commit wheels into the repository
+|Zero setup.
+|Binary blobs, a 10+ MB `ruff` wheel, platform-specific; licensing and
+repository-weight concerns; wrong place for generated artifacts.
+|Reject.
+
+|O4. Share one pip cache across nested installs (a session-scoped `PIP_CACHE_DIR` set
+by the test helper)
+|Smallest change, no new artifact; removes the cold-per-`HOME` repetition; keeps
+installs real.
+|Still needs the index for the first fill and for the unpinned `setuptools>=68`
+lookup; not offline; effect unmeasured.
+|First, cheap step; measure it. Not sufficient alone.
+
+|O5. Local index mirror or caching proxy
+|Transparent to pip; also helps CI.
+|A service to run and secure; one more moving part for a single-maintainer project.
+|Defer. O2 achieves the goal without a service.
+
+|O6. Give the Harness explicit index/wheelhouse options and record them in the
+preparation pins
+|Removes ambient dependence and records provenance for the Attempt itself.
+|A production Harness change, adjacent to Beta-1 packaging (BP1) and to the
+generic-versus-self-development preparation boundary; wider than the test problem.
+|Decision for the Maintainer; not in the first epic.
+
+|O7. Raise the evidence timeout
+|One-line policy change.
+|Hides the problem, makes every genuine hang cost more, and leaves the 777-900 s
+fragility. The BUG already rejects passing "just below 900 seconds".
+|Reject as a standalone remedy.
+
+|O8. Exclude the real-prepare tests from the default run, or run them as a second
+evidence command
+|Fast default suite.
+|`robust@v1` fixes the evidence set to `task-check`; excluding them silently removes
+trusted coverage of the trust boundary.
+|Reject unless coverage is explicitly retained elsewhere.
+
+|O9. Replace real environment builds with stubs everywhere
+|Fastest.
+|Loses exactly the property under test; the project's own BUG forbids it.
+|Reject. Use stubs only where the property does not depend on environment contents.
+
+|O10. Reuse a pre-built venv for all scenarios
+|Fast.
+|Venvs are not relocatable and per-Attempt freshness is the product behavior.
+|Reject.
+|===
+
+*Tentative direction [R]*: O4 first as a measured experiment; O2 as the sustainable
+provisioning; a small, explicitly marked set of canonical real-install tests with
+stubs where the property allows; O1 remains the bridge until O2 exists; O6 stays a
+separate Maintainer decision. No part of this is selected by this concept.
+
+[[epic]]
+== Proposed epic: WFC Test Infrastructure
+
+Status of the proposal: *[R]*, planning input only. Creating an FTR, a Commission or
+a backlog entry for it is a separate Maintainer action, and this concept makes none.
+
+[[epic-goal]]
+=== Goal and shape
+
+Make the required suite reliably finish well inside the Coordinator timeout, with
+real packaging and Harness coverage intact, reproducible dependencies, bounded
+diagnostics on failure, and no dependence on one maintainer's cache. Three coherent
+workstreams, each plausible as one implementation Commission of two to four Hops:
+
+[cols="1,4,3",options="header"]
+|===
+|Workstream |Scope |Nature
+
+|TI-1 Suite structure, sharing and visibility
+|Measure first: per-test durations in the check output, and the effect of a shared
+pip cache directory for nested installs. Then: classify the real-install tests with
+a marker; keep a small canonical set (full real `prepare` and `launch`, sentinel
+Runtime preflight) and move properties that do not depend on environment contents to
+the existing stub builders, with a written mapping of each retained assertion;
+shared cache for nested installs; fix the doubled `-q` (`addopts = "-q"` plus the
+`task-check` argument suppresses the final summary line: `22 passed` is not printed
+with the check's argv, verified on a small file); a documented layer or marker for
+opt-in network/provider tests with default skip.
+|Tests and pytest configuration only; no production source.
+
+|TI-2 Controlled offline dependency provisioning
+|A repo-owned, hash-pinned requirement set for the test dependency closure
+(initially Python 3.13 / Linux x86_64, with the matrix stated rather than implied); a
+documented script or `make` target that builds and verifies the wheelhouse outside
+all three repositories and writes a provenance manifest (index, date, resolver,
+requirement digest, interpreter tag, checksums); staleness detection from the
+requirement digest; a test-session guard that, in required-suite mode, sets the
+offline variables for nested subprocesses itself and fails with a clear message if
+the wheelhouse is absent or stale; documentation in the Operator Manual and
+Developer Guide replacing the manual two-variable ritual.
+|Tooling, test helper and documentation. No Runtime or Harness change.
+
+|TI-3 Bounded timeout diagnostics
+|Stream a bounded tail of the evidence command's output to an explicitly *untrusted*
+diagnostic during execution, so a timeout leaves something; record elapsed time and
+the last progress as untrusted facts; terminate the command's process group, not only
+the direct child; keep `status=error`, `error_class=timeout` and every reduction and
+routing rule unchanged. Optionally record the selected environment names (not
+secrets) as an untrusted diagnostic. Follows the accepted failure-diagnostics design
+(link:../../backlog/BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS.adoc[BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS]).
+|Production Coordinator change in `evidence.py`; needs its own review, Runtime
+promotion decision and regression tests. Highest governance sensitivity.
+|===
+
+Explicitly deferred: explicit Harness index options (O6), additional interpreter or
+architecture matrix, a CI service, parallel test execution (adds a dependency and
+nondeterminism), a local index mirror, a second evidence command, and any change to
+the timeout value.
+
+[[epic-order]]
+=== Dependencies and recommended order
+
+. *TI-1 first.* It is cheap, tests-only, and answers what actually dominates
+  (cache sharing versus index resolution) before TI-2 is sized. It also gives the
+  maintainer per-test timing in every check from then on.
+. *TI-2 second.* It consumes TI-1's classification and cache experiment, and
+  replaces the manual wheelhouse. It needs three Maintainer decisions (below).
+. *TI-3 independent.* It does not depend on TI-1 or TI-2 and can be moved earlier if
+  further unexplained timeouts occur, because a diagnostic on the next timeout is
+  worth more than any measurement made afterwards.
+
+Rough effort and Commission strategy *[R]*: three Commissions, `robust@v1`, two to
+four Hops each. No separate planning Commission is required; this concept is the
+planning input. Do not create one Commission per marker, test or file.
+
+[[epic-acceptance]]
+=== Acceptance criteria (proposed)
+
+[cols="1,5",options="header"]
+|===
+|Workstream |Concrete criteria
+
+|TI-1
+|The collected test count is unchanged or every change is listed; no test is
+deselected or weakened. Each retained real-install test has a written statement of
+the property that needs a real environment. The required suite's total time online
+and offline is recorded before and after on the same host. Per-test durations and
+the pass/fail summary line appear in the check output. A default run makes no
+non-loopback network connection other than through the nested installs of the
+retained real-install tests. Opt-in tests are skipped by default with a stated reason.
+
+|TI-2
+|On a clean checkout with the documented provisioning step done once, the full
+required suite passes with no package index reachable. The wheelhouse build is
+reproducible from repository inputs on a second machine or a second maintainer
+account; the manifest states what was built from what. Changing a dependency pin
+makes the staleness check fail with an actionable message instead of a timeout.
+Real `venv`, real `pip install` and build isolation still run (shown by the nested
+pip log). The required suite finishes in at most half the Coordinator timeout (450 s)
+under offline provisioning on the reference host (run B was 153 s).
+
+|TI-3
+|A timed-out check retains a bounded, labelled-untrusted tail and elapsed time; the
+persisted observation still reads `status=error`, `error_class=timeout`,
+`exit_code=null`; reducer routing for timeout is byte-for-byte unchanged in
+regression tests; nested descendants of the killed command are terminated (tested
+with a spawned child); no new trusted-evidence field is added without an explicit
+Maintainer decision recorded here or in the BUG.
+|===
+
+[[epic-risks]]
+=== Risks and test strategy
+
+* *Weakening trust-boundary coverage while chasing speed.* Mitigation: the property
+  mapping in TI-1; no stubs where the assertion depends on environment contents;
+  an architecture-level test that the canonical real-install set is not empty.
+* *Hidden network dependence.* Mitigation: the default-run network criterion in TI-1
+  and the offline criterion in TI-2.
+* *Provenance theater.* A manifest nobody checks is worse than none. Mitigation: the
+  staleness check fails the session, not a warning.
+* *Over-engineering.* The epic is three bounded workstreams; no service, no
+  framework, no matrix beyond what is stated.
+* *Churn from Beta-1 productization.* BP1 packaging and BP7 cutover will change
+  `prepare` and `launch`, and BP8 is already extracting universal tests from
+  historical Commission fixtures. TI-1 must not pre-empt BP8's separation of
+  genuine invariants from historical fixtures; it works on the Harness tests as they
+  are and records their mapping so BP8 can reuse it.
+* *Source authority.* Everything provisioned lives outside Development, Runtime and
+  Evidence; no Run evidence or accepted contract is edited.
+* *Trusted-evidence drift.* TI-3 changes the Coordinator and therefore the
+  Runtime-N / Development-N+1 path: promotion remains a separate Maintainer decision.
+
+[[epic-beta1]]
+=== Should the epic be a Beta-1 prerequisite?
+
+*Recommendation [R]:* classify it as pre-Beta-1 engineering infrastructure and a
+self-development throughput prerequisite, not as a release gate.
+
+Reasons:
+
+* The nested-prepare BUG's own classification is pre-beta operational hardening that
+  does not block Simple or Robust execution. *[V]* An external Beta user would
+  not run this repository's suite or its Harness fixtures. *[I]*
+* In practice the failures block the way Beta-1 itself is being built: three
+  accepted-then-stopped Runs in five days. Each further Run-heavy Beta-1 step (BP1,
+  BP2, BP3...) would pay the same risk. TI-1 and TI-3 are therefore best done before
+  that work; TI-2 should at least precede any large batch of new Harness tests.
+* Overlap with Beta-1 work is real but narrow. BP1 packaging identity and BP9
+  external-user qualification will need their own reproducible-install story; TI-2
+  must not duplicate or pre-empt it. The timeout-diagnostics BUG is already named a
+  BP4/BP9 usability candidate. BP8 covers the fixture extraction, not provisioning.
+
+Maintainer decisions required:
+
+. Confirm or change the classification above. This concept does not alter
+  `_open.adoc` or any release-gate authority.
+. TI-2 defaults: where the generated wheelhouse lives by default; whether an absent
+  wheelhouse in required-suite mode *fails* (recommended, fail-closed) or falls back
+  to the network; which interpreter tags are in scope first.
+. Whether explicit Harness index options (O6) are in scope for BP1 rather than this
+  epic.
+. Whether TI-3 may add an environment-names diagnostic, and under what label, since
+  trusted evidence currently names only a policy.
+. Whether to open an FTR for the epic, and when, relative to the documentation
+  Commissions already in flight.
+
+[[continuation]]
+== Immediate continuation
+
+The current documentation work can continue with the verified external wheelhouse
+mitigation. For any Attempt whose `task-check` will run the full suite:
+
+* Export `PIP_NO_INDEX=1` and
+  `PIP_FIND_LINKS=/home/stefan/wfc-scratch/wheelhouse-wfc-py313-20261115` in the shell
+  for both `prepare` and `launch`.
+* Re-verify before each use: `sha256sum -c SHA256SUMS`, the Attempt `dev-env`
+  interpreter tag (3.13), and that installed development dependencies equal the
+  wheelhouse versions.
+* Treat the result as a mitigation, not evidence of the variables: the persisted
+  Run state will not show them.
+
+This concept does not retroactively complete or alter any stopped Run (`RUN-4ffabb53...`,
+`RUN-3c6db523...`, `RUN-b99adac7...`), their trusted evidence, their candidate
+commits or the documentation FTRs and review artifacts they produced. A
+verification-only successor for the documentation-memory candidate remains a
+separate maintainer authorization. The concept authorizes no change to the WFC
+Runtime, tests, packaging or governance, and starts no Commission or Run.
+
+[[sources]]
+== Sources
+
+* link:../../backlog/BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION.adoc[BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION]
+* link:../../backlog/BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS.adoc[BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS]
+* link:../../backlog/BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc[BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION]
+* link:../../backlog/BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS.adoc[BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS]
+* link:../../backlog/beta1_productization.adoc[Beta-1 productization map (BP1-BP9)] and
+  link:../../backlog/_open.adoc[the active-work manifest]
+* link:workflow_coordinator_front_door_stage1_commission_test_burden_finding_2026-10-25.adoc[Permanent Commission-specific test burden]
+* link:wfc_documentation_curation_c3_001_broad_review.adoc[C3 independent broad review]
+* link:wfc_documentation_memory_planning_001_broad_review.adoc[Documentation-memory planning broad review]
+* link:../../operator_manual/ch03_running/01_preparation.adoc[Run preparation and Harness v0]
+* link:../../operator_manual/ch08_examples/03_commission_to_archive.adoc[Commission-to-archive walkthrough] (historical `task-check` policy)
+* `scripts/wfc_op.py`, `tests/unit/test_wfc_op.py`, `tests/conftest.py`,
+  `pyproject.toml`, `Makefile`, `src/workflow_coordinator/evidence.py` at the reviewed state
+* Run state under `/home/stefan/wfc-state/` for the C3 original, C3 verification and
+  documentation-memory attempts (`operator-summary.json`, `execution-evidence.json`)
+* Host diagnostics: `/home/stefan/wfc-scratch/memory-planning-timing-diagnostic-20261116/`,
+  `/home/stefan/wfc-scratch/c3-wheelhouse-verification-20261115-01/`,
+  `/home/stefan/wfc-scratch/wheelhouse-wfc-py313-20261115/` -- host-local observations, not portable artifacts
+* Sibling `spreadsheet-handling/core` (read-only): `Makefile`, `pyproject.toml`,
+  `tools/pip_install_spec.sh`, `tests/README.adoc`, `requirements/workflow-coordinator.txt`
