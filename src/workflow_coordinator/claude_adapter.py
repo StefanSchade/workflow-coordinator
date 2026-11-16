@@ -165,7 +165,7 @@ class ClaudeCliAdapter:
             },
             "permissions": {
                 # Restricted mode confines file tools to the working directory.
-                "allow": ["Edit", "Write", "WebFetch(domain:*)", "WebSearch"],
+                "allow": ["Edit", "Write", "WebFetch(domain:*)", "WebSearch", "Bash(curl:*)"],
                 "deny": [],
                 "blockReadsOutsideWorkingDirectories": True,
             },

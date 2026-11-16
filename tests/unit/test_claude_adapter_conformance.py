@@ -86,7 +86,7 @@ def test_exact_network_argv_profile_settings_cwd_prompt_and_environment(tmp_path
     # The permission-rule wildcard is intentional. A bare WebFetch grant
     # does not feed the sandbox proxy; a raw allowedDomains=["*"] is a
     # distinct setting with a conflicting exported runtime schema.
-    assert observation["settings"] == {"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False, "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path), scratch], "allowWrite": [scratch]}, "network": {"allowedDomains": []}}, "permissions": {"allow": ["Edit", "Write", "WebFetch(domain:*)", "WebSearch"], "deny": [], "blockReadsOutsideWorkingDirectories": True}}
+    assert observation["settings"] == {"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False, "filesystem": {"denyRead": ["~/"], "allowRead": [str(tmp_path), scratch], "allowWrite": [scratch]}, "network": {"allowedDomains": []}}, "permissions": {"allow": ["Edit", "Write", "WebFetch(domain:*)", "WebSearch", "Bash(curl:*)"], "deny": [], "blockReadsOutsideWorkingDirectories": True}}
     assert outcome.returncode == 0 and not outcome.timed_out
     assert json.loads(outcome.candidate_result or "{}") == envelope(Invocation("RUN-C", "H001", "INV-C"))
 
@@ -112,7 +112,7 @@ def test_edit_grant_uses_only_resolved_repository_as_working_directory(tmp_path:
     assert result["scrub"] is None
     assert "--restricted" in result["args"]
     assert "--add-dir" not in result["args"]
-    assert result["settings"]["permissions"]["allow"] == ["Edit", "Write", "WebFetch(domain:*)", "WebSearch"]
+    assert result["settings"]["permissions"]["allow"] == ["Edit", "Write", "WebFetch(domain:*)", "WebSearch", "Bash(curl:*)"]
     scratch = str(ClaudeCliAdapter._external_scratch_dir(request(alias)).resolve())
     assert result["settings"]["sandbox"]["filesystem"] == {
         "denyRead": ["~/"], "allowRead": [str(repository.resolve()), scratch], "allowWrite": [scratch],
@@ -229,7 +229,7 @@ def test_network_profile_never_retries_with_weaker_permissions(tmp_path: Path, m
     assert args[args.index("--permission-mode") + 1] == "acceptEdits"
     assert args[args.index("--permission-prompts") + 1] == "none"
     assert settings["permissions"] == {
-        "allow": ["Edit", "Write", "WebFetch(domain:*)", "WebSearch"],
+        "allow": ["Edit", "Write", "WebFetch(domain:*)", "WebSearch", "Bash(curl:*)"],
         "deny": [], "blockReadsOutsideWorkingDirectories": True,
     }
     assert settings["sandbox"] == {
