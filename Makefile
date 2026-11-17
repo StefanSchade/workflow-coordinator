@@ -65,3 +65,11 @@ memory-import:
 
 memory-roundtrip-check:
 	$(MEMORY_WORKBOOK) roundtrip-check
+
+.PHONY: doc-catalog doc-catalog-check
+
+doc-catalog:
+	$(PYTHON) scripts/wfc_doc_catalog.py generate
+
+doc-catalog-check:
+	$(PYTHON) scripts/wfc_doc_catalog.py check
