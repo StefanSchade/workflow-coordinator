@@ -18,6 +18,36 @@ import pytest
 REPOSITORY = Path(__file__).resolve().parent.parent
 PARTIAL_FLAG = "--wfc-partial"
 _STATE = pytest.StashKey()
+_REQUIRED_REAL = frozenset(
+    "tests/unit/test_wfc_op.py::" + name for name in (
+        "test_prepare_positive_produces_complete_envelope_and_leaves_state_absent",
+        "test_status_completed_run",
+        "test_prepare_final_revalidation_refuses_on_drift_during_preparation",
+        "test_canonical_preflight_refusal_propagates_and_proves_pinned_runtime_code",
+        "test_launch_uses_the_frozen_prepared_path_not_a_later_ambient_path",
+        "test_launch_sh_safely_quotes_shell_significant_paths",
+    )
+) | frozenset({
+    "tests/architecture/test_offline_distribution.py::test_clean_isolated_distribution_and_wheel_install",
+    "tests/unit/test_neutral_consumer_evidence.py::test_shell_consumer_uses_real_evidence_runner",
+})
+
+
+def pytest_collection_finish(session):
+    state = session.config.stash.get(_STATE, {})
+    if state.get("mode") == "required":
+        state["selected_real"] = {item.nodeid for item in session.items} & _REQUIRED_REAL
+        state["real_reports"] = {}
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    state = item.config.stash.get(_STATE, {})
+    if state.get("mode") == "required" and item.nodeid in _REQUIRED_REAL:
+        state.setdefault("real_reports", {}).setdefault(item.nodeid, {})[report.when] = report.outcome
+
 
 _SETUP_HELP = (
     "The required test suite needs verified offline inputs. Set WFC_TEST_INPUTS to the bundle "
@@ -105,6 +135,13 @@ def pytest_sessionfinish(session, exitstatus):
     state = session.config.stash.get(_STATE, None)
     if not state or not state.get("bundle"):
         return
+    if state.get("mode") == "required":
+        reports = state.get("real_reports", {})
+        missing = sorted(node for node in _REQUIRED_REAL if node not in state.get("selected_real", set())
+                         or reports.get(node) != {"setup": "passed", "call": "passed", "teardown": "passed"})
+        if missing:
+            state["missing_real"] = missing
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
     try:
         state["tool"].verify_bundle(state["profile"], state["bundle"])
     except state["tool"].InputsError as exc:
@@ -115,6 +152,10 @@ def pytest_sessionfinish(session, exitstatus):
 
 def pytest_terminal_summary(terminalreporter):
     state = terminalreporter.config.stash.get(_STATE, None) or {}
+    if state.get("missing_real"):
+        terminalreporter.write_sep("=", "REQUIRED REAL TESTS NOT SELECTED AND PASSED", red=True, bold=True)
+        for node in state["missing_real"]:
+            terminalreporter.write_line(f"  - {node}")
     if state.get("changed"):
         terminalreporter.write_sep("=", "OFFLINE INPUTS CHANGED OR INVALID DURING THE RUN", red=True, bold=True)
         for problem in state["changed"]:

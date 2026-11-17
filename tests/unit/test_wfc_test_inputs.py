@@ -679,7 +679,7 @@ def test_required_run_applies_sanitized_offline_configuration_to_the_process_tre
     hostile = {"PIP_INDEX_URL": "http://127.0.0.1:9/", "PIP_FIND_LINKS": "/elsewhere", "PIP_NO_INDEX": "0",
                "PIP_USER": "1", "PIP_CONFIG_FILE": "/evil"}
     result, output = pytest_run(project, tmp_path, "tests", env_updates=selected(directory, **hostile))
-    assert result.returncode == 0, output
+    assert result.returncode == 1 and "REQUIRED REAL TESTS NOT SELECTED AND PASSED" in output
     assert f"offline inputs: profile synthetic-host, 1 wheels verified in {directory}" in output
     seen = json.loads((tmp_path / "probe.json").read_text())
     assert seen == {
@@ -693,7 +693,7 @@ def test_relative_input_path_is_made_absolute_for_nested_processes(tmp_path):
     project, directory = make_project(tmp_path)
     relative = os.path.relpath(directory, project)
     result, output = pytest_run(project, tmp_path, "tests", env_updates=selected(relative))
-    assert result.returncode == 0, output
+    assert result.returncode == 1 and "REQUIRED REAL TESTS NOT SELECTED AND PASSED" in output
     assert json.loads((tmp_path / "probe.json").read_text())["WFC_TEST_INPUTS"] == str(directory)
 
 

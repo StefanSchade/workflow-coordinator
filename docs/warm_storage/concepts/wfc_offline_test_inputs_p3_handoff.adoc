@@ -1,0 +1,58 @@
+= P3 offline test inputs: implementation and qualification handoff
+:toc:
+
+Work item:: `WI-WFC-OFFLINE-TEST-INPUTS-P3-001`, H001, base `b1fe03983b124dee40042977444fbc51eafb4733`.
+Standing:: Agent-local measurements and implementation, awaiting independent review and the separately executed Coordinator task-check. These observations are not this Run's trusted evidence. BUG closure is a maintainer/operator decision after all closure criteria. Keep the original wheelhouse until full acceptance. Product boundary C/P4 is separate.
+
+== Predecessors and provenance
+
+The read-only P1 profile handoff, fixture inventory, P1 review, P2 handoff and P2 review were consulted. The accessible P1 recovery and P2 `operator-summary.json` files show completed two-hop Runs, each with a passing historical Coordinator task-check. The evidence repository contains P1 archive `9e3cd9ba4cfa6d36ed1bc32577eac3cc99064cb7` and P2 archive `0ba6557d572602a143420420ccb17b7180aab675`. Those results do not constitute this Run's task-check. P2's real Claude worker and independent reviewer each verified the staged wheels and performed real isolated local installs; literal shell variable assignment was denied there, while the explicit `exec` child environment worked. The P2 handoff describes the separate clean-export install and the stale in-tree `build/lib` hazard. No new Claude run is claimed here.
+
+The operator-staged `build/wfc/offline-p2-staged` independently passed `python3 -I scripts/wfc_test_inputs.py verify --profile cp313-linux-x86_64 --bundle build/wfc/offline-p2-staged` (12 wheels). A separately supplied copy at `tmp/p3-qualification/bundle` was made with `fetch --from-dir` and verified by each `exec`. Profile SHA-256: `2a9c8b7a1209f3f10be47a8b3c7f8d6009a4eb9637df30f3614cacbe60f06e52`. The twelve wheels and their exact versions, hashes, upstream HTTPS metadata and limitations are in the committed profile. This is artifact identity against that profile and official metadata, not publisher signature attestation. No original wheelhouse was modified. Only Linux x86-64, CPython 3.13 and the profiled glibc/seed pip are covered; ARM is not qualified.
+
+== Codex-side clean install and isolation
+
+This Codex agent shell runs on Linux `6.12.86+deb13-amd64` x86-64 with `/usr/bin/python3` 3.13.5 and ensurepip 25.1.1. A fresh HOME and venv were created under ignored `tmp/p3-qualification`; clean source came from `git archive HEAD`. With bubblewrap `--unshare-net --bind / / --dev /dev --proc /proc`, `--setenv HOME <checkout>/tmp/p3-qualification/home`, and `scripts/wfc_test_inputs.py exec --profile cp313-linux-x86_64 --bundle tmp/p3-qualification/bundle`, the fresh venv installed `<checkout>/tmp/p3-qualification/source[dev]` with `pip install -v`. The log `tmp/p3-qualification/install.log` shows PEP-517 build dependencies installed into an isolated environment from pinned setuptools 84.2.1, and successful local dependency installation. This is actual Codex sandbox access, distinct from the host/Coordinator environment and from the P2 Claude results.
+
+The existing `/usr/bin/bwrap` facility succeeded without any new grant; `unshare -n true` itself was denied (`Operation not permitted`). In the bubblewrap network namespace a numeric TCP connect to `1.1.1.1:443` returned 101 (`ENETUNREACH`), see `tmp/p3-qualification/network-probe.log`. This is actual denial, not an inference from `PIP_NO_INDEX`. For subsequent runs the probe and pytest are executed consecutively within the same namespace by `tmp/p3-qualification/run-denied.sh`. These ignored logs and helper are local references, not versioned or Coordinator-trusted artifacts.
+
+== Coverage and limits
+
+`tests/architecture/test_offline_distribution.py` builds a clean Git export via `python -m build` with separate isolated sdist and wheel-from-sdist builds, installs the resulting wheel into a fresh independent venv with dependency resolution enabled, checks `pip check`, the installed CLI and exact contract resource, and imports from an unrelated directory using `-I`. It checks the package origin is under the venv, injects a source-path override under isolated mode, and removes the installed resource to prove the probe fails. No `--no-deps` or `--no-build-isolation` shortcut is used. `tests/unit/test_neutral_consumer_evidence.py` uses a disposable Git repository containing text and shell only; it admits literal `sh checks/check.sh` and exercises the production evidence runner in that repository, including a failing text mutation. It does not invoke the self-development Harness on that consumer or claim a product compiler or lifecycle.
+
+The required-mode guard checks that all six P1 real preparation scenarios plus the distribution and neutral-consumer nodes were selected and each passed setup, call and teardown. The temporary-storage test's deliberate subprocess probes use explicit partial mode; the full required suite remains guarded. P2's integrity, toolchain/profile, corruption, unexpected artifact, hostile pip settings and no-fallback tests remain in the suite. Existing pinned Runtime checks and all real prepare cases remain intact.
+
+== Full-suite measurements
+
+All commands ran from the checkout in the Codex agent sandbox, with the fresh HOME, clean-export-installed venv and copied verified bundle described above. They ran the complete suite, without `--wfc-partial`, as `python -m pytest -ra --durations=10` through the explicit `exec` wrapper. The exact bubblewrap invocation for the first pass was:
+
+[source,sh]
+----
+bwrap --unshare-net --bind / / --dev /dev --proc /proc \
+  --setenv HOME "$PWD/tmp/p3-qualification/home" --chdir "$PWD" \
+  /usr/bin/python3 -I scripts/wfc_test_inputs.py exec \
+  --profile cp313-linux-x86_64 --bundle tmp/p3-qualification/bundle -- \
+  "$PWD/tmp/p3-qualification/venv/bin/python" -m pytest -ra --durations=10
+----
+
+The two subsequent passes used the same bubblewrap options, HOME, profile, bundle and command, invoked through `/bin/sh tmp/p3-qualification/run-denied.sh`; that helper first performs the numeric network probe in the same namespace and then `exec`s the wrapper. The standalone probe used the identical namespace option before the first pass. Collection separately reported 1055 tests (`tmp/p3-qualification/collection.log`).
+
+[cols="1,1,1,1,2",options="header"]
+|===
+|Log |Passed |Skipped |Deselected |pytest duration
+|`tmp/p3-qualification/suite-2.log` |1051 |4 |0 |187.68 s
+|`tmp/p3-qualification/suite-3.log` |1051 |4 |0 |230.39 s
+|`tmp/p3-qualification/suite-4.log` |1051 |4 |0 |189.97 s
+|===
+
+Each exited zero and satisfied the real-node execution guard. The three live Claude cases are opt-in and skipped; the fourth skip is the intentional temporary-storage subprocess probe. The optional real archive-wrapper case ran on this host. The durations include setup/call/teardown; the ten slowest are in each full log. These are pytest-reported durations on this host, not a general performance guarantee or trusted Coordinator evidence. The first exploratory full run (`suite-1.log`) took 175.69 s and failed two temporary-storage tests because their nested one-test subprocesses encountered the new guard; after explicitly selecting partial mode for those subprocesses, all three measurements above passed. No tests were removed or silently deselected.
+
+== Negative cases and review handoff
+
+The existing P2 tests check bundle corruption, unexpected artifacts, incompatible host/toolchain and wheel tags, hostile pip settings and fail-closed behavior. In separate disposable bundle copies, the verifier refused missing setuptools and missing pluggy with the exact missing filenames. Under `bwrap --unshare-net`, fresh venv pip with cleared environment and explicit `/dev/null` config, no index/cache and `PIP_FIND_LINKS` pointing to the setuptools-free copy failed the isolated build dependency stage with `No matching distribution found for setuptools>=68` (`tmp/p3-qualification/negative-build-controlled.log`). Installing pytest against the pluggy-free copy failed with `No matching distribution found for pluggy<2,>=1.6` (`tmp/p3-qualification/negative-pip.log`). Neither used index or cache fallback.
+
+An initial negative experiment using only outer `pip --isolated` flags unexpectedly succeeded: the nested build pip inherited this agent shell's `PIP_FIND_LINKS`, which pointed to the complete bundle. That result is not a missing-dependency pass. The controlled rerun above cleared the environment and explicitly provided the incomplete path; the P2 `exec` wrapper likewise explicitly sanitizes inherited pip settings. This observation should be considered when reproducing the negative control.
+
+The deliberate guard mutation repeated the complete suite in the denied-network context with only `--deselect tests/unit/test_wfc_op.py::test_status_completed_run` added. It exited 1, reported exactly that node under `REQUIRED REAL TESTS NOT SELECTED AND PASSED`, and otherwise reported 1050 passed, four skipped, one deselected in 177.42 s (`tmp/p3-qualification/guard-one-deselected.log`). This is a negative control, not a fourth qualifying pass. A separate negative origin control deliberately omitted `-I`, supplied the checkout `src` through `PYTHONPATH`, and failed the venv-origin assertion (`tmp/p3-qualification/source-leak-mutation.log`); the isolated positive probe and missing-resource mutation are in the distribution test. Both the staged bundle and separate copy verified again after use. Ruff passed on changed Python files and `git diff --check` passed; these are agent-local checks.
+
+Independent review must adversarially exercise these checks and inspect the claims and security boundaries; no independent P3 review is claimed by this worker. The Coordinator's configured task-check remains separately required. No ARM, other interpreter, Beta-1 lifecycle, consumer dependency manager, BUG closure or Runtime promotion is claimed.

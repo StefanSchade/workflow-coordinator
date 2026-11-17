@@ -22,7 +22,7 @@ def environment(**updates):
 
 def launch(env, *args):
     return subprocess.Popen(
-        [sys.executable, "-m", "pytest", "-q", "-s", str(FILE), "-k", "temp_storage_probe", *args],
+        [sys.executable, "-m", "pytest", "--wfc-partial", "-q", "-s", str(FILE), "-k", "temp_storage_probe", *args],
         cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
 
