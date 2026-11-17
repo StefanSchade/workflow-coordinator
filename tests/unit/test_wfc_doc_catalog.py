@@ -55,6 +55,41 @@ def test_projection_boundaries_and_links(tree):
     assert catalog.encode(records) == catalog.encode(catalog.project(tree)[0])
 
 
+def test_unsupported_definition_labels_end_supported_declarations(tree, capsys):
+    doc = tree / "docs/review.adoc"
+    doc.write_text(
+        "= Review\n\n"
+        "WorkItem:: WI-SUPPORTED-1\n"
+        "  continued WI-WRAPPED-2\n"
+        "Run / Hop:: RUN-UNSUPPORTED-3 / H999\n"
+        "Reviewed candidate:: 83ec2b10966392af281dcd22b2cc8a25109d4880\n"
+        "Reviewed implementation commits::\n"
+        "WI-UNSUPPORTED-4\n"
+        "Status:: old\n"
+        "  continued value\n"
+        "Review phase:: WI-UNSUPPORTED-5\n\n"
+        "Body mentions WI-BODY-6.\n",
+        encoding="utf-8",
+    )
+    records, _ = catalog.project(tree)
+    review = next(record for record in records if record["path"] == "docs/review.adoc")
+    assert review["source_declarations"] == {
+        "WorkItem": ["WI-SUPPORTED-1\n  continued WI-WRAPPED-2"],
+        "Status": ["old\n  continued value"],
+    }
+    assert review["ids"] == ["WI-SUPPORTED-1", "WI-WRAPPED-2"]
+    for identifier in (
+        "RUN-UNSUPPORTED-3",
+        "H999",
+        "83ec2b10966392af281dcd22b2cc8a25109d4880",
+        "WI-UNSUPPORTED-4",
+        "WI-UNSUPPORTED-5",
+        "WI-BODY-6",
+    ):
+        assert catalog.main(["query", "--live", "--id", identifier]) == 0
+        assert capsys.readouterr().out == ""
+
+
 def test_atomic_noop_and_failure(tree):
     output = tree / "build/catalog.jsonl"
     assert catalog.generate(output, b"old")

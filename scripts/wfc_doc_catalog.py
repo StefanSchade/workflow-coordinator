@@ -73,13 +73,16 @@ def project(root):
                     in_header = False
                 current = None
                 continue
-            if in_header and (m := re.match(r"^([A-Za-z]+)::\s*(.*)$", s)):
-                current = m[1] if m[1] in FIELDS else None
-                if current:
+            # Any definition-list term starts a new declaration, even when
+            # its label is outside the supported set or contains spaces.
+            if in_header and (m := re.match(r"^([^:]+)::\s*(.*)$", s)):
+                current = m[1]
+                if current in FIELDS:
                     declarations.setdefault(current, []).append(m[2])
                 continue
             if in_header and current and not re.match(r"^(?:\[|\* |\.|include::)", s):
-                declarations[current][-1] += "\n" + line
+                if current in FIELDS:
+                    declarations[current][-1] += "\n" + line
                 continue
             in_header = False
             current = None
