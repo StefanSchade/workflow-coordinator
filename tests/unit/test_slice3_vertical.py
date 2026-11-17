@@ -870,31 +870,22 @@ def test_git_subject_postcondition_charges_invalid_commits_and_rejects_collision
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
     run = replace(run_for(workflow, budget=1), current_head=head)
     adapter = CommitAdapter(repository, subject, envelope())
-    if accepted:
-        assert run_one_hop(
-            run,
-            workflow,
-            repository,
-            adapter,
-            components(("worker", 1), ("testing", 1)),
-            agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="tiny",
-            invocation_id="INV-1",
-        ).reduction.run.status.value == "completed"
-    else:
-        stopped = run_one_hop(
-            run,
-            workflow,
-            repository,
-            adapter,
-            components(("worker", 1), ("testing", 1)),
-            agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="tiny",
-            invocation_id="INV-1",
-        )
-        assert stopped.reduction.run.status.value == "awaiting_human"
-        assert stopped.reduction.run.hop_used == len(stopped.reduction.run.hops) == 1
-        assert stopped.reduction.run.hops[0].actual_commits
-        assert "WFC-GIT-08" in (stopped.reduction.run.stop_reason or "")
-        assert stopped.checkpoint["hops"] and stopped.checkpoint["state"]["stop_reason"]
+    stopped = run_one_hop(
+        run,
+        workflow,
+        repository,
+        adapter,
+        components(("worker", 1), ("testing", 1)),
+        agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="tiny",
+        invocation_id="INV-1",
+    )
+    assert stopped.reduction.run.status.value == "awaiting_human"
+    assert stopped.reduction.run.hop_used == len(stopped.reduction.run.hops) == 1
+    assert stopped.reduction.run.hops[0].actual_commits
+    assert "commit safety-cap breach" in str(stopped.reduction.run.anomalies)
+    assert ("WFC-GIT-08" in (stopped.reduction.run.stop_reason or "")) is not accepted
+    assert stopped.checkpoint["hops"] and stopped.checkpoint["state"]["stop_reason"]
+
 
 
 def test_durable_artifact_required_charges_post_acceptance_failure(repository):

@@ -409,6 +409,7 @@ def run_one_hop(
             base_head=run.current_head,
             claimed_commits=result.claimed_commits,
             allowed_paths=phase.authorized_scope,
+            max_commits=0,
         )
     post_acceptance_anomalies = (
         *_subject_anomalies(repository, delta.actual_commits, run, hop_id),

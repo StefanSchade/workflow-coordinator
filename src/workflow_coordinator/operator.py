@@ -579,7 +579,7 @@ def _reconstructed_context(
     if run.hops:
         hop = run.hops[-1]
         changed_paths = _git(
-            repository, "diff", "--name-only", f"{hop.base_head}..{hop.end_head}"
+            repository, "diff", "--no-renames", "--name-only", f"{hop.base_head}..{hop.end_head}"
         ).splitlines()
         lines.extend(
             (
@@ -1021,7 +1021,7 @@ def _summary(
     hop_evidence = execution_evidence or []
     hops = []
     for hop in run.hops:
-        changed = _git(repository, "diff", "--name-only", f"{hop.base_head}..{hop.end_head}").splitlines()
+        changed = _git(repository, "diff", "--no-renames", "--name-only", f"{hop.base_head}..{hop.end_head}").splitlines()
         hops.append({"hop_id": hop.hop_id, "base_head": hop.base_head, "end_head": hop.end_head,
                      "actual_commits": list(hop.actual_commits), "changed_paths": changed,
                      "outcome": hop.outcome,
@@ -1043,7 +1043,7 @@ def _summary(
             "successor_provenance": None if run.successor_provenance is None else {"predecessor_run_id": run.successor_provenance.predecessor_run_id, "predecessor_work_item_id": run.successor_provenance.predecessor_work_item_id, "predecessor_final_head": run.successor_provenance.predecessor_final_head, "authority_decision_ref": run.successor_provenance.authority_decision_ref, "authority_decision_sha256": run.successor_provenance.authority_decision_sha256, "continuation_descriptor_sha256": run.successor_provenance.continuation_descriptor_sha256, "salvage_manifest_sha256": run.successor_provenance.salvage_manifest_sha256},
             "anomalies": list(run.anomalies), "next_explicit_action": _next_explicit_action(run),
             "provider": provider, "commits": commits,
-            "changed_paths": _git(repository, "diff", "--name-only", f"{run.baseline_head}..{facts.head}").splitlines(),
+            "changed_paths": _git(repository, "diff", "--no-renames", "--name-only", f"{run.baseline_head}..{facts.head}").splitlines(),
             "worktree_clean": facts.clean and not facts.unresolved_submodules, "operator_error": error,
             "hops": hops, "execution_evidence": hop_evidence}
     if run.schema_version == 3 and convergence_projection is not None:

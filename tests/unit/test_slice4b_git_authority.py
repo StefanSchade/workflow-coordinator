@@ -395,3 +395,57 @@ def test_failed_result_with_intent_never_synthesizes_a_commit(repository: Path):
     assert stopped.reduction.run.status.value == "awaiting_human"
     assert git(repository, "rev-parse", "HEAD") == base
     assert "commit intent is not permitted" in (stopped.reduction.run.stop_reason or "")
+
+@pytest.mark.parametrize("both", [True, False])
+def test_rename_intent_still_refuses_under_rename_detection(repository: Path, both: bool):
+    git(repository, "config", "diff.renames", "true")
+    base = git(repository, "rev-parse", "HEAD")
+    (repository / "src/a.py").rename(repository / "src/new.py")
+    paths = ("src/a.py", "src/new.py") if both else ("src/new.py",)
+    expected = "staged paths differ" if both else "unexpected dirty path"
+    with pytest.raises(TrustedCommitError, match=expected):
+        trusted_commit(repository, expected_repository=repository, base_head=base, allowed_paths=("src",),
+                       intent=CommitIntent(paths, "fix: WI-1 H001 rename"), work_item_id="WI-1", hop_id="H001")
+
+
+@pytest.mark.parametrize("scope", [("src",), ()])
+@pytest.mark.parametrize("count", [1, 2])
+def test_agent_commits_without_intent_are_refused(repository: Path, scope: tuple[str, ...], count: int):
+    class CommittingAdapter(WorktreeOnlyAdapter):
+        def execute(self, request):
+            for index in range(count):
+                (request.repository / "src/a.py").write_text(f"change {index}\n")
+                git(request.repository, "add", "src/a.py")
+                git(request.repository, "commit", "-m", "fix: WI-1 H001 agent change")
+            result = json.loads(_result(intent=None))
+            result["result"]["claimed_commits"] = git(request.repository, "rev-list", "--reverse", f"HEAD~{count}..HEAD").splitlines()
+            return AgentExecutionOutcome(json.dumps(result), 0, False, "", "")
+    stopped = _vertical_run(repository, CommittingAdapter("", {}), scope=scope)
+    assert stopped.reduction.run.status.value == "awaiting_human"
+    assert "commit safety-cap breach" in str(stopped.reduction.run.anomalies)
+
+
+def test_clean_no_intent_hop_completes(repository: Path):
+    completed = _vertical_run(repository, WorktreeOnlyAdapter(_result(intent=None), {}))
+    assert completed.reduction.run.status.value == "completed"
+
+
+def test_review_agent_commit_without_intent_is_refused(repository: Path):
+    class ReviewCommitAdapter:
+        def execute(self, request):
+            (repository / "src/a.py").write_text("review change\n")
+            git(repository, "add", "src/a.py")
+            git(repository, "commit", "-m", "fix: WI-1 H001 review change")
+            payload = json.loads(_result(intent=None))
+            payload["result"].pop("status")
+            payload["result"]["verdict"] = "accept"
+            payload["result"]["claimed_commits"] = [git(repository, "rev-parse", "HEAD")]
+            return AgentExecutionOutcome(json.dumps(payload), 0, False, "", "")
+    selected = replace(phase({"done": route("complete")}, role="independent_reviewer", review="gate"), authorized_scope=("src",), evidence=())
+    workflow = profile({"review": selected})
+    base = git(repository, "rev-parse", "HEAD")
+    run = replace(run_for(workflow, budget=1), current_head=base, baseline_head=base)
+    components = {**_components(), "independent_reviewer": PromptComponent("independent_reviewer", "review.txt", "PIN", "review")}
+    stopped = run_one_hop(run, workflow, repository, ReviewCommitAdapter(), components, agent_operating_contract=load_agent_operating_contract(), persona="reviewer", task_payload="fixture", invocation_id="INV-1")
+    assert stopped.reduction.run.status.value == "awaiting_human"
+    assert "commit safety-cap breach" in str(stopped.reduction.run.anomalies)

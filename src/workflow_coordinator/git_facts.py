@@ -136,7 +136,7 @@ def _salvage_inventory_with_index(
             raise GitPreflightError(completed.stderr.strip() or "Git command failed")
         return completed.stdout.strip()
 
-    changed = tuple(filter(None, capture_git("diff", "--no-ext-diff", "--name-only", base_head).splitlines()))
+    changed = tuple(filter(None, capture_git("diff", "--no-renames", "--no-ext-diff", "--name-only", base_head).splitlines()))
     outside = [
         path for path in changed
         if not any(path == root or path.startswith(f"{root.rstrip('/')}/") for root in allowed_paths)
@@ -145,7 +145,7 @@ def _salvage_inventory_with_index(
         raise GitPreflightError("salvage tracked path is outside authorized scope: " + ", ".join(outside))
     binary_tracked = any(
         line.startswith("-\t") or line.split("\t", 1)[0] == "-"
-        for line in capture_git("diff", "--numstat", "--no-ext-diff", base_head).splitlines()
+        for line in capture_git("diff", "--no-renames", "--numstat", "--no-ext-diff", base_head).splitlines()
     )
     for path in changed:
         # A tracked change is not implicitly safe merely because Git can encode
@@ -164,7 +164,7 @@ def _salvage_inventory_with_index(
             raise GitPreflightError(f"salvage tracked path is not a regular in-repository file: {path}")
         if metadata.st_size > max_object_bytes:
             raise GitPreflightError(f"salvage tracked object exceeds size limit: {path}")
-    diff = _run_git(identity, "diff", "--binary", "--no-ext-diff", base_head, env=env).stdout.encode("utf-8")
+    diff = _run_git(identity, "diff", "--no-renames", "--binary", "--no-ext-diff", base_head, env=env).stdout.encode("utf-8")
     objects: list[SalvageObject] = []
     total_bytes = 0
     if diff:
@@ -603,7 +603,7 @@ def _observe_hop(
                 git_command(identity, "rev-list", "--reverse", f"{base_head}..{facts.head}").splitlines()
             )
             changed = tuple(
-                git_command(identity, "diff", "--no-ext-diff", "--name-only", f"{base_head}..{facts.head}").splitlines()
+                git_command(identity, "diff", "--no-renames", "--no-ext-diff", "--name-only", f"{base_head}..{facts.head}").splitlines()
             )
             merges = git_command(identity, "rev-list", "--merges", f"{base_head}..{facts.head}")
             if merges:

@@ -296,3 +296,59 @@ def test_marker_without_mutation_is_charged_once_and_marker_absence_is_free(repo
     marker = DispatchMarker(1, run.run_id, "H001", 1, "INV-1", head, 1)
     recovered = recover_uncertain_dispatch(run, marker, current_head=head)
     assert recovered.hop_used == 1 and recovered.hops[0].actual_commits == ()
+
+@pytest.mark.parametrize("renames", ["true", "false", "copies"])
+@pytest.mark.parametrize("inside", [False, True])
+@pytest.mark.parametrize("move", [True, False])
+def test_range_observation_includes_both_rename_leaves(repository: Path, renames: str, inside: bool, move: bool):
+    git(repository, "config", "diff.renames", renames)
+    source = "src/base.txt" if inside else "outside.txt"
+    content = "".join(f"line {i}\n" for i in range(30))
+    (repository / source).write_text(content, encoding="utf-8")
+    git(repository, "add", source)
+    git(repository, "commit", "-m", "test: source content")
+    base = git(repository, "rev-parse", "HEAD")
+    if move:
+        git(repository, "mv", source, "src/new.txt")
+    else:
+        (repository / source).unlink()
+        (repository / "src/new.txt").write_text(content + "extra\n", encoding="utf-8")
+        git(repository, "add", "-A")
+    git(repository, "commit", "-m", "test: move content")
+    delta = observe_hop(repository, base_head=base, allowed_paths=("src",))
+    assert set(delta.changed_paths) == {source, "src/new.txt"}
+    assert (f"out-of-scope changed path: {source}" in delta.anomalies) is not inside
+
+
+@pytest.mark.parametrize("renames", ["true", "false", "copies"])
+def test_salvage_staged_rename_checks_source_and_captures_both_leaves(repository: Path, renames: str):
+    git(repository, "config", "diff.renames", renames)
+    (repository / "outside.txt").write_text("base\n", encoding="utf-8")
+    git(repository, "add", "outside.txt")
+    git(repository, "commit", "-m", "test: source")
+    base = git(repository, "rev-parse", "HEAD")
+    git(repository, "mv", "outside.txt", "src/new.txt")
+    with pytest.raises(GitPreflightError, match="outside.txt"):
+        salvage_inventory(repository, base_head=base, allowed_paths=("src",))
+    objects = salvage_inventory(repository, base_head=base, allowed_paths=("src", "outside.txt"))
+    assert len(objects) == 1
+    assert b"a/outside.txt" in objects[0].content and b"b/src/new.txt" in objects[0].content
+
+@pytest.mark.parametrize("renames", ["true", "false", "copies"])
+def test_operator_reports_both_range_leaves(repository: Path, renames: str):
+    from workflow_coordinator.model import Hop
+    from workflow_coordinator.operator import _reconstructed_context, _summary
+
+    git(repository, "config", "diff.renames", renames)
+    base = git(repository, "rev-parse", "HEAD")
+    git(repository, "mv", "src/base.txt", "src/new.txt")
+    git(repository, "commit", "-m", "test: move")
+    head = git(repository, "rev-parse", "HEAD")
+    workflow = profile({"work": phase({"done": route("complete")})})
+    hop = Hop("H001", 1, "work", "worker", "fresh", "start", "end", base, head, (head,), "completed", "completed", (), (), "done", None, "done", "agent")
+    run = replace(run_for(workflow), baseline_head=base, current_head=head, hops=(hop,))
+    summary = _summary(repository, run, None)
+    assert set(summary["changed_paths"]) == {"src/base.txt", "src/new.txt"}
+    assert set(summary["hops"][0]["changed_paths"]) == {"src/base.txt", "src/new.txt"}
+    context = _reconstructed_context(run, workflow, repository, (), ())[0].content
+    assert "prior_changed_paths=src/base.txt,src/new.txt" in context
