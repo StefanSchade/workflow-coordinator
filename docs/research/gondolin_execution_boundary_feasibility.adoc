@@ -1,0 +1,535 @@
+= WFC × Gondolin: Optional Execution Boundary Feasibility
+:toc:
+:toclevels: 2
+:sectnums:
+
+Maturity::  in-review
+Authority:: exploratory
+Updated::   2026-11-14
+Owns::      A source-grounded feasibility study of Gondolin as an optional agent execution boundary beneath WFC, compared with the existing provider sandboxes plus Bubblewrap and with Bubblewrap plus network controls. It answers link:README.adoc#r1[research topic R1] and the Gondolin-related part of link:README.adoc#r4[R4]. Research for a maintainer decision; not an accepted design, not a backlog item and not an implementation mandate.
+
+[horizontal]
+Gondolin:: `https://github.com/earendil-works/gondolin` at `ca98da589edd0cd1c79333c0a2229660bb43d37b` (2026-11-13, upstream `main` on the inspection date; SDK package version 0.14.0; `git describe`: `image-alpine-base--0.5.0-4-gca98da5`). Paths marked _G:_ are relative to that repository.
+WFC:: `workflow-coordinator@beebac42eb99a61a2ae24de344bd720bf04154a2` (`main`). Unprefixed paths are relative to this repository.
+ASE:: `https://github.com/rse/ase` at `f6bcc4b33c80e111bd3ad83f9fd62af1b908980c` (2026-11-14, package version 2.0.12), read only for <<ase>>. The two ASE concepts reviewed the earlier `870e191`.
+Host:: The WFC development machine: Debian 13 guest under Proxmox (`systemd-detect-virt`: `kvm`), kernel 6.12, bubblewrap 0.11.0, Claude Code 2.1.322, codex-cli 0.167.0, Node.js 22.23.2, no QEMU installed.
+Inspected:: 2026-11-14.
+Method:: Source and documentation inspection, `strings` on the installed provider binaries, and read-only host checks. Gondolin was not installed, no VM was booted, no provider session was started, no credential file was read. Every statement about WFC and Gondolin working together is therefore *untested*.
+
+Claim markers: *[V]* verified in the cited source at the inspected revision. *[D]* stated by upstream documentation, not traced into source here. *[H]* observed on the host by a read-only check. *[P]* planned for WFC Beta 1, not implemented. *[U]* inference or assumption that nothing here tested. *[N]* a proposal of this document. Unmarked sentences are argument.
+
+[[assessment]]
+== Executive assessment
+
+*Recommendation: educational prototype only (option 2 of <<decision>>).* Gondolin is a serious piece of engineering with two properties WFC cannot get from Bubblewrap, but neither answers a requirement WFC has today, and its network model does not function behind a mandatory corporate proxy.
+
+. *The comparison is not "Gondolin versus WFC's Bubblewrap boundary".* WFC's Bubblewrap primitive is not wired into any live execution path *[V]*. The boundary that actually confines agents today is each provider's own sandbox. Both candidates therefore start from "not integrated", and the problem that stopped the Bubblewrap integration on 2026-11-08, namely how an authenticated provider CLI obtains its credentials inside an outer boundary without exposing them to its own tools, is the first problem a Gondolin integration meets as well.
+. *What Gondolin adds materially.* (a) Credential placeholders: the guest holds a token that is useless outside the host's HTTP mediation. (b) A separate kernel, and a VM that dies as one unit with its controller. (c) Per-request HTTP policy enforced by an unprivileged host process. Filesystem confinement, the property WFC has researched most, is not materially better than Bubblewrap for WFC's threat model.
+. *Strongest objection.* The daemon connects upstream directly and has no upstream-proxy support *[V]*. Where outbound traffic must pass a corporate proxy, mediated egress reaches nothing. The one workaround that keeps agents online (a raw TCP mapping to the proxy) switches off allowlists, hooks and credential substitution together, which leaves a micro-VM that does what Bubblewrap plus the same proxy does.
+. *Public internet access does not need Gondolin.* It needs two adapter settings and a recorded decision about the Agent VM's network (<<internet>>).
+. *ASE can stay unaware of the choice,* with one shared caveat about linked worktrees (<<ase>>).
+
+[[wfc]]
+== Current WFC execution boundary
+
+[cols="2,5,3",options="header"]
+|===
+|Concern |Implemented today |Planned or open
+
+|Execution port
+|`AgentExecutionPort.execute(AgentExecutionRequest) -> AgentExecutionOutcome`: prompt, repository, result contract and timeout in; candidate result, return code, `timed_out`, bounded stdout/stderr out (`src/workflow_coordinator/adapter.py`). `_execution_adapter` constructs `CodexCliAdapter` or `ClaudeCliAdapter` from an `ExecutionBinding(adapter, model, reasoning)`, "without a registry or fallback" (`operator.py`). *[V]*
+|One adapter and one `--executable` per Run.
+
+|Codex adapter
+|`codex --ask-for-approval never exec --ephemeral --json --sandbox workspace-write --cd <repo> --output-schema <file> --output-last-message <file> -`; prompt on stdin; result read from a file in the Coordinator's result directory; the child inherits the Coordinator's whole environment (`codex_adapter.py`). *[V]*
+|Network setting for <<internet>> not investigated.
+
+|Claude adapter
+|`claude -p --output-format json --json-schema ... --restricted --safe-mode --strict-mcp-config --tools Read,Glob,Grep,Edit,Write,Bash --settings <file> --permission-mode acceptEdits`; settings enable the provider sandbox with `failIfUnavailable`, deny reads of `~/`, allow reads of repository and scratch, allow writes to scratch, set `network.allowedDomains: []` and deny `WebFetch`/`WebSearch`; environment reduced to `PATH`, `HOME`, `USER`, `LANG` plus an operator allowlist; `TMPDIR` is a short `/tmp/wfc-claude-<token>` symlink to external scratch (`claude_adapter.py`). *[V]*
+|Live write qualification and the link:../backlog/BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION.adoc[short-`TMPDIR` exhaustion] remain open.
+
+|Stop and timeout
+|Both adapters start the provider in a new session; on timeout `SIGTERM` to the process group, three seconds, then `SIGKILL`. *[V]*
+|A descendant that leaves the group survives; a killed Coordinator leaves the provider running. Documented Beta-1 limitation, link:README.adoc#r2[R2].
+
+|Bubblewrap primitive
+|`execution_boundary.py`: `/usr` read-only, repository read-only at `/repo`, tmpfs over `/repo/.git`, writable binds only for repository subpaths, private `/tmp`, one optional external scratch at `/tmp/s`, `--die-with-parent`. No network, PID or `/proc` handling. Requires `.git` to be a real directory. No module under `src/` or `scripts/` imports it. *[V]*
+|Provider wiring is not authorized (link:../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[execution trust boundaries]).
+
+|Trusted Git
+|`trusted_commit` is "the sole Coordinator Git write surface": checks repository identity, `HEAD`, staged state and the exact dirty path set, refuses external filters, commits with `--no-verify` (`git_facts.py`). It runs on the host after the provider has exited. *[V]*
+|Bounded commits outside a Run *[P]*.
+
+|Trusted evidence
+|`ProductionEvidenceRunner` starts the policy-defined argv with `cwd=<repository>` and the Coordinator's inherited environment snapshot; on timeout it kills the direct child only (`evidence.py`). No sandbox. *[V]*
+|See the observation below.
+
+|Scratch and environment
+|The Harness creates `~/wfc-scratch/<attempt>` (mode 0700) and exports it as `TMPDIR`/`TMP`/`TEMP` in `launch.sh` (`scripts/wfc_op.py`). *[V]*
+|Placement for arbitrary consumer tools is not promised (link:../operator_manual/ch01_orientation/02_boundaries.adoc[Operator Manual, execution boundaries]).
+
+|Execution bindings
+|`execution-bindings.yaml`, schema 1: `bindings.<role>.{adapter, model, reasoning}`, adapters closed to `codex_cli` and `claude_cli` (`serialization.py`); written by the Harness from `--role-binding`. *[V]*
+|A frozen execution envelope separate from the Commission, with `--bind ROLE=ADAPTER:MODEL:REASONING` and project defaults (link:../warm_storage/concepts/wfc_beta1_implementation_readiness_review.adoc#c1[review C1]) *[P]*.
+|===
+
+Three consequences frame the rest of this study.
+
+* link:../architecture.md[The architecture] states that WFC "provides neither hostile-code containment nor host isolation" and that the provider sandbox is "provider-owned and not Coordinator-verified". WFC's authoritative control is observation after the Hop, not confinement during it. Any outer boundary is an addition to a design that does not depend on one.
+* The link:../warm_storage/concepts/workflow_coordinator_nested_claude_live_qualification_2026-11-08.adoc[nested qualification] found that the unmodified Bubblewrap boundary aborts even `claude --version` (the Bun runtime needs `/proc`), and that the authenticated nested run was never attempted because no credential-delivery mechanism existed. Its conclusion, "the narrow next question is the credential and tool-authority boundary", is unchanged.
+* Evidence commands execute agent-modified project code (a test suite, for example) on the host with the Coordinator's ambient authority. This is the indirect-execution case the trust-boundary record describes, and it is the least confined execution in WFC today. It is a concrete candidate workload for *any* boundary and is independent of the provider-credential problem, because evidence commands need no provider credentials.
+
+[[gondolin]]
+== Source-verified Gondolin capabilities
+
+Gondolin consists of a TypeScript SDK and Node CLI (the controller), a static Rust binary that is both the daemon `gondolind` and a Node-free CLI, a VMM (libkrun, else QEMU) and an Alpine-based guest with small Zig daemons (_G:_ `docs/architecture.md`). *[D]*
+
+[cols="2,6,3",options="header"]
+|===
+|Capability |Finding |Evidence
+
+|Kernel and process isolation
+|Guest code runs under its own kernel. QEMU is started `-nodefaults` with virtio devices only. The backend is libkrun when `/dev/kvm` is readable and writable and a runner is installed, otherwise QEMU; QEMU uses KVM when available and otherwise falls back to software emulation (TCG) without an error. libkrun has no software emulation.
+|_G:_ `native/crates/gondolind/src/qemu.rs` (`kvm_available`, `select_accel`) *[V]*; `docs/backends.md` *[D]*
+
+|Host filesystem exposure
+|Nothing from the host is visible unless mounted. Host directories are served by the daemon, resolved with `openat2(RESOLVE_BENEATH)`; escaping symlinks behave as missing; set-id bits are dropped. Mounts can be read-only and can hide paths. The static CLI offers only `--mount-hostfs HOST:GUEST[:ro]` and `--mount-memfs`; path hiding needs the SDK.
+|_G:_ `docs/vfs.md`, `docs/security.md` *[D]*; `native/crates/gondolin-cli/src/args.rs` *[V]*
+
+|Persistence and lifecycle
+|The root disk is a copy-on-write overlay discarded on close; `/tmp`, `/root` and others are guest tmpfs. Disk-only checkpoints exist; there is no memory snapshot. Extra packages require a custom image.
+|_G:_ `docs/limitations.md` *[D]*
+
+|Network mediation
+|No NAT. A userspace stack in the daemon terminates guest traffic. A flow is first matched against explicit `tcp.hosts` mappings and then forwarded as a raw tunnel; otherwise its first bytes are classified as HTTP/1.x, TLS or (if enabled) SSH; `CONNECT` is refused (`connect-not-allowed`) and everything else is refused (`unknown-protocol`). TLS is intercepted with a local CA; both the interception and the upstream client offer only `http/1.1` in ALPN. UDP is limited to DNS, answered synthetically by default. Internal address ranges are blocked. WebSocket upgrades pass and are opaque after the `101`.
+|_G:_ `native/crates/gondolin-egress/src/lib.rs` (lines 144, 225–343), `mitm.rs` line 156 *[V]*; `docs/network-access.md` *[D]*
+
+|Upstream proxy
+|None. The upstream connector opens `TcpStream::connect` to the resolved address. No source file reads `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` or `ALL_PROXY`. Daemon image downloads do not use a proxy either.
+|_G:_ `native/crates/gondolin-egress/src/upstream.rs` (`connect_any`); repository-wide search *[V]*; `docs/limitations.md`, `docs/images.md` *[D]*
+
+|Credentials
+|The guest receives placeholders in environment variables. The daemon substitutes real values into request headers (including Basic authentication, optionally the query string, never the body) for hosts the secret is bound to, and blocks a placeholder sent elsewhere. A secret does not restrict egress by itself.
+|_G:_ `docs/secrets.md`, `docs/security.md` *[D]*; `native/crates/gondolin-egress/src/secrets.rs` exists, not traced
+
+|Processes, signals, cleanup
+|Commands are executed by a guest daemon over virtio-serial, each in its own session and process group; abort sends `SIGKILL` to the group. `gondolin exec` exits with the command's exit code. The VMM is tied to the daemon with `PR_SET_PDEATHSIG(SIGKILL)`; the daemon kills the VM when its controller's pipe closes.
+|_G:_ `native/crates/gondolind/src/vmm.rs` line 85 *[V]*; `docs/exec.md`, `docs/architecture.md`, `docs/cli.md` *[D]*
+
+|Images and toolchains
+|The image builder supports Alpine. An OCI image (for example Debian) can supply the root filesystem on the Alpine kernel; that build needs Docker or Podman. The default image (about 200 MB) is downloaded from GitHub releases on first use.
+|_G:_ `docs/custom-images.md`, `docs/images.md` *[D]*; `images/alpine-base.json` *[V]*
+
+|Stated limits
+|No resource governance. VMM escape, a malicious local user of the same account and side channels are out of scope. "Assume allowed hosts can receive any data the guest can read."
+|_G:_ `docs/security.md`, `docs/limitations.md` *[D]*
+|===
+
+Maturity signals: version 0.14.0; the repository states it "has been built with the support of coding agents"; `docs/upgrading.md` describes a recent move of the whole I/O path into the Rust daemon; `docs/backends.md` says krun, the default backend on Linux with KVM, "has less runtime parity coverage" and that "some krun networking edge cases are still under investigation". *[D]* The published benchmarks were all taken on one Apple M5 Max under heavy load (<<costs>>). Nothing about Linux/KVM, nested virtualization or TCG performance is published.
+
+[[alternatives]]
+== Comparative alternatives
+
+A:: Existing WFC: provider sandboxes as today, Bubblewrap applied only where a concrete requirement justifies it.
+B:: A plus network control outside WFC: the provider's own domain settings, a corporate or local egress proxy, or host firewall policy. WFC implements no proxy.
+C:: Gondolin as an optional execution backend; Coordinator, Git and evidence stay on the host.
+
+[cols="3,4,4,4",options="header"]
+|===
+|Use case |A |B |C
+
+|Ordinary worker Hop
+|Works today.
+|Works; the agent needs the proxy settings both CLIs already honour *[H]*.
+|Needs a custom image, credential delivery and forced HTTP/1.1 to the provider; untested.
+
+|Reviewer Hop, read-mostly
+|Works today; reviewer independence is separate invocations.
+|Same as A.
+|Same guarantees; a fresh VM per invocation would additionally remove shared home and session state *[U]*.
+
+|Keep host files outside the repository from agent tools
+|Provider-owned, not Coordinator-verified. Bubblewrap can make it Coordinator-owned once the credential question is solved.
+|Same as A.
+|Coordinator-owned by construction: only mounts exist. Equal in effect to Bubblewrap for this purpose.
+
+|Hide paths or history (UC-05)
+|Bubblewrap hides `.git` and unmounted paths.
+|Same as A.
+|Read-only and hidden paths; no advantage over Bubblewrap. Neither solves derived-output flow.
+
+|Provider credential not readable by agent tools
+|Provider's own protection; accepted as sufficient by the 2026-11-09 product decision.
+|Same as A.
+|*Materially better in API-key mode*: the real key never enters the guest. Poor fit for subscription OAuth (<<agents>>).
+
+|Limit network destinations
+|Claude: provider domain list. Codex: provider network switch.
+|Proxy or firewall allowlist; standard, auditable, works for every process in the Agent VM.
+|Per-VM hostname allowlist with redirect and rebinding checks, without root. *Unavailable behind a mandatory proxy.*
+
+|Evidence commands on agent-modified code
+|Unconfined on the host.
+|Unconfined on the host.
+|Could run in a fresh VM without credentials or network. Bubblewrap with `--unshare-net` offers the same at lower cost.
+
+|Stop, timeout, orphans
+|Process-group signals; escapes possible.
+|Same as A.
+|*Materially better*: guest processes cannot outlive the VM. A Bubblewrap PID namespace gives a comparable result *[U]*.
+
+|Hostile code against the host kernel
+|Shared kernel.
+|Shared kernel.
+|*Materially better*: separate kernel, at the cost of trusting the VMM. WFC states no such requirement.
+|===
+
+Filesystem and context control, network control and credential isolation are separable, and WFC should keep them separate. Bubblewrap already answers the first. The second is best answered where the organization already enforces it (proxy, firewall) or by the provider's own setting. Only the third is something Gondolin does that the others do not, and the 2026-11-09 decision says WFC does not currently need it. Bundling all three into one mandatory backend would buy the one unneeded capability at the price of the proxy and virtualization constraints.
+
+[[agents]]
+== Codex/Claude integration feasibility
+
+Because both CLIs run their tools as local subprocesses, the whole CLI must run in the guest. The pattern of Gondolin's own Pi example, agent loop on the host and only tools in the guest (_G:_ `host/examples/pi-gondolin.ts`), is not available for closed provider CLIs.
+
+[cols="2,7",options="header"]
+|===
+|Aspect |Finding
+
+|Guest installation
+|Codex ships a static musl binary with its own bundled `bwrap` *[H]*; it should start on Alpine *[U]*. The installed Claude Code binary is a 342 MB glibc executable *[H]*; ASE's container definition shows the supported Alpine route (native installer plus `libgcc`, `libstdc++`, `ripgrep`, `USE_BUILTIN_RIPGREP=0`; ASE `tool/etc/ase.dockerfile`) *[V]*. Either way a custom image is required, with Git, the project toolchain and both CLIs, rebuilt whenever a CLI is updated.
+
+|Provider sandbox inside the guest
+|Both CLIs sandbox tool processes with user namespaces, Landlock or seccomp. Whether the guest kernels (Alpine `linux-virt` under QEMU, the libkrunfw kernel under krun) and a root guest user satisfy them is unknown *[U]*. The Claude adapter's `failIfUnavailable: true` would refuse to run rather than degrade *[V]*.
+
+|API-key authentication
+|Fits the placeholder mechanism if the key travels in a request header, which is the documented form for both providers *[U]*. `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` exist in the Claude binary; Codex reaches `api.openai.com` *[H]*.
+
+|Subscription/OAuth authentication
+|Both CLIs keep OAuth state in files (`~/.claude/.credentials.json`, `~/.codex/auth.json` exist on the host) and contain token-refresh endpoints (`platform.claude.com/v1/oauth/token`, `auth.openai.com`) *[H]*. Refresh exchanges carry tokens in bodies *[U]*, which substitution does not cover *[D]*. Mounting the credential file into the guest gives agent tools exactly the access the boundary was meant to remove, and token rotation would then write back to a file the host CLI also uses. This is the mode the maintainer uses today (the 2026-11-08 record found no API key on the host).
+
+|Provider transport
+|Forced HTTP/1.1 through a local interception CA. Claude Code reads `NODE_EXTRA_CA_CERTS`; Codex contains `CODEX_CA_CERTIFICATE` and `SSL_CERT_FILE` *[H]*; the guest init exports `SSL_CERT_FILE` and `NODE_EXTRA_CA_CERTS` *[D]*. Codex also contains `wss://` endpoints *[H]*; upgrades are allowed *[D]*. Whether both CLIs work completely over HTTP/1.1 with interception is untested.
+
+|Repository mount and Git
+|Mounting the repository at its host path keeps the adapters' absolute paths (`--cd`, schema, settings, result file) valid *[N]*. The Coordinator's result directory must also be mounted writable for Codex's result file *[V]*. A main checkout carries `.git` inside the mount, readable and writable by the agent unless hidden; hiding needs the SDK or a memory mount over `.git` *[U]*. File ownership seen by a root guest, and Git's ownership check there, are untested.
+
+|Coordinator-owned Git and evidence
+|Unchanged: `trusted_commit` and evidence run on the host after the guest command returned. Nothing has to move into the guest, and nothing should.
+
+|Scratch
+|A private guest `/tmp` removes both the `AF_UNIX` path-length problem and the shared host `/tmp` exhaustion that motivated the short-`TMPDIR` workaround. Guest tmpfs counts against VM memory (default 1 GiB, 2 vCPUs *[D]*), so heavy test scratch needs either a larger VM or a mounted scratch directory.
+
+|Output and exit codes
+|`gondolin exec` relays stdout, stderr, stdin and the exit code *[D]*. The adapter must still tell "the boundary did not start" (image missing, boot timeout: an `ExecutionNotStartedError`, which proves the port was not entered) from "the provider exited non-zero". How the static CLI encodes its own failures was not established *[U]*.
+
+|Stop, timeout, abnormal termination
+|The adapters' existing group signals would hit the `gondolin` process; the CLI installs signal handlers (_G:_ `gondolin-cli/src/signals.rs`) *[V]*, their effect on a running guest command is untested. If the process dies, the VMM is killed by the kernel *[V]* and every guest process with it. A host-mounted worktree can still be left mid-write, as today.
+|===
+
+*Can Gondolin be a replaceable boundary without changing Commission, WorkItem, Finding, trusted Git and evidence semantics?* In principle yes. The port carries transport facts only; semantic acceptance happens afterwards in `validated_result` and the reducer, and Git and evidence never cross the boundary. The seam is narrower than the port: the single `subprocess.Popen` call in each adapter. A launcher there would map an argv, working directory, environment and the read and write paths the adapter already knows to a wrapped command *[N]*:
+
+[source,text]
+----
+adapter builds (argv, cwd, env, read paths, write paths)
+   -> launcher: direct          argv unchanged
+   -> launcher: gondolin        gondolin exec --vmm ... --mount-hostfs ... --allow-host ... -- argv
+   -> launcher: bubblewrap      bwrap ... -- argv        (the unwired primitive)
+adapter keeps: timeout, signals, result parsing, diagnostics
+----
+
+Three things are not free at that seam: path identity between host and guest; classifying a boundary start failure as "not started"; and the parts of the Claude settings that assume the host (`denyRead ~/`, the scratch symlink). This is the same seam the Bubblewrap wiring needs. It is a reason to design the seam when outer-boundary wiring is commissioned at all, not a reason to adopt Gondolin, and it needs no plugin framework: two or three launchers selected by a closed name, like the adapters.
+
+Authority must not move: the guest receives the repository mount, one result directory, a network policy and placeholders. It must not receive the state root, the Evidence repository, provider configuration directories or the Coordinator's environment, and evidence must never run in the VM an agent has just used.
+
+[[corporate]]
+== Corporate deployment and networking
+
+*Upstream proxy.* Verified absent (<<gondolin>>). Three ways around it exist; none is production-ready.
+
+. *Raw mapping to the proxy.* `--tcp-map proxy.internal:3128=<proxy>:3128` plus `HTTPS_PROXY` in the guest. Mapped flows are forwarded before classification *[V]*, so the guest's `CONNECT` reaches the proxy; both CLIs honour `HTTPS_PROXY` *[H]*. Cost: mapped flows get "no HTTP parsing, hooks or secret substitution" *[D]*. Allowlisting, interception and placeholders are all off; destination policy is whatever the proxy enforces. The guest then needs the corporate CA in its image if the proxy intercepts TLS. Untested.
+. *Hook in the controller.* An `onRequest` hook may return its own `Response`, so a Node controller could fetch through a proxy agent. This needs the SDK instead of the static CLI, costs a round trip per request, and bodies of hook-returned responses are buffered up to a size limit *[D]*, which defeats streamed model responses; WebSockets cannot be served this way *[U]*. Not viable for agent CLIs.
+. *Patch or wait.* Adding `CONNECT` support to the upstream connector means carrying a fork of a security component, or depending on an upstream that documents the absence as a current fact in its limitations, network, environment and upgrade pages.
+
+[cols="3,6",options="header"]
+|===
+|Topic |Assessment
+
+|TLS interception by the corporate proxy
+|With direct egress the daemon validates upstream certificates against Node's store plus `NODE_EXTRA_CA_CERTS` (SDK) or system PEM roots (static CLI) *[D]*: a solvable setting, moot while the proxy itself is unreachable.
+
+|HTTP/2, `CONNECT`, WebSockets, QUIC
+|HTTP/1.1 only; `CONNECT` refused; WebSocket upgrade allowed; no QUIC *[V]*. Tools that require HTTP/2 or a guest-side proxy fail in mediated mode.
+
+|Internal DNS and split DNS
+|In mediated mode the host resolves names itself, so the host's resolver view applies *[D]*. Names that resolve to private ranges are blocked unless listed in `allowedInternalHosts`, an SDK option with no static-CLI flag *[D]*.
+
+|Private artifact repositories
+|Reachable directly: allow them as internal hosts (SDK). Reachable only through the proxy: workaround 1. Package managers in the guest must trust the interception CA; the exported bundle variables cover curl, Python and Node *[D]*.
+
+|Acquiring Gondolin itself
+|npm platform packages honour `npm_config_registry` *[D]*, so an internal npm mirror works. Guest images come from GitHub releases; the daemon and static CLI download without proxy support *[D]*. Images must be pre-staged or built internally, which needs Alpine package mirrors and, for OCI root filesystems, Docker or Podman.
+
+|Managed credentials
+|Placeholders need the real value in the controller's environment or arguments at start. Compatible with a secret manager that can inject an environment variable; no integration exists.
+
+|Host privileges
+|No root at run time. KVM needs membership in the device's group (an administrator action); QEMU, where krun cannot run, is a system package.
+|===
+
+*This machine.* `/dev/kvm` exists and the virtual CPUs expose `vmx`/`svm`, so Proxmox passes nested virtualization through; the device is `root:kvm 0660` and the WFC user is not in `kvm`, so access fails today; QEMU is not installed *[H]*. One group change would enable krun. Nested KVM performance for this workload is unmeasured. Without it, the only route is QEMU with TCG, which upstream calls "slow" and for which the start timeout has to be raised *[D]*; an agent session with a test suite under full software emulation is an unknown multiple of native time and should be assumed impractical until measured.
+
+[cols="4,2,6",options="header"]
+|===
+|Environment |Result |Reason
+
+|Ordinary Linux host with KVM
+|Feasible
+|krun by default; add the user to `kvm`. Custom image and credential mode remain to be solved.
+
+|Proxmox guest, nested virtualization available
+|Feasible, unmeasured
+|As above after the group change; this is the WFC development machine. Nested overhead unknown.
+
+|Proxmox guest without nested virtualization
+|Functional, impractical
+|QEMU/TCG only, and QEMU must be installed. Gondolin selects TCG automatically, without an error.
+
+|Corporate host requiring an outbound proxy
+|*Blocked* for mediated egress
+|No upstream proxy. Workaround 1 restores connectivity and removes Gondolin's network and credential features.
+
+|Corporate host without permission to run a VMM
+|*Blocked*
+|No container or namespace fallback exists; TCG still requires running QEMU.
+|===
+
+Hard blockers: no upstream proxy; no KVM where policy forbids it; subscription OAuth cannot be kept out of the guest. Solvable configuration: corporate CA trust, internal npm mirror, pre-staged images, internal hosts, `kvm` group membership.
+
+[[internet]]
+== Internet access and security implications
+
+link:../backlog/FTR-WFC-AGENT-PUBLIC-INTERNET-CAPABILITY.adoc[The public-internet record] settles that ordinary access is a regular agent capability and leaves the mechanism open. Four goals have to be kept apart:
+
+[cols="4,2,2,2,2",options="header"]
+|===
+|Mechanism |Basic developer internet |Limit destinations |Credential isolation |Prevent exfiltration of readable data
+
+|Provider-native web tools (search, fetch)
+|Yes
+|Provider-defined
+|No change
+|No
+
+|Ordinary network of the Agent VM
+|Yes
+|No
+|No change
+|No
+
+|Provider sandbox domain list / Bubblewrap `--unshare-net`
+|Yes, or none
+|Coarse
+|No change
+|No
+
+|Corporate proxy or independent egress mediation
+|Yes
+|Yes, organization-wide
+|No change
+|No
+
+|Gondolin mediation (direct egress only)
+|Yes, HTTP/1.1
+|Yes, per VM
+|Yes, API-key mode
+|No
+|===
+
+The last column is "no" for every row. A destination allowlist limits *where* data can go, not *what* goes there. The provider endpoint itself must be allowed and receives repository content by design; an agent can call the same endpoint with a different account's key; package registries, code hosts and many documentation sites accept uploads or carry data in URLs; real DNS lookups tunnel data. Gondolin's documentation says the same: its network layer is "not [meant] to prevent exfiltration to an allowed destination" *[D]*. What an agent cannot read it cannot leak; the effective control is the ingress predicate of the trust-boundary record, that is, what is mounted or readable at all. Gondolin could bind a destination to one credential with a custom hook (reject provider requests that do not carry the placeholder) *[U]*; that narrows one channel and is the only information-flow improvement specific to it.
+
+*Minimum for Beta 1, without Gondolin* *[N]*, to be confirmed by the investigation the record already schedules after Claude adapter completion:
+
+. Claude adapter: stop denying `WebFetch` and `WebSearch`, and replace the empty `allowedDomains` with an operator-level setting (default: unrestricted, per `GOAL-WFC-004`).
+. Codex adapter: determine and set the corresponding network switch for `workspace-write` and its web-search tool *[U]*.
+. Where a proxy is mandatory, pass the proxy variables to the provider: the Claude adapter's environment allowlist drops them unless they are named in `WFC_CLAUDE_EXTRA_ENV_NAMES` *[V]*; the Codex adapter inherits them *[V]*.
+. Keep these values in the execution envelope and its evidence, never in the Commission.
+. State the residual risk in the release limitations: agents with internet access can transmit anything they can read; destination restriction, where an organization wants it, is done at its proxy or firewall, which both CLIs already work behind.
+
+Gondolin is not a prerequisite for any of these steps, and nothing found here makes such a dependency unavoidable.
+
+[[ase]]
+== ASE compatibility
+
+The boundary set by link:ase_wfc_integration_concept.adoc#architecture[the integration concept] holds: ASE orchestrates tasks, WFC coordinates one bounded attempt as a child process, and an execution boundary, if any, sits below WFC's adapters. ASE sees an exit code and a result; it can remain unaware of Gondolin.
+
+[cols="3,7",options="header"]
+|===
+|Concern |Finding
+
+|ASE-owned worktrees and changeset branches
+|ASE creates changesets with `git worktree add` (ASE `tool/src/ase-agent-runtime-exec.ts`) *[V]*. In a linked worktree `.git` is a file that points into the main repository. WFC's Bubblewrap primitive rejects that today ("repository must contain a real .git directory") *[V]*, and a Gondolin mount of the worktree alone would leave Git unusable inside the guest *[U]*. Coordinator Git on the host is unaffected. This is a property of any filesystem boundary, to be solved once at the launcher seam (mount the common Git directory read-only, or accept an agent without Git).
+
+|Caller termination and child lifecycle
+|ASE cancels its tool child and force-kills it after ten seconds (`forceKillAfterDelay`, ASE `tool/src/ase-agent-runtime.ts`) *[V]*. A VM adds one more process to the chain but a stronger end: once the `gondolin` process is gone, no guest process survives. Whether a killed WFC process takes the `gondolin` process with it is the existing R2 question, unchanged. Ten seconds must cover WFC's three-second grace plus VM teardown.
+
+|Execution identity and evidence
+|The boundary choice belongs to the execution envelope and its audit projection *[P]*; ASE holds a pointer and a digest only. A Gondolin envelope should record Gondolin version, backend and image build identifier *[N]*.
+
+|Credentials and network environment
+|ASE starts the tool child with `env: { ASE_HEADLESS: "true" }` *[V]*, which execa adds to the parent environment by default; WFC therefore inherits ASE's environment. Placeholder secrets and network policy would be WFC operator configuration, never ASE task content.
+
+|Duplicate sandbox layers
+|ASE launches agent tools under the provider's permission mode and adds no OS sandbox of its own; separately it publishes a container image that runs ASE and Claude Code as an unprivileged user (ASE `tool/src/ase-agent-runtime-tool.ts`, `tool/etc/ase.dockerfile`) *[V]*. Run inside that container, a Gondolin backend needs `/dev/kvm` passed into the container or falls back to TCG, and the stack becomes container, VM, provider sandbox. The overlap is a deployment fact to document, not a second integration project.
+|===
+
+[[costs]]
+== Optional-backend architecture and costs
+
+*Selection.* If ever built, the choice belongs in the execution bindings, beside the role bindings and outside the Commission *[N]*; the shape below is illustrative, not a schema proposal:
+
+[source,yaml]
+----
+schema_version: 2
+bindings:
+  worker: {adapter: claude_cli, model: <model>, reasoning: high}
+boundary:
+  kind: gondolin        # absent = today's behaviour
+----
+
+[cols="3,6",options="header"]
+|===
+|Requirement |How it would be met
+
+|Existing execution remains supported; no mandatory installation
+|No `boundary` key means the direct launcher. Gondolin stays an external binary found at run time; WFC gains no Node or npm dependency if the static CLI is used.
+
+|Capability detection and diagnostics
+|Preflight, before any provider dispatch: binary and version, readable and writable `/dev/kvm`, image present, one `gondolin exec -- true`. Failure is an `OperatorPreflightError` that names the missing piece.
+
+|Explicit failure, no silent fallback
+|WFC must pin the backend (`--vmm`) and test KVM itself, because Gondolin's own fallbacks are silent: krun to QEMU, KVM to TCG, virtio-fs to sandboxfs *[V]*/*[D]*.
+
+|No change to Commission identity or authority
+|Already true for bindings: the Commission names roles only *[V]*/*[P]*.
+
+|No provider-specific assumptions in the workflow
+|The launcher sits below both adapters; programs and profiles never see it.
+
+|External consumer repositories
+|A consumer needs its own toolchain image. This is the largest recurring cost and falls on every consumer.
+|===
+
+[cols="3,7",options="header"]
+|===
+|Cost |Evidence and assessment
+
+|Installation and dependencies
+|Static binary or npm platform package; krun runner bundled for Linux x86_64; QEMU otherwise; Node.js 22.19 or newer for the SDK *[D]*.
+
+|Images and updates
+|About 200 MB base image; a WFC image needs Git, Python, both CLIs and the consumer toolchain. Every provider CLI update means an image rebuild. Estimate: the dominant maintenance cost.
+
+|Start latency
+|Create to first exec: 907 ms median (1034 ms p95); one-shot CLI exec, cold: 1315 ms. Apple M5 Max, QEMU with HVF, machine under heavy load (_G:_ `host/bench/results/SUMMARY.md`) *[V]*. Negligible against Hops of minutes, *if* hardware virtualization is available. No Linux, nested or TCG figures exist.
+
+|CPU and memory
+|Default 1 GiB and 2 vCPUs; QEMU resident size 320–430 MB in the benchmarks *[V]*. A provider CLI plus a test suite will need several GiB (estimate). No resource governance *[D]*.
+
+|Filesystem performance
+|On a host-directory mount, `find` over a 2,000-file tree took 1.5 s and 11.6 s through sandboxfs and 0.44 s and 2.8 s through virtio-fs in four interleaved variants of one run; untar of the same tree ranged from 2.4 s to 46.9 s (same benchmark file, machine load between 30 and 280) *[V]*. The spread makes these figures unusable for a decision. Upstream's own summary is that virtio-fs is 2–4 times faster for metadata and 10–15 times faster for large I/O than sandboxfs (_G:_ `docs/vfs.md`) *[D]*. Git on a mounted worktree is metadata-heavy and therefore sensitive to which transport is active. On Linux with krun, virtio-fs is forwarded "one request at a time" and is "slower than QEMU's vhost-user" *[D]*; unmeasured.
+
+|Troubleshooting
+|`GONDOLIN_DEBUG=net` shows classification and policy decisions *[D]*. New failure classes for operators: boot timeout, image mismatch, `502` from CA trust, `CONNECT` refused, HTTP/2-only clients, guest out of memory, transport fallback.
+
+|Portability
+|Linux and macOS, arm64 and x86_64; no Windows *[D]*.
+
+|Security maintenance
+|A 0.x project changing quickly; the VMM and the interception stack must be kept current. The interception CA key under `~/.cache/gondolin/ssl` is readable by the same user *[D]*, including any agent WFC still runs directly on the host.
+|===
+
+Against this stands the additional value over Bubblewrap: credential placeholders (not a current requirement, and unsuitable for the authentication mode in use), a separate kernel (no stated requirement), and unit termination (obtainable more cheaply). The costs are certain and recurring; the benefits answer requirements WFC has explicitly declined to adopt for now.
+
+[[experiment]]
+== Minimal educational experiment
+
+Purpose: observe the two things Bubblewrap cannot show, credential non-exposure through mediated egress and VM-scoped termination, and collect the first Linux numbers. No agent, no provider, no real credential, no WFC code. Not executed in this study.
+
+Preconditions, each a maintainer decision and each reversible: membership in `kvm` (or acceptance of TCG timings); a throwaway directory such as `~/wfc-scratch/gondolin-exp/` holding the npm-installed package, a per-run CA directory (`GONDOLIN_MITM_CERT_DIR`) and the image cache. Removing that directory and `~/.cache/gondolin` discards everything.
+
+One Node script of roughly fifty lines with the SDK *[N]*:
+
+. Create a synthetic Git repository with a few thousand small files and, beside it, a canary file that is not mounted.
+. Start a local HTTP listener in the same script as the "upstream"; it logs the `Authorization` header it receives.
+. Create a VM with the repository mounted read-write with `.git` hidden, `allowedInternalHosts` set to the listener, `allowedHosts` set to that one name, and a secret whose value is a random canary string bound to that host.
+. Run fixed shell commands in the guest and record results.
+
+[cols="1,5,4",options="header"]
+|===
+|# |Observation |Shows
+
+|O1
+|`env` in the guest prints a placeholder; the listener receives the canary. A request that carries the placeholder to a host the secret is not bound to is blocked.
+|Credential non-exposure and host binding.
+
+|O2
+|A request to a non-listed host returns 403; raw TCP is reset; `CONNECT` is refused; an HTTP/2-only request fails or downgrades.
+|What mediated egress admits; what agents' tools would hit.
+
+|O3
+|The canary file and the host home are absent; `.git` is absent; a write outside the mount stays in the VM.
+|Filesystem exposure equals the mount list.
+
+|O4
+|A guest command double-forks a long sleeper; the script is killed with `SIGKILL`; afterwards no VMM process remains on the host.
+|Unit termination, the contrast to process-group signals.
+
+|O5
+|Time to first exec; `git status` and a recursive `find` on the mount against the same on the host; transport reported by `/proc/mounts`; resident size of the VMM.
+|First Linux and nested-KVM cost figures.
+
+|O6
+|Optional, with a custom image: `codex --version` and `claude --version` in the guest, without login.
+|Whether the binaries start at all, the analogue of the Bubblewrap Phase B.
+|===
+
+Observations that would justify continuing toward an optional adapter: O1–O4 as documented; mounted-tree operations within a small factor of host speed with virtio-fs active; start under two seconds on nested KVM; both binaries start; *and* a concrete requirement for credential isolation or kernel-level containment has appeared in the meantime. Observations that argue against: only TCG is available; mounted-tree Git is an order of magnitude slower; the provider sandboxes cannot initialize in the guest and no acceptable substitute exists; the target deployment sits behind a mandatory proxy.
+
+[[decision]]
+== Recommendation, blockers and open questions
+
+Among (1) no integration, (2) educational prototype only, (3) optional post-Beta backend, (4) strategic direction: *option 2*. Option 3 becomes reasonable only when a requirement for credential isolation or kernel-level containment exists, the deployment has direct egress or upstream gained proxy support, and the experiment's cost figures are acceptable. Option 4 is not supported by anything found here.
+
+Strongest unique benefit:: Credential placeholders bound to a destination: an API key that agent-controlled code can use but never read. No Bubblewrap or proxy arrangement provides this.
+Strongest technical objection:: No upstream proxy. In the environment where credential and egress control matter most, mediated egress cannot reach the network, and the workaround disables the benefit above. Second: it requires KVM, and its fallback is silent software emulation.
+Simplest credible alternative:: Provider sandboxes as today, plus the organization's own proxy or firewall for destination control, plus the existing Bubblewrap primitive (with `--unshare-net`, PID namespace and `/proc`) for the one execution that needs no credentials at all: evidence commands.
+Viable behind a corporate proxy?:: Not in its mediated mode. As a plain VM with a raw tunnel to the proxy, probably, with no advantage over alternative B.
+Needed before opening public internet access?:: No.
+Compatible with ASE without coupling?:: Yes. One shared caveat: linked worktrees and any filesystem boundary.
+What should WFC do now?:: Nothing in product code. Keep Gondolin out of Beta 1. Proceed with the scheduled internet investigation on adapter settings. If outer-boundary wiring is ever commissioned, define the launcher seam of <<agents>> once so that Bubblewrap and a VM backend are both possible. Run the experiment of <<experiment>> when convenient, as learning.
+
+Blockers for any integration: upstream proxy; KVM availability and permission; credential delivery for subscription authentication; an image pipeline per consumer toolchain; provider sandbox behaviour inside the guest.
+
+Open questions: Do both CLIs work fully over intercepted HTTP/1.1? How does the static CLI report its own start failures, and does it stop the guest command on `SIGTERM`? What are start, memory and mounted-Git costs on nested KVM with krun? Would upstream accept proxy support in the egress connector? Is confining evidence commands, with Bubblewrap, a requirement worth its own record?
+
+== Source register
+
+Gondolin at `ca98da5` (`https://github.com/earendil-works/gondolin/blob/ca98da589edd0cd1c79333c0a2229660bb43d37b/<path>`):
+
+* `native/crates/gondolin-egress/src/lib.rs` (flow classification, mapped TCP, `CONNECT` refusal, ALPN), `upstream.rs` (direct connect), `mitm.rs`, `secrets.rs`
+* `native/crates/gondolind/src/qemu.rs` (KVM detection, accelerator selection), `vmm.rs` (`PR_SET_PDEATHSIG`)
+* `native/crates/gondolin-cli/src/args.rs`, `signals.rs`
+* `docs/security.md`, `limitations.md`, `network-access.md`, `network.md`, `secrets.md`, `backends.md`, `architecture.md`, `vfs.md`, `exec.md`, `cli.md`, `install.md`, `images.md`, `custom-images.md`, `environment.md`, `upgrading.md`
+* `host/bench/results/SUMMARY.md`, `host/bench/suites/vfs.ts`, `images/alpine-base.json`, `host/examples/pi-gondolin.ts`
+
+WFC at `beebac4`:
+
+* `src/workflow_coordinator/adapter.py`, `codex_adapter.py`, `claude_adapter.py`, `execution_boundary.py`, `operator.py` (`_execution_adapter`, `_preflight`), `evidence.py` (`ProductionEvidenceRunner`), `git_facts.py` (`trusted_commit`), `serialization.py` (`run_execution_configuration_from_yaml`), `scripts/wfc_op.py`
+* link:../architecture.md[Architecture], link:../functional_model/workflow_program_use_cases.adoc[Functional Model] (GOAL-WFC-003/004, sections 3.1, 3.2, UC-05)
+* link:../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[Execution trust boundaries], link:../backlog/FTR-WFC-AGENT-PUBLIC-INTERNET-CAPABILITY.adoc[public internet capability], link:../backlog/beta1_productization.adoc#bp4[Beta-1 map BP4] and link:../backlog/beta1_productization.adoc#bp9[BP9], link:../backlog/_open.adoc[active work]
+* link:../warm_storage/concepts/workflow_coordinator_nested_claude_live_qualification_2026-11-08.adoc[Nested Bubblewrap live qualification], link:../warm_storage/concepts/wfc_beta1_implementation_readiness_review.adoc#c1[readiness review C1]
+* link:README.adoc[Research topics] R1, R2, R4; link:ase_wfc_integration_concept.adoc[ASE integration concept], link:ase_wfc_higher_order_orchestration.adoc[ASE higher-order orchestration]
+
+ASE at `f6bcc4b`: `tool/src/ase-agent-runtime-exec.ts`, `ase-agent-runtime.ts`, `ase-agent-runtime-tool.ts`, `tool/etc/ase.dockerfile`.
+
+Host checks (read-only): `ls -l /dev/kvm`, `id`, CPU flags, `systemd-detect-virt`, `bwrap --version`, `claude --version`, `codex --version`, `file` and `strings` on the two provider binaries, existence (not content) of the two provider credential files.
