@@ -1,0 +1,25 @@
+# Implement local derived knowledge catalog pilot K1
+
+Implement K1 exclusively under docs/backlog/FTR-WFC-KNOWLEDGE-CATALOG-PILOT.adoc as revised and committed in cda1060; its D1 is approved with changes. This revision supersedes all older references to a committed catalog or forbidden raw header values. Inspect actual current corpus including M1/M2 modular models and relevant conventions, Makefile, project memory orientation and ignore rules. Do not resurrect the previous implementation proposal.
+
+Create a bounded stdlib-only `scripts/wfc_doc_catalog.py` and meaningful fixture tests, generate/check/query and Makefile targets per the FTR. Scan docs/**/*.adoc and *.md, preserve provenance of a bounded set of raw source header declarations, no inferred current status, no mandatory metadata, no full AsciiDoc include evaluation. Distinguish filename/title/identity-header identifiers from arbitrary body mentions. Extract first substantive section title. Handle guarded AsciiDoc titles, Markdown, local attribute-resolved links, missing metadata and section headings; report unresolved targets truthfully. Default output is local ignored `build/wfc/document_catalog.jsonl`; `.gitignore` already ignores build/ so change only if required. Never commit the output or place it in canonical Project Memory.
+
+Generate deterministically from sources with no network, Git or clock dependence; atomically replace existing output only on successful changed bytes, preserve previous bytes on failures and do not rewrite unchanged content. Query reads existing output without implicit refresh; missing output provides actionable generate instructions; --live calculates in memory only. Check compares explicit existing output with fresh in-memory projection and reports drift; report broken links and Project Memory source_path misses informationally. No cache invalidation or automatic review update. Demonstrate all behavior with real fixture tests, including safe atomic failure, unchanged mtime/identity, staleness/missing/live, bounded source declarations and no inferred classification, body-only id exclusion, sections and links. Generate/check may write ignored local build output; never include ignored file in CommitIntent. Later review artifacts may stale the output; this is expected, not a Run failure. No default tests, CI or Coordinator evidence may require catalog freshness.
+
+Apply the five small documentation/convention updates per approved D1, including generation/query instructions, raw declarations, staleness, non-authority and identity limit. Conduct 15-document representative sample and the three-question walkthrough including a body-only identifier exclusion, count/size and broken-link/Project Memory source-path report. Render changed AsciiDoc and validate relevant links, run focused fixture tests and `make check` with the provided offline environment; report actual checks and limits. Update the FTR only with a factual candidate milestone and mark review and Coordinator evidence as pending. Do not modify historical sources, canonical Project Memory, workflow code, program/profile/evidence, or P1. The existing .gitignore is outside scope; if it becomes inadequate, stop and report the concrete authority gap. Stop for a genuine security/authority conflict, not for ordinary experimental implementation choices.
+
+CommitIntent lists every actually changed tracked leaf exactly once; subject is Conventional Commit with WI-WFC-KNOWLEDGE-CATALOG-K1-001 and actual Hop ID as separate bounded tokens. Agents never write Git commits. Review artifacts are reserved to their phases.
+
+Fresh independent Terra reviewer independently inspect full candidate and run reproducibility, schema/identity boundary, safe replacement and no-op/failure, explicit stale/missing/live and ignore checks against fixtures and real corpus. Verify five docs and actual permitted raw fields, no claims of current authority, no full include expansion promise, no runtime/governance/Project Memory mutation or tracked generated artifact. Challenge walkthrough, source-path and link reporting, output size, and confirm make check and focused tests. Review practical handling of malformed links and missing optional fields. Report material findings via configured robust correction/focused/renewed broad routes.
+
+## Acceptance
+
+K1 implements approved D1 as a deterministic locally generated ignored non-authoritative catalog with explicit query and check behavior, safe atomic/no-op generation, meaningful tests and documented limitations; fresh independent review has no blocking findings and Coordinator task-check passes.
+
+## Withheld authority
+
+No Runtime or Coordinator changes, program/profile/evidence changes, committed catalog, canonical Project Memory mutation, historical document migration, mandatory headers, inferred current status, embeddings, RAG, network retrieval service, MCP, automatic freshness check or review regeneration, P1, agent Git writes, Runtime promotion or push.
+
+## Default escalation
+
+Stop and report a genuine WFC security or authority conflict with concrete evidence; no unauthorized expansion or model substitution.
