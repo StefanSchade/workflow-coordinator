@@ -1,0 +1,83 @@
+ifndef::assembled[]
+= WFC Technical Model
+:toc:
+:tech-docs: ../..
+endif::[]
+
+== Persistence
+
+`persistence.py` publishes complete files or leaves the previous file untouched
+(`atomic_write_text`/`atomic_write_json`). Per Run, under the state root's
+`checkouts/<id>/`, it maintains `run.json` (the authoritative Run snapshot),
+`checkpoint.json` (a generated projection that records the exact
+`run_json_sha256` it projects, so a later rewrite of `run.json` cannot silently
+become new predecessor truth) and `execution-evidence.json` (append-only rows,
+each append preserving all predecessors). `operator.py` additionally writes
+`operator-plan.json` and `operator-summary.json` at the state root, and bounded
+per-invocation provider diagnostics when a transport outcome exists without an
+accepted result.
+
+`persistence.py` also provides the dispatch-marker mechanism:
+`recover_uncertain_dispatch` conservatively charges a marked Hop, never replays
+it, and rejects a marker whose Run identity, base HEAD, sequence or budget
+conflicts with persisted state. Note the boundary precisely: markers are written
+and recovered by `slice4.py`, the bounded local Codex proof boundary. The
+production serial driver `operator.py:run_serial_hops` deliberately runs
+"without reserving a future Hop" and charges each Hop as it is appended, so
+same-Run marker recovery is modeled and unit-tested rather than wired into the
+normal path -- link:{tech-docs}/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc[the atomic
+hop-recovery record] owns that gap.
+
+`trusted_qualification_index_for_run` and `validate_checkpoint_inputs` bind an
+evidence document to exactly one valid Run/evidence pair and exclude abandoned
+staged rows, which is what makes convergence facts replay-derivable rather than
+mutable shadow state.
+
+== Adapters
+
+Both implemented adapters sit behind `AgentExecutionPort` and return transport
+facts only.
+
+`codex_adapter.py` launches `codex ... exec --ephemeral --json --sandbox
+workspace-write --output-schema <file> --output-last-message <file>`, writes the
+projected strict schema to a file and reads the last message back.
+
+`claude_adapter.py` launches `claude -p --output-format json --json-schema
+<serialized> --restricted --safe-mode --strict-mcp-config --tools
+Read,Glob,Grep,Edit,Write,Bash --permission-mode acceptEdits
+--permission-prompts none --no-session-persistence`, with a generated settings
+file enabling the provider sandbox (`failIfUnavailable: true`,
+`allowUnsandboxedCommands: false`), denying reads of `~/`, allowing reads of the
+repository and an invocation-scoped scratch directory, allowing writes only to
+that scratch, setting `network.allowedDomains` to the empty list and denying
+`WebFetch`/`WebSearch`. It also constructs a short, invocation-scoped `TMPDIR`
+symlink because Claude Code derives AF_UNIX socket paths from `TMPDIR` and the
+108-byte `sun_path` limit would otherwise break its Bash sandbox bridge. The
+environment is reduced to `PATH`, `HOME`, `USER`, `LANG` plus an explicit,
+validated allowlist.
+
+Per-role execution bindings (`RunExecutionConfiguration`) select adapter, model
+and reasoning effort by *workflow role*. `operator.py:_preflight` requires one
+adapter across all roles. Both provider sandboxes are provider-owned and not
+Coordinator-verified (`DEC-WFC-009`); see link:{tech-docs}/architecture.md[architecture]
+for the standing containment statement.
+
+== Target execution containment direction
+
+The Maintainer's accepted direction is for WFC to own a provider-independent
+technical containment boundary for local provider processes and their contained
+children, including filesystem, process, scratch, credential exposure and
+network boundaries. Provider-native controls remain complementary defense in
+depth and may enable capabilities; they remain operationally relevant today.
+The existing `execution_boundary.py` is an experimental filesystem primitive,
+not an integrated provider-dispatch boundary. No current containment guarantee
+or provider-safeguard relaxation follows from the target direction.
+
+Helpers, hooks, MCP services and sidecars may run outside the local boundary;
+remote provider-hosted tools are outside its enforcement. Provider inference
+and authentication transport crosses it, while Coordinator-owned evidence and
+Git operations are separate trust domains. Non-local execution and egress need
+governed authority and appropriate technical or contractual controls. The
+link:{tech-docs}/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc#provider-independent-direction[execution trust-boundary direction]
+records the trade-offs and unresolved design and qualification work.
+

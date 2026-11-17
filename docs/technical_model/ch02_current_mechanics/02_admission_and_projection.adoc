@@ -1,0 +1,107 @@
+ifndef::assembled[]
+= WFC Technical Model
+:toc:
+:tech-docs: ../..
+endif::[]
+
+== Admission (A1/A2/A3)
+
+`operator.py:_preflight` runs before any Run exists and fails closed on the
+first violation. In order of what it establishes:
+
+. *Repository reality.* The path is a Git top-level, `--expected-head` is a full
+  40-character lowercase SHA, observed HEAD equals it, and the worktree is clean
+  with resolved submodules. The state root must not already exist; one-shot
+  operator roots are never overwritten.
+. *Pinned governing inputs.* WorkItem, Profile, Policy, Components and Task are
+  read *from the pinned commit*, not the worktree, and each is parsed by
+  `serialization.py` with closed key sets. `WorkItem.profile_ref` must name the
+  supplied profile path. Each input's SHA-256 is recorded, and
+  `_governing_inputs_unchanged` re-checks them later.
+. *Role coherence.* `WorkItem.personas` must exactly equal the set of roles the
+  profile's phases use, and the Run execution bindings must cover exactly the
+  same roles. Mixed adapters across roles are rejected, because one scalar
+  executable is launched.
+. *Scope and action containment.* `_preflight` itself normalizes every scope
+  path, requires each phase's `authorized_actions` to be a subset of the policy
+  actions, and requires each phase's scope to lie inside the WorkItem scope. It
+  also requires `WorkItem.initial_phase` to exist in the profile.
+. *A1 authority relations* (`_admit_a1`, pure, no external state): every
+  WorkItem, phase and governing path must have valid normalized A1 shape;
+  governing inputs must lie inside `governance_paths`; no phase scope may
+  overlap `governance_paths` in either direction; WorkItem scope must lie inside
+  `work_item_scope_ceiling`; and the hop limit must respect both the policy
+  maximum and the Coordinator hard maximum of 20.
+. *A2 evidence admission.* Every evidence name a phase references must be
+  defined in the policy (`_selected_evidence_names`), and
+  `evidence.py:prepare_evidence_commands` resolves the executable, snapshots the
+  environment and records the authored-argv digest, timeout and stat
+  fingerprint. `_admit_evidence_disposition` additionally requires that any
+  phase with required evidence is a *gate* review declaring a
+  `failed_evidence_route` -- the single exception being the closed terminal
+  Worker shape of `simple@v1`.
+. *A3 operating contract.* `prompt.py:load_agent_operating_contract` loads the
+  package resource `resources/agent_operating_contract_v6.txt` through
+  `importlib.resources` and admits it only if its SHA-256 equals the reviewed
+  constant. It cannot be selected, overridden or replaced by a consumer, and
+  `assemble_prompt` re-checks the digest before every prompt.
+
+== Projection: result contract selection and schema
+
+Selection is a deterministic function of admitted facts, never a phase-name
+switch (`model.py:select_result_contract`). It reads one explicit selection key
+-- phase role, whether a review descriptor exists, its `finding_authority`, the
+convergence role, and the profile/Run schema versions -- and returns a
+`ResultContractKind`:
+
+[cols="2,3",options="header"]
+|===
+|Admitted shape |Selected kind
+
+|Any convergence role other than `none`
+|`generic-routing-result`
+
+|The closed terminal Worker shape (`simple@v1`: one phase, no review, the
+`simple-self-check` modifier, `task-check` evidence, a single `accept` route
+with `effect: complete`)
+|`generic-routing-result`
+
+|`worker` role with no review descriptor
+|`work-result`
+
+|`independent_reviewer` role with a review descriptor
+|`review-verdict`
+
+|Anything else currently admissible
+|`generic-routing-result`
+|===
+
+`model.py:result_contract_version` then maps the kind and profile/phase facts to
+a wire version: `work-result`/`review-verdict` are version 3 under profile
+schema 3 and version 1 otherwise; the generic contract is version 2 under
+profile schema 3 or any convergence role, and version 1 otherwise.
+`admits_result_contract_version` is the single predicate for which pairs exist.
+
+`structured_result_schema.py` builds the provider-neutral closed envelope:
+`{schema_version, run_id, hop_id, invocation_id, result}` with every identity
+field pinned to a single-member enum of the dispatched value, and `result`
+projected for the selected kind. Three properties are worth naming:
+
+* Every object is `additionalProperties: false` with an explicit `required`
+  list, so an unknown field is unrepresentable rather than ignored.
+* `requested_route` is an enum of the current phase's permitted routes, taken
+  from `reducer.py:permitted_route_keys` -- the very function the reducer uses --
+  and an empty permitted-route set raises rather than meaning "unconstrained".
+* The family projections are *subtractions and additions on one shape*:
+  `work-result` drops `outcome` and adds `status: completed|blocked`;
+  `review-verdict` drops `outcome` and adds `verdict: accept|changes_required`;
+  both drop the convergence fields. A Worker therefore has no field that could
+  hold a review verdict, and vice versa.
+
+`codex_adapter.py` re-projects that envelope into OpenAI Structured Outputs and
+asserts the strict subset itself (`assert_openai_strict_schema`);
+`claude_adapter.py` passes the serialized schema through `--json-schema` and
+extracts only the successful structured-output member of Claude's wrapper.
+Neither adapter infers workflow semantics: each receives an already-selected
+kind and version.
+

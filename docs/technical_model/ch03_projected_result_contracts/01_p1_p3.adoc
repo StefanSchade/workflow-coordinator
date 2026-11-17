@@ -1,0 +1,67 @@
+ifndef::assembled[]
+= WFC Technical Model
+:toc:
+:tech-docs: ../..
+endif::[]
+
+[[implemented-p1-p3]]
+== Implemented Projected Result Contracts: P1--P3
+
+P1--P3 are implemented, independently accepted and Runtime-promoted; their
+current disposition is owned by link:{tech-docs}/backlog/_open.adoc[the active-work
+manifest]. This section distils what they actually built so the mechanism is
+understandable without reading the design chronology in
+link:{tech-docs}/wfc_projected_result_contracts_concept_2026-10-07.adoc[the concept],
+which remains the definition source for the *unfinished* slices only.
+
+The problem they solved:: A category of mechanical contract failures was being
+rejected after the fact -- a Worker emitting a review-style disposition, a
+fabricated route, a re-authored immutable Finding field. Projection makes those
+*unrepresentable before authority is even checked*, rather than merely invalid.
+
+P1 -- projection infrastructure:: One deterministic selection seam. The
+permanent concepts are `ResultContractKind` and `select_result_contract`
+reading an explicit tuple of admitted facts. The selected kind and version are
+persisted on the Hop, so reduction and replay use the recorded identity rather
+than re-deriving it. Nothing below the semantic-type line was new: the adapter
+projection stage already existed.
+
+P2 -- distinct result families:: `WorkResult` and `ReviewVerdict` exist as
+separate types next to `RoutingResult`, with separate parsers
+(`serialization.py:work_result_from_data` / `review_verdict_from_data`) and
+separate projections. `WorkResult.status` has only `completed|blocked`;
+`ReviewVerdict.verdict` has only `accept|changes_required`. The prompt states
+the family and its vocabulary explicitly (`prompt.py`: "do not emit review
+verdict vocabulary" / "do not emit worker status vocabulary"), and
+`reduce_result` refuses a result whose family does not match the persisted
+contract identity.
+
+P3 -- Finding authorship projection:: What a model may author about a Finding is
+now typed. A new Finding is authored with `finding_id: null` typed as `null`
+plus `invariant`, `blocking`, `proposed_state`, evidence and optional successor;
+an existing Finding is addressed by `finding_id` with a proposed state and
+evidence only. Immutable trusted fields are never re-authored from a result.
+Under contract version 3 the Finding array becomes a closed `anyOf` of three
+alternatives -- new authoring, an evidence-only *citation*, and a *transition*
+whose target is a tagged union (`resolved` / `residual` / `superseded` with a
+required `successor_ref` / `open` with `new_material_evidence`). Authority is
+still checked at reduction: projection bounds what can be *said*, never what is
+allowed to *stick*.
+
+What P1--P3 deliberately did not do:: They did not change the reducer's
+stateful authority checks, and they did not add any cross-phase or
+whole-program reasoning. That is exactly the boundary where the remaining
+slices sit.
+
+[CAUTION]
+====
+P3.5 (Commission/authority conformance), P4 (Coordinator-owned
+effects/mechanics, including CommitIntent canonicalization) and P5 (provider
+capability/projection cleanup) are *unimplemented concept direction*. They
+authorize nothing, and their presence in the same concept document as P1--P3
+does not make them delivered. P3.5's concrete observed defect is owned by
+link:{tech-docs}/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc[the gate
+Finding-authority BUG]; P4/P5 standing is in
+link:{tech-docs}/backlog/_open.adoc[the active-work manifest].
+====
+

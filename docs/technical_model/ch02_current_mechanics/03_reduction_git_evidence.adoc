@@ -1,0 +1,110 @@
+ifndef::assembled[]
+= WFC Technical Model
+:toc:
+:tech-docs: ../..
+endif::[]
+
+== Reduction order
+
+`reducer.py:reduce_result` applies mandatory preemption before any Finding or
+route authority. The order is itself the contract:
+
+. *Contract identity.* The persisted Hop's recorded `result_contract_kind` and
+  `result_contract_version` must be complete, supported and equal to the actual
+  result family and version. An unpersisted non-generic family is unsupported.
+. *Correlation.* The Run must be `running` and the result must correlate to the
+  last recorded Hop. Under profile schema 3, an evaluator phase additionally
+  requires a trusted qualification index with exactly one staged attempt whose
+  hop, sequence and pre-route anchor match.
+. *Semantic observation, then mechanical preemption.* A requested human stop or
+  escalation is captured as a `SemanticStop` *before* mechanical stops are
+  selected, and every controlling mechanical fact (profile error, result-state
+  error, repository anomaly, policy anomaly, required-evidence error) is also
+  appended to `Run.anomalies`, so a captured semantic stop can never hide the
+  dirty/evidence/policy condition that preempted it.
+. *Terminal and scope guards.* A `failed` outcome discards every proposal; a
+  `scope_changed` claim stops.
+. *Route legality.* A reserved escape route requested directly fails closed; an
+  unknown route fails closed; `changes_required` from a phase with no review
+  fails closed; an advisory review cannot take `complete`.
+. *Finding deltas,* applied atomically under the phase's derived authority
+  (`gate` with the descriptor's `finding_authority`, otherwise `agent`). Any
+  `ReductionError` stops the Run without partial mutation.
+. *Route resolution.* A `blocked` result stops with deltas retained;
+  required-evidence failure substitutes `failed_evidence_route`; a convergence
+  goalpost substitutes the reserved escape route;
+  `changes_required` cannot take `complete`; an exhausted hop budget blocks a
+  `goto` but still permits a deterministic completion; a supervisor route parks
+  the Run; and `_apply_route` refuses `complete` while any Finding is open and
+  blocking.
+
+See link:{tech-docs}/semantic_model/workflow_execution_semantics.adoc#finding-identity[the
+Semantic Model] for what that authority *means*, including Coordinator-allocated
+Finding identity versus authorized disposition.
+
+== Git observation and the single trusted commit surface
+
+`git_facts.py` is the only module that writes Git, and `trusted_commit` is its
+only write path. Its own docstring states the intent; the code enforces it:
+repository identity must match, configured external clean/process filters are
+refused, HEAD must equal the expected base, submodules must be resolved, and the
+commit subject must pass `commit_subject_error` -- one non-empty line,
+Conventional-Commit-compatible, containing the WorkItem ID and Hop ID as
+separately bounded tokens. `CommitIntent.paths` are normalized, deduplicated and
+required to lie inside the phase's authorized scope; the actual changed-worktree
+set must equal them exactly, with both unexpected dirty paths and
+intent-without-mutation rejected. Staging is an explicit pathspec, the commit
+uses `--no-verify`, and the post-commit observation must show exactly one commit
+whose changed paths and subject match the intent, or the whole thing is an error.
+
+`vertical.py` additionally refuses a `CommitIntent` whose phase lacks *both*
+`edit` and `commit`, and refuses one paired with a disposition that may not
+commit. A review phase may commit only its declared durable artifact paths.
+When no commit is made, `observe_hop` records base/end HEAD, actual commits,
+changed paths and anomalies anyway, with a zero-commit cap: any agent-authored
+commit is refused regardless of phase, claims, or empty scope. Clean no-commit
+Hops remain valid. Range observation, salvage inventory and operator reporting
+explicitly disable rename detection, exposing deleted source and added destination
+as separate paths. The trusted staging path remains unchanged; rename-shaped
+intents can still fail its exact staged-path check.
+
+This is the concrete content of WFC's repository-acceptance integrity: the
+Coordinator's own post-Hop Git observation, not a provider sandbox, is the
+authoritative enforcement of a phase's `authorized_scope`.
+
+== Evidence processing
+
+Evidence authority is admitted once, at preparation, and never re-derived from a
+name at execution time. `evidence.py` separates the two: a
+`PreparedEvidenceCommand` carries the authored argv, its digest, timeout,
+canonical repository root, environment snapshot and admission-time executable
+fingerprint; the `EvidenceRunner` seam only *executes*. The default runner is
+`FailClosedEvidenceRunner`, which executes nothing and raises.
+
+`ProductionEvidenceRunner.observe` re-resolves the executable, spawns with
+`shell=False`, stdin at `DEVNULL`, the snapshotted environment and the canonical
+cwd, and classifies the outcome into exactly one `Observation` status:
+`pass` (exit 0), `fail` (positive exit code), `error` (resolution, spawn,
+timeout, signal or communication failure) or `not_run`. Stream bodies are
+reduced to byte counts and SHA-256 digests. A bounded stdout/stderr tail may be
+attached as `UntrustedDiagnosticCapture`, which `model.py` documents as never
+trusted A2 evidence: not digested, not an identity or outcome fact, and not
+consulted by any routing decision.
+
+`evidence.py:observation_error` then re-validates the returned Observation
+against the prepared command -- provider/command-name identity, status
+membership, argv digest, authored `argv[0]`, executed argv tail, timeout,
+exit-code/signal coherence per status and the stream-fact invariants -- so a
+runner cannot report a passing observation belonging to a different command.
+Any such error becomes `MechanicalFacts.required_evidence_error`, and a `fail`
+becomes `required_evidence_failed`, which the reducer turns into the declared
+failure route or a stop.
+
+Which evidence a Run owes is fixed by the program's declared evidence profiles,
+not by the Commission: `robust@v1` and `simple@v1` define only `task-check-v1`,
+so they always require `task-check`, while `direct@v1` additionally defines a
+`none` profile and may therefore run with no evidence. `task-check` is defined
+by `governance/policy-bases/repository-standard-v1.yaml` as `python -m pytest -q`
+with a 900-second timeout, bounded by
+`model.py:COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS`.
+
