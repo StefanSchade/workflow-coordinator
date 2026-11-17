@@ -1,0 +1,122 @@
+ifndef::assembled[]
+= WFC Functional Model
+:model-docs: ../..
+:model-entry: ../workflow_execution_semantics.adoc
+
+Standing:: WORKING DRAFT / DISCUSSION RECORD; this material accepts no new contract or semantics.
+endif::[]
+
+== 6. Candidate workflow programs and test scenarios
+
+The examples are *scenarios to preserve and analyze*, not a claim that each is
+already a supported, distinct reusable YAML program. Each scenario carries its
+own current-evidence note; three of the six have an implemented program and
+three do not.
+
+=== UC-01 -- Standard review loop
+
+Approximate logical flow (loops omitted):
+
+[source,text]
+----
+Implement -> Independent Review -> Correct -> Focused Rereview -> Complete
+----
+
+Requirements:
+
+* The reviewer can raise blocking issues.
+* An authorized later phase can disposition outstanding Findings.
+* A clean outcome can complete without performing a needless correction.
+* A failed review can return for correction and rereview, possibly repeatedly.
+* A Run cannot complete with an open blocking Finding.
+
+Known current evidence:: Implemented as `robust@v1`, whose closed record is
+reused by every Commission that selects it; the per-Commission profile file is
+now a deterministic rendering of that one program rather than a hand-copied
+process. `robust@v1` has independent acceptance and a completed dogfood.
+`direct@v1` implements the narrower verification-plus-correction variant and
+its acceptance reconciliation remains outstanding. The requirement that "an
+authorized later phase can disposition outstanding Findings" is satisfied by
+`robust@v1`'s reviews (`finding_authority: [resolve]`) but *not* by
+`direct@v1`'s gate, which declares none -- the known defect owned by
+link:{model-docs}/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc[the gate
+Finding-authority BUG]. The completion guard against open blocking Findings is
+implemented.
+
+=== UC-02 -- Staged adversarial review with economical correction loop
+
+[source,text]
+----
+Implement (economical model)
+  -> Broad adversarial review (frontier model)
+  -> Correct / focused rereview loop (economical model[s])
+  -> Fresh broad adversarial review (frontier model)
+  -> Complete, or return to correction / further review
+----
+
+The inexpensive focused rereview checks disposition of the *known* Finding set. The later broad review is a *new* attempt to discover missed issues and may therefore open new Findings. A final broad review must not be characterized as a phase from which no new issues can emerge.
+
+Model choices (e.g., Terra High/Medium and Sol High) are illustrative commercial bindings, not the definition of the workflow program. Model selection, role separation, independence and cost accounting are separate concerns.
+
+Known current evidence:: `robust@v1` implements the *topology* of this scenario,
+including the renewed fresh broad review as the sole completion path. The
+*economical* part is not yet expressible: execution bindings
+(`RunExecutionConfiguration`) select adapter, model and reasoning effort per
+*workflow role*, and `robust@v1`'s broad and focused reviews are both the
+`independent_reviewer` role, so they cannot be bound to different models.
+`operator.py:_preflight` additionally requires one adapter across all roles.
+Per-phase or per-review-breadth binding is the concrete granularity gap; no
+design is selected.
+
+Open historical question:: Did a similar final review appear or disappear in historical Commissions due to copied/modified profiles rather than a deliberate product version change? Verify against profile history and the Run Ledger. This question concerns the legacy hand-authored profiles under `governance/self-development/`; the three closed programs are no longer subject to that drift.
+
+=== UC-03 -- Convergence-failure escape
+
+[source,text]
+----
+Correction <-> Rereview (repeated without progress)
+  -> Diagnose recurring failure / root cause
+  -> Revise strategy
+  -> Authorized strategy review / resume
+----
+
+A new attack example need not imply an entirely new conceptual Finding. It may show that a narrow fix repaired one manifestation without addressing the common underlying invariant. The workflow must be able to recognize stagnation and change abstraction level instead of merely iterating the same response.
+
+Existing evidence:: link:{model-docs}/backlog/FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE.adoc[the convergence-escape FTR] and accepted implementation Slices 1--4 establish substantial runtime work: `model.py` carries the closed `ConvergenceRole`, `ConvergenceProtocol`, diagnosis/strategy vocabularies and typed convergence records, `reducer.py` derives convergence facts from trusted qualification evidence and substitutes a reserved escape route at the goalpost, and profile `schema_version: 3` requires a convergence configuration. No *catalogue* program uses it: all three closed programs render profile `schema_version: 2` with no convergence role, so this path is exercised by fixtures and tests rather than by a reusable dogfooded program. Slice-5 R1A-history dogfood and Slice-6 foreign-domain falsification have not run. Check phase/route/result semantics against code and fixtures before claiming end-to-end product availability.
+
+=== UC-04 -- Elevated-privilege work and compulsory defensive review
+
+[source,text]
+----
+Ordinary work -> Explicitly authorized elevation -> Privileged work
+  -> Mandatory defensive security review -> Ordinary continuation / completion
+----
+
+Sensitive surfaces include CI/CD scripts, Git hooks, tooling executed at another trust level and selected critical tests. Ordinary agents may be prevented from modifying them through OS-level controls; an elevated step requires authorization outside the mere choice of a phase. Once an elevated change occurs, no successful completion path may bypass the defensive review. This is a legitimate all-successful-path assurance condition, unlike a demand that every Finding-bearing route pass a later fixer.
+
+Source:: link:{model-docs}/backlog/FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW.adoc[the elevated-privilege record]; not a deployed capability. Nothing in the current programs, phase model or admission expresses privilege elevation, and no implemented mechanism makes a later phase compulsory on every successful path.
+
+=== UC-05 -- Protected context / local inference
+
+A data-sensitive assignment may require a phase whose model executes only within an approved environment, possibly self-hosted inference. Protected sources must not be leaked to providers or artifacts outside their trust boundary. Trust is enforced by execution and information-access controls, not simply by declaring `trusted_model` in YAML. Working-tree Git access and derived content/export paths require explicit analysis; hiding directories by mounts alone is insufficient.
+
+Status:: Candidate architectural use case. No claim that such a product workflow or full containment exists today. Today's phase model has no protected-context or information-flow concept at all, and per-role execution bindings carry no trust attribute; `execution_boundary.py`'s mount primitives are unintegrated. link:{model-docs}/research/README.adoc[The research register] owns the open R1/R3 questions.
+
+=== UC-06 -- Simple task
+
+[source,text]
+----
+Work -> Complete
+----
+
+A bounded single-agent task with no mandatory independent review, for cases in which WFC becomes the ordinary controlled gateway to LLM execution. This is a different workflow guarantee, not an invitation for a Commission to disable a required review in UC-01 or UC-04.
+
+Known current evidence:: Implemented as `simple@v1`, which has independent
+acceptance, Runtime promotion and a clean first dogfood. It is a genuinely
+separate program, not a weakened `robust@v1`: `model.py:is_closed_terminal_worker_shape`
+recognizes its exact shape -- one phase, no review, the `simple-self-check`
+modifier, `task-check` evidence, a single `accept` route with `effect: complete`
+and no `goto` -- so a second Hop is structurally unreachable from the program
+alone. That recognition is also the only reason its phase is exempt from the
+rule that a phase with required evidence must be a gate review.
+

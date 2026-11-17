@@ -1,0 +1,84 @@
+ifndef::assembled[]
+= WFC Semantic Model
+:model-docs: ../..
+:model-entry: ../workflow_execution_semantics.adoc
+
+Authority:: Explanatory; grants no execution authority and amends no contract.
+endif::[]
+
+[[trusted-evidence]]
+== Provider result versus Coordinator-trusted evidence
+
+A provider's structured result and the Coordinator's own evidence are different
+kinds of fact, and the difference is enforced, not merely advised.
+
+A *provider result* is an untrusted candidate until it is parsed, correlated and
+accepted. `adapter.py:validated_result` requires an exact envelope key set, the
+expected contract version, and an exact match of `run_id`, `hop_id` and
+`invocation_id` against the dispatch, before the result body is even parsed into
+its semantic family. The reducer then additionally refuses any result that is
+not correlated to the current accepted Hop. Within an accepted result, the
+agent's own `claimed_commits` and `evidence_refs` are claims: actual commits and
+changed paths come from the Coordinator's own Git observation
+(`git_facts.py:observe_hop`), and a `CommitIntent` is a *proposal* for a
+Coordinator-made commit, not proof that one happened.
+
+*Coordinator-trusted evidence* is an `Observation` produced by the Coordinator
+executing a policy-defined command itself after the Hop's agent work, from the
+canonical repository root, with a snapshotted environment and the authored
+argv digest, timeout and resolved-executable fingerprint recorded
+(`evidence.py`). Its status is one of `pass`, `fail`, `error` or `not_run`, and
+`evidence.py:observation_error` re-validates every returned Observation against
+the command that was actually prepared, so a runner cannot report a passing
+observation for a different command. The default runner executes nothing and
+fails closed.
+
+Which evidence a Run owes comes from the program, not the Commission.
+`robust@v1` and `simple@v1` each define exactly one evidence profile,
+`task-check-v1`, so they always require `task-check`. `direct@v1` also defines a
+`none` profile, so a `direct@v1` Commission may legitimately select no evidence
+at all -- selecting *which declared profile* applies is the only Commission-side
+choice, and it cannot introduce an undeclared command. The standard policy basis
+defines `task-check` as `python -m pytest -q` with a 900-second timeout.
+
+Consequences that documentation and agents must respect:
+
+* An agent-run test, check or build is exploratory validation. It is not
+  Coordinator-trusted evidence, and failing to reproduce an authored evidence
+  command in an agent shell is not evidence that the Coordinator's gate failed
+  or is unavailable.
+* A required-evidence `fail` does not merely annotate the Hop: it replaces the
+  requested route with the review descriptor's declared
+  `failed_evidence_route`, and if no such usable route exists the Run stops.
+* A diagnostic stdout/stderr tail may be captured for a failed observation, but
+  `UntrustedDiagnosticCapture` is explicitly never trusted evidence: it is not
+  digested as an outcome fact and no routing decision consults it.
+* A rendered candidate, a Worker summary and a CommitIntent do not establish
+  independent review acceptance or a passing Coordinator check. Those are
+  separate, later milestones.
+
+[[three-verifications]]
+== The three different senses of verification
+
+*Static admission:* Evaluate configuration and structural properties knowable
+before starting a Run, or before dispatching a particular Hop. This checks
+declared capabilities and permissible continuations, not the agent's future
+route selection.
+
+*Projected result typing:* Before a Hop, derive the permitted output
+schema and route keys for that particular invocation. It can make certain
+malformed or categorically unauthorized results unrepresentable, when the
+condition is already known.
+
+*Runtime reduction:* Once an actual Hop result exists, correlate identity,
+validate typed fields and authorized semantic operations, apply lawful Finding
+deltas, then check route preconditions against the resulting state. Fail closed
+instead of inventing a substitute semantic answer.
+
+Important distinction:: A runtime safety check after a result is not a failure
+of the typing approach. If the relevant fact *can change during that very Hop*,
+its final value is not knowable before the Hop. Dependent or branch-specific
+result contracts might reject more combinations in the schema, but semantic
+validation of actual Finding identities, effects and authority cannot be
+omitted.
+

@@ -1,0 +1,97 @@
+ifndef::assembled[]
+= WFC Semantic Model
+:model-docs: ../..
+:model-entry: ../workflow_execution_semantics.adoc
+
+Standing:: WORKING DRAFT / DISCUSSION RECORD; this material accepts no new contract or semantics.
+endif::[]
+
+[[p35-problem]]
+== The P3.5 problem, without ambiguous quantifiers
+
+Business problem:: A workflow can arrive, with an open blocking Finding, at a
+branch that offers no legal way to disposition it. The engine prevents
+successful completion, but cannot produce the missing workflow capability after
+the fact.
+
+Incorrect simplification:: "Every path following every Finding-opening phase
+must contain another disposition phase." This ignores conditional, clean
+outcomes of review and can make ordinary review-to-completion flows invalid.
+Appending a so-called final review does not fix the reasoning, because an
+actual review can itself open new Findings.
+
+Also insufficient:: Looking only at phases that can *create* Findings. A phase
+may carry previously open Findings forward. The relevant question concerns
+post-Hop states in which a blocker may still be open.
+
+Candidate requirement for later explicit design:
+
+* For every legally reachable Run state with an open blocking Finding, at least
+  one legal onward opportunity to disposition the Finding must remain, unless an
+  explicitly authorized human stop/abort is itself the intended outcome (this
+  exception and its precise meaning remain to be decided).
+* A transition into a region with no later disposition possibility must be
+  conditionally legal only if the post-Hop state is clean of open blocking
+  Findings.
+* A successful `complete` is legal only in the clean state. This guard is
+  already implemented (see link:{model-entry}#current-boundaries[Current scope boundaries]).
+* The reducer may *reject* an invalid requested route. It need not invent a
+  different route.
+
+**Caution:** The candidate wording above may be stronger than the narrower
+existential rule selected in the maintainer's 2026-10-26 P3.5 disposition. Treat
+it as a requirements question and counterexample, not an already accepted
+amendment to the historical P3.5 design.
+
+== Example: repair branch and clean-only audit branch
+
+[source,text]
+----
+              Review
+              /    \
+  issues remain    no open blocking Finding
+            /        \
+      Correction   Audit Trail
+          |             |
+       Rereview       Complete
+          |
+         ...
+----
+
+Both branches can belong to the same program. The `Audit Trail` branch has no
+repair opportunity, but is legitimate when the post-Hop Finding state is clean.
+Its entry condition is a *state-based guard*, not a prediction of agent intent.
+
+== What the proposed route guard means
+
+Illustrative, **not supported** YAML:
+
+[source,yaml]
+----
+routes:
+  accept:
+    effect: goto
+    target: audit_trail
+    require_no_open_blocking_findings: true
+----
+
+Ownership in the intended architecture:: A mandatory property of a route in the
+*workflow program*, not a convenience toggle chosen by the concrete Commission.
+The trusted interpreter would enforce the rule; a Commission must not weaken it
+through binding.
+
+Status:: Proposed in
+link:{model-docs}/warm_storage/concepts/workflow_coordinator_p35_finding_reachability_design_2026-10-18.adoc[the 2026-10-18 P3.5 reachability design].
+`model.py:Route` still has no such field, and
+`serialization.py:_route` accepts only `effect`, `target`, `question` and
+`supervisor`, so the key above would be rejected as unknown rather than quietly
+ignored. `reducer.py:_apply_route` tests blocker cleanliness on `complete`
+only. The original design restricted this guard to
+`goto`, since `complete` is already guarded globally. No one is authorized to
+use this YAML as working production syntax.
+
+Semantics in that design:: After this Hop's lawful Finding deltas are reduced,
+test the actual Run state. If any open blocking Finding remains, do not take the
+`goto`; stop in the declared fail-closed way, without silently choosing a new
+route or performing an extra provider invocation.
+

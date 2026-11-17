@@ -1,0 +1,102 @@
+ifndef::assembled[]
+= WFC Semantic Model
+:model-docs: ../..
+:model-entry: ../workflow_execution_semantics.adoc
+
+Authority:: Explanatory; grants no execution authority and amends no contract.
+endif::[]
+
+[[vocabulary]]
+== Current core vocabulary
+
+Interpreter:: The trusted Python package (`src/workflow_coordinator/`) that
+gives workflow operations their meaning. It admits governing inputs, projects a
+result contract per invocation, reduces the returned result against persisted
+Run state, and owns every trusted effect. It encodes no particular business
+review process: the process comes from the program.
+
+Workflow program:: A closed, hand-authored declarative record of a process:
+its phases, each phase's role, authorized actions, evidence obligation, review
+descriptor and routes. Three programs exist today as literal catalogue records
+under `governance/workflow-programs/{simple,direct,robust}/v1.yaml`, carrying
+`schema_version: 1` as *program records*. Their content is fixed; a correction
+is a new revision, never an in-place edit. `commissioning.py` recognizes exactly
+the `(simple, v1)`, `(direct, v1)` and `(robust, v1)` pairs and rejects every
+other pair, and it additionally compares each loaded record against an in-source
+template, so a program cannot be altered through its file alone.
+
+Profile:: The *admitted* form of a program for one Run: a
+`WorkflowProfile` (`model.py`) parsed from profile YAML with
+`schema_version` 2 or 3 (`serialization.py:workflow_profile_from_yaml`). The
+Front Door compiler renders one profile file per Commission by substituting the
+program's scope and evidence slots, so a Commission-specific profile *file*
+still exists, but its process shape is a deterministic projection of the closed
+program rather than a hand-copied one. Profile `schema_version: 3` additionally
+requires a `convergence` configuration. Legacy hand-authored schema-v2 profiles
+remain under `governance/self-development/` from Commissions that predate the
+Front Door.
+
+Commission:: A concrete bounded assignment. Its maintainer-authored form is a
+Commission Intent (`governance/commissions/<id>/intent.yaml`): program identity
+and source commit, task title/body/acceptance/withheld authority, scope,
+personas per role, evidence profile, policy basis, hop limit and durable-artifact
+mappings. `commissioning.py:render_commission` deterministically renders it into
+the ordinary WorkItem, Profile, Policy and Task files that `prepare` and `launch`
+consume. An Intent has no write path to a program's phases, routes or review
+descriptors; it fills declared slots only.
+
+Policy:: The independent ceiling on what any Run in a repository may do
+(`RepositoryPolicy`). It owns `governance_paths`, `work_item_scope_ceiling`,
+permitted `actions`, `max_autonomous_hops` and the *definitions* of evidence
+commands. A program requests capability; it cannot grant capability to itself.
+Effective authority is the intersection the Coordinator computes from Policy,
+WorkItem and Profile -- never a phase name, a persona, a provider or a path
+string.
+
+Run:: One pinned execution of one Commission against one repository
+(`Run` in `model.py`). It carries its own identity plus the pinned
+`profile_id`/`profile_revision` and `policy_id`/`policy_revision`, a
+`baseline_head` and `current_head`, the current `phase`, a `status`, a hop
+budget, and the two accumulating ledgers: `hops` and `findings`. One WorkItem
+mutates one repository.
+
+Phase:: One program state (`Phase`). It names the workflow role, the prompt
+components to select, whether a durable artifact is required, the authorized
+scope and actions, human gates, the required evidence commands, an optional
+review descriptor, and the named routes leaving it. Current roles are a closed
+two-value vocabulary, `worker` and `independent_reviewer`
+(`WorkflowRole`), documented in source as granting no authority by name.
+
+Hop:: One bounded agent invocation and its complete durable processing: prompt
+assembly, provider execution, result parsing and correlation, any trusted
+commit, evidence execution, reduction and persistence. Hop IDs are
+Coordinator-allocated as `H001`, `H002`, ... from `hop_used`
+(`vertical.py:run_one_hop`). A Hop records what was requested and what was
+actually applied, separately.
+
+Route:: A named, phase-local exit. Its `effect` is one of `goto`, `complete`,
+`await_human`, `suspend_for_prerequisite` or `stop` (`RouteEffect`), with an
+optional `target`, an optional human `question`, and a `supervisor` flag.
+`requested_route` is what the agent asked for; the *applied* route is what the
+Coordinator decided. They can differ, and both are persisted on the Hop.
+
+Finding:: A tracked issue with Coordinator-owned identity and lifecycle
+(`Finding`). It carries `finding_id`, `invariant`, `blocking`, `state`,
+the hop that introduced it, the hop that last changed it, evidence references
+and a disposition label. `blocking` is a property of the Finding, independent of
+its lifecycle `state`.
+
+Disposition:: A permitted change to a Finding's lifecycle state -- `resolve`,
+`residual`, `supersede` or `reopen` -- as distinct from changing the work
+product. Authority to disposition is not evidence that the underlying problem
+was genuinely repaired.
+
+Evidence:: A deterministic, policy-defined command the Coordinator executes
+itself after a Hop's agent work, recorded as a bounded `Observation`. Evidence
+is a Coordinator observation, never an agent claim; see link:{model-entry}#trusted-evidence[Provider result versus Coordinator-trusted evidence].
+
+Clean with respect to completion:: No Finding is simultaneously `state == open`
+and `blocking == true`, evaluated *after* that Hop's lawfully admitted Finding
+deltas (`reducer.py:_has_open_blocker`). This does not mean there are no
+Findings, no nonblocking concerns and no residual risk.
+

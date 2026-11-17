@@ -1,0 +1,79 @@
+ifndef::assembled[]
+= WFC Semantic Model
+:model-docs: ../..
+:model-entry: ../workflow_execution_semantics.adoc
+
+Authority:: Explanatory; grants no execution authority and amends no contract.
+endif::[]
+
+[[states]]
+== Current execution states
+
+A Run's `status` (`RunStatus`) is the single place that says whether another
+autonomous invocation may happen:
+
+[cols="1,3",options="header"]
+|===
+|`RunStatus` |Meaning
+
+|`ready`
+|Admitted and positioned at a phase; the next Hop may be dispatched.
+
+|`running`
+|A Hop is charged and dispatched; only a result correlated to that exact Hop can
+be reduced.
+
+|`awaiting_supervisor`
+|A route marked `supervisor` was requested. Only the declared supervisor routes
+remain selectable, and a supervisor confirmation carries no Finding-disposition
+surface.
+
+|`awaiting_human`
+|A human stop: an `await_human` route, a requested escalation, a mechanical
+preemption, or a blocked completion attempt.
+
+|`awaiting_human_budget`
+|A further invocation was needed but the autonomous hop budget is exhausted.
+
+|`suspended`
+|A prerequisite was explicitly authorized from an awaiting-human stop, pinning a
+`suspension_head` and a child Run. A `suspend_for_prerequisite` route alone does
+*not* reach this state: it stops for a human, and only an explicit
+authorization moves the Run here.
+
+|`reconcile_required`
+|Observed reality no longer matches persisted expectation -- either an
+interruption or a prerequisite's return. No further autonomous progression is
+legal, every recorded anomaly must be resolved first, and resuming is an
+explicit act that returns the Run to `ready`.
+
+|`completed`
+|A `complete` route was applied from a clean state.
+
+|`stopped`
+|Terminal stop. A stopped Run accepts no further invocation even with budget
+remaining.
+|===
+
+`reducer.py:permitted_route_keys` derives the finite set of routes a Hop may
+request from the phase and the status: paused and terminal statuses yield no
+routes at all, `awaiting_supervisor` yields only supervisor routes, and a
+convergence evaluator's reserved escape route is withheld from the agent. The
+same function supplies the projected schema's route enum, so what the provider
+may emit cannot drift from what the reducer would honor.
+
+Three result-level vocabularies are distinct from Run status:
+
+* `Outcome` -- `completed`, `changes_required`, `blocked`, `failed`: the
+  generic routing-result disposition.
+* `WorkStatus` -- `completed`, `blocked`: a Worker's own disposition. There is
+  no `changes_required` member, so a Worker cannot express a review verdict.
+* `ReviewDisposition` -- `accept`, `changes_required`: a reviewer's verdict.
+  There is no Worker-style status member.
+
+Hop budget is `hop_limit` versus `hop_used`. Each dispatch is charged before the
+provider is called, and an uncertain dispatch is conservatively charged and
+never replayed (`persistence.py:recover_uncertain_dispatch`). A Commission's
+requested limit is bounded by the Policy maximum and by the Coordinator hard
+maximum of 20 (`model.py:COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS`).
+

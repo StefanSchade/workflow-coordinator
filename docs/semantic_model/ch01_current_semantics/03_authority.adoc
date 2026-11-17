@@ -1,0 +1,91 @@
+ifndef::assembled[]
+= WFC Semantic Model
+:model-docs: ../..
+:model-entry: ../workflow_execution_semantics.adoc
+
+Authority:: Explanatory; grants no execution authority and amends no contract.
+endif::[]
+
+[[phase-versus-route]]
+== Phase authority versus route authority
+
+These are two different questions and the current reducer answers them in two
+different places. Conflating them is the most common category error in this
+vocabulary.
+
+*Phase authority* is what may happen *during* a Hop: the role, the authorized
+scope, the authorized actions, the evidence obligation, whether the phase
+reviews at all, and -- if it does -- which Finding operations its review
+descriptor grants. It is fixed by the admitted Profile and Policy before the
+Hop is dispatched, and it is projected into the prompt's `[identity]` block
+(`prompt.py:_header`).
+
+*Route authority* is only which *exit* the Hop may select, and it is strictly
+phase-local. A route's `effect` decides what happens to the Run; it does not
+confer any ability to do work.
+
+Two consequences stated explicitly, because the operating contract relies on
+them:
+
+* A sole permitted route named `review` does not make a Hop review-only, and a
+  requested route does not perform the target phase's work. The target phase's
+  authority is projected separately, if and when that Hop runs.
+* An agent's `requested_route` is a request. The Coordinator may substitute a
+  different route or none at all. Current substitution and refusal points, in
+  reduction order (`reducer.py:reduce_result`): a controlling mechanical fact
+  preempts everything; a requested human stop or escalation stops; a `failed`
+  outcome is terminal; a `scope_changed` claim stops; a reserved escape route
+  requested directly fails closed; an unknown route fails closed;
+  `changes_required` from a phase with no review fails closed; required-evidence
+  failure substitutes the review descriptor's `failed_evidence_route`;
+  a convergence goalpost substitutes the reserved escape route; a
+  `changes_required` result cannot take a `complete` route; and an exhausted hop
+  budget blocks a `goto` while still permitting a deterministic completion.
+* `complete` is additionally guarded globally: `reducer.py:_apply_route`
+  refuses it and stops for a human whenever an open blocking Finding remains.
+  The reducer rejects an illegal route; it does not invent a substitute
+  semantic answer.
+
+[[finding-identity]]
+== Finding identity versus Finding disposition
+
+Finding *identity* is Coordinator-owned. Finding *disposition* is an authorized
+proposal. The current reducer keeps these apart mechanically.
+
+Identity and immutable facts:: `finding_id` is allocated by the Coordinator as
+`F001`, `F002`, ... (`reducer.py:_next_finding_id`). An agent proposes a new
+Finding with `finding_id: null`; the projected schema types that field as
+`null`, so a fabricated identity is not expressible. A non-null `finding_id`
+that is not already in persisted Run state fails closed. Once a Finding exists,
+`invariant`, `blocking` and the introducing hop are never re-authored from a
+result; the reducer sources them from held state.
+
+Disposition authority:: Permitted operations come from the phase's review
+descriptor `finding_authority`, and `reducer.py:_may_dispose` admits a
+disposition only when the acting authority is `gate` and the operation appears
+in that list (or when the authority is `human`). `robust@v1`'s two review phases
+declare `finding_authority: [resolve]`; `direct@v1`'s verification phase
+declares `finding_authority: []`, which means its gate may disposition nothing.
+Legal state operations are `resolve`, `residual` and `supersede` from `open`,
+plus `reopen` and `supersede` from `resolved`
+(`reducer.py:_finding_operation`); every other transition is simply not an
+operation. `reopen` additionally requires explicitly asserted new material
+evidence.
+
+Three further boundaries worth stating:
+
+* Correction, edit or commit authority is not disposition authority. A
+  correction Hop with `finding_authority=` empty may add evidence to a Finding
+  in the same state, but may not resolve, residualize, supersede or reopen one.
+* Creation capability, review authority and disposition authority are
+  independent. Do not infer any of them from a phase name or from the mere
+  presence of a review descriptor.
+* An advisory review (`ReviewAuthority.ADVISORY`) acts with agent authority
+  only and can never take a `complete` route; a supervisor confirmation exposes
+  no disposition surface at all.
+
+Result schema version 3 adds two agent-visible forms that keep this separation
+sharper: a *citation*, which attaches evidence to an existing Finding without
+proposing any state change, and a *transition*, whose target state is a closed
+tagged union still subject to the same authority gate.
+
