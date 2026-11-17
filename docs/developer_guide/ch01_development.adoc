@@ -43,6 +43,11 @@ Claude live smoke test is opt-in, requires an authenticated executable and
 network access, and can incur a charge. A normal documentation change needs no
 live provider Run.
 
+NOTE: Every pytest run, including the examples above, needs the verified offline
+inputs described in <<offline-test-inputs>> (or an explicit `--wfc-partial` subset
+run). The plain `pip install '.[dev]'` shown above uses whatever index your pip
+configuration selects; the required suite does not.
+
 === Pytest scratch
 
 `tests/conftest.py` leaves explicit `--basetemp` or `PYTEST_DEBUG_TEMPROOT` to
@@ -56,3 +61,133 @@ locks and retention; the selected base appears in the pytest header. An explicit
 `--basetemp` has pytest's destructive reset semantics: choose it carefully.
 This override affects pytest allocation only, not the environment or temporary
 file choices of subprocesses and `tempfile`.
+
+[[offline-test-inputs]]
+=== Offline test inputs
+
+Standing:: Development tooling for WFC's own tests only. It is not an installed
+feature, a dependency service, a consumer prerequisite or a change to the package's
+Python declaration. The Operator Manual is unchanged.
+
+The required suite builds real virtual environments and runs real PEP-517 isolated
+builds, so it needs third-party wheels (build backend, runtime, dev extras) that
+no index may supply at test time. These wheels are pinned by a repository profile and
+supplied as a *bundle directory*; a bundle is trusted only because its bytes match the
+profile, never because of where it is stored.
+
+* Profile: `tests/fixtures/offline-test-inputs/cp313-linux-x86_64.json` (file name is
+  the profile id). It pins exact filenames, sizes, SHA-256, embedded metadata and
+  requirements, official source URLs, the accepted wheel tags and the one qualified
+  host: CPython 3.13 on Linux x86-64 (glibc 2.28 or newer), with the interpreter's
+  `ensurepip` seed pip 25.1.1. Another interpreter, architecture or seed pip is
+  refused, not approximated; it needs its own reviewed profile. Provenance is official
+  PyPI HTTPS metadata, not an independent signature attestation.
+  `py313-linux-x86_64-candidate.json` is the immutable P1 measurement it was derived
+  from; a test keeps both in agreement and checks that the pins satisfy
+  `pyproject.toml` (build requirement, runtime and dev dependencies, applicable
+  markers). Changing a dependency range therefore requires re-reviewing the pins.
+* Tool: `scripts/wfc_test_inputs.py`, standard library only, explicit operations only:
+
+[source,sh]
+----
+python3 scripts/wfc_test_inputs.py fetch  --profile cp313-linux-x86_64 --bundle NEW_DIR
+python3 scripts/wfc_test_inputs.py fetch  --profile cp313-linux-x86_64 --bundle NEW_DIR --from-dir TRANSFERRED_DIR
+python3 scripts/wfc_test_inputs.py verify --profile cp313-linux-x86_64 --bundle DIR
+python3 scripts/wfc_test_inputs.py exec   --profile cp313-linux-x86_64 --bundle DIR -- COMMAND ARG...
+----
+
+`fetch` is the only operation that touches the network, and only without
+`--from-dir`: it downloads each pinned `files.pythonhosted.org` HTTPS URL (no other
+host, no downgrade or foreign redirect), checks size and SHA-256 and the embedded
+metadata, and renames a staging directory into the new `NEW_DIR` only when every wheel
+verified; any failure leaves nothing behind. `--from-dir` accepts bytes transferred by
+another route and applies the same checks (extra files in the source are ignored, not
+copied; symlinks are refused). `verify` is read only. It requires exactly the pinned
+wheel files: no missing, extra, hidden, nested, symlinked, non-regular or
+world-writable entries; matching size and hash; wheel tags compatible with the host;
+embedded name, version, requirements and tags equal to the profile; no unsafe archive
+members. `exec` verifies, runs `COMMAND` literally (no shell) and verifies again,
+exiting 125 if the tool failed or the inputs changed while it ran; otherwise the child's
+status is returned. Create the bundle outside the checkout, or under the ignored `build/`;
+never inside tracked paths.
+
+`exec` discards every inherited `PIP_*` variable (any case) and sets
+`PIP_CONFIG_FILE=/dev/null` (pip then ignores global, user and site files),
+`PIP_NO_INDEX=1`, `PIP_FIND_LINKS=<absolute bundle>`, `PIP_NO_CACHE_DIR=1`,
+`PIP_DISABLE_PIP_VERSION_CHECK=1` and `PIP_NO_INPUT=1`, plus `WFC_TEST_INPUTS` and
+`WFC_TEST_PROFILE`. Everything else (PATH, HOME, proxies, TMPDIR) is preserved. This
+is a no-index/no-cache configuration, not proof that the network is unreachable.
+
+==== Running the required suite
+
+Set the two variables to the explicitly selected bundle and profile, then run the
+unchanged command. Relative bundle paths are resolved against the current directory:
+
+[source,sh]
+----
+export WFC_TEST_INPUTS=/absolute/path/to/bundle WFC_TEST_PROFILE=cp313-linux-x86_64
+python -m pytest -q
+----
+
+Before any test runs, `tests/conftest.py` verifies that directory against the profile
+and applies the same sanitized `PIP_*` settings to the pytest process, so every nested
+venv, `pip install` and PEP-517 build inherits them; at the end it verifies the
+directory again and turns a modified bundle into a failing run. Missing, half-set,
+unknown, incompatible or corrupt inputs stop configuration with exit status 4 and an
+explanation: never a skip, an xfail or a fallback to an index or cache. `--collect-only`
+and `--help` do not verify and run no tests.
+
+Setup must be explicit for each separate process, because nothing forwards pip settings
+for you: provider shells (for example Claude's) do not inherit `PIP_*`, `prepare`
+runs its pip installs with its own process environment, and `launch` freezes only PATH
+and the scratch variables. So supply both `prepare` and `launch` yourself, each with its
+own bundle selection:
+
+[source,sh]
+----
+python3 scripts/wfc_test_inputs.py exec --profile cp313-linux-x86_64 --bundle DIR -- \
+    python3 scripts/wfc_op.py prepare ...
+python3 scripts/wfc_test_inputs.py exec --profile cp313-linux-x86_64 --bundle DIR -- \
+    python3 scripts/wfc_op.py launch ...
+----
+
+A configured Coordinator `task-check` (`python -m pytest -q`) runs the whole suite
+unchanged; it inherits the launch environment and so needs `WFC_TEST_INPUTS` and
+`WFC_TEST_PROFILE` there. If the environment is not passed, it fails with the message
+above.
+
+==== Staging a bundle for a restricted worker
+
+A restricted worker may not read the directory holding your wheelhouse. Stage the exact
+pinned wheel files into a disposable directory the worker may read (for example below the
+ignored `build/`), verify the copy with `verify`, and treat it as untrusted until the
+worker verifies it itself against the committed profile. Never modify the original
+wheelhouse; delete the staging directory when the Run is over. In that worker use
+`exec`, or set the `PIP_*` values above explicitly yourself.
+
+==== Partial runs
+
+`python -m pytest --wfc-partial tests/unit/test_reducer.py` runs a clearly labelled
+subset: the flag must be on the literal command line (not `PYTEST_ADDOPTS` or an ini
+file), requires explicit test paths below `tests/` and refuses the whole suite. The
+header and summary say the run is partial and not required-suite acceptance. Without
+inputs, pip is still forced offline with no find-links, so a selected test that needs a
+real install fails instead of reaching an index; if inputs are supplied they are
+verified as usual. Choose real-install tests only with inputs.
+
+==== Failures
+
+[cols="2,3",options="header"]
+|===
+|Message mentions |Meaning and remedy
+|`WFC_TEST_INPUTS and WFC_TEST_PROFILE must both be set` |Select a bundle and profile id.
+|`missing:` / `unexpected entry` |Bundle is not exactly the pinned set; re-`fetch` into a new directory.
+|`SHA-256 differs` / `size` / `exceeds the pinned size` |Corrupt or replaced bytes; discard the directory and re-`fetch`.
+|`without following links`, `not a regular file`, `world-writable` |Unsafe entry or directory; recreate it.
+|`host ... profile requires` |This host is not the qualified profile; use or review another profile.
+|`not accepted by the profile` / `embedded ... differs` |Wheel does not fit the profile or its closure; review, do not patch the bundle.
+|`inputs changed ... while the command ran`, `CHANGED OR INVALID DURING THE RUN` |Something modified the bundle; the result is not valid.
+|===
+
+A refreshed or different profile is a deliberate maintainer change that must be reviewed
+with its dependency closure; the tool never resolves, upgrades or amends pins.
