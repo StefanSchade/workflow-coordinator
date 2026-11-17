@@ -1,0 +1,40 @@
+= P2 offline test inputs: independent broad review
+:toc:
+
+Work item:: `WI-WFC-OFFLINE-TEST-INPUTS-P2-001`, Run `RUN-368332c701204f96a0e00d5cedbb2c18`, Hop H002 (independent reviewer, gate authority, blocking findings only).
+
+Candidate:: commit `7e5de296ea865c70f61fe3a319a257df83733288` (base `be0a872`). Changed leaves: `docs/developer_guide/ch01_development.adoc`, `docs/warm_storage/concepts/wfc_offline_test_inputs_p2_handoff.adoc`, `scripts/wfc_test_inputs.py`, `tests/conftest.py`, `tests/fixtures/offline-test-inputs/cp313-linux-x86_64.json`, `tests/unit/test_wfc_test_inputs.py`. No Runtime/product source, adapter, sandbox, evidence policy, dependency or Python declaration, or Operator Manual file changed.
+
+Verdict:: accept. No blocking finding. Everything below that I ran is agent-local exploratory evidence in this review Claude shell; it is not Coordinator-trusted evidence. The Coordinator's separate task-check remains the required full-suite evidence and was not run or replaced here.
+
+== Checks performed
+
+[cols="2,4",options="header"]
+|===
+|Area |Result
+|P1 closure and pins |The twelve profile entries (filename, size, SHA-256, name, version) equal the immutable P1 candidate `py313-linux-x86_64-candidate.json` with zero differences; the candidate and P1 handoff are unchanged since the base. The operator-reported P1 Run and Evidence ID were not inspectable from this worker and are not independently confirmed here. Provenance remains official PyPI HTTPS metadata match, not a signature attestation; the profile and handoff state this.
+|Operator staging |`python3 -I scripts/wfc_test_inputs.py verify --profile cp313-linux-x86_64 --bundle build/wfc/offline-p2-staged` printed `verified 12 wheels`. I separately ran `sha256sum` on the twelve staged files and compared every digest by eye with the profile: all twelve identical. The directory is ignored (`git check-ignore` matches `build/`), exactly twelve files. Verified again after all my use: still 12 wheels. The location was not trusted.
+|Scratch copy |`fetch --from-dir build/wfc/offline-p2-staged --bundle build/wfc/rev-h002/bundle` produced a verified 12-wheel copy; verified again after use.
+|Positive install in this Claude shell |A pristine `git archive HEAD` export (avoids the stale in-tree `build/lib` hazard) was installed into a genuinely fresh venv (`pip list` showed only pip 25.1.1) with `python3 -I scripts/wfc_test_inputs.py exec ... -- <venv>/bin/python -m pip install -v <export>`. Log: `Looking in links: <bundle>`, `Installing build dependencies` ran an isolated build environment that processed only the bundle's `setuptools-84.2.1`, PyYAML 6.0.3 came from the bundle, `Successfully built workflow-coordinator`, `Successfully installed PyYAML-6.0.3 workflow-coordinator-0.1.0`. A dev-extras venv (`pip install -e <export>[dev]` through `exec`) also installed all eleven closure wheels plus WFC offline. Build isolation was active and not disabled.
+|Literal shell-level env assignment |I tried `PIP_NO_INDEX=1 PIP_CONFIG_FILE=/dev/null PIP_FIND_LINKS=... <venv>/bin/python -m pip config list`; it was denied automatically (no approval surface). This independently reproduces the implementer's reported limitation. Pip configuration was instead made explicit through the tool's `exec`, which is the reviewed code path. No sandbox right was requested or worked around.
+|Hostile config |`exec` removes every inherited `PIP_*` (any case), sets `PIP_CONFIG_FILE=/dev/null`, `PIP_NO_INDEX`, `PIP_FIND_LINKS`, `PIP_NO_CACHE_DIR`, `PIP_DISABLE_PIP_VERSION_CHECK`, `PIP_NO_INPUT`, preserves unrelated variables. Code read; the test file proves it with real pip under hostile HOME/XDG/`PIP_*`/config files.
+|Integrity rejection |A bundle copy with an added `extra.whl` was refused by `exec` before the command ran (`unexpected entry`, exit 125, the echo child never ran). The test file covers missing, corrupt, truncated, symlink, FIFO, world-writable, hidden, nested, metadata-mismatch, tag-mismatch and unsafe-member cases. Reads use `O_NOFOLLOW` and hash the same bytes that are inspected.
+|Full-suite guard |With no inputs, plain `pytest -q` exits 4 with an explanatory message and runs nothing: no skip, no fallback. `--wfc-partial tests` is refused (whole suite). `--wfc-partial` honoured only from the literal command line (`invocation_params`), not `PYTEST_ADDOPTS`; labelled in header and summary; no inputs means pip forced offline without find-links.
+|Focused tests |`pytest tests/unit/test_wfc_test_inputs.py` under `exec` against the scratch bundle: 79 tests, no failures. `tests/unit/test_wfc_op.py` (existing real two-venv prepare/launch tests, untouched) against the operator-staged bundle: all passed, one pre-existing skip.
+|Docs |The developer guide section covers setup, inputs, staging, separate prepare/launch setup, partial mode and failures, and states that no-index is not network denial. The normative Operator Manual is untouched.
+|Stack neutrality / security |Stdlib-only development tool; no generic dependency service, registry, mirror, container requirement, Python declaration change, adapter or sandbox change.
+|===
+
+== Findings
+
+No blocking finding. Non-blocking observations, recorded as truthful limits rather than defects:
+
+* The instruction to set pip configuration explicitly in the Claude shell could not be met by literal `VAR=x` assignment because this session denies any command that sets an environment variable (the implementer and I both observed this). The equivalent explicit configuration through `exec` is a reviewed, deterministic route and the install, isolation and negative-control results are genuine; the operator should confirm this is acceptable. It needed no new right, so it is not an authority conflict.
+* `PIP_FIND_LINKS` carries the bundle path; pip splits find-links on whitespace, so a bundle path containing spaces would fail closed (no distribution found), not fall back. Document or avoid such paths in P3.
+* The seed pip is identified by `ensurepip.version()`, not a hash; the verification detects rather than prevents concurrent change after the pre-check.
+* Not established, and not claimed by P2: actual outbound-network denial, Codex or Coordinator/prepare/launch qualification, whether the production evidence runner forwards `WFC_TEST_INPUTS` and `WFC_TEST_PROFILE` (if it does not, the task-check fails clearly), timing, C3 cause, and any P3 work. The BUG stays open.
+* The 39 environment-limited failures in this shell (nested bubblewrap, read-only `/tmp`) were reported by the implementer as identical on pristine HEAD; I did not repeat the full suite in this shell and do not vouch for it. The Coordinator task-check decides.
+
+== Cleanup note
+
+`build/wfc/rev-h002` (bundle copies, a clean source export and two venvs) is ignored, disposable review scratch inside the already-writable checkout and is not part of any commit. The operator-staged directory was only read.
