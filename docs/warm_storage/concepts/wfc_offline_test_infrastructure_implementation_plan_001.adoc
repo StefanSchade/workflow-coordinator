@@ -1,0 +1,1001 @@
+= Offline WFC self-development tests: environment boundaries and implementation plan
+:toc:
+:toclevels: 3
+:sectnums:
+
+Authority:: Informative architecture proposal, pending Maintainer decision. This
+plan grants no implementation, Commission, Run, dependency update, network grant,
+Runtime promotion or release authority. Existing preparation, security, evidence
+and governance contracts remain controlling.
+Maturity:: Proposed for independent review; implementation and experiments below
+have not been performed by this planning task.
+Updated:: 2026-11-17
+Work item:: `WI-WFC-OFFLINE-TEST-INFRASTRUCTURE-PLANNING-001`, H001.
+Source baseline:: Development `975147aa4b3130dffc5713c37883a112440f3cfe`.
+Owns:: A bounded implementation proposal for reproducible offline WFC development
+builds/tests, its migration and acceptance criteria, and its relationship to
+stack-neutral product preparation. Backlog status and Beta-1 scope stay at their
+existing owners.
+
+== Recommendation and decision boundary
+
+Propose *a small, repository-described, externally stored offline dependency
+bundle for WFC's own development*, plus a verifier/command wrapper and an explicit
+coverage inventory. Initially retain all current real nested installation
+scenarios. Measure before replacing any of them with stubs. Reuse dependency
+bytes, never substitute a shared mutable environment for an environment under
+test. A directory of verified wheels is the simplest justified initial Python
+bundle format; it is neither a WFC product service nor a prerequisite imposed on
+consumer repositories.
+
+Combine that with the already-planned Beta-1 boundary: an installed WFC uses an
+operator-provided execution environment and consumer-authored commands. It need
+not detect a consumer's stack, create its environment, install its dependencies
+or choose its registry. That direction is *planned*, with preparation-contract
+amendments and self-development cutover still requiring their own decisions.
+It does not eliminate WFC's independent package/build/install tests.
+
+The Maintainer decides whether to adopt this recommendation, the first qualified
+host profile, artifact delivery location and work sequencing. No automated
+wheelhouse refresh, mirror, dependency service, cache protocol or new evidence
+command is justified by current observations. No change to the 900-second policy
+limit or timeout classification is proposed here.
+
+[[sources]]
+== Sources, authority and method
+
+Repository facts below were read at the baseline above. Host files were inspected
+read-only during this task; no suite, preparation or installation was rerun.
+References use function/test names because historical line numbers have moved.
+
+[cols="1,5,3",options="header"]
+|===
+|Ref |Source |Standing and use
+
+|S1
+|link:../../backlog/BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION.adoc[Nested-prepare offline BUG]
+|Open problem owner; separates sandbox diagnostics, original timeouts and the
+external mitigation. Authorizes no correction itself.
+
+|S2
+|link:wfc_test_infrastructure_strategy_2026-11-16.adoc[November 16 strategy]
+|Exploratory predecessor: timings, cache hypothesis and candidate workstreams.
+Its TI-2 is an option evaluated here, not a selected specification; TI-3 is
+outside this proposal's implementation packages.
+
+|S3
+|link:../../backlog/beta1_productization.adoc[Current BP1–BP9 map]
+|Informative current planning synthesis. None of BP1–BP9 is evidenced there as
+delivered. Package classification is not implementation acceptance.
+
+|S4
+|link:wfc_beta1_product_boundary_review.adoc[First product-boundary review],
+link:wfc_beta1_product_boundary_review_second_pass.adoc#preparation[second-pass preparation proposal],
+link:wfc_beta1_implementation_readiness_review.adoc#c3[third-pass plan/probe correction]
+|Historical exploratory analysis. Read with S3's dispositions: bindings stay
+separate from Commission identity, plan executes no project command, and the
+third review's mandatory Linux supervision foundation is superseded for Beta 1.
+
+|S5
+|link:../../operator_manual/ch03_running/01_preparation.adoc[Generic preparation and current Harness],
+link:../../operator_manual/ch05_self_development/01_topology_budget.adoc[self-development specialization],
+link:../../operator_manual/ch05_self_development/02_promotion.adoc[promotion]
+|Normative current contracts. link:../../run-preparation.adoc[run-preparation]
+and link:../../self-development.adoc[self-development] are navigation, not
+alternative contracts.
+
+|S6
+|link:../../../pyproject.toml[pyproject.toml], link:../../../Makefile[Makefile],
+link:../../../scripts/wfc_op.py[wfc_op.py]
+|Implemented package metadata, developer commands and source-only Harness.
+
+|S7
+|link:../../../src/workflow_coordinator/evidence.py[evidence.py],
+link:../../../src/workflow_coordinator/operator.py[operator.py],
+link:../../../src/workflow_coordinator/claude_adapter.py[Claude adapter],
+link:../../../src/workflow_coordinator/codex_adapter.py[Codex adapter],
+link:../../../src/workflow_coordinator/resources/agent_operating_contract_v6.txt[operating contract v6]
+|Implemented admission, environment and evidence/agent boundaries; not a
+dependency-provisioning interface.
+
+|S8
+|link:../../../tests/unit/test_wfc_op.py[Harness tests],
+link:../../../tests/conftest.py[pytest scratch],
+link:../../../tests/unit/test_a2_evidence_commands.py[A2 tests],
+link:../../../tests/architecture/test_package_boundaries.py[package guards],
+link:../../../tests/unit/test_pytest_temp_storage.py[temp-storage tests]
+|Current fixtures/assertions. Proposed test scopes below supplement rather than
+silently replace them.
+
+|S9
+|link:../../backlog/BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS.adoc[Timeout diagnostics BUG],
+link:../../backlog/BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS.adoc[nonzero-exit diagnostics BUG],
+link:../../backlog/BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc[temp-resource BUG]
+|Separate owners. Missing timeout output is not evidence of a shared root cause.
+
+|S10
+|link:../../developer_guide/ch01_development.adoc[Development guide],
+link:../../ai_info/doc_conventions.adoc[documentation conventions]
+|Current setup/check navigation and document conventions.
+|===
+
+Claim classes in this plan: *source observation* means inspected repository
+behavior; *host diagnostic* means untrusted external logs or this task's read-only
+checks; *trusted historical observation* means a persisted Coordinator result,
+whose provenance is retained; *inference* and *proposal* mean neither tested nor
+accepted behavior. Reading a historical trusted observation does not create new
+trusted evidence for this Run. This invocation has no projected trusted evidence
+names; its rendering and consistency checks are agent-local validation only.
+
+[[trace]]
+== Current execution and packaging trace
+
+=== What is installed, exported and built
+
+Source observation (S6): WFC declares Python `>=3.10`, runtime dependency
+`PyYAML>=6`, and development extras `build>=1.2`, `pytest>=8.2`, `pytest-cov>=5`,
+`ruff>=0.6`. Its build backend is `setuptools.build_meta` with the build requirement
+`setuptools>=68`. These ranges are compatibility declarations, not reproducible
+test input pins. Only `workflow_coordinator*` under `src/` and resource text files
+are packaged; the entry point is `wfc = workflow_coordinator.operator:main`.
+The Harness script is not an installed product preparation command.
+
+The actual Harness path is:
+
+. `cmd_prepare` creates private attempt scratch, temporarily exports
+  `TMPDIR`/`TMP`/`TEMP`, pins clean Development/Runtime/Evidence repositories,
+  requires detached/push-disabled Runtime, fresh OPS/STATE and governing files.
+. `prepare_runtime_environment` calls `export_runtime`: `git archive` of the
+  exact Runtime commit into external `OPS/runtime-src`. It creates
+  `OPS/runtime-env` using `sys.executable -m venv`, installs the export
+  non-editably, and checks the absolute `runtime-env/bin/wfc --help`.
+. `prepare_development_environment` creates `OPS/dev-env` and installs the *live
+  pinned Development checkout* with `[dev]`, non-editably. It does not export
+  Development. The source checkout retains `.git` for repository-sensitive
+  tests; installed code and pinned Git source are distinct aspects of the
+  substrate. The Evidence repository is pinned, not pip-installed by this path.
+. `pip_install` invokes `<env>/bin/pip install <local target>` with inherited
+  environment and captured output. It sets no index/cache options and no build
+  isolation override; failure raises `HarnessRefusal` with pip's stderr.
+. pip's ordinary local-project PEP 517 path creates a separate ephemeral build
+  environment and installs build dependencies there before building/installing
+  WFC. Having setuptools in the target venv does not provision that build
+  environment. `[build-system].requires` is only the starting set: backend-hook
+  requirements and their own dependency closure must also be available.
+. Controlled `PATH` is `dev-env/bin:runtime-env/bin:<trusted base PATH>`.
+  `verify_controlled_path` checks `python3` resolves into dev-env. The pinned
+  Runtime's own `_preflight` runs under its interpreter through the seam;
+  evidence executables are resolved, evidence commands are not executed.
+  Preparation writes bindings, pins, records and launcher, revalidates repositories,
+  checks STATE remains absent, and stops without a Run or provider dispatch.
+
+The generic sequence in S5 still describes exact target export and a separate
+evidence environment. Its Harness subsection and self-development specialization
+explicitly describe the live-Development exception. Neither this plan nor the
+future product proposal silently rewrites the generic sequence. BP7/Q5 owns
+reconciling its wording with the proposed user-provided environment.
+
+`make test` runs `$(PYTHON) -m pytest -q`; pytest itself adds another `-q` and
+discovers `tests/` with `pythonpath = ["src", "."]`. `make check` also runs Ruff
+and the explicitly listed format checks; `make build` runs `python -m build`.
+The current self-development evidence policy's `python -m pytest -q` is not
+equivalent to `make check` or a distribution-build gate. S6 has no general setup
+or offline-provisioning target. The optional spreadsheet-tool requirements file
+belongs to memory tooling and is not the WFC development closure.
+
+=== Fixture homes, scratch and environment propagation
+
+`tests/unit/test_wfc_op.py::run_wfc_op` copies `os.environ` then replaces `HOME`.
+Disposable Development/Runtime clones are local Git clones; local source bytes
+do not supply third-party installation dependencies. Different fixture homes
+ordinarily give pip different default caches, though explicit pip/XDG
+configuration can change that. Cache reuse alone does not close index resolution.
+
+`world` shares repository fixtures. `prepared` is module-scoped and makes one real
+two-venv preparation; launch tests reuse it with restoration of perturbations.
+`completed_run` makes another real prepare/launch with its *own* Development clone
+because a fake-provider Hop commits there. Drift-during-prepare, sentinel Runtime,
+frozen-PATH and shell-quoting tests each also exercise real preparation. The
+optional real archive-wrapper test creates another real attempt if its sibling
+scripts are available. Early refusal tests stop before pip. The scratch/preflight
+test already stubs both environment builders. These are different test purposes,
+not interchangeable calls to a uniformly expensive fixture.
+
+`tests/conftest.py` uses explicit pytest temp settings unchanged. Otherwise it
+chooses supplied `TMPDIR`, `TMP`, `TEMP` outside `/tmp`, or ignored repository
+`tmp/pytest`, and rejects invalid/symlinked storage. This controls pytest allocation;
+it does not globally rewrite subprocess temp variables or set a pip cache/source.
+Harness scratch remains private per Attempt, outside repositories/OPS/STATE. The
+bundle proposed below is separate from both scratch mechanisms and is never
+pytest's destructively reset `--basetemp`.
+
+`write_launch_sh` freezes PATH and temp variables as shell-quoted literals. It
+does *not* freeze `PIP_NO_INDEX`, `PIP_FIND_LINKS` or arbitrary environment values.
+Thus the workaround must be present at both prepare and launch. Setting it only
+while preparing does not establish the later evidence environment.
+
+Source observation (S7): `_preflight` snapshots the Coordinator environment once;
+`snapshot_environment` copies its values immutably and supplies `os.defpath` only
+if PATH is absent. `prepare_evidence_commands` resolves selected policy executables
+at admission; `ProductionEvidenceRunner` resolves again using that snapshot and
+executes literal argv, `shell=False`, repository-root cwd, DEVNULL stdin, and that
+environment. It can use already-provided tools and inputs; it neither constructs
+a toolchain nor proves that every command/dependency will work. Only resolution
+and fingerprints are checked; this is not isolation from arbitrary project code.
+
+The persisted observation names `coordinator-inherited-environment-v1`, PATH
+source/digest and command resolution/fingerprint. It does not persist all
+environment values, a dependency manifest or duration. A pip setting can therefore
+be present in memory without being recoverable from old Run evidence. On timeout
+the current runner kills/reaps the direct child and records `error`/`timeout`
+without output capture; clean positive exits get bounded untrusted tails. No
+process-tree or timeout-output correction is implied by offline provisioning.
+
+Agent execution is a separate boundary. Claude's default child allowlist is
+PATH/HOME/USER/LANG plus explicitly configured extra names; its temp variables
+are managed separately. Pip/bundle variables do not automatically traverse it.
+The Codex adapter's launch does not supply an explicit environment mapping, but
+the provider's own shell/sandbox may restrict what reaches a tool. Do not infer
+agent filesystem visibility or network access from Coordinator inheritance.
+Agents may invoke a local verifier with an explicit accessible bundle path;
+failure there is an agent-local limitation, not a new trusted evidence result.
+No adapter allowlist or security setting change is part of this proposal.
+
+[[observations]]
+== Observations and uncertainty
+
+External paths below are provenance, not portable prerequisites or proposed
+defaults. They were readable in this planning invocation. No claim of absence
+is made for inaccessible or uninspected host material.
+
+[cols="2,5,2",options="header"]
+|===
+|Observation |What was inspected or recorded |Limit
+
+|Original C3
+|Read `operator-summary.json` and the checkout's `execution-evidence.json` under
+`/home/stefan/wfc-state/wfc-documentation-curation-c3-20261115-01/`.
+Run `RUN-3c6db523e1e64755b04b678f402aa563` records `task-check` timeout after
+900 s, `status=error`, `error_class=timeout`, null exit/output facts and no
+untrusted diagnostic. Candidate `9930622` and independent review `ed212d2`
+remain historical artifacts; the Run stopped awaiting a human.
+|Trusted historical observation of a timeout, *not its cause*.
+
+|C3 separate mitigation
+|Read `/home/stefan/wfc-scratch/c3-wheelhouse-verification-20261115-01/`
+`full-result.txt` (`exit=0 duration=171s`), `full.log` and `nested-pip.log`.
+The latter shows ignored indexes, local wheel processing, an ephemeral
+`pip-build-env` and installation of build dependencies. S1 records 918 passed,
+four skipped, versus an earlier 896.96 s diagnostic with two download failures.
+|Host diagnostics, not C3 trusted acceptance; no fresh rerun here.
+
+|Existing bundle bytes
+|Read `/home/stefan/wfc-scratch/wheelhouse-wfc-py313-20261115/SHA256SUMS`;
+all 12 wheel SHA-256 values matched a fresh read-only digest calculation.
+Universal wheels plus cp313/manylinux x86_64 PyYAML/coverage and platform ruff
+wheels are present. Nested log identifies pip 25.1.1.
+|Matches a host-local manifest; does not authenticate its upstream origin,
+prove reproducible bootstrap or qualify Python 3.10/macOS/other architectures.
+
+|November 16 timing comparison
+|Read `result-A-as-launched.txt` and `result-B-offline-wheelhouse.txt` under
+`/home/stefan/wfc-scratch/memory-planning-timing-diagnostic-20261116/`:
+777 s/exit 1 and 153 s/exit 0. S2's six real-prepare cases total 678.4 s
+versus 56.4 s; it records Python 3.13.5, 930 collected, same source, sequential
+A then B. Its failed sentinel case has truncated pip details.
+|Untrusted comparison, no replication/randomization; no precise cause for
+that truncated failure and no universal performance guarantee.
+
+|Other original timeouts and later pass
+|S1/S2/S9 record FTR05 and documentation-memory timeouts, and a separate C3
+verification Run `RUN-d776734b22584592a9c49fe70371449a` passing trusted
+`task-check`. The reported 169 s and pip settings are external observations.
+S9 says FTR05's review proposed a blocking concern, whereas S2's summary groups
+all three as accepted before timeout; use the narrower S9 account for FTR05.
+|Repository-recorded historical evidence, not all host Run files re-inspected.
+No old Run is reclassified by this plan.
+|===
+
+The 12 observed versions are build 1.6.1, coverage 7.17.3, iniconfig 2.3.1,
+packaging 26.3, pluggy 1.7.0, pygments 2.21.0, pyproject_hooks 1.3.3, pytest
+9.2.0, pytest_cov 7.1.0, PyYAML 6.0.3, ruff 0.17.5 and setuptools 84.2.1.
+This inventory is a candidate input to a refresh, *not an adopted lock*.
+Tool bootstrap and backend-hook closure still require explicit qualification.
+
+Inference: controlled local inputs plausibly remove the demonstrated DNS/download
+failure class and much of the measured latency. *C3 causality remains unknown*.
+Prior C3, FTR05 and other original Coordinator timeouts have no proven common
+cause and must not be retroactively attributed to pip/network. CPU/disk variance,
+process stalls or other causes are neither established nor excluded. Raising the
+timeout, adding supervision or amending past evidence is not a consequence of
+this plan. S9 owns any separately authorized diagnosis.
+
+[[boundaries]]
+== Ownership and stack-neutral environment boundaries
+
+[cols="2,4,4",options="header"]
+|===
+|Owner |Responsibility |Explicit boundary
+
+|WFC development maintainers
+|Choose/test WFC's Python dependency and toolchain profiles; own exact inputs,
+refresh, source-build/install tests, fixtures and developer instructions.
+|The offline bundle describes this repository's development needs. A consumer
+does not acquire these requirements by adopting WFC.
+
+|Host/operator or CI administrator
+|Install WFC itself and provide executable toolchains, sufficient scratch,
+bundle bytes and an appropriate controlled environment; choose permitted artifact
+transport and initial connected bootstrap outside offline runs.
+|An installed Python WFC may require Python for its own execution; this does
+not require Python metadata, venvs or pip in the orchestrated repository.
+The host controls actual network denial and access, not an agent claim.
+
+|Current self-development Harness
+|Implement S5's specialized pinned exports, environments, PATH, scratch,
+bindings and pinned-Runtime provider-free preflight.
+|It is Python-specific today. Do not market this script as generic foreign-stack
+preparation or give it a universal dependency-install interface to fix these tests.
+
+|WFC Coordinator
+|Admit policy-authored argv, snapshot already-provided environment, resolve
+executables, execute authorized checks and record/reduce outcomes.
+|No package-manager detection, registry selection, dependency solving or consumer
+environment construction. Executable suitability is not fully proven by lookup.
+
+|Consumer project
+|Own its commands, dependency/toolchain lifecycle and environment instructions,
+whether shell, Go, Java, Rust, content tooling or anything else.
+|Its lockfiles and offline sources remain project concerns. Its check runs only
+under admitted execution authority; provisioning WFC does not authorize it.
+
+|Harness/test tooling versus evidence owner
+|Test-only wrapper prepares subprocess inputs. Coordinator independently executes
+admitted trusted checks using its launch environment.
+|Local logs, manifests and agent checks are not trusted evidence by themselves.
+No policy, reduction, result schema or admission rule changes here.
+|===
+
+=== Current checks versus planned Beta-1 possibilities
+
+[cols="1,4,4",options="header"]
+|===
+|Package |Current baseline / planning direction (S3/S4) |Consequence for this proposal
+
+|BP1
+|Current wheel has raw engine entry point and A3 resource. Installed product
+identity/resources/dispatch are planned, not delivered.
+|Retain independent real build, clean install, unrelated-cwd CLI/resource tests.
+Installing WFC is separate from preparing any consumer environment.
+
+|BP2
+|Current compiler includes self-development policy assumptions; consumer
+configuration/compiler extraction is planned.
+|Neutral fixture must exercise actual admission; do not pretend current
+Front Door can compile arbitrary consumer commands.
+
+|BP3
+|Read-only plan/init/bounded mechanics are planned. S4's later correction and
+S3 require plan to execute *no project command*.
+|Inspecting an environment/configuration cannot run pip, a build or a baseline
+check as an invisible suitability test. Marker-file test must prove this later.
+
+|BP4
+|User-provided environment, frozen execution envelope and authorized baseline
+probe are planned. Generic preparation does not build a payload environment.
+Current raw preflight resolves commands but does not run that probe.
+|A future probe runs only after authorization, reports check/mutation failure,
+and is separate from provisioning. Do not add it to current Harness preflight.
+PATH/fingerprint observations do not promise a hermetic or secret-free environment.
+
+|BP5/BP6
+|Installed archive, sanitized projection and lifecycle/report integration planned.
+|Bundle provenance stays development/CI material; no new trusted archive field,
+raw-retention rule or secret-bearing environment dump is needed.
+
+|BP7
+|Self-development cutover is candidate/later; BP6, Runtime promotion and Q5/Q6
+preparation/timing decisions precede retirement of the old path.
+|A maintained development environment may later replace per-Attempt payload
+installs. Keep current preparation working until replacement qualification;
+normative contract amendment belongs to BP7, not this test-infrastructure change.
+
+|BP8
+|Extraction of real universal invariants from historical fixtures is planned.
+|Use the coverage inventory when extracting tests; historical fixtures are not
+permanent product API requirements. No test deletion merely to get a green suite.
+
+|BP9
+|External-user non-Python qualification, fake-provider lifecycle and supported
+adapter live qualification planned.
+|Provider-free offline development tests cannot replace live qualification or
+prove new-user product usability. Product gates retain their configured owners.
+|===
+
+The second-pass review's suggestion to skip wheel builds offline is not adopted:
+controlled offline build inputs are the alternative assessed here. Its earlier
+pre-authorization probe and Commission-bound execution bindings were corrected
+by the later review/map. Its product environment direction is useful without
+importing those superseded details or the third review's supervision architecture.
+
+[[alternatives]]
+== Alternatives and viable combinations
+
+The assessment considers portability, stack-neutrality, reproducibility,
+integrity/security, coverage, speed, complexity and ongoing maintenance. No
+measurements compare new fixture designs, shared caches or other profile formats.
+
+[cols="2,3,3,3",options="header"]
+|===
+|Alternative |Benefits |Costs / limits |Disposition
+
+|A0: existing manual wheelhouse or ambient pip cache
+|Manual wheelhouse already speeds real installs. A cache is easy to share.
+Neither requires changing WFC product APIs.
+|Personal paths, no repository-owned input closure, open ranges, uncontrolled
+config and incompatible tags. A cache can be incomplete, stale or still cause
+index queries. Cache contents do not authenticate artifacts or prove offline use.
+|Keep verified wheelhouse as migration bridge; reject cache-only closure.
+Shared-cache experiment optional, not a prerequisite or a selected architecture.
+
+|A1: exact closed offline inputs, locally staged directory/archive
+|Portable recipe per explicitly qualified profile; exact versions and artifact
+hashes; fresh real builds/installations retained; offline failures are prompt.
+Works without an online service and without touching consumer requirements.
+|First bootstrap needs a connected operator or transferred approved bytes;
+per-tag wheels, transitive/runtime/build closure and seed toolchain need refresh.
+Hash checks protect against changed bytes, not malicious approved dependencies.
+|Selected proposal for WFC self-development. Start with wheels because the
+observed workload is Python; accept verified transfer as well as local download.
+
+|A2: vendor wheels, pin a container image, or operate a mirror
+|Vendoring simplifies delivery; a pinned image also captures host tools; a mirror
+helps many users. All can preserve real builds if designed accordingly.
+|Wheels bloat source/history. Images add platform/runtime machinery and still
+need digest/provenance/refresh and offline distribution. A mirror is a new service
+with availability/security cost; it does not itself pin resolution.
+|Viable at greater deployment scale or as existing CI transport. No evidence
+justifies introducing one here. A future host image may carry the same A1 bundle.
+
+|B1: retain real scenarios, share only read-only inputs; stub unrelated logic
+|Preserves high-value trust-boundary checks and independent fresh environments;
+existing read-only module fixture already avoids redundant setup. Potential later
+speed gains without product change; portable tests can use fake tools.
+|Needs assertion-by-assertion mapping and restoration discipline. Stubs cannot
+prove install/export identity or actual shell/venv behavior. Incremental gains
+after A1 are unmeasured; changing six ~9 s scenarios may save little.
+|Select inventory and existing sharing now; retain all six real scenarios at
+first. Allow bounded later stubbing only with equivalent real regression coverage.
+
+|B2: stub all installs, reuse/copy a venv, deselect installs, disable isolation
+|Fastest apparent suite; less provisioning.
+|Loses fresh installation, `.git` substrate, source pin and backend-isolation
+coverage; venv relocation is unsafe. An offline skip turns missing inputs into a
+false green result. Disabling PEP 517 isolation tests a different property.
+|Reject as required-suite solution. Fast subsets may be developer conveniences
+only, never claimed as full evidence or a replacement for required coverage.
+
+|C: implement Beta-1's provided-environment boundary and retire legacy Harness
+|Best stack neutrality for foreign projects; avoids repeated product preparation
+installs, separates WFC tooling from each payload stack, lowers per-Run cost.
+|BP1–BP7 dependencies, contract decisions and cutover are not delivered. Does not
+provision a new developer's test dependencies or exercise WFC's source builds.
+Depends on host/operator-supplied tools; recorded PATH alone is not reproducibility.
+|Necessary product direction, insufficient offline-test remedy by itself.
+Keep package/install/admission/integration tests after cutover.
+|===
+
+Combination *A1 + conservative B1 + eventual C* is simplest justified: it addresses
+the observed installation-input gap now with little new machinery and avoids
+designing a temporary product dependency service. A1 alone is viable if suite
+headroom is adequate; B1 alone cannot make a fresh checkout offline; C alone leaves
+package testing and bootstrap unresolved. A2 may later be a delivery choice, not
+a new WFC responsibility. No comparative result warrants mandatory cache reuse,
+parallel pytest workers, fixture deletion or higher timeouts.
+
+[[inputs]]
+== Proposed development-only input and tooling contract
+
+Everything in this section is proposed, not a new current configuration surface.
+Provisional filenames make the work packages reviewable; implementing work may
+adjust them with equivalent observable interfaces. Product configuration and
+evidence policy remain unchanged.
+
+=== Minimal artifacts, ownership and interfaces
+
+* `requirements/offline/cp313-linux-x86_64.txt`: reviewed exact requirement/version
+  and SHA-256 pins for all selected third-party wheel bytes, with markers resolved
+  for the profile. Public `pyproject.toml` ranges remain unchanged. The name denotes
+  the initial candidate profile, not a promise that any Linux/3.13 binary works.
+* `requirements/offline/cp313-linux-x86_64.json`: small profile/provenance record:
+  profile format version; relevant pyproject/build metadata digests for the pinned
+  Runtime N and Development N+1 inputs; lock digest; implementation/Python patch,
+  ABI/platform/libc constraints and accepted wheel tags; interpreter distribution
+  and `venv`/ensurepip seed-pip version; resolver/frontend/backend versions;
+  wheel filename/version/hash set; source locations and acquisition date;
+  qualification commands/result references. These fields describe development
+  inputs, not Commission or trusted-evidence fields. No secrets or credentials.
+* `scripts/wfc_test_inputs.py`: small standard-library bootstrap/verifier/exec
+  utility with explicit `fetch`, `verify` and `exec` operations. No daemon, plugin
+  discovery, background refresh or general package-manager abstraction.
+* Generated bundle under an explicitly supplied external `--bundle DIR`, never a
+  personal default baked into Git. Content is wheels plus the matching manifest;
+  no WFC wheel substituted for the local sources being tested. Optional transfer
+  as an archive includes its own reviewed digest; safe extraction rejects escaping
+  paths/symlinks. Direct directory provisioning is sufficient for the first slice.
+
+Proposed invocation shape, *not executable until implementation is authorized*:
+
+[source,text]
+----
+<host-python> scripts/wfc_test_inputs.py fetch --profile <repo-profile> --bundle <new-external-dir>
+<host-python> scripts/wfc_test_inputs.py verify --profile <repo-profile> --bundle <external-dir>
+<host-python> scripts/wfc_test_inputs.py exec --profile <repo-profile> --bundle <external-dir> -- <command> <args...>
+----
+
+`fetch` is an explicit connected operator operation using the pinned bootstrap
+pip, only downloading exact hashed third-party wheels into a fresh directory
+(the selected pip's `download --require-hashes --only-binary=:all: -r <lock>`
+path, with the source explicitly selected for that connected operation).
+It does not resolve new versions, amend locks, install WFC or launch providers.
+Lock generation/refresh is a separate deliberate maintainer operation, initially
+documented commands rather than an automatic resolver service. `verify` needs
+only the supplied host Python standard library to check structure/digests/profile;
+wheel-tag/metadata qualification uses pinned packaging tooling once bootstrapped.
+`exec` verifies before running literal argv (no shell interpolation), returns
+the child's outcome and supplies the controlled offline environment, including
+`WFC_TEST_INPUTS` and `WFC_TEST_PROFILE` for its selected directory/profile. It does
+not reinterpret evidence results or assume the command is authorized by a plan.
+
+For tests an explicit absolute `WFC_TEST_INPUTS` directory and
+`WFC_TEST_PROFILE=cp313-linux-x86_64` (selecting the repository profile) let
+`tests/conftest.py` call the same verifier/normalizer before real fixture setup.
+The required suite defaults to this qualified offline mode, including the
+unchanged `python -m pytest -q`; it does not require a new evidence command.
+The outer operator supplies the path at prepare *and* launch using `exec`.
+The test hook verifies and normalizes inherited subprocess inputs for tests,
+but cannot retroactively provision the outer interpreter or a preparation that
+already failed. An absent/invalid bundle is a test-setup error with instructions,
+never a skip, xfail or automatic online fallback. Fast local subsets can have a
+documented explicit mode only if their result clearly states partial coverage;
+full required-suite acceptance cannot select that mode.
+
+=== Closure includes build isolation and tool bootstrap
+
+Third-party input selection must include:
+
+. Runtime dependencies and the complete `[dev]` closure, including pytest-cov's
+  coverage dependency and interpreter-conditional packages (for example, a
+  different Python may need packages absent from the 3.13 profile).
+. `[build-system].requires`, the selected backend's transitive dependencies, and
+  every requirement returned by the relevant PEP 517 hooks for both wheel and
+  sdist paths. Installing `[dev]` alone does not request setuptools as a runtime
+  dependency. An older/new backend may request `wheel` or other packages that the
+  observed 12-wheel directory does not demonstrate are unnecessary generally.
+. The frontend/resolver toolchain itself. `venv` uses the selected interpreter's
+  ensurepip seed. With the unmodified Harness every fresh nested venv uses that
+  seed pip; pin/qualify the interpreter distribution and seed version or reject
+  the profile. Upgrading only the outer pip does not upgrade nested pip. Include
+  an exact pip wheel if the documented outer bootstrap needs it. No global
+  `PIP_REQUIRE_HASHES` is assumed for local WFC directory installs, which are not
+  hashable requirement archives.
+. Host prerequisites: Git, tar, POSIX shell, usable Python/venv/ensurepip,
+  sufficient writable scratch, and existing Linux/bubblewrap test facilities.
+  Pin/document the reference versions and validate availability. Python wheels
+  alone do not provision kernel features or host executables. The first profile
+  does not redefine the product's Python `>=3.10` compatibility promise.
+
+During a connected, separately authorized refresh, inspect project metadata and
+backend hook requests in disposable build environments with the selected tools;
+resolve exact versions once; acquire wheels from the stated upstream or existing
+approved artifact source; record hashes, URLs and licenses/provenance; review
+the resulting closure and qualification results. Backend hook execution is
+project code execution, not a read-only `plan` check. No sdist dependency may
+silently compile/download during offline use. If a needed dependency has no
+compatible wheel, stop qualification: either qualify a separately built wheel
+with its source/toolchain/provenance or choose another supported profile through
+normal maintenance. Do not synthesize a cross-platform lock by renaming files.
+
+For legacy Runtime N versus Development N+1, check both dependency/build metadata
+digests. One union bundle is sufficient only if the exact selected versions
+satisfy both; otherwise supply separately qualified sources at the corresponding
+operator boundary or defer that profile. Never hide conflicting versions in an
+unconstrained shared directory. Local test clones at the current baseline and
+real self-development across two revisions are separate qualification cases.
+
+Reproducibility here means the same approved third-party bytes, versions and
+qualified toolchain can provision the same tests from a fresh checkout. It does
+not claim bit-for-bit identical WFC wheels, deterministic timestamps or universal
+resolver output. Fresh PEP 517 builds of the selected WFC source remain real.
+
+=== Integrity, freshness and offline failure behavior
+
+The repository-reviewed lock/profile is the trust reference; a checksum file
+downloaded beside arbitrary wheels is not independent authentication. Verify exact
+filenames and hashes, reject missing/unexpected/duplicate-version artifacts,
+non-wheel inputs, symlinks/escaping paths, wrong tags, mismatched metadata and
+incompatible toolchain. Allow no URL/index entry in the offline source path.
+Use a read-only directory during runs; do not mutate it in place while in use.
+Recheck integrity after qualification to detect accidental fixture mutation.
+This is input-integrity discipline for development tooling, not a new security
+policy or a claim of isolation from malicious code running as the same user.
+
+`exec` and the required-suite hook remove inherited pip configuration variables
+then set a known environment: `PIP_CONFIG_FILE` to the platform null config,
+`PIP_NO_INDEX=1`, `PIP_FIND_LINKS` to the verified absolute local directory,
+`PIP_NO_CACHE_DIR=1`, `PIP_DISABLE_PIP_VERSION_CHECK=1`, `PIP_NO_INPUT=1`.
+Clear inherited constraints, extra sources, build-isolation overrides and options
+that could disable resolution/installation or weaken the test; do not clear
+unrelated provider authentication or alter existing PATH/temp contracts.
+Test pip's actual config precedence with the selected seed/tool versions, including
+host/user config. Fail if the selected profile cannot enforce this combination.
+No shared cache is needed for correctness; an empty cache must work.
+
+No-index is a package-index selection rule, *not* a network firewall. Direct URL
+requirements, a backend or a test can initiate other traffic. Profile validation
+rejects unapproved URL/VCS requirements and records hook outputs; qualification
+must also run with outbound access unavailable using existing host/CI facilities.
+That test must fail on an attempted remote dependency, not quietly reuse an
+ambient cached response. No new sandbox/network grant is authorized by this plan.
+If actual no-network execution is unavailable, record no-index validation only
+and leave offline qualification incomplete.
+
+[cols="3,5",options="header"]
+|===
+|Failure |Proposed observable response
+
+|Missing bundle/interpreter/venv/host executable
+|Stop before repeated installs; name prerequisite, profile and documented setup
+or transfer command. Never fetch during tests or change a provider sandbox.
+
+|Missing transitive/build-hook wheel or conflicting pins
+|Report requirement, build/runtime stage, Runtime/Development metadata digest,
+profile and source directory; preserve bounded pip output as untrusted diagnostic.
+Fail; refresh the closure under connected maintenance. No `--no-build-isolation`,
+`--no-deps`, index fallback or offline skip.
+
+|Wrong hash/tag, added wheel or changed dependency metadata
+|Reject before package execution where detectable; show expected/actual identity
+without secrets. Reprovision matching reviewed bytes or refresh/requalify.
+
+|Stale profile
+|Metadata/lock/toolchain mismatch is a hard setup failure. Age alone gives a
+maintenance reminder, not an arbitrary expiry gate. A known vulnerability,
+dependency/platform change or failed compatibility qualification triggers review.
+
+|Install/check fails or exceeds budget
+|Keep the actual command result and existing Coordinator classification. Tooling
+may emit bounded local timing/logs; it does not change trusted timeout handling,
+kill policy, authority, result reduction or past Run state.
+|===
+
+Refresh when project or backend metadata, selected Runtime, interpreter/seed pip,
+target platform, direct/transitive pins or security maintenance changes. Create
+a new staged bundle, verify/qualify it, review lock/provenance together, then
+switch the external path. Keep the old directory until in-flight attempts are
+finished. Cleanup is operator-owned and only deletes identified generated input
+directories; never Runtime, Development Git data, Evidence archives or Run state.
+No magical cache invalidation, content-addressed service or background rotation.
+
+[[bootstrap]]
+== Fresh checkout, offline operation and workaround migration
+
+Proposed setup sequence for a new developer/CI agent, independent of personal
+scratch paths:
+
+. Obtain the WFC checkout plus committed profile/lock and documented host
+  interpreter/venv/Git/tar/Linux facilities. An entirely offline machine must
+  receive those host prerequisites and verified bundle bytes by external transfer;
+  a checkout cannot generate missing third-party bytes without a source.
+. On a connected provisioning host of the qualified profile, use the pinned
+  bootstrap tools and explicit `fetch` to populate a fresh external directory;
+  alternatively copy matching already-qualified bytes. Verify against repository
+  pins after transfer, including archive digest if transport uses an archive.
+. Verify seed/toolchain/profile before creating an outer development environment.
+  Use `exec` to create/install a fresh external development venv from the live
+  checkout `[dev]`, retaining PEP 517 isolation and Git context. Verify installed
+  dependency versions against the profile. Do not require tests/pytest to be
+  installed in order to validate the bundle in the first place.
+. Use the same wrapper/environment for current Harness preparation and for
+  launch; export explicit bundle/profile selection into each process. Supply
+  scratch through existing contracts. The launch shell's PATH/temp literals
+  still control those values; the wrapper ensures pip/bundle settings exist
+  at launch so the Coordinator snapshot includes them.
+. Run the unchanged full required pytest command in that environment. The suite
+  hook validates the same inputs before nested fixtures change HOME. Local CI
+  logs name profile/lock digest and timings, not secrets. Coordinator-owned
+  checks remain separately executed and classified; a local pass is not a Run
+  acceptance substitute.
+
+The existing `PIP_NO_INDEX=1`/`PIP_FIND_LINKS` host workaround stays usable during
+migration: verify its checksums, Python/platform fit and both prepare/launch
+environments as S1 instructs. Do not rename the host SHA256SUMS into a portable
+lock (it contains absolute host paths), or assume its 12 wheels cover every new
+backend/interpreter. Re-acquire/qualify a repository-described bundle before
+switching to the wrapper. The wrapper replaces ambient configuration ownership;
+it will still deliberately set the pip variables internally for the legacy path.
+
+Retire the *manual two-variable ritual*, not offline control, only after a fresh
+account/checkout with empty HOME/cache and no personal wheelhouse can perform
+documented bootstrap/transfer, current prepare/launch and full required tests;
+real PEP 517 build/install logs and dependency checks pass; negative/failure cases
+below pass; and independent review plus separately configured Coordinator evidence
+are complete. Keep fallback instructions until this is demonstrated. BP7 later
+retires legacy per-Attempt installs only under its own cutover criteria; it does
+not retire source-build/install regression coverage or the offline input lifecycle.
+
+[[coverage]]
+== Coverage retained, experiments and qualification matrix
+
+This is the initial mapping; implementing work must record the complete collected
+node IDs, skips and assertions at its actual baseline. Counts from historical
+diagnostics (922 or 930) are not frozen expected counts for a later source tree.
+Markers/subsets are navigation only; `task-check` must still exercise the required
+real scenarios. No new optional-install marker is a reason to omit them.
+
+[cols="3,3,4",options="header"]
+|===
+|Scenario / current test area |Initial treatment |Property and independent review check
+
+|`test_wfc_op.py::prepared`, prepare-positive and no-Run tests
+|Real fresh two-venv preparation; retain module read-only reuse.
+|Pinned Runtime export is actually built/installed, live Development retains Git
+context, launch artifacts exist, STATE remains absent, preflight is provider-free.
+Check source/import origin outside checkout, no editable/system-site shortcut.
+
+|`completed_run` and launch/status tests
+|Real separate preparation and fake-provider completion; own Development clone.
+|Pinned launch reaches actual engine/admission, produces real commit/state;
+status projects persisted facts read-only. Shared runtime bytes are inputs,
+not a shared writable dev-env across mutating scenarios.
+
+|`test_canonical_preflight_refusal_propagates_and_proves_pinned_runtime_code`
+|Keep real sentinel Runtime installation and refusal.
+|Distinctive sentinel proves pinned Runtime's own `_preflight`, not source-tree
+imports, a stub seam or Development implementation.
+
+|`test_prepare_final_revalidation_refuses_on_drift_during_preparation`
+|Keep real pipeline initially.
+|Pin drift *during* preparation is refused at final revalidation. Later stubbing
+requires mapping this assertion and retaining equivalent real full-pipeline drift
+coverage; docstring intent is not discarded for speed.
+
+|Frozen-PATH and shell-significant-provider-path tests
+|Keep both real currently implemented scenarios initially.
+|Launch uses prepared PATH despite new ambient PATH; literal quoting cannot
+execute path metacharacters. A stub cannot prove actual interpreter/shebang and
+shell interaction. Existing short safe HOME/venv paths remain deliberate.
+
+|Early dirty/push-enabled/stale-OPS/STATE/missing-input refusals;
+scratch, preflight-env and artifact corruption tests
+|Retain early refusals and existing narrow stubs. Pure construction tests may
+share helpers but never bypass production admission for integration claims.
+|No mutation of real repositories, no provider invocation during preparation,
+scratch/path restrictions, record digests and final revalidation retained.
+Restore any shared-fixture perturbation; failed cleanup must fail the test.
+
+|Package guards and new offline distribution scenario
+|Keep current import/resource guards; add real sdist/wheel isolated build and
+fresh wheel install in independent package tests.
+|Current guards do not themselves build a wheel; pytest's source pythonpath can
+mask missing installed resources. Clear source overrides, run from unrelated cwd
+with isolated interpreter import, check CLI/help and exact packaged A3 identity.
+BP1 later adds its selected identity/resources/dispatch assertions.
+
+|`test_a2_evidence_commands.py`, operator/admission/integration suites
+|Keep real literal command execution, environment snapshot/resolution, outcome
+taxonomy, failure diagnostics and post-evidence Git observation.
+|An offline-source wrapper is not a replacement evidence runner. Retain authority
+refusals, tampering checks, cwd/argv and snapshot immutability assertions.
+
+|Real archive wrapper, bubblewrap and live provider tests
+|Preserve existing optional sibling-wrapper condition and live-provider opt-in;
+enumerate their skip reasons. Keep Linux/bubblewrap integration qualification.
+|Required profile needs its host facilities; no new availability skip turns
+required boundary tests green. Provider-free default must not invoke real APIs.
+S3's BP5/BP9 own installed archive and supported-provider qualification.
+
+|Neutral non-Python consumer (below)
+|Add raw-engine/evidence fixture where possible now; attach compiler/lifecycle
+parts to BP2/BP3/BP4 implementation, not fake claims of delivery.
+|No consumer Python manifest or installation. Real admission and literal shell
+check use the provided execution environment, with fake provider only.
+|===
+
+=== Concrete non-Python consumer scenario
+
+Use a disposable Git content repository containing `story.txt`, `checks/check.sh`
+and governing inputs, with *no* `pyproject.toml`, requirements file or Python
+source. The operator provides installed WFC separately, POSIX shell and Git.
+Policy evidence is `argv: [sh, checks/check.sh]`; the script checks a text
+invariant using shell builtins and exits deterministically. WFC's own Python may
+be in its dedicated installation environment, but is never demanded from the
+consumer's tree or used as its evidence command.
+
+Provider-free current-seam qualification: hand-authored admitted engine inputs
+select that command; resolve it in the provided environment and execute through
+the production evidence runner in the neutral repository cwd. A fake provider
+can exercise a bounded change/admission/commit path. Do not call today's
+self-development Harness `prepare` on this repository: its unconditional
+`pip install <Development>[dev]` is exactly the boundary being replaced.
+
+For planned BP2/BP3/BP4: compile the same consumer through product configuration,
+ensure `plan` leaves HEAD/index/worktree unchanged and never executes a check
+that would create a marker, then after authorization run the baseline probe and
+fake-provider lifecycle. Replace pip/venv/build tools visible on the consumer
+command PATH with failing sentinels (without breaking WFC's own installed
+interpreter); none may be invoked for payload preparation. A missing `sh` or a
+failing/mutating check produces an actionable honest refusal/probe failure, not
+an attempt to install Python or select a registry. Repeat later with S4's Go
+example if useful, but do not require a Go toolchain for this minimal neutrality
+test. This does not promise the product compiler exists today.
+
+=== Required experiments and negative cases
+
+These have *not* been performed in this task. They are implementation acceptance,
+not claimed results:
+
+. Qualify static and dynamic backend closure for local install, sdist creation,
+  wheel-from-sdist and wheel installation, including both Runtime N/Development
+  N+1 metadata where different. Show real isolated build-environment creation
+  and exact selected dependency versions; disallow no-isolation/no-deps shortcuts.
+. Run from a new external bundle location and fresh account/HOME/cache; supply
+  hostile ambient index/find-links/constraints/user pip config and verify the
+  wrapper normalizes them. Empty caches and disabled indexes must still pass.
+  Repeat the full suite with outbound networking unavailable through an existing
+  permitted host/CI facility. Logs alone saying “Ignoring indexes” prove only
+  no-index selection; successful offline qualification needs actual denial.
+. Remove setuptools, a backend-hook dependency and one transitive dev wheel in
+  separate disposable bundle copies; corrupt a hash, add another version or
+  incompatible wheel; change pyproject/lock/seed-tool identity. Each fails early
+  or at the named isolated-build stage with an actionable diagnostic. No fallback,
+  unexpected remote request, skip or accepted partial suite.
+. Delete a packaged resource or make sentinel Runtime differ from Development;
+  ensure installed-package checks detect it. Assert canonical real-install node
+  IDs are selected and ran successfully, and collection/skip deltas are reviewed.
+  A deliberately disabled real-install scenario must make the coverage guard fail.
+. Verify prepare and launch in separate shells, including prepare-only pip values,
+  launch-only values, restricted agent visibility and missing bundle in the
+  Coordinator environment. The documented wrapper must supply both boundaries.
+  Local inability to see bytes is reported separately from trusted-run outcomes.
+. Record total/setup/call/teardown durations, collected/pass/skip/deselected counts,
+  host/toolchain/bundle identities and cold versus repeated runs. First obtain a
+  current baseline under the verified mitigation; do not rerun unrestricted index
+  failure merely to reproduce a slow timeout. Aim for three full offline runs
+  each below 450 s on the documented reference host, leaving at least half of
+  the existing 900 s ceiling. This is a proposed engineering acceptance target,
+  not a new release/evidence policy. Report slower hosts and unqualified profiles
+  honestly; investigate variance before increasing limits or deleting coverage.
+
+The new measurement must state whether package tests fit in the same suite with
+headroom. If not, first inspect duplication/fixture cost; any division of required
+evidence coverage needs separate policy authority and cannot silently change
+`task-check`. Duration output/quiet-option cleanup can be proposed narrowly if it
+improves reporting; no evidence timeout or trusted-observation schema change is
+needed to measure local test durations.
+
+[[packages]]
+== Bounded implementation work packages (proposed)
+
+These are small cohesive packages for later authorization, not additional
+Commissions created by this plan. Paths are provisional scope for that future
+work, not mutation permission in this Run. Each implementing scope must include
+the applicable documentation and tests before work begins.
+
+[cols="1,3,4,4",options="header"]
+|===
+|Package / owner |Dependencies and provisional files |Deliverable and observable acceptance |Independent review focus
+
+|P1: inventory and qualification profile — WFC test maintainer
+|Maintainer selects initial profile and source/transport. Inspect
+`tests/unit/test_wfc_op.py`, package/A2/integration tests and `pyproject.toml`;
+write profile/closure instructions under `requirements/offline/` and test guide.
+|Complete node/assertion/skip map, pinned candidate closure including dynamic
+build requirements and seed tools, host prerequisite list, current offline timing
+baseline. Every assumption or unperformed qualification is labelled. No test
+weakened or public dependency range changed.
+|Trace actual builds, conditional/transitive requirements and N/N+1 identity.
+Challenge host checksum provenance and claimed tag support; reject omissions
+or Python requirements applied to consumer repositories.
+
+|P2: deterministic provisioning and required-suite hookup — development tooling maintainer
+|P1 and reviewed input pins. `requirements/offline/*`,
+`scripts/wfc_test_inputs.py`, focused new tooling tests, `tests/conftest.py`,
+developer guide and current self-development preparation guidance; optional
+small Makefile convenience only under its future explicit scope.
+|Explicit fetch/verify/exec, reproducible fresh-account bootstrap or transfer,
+controlled pip environment at outer prepare and launch and nested fixtures,
+negative cases above. Full unchanged pytest command retains all real scenarios,
+fails on missing/stale/corrupt inputs, works without personal paths/caches.
+Does not change `scripts/wfc_op.py` or production Coordinator/adapters.
+|Independently try hostile config, missing transitive/build wheels, unsupported
+tag/toolchain and separate-shell launch. Verify no implicit network fallback,
+install skip, hash-check bypass or expanded provider/security authority.
+
+|P3: installation coverage and headroom — package/test maintainer
+|P2 qualified inputs. `tests/architecture/test_package_boundaries.py` or a new
+packaging integration file, `tests/unit/test_wfc_op.py` only where justified,
+provider-free neutral fixture/tests, developer test documentation.
+|Fresh isolated sdist/wheel builds and clean installed-package probes outside
+source tree; required real-node guard; neutral raw-evidence/admission scenario;
+three full offline timing/count reports and negative/mutation cases. Retain six
+real prepare scenarios initially. Only measured later duplication with mapped
+assertions justifies a bounded stub/shared-fixture change.
+|Falsify source-import leakage, missing resources, fake isolation, suite
+deselection and shared mutable venvs. Distinguish raw-engine neutrality from
+planned product compiler/lifecycle acceptance. Confirm 450 s reference target
+including added coverage, or document unresolved acceptance before retirement.
+
+|P4: product-boundary integration handoff — BP1/BP2/BP3/BP4/BP7/BP8 owners
+|Independent existing BP sequencing and Maintainer Q5/Q6 decisions; installed
+product modules/tests when authorized, affected operator manual sections only.
+P1–P3 inventory/fixture is input, not a dependency forcing new product features.
+|BP1 real installed resource/identity tests; BP2 neutral compilation; BP3 no-command
+plan; BP4 authorized probe in a provided environment; BP7 cutover qualification;
+BP8 test extraction preserves required package/admission invariants. No payload
+pip invocation. Maintain old path until selected cutover criteria are met.
+|Check S3/S4 standing and contract amendment authority. No invented preparation
+service, mandatory consumer Python tooling, automatic cutover, supervision
+foundation or claim these planned commands are already implemented.
+|===
+
+P1–P3 can improve self-development reliability before a large Beta-1 test batch;
+P4 follows the existing product map rather than blocking on speculative tooling.
+P3 can begin mapping package assertions alongside P2, but its offline acceptance
+depends on qualified inputs. Prefer authorizing coherent packages over one task
+per marker/helper. This plan sets no number of Hops or new gate.
+
+Release/productization ordering: first adopt/qualify development inputs and keep
+the workaround while acceptance is incomplete; then remove the manual ritual
+after P2/P3 review/evidence; carry the tests into BP1 and BP8; retain legacy
+Harness until BP7's selected product replacement and Runtime promotion. Beta-1
+release eligibility remains S3 and its Maintainer decisions, including BP9 and
+unresolved gates. Development speed improvement is not a product release verdict.
+
+[[decisions]]
+== Decisions, non-goals and review handoff
+
+Maintainer decisions before implementation:
+
+* Adopt A1 plus conservative B1, or choose a documented alternative. Confirm the
+  first reference interpreter/distribution/seed-pip and Linux architecture/libc
+  profile; the observed Python 3.13/Linux bundle is evidence for a candidate,
+  not automatic product support narrowing. Add other supported profiles explicitly.
+* Choose an existing source and delivery location/transfer route for bundle bytes.
+  First implementation needs no new hosting service; offline users must have a
+  documented way to obtain the bytes independently of a personal directory.
+* Approve the future P1–P3 scopes, missing-input failure default and reference-host
+  performance target. Decide P4 timing through existing BP owners; Q5/Q6 and
+  Runtime promotion remain separate. This plan does not change active backlog.
+
+Addressed failure class: unavailable/uncontrolled third-party inputs for fresh
+WFC development and nested PEP 517 installs, repeated index/download latency in
+the observed host diagnostics, and brittle dependence on an ambient shell/cache.
+Coverage mapping also prevents speed work from silently dropping installation
+and admission checks. Those are proposed outcomes until implemented and qualified.
+
+Out of scope: diagnosing the original timeouts; process supervision/group kill;
+new timeout-output retention or trusted environment fields; changing evidence
+policy, security/governance or generic preparation now; dependency upgrades as
+part of this planning task; universal consumer provisioning; new services,
+parallel-test infrastructure, network grants, Runtime changes/promotion or past
+Run/evidence edits. S2's TI-3 and S9 may proceed independently if separately
+authorized; they are not prerequisites manufactured by this proposal.
+
+Independent broad review should trace S6–S8 afresh, challenge the selected closure
+and bootstrap rather than accept the host wheelhouse as sufficient, and test the
+argument that WFC Python tooling cannot leak into foreign consumer requirements.
+Material blockers include missing dynamic/transitive inputs, a fresh checkout
+needing undocumented personal state, lost real isolation/admission coverage,
+unproven offline claims, wrong current/planned boundaries, asserted C3 causality,
+or acceptance that cannot be observed. Preferences among equivalent filenames or
+small tooling layouts are not architecture defects. Normal bounded correction
+and configured focused/renewed review follow later; this worker creates no review
+artifact or review verdict and claims no independent acceptance.
+
+Before retiring the workaround, the implementing handoff must include reviewed
+pins/provenance, fresh-bootstrap and actual-offline results, the real-build/node
+coverage map, failure-test results, timing/headroom reports, independent review
+without blocking concerns and the separately configured Coordinator task-check.
+No local exploratory result can supply that last trusted observation. Nothing in
+this plan retroactively changes an old Run or authorizes its continuation.
