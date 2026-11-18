@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 
@@ -26,6 +27,7 @@ ROOT_TEXT_FILES = {"LICENSE", "Makefile", "README.md"}
 # artifact inside the repository -- import converts into a temporary directory
 # outside it -- so no other exclusion is needed.
 EXCLUDED_RELATIVE_FILES = {("project_memory.ods",)}
+EXCLUDED_RELATIVE_DIRECTORIES = {("tmp",)}
 GROUPS = {
     "wfc_docs_and_governance.txt": ("docs", "governance"),
     "wfc_project_memory.txt": ("project_memory",),
@@ -60,22 +62,30 @@ def _is_excluded_path(relative: Path) -> bool:
 
 def _files(repository: Path, output: Path) -> list[Path]:
     files: list[Path] = []
-    for path in sorted(repository.rglob("*")):
-        if not path.is_file() or output in path.parents or not _is_snapshot_file(path):
-            continue
-        relative = path.relative_to(repository)
-        if any(
-            part in EXCLUDED_DIRECTORIES or part.endswith(".egg-info") for part in relative.parts
-        ):
-            continue
-        if _is_excluded_path(relative):
-            continue
-        try:
-            path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        files.append(path)
-    return files
+    for root, directories, filenames in os.walk(repository):
+        directory = Path(root)
+        directories[:] = [
+            name
+            for name in directories
+            if name not in EXCLUDED_DIRECTORIES
+            and not name.endswith(".egg-info")
+            and (directory / name).relative_to(repository).parts
+            not in EXCLUDED_RELATIVE_DIRECTORIES
+            and directory / name != output
+        ]
+        for name in filenames:
+            path = directory / name
+            if not path.is_file() or not _is_snapshot_file(path):
+                continue
+            relative = path.relative_to(repository)
+            if _is_excluded_path(relative):
+                continue
+            try:
+                path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            files.append(path)
+    return sorted(files)
 
 
 def _group_name(relative: Path) -> str:
@@ -96,6 +106,7 @@ def _tree(repository: Path, output: Path) -> str:
                 or path.name in EXCLUDED_DIRECTORIES
                 or path.name.endswith(".egg-info")
                 or _is_excluded_path(path.relative_to(repository))
+                or path.relative_to(repository).parts in EXCLUDED_RELATIVE_DIRECTORIES
             ):
                 continue
             entries.append(path)
@@ -115,14 +126,14 @@ def _render_snapshot(title: str, sections: list[tuple[str, str]]) -> str:
     lines = [title, "=" * len(title), "", "Table of Contents", "-" * 17, ""]
     lines.extend(toc_placeholders)
     lines.append("")
+    targets = []
     for label, content in sections:
+        targets.append(len(lines) + 1)
         lines.extend((f"==== File: {label} ====", ""))
         lines.extend(content.rstrip().splitlines())
         lines.append("")
 
-    for index, (label, _) in enumerate(sections):
-        heading = f"==== File: {label} ===="
-        target = next(number for number, line in enumerate(lines, start=1) if line == heading)
+    for index, ((label, _), target) in enumerate(zip(sections, targets)):
         lines[6 + index] = f"{target:06d} | {label}"
     numbered = (f"{number:06d} | {line}" for number, line in enumerate(lines, start=1))
     return "\n".join(numbered) + "\n"

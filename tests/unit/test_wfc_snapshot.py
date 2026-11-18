@@ -35,6 +35,10 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
     (repository / "docs" / "guide.md").write_text("# Guide\n", encoding="utf-8")
     (repository / "governance" / "policy.yaml").write_text("version: 1\n", encoding="utf-8")
     (repository / "README.md").write_text("# Example\n", encoding="utf-8")
+    (repository / "tmp").mkdir()
+    (repository / "tmp" / "scratch.txt").write_text("scratch must not leak\n", encoding="utf-8")
+    (repository / "docs" / "tmp").mkdir()
+    (repository / "docs" / "tmp" / "retained.txt").write_text("real document\n", encoding="utf-8")
     (repository / ".git").mkdir()
     (repository / ".git" / "config").write_text("ignored\n", encoding="utf-8")
     output = tmp_path / "snapshots"
@@ -81,6 +85,11 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
     assert "src/workflow_coordinator/resources/_meta.yaml" in sources
     assert "packaged: true" in sources
     assert "docs/guide.md" in (output / "wfc_docs_and_governance.txt").read_text(encoding="utf-8")
+    docs = (output / "wfc_docs_and_governance.txt").read_text(encoding="utf-8")
+    assert "docs/tmp/retained.txt" in docs
+    assert "scratch must not leak" not in (output / "wfc_repo_infrastructure.txt").read_text(
+        encoding="utf-8"
+    )
     memory = (output / "wfc_project_memory.txt").read_text(encoding="utf-8")
     assert "project_memory/README.adoc" in memory
     assert "project_memory/canonical/concerns.json" in memory
@@ -90,6 +99,29 @@ def test_snapshot_tool_writes_grouped_line_numbered_files_with_toc_and_tree(
     assert ".git" not in tree
     assert "canonical/" in tree
     assert "project_memory.ods" not in tree
+    assert "scratch.txt" not in tree
+
+
+def test_toc_points_to_real_heading_when_content_contains_a_later_heading(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    (repository / "docs").mkdir(parents=True)
+    (repository / "docs" / "a.txt").write_text("==== File: docs/b.txt ====\n", encoding="utf-8")
+    (repository / "docs" / "b.txt").write_text("second file\n", encoding="utf-8")
+    output = tmp_path / "snapshots"
+    script = Path(__file__).resolve().parents[2] / "scripts" / "wfc_snapshot.py"
+
+    subprocess.run(
+        [sys.executable, str(script), "--repository", str(repository), "--output", str(output)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    lines = (output / "wfc_docs_and_governance.txt").read_text(encoding="utf-8").splitlines()
+    toc = next(line for line in lines if line.endswith(" | docs/b.txt"))
+    target = int(toc.split(" | ")[1])
+    assert lines[target - 1].endswith("==== File: docs/b.txt ====")
+    assert lines[target + 1].endswith("second file")
 
 
 def test_snapshot_tool_defaults_output_to_build_snapshots(tmp_path: Path) -> None:
