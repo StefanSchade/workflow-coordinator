@@ -1,0 +1,146 @@
+= BP2a admission extraction: independent audit broad review
+
+Work item:: `WI-WFC-BETA1-BP2-ADMISSION-AUDIT-001`
+Audited candidate:: `c7b84e29e53a8c45c3d4beb5b5a6b4795e044465`
+Comparison base:: `d18cc2247824baee0d3cc36dfffaf8ea32922a74`
+Audit head:: `1aa3af1007c93ad3f0b02c182defc7da2a3818c3`
+Disposition:: Accept; no blocking findings.
+
+== What was checked
+
+This audit assessed the candidate against the original Commission contract in
+`governance/commissions/wfc-beta1-bp2-admission-extraction-001/` (`task.md`,
+`work-item.yaml`, `baseline-test-operator.txt`) and against the current source,
+before consulting the earlier review. The earlier Terra review was read only
+afterwards, for comparison; none of its claims were treated as proof.
+
+Diff surface: `git diff --stat d18cc22..c7b84e2` reports exactly two leaves,
+`src/workflow_coordinator/operator.py` (+41/-4) and the new
+`tests/unit/test_operator_admit_parsed.py` (+72). Both are listed in the
+Commission `work-item.yaml` scope. Nothing touches the renderer, providers,
+reducer, runtime, Workflow Program, archive, governance, completion guards or
+Finding authority, and no BP2b implementation is present.
+
+== Behavior neutrality of the extraction
+
+The unified diff removes no line from `_preflight` before the strict-parser
+block: the first hunk is additive and ends the function with a delegating
+`return admit_parsed(...)`. Everything from the `profile_ref` comparison
+onward is relocated verbatim.
+
+That verbatim claim was verified mechanically rather than by reading alone.
+Normalizing only the three expected parameter substitutions
+(`args.expected_head` -> `expected_head`, `args.durable_artifact` ->
+`durable_artifact`, `args.timeout_seconds` -> `timeout_seconds`), the
+pre-change `_preflight` tail and the new `admit_parsed` body after its
+docstring compare byte-identical. Consequently check order, every
+`OperatorPreflightError` message, each `from error` cause chain, the scope and
+policy-ceiling checks, the autonomous-hop ceiling, legacy versus mapped
+durable-artifact branches, pinned component reads, `_admit_a1`,
+`_admit_evidence_disposition`, `snapshot_environment`,
+`prepare_evidence_commands`, the positive-timeout check and the 17-element
+return tuple are preserved by construction, not by assertion.
+
+A separate search confirmed no residual `args` reference survives inside
+`admit_parsed` (operator.py lines 355-525); the only `args.` reads remaining in
+the preflight path are in `_preflight` itself and in `main`, unchanged. The
+`_preflight` signature is byte-identical, so the public invocation and all
+existing callers -- `main` and `commissioning._preflight` -- are untouched, and
+the exact-signature sentinel in `tests/unit/test_wfc_op.py:162` still matches.
+
+== Parsed-input provenance and the trust boundary
+
+The docstring of `admit_parsed` is the contract's load-bearing artifact, and it
+is truthful about what the seam does not do. It requires the caller to supply
+objects from the corresponding strict YAML parsers, matching governing texts,
+normalized input paths under the named five keys, and an execution
+configuration parsed from the binding source; it then states plainly that the
+function verifies neither those relationships nor that the texts were read from
+those paths at the revision. It also assigns repository identity, the full
+clean expected HEAD with resolved submodules, the nonexistent resolved state
+root, binding-source provenance and operating-contract validity to the caller,
+and closes by denying that successful admission attests to any of them. The one
+provenance operation the seam still performs itself -- pinned reads of selected
+components at `expected_head` -- is explicitly called out.
+
+Cross-checking the docstring against the checks `_preflight` performs before
+the seam found no caller obligation omitted and no claim overstated. The seam
+therefore admits no unsupported trust claim, which is the contract's stated
+requirement.
+
+A future BP2b caller can honor these obligations: every obligation maps to an
+existing in-module helper or import -- `repository_identity`,
+`observe_repository`, `_relative_path`, `_pinned_text`,
+`load_agent_operating_contract`, and the five `serialization` parsers -- so the
+precondition set is discharged with the same code `_preflight` already uses,
+not with a reimplementation. Path normalization that matters inside the seam
+stays inside it: `work_item.profile_ref`, each `--durable-artifact` value and
+each manifest component path are still passed through `_relative_path` within
+`admit_parsed`.
+
+Two residual, non-blocking observations are recorded without a Finding, since
+both are documented caller preconditions rather than demonstrable defects, and
+the audit task directs that a defended precondition is not itself a defect.
+First, `input_paths` is consumed as already normalized; a caller that violated
+that stated obligation could seed the governing map with an unnormalized key.
+Nothing in-tree does so, and `_governing_inputs_unchanged` re-reads every
+governing path through `_pinned_text` at `expected_head` between Hops, so a
+text/path mismatch introduced that way fails closed at the next Hop rather than
+being admitted silently. Second, a `texts` key absent from `input_paths` would
+surface as `KeyError` rather than `OperatorPreflightError`; that is a caller
+contract violation, not a weakening of admission, and `_preflight` builds both
+mappings from one tuple so the condition is unreachable today.
+
+== Regression and focused-test evidence
+
+The committed baseline records exit 0 and 106 passing node IDs at Development
+`13ab1a5d79358c9ada1b0b4bc6b1c5407e8f00be`. This audit independently re-ran the
+same selection with the offline bundle, `python3 scripts/wfc_test_inputs.py
+exec --profile cp313-linux-x86_64 --bundle build/wfc/offline-p2-staged --
+.venv/bin/python -m pytest --wfc-partial tests/unit/test_operator.py -q -rA`,
+and compared outcomes by node ID rather than by count: 106 `PASSED` lines, zero
+failures, zero skips, and a sorted node-ID diff against the committed baseline
+list with zero differences. Adding `tests/unit/test_operator_admit_parsed.py`
+to the selection, all three direct-entry tests pass as well. No pre-existing
+operator test or assertion is modified or deselected anywhere in the diff.
+
+The three focused tests were inspected, not merely counted.
+`test_direct_parsed_admission_matches_preflight` asserts full tuple equality
+between the direct seam and `_preflight` on the same inputs, spot-checks a
+component body and its governing digest, and asserts the state root is still
+absent -- which also demonstrates the seam creates no state-root side effect.
+`test_profile_reference_rejection_precedes_role_validation` pins the ordering
+of the `profile_ref` rejection ahead of persona-role validation by reusing the
+same mutated work item in both directions.
+`test_evidence_preparation_failure_precedes_timeout` sets `timeout_seconds = 0`
+and still observes the evidence-preparation failure, asserting the
+`ValueError` cause, which pins both the ordering and the error classification
+that the extraction had to preserve. These three establish the properties the
+existing suite exercises only indirectly through `_preflight`. The module
+carries the same `FTR-AGENT-WORKFLOW-COORDINATOR-P5` marker as its sibling unit
+modules and imports only the `args`, `git` and `repository` fixtures from
+`tests/unit/test_operator.py`, so it adds no collection of existing cases.
+
+== Comparison with the earlier review
+
+The earlier broad review at
+`docs/warm_storage/concepts/wfc_beta1_bp2_admission_extraction_001_broad_review.adoc`
+reaches the same disposition, and this audit's independent conclusions agree
+with it. Reused previously accepted evidence is limited to the committed
+operator baseline node-ID list, which was used only as the comparison target
+for a run executed in this audit; the earlier review's own logs and digests
+were not relied on. This audit adds the normalized byte-identity proof of the
+relocated body, the absence of residual `args` references in the seam, the
+`_preflight` signature sentinel check, scope membership of both leaves against
+the Commission work item, and the inter-Hop fail-closed analysis of the
+documented `input_paths` precondition.
+
+== Limitations
+
+The test runs above are agent-local exploratory evidence, not
+Coordinator-trusted evidence. The Coordinator `task-check` is executed
+separately and its outcome is not projected here. One compound shell command
+during this audit was refused by the session permission surface; the same facts
+were re-established with separate permitted commands, so nothing was left
+unverified on that account. The historical Run and its acceptance were read
+only and remain unchanged.
