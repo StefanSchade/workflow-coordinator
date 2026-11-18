@@ -28,7 +28,7 @@ from pathlib import Path
 import yaml
 
 from ..commissioning import CommissionError, CompiledCommission, compile_commission
-from ..git_facts import GitPreflightError, observe_repository, repository_identity
+from ..git_facts import GitPreflightError, repository_head, repository_identity
 from .config import ConsumerConfig, ExecutionEnvelope, consumer_config_from_yaml, resolve_execution
 from .request import ConsumerRequest, consumer_request_from_yaml
 
@@ -291,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         task = task_document_from_markdown(task_text)
         config = consumer_config_from_yaml(config_text)
-        guidance_commit = args.guidance_commit or observe_repository(repository).head
+        guidance_commit = args.guidance_commit or repository_head(repository)
         max_autonomous_hops = args.max_autonomous_hops if args.max_autonomous_hops is not None else config.max_autonomous_hops
         request = consumer_request_from_plan_inputs(
             task=task, commission_id=args.commission_id, work_item_id=args.work_item_id,

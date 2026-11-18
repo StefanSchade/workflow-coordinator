@@ -284,6 +284,57 @@ def test_refuses_configured_clean_filter_before_staging(repository: Path):
     assert not (repository / "filter-executed").exists()
 
 
+def test_refuses_symlink_swap_between_validation_and_staging(repository: Path, monkeypatch):
+    """R2 regression: a path validated as a regular file, then swapped for a
+    symlink in the narrow window before ``git add`` actually stages it, must
+    never reach a published commit.
+
+    The swap is injected deterministically at the exact boundary the review
+    reproduced: inside the ``git add`` call itself, after the pre-staging
+    ``lstat`` check already passed.
+    """
+
+    import workflow_coordinator.git_facts as git_facts
+
+    base = git(repository, "rev-parse", "HEAD")
+    original = git_facts._trusted_git
+    outside = repository.parent / "outside-swap-target"
+    outside.write_text("attacker-controlled content\n", encoding="utf-8")
+    (repository / "src" / "new.py").write_text("legitimate content\n", encoding="utf-8")
+
+    def swap_then_add(repo: Path, *args: str, **kwargs: object) -> str:
+        if args[:1] == ("add",):
+            (repository / "src" / "new.py").unlink()
+            (repository / "src" / "new.py").symlink_to(outside)
+        return original(repo, *args, **kwargs)
+
+    monkeypatch.setattr(git_facts, "_trusted_git", swap_then_add)
+
+    with pytest.raises(TrustedCommitError, match="no longer a regular file"):
+        bounded_path_commit(
+            repository, expected_repository=repository, base_head=base, allowed_paths=("src",),
+            intent=NewPathCommitIntent(("src/new.py",), "feat(workflow): WI-1 H001 add new file"),
+            work_item_id="WI-1", hop_id="H001",
+        )
+
+    # No unacceptable commit was published: HEAD is untouched and the
+    # attacker-controlled content never entered repository history.
+    assert git(repository, "rev-parse", "HEAD") == base
+    log_subjects = subprocess.run(
+        ("git", "-C", str(repository), "log", "--all", "--format=%s"), text=True, capture_output=True, check=True,
+    ).stdout
+    assert "add new file" not in log_subjects
+    # The safe residue left behind (the swap staged in the index, never
+    # committed) is reported honestly rather than silently reset.
+    assert git(repository, "diff", "--cached", "--name-only") == "src/new.py"
+    staged_mode = subprocess.run(
+        ("git", "-C", str(repository), "ls-files", "--stage", "--", "src/new.py"),
+        text=True, capture_output=True, check=True,
+    ).stdout
+    assert staged_mode.startswith("120000 ")
+    assert Path(repository / "src" / "new.py").is_symlink()
+
+
 def test_deterministic_staging_failure_reports_truthfully_without_reset(repository: Path, monkeypatch):
     import workflow_coordinator.git_facts as git_facts
 

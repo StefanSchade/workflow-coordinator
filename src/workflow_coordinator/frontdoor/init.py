@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -20,6 +20,28 @@ from .config import consumer_config_from_yaml
 
 DEFAULT_CONFIG_PATH = ".wfc/config.yaml"
 DEFAULT_GOVERNANCE_DIR = ".wfc/governance"
+
+
+def _validated_config_destination(repository: Path, config_path: str) -> Path:
+    """Resolve ``--config-path`` strictly inside ``repository``, before any mutation.
+
+    Refuses an absolute path, a ``..``-escaping path, and a symlink escape (an
+    existing parent component that resolves outside the repository) up front --
+    none of those may ever reach ``mkdir``/``write_text`` below.
+    """
+
+    if not config_path or config_path != config_path.strip() or "\\" in config_path:
+        raise CommissionError("--config-path must be a normalized repository-relative path")
+    candidate = PurePosixPath(config_path)
+    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
+        raise CommissionError("--config-path must be a repository-relative path that does not escape the repository")
+    destination = repository / candidate
+    try:
+        resolved = destination.resolve()
+        resolved.relative_to(repository)
+    except ValueError as error:
+        raise CommissionError("--config-path must resolve inside the repository") from error
+    return destination
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -57,8 +79,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wfc init: {error}", file=sys.stderr)
         return 2
 
-    config_path = Path(args.config_path)
-    destination = config_path if config_path.is_absolute() else repository / config_path
+    try:
+        destination = _validated_config_destination(repository, args.config_path)
+    except CommissionError as error:
+        print(f"wfc init: {error}", file=sys.stderr)
+        return 2
     if destination.exists():
         print(f"wfc init: refusing to overwrite existing Consumer Config: {destination}", file=sys.stderr)
         return 2

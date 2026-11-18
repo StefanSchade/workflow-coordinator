@@ -393,6 +393,18 @@ def repository_identity(repository: Path) -> Path:
     return _repository_identity(repository, git_command=_readonly_git)
 
 
+def repository_head(repository: Path) -> str:
+    """Return HEAD using only ref plumbing, never a working-tree status read.
+
+    Unlike ``observe_repository``, this runs no ``git status`` (or any other
+    command that can consult a repository-configured ``core.fsmonitor``
+    helper) -- it is nothing but ``git rev-parse HEAD``.
+    """
+
+    identity = _repository_identity(repository, git_command=_readonly_git)
+    return _readonly_git(identity, "rev-parse", "HEAD")
+
+
 def _contains_identity_token(subject: str, identity: str) -> bool:
     return re.search(rf"(?<![A-Za-z0-9_-]){re.escape(identity)}(?![A-Za-z0-9_-])", subject) is not None
 
@@ -457,6 +469,30 @@ def _staged_paths(repository: Path, *, git_command: GitCommand = _git) -> tuple[
             git_command(repository, "diff", "--no-ext-diff", "--cached", "--name-only").splitlines(),
         )
     )
+
+
+_REGULAR_STAGE_MODES = {"100644", "100755"}
+
+
+def _staged_non_regular_paths(
+    repository: Path, paths: tuple[str, ...], *, git_command: GitCommand
+) -> tuple[str, ...]:
+    """Return staged paths whose index entry mode is not an ordinary file.
+
+    Guards the narrow window between the pre-staging ``lstat`` validation and
+    the commit itself: a path swapped for a symlink (or anything else) right
+    before ``git add`` staged it must never reach the committed tree, even
+    though ``git add`` already staged it.
+    """
+
+    output = git_command(repository, "ls-files", "--stage", "--", *paths)
+    offending: list[str] = []
+    for line in filter(None, output.splitlines()):
+        mode, remainder = line.split(" ", 1)
+        _, path = remainder.split("\t", 1)
+        if mode not in _REGULAR_STAGE_MODES:
+            offending.append(path)
+    return tuple(offending)
 
 
 def _observe_repository(repository: Path, *, git_command: GitCommand) -> GitFacts:
@@ -846,6 +882,11 @@ def bounded_path_commit(
     staged = _staged_paths(identity, git_command=_trusted_git)
     if set(staged) != set(paths):
         raise TrustedCommitError("staged paths differ from commit intent")
+    if swapped := _staged_non_regular_paths(identity, paths, git_command=_trusted_git):
+        raise TrustedCommitError(
+            "staged path is no longer a regular file (validated, then swapped before "
+            "commit); left staged in the index but not committed: " + ", ".join(swapped)
+        )
     if _trusted_git(identity, "rev-parse", "HEAD") != base_head:
         raise TrustedCommitError("unexpected HEAD movement before commit")
     try:

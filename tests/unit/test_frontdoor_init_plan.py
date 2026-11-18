@@ -113,6 +113,88 @@ def test_init_writes_only_the_consumer_config_and_never_commits(repository: Path
     assert "refusing to overwrite" in err
 
 
+def _assert_init_refused_before_any_mutation(
+    repository: Path, *, config_path: str, head_before: str, outside_sentinel: Path, outside_sentinel_text: str,
+    outside_escaped: Path,
+) -> None:
+    status_before = git(repository, "status", "--porcelain", "--untracked-files=all")
+    code, out, err = _run([
+        "init", "--repository", str(repository), "--scope-ceiling", "src", "--config-path", config_path,
+    ])
+    assert code != 0
+    assert out == ""
+    assert "wfc init" in err
+    assert not outside_escaped.exists()
+    assert outside_sentinel.read_text(encoding="utf-8") == outside_sentinel_text
+    assert not (repository / ".wfc").exists()
+    assert git(repository, "rev-parse", "HEAD") == head_before
+    assert git(repository, "status", "--porcelain", "--untracked-files=all") == status_before
+
+
+def test_init_rejects_absolute_config_path_before_any_mutation(repository: Path, tmp_path: Path):
+    head_before = git(repository, "rev-parse", "HEAD")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "SENTINEL.txt"
+    sentinel.write_text("sentinel\n", encoding="utf-8")
+    escaped = outside / "escaped.yaml"
+
+    _assert_init_refused_before_any_mutation(
+        repository, config_path=str(escaped), head_before=head_before,
+        outside_sentinel=sentinel, outside_sentinel_text="sentinel\n", outside_escaped=escaped,
+    )
+
+
+def test_init_rejects_dot_dot_traversal_config_path_before_any_mutation(repository: Path, tmp_path: Path):
+    head_before = git(repository, "rev-parse", "HEAD")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "SENTINEL.txt"
+    sentinel.write_text("sentinel\n", encoding="utf-8")
+    escaped = outside / "escaped.yaml"
+
+    _assert_init_refused_before_any_mutation(
+        repository, config_path="../outside/escaped.yaml", head_before=head_before,
+        outside_sentinel=sentinel, outside_sentinel_text="sentinel\n", outside_escaped=escaped,
+    )
+
+
+def test_init_rejects_symlinked_parent_escape_config_path_before_any_mutation(repository: Path, tmp_path: Path):
+    head_before = git(repository, "rev-parse", "HEAD")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "SENTINEL.txt"
+    sentinel.write_text("sentinel\n", encoding="utf-8")
+    escaped = outside / "escaped.yaml"
+
+    # A preexisting symlink, inside the repository, whose target directory is
+    # outside it -- the config-path argument itself contains no ".." segment.
+    linked = repository / "linked"
+    linked.symlink_to(outside, target_is_directory=True)
+
+    _assert_init_refused_before_any_mutation(
+        repository, config_path="linked/escaped.yaml", head_before=head_before,
+        outside_sentinel=sentinel, outside_sentinel_text="sentinel\n", outside_escaped=escaped,
+    )
+
+
+def test_init_still_succeeds_in_repository_after_escape_refusals(repository: Path, tmp_path: Path):
+    """R4 regression companion: refusing escapes must not weaken valid in-repository init."""
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SENTINEL.txt").write_text("sentinel\n", encoding="utf-8")
+    _run(["init", "--repository", str(repository), "--scope-ceiling", "src", "--config-path", str(outside / "escaped.yaml")])
+
+    code, out, err = _run([
+        "init", "--repository", str(repository), "--scope-ceiling", "src", "--config-path", "nested/dir/config.yaml",
+    ])
+    assert code == 0, err
+    config_path = repository / "nested" / "dir" / "config.yaml"
+    assert config_path.exists()
+    assert "nested/dir/config.yaml" in git(repository, "status", "--porcelain", "--untracked-files=all")
+
+
 def _plan_args(repository: Path, *, task_path: Path) -> list[str]:
     return [
         "plan", str(task_path),
@@ -163,6 +245,46 @@ def test_plan_previews_without_any_mutation_and_without_running_the_project_comm
     assert not (repository / "MARKER_WAS_RUN").exists()
     assert not (repository / "HOOK_WAS_RUN").exists()
     assert not (repository / ".wfc" / "governance").exists()
+
+
+def test_plan_never_runs_a_repository_configured_fsmonitor_helper(repository: Path):
+    """R1 regression: a configured ``core.fsmonitor`` helper must never run on the plan path.
+
+    Before the fix, the default ``--guidance-commit`` lookup called
+    ``git_facts.observe_repository``, which runs ``git status`` -- a command
+    that *does* consult a repository-configured ``core.fsmonitor`` helper.
+    """
+
+    _run(["init", "--repository", str(repository), "--scope-ceiling", "src", "--scope-ceiling", "tests"])
+    git(repository, "add", ".")
+    git(repository, "commit", "-q", "-m", "chore: commit Consumer Config")
+
+    task_path = repository / "task.md"
+    task_path.write_text(_TASK_TEXT, encoding="utf-8")
+
+    fsmonitor = repository / "fsmonitor-hook.sh"
+    fsmonitor.write_text("#!/bin/sh\necho marker > FSMONITOR_WAS_RUN\nexit 0\n", encoding="utf-8")
+    fsmonitor.chmod(0o755)
+    git(repository, "config", "core.fsmonitor", str(fsmonitor))
+
+    # Make every tracked index entry's cached stat data stale, the one state
+    # in which an ordinary status-reading Git porcelain would actually refresh
+    # the index (and, with the helper configured above, invoke it).
+    for path in repository.rglob("*"):
+        if path.is_file() and ".git" not in path.relative_to(repository).parts:
+            path.touch()
+
+    head_before = git(repository, "rev-parse", "HEAD")
+    tree_before = _tree_snapshot(repository)
+    index_before = _index_bytes(repository)
+
+    code, out, err = _run(_plan_args(repository, task_path=task_path))
+    assert code == 0, err
+
+    assert not (repository / "FSMONITOR_WAS_RUN").exists()
+    assert git(repository, "rev-parse", "HEAD") == head_before
+    assert _index_bytes(repository) == index_before
+    assert _tree_snapshot(repository) == tree_before
 
 
 def test_plan_output_is_stable_across_repeated_calls(repository: Path):
