@@ -15,9 +15,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from workflow_coordinator.commissioning import CommissionError, compile_commission, verify_commission
+from workflow_coordinator.commissioning import CommissionError, compile_commission
 from workflow_coordinator.frontdoor.config import consumer_config_from_yaml, resolve_execution
 from workflow_coordinator.frontdoor.request import consumer_request_from_yaml
+from workflow_coordinator.frontdoor.verify import verify_commission
 
 
 def git(repository: Path, *args: str) -> str:
