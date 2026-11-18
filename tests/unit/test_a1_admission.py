@@ -109,6 +109,7 @@ def test_evidence_disposition_admission_requires_an_explicit_gate_disposition():
     _admit_evidence_disposition(workflow())
 
 
+@pytest.mark.historical_governance
 def test_evidence_disposition_admission_accepts_the_successful_p2_profile():
     profile_path = (
         Path(__file__).parents[2]

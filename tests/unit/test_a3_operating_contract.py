@@ -392,6 +392,7 @@ def test_prompt_places_complete_contract_once_after_header_before_consumers_and_
     assert package.agent_operating_contract == contract.provenance()
 
 
+@pytest.mark.historical_governance
 def test_current_worker_completion_guidance_reaches_assembled_prompt():
     worker_path = Path(__file__).resolve().parents[2] / "governance/self-development/prompts/worker.txt"
     worker_text = worker_path.read_text(encoding="utf-8")
