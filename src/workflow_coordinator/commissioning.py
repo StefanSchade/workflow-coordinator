@@ -16,18 +16,23 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from importlib.resources import files as _resource_files
 from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
 from yaml.constructor import ConstructorError
 
-from .operator import OperatorPreflightError, _preflight
+from .git_facts import GitPreflightError, observe_repository, repository_identity
+from .implementation_identity import RESOURCE_DIGESTS as _PACKAGE_RESOURCE_DIGESTS, VERSION as _PACKAGE_VERSION
+from .operator import OperatorPreflightError, _pinned_text, _preflight, _relative_path, admit_parsed
+from .prompt import load_agent_operating_contract
 from .serialization import (
     ValidationError,
     a1_path_shape,
     component_manifest_from_yaml,
     repository_policy_from_yaml,
+    run_execution_configuration_from_yaml,
     workflow_profile_from_yaml,
     work_item_from_yaml,
 )
@@ -573,3 +578,371 @@ def verify_render_manifest(
         except OperatorPreflightError as error:
             raise CommissionError(f"operator preflight refused projected bundle: {error}") from error
     return rendered
+
+
+# ---------------------------------------------------------------------------
+# BP2b -- consumer-neutral compilation with execution bindings kept separate.
+#
+# ``compile_commission``/``verify_commission`` compile a bounded Commission
+# for an arbitrary (non-WFC) consumer repository from package-owned product
+# resources (``resources/roles/*.txt``, digest-checked against
+# ``implementation_identity.RESOURCE_DIGESTS``) and a consumer-authored
+# ``repository_policy`` guidance file already tracked in the consumer's own
+# repository.  Execution bindings are never read, written, or admitted here;
+# ``frontdoor.config.resolve_execution`` produces a separate envelope whose
+# identity is independent of these Commission bytes (C1).  Admission itself
+# is never duplicated: ``verify_commission`` establishes every caller
+# obligation ``operator.admit_parsed`` documents, then calls it directly.
+# ---------------------------------------------------------------------------
+
+_CONSUMER_ROLE_RESOURCES = {
+    "worker": "roles/worker.txt",
+    "reviewer": "roles/reviewer.txt",
+    "simple-self-check": "roles/simple-self-check.txt",
+}
+_REPOSITORY_POLICY_COMPONENT_ID = "repository_policy"
+
+
+def _package_resource_text(relative: str) -> str:
+    """Return the reviewed bundled resource's text, digest-checked every call."""
+
+    root = Path(str(_resource_files("workflow_coordinator"))).resolve()
+    path = root / "resources" / relative
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise CommissionError(f"cannot read package resource {relative}: {error}") from error
+    expected = _PACKAGE_RESOURCE_DIGESTS.get(relative)
+    digest = hashlib.sha256(data).hexdigest()
+    if expected is None or digest != expected:
+        raise CommissionError(f"package resource digest mismatch or unreviewed: {relative}")
+    return data.decode("utf-8")
+
+
+def _consumer_program_template(program_id: str, program_revision: str) -> dict[str, Any]:
+    """Return the closed simple@v1/robust@v1 literal with repository_policy filled.
+
+    ``direct@v1`` is deliberately withheld from the consumer compiler.  The
+    `repository_policy` slot every phase already declares (and leaves empty
+    in the self-development templates) is filled here with one shared
+    component ID so every phase binds the same consumer guidance.
+    """
+
+    if (program_id, program_revision) == ("simple", "v1"):
+        template = _simple_template()
+    elif (program_id, program_revision) == ("robust", "v1"):
+        template = _robust_template()
+    else:
+        raise CommissionError(
+            "only the closed simple@v1 and robust@v1 programs are supported by the consumer compiler"
+        )
+    template = json.loads(json.dumps(template))
+    for phase in template["phases"].values():
+        phase["components"]["repository_policy"] = [_REPOSITORY_POLICY_COMPONENT_ID]
+    return template
+
+
+@dataclass(frozen=True)
+class CompiledCommission:
+    """The deterministic, still-untrusted consumer-neutral projection."""
+
+    request: Any
+    config: Any
+    target_dir: str
+    paths: Mapping[str, str]
+    texts: Mapping[str, str]
+    manifest: Mapping[str, Any]
+
+    def write_to(self, repository: Path, *, overwrite: bool = False) -> None:
+        """Materialize ordinary files below ``repository``; refuse to overwrite."""
+
+        for path, text in self.texts.items():
+            destination = repository / path
+            if destination.exists() and not overwrite:
+                raise CommissionError(f"refusing to overwrite existing compiled file: {path}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(text, encoding="utf-8")
+
+
+def compile_commission(
+    request: Any, config: Any, *, repository: Path | str, target_dir: str | None = None,
+) -> CompiledCommission:
+    """Compile one consumer-neutral Commission without any execution binding.
+
+    ``repository`` is read only to pin ``request.guidance`` at its own
+    ``source_commit``; every other governing input is package-owned.  No
+    ``bindings``/``execution``/``provider``/``model``/``effort`` field is a
+    legal part of ``request`` or ``config`` -- their closed schemas (see
+    ``frontdoor.request``/``frontdoor.config``) already refuse any such key
+    before this function ever runs.
+    """
+
+    repository = Path(repository).resolve()
+    if not repository.is_dir():
+        raise CommissionError(f"repository is not a directory: {repository}")
+    program_id, program_revision = request.program.id, request.program.revision
+    template = _consumer_program_template(program_id, program_revision)
+    required_personas = set(template["roles"])
+    if set(request.personas) != required_personas:
+        raise CommissionError(
+            f"{program_id}@{program_revision} requires exactly " + ", ".join(sorted(required_personas)) + " personas"
+        )
+    evidence_profile_names = list(template["evidence_profiles"])
+    if len(evidence_profile_names) != 1:
+        raise CommissionError("internal: consumer programs must define exactly one evidence profile")
+    evidence_names = tuple(template["evidence_profiles"][evidence_profile_names[0]]["evidence"])
+    required_artifacts = {
+        phase["artifact_key"] for phase in template["phases"].values() if phase["durable_artifact"] == "required"
+    }
+    if set(request.durable_artifacts) != required_artifacts:
+        if not required_artifacts:
+            raise CommissionError(f"{program_id}@{program_revision} contains forbidden durable-artifact mappings")
+        raise CommissionError(
+            f"{program_id}@{program_revision} requires exactly durable-artifact mappings: "
+            + ", ".join(sorted(required_artifacts))
+        )
+    if any(not _within(path, request.scope) for paths in request.durable_artifacts.values() for path in paths):
+        raise CommissionError("Consumer Request durable-artifact paths must be contained in Consumer Request scope")
+    if request.max_autonomous_hops > config.max_autonomous_hops:
+        raise CommissionError("Consumer Request hop limit exceeds the Consumer Config ceiling")
+    if any(not _within(path, config.work_item_scope_ceiling) for path in request.scope):
+        raise CommissionError("Consumer Request scope exceeds the Consumer Config work-item scope ceiling")
+    guidance_within_governance_dir = _within(request.guidance.path, (config.governance_dir,))
+    governance_paths = (
+        (config.governance_dir,) if guidance_within_governance_dir else (config.governance_dir, request.guidance.path)
+    )
+    if any(_within(path, governance_paths) for path in request.scope):
+        raise CommissionError("Consumer Request scope overlaps the repository_policy guidance or governance directory")
+    target_dir = _path(target_dir or f"{config.governance_dir}/{request.commission_id}", context="compile target directory")
+    if not _within(target_dir, (config.governance_dir,)):
+        raise CommissionError("compile target directory is outside the Consumer Config governance directory")
+
+    guidance_text = _git_text(repository, request.guidance.source_commit, request.guidance.path, context="consumer guidance")
+
+    role_component_ids = sorted({
+        component_id for phase in template["phases"].values() for component_id in phase["components"]["role"]
+    })
+    modifier_component_ids = sorted({
+        component_id for phase in template["phases"].values() for component_id in phase["components"]["modifiers"]
+    })
+    package_component_ids = [*role_component_ids, *modifier_component_ids]
+    component_resources: dict[str, str] = {}
+    component_texts: dict[str, str] = {}
+    for component_id in package_component_ids:
+        resource_relative = _CONSUMER_ROLE_RESOURCES.get(component_id)
+        if resource_relative is None:
+            raise CommissionError(f"internal: no package resource is bound for component: {component_id}")
+        component_resources[component_id] = resource_relative
+        component_texts[component_id] = _package_resource_text(resource_relative)
+
+    paths = {
+        "work_item": f"{target_dir}/work-item.yaml", "profile": f"{target_dir}/profile.yaml",
+        "policy": f"{target_dir}/policy.yaml", "task": f"{target_dir}/task.md",
+        "components": f"{target_dir}/components.yaml", "manifest": f"{target_dir}/commission-manifest.json",
+    }
+    component_paths = {
+        component_id: f"{target_dir}/components/{component_id}.txt" for component_id in package_component_ids
+    }
+    component_paths[_REPOSITORY_POLICY_COMPONENT_ID] = request.guidance.path
+
+    profile_phases = template["phases"]
+    for phase in profile_phases.values():
+        scope_slot = phase.pop("scope")
+        artifact_key = phase.pop("artifact_key", None)
+        if scope_slot == "S":
+            phase["authorized_scope"] = list(request.scope)
+        else:
+            phase["authorized_scope"] = list(request.durable_artifacts[artifact_key])
+        if phase["evidence"] == "E":
+            phase["evidence"] = list(evidence_names)
+    profile_data = {
+        "schema_version": 2, "profile_id": f"{request.commission_id}-{program_id}-{program_revision}",
+        "revision": "1", "phases": profile_phases,
+    }
+    policy_data = {
+        "schema_version": 3, "policy_id": "consumer-standard", "revision": "v1",
+        "scope": [config.repository_name], "governance_paths": list(governance_paths),
+        "work_item_scope_ceiling": list(config.work_item_scope_ceiling), "max_autonomous_hops": config.max_autonomous_hops,
+        "actions": ["edit", "commit", "review"],
+        "evidence_commands": {
+            "task-check": {"argv": list(request.evidence.argv), "timeout_seconds": request.evidence.timeout_seconds},
+        },
+    }
+    item_data = {
+        "schema_version": 2, "work_item_id": request.work_item_id, "authority_source": request.authority_source,
+        "profile_ref": paths["profile"], "repository": config.repository_name, "scope": list(request.scope),
+        "initial_phase": "implement", "max_autonomous_hops": request.max_autonomous_hops,
+        "personas": dict(request.personas),
+        "profile_labels": [
+            f"program_id={program_id}", f"program_revision={program_revision}", "program_source=package",
+        ],
+        "durable_artifacts": {key: list(value) for key, value in request.durable_artifacts.items()},
+    }
+    texts: dict[str, str] = {
+        paths["work_item"]: _yaml(item_data), paths["profile"]: _yaml(profile_data), paths["policy"]: _yaml(policy_data),
+        paths["task"]: _task_text(request),
+    }
+    for component_id, text in component_texts.items():
+        texts[component_paths[component_id]] = text
+    components_data = {
+        "schema_version": 1,
+        "components": {component_id: {"path": path} for component_id, path in component_paths.items()},
+    }
+    texts[paths["components"]] = _yaml(components_data)
+
+    source_digests = {
+        "request": _sha(request.raw_text), "config": _sha(config.raw_text), "guidance": _sha(guidance_text),
+        **{f"component:{component_id}": _sha(text) for component_id, text in component_texts.items()},
+    }
+    manifest_data = {
+        "schema_version": 1,
+        "request": {"sha256": source_digests["request"]},
+        "config": {"sha256": source_digests["config"]},
+        "package": {
+            "version": _PACKAGE_VERSION,
+            "resources": {
+                component_resources[component_id]: source_digests[f"component:{component_id}"]
+                for component_id in package_component_ids
+            },
+        },
+        "program": {"id": program_id, "revision": program_revision},
+        "guidance": {
+            "path": request.guidance.path, "source_commit": request.guidance.source_commit,
+            "sha256": source_digests["guidance"],
+        },
+        "targets": paths,
+        "selected_components": [
+            {
+                "id": component_id,
+                "path": component_paths[component_id],
+                "origin": "guidance" if component_id == _REPOSITORY_POLICY_COMPONENT_ID else "package",
+                "sha256": (
+                    source_digests["guidance"]
+                    if component_id == _REPOSITORY_POLICY_COMPONENT_ID
+                    else source_digests[f"component:{component_id}"]
+                ),
+            }
+            for component_id in component_paths
+        ],
+        "digests": {path: _sha(value) for path, value in texts.items()},
+    }
+    manifest_text = json.dumps(manifest_data, sort_keys=True, indent=2) + "\n"
+    texts[paths["manifest"]] = manifest_text
+    # Exercise the unchanged schemas now, before callers ever commit a malformed projection.
+    try:
+        work_item_from_yaml(texts[paths["work_item"]])
+        workflow_profile_from_yaml(texts[paths["profile"]])
+        repository_policy_from_yaml(texts[paths["policy"]])
+        component_manifest_from_yaml(texts[paths["components"]])
+    except ValidationError as error:
+        raise CommissionError(f"internal compiled schema refusal: {error}") from error
+    return CompiledCommission(request, config, target_dir, paths, texts, manifest_data)
+
+
+_VERIFY_COMMISSION_TIMEOUT_SECONDS = 900.0
+
+
+def verify_commission(
+    request_path: str, config_path: str, *, repository: Path | str, expected_head: str,
+    execution_envelope: Any, target_dir: str | None = None, evidence_runner: Any = None,
+) -> tuple[CompiledCommission, Any]:
+    """Re-project pinned blobs at ``expected_head``, compare, then admit directly.
+
+    This establishes every caller obligation ``operator.admit_parsed``'s
+    docstring names -- strict parse of the corresponding objects, matching
+    normalized paths and pinned texts actually re-read at ``expected_head``,
+    repository identity, a full clean expected HEAD with resolved
+    submodules, a nonexistent resolved state root, binding-source
+    provenance, and operating-contract validity -- then calls
+    ``admit_parsed`` once; it never reimplements admission.
+
+    ``execution_envelope`` (a ``frontdoor.config.ExecutionEnvelope``) is
+    resolved entirely outside this Commission's own pinned bytes; a
+    different envelope never changes any compiled Commission byte compared
+    here, only the envelope's own separate digest.
+    """
+
+    from .frontdoor.config import consumer_config_from_yaml
+    from .frontdoor.request import consumer_request_from_yaml
+
+    repository = Path(repository).resolve()
+    if not repository.is_dir():
+        raise CommissionError(f"repository is not a directory: {repository}")
+    try:
+        if repository_identity(repository) != repository:
+            raise CommissionError("repository path is not the Git top-level")
+    except GitPreflightError as error:
+        raise CommissionError(str(error)) from error
+    if not _SHA.fullmatch(expected_head):
+        raise CommissionError("expected HEAD must be a full 40-character lowercase commit SHA")
+    facts = observe_repository(repository)
+    if facts.head != expected_head:
+        raise CommissionError("current HEAD does not equal expected HEAD")
+    if not facts.clean or facts.unresolved_submodules:
+        raise CommissionError("worktree preconditions fail: repository must be clean with resolved submodules")
+
+    request_text = _tree_text(repository, expected_head, request_path, context="Consumer Request")
+    config_text = _tree_text(repository, expected_head, config_path, context="Consumer Config")
+    request = consumer_request_from_yaml(request_text)
+    config = consumer_config_from_yaml(config_text)
+
+    chosen_dir = _path(target_dir or f"{config.governance_dir}/{request.commission_id}", context="compile target directory")
+    # Re-resolve pinned/package sources before trusting a single compiled blob.
+    compiled = compile_commission(request, config, repository=repository, target_dir=chosen_dir)
+    # Every compiled byte is governing, not merely the five named top-level
+    # files: a materialized package-resource component (for example
+    # ``components/worker.txt``) must match exactly as much as the profile
+    # or policy does, or admission would trust an unverified committed copy.
+    for path, expected_text in compiled.texts.items():
+        actual = _tree_text(repository, expected_head, path, context=f"compiled {path}")
+        if actual != expected_text:
+            raise CommissionError(f"compiled projection equivalence mismatch: {path}")
+
+    observed_guidance = _tree_text(repository, expected_head, request.guidance.path, context="consumer guidance")
+    pinned_guidance = _git_text(
+        repository, request.guidance.source_commit, request.guidance.path, context="pinned consumer guidance"
+    )
+    if observed_guidance != pinned_guidance:
+        raise CommissionError(f"consumer guidance differs from its pinned source object: {request.guidance.path}")
+
+    agent_operating_contract = load_agent_operating_contract()
+    with tempfile.TemporaryDirectory(prefix="wfc-consumer-commission-check-") as root:
+        temp = Path(root)
+        state_root = temp / "state"
+        bindings_path = temp / "execution-bindings.yaml"
+        bindings_path.write_text(execution_envelope.text, encoding="utf-8")
+
+        input_paths = {
+            name: _relative_path(path, context=name.replace("_", " "))
+            for name, path in (
+                ("work_item", compiled.paths["work_item"]), ("profile", compiled.paths["profile"]),
+                ("policy", compiled.paths["policy"]), ("components", compiled.paths["components"]),
+                ("task", compiled.paths["task"]),
+            )
+        }
+        texts = {
+            name: _pinned_text(repository, expected_head, path, context=name.replace("_", " "))
+            for name, path in input_paths.items()
+        }
+        try:
+            work_item = work_item_from_yaml(texts["work_item"])
+            profile = workflow_profile_from_yaml(texts["profile"])
+            policy = repository_policy_from_yaml(texts["policy"])
+            manifest = component_manifest_from_yaml(texts["components"])
+            binding_text = bindings_path.read_text(encoding="utf-8")
+            execution_configuration = run_execution_configuration_from_yaml(binding_text)
+        except (ValidationError, OSError, UnicodeError) as error:
+            raise CommissionError(str(error)) from error
+        try:
+            result = admit_parsed(
+                work_item=work_item, profile=profile, policy=policy, manifest=manifest,
+                execution_configuration=execution_configuration,
+                repository=repository, expected_head=expected_head, state_root=state_root,
+                input_paths=input_paths, texts=texts, binding_source=bindings_path,
+                agent_operating_contract=agent_operating_contract,
+                durable_artifact=[], timeout_seconds=_VERIFY_COMMISSION_TIMEOUT_SECONDS,
+                **({"evidence_runner": evidence_runner} if evidence_runner is not None else {}),
+            )
+        except OperatorPreflightError as error:
+            raise CommissionError(f"operator admission refused compiled bundle: {error}") from error
+    return compiled, result
