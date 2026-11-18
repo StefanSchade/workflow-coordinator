@@ -87,8 +87,11 @@ OS/environment containment boundary is claimed, for self-development or any
 other consumer repository, and WFC does not require a provider sandbox to
 preventively enforce a phase's `authorized_scope`; the Coordinator's own
 post-Hop Git/scope observation is the authoritative enforcement of that
-scope. WFC ownership of a provider-independent execution-isolation boundary is
-an accepted future direction, not current V1 functionality; see
+scope for candidate acceptance; this does not prevent or undo writes. WFC
+ownership of a provider-independent execution-isolation boundary is an accepted
+future direction, not current V1 functionality. Its dispatch integration and
+effective qualification are post Beta 1; Beta 1 must not claim preventive
+Commission-scope isolation. Existing provider safeguards remain in place; see
 [FTR-WFC-EXECUTION-TRUST-BOUNDARIES](backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc)
 for its status and non-current standing.
 
