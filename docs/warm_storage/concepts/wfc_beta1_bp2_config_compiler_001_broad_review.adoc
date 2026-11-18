@@ -1,0 +1,181 @@
+= BP2b consumer-neutral Commission compiler: broad review
+
+Candidate:: `edd4ae85ffea1d32d209852fcf26005bd0466bd2`
+Comparison base:: `0156cdc41a034004b5d06eb2eea23b383a66330d`
+Disposition:: Changes required; one blocking finding.
+
+== Blocking finding
+
+*The candidate breaks an existing architecture invariant test: the kernel now
+imports the front door.* `commissioning.verify_commission` contains
+
+[source,python]
+----
+from .frontdoor.config import consumer_config_from_yaml
+from .frontdoor.request import consumer_request_from_yaml
+----
+
+at `src/workflow_coordinator/commissioning.py:865-866`. The pre-existing
+check `tests/architecture/test_bp1_identity.py::test_roles_match_reviewed_sources_and_kernel_import_direction`
+walks the AST of every `src/workflow_coordinator/**/*.py` outside
+`frontdoor/` and asserts that no such module imports
+`workflow_coordinator.frontdoor`; a function-local import is still an
+`ast.ImportFrom` and is caught. The failure is deterministic:
+
+----
+E   AssertionError: PosixPath('.../src/workflow_coordinator/commissioning.py')
+E   assert not True
+E    +  where True = ('frontdoor.config').startswith(('frontdoor', 'workflow_coordinator.frontdoor'))
+tests/architecture/test_bp1_identity.py:70: AssertionError
+----
+
+Static re-check of the same predicate over both trees: base
+`0156cdc` has 20 kernel modules and zero offending imports; the candidate has
+the two above. The invariant is also violated in substance, not only in the
+test: `frontdoor/request.py` and `frontdoor/config.py` import
+`..commissioning` at module load, so the new dependency is a cycle that only
+deferred importing hides. This is the project's own layering safeguard, and
+the task requires that all current tests and security checks run without
+relaxed assertions, so the check must be satisfied rather than amended.
+Correction direction (not implemented here): keep the consumer parsers
+reachable from the kernel -- for example a kernel-side consumer-input module
+that `frontdoor` re-exports, or passing already-parsed Request/Config objects
+(or a parser callable) into `verify_commission` -- so that no kernel module
+names `frontdoor`.
+
+== What the implementation does satisfy (independently reproduced)
+
+The rest of the candidate held up under direct adversarial probing of the
+production entry points against from-scratch, disposable, non-Python
+repositories with an executable `sh` check and no `governance/` path.
+
+Admission is reused, not duplicated. `verify_commission` re-reads the
+Request and Config from the tree at `expected_head`, recompiles, compares
+*every* compiled byte (including the materialized `components/*.txt`, not
+only the five named files), re-verifies the guidance blob against its pinned
+`source_commit`, and only then calls `operator.admit_parsed` once, having
+first established the obligations its docstring names: repository top-level
+identity, a 40-hex expected HEAD equal to current HEAD, a clean worktree with
+resolved submodules via the same `observe_repository` the unchanged
+`_preflight` uses, a nonexistent resolved state root, pinned texts read at
+`expected_head` through `operator._pinned_text` with `_relative_path`
+normalization, strict parse of the corresponding objects, binding-source
+provenance (the envelope text is written and re-read from the file passed as
+`binding_source`), and `load_agent_operating_contract()` validity.
+`operator.py` is untouched by this Hop, so `_preflight` order, behavior and
+BP2a invariants are unchanged by construction.
+
+Negative cases reach real production boundaries, confirmed by independent
+probes rather than the committed tests alone:
+
+* tampered package role resource *file* (isolated package copy, real byte
+  edit): refused with `package resource digest mismatch or unreviewed:
+  roles/worker.txt`;
+* tampered committed component: `compiled projection equivalence mismatch`;
+* guidance changed after its pin: `consumer guidance differs from its pinned
+  source object`;
+* Commission not committed: `compiled .../work-item.yaml is absent or
+  ambiguous at pinned source commit`;
+* Request not tracked at `expected_head`: same refusal class;
+* repository argument below the top level: `repository path is not the Git
+  top-level`; HEAD mismatch and dirty worktree refused;
+* worker scope containing its own `repository_policy` guidance: refused
+  inside admission by A1 (`profile authorized_scope overlaps repository
+  policy governance_paths: implement:src <-> src/GUIDE.md`);
+* Request scope above the Config ceiling, hop count above the ceiling,
+  `direct@v1`, `../etc` scope, forged `bindings` key in the Request *and* in
+  the Config, and execution overrides or defaults naming roles the chosen
+  program does not use: all refused;
+* mixed adapters across roles in one envelope: `resolve_execution` builds it,
+  but admission refuses with `mixed execution adapters are incompatible with
+  the single scalar executable`.
+
+Frozen assets demonstrably reach the engine authority boundary: the
+`components` mapping returned by `admit_parsed` carries
+`repository_policy` with the consumer's pinned guidance bytes and the
+package-owned `worker`/`reviewer`/`simple-self-check` texts, all re-read by
+`admit_parsed` itself at `expected_head`.
+
+Commission/execution identity is separate in the way the acceptance names.
+With one fixed Request and Config, resolver overrides selecting *two
+different adapters* (`codex_cli`, `claude_cli`) produced byte-identical
+compiled Commission texts, different envelope digests, and two successful
+admissions carrying the different adapters -- a stronger case than the
+committed test, which varies only the model within one adapter.
+
+Profile equivalence to the v1 self-development rendering holds for both
+programs field-for-field apart from the deliberately filled
+`repository_policy` slot and the component paths; `direct@v1` and any new
+program or revision are withheld from this path. The legacy
+`render_commission`/`verify_render_manifest` route, including
+`_repository_standard_record`'s exact `("python","-m","pytest","-q")`
+identity check, is unchanged, and `tests/unit/test_commissioning.py`,
+`test_operator.py`, `test_operator_admit_parsed.py`, `test_a1_admission.py`,
+`test_a2_evidence_commands.py` and `test_neutral_consumer_evidence.py` all
+pass. The consumer evidence command flows through the unchanged
+`evidence.py`: `sh checks/check.sh` resolves to `/usr/bin/dash` and
+`./checks/check.sh` to the repository-relative file at admission, while an
+unresolvable `argv[0]` is refused with `evidence command task-check:
+executable does not resolve to an executable regular file`. The BUG record
+update is accurate and keeps the record open for the self-development path.
+No excluded surface was implemented: the diff touches six leaves only, and
+no provider adapter, reducer, runtime, governance program, policy basis,
+script or packaging declaration changed.
+
+== Non-blocking observations
+
+. *Execution defaults still colour the Commission's provenance bytes.* The
+  compiled `commission-manifest.json` embeds `sha256(config.raw_text)`, and
+  `ConsumerConfig` carries `default_execution`. Compiling with otherwise
+  identical Configs differing only in `adapter` therefore yields different
+  manifest bytes, and changing only the default model in an already committed
+  Config makes `verify_commission` refuse the untouched Commission
+  (`compiled projection equivalence mismatch:
+  .wfc/commissions/consumer-simple-test/commission-manifest.json`). The
+  stated acceptance -- same Request/Config, differing bindings -- is still
+  met, and the failure mode is a fail-closed refusal, so this is not blocked;
+  a later Hop may wish to digest a business projection of the Config, or move
+  `default_execution` out of the frozen input.
+. *`resolve_execution`'s role-exactness makes the Config per-program.* A
+  Config whose `default_execution` names `worker` and
+  `independent_reviewer` is refused for `simple@v1`, so one repository cannot
+  serve both programs from the one "durable, per-repository" Config its
+  docstring describes.
+. *Compile accepts two shapes that only admission refuses.* Guidance inside
+  the requested scope (probe above) and, by the same one-directional test,
+  any scope path that *contains* a governance path, compile successfully and
+  are rejected later by `_admit_a1`. Safe, but contrary to the module's own
+  stated principle of refusing at render exactly what admission refuses.
+. *The envelope digest is not re-derived at verification.*
+  `verify_commission` writes `execution_envelope.text` without checking that
+  `execution_envelope.digest` matches it; only `resolve_execution` ties the
+  two.
+. *The new acceptance prepares, but never executes, the consumer check.*
+  Execution of a consumer shell check is covered by the pre-existing
+  `tests/unit/test_neutral_consumer_evidence.py` with the same argv shape.
+. *One intermittent failure, not reproduced.* In the first of five full local
+  `tests/unit tests/architecture` runs,
+  `test_consumer_verify_rejects_dirty_or_mismatched_head` failed; the
+  traceback was not captured, and it then passed in four further full runs
+  and twenty consecutive isolated runs of the file. A targeted probe showed
+  `observe_repository` does detect a same-size, same-mtime overwrite, so the
+  suspected racy-stat mechanism is excluded. Recorded for the Coordinator's
+  trusted run rather than asserted as a defect.
+
+== Local checks and limits
+
+Agent-local runs with the review virtual environment, `--wfc-partial`:
+`tests/unit/test_consumer_compiler.py` 20 passed (and 20/20 repeated runs);
+full `tests/unit tests/architecture` 42 failures, of which 41 are
+agent-local environment limitations reproduced as such -- 22 in
+`test_claude_adapter_conformance.py` from a read-only `/tmp`
+(`OSError: [Errno 30] Read-only file system` inside the untouched
+`claude_adapter.py`), 17 in `test_wfc_op.py` and 2 build/distribution tests
+from the absent package index (`No matching distribution found for
+setuptools>=68`) -- and one is the real regression recorded above. `ruff
+check .` reports two errors, both pre-existing in the BP2a file
+`tests/unit/test_operator_admit_parsed.py` and untouched here. The
+Coordinator-trusted required suite needs `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`
+offline bundles that are unavailable in this sandbox; none of the above is
+Coordinator-trusted evidence, and the full configured `task-check` remains
+for the Coordinator to run.
