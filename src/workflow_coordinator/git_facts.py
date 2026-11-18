@@ -66,6 +66,20 @@ class TrustedCommit:
 
 
 @dataclass(frozen=True)
+class NewPathCommitIntent:
+    """A Coordinator-owned request to commit exact, newly created leaf files.
+
+    Unlike ``model.CommitIntent`` (an agent's semantic request materialized
+    inside a Hop), this is supplied directly by a Coordinator-owned caller
+    acting outside any Hop -- ``wfc init``, the archive port -- and is never
+    agent-authored.
+    """
+
+    paths: tuple[str, ...]
+    subject: str
+
+
+@dataclass(frozen=True)
 class SalvageObject:
     """One untrusted, byte-addressed candidate object; never Git authority."""
 
@@ -715,6 +729,106 @@ def trusted_commit(
     if subject_error:
         raise TrustedCommitError(subject_error)
     paths = _validated_intent_paths(intent, allowed_paths)
+    if _staged_paths(identity, git_command=_trusted_git):
+        raise TrustedCommitError("pre-existing staged state")
+    actual_paths = _changed_worktree_paths(identity, git_command=_trusted_git)
+    unexpected = sorted(set(actual_paths) - set(paths))
+    missing = sorted(set(paths) - set(actual_paths))
+    if unexpected:
+        raise TrustedCommitError(f"unexpected dirty path: {', '.join(unexpected)}")
+    if missing:
+        raise TrustedCommitError(f"commit intent path has no worktree mutation: {', '.join(missing)}")
+
+    try:
+        _trusted_git(identity, "add", "--", *paths)
+    except GitPreflightError as error:
+        raise TrustedCommitError(f"staging failed: {error}") from error
+    staged = _staged_paths(identity, git_command=_trusted_git)
+    if set(staged) != set(paths):
+        raise TrustedCommitError("staged paths differ from commit intent")
+    if _trusted_git(identity, "rev-parse", "HEAD") != base_head:
+        raise TrustedCommitError("unexpected HEAD movement before commit")
+    try:
+        _trusted_git(identity, "commit", "--no-verify", "-m", intent.subject, "--")
+    except GitPreflightError as error:
+        raise TrustedCommitError(f"commit failed: {error}") from error
+
+    delta = _observe_hop(
+        identity,
+        base_head=base_head,
+        allowed_paths=allowed_paths,
+        max_commits=1,
+        claims_existing_commits=False,
+        git_command=_trusted_git,
+        git_succeeds=_trusted_git_succeeds,
+    )
+    subject = _trusted_git(identity, "show", "-s", "--format=%s", delta.end_head)
+    invalid = (
+        len(delta.actual_commits) != 1
+        or delta.actual_commits[0] != delta.end_head
+        or set(delta.changed_paths) != set(paths)
+        or subject != intent.subject
+        or bool(delta.anomalies)
+    )
+    if invalid:
+        raise TrustedCommitError("post-commit observation does not match commit intent", delta=delta)
+    return TrustedCommit(commit=delta.end_head, delta=delta)
+
+
+def bounded_path_commit(
+    repository: Path,
+    *,
+    expected_repository: Path,
+    base_head: str,
+    allowed_paths: tuple[str, ...],
+    intent: NewPathCommitIntent,
+    work_item_id: str,
+    hop_id: str,
+) -> TrustedCommit:
+    """Commit only exactly named, newly created leaf files; refuse everything else.
+
+    A narrower sibling of ``trusted_commit`` for Coordinator-owned callers
+    acting outside an agent Hop.  It reuses the same trusted Git execution
+    policy, hook/filter refusal and post-commit observation, but additionally
+    refuses any intent path that already names a blob at ``base_head`` --
+    there is no "existing file" case here; modification and deletion of an
+    already-tracked path are both refused the same way, by that one check,
+    and only exact new leaves are ever committed.  A directory-shaped path is
+    refused with a clear diagnostic rather than expanded to the files beneath
+    it -- this does not decide
+    BUG-WFC-COMMIT-INTENT-DIRECTORY-PATH-RECONCILIATION's open choice between
+    its Option 1 and Option 2, it only keeps this narrower primitive on
+    Option 1's leaf-exact side of that choice.
+    """
+
+    identity = _repository_identity(repository, git_command=_trusted_git)
+    if identity != expected_repository.resolve():
+        raise TrustedCommitError("repository identity mismatch")
+    if filters := _configured_external_filters(identity):
+        raise TrustedCommitError(
+            "configured clean/process filter is not permitted for bounded path commit: "
+            + ", ".join(filters)
+        )
+    facts = _observe_repository(identity, git_command=_trusted_git)
+    if facts.head != base_head:
+        raise TrustedCommitError("unexpected HEAD movement")
+    if facts.unresolved_submodules:
+        raise TrustedCommitError("unresolved submodule identity")
+    subject_error = commit_subject_error(intent.subject, work_item_id=work_item_id, hop_id=hop_id)
+    if subject_error:
+        raise TrustedCommitError(subject_error)
+    paths = _validated_intent_paths(intent, allowed_paths)
+    for path in paths:
+        if _trusted_git_succeeds(identity, "cat-file", "-e", f"{base_head}:{path}"):
+            raise TrustedCommitError(f"commit intent path already exists at base HEAD: {path}")
+        try:
+            lstat = (identity / path).lstat()
+        except FileNotFoundError:
+            raise TrustedCommitError(f"commit intent path does not exist in the worktree: {path}") from None
+        if stat.S_ISDIR(lstat.st_mode):
+            raise TrustedCommitError(f"commit intent path is a directory, not a leaf file: {path}")
+        if stat.S_ISLNK(lstat.st_mode) or not stat.S_ISREG(lstat.st_mode):
+            raise TrustedCommitError(f"commit intent path is not a regular file: {path}")
     if _staged_paths(identity, git_command=_trusted_git):
         raise TrustedCommitError("pre-existing staged state")
     actual_paths = _changed_worktree_paths(identity, git_command=_trusted_git)

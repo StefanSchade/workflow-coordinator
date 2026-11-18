@@ -15,5 +15,11 @@ def main(argv=None):
     if args in (['--version'], ['--version', '--json'], ['--json', '--version']):
         print(json.dumps(identity, sort_keys=True) if '--json' in args else f"wfc {identity['version']}")
         return 0
+    if args[:1] == ['init']:
+        from .init import main as init_main
+        return init_main(args[1:])
+    if args[:1] == ['plan']:
+        from .plan import main as plan_main
+        return plan_main(args[1:])
     from ..operator import main as operator_main
     return operator_main(args)
