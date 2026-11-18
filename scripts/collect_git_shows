@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'Usage: %s NUMBER [OUTPUT_DIRECTORY_OR_FILE]\n' "${0##*/}" >&2
+}
+
+if [[ ${1:-} == --help || ${1:-} == -h ]]; then
+  usage
+  exit 0
+fi
+if [[ $# -lt 1 || $# -gt 2 || ! $1 =~ ^[1-9][0-9]*$ ]]; then
+  usage
+  exit 2
+fi
+
+git rev-parse --git-dir >/dev/null
+count=$1
+target=${2:-.}
+if [[ -d $target ]]; then
+  target="${target%/}/git-shows-$(date +%Y%m%d-%H%M%S).txt"
+fi
+if [[ -e $target || -L $target ]]; then
+  printf 'Output already exists: %s\n' "$target" >&2
+  exit 1
+fi
+
+# Write beside the destination so a failed Git command leaves no partial report.
+target_dir=$(dirname -- "$target")
+tmp=$(mktemp "$target_dir/.git-shows.XXXXXXXX")
+trap 'rm -f -- "$tmp"' EXIT
+
+{
+  printf 'Repository: %s\n' "$(git rev-parse --show-toplevel)"
+  printf 'Requested commits: %s\n\n' "$count"
+  git --no-pager log -n "$count" --format='%h%x09%an%x09%aI%x09%s' HEAD
+  printf '\n\n'
+  while IFS= read -r commit; do
+    printf '\n%s\n' '=============================================================================='
+    git --no-pager show --no-color --no-ext-diff --format=fuller --stat --patch "$commit"
+    printf '\n'
+  done < <(git rev-list -n "$count" HEAD)
+} > "$tmp"
+
+# Refuse to overwrite even if the destination appeared during report generation.
+if ! ln -- "$tmp" "$target"; then
+  printf 'Could not create output without overwriting: %s\n' "$target" >&2
+  exit 1
+fi
+printf 'Git report written to: %s\n' "$target"
