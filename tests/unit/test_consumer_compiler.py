@@ -9,6 +9,7 @@ or writes `governance/`.
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 from pathlib import Path
 
@@ -442,4 +443,25 @@ def test_consumer_verify_rejects_binding_role_mismatch(repository: Path) -> None
         verify_commission(
             "consumer-robust-test-request.yaml", "consumer-robust-test-config.yaml",
             repository=repository, expected_head=expected_head, execution_envelope=envelope,
+        )
+
+
+def test_consumer_verify_rejects_envelope_digest_mismatched_with_its_own_text(repository: Path) -> None:
+    head = git(repository, "rev-parse", "HEAD")
+    request = consumer_request_from_yaml(simple_request_text(head))
+    config = consumer_config_from_yaml(config_text())
+    compiled = compile_commission(request, config, repository=repository)
+    expected_head = commit_compiled(repository, compiled)
+    (repository / "consumer-simple-test-request.yaml").write_text(simple_request_text(head), encoding="utf-8")
+    (repository / "consumer-simple-test-config.yaml").write_text(config_text(), encoding="utf-8")
+    git(repository, "add", ".")
+    git(repository, "commit", "-q", "-m", "test: materialize consumer request/config inputs")
+    expected_head = git(repository, "rev-parse", "HEAD")
+
+    envelope = resolve_execution(config, {}, ("worker",))
+    forged = dataclasses.replace(envelope, digest="0" * 64)
+    with pytest.raises(CommissionError, match="execution envelope digest does not match its own bound text"):
+        verify_commission(
+            "consumer-simple-test-request.yaml", "consumer-simple-test-config.yaml",
+            repository=repository, expected_head=expected_head, execution_envelope=forged,
         )

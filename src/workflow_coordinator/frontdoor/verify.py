@@ -16,6 +16,7 @@ naming ``frontdoor``.
 
 from __future__ import annotations
 
+import hashlib
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,9 @@ def verify_commission(
     )
     if observed_guidance != pinned_guidance:
         raise CommissionError(f"consumer guidance differs from its pinned source object: {request.guidance.path}")
+
+    if hashlib.sha256(execution_envelope.text.encode("utf-8")).hexdigest() != execution_envelope.digest:
+        raise CommissionError("execution envelope digest does not match its own bound text")
 
     agent_operating_contract = load_agent_operating_contract()
     with tempfile.TemporaryDirectory(prefix="wfc-consumer-commission-check-") as root:

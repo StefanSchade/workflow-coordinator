@@ -836,4 +836,3 @@ def compile_commission(
     except ValidationError as error:
         raise CommissionError(f"internal compiled schema refusal: {error}") from error
     return CompiledCommission(request, config, target_dir, paths, texts, manifest_data)
-
