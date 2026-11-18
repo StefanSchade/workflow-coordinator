@@ -341,6 +341,39 @@ def _preflight(
         execution_configuration = run_execution_configuration_from_yaml(binding_text)
     except ValidationError as error:
         raise OperatorPreflightError(str(error)) from error
+    return admit_parsed(
+        work_item=work_item, profile=profile, policy=policy, manifest=manifest,
+        execution_configuration=execution_configuration,
+        repository=repository, expected_head=args.expected_head, state_root=state_root,
+        input_paths=input_paths, texts=texts, binding_source=binding_source,
+        agent_operating_contract=agent_operating_contract,
+        durable_artifact=args.durable_artifact, timeout_seconds=args.timeout_seconds,
+        evidence_runner=evidence_runner,
+    )
+
+
+def admit_parsed(
+    *, work_item, profile, policy, manifest, execution_configuration,
+    repository: Path, expected_head: str, state_root: Path,
+    input_paths: Mapping[str, str], texts: Mapping[str, str], binding_source: Path,
+    agent_operating_contract: AgentOperatingContract,
+    durable_artifact: Sequence[str], timeout_seconds: float,
+    evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
+):
+    """Admit parsed inputs and prepare the existing preflight result.
+
+    The caller must provide objects produced by the corresponding strict YAML
+    parsers, matching governing texts and normalized input paths (keys work_item,
+    profile, policy, components, task), and an execution configuration parsed
+    from the binding source. This function does not verify those relationships
+    or that the texts were read from the paths at the revision. The caller must
+    establish repository identity, a full clean expected HEAD with resolved
+    submodules, a nonexistent resolved state root, binding-source provenance,
+    and operating-contract validity. Selected components are still read from
+    expected_head here. The returned tuple has the same layout as _preflight;
+    successful admission alone does not attest to the caller's preceding checks
+    or provenance.
+    """
     if _relative_path(work_item.profile_ref, context="WorkItem.profile_ref") != input_paths["profile"]:
         raise OperatorPreflightError("WorkItem.profile_ref does not identify the supplied profile path")
     profile_roles = {phase.role for phase in profile.phases.values()}
@@ -396,7 +429,7 @@ def _preflight(
     if work_item.initial_phase not in profile.phases:
         raise OperatorPreflightError(f"WorkItem.initial_phase is absent from supplied profile: {work_item.initial_phase}")
     initial_phase = profile.phases[work_item.initial_phase]
-    legacy_artifacts = tuple(_relative_path(path, context="durable artifact") for path in args.durable_artifact)
+    legacy_artifacts = tuple(_relative_path(path, context="durable artifact") for path in durable_artifact)
     if len(set(legacy_artifacts)) != len(legacy_artifacts):
         raise OperatorPreflightError("durable artifact arguments must not contain duplicates")
     durable_artifacts: dict[str, tuple[str, ...]] = {}
@@ -464,8 +497,8 @@ def _preflight(
         if reference is None:
             raise OperatorPreflightError(f"selected component ID is absent from manifest: {component_id}")
         path = _relative_path(reference.path, context=f"component {component_id} path")
-        content = _pinned_text(repository, args.expected_head, path, context=f"component {component_id}")
-        components[component_id] = PromptComponent(component_id, path, args.expected_head, content)
+        content = _pinned_text(repository, expected_head, path, context=f"component {component_id}")
+        components[component_id] = PromptComponent(component_id, path, expected_head, content)
         governing[path] = _governing_digest(content)
         selected_component_paths.append(path)
     _admit_a1(
@@ -482,7 +515,7 @@ def _preflight(
         )
     except ValueError as error:
         raise OperatorPreflightError(str(error)) from error
-    if args.timeout_seconds <= 0:
+    if timeout_seconds <= 0:
         raise OperatorPreflightError("timeout seconds must be positive")
     return (
         agent_operating_contract, repository, state_root, input_paths, texts, work_item, profile, policy,
