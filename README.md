@@ -35,3 +35,13 @@ classification of current documentation, executable surfaces, provenance,
 history, and planning evidence. Start there before maintaining or operating the
 project. The compact [task router](docs/ai_info/_ai_info.adoc) provides the
 normal current-reading path for a specific task.
+
+The installed `wfc --version --json` reports the executing package version,
+implementation tree SHA-256, reviewed resource SHA-256 digests and source commit
+when established. A null `source_commit` means unknown: wheel and source archive
+installs do not establish a Git commit merely from their contents. In a clean
+checkout, the commit is reported only after the package files are verified
+against it. The tree digest covers package files by relative path and bytes,
+excluding Python bytecode and `__pycache__`; it does not depend on the current
+working directory. Reviewed role texts and the operating contract are checked
+before dispatch. Existing operator arguments continue through `wfc` unchanged.

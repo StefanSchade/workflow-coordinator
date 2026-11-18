@@ -20,6 +20,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Sequence
 
+from .implementation_identity import implementation_identity
 from .git_facts import (
     GitPreflightError, observe_repository, preflight_hop, repository_identity,
     salvage_inventory, salvage_omissions,
@@ -1753,8 +1754,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if run.run_id == successor_provenance.predecessor_run_id:
                 raise OperatorPreflightError("successor Run identity must differ from its predecessor")
             run = replace(run, successor_provenance=successor_provenance)
+        coordinator_identity = implementation_identity()
         state_root.mkdir(parents=True)
-        plan = {"schema_version": 2, "repository": str(repository), "expected_baseline": args.expected_head,
+        plan = {"coordinator": coordinator_identity, "schema_version": 2, "repository": str(repository), "expected_baseline": args.expected_head,
                 "inputs": {**paths, "pinned_revision": args.expected_head},
                 "components": {key: {"path": value.path, "digest": value.digest} for key, value in components.items()},
                 "durable_artifacts": {

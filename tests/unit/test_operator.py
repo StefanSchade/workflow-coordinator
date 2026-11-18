@@ -1586,6 +1586,8 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
     plan, summary = json.loads((state / "operator-plan.json").read_text()), json.loads((state / "operator-summary.json").read_text())
     assert len(loads) == 1
     assert counter.read_text() == "1" and plan["max_autonomous_hops"] == 1 and plan["retry"] is False
+    from workflow_coordinator.implementation_identity import implementation_identity
+    assert plan["coordinator"] == implementation_identity()
     assert plan["schema_version"] == 2
     assert plan["role_personas"] == {"worker": "fixture worker"}
     assert plan["role_bindings"] == {
