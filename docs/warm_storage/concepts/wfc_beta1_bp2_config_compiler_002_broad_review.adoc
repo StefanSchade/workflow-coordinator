@@ -1,0 +1,298 @@
+= BP2b consumer-neutral Commission compiler: broad review (successor Run)
+
+WorkItem:: `WI-WFC-BETA1-BP2-CONFIG-COMPILER-002`
+Hop:: `H002` (`broad_review`, fresh independent reviewer, gate, blocking-only)
+Candidate:: `9a8b55a7e5c84e2d166ac99f95e302568daca7db`
+Comparison base:: `0156cdc41a034004b5d06eb2eea23b383a66330d` (original
+assurance baseline, not the WIP or this Run's own baseline)
+Reviewed ancestry:: `edd4ae8` (predecessor H001 candidate), `ca6df76`
+(predecessor H002 review), `9ccf828` (non-authoritative maintainer
+preservation of the interrupted H003), `9a8b55a` (this Run's H001).
+Disposition:: Accept; no blocking findings.
+
+This review is independent and carries no credit forward. No predecessor
+Finding is imported, changed, or retroactively closed; the predecessor review
+artifact `wfc_beta1_bp2_config_compiler_001_broad_review.adoc` is byte-unchanged
+by this candidate (`git diff ca6df76..9a8b55a` over that path is empty) and is
+cited only as provenance. Every statement below was reproduced by the reviewer
+against the production entry points, not taken from the worker's report.
+
+== Scope of the candidate
+
+`git diff --name-only 0156cdc..9a8b55a` is 13 leaves. Five are the maintainer's
+own authorization commit (`governance/commissions/wfc-beta1-bp2-config-compiler-002/*`,
+added by `ba4e07b`). The implementation surface is:
+
+* `src/workflow_coordinator/commissioning.py` -- purely additive (two import
+  lines plus an appended BP2b section; the v1 `render_commission` /
+  `verify_render_manifest` region is byte-unchanged).
+* `src/workflow_coordinator/frontdoor/request.py`, `.../config.py`,
+  `.../verify.py` -- new.
+* `tests/unit/test_consumer_compiler.py` -- new.
+* `docs/backlog/beta1_productization.adoc`,
+  `docs/backlog/BUG-WFC-EVIDENCE-COMMAND-CONSUMER-NEUTRALITY.adoc`,
+  `docs/warm_storage/concepts/wfc_beta1_bp2_config_compiler_001_broad_review.adoc`
+  (the latter added by `ca6df76`, not modified here).
+
+No excluded surface is touched. `git diff --stat 0156cdc..9a8b55a` restricted
+to `operator.py`, `evidence.py`, `serialization.py`, `model.py`, `reducer.py`,
+`prompt.py`, `implementation_identity.py`, `pyproject.toml`, `scripts/`,
+`governance/workflow-programs/` and `governance/policy-bases/` is empty: the
+provider adapters, reducer, runtime, existing Workflow Programs, legacy policy
+bases and packaging declarations are all byte-identical. No existing test file
+was modified, so no assertion was relaxed. `git diff --check 0156cdc..9a8b55a`
+reports nothing, so the preserved WIP's trailing-blank-line warning is gone.
+No BP3-BP9 mechanics, `direct@v1` product support, continuation, mixed-provider
+Run or ASE integration appears anywhere in the diff.
+
+== The predecessor's blocking import-direction finding is resolved in substance
+
+`verify_commission` now lives in `src/workflow_coordinator/frontdoor/verify.py`
+rather than in the kernel, so no kernel module names `frontdoor`. This is
+checked, not asserted: the pre-existing AST invariant
+`tests/architecture/test_bp1_identity.py::test_roles_match_reviewed_sources_and_kernel_import_direction`
+(unchanged, lines 57-71) walks every `src/workflow_coordinator/**/*.py` outside
+`frontdoor/` and refuses any `Import`/`ImportFrom` naming `frontdoor`; it
+passes. `commissioning.py`'s import block names only `implementation_identity`,
+`operator` and `serialization`, and there is no function-scope `frontdoor`
+import anywhere in it. The dependency now runs one way: `frontdoor.{request,
+config,verify}` import `..commissioning`, and nothing in the kernel imports
+back. The predecessor's substantive objection -- that the deferred import hid a
+cycle -- no longer applies.
+
+== Independently reproduced: what the implementation actually does
+
+All probes below ran against from-scratch, disposable Git repositories created
+by `git init` with no `governance/` directory, no `pyproject.toml`, no `*.py`
+file, and an executable `checks/check.sh`. Probe transcripts were produced in
+this Hop by driving the production entry points directly.
+
+=== Admission is reused, not duplicated, and its caller obligations are met
+
+`frontdoor/verify.py:42-137` is the only consumer-path caller of
+`operator.admit_parsed`, and it establishes each obligation that function's
+docstring (`operator.py:363-376`) assigns to the caller, in this order:
+
+* repository top-level identity via the same `git_facts.repository_identity`
+  the unchanged `_preflight` uses, and a `is_dir()` check;
+* a 40-hex lowercase `expected_head` equal to the observed HEAD, and a clean
+  worktree with resolved submodules via the same `observe_repository`;
+* a resolved state root that cannot pre-exist, since it is a fresh name inside
+  a newly created `TemporaryDirectory`;
+* strict parse of the corresponding objects through the unchanged
+  `work_item_from_yaml` / `workflow_profile_from_yaml` /
+  `repository_policy_from_yaml` / `component_manifest_from_yaml` /
+  `run_execution_configuration_from_yaml`;
+* normalized input paths through operator's own `_relative_path`, and governing
+  texts read with operator's own `_pinned_text` at `expected_head` -- so the
+  "texts were read from those paths at that revision" obligation is discharged
+  by the same helper `_preflight` uses, not by a parallel reimplementation;
+* binding-source provenance: the envelope text is written to a file, read back,
+  parsed, and its `digest` is re-derived from its own text and refused on
+  mismatch (`verify.py:94-95`);
+* operating-contract validity via the unchanged `load_agent_operating_contract`.
+
+Critically, `verify.py:82-85` compares *every* compiled byte against the tree at
+`expected_head`, not only the five named governing files. The materialized
+`components/*.txt` are covered, so admission cannot be handed an unverified
+committed copy of a frozen role text. The consumer `repository_policy`
+component is the one compiled path that is not a generated file; it is covered
+separately at `verify.py:87-92`, where the blob observed at `expected_head`
+must equal the blob at the request's pinned `guidance.source_commit`.
+
+=== Frozen resources reach the real engine authority boundary
+
+This was tested at the boundary, not with a hash helper. Driving
+`verify_commission` to completion and inspecting the admission tuple it returns:
+
+* `result[8]['worker'].content` equals the installed package resource
+  `resources/roles/worker.txt` byte-for-byte, and `result[8]['worker'].revision`
+  equals `expected_head` -- the frozen product resource arrives as an admitted
+  `PromptComponent` built by `operator._pinned_text`;
+* `result[8]['repository_policy'].content` equals the consumer's pinned
+  `GUIDANCE.md` text;
+* `result[13]['task-check'].authored_argv` is `('sh', 'checks/check.sh')` and
+  its `admission_resolution.canonical_path` is `/usr/bin/dash` -- the consumer's
+  own shell check is resolved and stat-fingerprinted by the unchanged
+  `evidence.prepare_evidence_commands`, i.e. through the existing trusted
+  evidence mechanism rather than a bypass. Actual execution of such a check
+  through `PRODUCTION_EVIDENCE_RUNNER` in a non-Python repository is covered by
+  the pre-existing required-suite test
+  `tests/unit/test_neutral_consumer_evidence.py::test_shell_consumer_uses_real_evidence_runner`,
+  which passes.
+
+The legacy WFC-specific exact Python policy validation is untouched:
+`commissioning._repository_standard_record` still requires
+`argv == ("python", "-m", "pytest", "-q")` for the self-development
+`repository-standard` bases, and that region of the file is byte-unchanged.
+The consumer path does not relax it; it simply does not use it.
+
+=== Commission identity is separate from execution identity
+
+Verified directly. With the Request and Config held fixed and only the
+`resolve_execution` override changed, the compiled `texts` mapping is identical
+and the envelope digests differ, which the committed test
+`test_consumer_simple_end_to_end_admits_with_differing_execution_digests`
+also asserts after a real `verify_commission`/`admit_parsed` round trip
+(`result[16]` differs between the two bindings while
+`compiled_a.texts == compiled_b.texts`).
+
+The task directs this reviewer to judge whether execution-default changes
+affect immutable Commission identity. Reproduced result: changing only
+`default_execution.model` in the Consumer Config changes exactly one compiled
+file, `commission-manifest.json`, because the manifest records
+`config.sha256` over the whole pinned Config text. Every admission-governing
+byte -- `work-item.yaml`, `profile.yaml`, `policy.yaml`, `task.md`,
+`components.yaml` and every materialized `components/*.txt` -- is byte-identical.
+This is not a material breach: the task itself specifies the resolver as
+`resolve_execution(config, overrides, roles)`, so the Config legitimately
+carries execution defaults, and the task separately requires "traceable origin
+and digests" for the pinned inputs. The manifest digest is provenance of a
+legitimate pinned input, not an admission-governing or authority-bearing byte,
+and the stated acceptance (same Request/Config, differing permitted bindings ->
+byte-identical Commission artifacts, differing envelope digests) holds. Recorded
+below as a non-blocking observation, not a finding.
+
+Request-level rejection of execution fields is structural rather than a
+deny-list: `commissioning._mapping` refuses any unexpected key, so
+`bindings:`, or a `provider:` nested inside `evidence:`, is refused as a
+forbidden field. `_SUPPORTED_PROGRAMS` is closed to `simple@v1` and
+`robust@v1`; `direct@v1` is refused at parse time and again in
+`_consumer_program_template`. No new Workflow Program, revision or program
+record is introduced -- the consumer templates are the same
+`_simple_template()` / `_robust_template()` literals with the already-declared
+`repository_policy` slot filled.
+
+=== Profile equivalence to v1
+
+The committed tests pin the full compiled `phases` mapping for both programs
+field-for-field against the accepted `simple@v1` and `robust@v1` literals. The
+only differences are the deliberate ones: `components.repository_policy` is
+`["repository_policy"]` in every phase instead of empty, the `scope`/`artifact_key`
+slots are resolved into concrete `authorized_scope`, and the `evidence` slot is
+resolved to `["task-check"]`. Routes, roles, `authorized_actions`,
+`human_gates`, `durable_artifact`, review `breadth`/`authority`/`context`/
+`blocking_policy`/`trigger`/`exit`/`finding_authority`/`failed_evidence_route`
+are preserved exactly. Those differences are documented in
+`docs/backlog/beta1_productization.adoc`.
+
+Guidance cannot widen anything: it enters only as the text of one prompt
+component bound into the existing `repository_policy` slot. No request or config
+field can reach `authorized_actions`, `routes`, `review.finding_authority` or
+`policy.actions`; those come from the closed package-owned literals.
+
+=== Negative cases all fail closed at production boundaries
+
+Reproduced in this Hop against real repositories (none of these rely on a
+test-only stub):
+
+[cols="1,1"]
+|===
+|Attack |Refusal observed
+
+|Forged `bindings:` key in the Request |`Consumer Request contains forbidden field(s): bindings`
+|`provider:` nested inside `evidence:` |`...evidence contains forbidden field(s): provider`
+|`direct@v1` requested |`only the closed simple@v1 and robust@v1 programs...`
+|`../etc`, `/etc/passwd`, `a/../../b.md` as scope or guidance path |`must be an A1-normalized repository-relative path`
+|`../esc`, `/abs/gov` as `governance_dir` |same A1 refusal
+|`target_dir` outside the governance directory, or traversing |`compile target directory is outside the Consumer Config governance directory` / A1 refusal
+|Genuine on-disk mutation of `resources/roles/worker.txt` |`package resource digest mismatch or unreviewed: roles/worker.txt`
+|Committed tamper of a materialized `components/worker.txt` |`compiled projection equivalence mismatch`
+|Guidance changed after its pin |`consumer guidance differs from its pinned source object`
+|Guidance pinned to a nonexistent commit |`consumer guidance is absent or ambiguous at pinned source commit`
+|Request not tracked at `expected_head` |`Consumer Request is absent or ambiguous at pinned source commit`
+|Uncommitted or untracked worktree change |`worktree preconditions fail: repository must be clean with resolved submodules`
+|`expected_head` != HEAD |`current HEAD does not equal expected HEAD`
+|`repository` not the Git top-level |`repository path is not the Git top-level`
+|Envelope digest forged away from its text |`execution envelope digest does not match its own bound text`
+|Self-consistent envelope naming an unsupported adapter |`Run execution configuration.bindings.worker.adapter must be codex_cli or claude_cli`
+|Self-consistent envelope naming a role the profile does not use |`Run execution bindings must exactly match roles used by the profile`
+|Mixed adapters across roles in one Run |`mixed execution adapters are incompatible with the single scalar executable`
+|Execution overrides or defaults for an unselected role |`roles the selected program does not use`
+|Request hop limit above the Config ceiling |`exceeds the Consumer Config ceiling`
+|Request scope overlapping the governance directory |`overlaps the repository_policy guidance or governance directory`
+|Guidance file inside the Run's writable scope |`profile authorized_scope overlaps repository policy governance_paths` (A1, at `operator._admit_a1`)
+|===
+
+The last four rows are the authority-widening cases. The A1 overlap refusal is
+the important one: a Run can never hold write authority over its own Commission
+or its own `repository_policy` guidance, and that is enforced by the unchanged
+`operator._admit_a1`, reached through the real `admit_parsed` call.
+
+== Local check results and limits
+
+Reviewer-side exploratory runs only; the Coordinator's own task-check is the
+authoritative evidence.
+
+* `tests/unit/test_consumer_compiler.py` -- 21 passed.
+* `tests/unit` + `tests/architecture`, excluding the four files named below --
+  all passed (~900 tests), including `test_bp1_identity.py`,
+  `test_package_boundaries.py`, `test_product_invariants.py`,
+  `test_commissioning.py`, `test_operator.py`,
+  `test_operator_admit_parsed.py`, `test_a1_admission.py`,
+  `test_a2_evidence_commands.py`, `test_neutral_consumer_evidence.py`,
+  `test_self_development_governance.py`.
+* Not runnable in the reviewer sandbox, for environmental reasons unrelated to
+  the candidate (each of these files is byte-unchanged by it):
+  `test_bp1_identity.py::test_installed_identity_and_real_preflight`,
+  `test_offline_distribution.py` and `test_wfc_op.py` fail on the absent
+  package index (`No matching distribution found for setuptools>=68`);
+  `test_claude_adapter_conformance.py` and `tests/integration/` fail on the
+  read-only `/tmp` and unavailable nested `bwrap` of the reviewer sandbox
+  (`OSError: [Errno 30] Read-only file system`). The required offline bundle
+  (`WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`) is not present here, so every run above
+  was a `--wfc-partial` subset and is explicitly not required-suite acceptance.
+* No new packaging declaration is needed: `resources/roles/*.txt` were already
+  declared in `implementation_identity.RESOURCE_DIGESTS` before `0156cdc`, that
+  file is unchanged, and `test_installed_identity_and_real_preflight` still
+  pins the declared resource count at four.
+
+== Non-blocking observations
+
+These are recorded for the maintainer; none is a Finding and none blocks this
+gate.
+
+. `commission-manifest.json` digests the whole Consumer Config text, which
+  includes `default_execution`, so an execution-default change perturbs that one
+  provenance file. Analysed above; no admission-governing byte is affected.
+. `verify_commission` writes the execution bindings into a `TemporaryDirectory`
+  that is removed before it returns, so the returned tuple's `binding_source`
+  names a path that no longer exists. Harmless for this verify-and-admit entry
+  point, but a future BP3 launch path must not treat that returned value as
+  live provenance.
+. `resolve_execution` copies only `adapter`/`model`/`reasoning` out of an
+  override mapping; an unexpected key in a programmatic override is ignored
+  rather than refused, unlike the parsed-text schemas which refuse unknown
+  fields.
+. `compile_commission`'s governance/scope overlap check is one-directional,
+  so the guidance-inside-scope case compiles and is caught only later by
+  `operator._admit_a1`'s bidirectional check. Fail-closed at the real boundary,
+  but the message surfaces at admission rather than at compile time.
+. `test_consumer_compile_rejects_tampered_package_resource` inverts the
+  comparison by monkeypatching the expected digest instead of mutating the
+  resource bytes. Equivalent in effect; a genuine on-disk mutation was confirmed
+  refused during this review, and the pre-existing required test
+  `test_bp1_identity.py::test_installed_identity_and_real_preflight` (lines
+  51-54) mutates the real installed `resources/roles/worker.txt` bytes and
+  requires `wfc --version` to exit 2 with `digest mismatch`.
+. The BUG record paragraph attributes the consumer-neutral evidence change to
+  `WI-WFC-BETA1-BP2-CONFIG-COMPILER-001` rather than the delivering `-002`
+  WorkItem. The record correctly stays open for the self-development path and
+  claims no closure.
+
+== Disposition
+
+Accept. No blocking Findings. The BP2b deliverable is present and real for both
+`simple@v1` and `robust@v1` against a genuine non-Python, non-WFC repository
+with a real shell check; admission is reused rather than duplicated and every
+documented caller obligation is established before the call; Commission identity
+and execution identity are separate; frozen product resources and pinned
+consumer guidance reach the engine authority boundary and their tampering is
+refused there; the v1 render and self-development route and the legacy exact
+Python policy identity check are unchanged; and no excluded surface was
+modified.
+
+This is implementation-level independent review acceptance only. It is not
+product qualification, not BP2 closure, and not acceptance of the controlling
+BUG record, all of which remain outstanding. Coordinator task-check is separate
+and authoritative.
