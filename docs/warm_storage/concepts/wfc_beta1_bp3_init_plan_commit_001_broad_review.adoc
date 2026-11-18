@@ -1,0 +1,304 @@
+= BP3 `wfc init` / non-executing `wfc plan` / `bounded_path_commit`: broad review
+
+WorkItem:: `WI-WFC-BETA1-BP3-INIT-PLAN-COMMIT-001`
+Hop:: `H002` (`broad_review`, fresh independent reviewer, gate, blocking-only)
+Candidate:: `80f14d0baefee73af053b4e48a97661f52e4da6c` (H001)
+Authorization base:: `5565082ab7ea71f92c86fdc1475e9a5fe759977b`
+(`chore: authorize beta-1 BP3 implementation`)
+Accepted predecessor material:: BP2b at `9a8b55a` (implementation `edd4ae8`,
+non-authoritative preservation `9ccf828`, correction `9a8b55a`, fresh broad
+review `6e19dc6`, acceptance `89faba8`).
+Disposition:: *Accept.* No blocking findings. Six non-blocking residual
+observations are recorded below; none of them is a defect in the authorized
+BP3 surface that would justify withholding acceptance.
+
+This review carries no credit forward from the worker's report. Every
+behavioural statement below was reproduced in this Hop by driving the
+production entry points -- the declared installed entry point
+`workflow_coordinator.frontdoor.cli:main` and `git_facts.bounded_path_commit`
+itself -- against disposable, from-scratch, non-Python consumer Git
+repositories created for this review and deleted afterwards. Where a claim
+could not be reproduced in this sandbox, that is stated as an explicit
+limitation rather than treated as verified.
+
+== Candidate scope is exactly the authorized surface
+
+`git diff --name-only 5565082..80f14d0` is nine leaves:
+
+* new: `src/workflow_coordinator/frontdoor/init.py`,
+  `src/workflow_coordinator/frontdoor/plan.py`,
+  `tests/unit/test_bounded_path_commit.py`,
+  `tests/unit/test_frontdoor_init_plan.py`
+* additive edits: `src/workflow_coordinator/git_facts.py` (+114, no deletions:
+  `NewPathCommitIntent` plus `bounded_path_commit` appended after
+  `trusted_commit`), `src/workflow_coordinator/frontdoor/cli.py` (+6, no
+  deletions: two dispatch branches)
+* docs: `docs/backlog/beta1_productization.adoc`,
+  `docs/backlog/BUG-WFC-COMMISSION-RENDER-CHECK-WRITES-BUNDLE.adoc`,
+  `docs/developer_guide/ch02_code_navigation.adoc`
+
+Withheld surface is untouched: `commissioning.py` (the accepted BP2b compiler
+and Admission logic), `frontdoor/request.py`, `frontdoor/config.py`,
+`frontdoor/verify.py`, `operator.py`, the provider adapters, `reducer.py`,
+`model.py`, `evidence.py`, `scripts/`, `governance/workflow-programs/`,
+`governance/policy-bases/` and `pyproject.toml` do not appear in the diff at
+all. No existing test file was modified, so no existing assertion was relaxed.
+Nothing named `preserve_candidate`, no project-command probe, no archive,
+report, cutover, qualification, `direct@v1`, continuation or
+mixed-provider mechanics appears anywhere in the diff:
+`grep -rn "preserve_candidate\|probe" src/workflow_coordinator/frontdoor/`
+is empty. `BUG-WFC-COMMIT-INTENT-DIRECTORY-PATH-RECONCILIATION.adoc` is
+byte-unchanged.
+
+== `wfc plan` is genuinely read-only (independently reproduced)
+
+Fixture: `git init` of a neutral repository with `app/main.txt`,
+`tests/t.txt`, `policy/GUIDANCE.md` and an executable `check.sh` that writes a
+marker file; no `*.py`, no `pyproject.toml`, no `governance/`, no `.wfc/`. The
+configured project command (`--evidence-argv sh --evidence-argv check.sh`) is
+the marker-writing script. `robust@v1` was previewed with two personas and
+both required durable artifacts, `simple@v1` separately.
+
+Index neutrality was tested in the one state where it is actually hard. All
+tracked files were `touch`ed first, so every index entry's stat data was stale
+and any ordinary Git porcelain would rewrite `.git/index`:
+
+* before `wfc plan`: `sha256(.git/index) = ddb5155728ea355b3e844c6b145b54db`
+  `abdbd9f63d1dc30bbce3f8de40b6aaab`
+* after `wfc plan` (exit 0, full preview printed): *identical* digest
+* after a single plain `git status --porcelain -uall` on the same repository:
+  `854cd3911685fc65d56b87bc2c6efb9389a82fe1b04843c65e4adf6a6185fcbb`
+
+The positive control matters: the index-refresh write that `wfc plan` avoids is
+one a naive implementation would have performed. The mechanism is real, not
+accidental -- `plan` observes through `git_facts.observe_repository`, which
+copies the index to a temporary file, points `GIT_INDEX_FILE` at the copy and
+sets `GIT_OPTIONAL_LOCKS=0`; `commissioning.compile_commission` reads guidance
+only via `git ls-tree` / `git show <commit>:<path>`.
+
+HEAD was unchanged (`130d6c81...` before and after). `git status --porcelain
+-uall` after the preview listed only the pre-existing untracked `task.md`; a
+directory listing confirmed no `.wfc/governance` directory, no Commission file,
+no marker and no stray temporary file anywhere in the worktree. The project
+command never executed (no marker file). `grep -n
+"write_to\|verify_commission\|admit\|subprocess\|Popen\|os.system"` over
+`plan.py` and `init.py` matches only a docstring sentence -- there is no
+process launch and no publication call in either module, so no provider, no
+hook-bearing Git mutation, no Commission write and no Run launch can occur.
+Two consecutive previews produced byte-identical stdout (`cmp` exit 0).
+
+`plan` really does use the accepted BP2b interfaces rather than a local
+re-implementation. Reproduced independently of the worker's own test: driving
+`frontdoor.cli.main(["plan", ...])` and then separately calling
+`commissioning.compile_commission` and `frontdoor.config.resolve_execution`
+with the same inputs reproduced all eight projected Commission file digests
+printed by the preview, and the printed `execution envelope digest` equalled
+`resolve_execution(...).digest`. The envelope stays outside the Commission
+bytes: neither the envelope digest nor the chosen adapter name occurs in any
+compiled Commission text. The preview's own structure keeps them separate
+("projected Commission files (not written by plan)" versus "resolved execution
+envelope (separate from the Commission; not published)").
+
+`plan` builds its request by rendering YAML and re-parsing it through the
+unchanged `consumer_request_from_yaml`, so BP2b's closed-schema field-forgery
+and scope refusals apply unchanged; it never calls `verify_commission` or
+`operator.admit_parsed`, so BP2b's temporary binding file is never created,
+retained, or presented as launch provenance.
+
+== A consumer can actually prepare the inputs
+
+The task document is plain markdown in exactly the shape
+`commissioning._task_text` already renders (`# title`, body, `## Acceptance`,
+`## Withheld authority`, `## Default escalation`) -- no new schema, no WFC
+self-development convention, no `governance/` layout required of the consumer.
+A multi-paragraph body and a multi-line acceptance section parse and preview
+correctly.
+
+The first-run flow works without any intermediate commit: `wfc init
+--repository . --scope-ceiling app` writes exactly one new file
+(`.wfc/config.yaml`, untracked, `git diff --cached` empty, HEAD unmoved),
+prints a `NEXT EXPLICIT ACTION` telling the maintainer to review, fill in
+`default_execution` and commit it themselves, and a second `wfc init` refuses
+with `refusing to overwrite existing Consumer Config`. `wfc plan` then
+succeeds against that still-uncommitted config, because only the pinned
+`--guidance-path` must exist in a commit.
+
+Missing or malformed inputs are reported understandably, with exit code 2, no
+output on stdout and no mutation:
+
+* no config: `cannot read Consumer Config '<path>': ... (run \`wfc init\`
+  first, or pass --config)`
+* malformed task document: `task document must be '# <title>' followed by a
+  body, then '## Acceptance', '## Withheld authority' and '## Default
+  escalation' sections, in that order`
+* guidance not committed at the pinned commit: `consumer guidance is absent or
+  ambiguous at pinned source commit <sha>: policy/MISSING.md`
+* no execution binding supplied and none in the config: `execution binding for
+  role worker is missing: adapter, model, reasoning`
+* bad `--guidance-commit`: the BP2b `40-character SHA` refusal
+* missing `--persona`: the ordinary argparse usage error
+* non-repository `--repository`: Git's own `not a git repository` message,
+  prefixed `wfc init:`
+
+No governance gate beyond the authorized inputs was invented, and no project
+command is required before authorization: `plan` records `evidence.argv`
+without resolving or running it.
+
+== `bounded_path_commit`: positive and adversarial behaviour
+
+The function reuses the existing trusted execution policy
+(`_trusted_git`: `GIT_*` stripped from the environment,
+`core.hooksPath=/dev/null`, `commit.gpgSign=false`, `core.fsmonitor=false`, no
+shell), the existing `_validated_intent_paths` normalization/scope contract,
+`commit_subject_error`, `_configured_external_filters` and the existing
+`_observe_hop` post-commit observation. It adds exactly one new rule --
+`git cat-file -e <base_head>:<path>` must fail -- which is what makes
+modification and deletion of an already-tracked path impossible, plus an
+`lstat` leaf check. It exposes no agent-authored Git argv and does not relax
+`trusted_commit`, which is byte-unchanged.
+
+The repository's own 24 cases
+(`tests/unit/test_bounded_path_commit.py`) and the 14 existing
+`tests/unit/test_slice4b_git_authority.py` cases pass together
+(`62 passed` with `tests/unit/test_frontdoor_init_plan.py`). Beyond them, this
+review ran its own adversarial probes against real repositories, asserting
+output *and* HEAD/index/worktree effects:
+
+[cols="3,2"]
+|===
+|Probe |Observed
+
+|new leaf under a new subdirectory, named exactly
+|committed, one changed path, worktree clean afterwards
+
+|intent path reached through a symlinked parent directory pointing outside the
+repository
+|refused (`unexpected dirty path: src/link`); HEAD and index untouched; nothing
+outside the repository read into a blob
+
+|`.gitignore`d new leaf
+|refused (`commit intent path has no worktree mutation`)
+
+|one of two new siblings in a new directory
+|refused (`unexpected dirty path: src/d/b.txt`) -- an unnamed sibling cannot
+ride along
+
+|path already staged before the call
+|refused (`pre-existing staged state`)
+
+|`core.hooksPath` with `pre-commit`, `commit-msg`, `post-commit` and
+`post-index-change` hooks installed, the hook files themselves in the intent
+|committed; *no* hook ran (`--no-verify` alone would not have stopped
+`post-commit`; `core.hooksPath=/dev/null` does)
+
+|`core.fsmonitor` pointing at a marker-writing script
+|not executed
+
+|`diff.<driver>.command` plus `diff.external` with a `.gitattributes`
+selecting the driver
+|not executed (`--no-ext-diff`), and the call refused on the unrelated dirty
+paths
+
+|configured `filter.<name>.clean` with a selecting `.gitattributes`
+|refused before staging; filter never ran (repository test, reconfirmed)
+
+|concurrent commit landing between staging and commit
+|refused (`staged paths differ from commit intent`); the primitive published
+nothing
+
+|injected `git add` failure
+|refused truthfully (`staging failed: ...`), worktree content intact
+|===
+
+Refusals left the prior tree, index and HEAD intact in every probe, and the
+directory-shaped intent is refused with a leaf-exact diagnostic rather than
+expanded -- `BUG-WFC-COMMIT-INTENT-DIRECTORY-PATH-RECONCILIATION` is neither
+decided nor closed.
+
+== Legacy compatibility
+
+`frontdoor/cli.py` intercepts only `args[:1] == ['init']` and
+`args[:1] == ['plan']` ahead of the unchanged `operator.main` fallback;
+`--version` handling is unchanged. The legacy operator takes no positional
+subcommand except `export-salvage`, `prepare-successor` and `status`, so no
+existing invocation changes meaning. The pre-existing invariant
+`tests/architecture/test_bp1_identity.py::test_dispatch_preserves_legacy_arguments`
+(bare-flag operator dispatch) and the kernel import-direction AST invariant
+both pass unchanged, as does `tests/architecture/test_package_boundaries.py`.
+`scripts/wfc_op.py` and the self-development route are untouched.
+
+== Documentation and BUG handling
+
+`beta1_productization.adoc` records the implementation as *prepared for
+independent review and Coordinator `task-check`*, explicitly leaving
+acceptance, Runtime promotion and product closure outstanding, and scopes
+preservation out to BP4. The render/check BUG record gains a section stating
+that `wfc plan` satisfies the desired non-writing-preview direction *for the
+new path only*, and its Lifecycle section still reads *open* with the legacy
+`scripts/wfc_op.py::cmd_commission_render` defect unresolved and its non-scope
+intact. `ch02_code_navigation.adoc` gains an accurate pointer to the new
+modules. No premature acceptance or closure is asserted anywhere, and no
+review-phase artifact other than this one was written by the implement Hop.
+
+== Non-blocking residual observations
+
+R1:: `wfc plan`'s observation inherits ordinary Git policy, so a
+repository-configured `core.fsmonitor` program *is* executed by the
+`git status` inside `observe_repository`, and such a program can itself write
+to the worktree (reproduced: the probe's fsmonitor script created a marker
+during `wfc plan`). This is not agent-reachable -- `core.fsmonitor` lives in
+Git configuration, not in any committed worktree file, so only the person who
+already owns the repository (and who is the one invoking `wfc plan`) can
+configure it, and the legitimate case (a Watchman-style monitor) is read-only
+by design. It is also pre-existing accepted behaviour of the Slice-2
+observation seam, which BP3 reuses rather than widens, and the BP3 *write*
+primitive does neutralize `core.fsmonitor`. Recorded, not blocking: hardening
+would mean changing the shared accepted observation path, which is outside this
+Commission's authority.
+R2:: `bounded_path_commit` validates `lstat` leaf-ness before staging, but a
+concurrent writer that replaces the validated regular file with a symlink
+inside the remaining window gets a symlink committed (reproduced only by
+injecting the swap into a patched internal helper: mode `120000` in the
+resulting tree). The primitive is Coordinator-owned and documented for callers
+acting outside a Hop, so no agent is running concurrently in the intended
+usage, and `trusted_commit` is no stronger here. A cheap future hardening when
+BP4/BP5 wire a real caller: have the post-commit observation also assert the
+committed blob modes.
+R3:: The `bounded_path_commit` docstring and `ch02_code_navigation.adoc` name
+`frontdoor.init` / `wfc init` among its Coordinator-owned callers, but `wfc
+init` deliberately never commits and no production caller exists yet. The
+wording describes intent; it should not be read as an existing call site.
+R4:: `wfc init --config-path` is used verbatim, so an absolute or
+`../`-escaping value writes outside the repository, and `--repository <subdir>`
+resolves through `git rev-parse --show-toplevel` to the *enclosing*
+repository root rather than refusing. This review triggered the latter
+accidentally and removed the resulting file. Both are consumer-invoked
+conveniences with no Coordinator authority boundary behind them, so this is a
+usability nit, not a defect of the authorized contract.
+R5:: In the preview, a multi-line task body or acceptance section renders its
+continuation lines unindented under the `Task:` block. Cosmetic only; content
+is complete and deterministic.
+R6:: Environment, not candidate: this checkout's `.venv/bin/wfc` console
+script is stale and still imports `workflow_coordinator.operator:main`, which
+predates BP1's `pyproject.toml` entry point
+`wfc = "workflow_coordinator.frontdoor.cli:main"` (added by `0ff1570`), so a
+literal `wfc init` fails in this sandbox. This review therefore exercised the
+*declared* entry point function directly. The two architecture tests that would
+prove the built wheel's console script
+(`test_installed_identity_and_real_preflight`,
+`test_clean_isolated_distribution_and_wheel_install`) cannot run here: an
+isolated `python -m build` needs to download `setuptools>=68` and there is no
+network access.
+
+== Evidence limitations
+
+Agent-side results above are exploratory validation, not Coordinator-trusted
+evidence; the Coordinator `task-check` is separate and was not run here. In the
+agent sandbox, `tests/unit/test_claude_adapter_conformance.py` (22 failures)
+and `tests/unit/test_wfc_op.py` (4 failures, 13 errors) fail for environmental
+reasons -- no `claude` binary on `PATH` and no network for the isolated build's
+`setuptools` download. Neither file imports `frontdoor` or `git_facts`, and
+neither appears in the candidate diff, so these are not regressions from this
+change. All other `tests/unit` and `tests/architecture` tests pass. Every
+fixture used by this review was disposable and has been removed; the reviewed
+checkout's tracked state is unchanged.
