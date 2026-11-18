@@ -59,10 +59,11 @@ epic's 2026-11-18 decisions actually settle them.
   adopts C2).
 * *`wfc plan` runs no project command; the probe follows authorization*
   (adopts C3's placement, not its every mechanism).
-* *Evidence default:* a separate Git-backed Evidence repository with a
-  sanitized audit projection and a local-raw option is preferred (answers
-  Q3's default; exact retention/projection fields remain open, see
-  <<decision-gates>>).
+* *Evidence destination:* a separate Git-backed Evidence repository is the
+  preferred default; repository-local archiving remains a distinct option.
+  Raw retention (`local`, `commit`, or `discard`) is a separate choice from
+  destination. The conflict with historical `DEC-WFC-023` remains unresolved;
+  this plan does not rewrite it. See DG-2 for timing and protection boundaries.
 * *Preservation is a requirement, recovery is not:* automatic,
   non-authoritative candidate preservation on a regular stop is required;
   full crash supervision is not. This is addressed below as a bounded
@@ -80,41 +81,36 @@ epic's 2026-11-18 decisions actually settle them.
   recommendation below), but whether a failed or incomplete
   preserved-candidate-ref case actually blocks the `0.1.0b1` tag is a
   separate question `_open.adoc` leaves open. DG-6 below gives the
-  maintainer that gate-status choice explicitly, before BP4 starts, rather
+  maintainer that gate-status choice explicitly before release, rather
   than this plan resolving it through BP4's acceptance wording alone.
 * *No mandatory comprehensive supervisor/subreaper:* the readiness review's
   C4 (host process, subreaper, six-case classifier, `wfc stop`) and its
   "mandatory BP4a dependency" are *superseded for Beta 1*. BP4 below is
-  therefore R2's original controller, corrected by C1–C3, not R3's BP4a/BP4b
-  split.
+  therefore R2's controller corrected by C1–C3, split below into lifecycle
+  and preservation slices; these are not R3's host/controller split.
 * *Continuation stays manual in Beta 1:* C6 and `wfc continue` (RP1) are a
   fast-follow, not a Beta-1 package; no lineage block, no adoption command
   and no new review-entry phase are commissioned here.
-* *Claude:* operationally proven in successful Runs; exactly one targeted
-  qualification remains open (a positive new-directory write and WFC
-  candidate acceptance under the current Runtime). The former negative
-  (preventive-isolation) criterion is superseded. This plan does not invent
-  a second Claude qualification; see BP9 below.
+* *Claude:* operationally proven in successful Runs. Current maintainer
+  direction for this planning Run does not require repeating a historical
+  BUG-specific live test for formality. The epic, `_open.adoc` and Claude BUG
+  still require the targeted positive qualification; their release disposition
+  conflicts with that direction and needs maintainer reconciliation before
+  release. Product-level live Beta qualification remains appropriate; see BP9.
+  The former preventive negative criterion is superseded.
 * *Execution-boundary integration* (provider-independent preventive
   isolation) is explicitly post Beta 1 and is not a BP1–BP9 deliverable.
 
 === Access verified versus inaccessible
 
-This checkout contains the Development repository only. The "sibling
-`workflow-coordinator-run-evidence` archiver" the task names is a *separate*
-Git repository (the Evidence repository); it is not present in this sandbox.
-What was actually inspected: `scripts/wfc_op.py`'s `cmd_archive` (lines
-1149–1234) and `_invoke_canonical_archive`, which is a thin, deterministic
-wrapper that runs `<evidence>/scripts/wfc-archive-run <state> <evidence>
-[--dry-run]` and parses its own printed report lines; and the second-pass
-review's citation of that repository's `scripts/archive_run.py`,
-`scripts/wfc-archive-run`, `tests/test_archive_helpers.py` and
-`tests/test_wfc_archive_run.py` (61 tests) as the archiver's actual
-implementation and conformance suite. Neither file's contents nor the cited
-tests could be read from here. BP5 below states this as a concrete
-prerequisite for its own implementer -- who needs that repository checked
-out locally, exactly as `scripts/wfc_op.py`'s own tests already require it
-operationally -- not as a gap this plan papers over.
+The sibling `workflow-coordinator-run-evidence` repository is available in
+this environment. Its `scripts/archive_run.py` uses a repository-bound archive
+root and refuses destinations outside it; `scripts/wfc-archive-run` is the
+existing wrapper. `scripts/wfc_op.py` invokes that wrapper, first dry-running
+it. BP5 must port and verify the sibling implementation and conformance suite;
+it cannot assume that the existing fixed root already supports repository-local
+destinations. Access to the sibling and a retained Run remains a prerequisite
+for the implementing Commission.
 
 [[conventions]]
 == Commission-authoring convention used below
@@ -177,10 +173,10 @@ consumer-neutral fixtures. (`tests/unit/test_commissioning.py`'s own
 literal-rendering/tamper/renewal-trace/A1 invariants are a separate,
 `v1`-pinned suite the same review keeps until BP2b's `v1` compile path is
 removed at BP7; BP8 does not touch them.)
-Modules/paths:: New/relocated tests under `tests/` with an explicit marker
-and default deselection for the remaining 40 historical-fixture tests; one
-parse-smoke test over `governance/self-development/` left in place for
-regression only.
+Modules/paths:: New/relocated tests under `tests/` while retaining the remaining historical-fixture tests in the normal
+repository test selection. Provide a separately invocable product-only
+selection for checkouts without those fixtures; retain a parse-smoke test
+over `governance/self-development/` when present.
 Excluded scope:: No deletion of the historical fixtures; no quarantine,
 performance work or fixture consolidation beyond the five invariants; no
 behavior change to the production preflight/admission path (`operator.py`)
@@ -192,13 +188,15 @@ link:BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc[pytest temp-resource
 exhaustion] and link:BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION.adoc[offline
 fixtures] are adjacent infrastructure issues this Commission may surface but
 does not itself fix.
-Acceptance:: The default test selection passes with
-`governance/self-development/` and `governance/work-items/` absent from the
-checkout.
+Acceptance:: The product-only selection passes with
+`governance/self-development/` and `governance/work-items/` absent; the
+normal repository selection still collects and runs the historical tests
+when those fixtures are present.
 Tests/evidence:: The five relocated/ported invariant tests, run against a
 neutral fixture, not a clone of this repository.
-Risks:: Low; mechanical relocation. The risk is scope creep into the other
-forty historical tests, which this Commission does not touch.
+Risks:: Default deselection would hide historical regressions; retain those
+tests and document the explicit product-only command. Avoid changing their
+assertions merely to pass productization.
 Decision gates:: None.
 
 === BP2a -- `wfc-beta1-bp2-admission-extraction-001`
@@ -267,7 +265,9 @@ retry-safe `wfc archive` capability, ported from the Evidence repository's
 own implementation rather than reimplemented.
 Modules/paths:: `frontdoor/archive.py`; `wfc archive`; staging and atomic
 placement; idempotent retry; the narrowed cleanliness rule the second-pass
-review specifies.
+review specifies. Parameterize the destination boundary for both a separate
+Evidence repository and a repository-local archive, subject to DG-2 timing.
+Never treat raw retention as the destination selector.
 Excluded scope:: No projection/retention design (BP6); no change to the
 Evidence repository's own `scripts/archive_run.py` or
 `scripts/wfc-archive-run`, which remain the source of truth this port must
@@ -291,7 +291,10 @@ the same STATE root with the old `scripts/wfc_op.py cmd_archive` path and
 with the new module into two temporary Evidence repositories produces
 identical `copied_files` digests and facts (ignoring `archived_at`). A
 retry after a kill between copy and commit produces exactly one commit with
-identical content; a second archive of the same attempt is a no-op.
+identical content; a second archive of the same attempt is a no-op. If DG-2
+selects Beta-1 delivery, exercise the same retry and destination-confinement
+checks in a payload repository, including refusal of path traversal, symlink
+escape and unauthorized commits; unrelated dirty paths must remain untouched.
 Tests/evidence:: The ported Evidence-repository conformance tests (61 per
 the second-pass review's count) now driving the new module, plus the
 equivalence and retry tests above.
@@ -303,7 +306,8 @@ and run its tests -- confirm that access is actually available before
 authorizing this Commission; if it is not, this Commission stops on that
 concrete prerequisite rather than silently porting a smaller, invented test
 set.
-Decision gates:: None.
+Decision gates:: DG-2 destination timing must be settled before BP5 starts;
+if local delivery is deferred, its explicit follow-up and deadline are recorded.
 
 === BP3 -- `wfc-beta1-bp3-init-plan-commit-001`
 
@@ -339,7 +343,7 @@ Risks:: Small; the commit function must refuse modifying or deleting an
 existing file, so it can never be used to amend a committed Commission.
 Decision gates:: None.
 
-=== BP4 -- `wfc-beta1-bp4-lifecycle-controller-001`
+=== BP4a -- `wfc-beta1-bp4-lifecycle-controller-001`
 
 Goal/deliverable:: `wfc run` from authorized request to terminal Run,
 restartable at every step but launch, ending at `terminal` with no archive
@@ -352,9 +356,8 @@ epic supersedes as mandatory for Beta 1; does not include C6/lineage.
 Modules/paths:: `frontdoor/lifecycle.py`, `frontdoor/envelope.py`; `run`,
 `resume`, `status`; journal and step functions; engine subprocess launch,
 lock and detachment exactly as today (no new host process); same-repository
-refusal; active-lifecycle pointer; `git_facts.preserve_candidate`
-(bounded version of C5, below).
-Excluded scope:: Any supervising host process, subreaper, or completion
+refusal and active-lifecycle pointer. Candidate capture belongs to BP4b.
+Excluded scope:: Candidate capture (BP4b); any supervising host process, subreaper, or completion
 record beyond what the engine and its existing lock already provide; any
 `wfc stop` command; any lineage block, `--continues` or `wfc continue`.
 Prerequisites/predecessors:: `wfc-beta1-bp3-init-plan-commit-001` accepted.
@@ -365,39 +368,44 @@ diagnostics] (all three are usability candidates folded into this
 Commission's acceptance, not independently re-opened); link:FTR-WFC-ATOMIC-HOP-RECOVERY.adoc[same-Run
 recovery] (explicitly *not* in scope; this Commission classifies an
 interruption, it does not resume the interrupted Run itself).
-Bounded technical recommendation for preservation without C4:: Capture a
-candidate only when the engine's own lock is free and the journal shows
-either a clean terminal summary or an interruption at a recorded step
-boundary -- the same facts R2's original design already classifies as
-"interrupted" -- *without* claiming the host's `attested` quiescence the
-readiness review introduces. Label the preservation record's quiescence
-source `unattested` in this case. This matches the epic's own instruction
-("practical preservation without full recovery") and must be stated in the
-Operator Manual's recovery chapter as an explicit limitation at the point
-of implementation: a provider process that outlives the engine could still
-be writing when the candidate is captured; Beta 1 does not detect this.
-Acceptance:: The second-pass review's acceptance scenario up to the
-terminal state passes in a neutral fixture with a fake provider, including
-a refusal-before-launch case and an engine-killed-mid-Hop case that ends
-`interrupted` with a preserved candidate ref and an untouched working tree;
-no `pip` invocation occurs anywhere in the path; a scripted non-terminal
-`--yes` Run reaches a terminal state with no further prompt.
-Tests/evidence:: A completed Run and an `awaiting_human` Run with the fake
-provider; a crash-injection matrix killing the controller after each step
-boundary, asserting `resume` reaches the same end state with exactly one
-Commission commit and exactly one engine launch; a changed package identity
-or provider binary between authorization and launch is refused; the
-preservation predicates (quiescence-as-defined-above, HEAD match, clean
-index, paths within phase scope, no clean/filter config, size cap, two
-stable tree passes) tested individually against fixture STATE directories.
-Risks:: Process supervision is the least certain part of this plan even in
-its reduced form; a provider process may outlive the engine and keep
-writing (stated as a limitation above, not solved here). Attempt names
-must carry a project slug so two projects cannot collide under one home
-directory.
-Decision gates:: See <<decision-gates>>, DG-3 (preservation disposition)
-and DG-6 (preservation's release-gate status) should be confirmed before
-this Commission starts.
+Acceptance:: The second-pass review's lifecycle scenario up to terminal
+passes in a neutral fixture with a fake provider, including refusal before
+launch, a completed Run and an `awaiting_human` Run; no `pip` invocation
+occurs in the path and a scripted `--yes` Run needs no further prompt.
+Tests/evidence:: Kill the controller at each step boundary: resume reaches
+the same end state with exactly one Commission commit and one engine launch;
+refuse changed package identity or provider binary after authorization.
+Risks:: Journal/restart and authorization are substantial coupled work;
+this slice exposes those behaviors before preservation is added.
+Decision gates:: None.
+
+=== BP4b -- `wfc-beta1-bp4-candidate-preservation-001`
+
+Goal/deliverable:: Add bounded, non-authoritative capture of unadopted work
+on stops and interruptions to the accepted lifecycle, without Run recovery.
+Modules/paths:: `git_facts.preserve_candidate`, lifecycle stop handling and
+the affected recovery guidance in `docs/operator_manual/ch06_recovery/`.
+Excluded scope:: No host supervisor, subreaper, provider-session recovery,
+lineage or same-Run recovery. Capture must not adopt a candidate.
+Prerequisites/predecessors:: `wfc-beta1-bp4-lifecycle-controller-001` accepted;
+DG-6 resolved before release if the gate status remains disputed.
+Controlling BUG/FTR:: link:FTR-WFC-ATOMIC-HOP-RECOVERY.adoc[same-Run recovery]
+remains outside scope; the epic's practical preservation requirement controls.
+Bounded technical recommendation:: Capture only when the engine lock is free
+and the journal records a terminal or interrupted step boundary. Record the
+quiescence source as `unattested`: a surviving provider may still write.
+Document that limitation; no broad subreaper is required. This recommendation
+is non-authorizing and can be revised during Commission review.
+Acceptance:: An engine killed mid-Hop yields `interrupted`, a preserved
+candidate ref and an untouched working tree; an awaiting-human stop preserves
+unadopted work, while normally adopted work needs no extra candidate.
+Tests/evidence:: Exercise lock/journal conditions, HEAD match, clean index,
+phase-scope paths, clean/filter refusal, size cap and two stable tree passes;
+verify refusal leaves repository state untouched and no adoption is implied.
+Risks:: A surviving provider can still write despite the lock being free;
+stable passes reduce but do not prove quiescence.
+Decision gates:: DG-6 concerns release status, not authority to implement the
+bounded recommendation. Resolve an actual design conflict if encountered.
 
 === BP6 -- `wfc-beta1-bp6-audit-report-001`
 
@@ -410,10 +418,12 @@ Excluded scope:: No Findings-schema redesign beyond the fields already
 persisted today (the second-pass review's own caveat: the Findings shape is
 the least grounded field list, not something this Commission should
 over-specify); no lineage/continuation fields (deferred with C6); no
-token-usage field beyond a reserved, nullable placeholder unless DG-1 below
-is resolved otherwise before this Commission starts.
+fabricated usage values; collect provider-reported usage where feasible at
+reasonable cost, with a nullable placeholder when unavailable, subject to DG-1.
 Prerequisites/predecessors:: `wfc-beta1-bp4-lifecycle-controller-001` and
-`wfc-beta1-bp5-archive-port-001` accepted.
+`wfc-beta1-bp5-archive-port-001` accepted; also
+`wfc-beta1-bp4-candidate-preservation-001` if DG-6 retains it for Beta.
+If deferred, omit its fields and explicitly report preservation unavailable.
 Controlling BUG/FTR:: link:FTR-WFC-CONTRACT-HISTORICAL-RECONSTRUCTABILITY.adoc[historical
 meaning] (new schema must identify its own revision); link:BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION.adoc[provider
 diagnostics] and link:BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS.adoc[failure
@@ -421,12 +431,19 @@ diagnostics] are already corrected and accepted -- cited here as reusable
 context for the report's failure-mode content, *not* reopened or
 recommissioned.
 Acceptance:: Privacy property: for a Run whose home directory, user name
-and scratch path are known, `audit.json` contains none of them and no
-absolute path. Every raw digest in the projection equals the raw manifest's.
-A stopped and an interrupted Run both project correctly, including the
-preservation fact recorded by BP4 with its `unattested` quiescence source.
+and scratch path are known, `audit.json` contains none of them, no
+absolute path, persona or provider prose. Every raw digest in the projection
+equals the raw manifest's. Provider-reported usage is recorded when feasible;
+unavailable values remain unknown. If DG-1 selects the gate, demonstrate
+reported usage from supported providers in BP9 before release.
+A stopped and an interrupted Run both project correctly, including any
+preservation fact recorded by BP4b with its `unattested` quiescence source;
+if deferred, the report identifies that limitation instead.
 With `raw: local`, `git ls-files` in the Evidence repository shows only
-`audit.json` files and `.gitignore`.
+`audit.json` files and `.gitignore`. If DG-2 selects local archiving for
+Beta 1, run the privacy and digest checks there too: raw files must not be
+committed by default, and ignored or untracked local raw files must not leak
+through payload commits. Explicit raw commit is an opt-in security boundary.
 Tests/evidence:: Report content checked against the failure-mode cases
 already identified in BP4's acceptance; a stopped and an interrupted
 fixture Run both project truthfully with explicit limits stated, not
@@ -453,37 +470,29 @@ Excluded scope:: No new product mechanism; this Commission consumes BP1–BP6
 and BP8, it does not add to them. No execution-boundary integration work
 (post Beta 1, per the FTR).
 Prerequisites/predecessors:: `wfc-beta1-bp6-audit-report-001` accepted.
-Controlling BUG/FTR:: link:BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[the
-Claude write-permission BUG] -- this Commission is where the *one* remaining
-targeted qualification belongs: under the current Runtime (the BUG's own
-wording, matching <<basis>> above), a live Claude worker creates a
-previously nonexistent WFC-authorized directory, writes a file in it, and
-WFC performs candidate acceptance and reduction from evidence. This
-qualification does not require or wait on a Runtime promotion produced by
-this plan's own BP1–BP6 Commissions -- it runs under whichever Runtime is
-current when the maintainer attempts it, which is why it is not scheduled
-after Batch 4's promotion below. This is a maintainer-owned live Run, done
-once, not repeated speculatively and not paired with a second, superseded
-negative-isolation test (per the epic).
-link:FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[Execution boundaries] is cited
-for contrast only: its integration and qualification are explicitly post
-Beta 1 and this Commission must not claim them.
-Acceptance:: A person who has not read the Operator Manual completes the
-second-pass review's acceptance scenario from the quickstart alone, on a
-real non-Python repository, with a fake provider for the automated/local
-parts and one live Run per supported adapter (Codex, then the Claude
-qualification above) from an installed wheel.
-Tests/evidence:: The permanent fake-provider acceptance test; the local
-integration scenario (install, `init`, `plan`, `run --yes` through archive
-and report, one deliberate failure case from the second-pass review's
-failure/retry table); the live per-adapter smoke, recorded as maintainer-owned
-evidence, not agent-reported success.
-Risks:: Live qualification is maintainer-owned and provider-dependent;
-this Commission's own authored work (the test, the scenario, the
-quickstart) is delegable, the live Runs are not, per the second-pass
-review's own delegation note.
-Decision gates:: None new; this Commission executes the qualification the
-epic already scoped, it does not reopen whether to do it.
+Controlling BUG/FTR:: link:BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[Claude
+write-permission BUG], the epic and `_open.adoc` still call for its targeted
+positive new-directory case through candidate acceptance; general successful
+Runs do not establish that specific case. The current planning direction says
+not to require a repeated BUG-specific live test merely for formality. This is
+a real unresolved record conflict, not a claim that the BUG is closed. Before
+release the maintainer must reconcile these records or explicitly retain that
+criterion; BP9 does not itself rewrite them. The former negative isolation
+criterion is superseded; provider-independent preventive isolation is post Beta.
+Acceptance:: An unfamiliar user completes the quickstart scenario on a real
+non-Python repository. The automated scenario uses a fake provider; product
+Beta E2E qualification exercises each supported adapter from an installed
+wheel under maintainer authority. A live scenario may also satisfy the BUG's
+positive criterion if it actually exercises and evidences it; do not repeat it
+merely for formality. Record the actual Runtime and results.
+Tests/evidence:: Permanent fake-provider acceptance test covering success,
+correction/review, stops, archive retry, a deliberate failure and `--yes`;
+local installed-wheel integration and maintainer-owned live per-adapter
+qualification evidence. Do not infer a live result from a fake provider.
+Risks:: Live qualification depends on provider access and maintainer authority.
+Decision gates:: Reconcile the conflicting Claude records before the release
+decision; choose either to retain the targeted criterion or update its owning
+records with a reasoned disposition. No live execution is authorized here.
 
 === BP7 -- `wfc-beta1-bp7-self-development-cutover-001`
 
@@ -535,14 +544,15 @@ starts; see <<decision-gates>>.
 
 [source,text]
 ----
-BP1 --> BP2a --> BP2b --> BP3 --+--> BP4 --+--> BP6 --> BP9 --> 0.1.0b1
-  \                              \         |
-   +---> BP5 (port/tests start) --+-> BP5 (commit, finishes) --+
+BP1 --> BP2a --> BP2b --> BP3 --> BP4a --> BP4b --> BP6 --> BP9 --> 0.1.0b1
+  \                       \                         ^
+   +--> BP5 (start) --------> BP5 (finish) ----------+
+BP4b may be deferred subject to DG-6; BP6 then follows BP4a and BP5.
 BP8 (parallel, independent, no predecessor)
 BP7 (after BP6 acceptance + maintainer Runtime promotion; before or after the tag, per DG-4)
 ----
 
-Critical path: BP1, BP2a, BP2b, BP3, BP4, BP6, BP9. BP5 is off the critical
+Critical path: BP1, BP2a, BP2b, BP3, BP4a, BP4b, BP6, BP9 (subject to DG-6). BP5 is off the critical
 path in the sense that its port, staging and equivalence-test work can run
 the whole time BP2–BP3 are built; but BP5's own acceptance (the
 copy-to-commit retry) needs BP3 accepted first, so BP5 cannot *close*
@@ -559,8 +569,9 @@ meet only at BP6, where archive is first wired into the lifecycle -- until
 then they are independent of *each other* (though both depend on BP3) and
 should be reviewed independently.
 
-Real release gates (block `0.1.0b1`): BP1–BP6, BP8, BP9 as specified above,
-including the one Claude positive qualification -- see
+Real release gates (block `0.1.0b1`): BP1–BP3, BP4a, BP5, BP6, BP8 and BP9 as specified above; BP4b is subject to DG-6,
+including product Beta provider qualification and the unresolved Claude record
+conflict -- see
 <<preservation-gate-status>> for the one open gate-status question within
 that list. Explicit post-Beta items, not gates: BP7's exact timing
 (candidate before the tag, acceptable after); `wfc continue`/RP1 and C6's
@@ -589,9 +600,8 @@ Each batch is sequential work a maintainer can authorize together; no batch
 grants new authority, and nothing in it auto-promotes a Runtime or pushes.
 "Autonomous-continuation condition" means: every Commission in the batch
 reaches independent broad-review acceptance with no open blocking Finding,
-and Coordinator `task-check` passes. If that holds, the next batch may be
-authorized without a further maintainer decision beyond the ordinary
-per-Commission authorization. "Stop" means a point where only the maintainer
+and Coordinator `task-check` passes. If that holds and the next batch's stated decisions and prerequisites are
+met, it may be authorized through ordinary per-Commission authorization. "Stop" means a point where only the maintainer
 can proceed.
 
 === Batch 1
@@ -601,22 +611,23 @@ Commissions:: `wfc-beta1-bp1-packaging-identity-001`,
 Starting prerequisites:: None; `_open.adoc` already lists BP1 and bounded
 BP8 extraction as having no technical predecessor, and Q2 (needed for BP2)
 is already closed by the epic.
-Internal order:: BP1 first is a convenience, not a hard dependency; BP8 and
-BP2a touch disjoint source and may run genuinely in parallel.
+Internal order:: BP1 and BP8 may run in parallel; BP2a starts only after BP1
+is independently accepted. These are the first three authorable Commissions;
+only BP1 and BP8 are immediately startable.
 Expected state at end:: An installable, identifiable `wfc` skeleton exists;
 the five universal tests run independent of the historical governance tree;
 `admit_parsed` is extracted with the 106-test guard unchanged.
 Continuation condition:: All three independently accepted and passing
 `task-check`.
-Stop:: None required to start Batch 2; DG-1/DG-2 (token usage, Evidence
-retention) should be put in front of the maintainer during this batch so
-they are resolved before Batch 3 needs them, not discovered late.
+Stop:: Resolve DG-2 destination timing before BP5 starts in Batch 2; resolve
+DG-1 before BP6. No Batch 2 authorization follows automatically from this plan.
 
 === Batch 2
 
 Commissions:: `wfc-beta1-bp2-config-compiler-001`,
 `wfc-beta1-bp5-archive-port-001`, `wfc-beta1-bp3-init-plan-commit-001`.
-Starting prerequisites:: Batch 1 fully accepted.
+Starting prerequisites:: Batch 1 fully accepted; DG-2 destination timing
+resolved before BP5 starts.
 Internal order:: BP2b and BP5 start together (BP5's port/tests/staging need
 only BP1); BP3 starts only once BP2b's candidate is independently accepted,
 since BP3 reuses the compiled bundle shape. BP5's own acceptance (the
@@ -638,25 +649,24 @@ compensate.
 === Batch 3
 
 Commissions:: `wfc-beta1-bp4-lifecycle-controller-001`,
-`wfc-beta1-bp6-audit-report-001`, `wfc-beta1-bp9-beta-gate-001`.
-Starting prerequisites:: Batch 2 fully accepted; DG-3 (preservation
-disposition) and DG-6 (preservation's release-gate status) resolved before
-BP4 starts; DG-1/DG-2 resolved before BP6 starts.
-Internal order:: Strictly sequential -- BP4, then BP6 (needs BP4 and BP5),
-then BP9 (needs BP6). This batch is the critical path; none of its three
-Commissions can be parallelized with each other, only internally staffed in
-sequence.
-Expected state at end:: `wfc run` reaches a terminal state unattended with
-practical candidate preservation on interruption; archive and a sanitized
+`wfc-beta1-bp4-candidate-preservation-001`, `wfc-beta1-bp6-audit-report-001`, `wfc-beta1-bp9-beta-gate-001`.
+Starting prerequisites:: Batch 2 fully accepted; DG-1/DG-2 resolved before
+BP6 starts. Resolve DG-6 before release; its outcome controls whether BP4b
+is tag-blocking.
+Internal order:: BP4a, BP4b, BP6, then BP9, each after independent
+acceptance of its predecessor. If DG-6 defers preservation, authorize BP6
+against the accepted lifecycle and explicitly report preservation as absent.
+Expected state at end:: `wfc run` reaches a terminal state unattended;
+practical candidate preservation is available or explicitly deferred under
+DG-6; archive and a sanitized
 report are wired into the lifecycle; the Beta-1 acceptance scenario passes
-end to end with a fake provider, and the one Claude qualification has been
-attempted live by the maintainer.
-Continuation condition:: Each of the three independently accepted and
+end to end with a fake provider; product live qualification and the Claude
+record conflict have a recorded maintainer disposition.
+Continuation condition:: Each independently accepted and
 passing `task-check`, in order, before the next starts.
-Stop:: The live Claude qualification inside BP9 is maintainer-owned and
-provider-dependent; it does not complete merely because the agent-authored
-parts of BP9 are accepted. Record its outcome explicitly rather than
-inferring it from a successful Commission elsewhere.
+Stop:: Live product qualification is maintainer-owned and provider-dependent.
+Reconcile the Claude records before release; do not infer qualification from
+agent-authored tests or general historical Runs.
 
 === Batch 4
 
@@ -668,8 +678,8 @@ Internal order:: Single Commission; its own acceptance requires two
 completed self-hosted Runs before the old path is removed, which is
 internal to the Commission, not a further batch.
 Expected state at end:: Self-development runs on the product Front Door;
-`scripts/wfc_op.py` is gone or a stub; `0.1.0b1` is ready to tag per
-<<release>>.
+`scripts/wfc_op.py` is gone or a stub. This optional batch may follow the
+tag and is not a prerequisite for release.
 Continuation condition:: Independently accepted and passing `task-check`,
 with the two self-hosted Runs as recorded evidence, not agent claims.
 Stop:: This batch cannot start without the maintainer's Runtime-promotion
@@ -693,28 +703,17 @@ preference and the second-pass review's own default.
 |Before `wfc-beta1-bp6-audit-report-001` starts (Batch 3).
 
 |DG-2
-|Evidence retention and projection specifics: exact `audit.json` field
-list beyond what BP4/BP6 already persist, raw-file retention default
-(unbounded local versus a cap), and destination layout under `WFC_HOME`.
-|*(a)* Design a new field list and retention policy now. *(b)* Freeze the
-field list to facts BP4/BP5 already persist (per BP6's excluded scope
-above) and defer a retention cap to post-Beta usage data. *Recommended:
-(b)*; a cap invented without a real Evidence repository of accumulated
-Runs is speculative.
-|Before `wfc-beta1-bp6-audit-report-001` starts (Batch 3).
-
-|DG-3
-|Preservation disposition without the superseded host/subreaper: what
-quiescence signal BP4's `preserve_candidate` relies on, and how that
-limitation is worded in the Operator Manual.
-|*(a)* Build a minimal non-subreaper liveness probe (signal the
-direct child's process group only, no full subreaper) as a cheap partial
-mitigation. *(b)* Use the engine's existing lock/journal facts only,
-label the result `unattested`, and document the surviving-provider case as
-a known Beta-1 limitation (this plan's bounded recommendation under BP4).
-*Recommended: (b)* for Beta 1; *(a)* is a reasonable post-Beta hardening
-step once the X1–X4 experiments the readiness review proposes are run.
-|Before `wfc-beta1-bp4-lifecycle-controller-001` starts (start of Batch 3).
+|Destination option timing, raw retention and projection specifics.
+|*(a)* Deliver both destinations in BP5/BP6 for Beta, with destination-bound
+commits and privacy tests. *(b)* Ship the separate Evidence default first and
+commission repository-local archiving as a named post-Beta follow-up; retain
+the option and record its owner and deadline. *Recommended: (a)* if bounded
+confinement and privacy tests fit; otherwise choose (b) explicitly. Raw
+`local`, `commit`, or `discard` is independent of either destination; only
+explicit opt-in may commit raw evidence. Reconcile `DEC-WFC-023` separately;
+this recommendation does not change it. Freeze projection to persisted facts
+and defer a retention cap unless a real need justifies it.
+|Destination timing before BP5 starts; raw/projection specifics before BP6.
 
 |DG-4
 |BP7 cutover timing against the `0.1.0b1` tag.
@@ -723,7 +722,7 @@ itself through the new path. *(b)* Tag first, cut over shortly after.
 *Recommended: (a)*, per the second-pass review's own rationale (shipping
 with two Front Doors in the tree invites fixes to the wrong one), but the
 epic leaves this explicitly open and either is workable.
-|Before `wfc-beta1-bp7-self-development-cutover-001` starts (Batch 4).
+|Before the tag if cutover is deferred; otherwise before BP7 starts.
 
 |DG-5
 |Q5: wording of the amendment to steps 4 and 5 of the normative preparation
@@ -741,21 +740,21 @@ it "a Beta-1 candidate, with design/acceptance still open," while the
 epic's "Requirements and preferences" section asks for it "as automatically
 as practical" without itself naming a gate. See <<preservation-gate-status>>.
 |*(a)* Tag-blocking: BP4's preserved-candidate-ref case (engine-killed
-mid-Hop) is part of the `0.1.0b1` release gate, as BP4's acceptance states
-below. *(b)* Documented limitation: build and test `preserve_candidate` in
+mid-Hop) is part of the `0.1.0b1` release gate, as BP4b's acceptance states
+above. *(b)* Documented limitation: build and test `preserve_candidate` in
 BP4 as specified, but if its acceptance case fails or needs rework, ship
 `0.1.0b1` with that stated as a known limitation and fix it fast-follow,
 rather than holding the tag. *Recommended: (a)*; the mechanism is small,
-already scoped inside BP4 and DG-3's bounded `unattested` design, and
+already scoped inside BP4 and the bounded `unattested` design, and
 shipping without it reopens the destructive-refusal problem the epic's own
 requirement names.
-|Before `wfc-beta1-bp4-lifecycle-controller-001` starts (start of Batch 3).
+|Before the release decision.
 |===
 
 Not open, and not reopened by this plan: whether to change the engine (no);
 whether `direct@v1` ships in Beta 1 (no); whether to provision project
 environments (no); whether to resume an interrupted Run as if it were the
-same Run (no); whether Claude needs a second, superseded qualification (no).
+same Run (no); whether the former Claude preventive negative criterion remains in scope (no).
 
 [[release]]
 == Release acceptance and definition of done
@@ -776,30 +775,30 @@ link:README.adoc[the backlog upkeep convention], and must not be conflated:
 
 Definition of done for `0.1.0b1`:
 
-* BP1–BP6, BP8 and BP9 each independently accepted per the acceptance
-  criteria above, with Coordinator-trusted evidence for every accepting
-  Run.
+* BP1–BP3, BP4a, BP5, BP6, BP8 and BP9 independently accepted per their
+  criteria, with Coordinator-trusted evidence; BP4b is required if DG-6
+  selects it as a release gate.
 * Each accepted Run archived (via the existing `scripts/wfc_op.py
   cmd_archive` path, since BP5/BP6 do not yet exist for their own
   predecessors) into the Evidence repository, consistent with current
   practice for every other accepted BUG/FTR correction.
-* BP9's full acceptance scenario passing end to end, including the one
-  live Claude qualification this plan does not duplicate or invent further.
-* DG-1 through DG-6 resolved, with their resolutions recorded in the epic
-  (`beta1_productization.adoc`) by the maintainer, not silently assumed by
-  an implementer.
+* BP9's full acceptance scenario and product live provider qualification
+  completed, with the Claude record conflict reconciled by the maintainer.
+* DG-1, DG-2 and DG-6 resolved for release; DG-4 and DG-5 are resolved
+  before BP7 starts, or DG-4 explicitly defers it. Record the Claude conflict
+  disposition in the owning records. Decisions are maintainer-owned.
 * The maintainer's separate product-closure record for the epic, per the
   upkeep convention above; an accepted Commission's independent review is
   not that record.
-* BP7 completed either before or after the tag per DG-4; its timing does
-  not block the tag itself if deferred, per the epic's own classification
-  of BP7 as "candidate before tag / later if deferred."
+* BP7 timing explicitly disposed per DG-4; completion and DG-5 are not
+  required for the tag if cutover is deferred.
 
 Explicitly *not* required for `0.1.0b1`, consistent with the epic's current
 decisions: `wfc continue`/RP1 and C6's lineage mechanism; same-Run reconcile
 (`FTR-WFC-ATOMIC-HOP-RECOVERY`); execution-boundary integration and
-qualification (`FTR-WFC-EXECUTION-TRUST-BOUNDARIES`); a second Claude
-qualification beyond the one named in BP9; macOS or Windows support; dynamic
+qualification (`FTR-WFC-EXECUTION-TRUST-BOUNDARIES`); repetition of a
+BUG-specific Claude test solely for formality, subject to reconciliation of
+the controlling records; macOS or Windows support; dynamic
 routing or mixed adapters in one Run; any comprehensive host
 supervisor/subreaper.
 
@@ -809,11 +808,9 @@ supervisor/subreaper.
 This plan was built by reading the repository and the named reviews, not by
 running the suite or any live provider; Coordinator `task-check` for *this*
 WorkItem is a separate, Coordinator-owned step, not performed here. The
-Evidence repository's own implementation and tests were not directly
-readable from this sandbox, as stated in <<basis>>; BP5's prerequisite is
-stated rather than assumed satisfied. The preservation recommendation under
-BP4 (DG-3) is this plan's own bounded technical judgment, not a settled
-maintainer decision; it should be confirmed, not silently executed, before
-BP4 is authorized. Batches group Commissions for authorization convenience;
+sibling archiver was inspected locally as stated in <<basis>>; its
+full conformance suite remains work for BP5. The preservation recommendation
+is bounded technical judgment, not authorization or a settled maintainer
+decision. Batches group Commissions for authorization convenience;
 they do not change any Commission's own authorized scope or finding
 authority, and no batch boundary is itself a review or acceptance event.
