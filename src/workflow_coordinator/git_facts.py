@@ -896,6 +896,36 @@ def _isolated_index_copy(identity: Path) -> Path:
     return Path(copied_index)
 
 
+_FILTER_KEY_PATTERN = re.compile(rb"^filter\..*\.(clean|process)$")
+
+
+def _configured_external_filters_byte_safe(repository: Path) -> tuple[str, ...]:
+    """Byte-safe counterpart of ``_configured_external_filters`` for preservation only.
+
+    ``_configured_external_filters`` (frozen BP4a code, shared with
+    ``trusted_commit`` and ``bounded_path_commit``) asks Git's own
+    ``--get-regexp`` to find the key. That query depends on the active
+    locale: under a UTF-8 locale Git's regex engine does not match a
+    configured filter key whose subsection is not valid UTF-8, even though
+    Git still applies that filter when building a tree. ``git config --list
+    -z`` instead returns every key as raw, NUL-separated bytes with no
+    locale-dependent matching, so candidate preservation reads it directly
+    and applies the identical key pattern itself.
+    """
+
+    completed = _run_git_raw(
+        repository, "config", "--list", "-z", env=_trusted_git_environment(), trusted=True,
+    )
+    if completed.returncode:
+        raise PreservationRefused(os.fsdecode(completed.stderr).strip() or "Git command failed")
+    matches: list[str] = []
+    for entry in filter(None, completed.stdout.split(b"\0")):
+        key = entry.split(b"\n", 1)[0]
+        if _FILTER_KEY_PATTERN.match(key):
+            matches.append(os.fsdecode(key))
+    return tuple(matches)
+
+
 def _build_candidate_tree(identity: Path, *, base_head: str, changed_paths: tuple[str, ...]) -> str:
     """Write one tree object: ``base_head`` overlaid with the worktree content of ``changed_paths``.
 
@@ -952,7 +982,7 @@ def preserve_candidate(
     identity = _repository_identity(repository, git_command=_readonly_git)
     if identity != expected_repository.resolve():
         raise PreservationRefused("repository identity mismatch")
-    if filters := _configured_external_filters(identity):
+    if filters := _configured_external_filters_byte_safe(identity):
         raise PreservationRefused(
             "configured clean/process filter is not permitted for candidate preservation: "
             + ", ".join(filters)

@@ -202,6 +202,25 @@ def test_configured_clean_filter_is_refused(repo: Path):
         )
 
 
+def test_configured_clean_filter_with_non_utf8_subsection_name_is_refused(repo: Path):
+    # F005 regression: the frozen ``_configured_external_filters`` asks
+    # Git's own ``--get-regexp``, which (under a UTF-8 locale) does not
+    # match a configured filter key whose subsection is not valid UTF-8,
+    # even though Git still applies that filter when building a tree.
+    # Candidate preservation must refuse this configuration too, not only
+    # the plain-ASCII case ``test_configured_clean_filter_is_refused`` covers.
+    base = head(repo)
+    (repo / "scope" / "a.txt").write_text("v2\n", encoding="utf-8")
+    raw_subsection = b"caf\xe9"
+    with (repo / ".git" / "config").open("ab") as handle:
+        handle.write(b'[filter "' + raw_subsection + b'"]\n\tclean = cat\n')
+    with pytest.raises(GF.PreservationRefused, match="clean/process filter"):
+        GF.preserve_candidate(
+            repo, expected_repository=repo, base_head=base,
+            allowed_paths=("scope",), run_id="RUN-filter-nonutf8",
+        )
+
+
 def test_unsafe_special_file_in_scope_is_refused(repo: Path):
     base = head(repo)
     (repo / "scope" / "a.txt").write_text("v2\n", encoding="utf-8")
