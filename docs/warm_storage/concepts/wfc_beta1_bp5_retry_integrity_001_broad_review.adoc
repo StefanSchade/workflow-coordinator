@@ -1,0 +1,359 @@
+= BP5 retry integrity: independent broad review
+
+WorkItem:: `WI-WFC-BETA1-BP5-RETRY-INTEGRITY-001`
+Hop:: `H002` (`broad_review`, independent reviewer)
+Verdict:: **changes_required** -- two blocking findings; requested route
+`correction`.
+Baseline reviewed against:: `5f70885f6496d1d04b986fccab6aab53027591e2`
+(`chore: authorize BP5 retry integrity correction`).
+Reviewed candidate:: `e942f8d7e24c7252131a710125a541cebeac254c`
+(`fix(archive): ... H001 reverify resumed archive retry against authoritative
+sources`), 4 files, +401/-19.
+Role:: This is a review verdict for the Coordinator. It does not establish Run
+acceptance; the Coordinator's full task-check remains mandatory and separate.
+No product, test, fixture or documentation byte was changed by this Hop. This
+artifact is the only change proposed. No Git write was performed by this Hop.
+
+`H001`'s own summary was read as an evidence lead only. Every claim below was
+independently reproduced in this session against `HEAD` `e942f8d`, in
+disposable Git repositories created under `TMPDIR`; the two blocking findings
+were additionally differentially reproduced against the pre-fix module at
+`5f70885` to establish which behaviour the candidate introduces. No historical
+review label is treated as a current-Run Finding.
+
+== What the candidate does, as actually implemented
+
+`_verify_resumable_placement` (`src/workflow_coordinator/frontdoor/archive.py:721`)
+keeps the three pre-existing self-checks (attempt id, recorded `sources`, every
+copied file against its own manifest entry's digest and size) and adds a fourth:
+it re-derives a manifest from the current authoritative Run/OPS sources via the
+existing `_manifest_candidate` helper (`archive.py:634`, called at
+`archive.py:764`) and refuses unless
+`_manifests_match_ignoring_archived_at(manifest, candidate_manifest)`
+(`archive.py:656`, called at `archive.py:770`) holds. `_manifests_match_ignoring_archived_at`'s
+per-entry projection was widened from `(path, sha256, bytes)` to
+`(path, sha256, bytes, source)` (`archive.py:660-665`); because the
+already-committed no-op branch (`archive.py:859-864`) reuses the same helper,
+that widening applies there too.
+
+This is the right shape, it reuses exactly the two helpers the task named, and
+it genuinely closes the headline gap: a file altered together with a matching
+altered self-digest, and falsified `facts`/`semantic`/`source` fields, are all
+refused where they were not before. Four of the task's named cases are
+reproduced closed below. But the invariant as stated in Acceptance -- *committed
+only if its safely validated files, provenance, identity, facts and semantic
+payload match a newly derived manifest ... ignoring only legitimate
+`archived_at` difference*, and *refuse without commit or loss of placed data* --
+is not fully met. Two reproduced violations follow.
+
+== Blocking findings
+
+=== BF-1 -- the comparator compares a four-field projection, not the manifest; forged per-file fields are committed
+
+*Reproduced violation of an explicit acceptance criterion.*
+
+`copied_key` projects each `copied_files` entry onto exactly four keys:
+
+[source,python]
+----
+src/workflow_coordinator/frontdoor/archive.py:660
+    def copied_key(entries: list[dict]) -> set[tuple[object, object, object, object]]:
+src/workflow_coordinator/frontdoor/archive.py:665
+        return {(e.get("path"), e.get("sha256"), e.get("bytes"), e.get("source")) for e in entries}
+----
+
+Every *other* top-level manifest key is compared by whole-value equality
+(`a2 == b2`, `archive.py:670`), so a forged top-level field is caught. Inside a
+`copied_files` entry it is the opposite: any key the projection does not name is
+invisible to the comparison, while the placed `manifest.json` -- including those
+keys -- is what the commit publishes (`archive.py:906`, `paths` includes
+`f"{dest_rel}/manifest.json"`).
+
+A genuinely derived entry has exactly the four keys `_copy_one` writes
+(`archive.py:216-221`). So *any* additional per-file key in the placed manifest
+is, by construction, content that does not exist in a manifest freshly derived
+from the authoritative sources -- and it is committed anyway.
+
+Reproduced on a disposable repository: place a genuine, intact, uncommitted
+archive via `_manifest_candidate` (exactly the state an interruption between the
+atomic rename and the commit leaves), then add two forged provenance keys to one
+`copied_files` entry and retry.
+
+[source,text]
+----
+comparator says placed == freshly derived: True
+placed  entry: {"bytes": 110, "original_source": "/attacker/controlled/path.json",
+                "path": "run/operator-summary.json", "sha256": "6f22904...f820a",
+                "source": ".../wfc-state/wfc-probe-extra-key-01/operator-summary.json",
+                "verified_by": "FORGED: WFC Coordinator trusted review"}
+derived entry: {"bytes": 110, "path": "run/operator-summary.json",
+                "sha256": "6f22904...f820a",
+                "source": ".../wfc-state/wfc-probe-extra-key-01/operator-summary.json"}
+archive_run outcome: archived
+commits created: 1
+COMMITTED entry: {"bytes": 110, "original_source": "/attacker/controlled/path.json",
+                "path": "run/operator-summary.json", "sha256": "6f22904...f820a",
+                "source": ".../wfc-state/wfc-probe-extra-key-01/operator-summary.json",
+                "verified_by": "FORGED: WFC Coordinator trusted review"}
+----
+
+The placed manifest demonstrably differs from the freshly derived manifest in
+its *per-file provenance record* -- the exact field family this correction was
+commissioned to cover ("ensure the comparison covers actual identity and
+per-file provenance fields") -- the comparator reports a match, and the forgery
+is published into the Evidence repository under an authentic-looking archive
+commit. Acceptance says such an archive must "refuse without commit".
+
+This is not a speculative threat model: it is the same placed-but-uncommitted
+tamper window, the same actor capability, and the same manifest field group the
+candidate's own `test_forged_per_file_source_is_refused` already exercises. The
+candidate's test passes only because it mutates a key the projection happens to
+name; mutating by *addition* instead of substitution bypasses it.
+
+The same bypass applies to the already-committed no-op branch
+(`archive.py:859-864`), which reuses the same helper: an already-committed
+archive whose manifest carries forged extra per-entry fields is reported
+`no_op` ("identical repeat") rather than "different content".
+
+*Correction direction (not prescriptive).* Compare entries whole rather than by
+a fixed projection, e.g. a sorted list of `json.dumps(entry, sort_keys=True)`,
+which stays order-insensitive, needs no new infrastructure, and keeps the
+existing duplicate-path refusal (`archive.py:713-714`) as the guard that makes
+multiplicity-insensitive comparison safe. A tuple-of-`sorted(entry.items())` set
+would be the obvious alternative but raises `TypeError` on a forged entry whose
+value is a list or dict, so it would need its own guard. Whichever is chosen, the
+positive controls must still pass unchanged.
+
+=== BF-2 -- the new reverification deletes the placed, uncommitted archive when the staging root is an in-repository alias
+
+*Reproduced violation of an explicit acceptance criterion, newly introduced by
+this candidate.*
+
+The task requires: "On mismatch or inability to validate, fail closed before
+commit without overwriting, deleting or repairing the placed archive", "Safe
+disposable comparison material must respect existing containment and cleanup
+protections", and Acceptance requires refusal "without commit or loss of placed
+data".
+
+`_manifest_candidate` begins with `shutil.rmtree(staging, ignore_errors=True)`
+(`archive.py:638`). Pre-fix this ran on two paths only: the fresh-archive branch
+and the already-committed no-op branch. The candidate adds a third call site on
+the *placed-but-uncommitted resume* branch (`archive.py:764`) -- the one path on
+which the acceptance explicitly forbids loss of placed data.
+
+`assert_no_symlink_escape(staging, identity)` (`archive.py:176`) refuses only
+symlinks whose target escapes the repository root; an *in-repository* symlink is
+accepted by design. Nothing resolves `staging` against `dest`. So a tracked
+symlink `.wfc-archive-staging -> archive/unclassified` makes `staging` and
+`dest` the same directory, and the first thing the new reverification does is
+`rmtree` it.
+
+Differential reproduction on disposable repositories, identical fixture and
+identical scenario, only the module under test differing:
+
+[source,text]
+----
+--- PRE-FIX (5f70885) ---
+placed before retry: ['manifest.json', 'run', 'run/operator-summary.json']
+archive_run: ACCEPTED outcome=archived
+placed after retry : ['manifest.json', 'run', 'run/operator-summary.json']
+head moved: True
+
+--- CANDIDATE (e942f8d) ---
+placed before retry: ['manifest.json', 'run', 'run/operator-summary.json']
+archive_run: REFUSED: commit failed: commit intent path does not exist in the
+             worktree: archive/unclassified/wfc-probe-alias-01/run/operator-summary.json
+placed after retry : ['<ABSENT>']
+head moved: False
+----
+
+`HEAD` does not move, so nothing tampered is published -- but the genuine,
+intact, not-yet-committed archive is **destroyed**, and the diagnostic the
+operator sees is a generic `commit failed: commit intent path does not exist in
+the worktree`, which does not say that the retry itself deleted the data. That
+is the opposite of failing closed without deleting the placed archive.
+
+Scope note: this is inside the modelled threat set, not an expansion of it. The
+module already defends against evidence-repository symlinks and its own
+docstring names "a tracked symlink (for example `archive/` pointing outside the
+Evidence repository)" as a modelled case (`archive.py:176-182`); the task
+explicitly requires the new comparison material to respect existing containment
+and cleanup protections, and explicitly names symlink-escape among the checks to
+respect. The actor needed is one who can write into the Evidence repository --
+strictly less than the out-of-scope "privileged actors controlling both sources
+and WFC authority". The same `rmtree` shape is pre-existing in the fresh-archive
+and no-op branches, but on those paths there is no placed uncommitted archive
+whose preservation the acceptance guarantees; the candidate newly carries it onto
+the branch where that guarantee applies.
+
+An untracked alias symlink is caught earlier by `_assert_narrow_cleanliness`
+(verified: `evidence repository is not clean outside the archive destination
+... .wfc-archive-staging`, placed data intact). Only the tracked-symlink case
+reaches the destructive path.
+
+*Correction direction (not prescriptive).* Before any cleanup or derivation,
+refuse when the resolved `staging` and the resolved `dest` are equal or nested;
+or derive the comparison manifest somewhere that cannot alias `dest`. Either is
+a containment check of the kind the module already contains, not new
+infrastructure.
+
+== What was verified as genuinely closed, preserved or correct
+
+Reproduced closed by this review (disposable repositories, candidate module):
+
+. Altered placed file plus matching altered self-digest in its own manifest --
+  refused, `HEAD` unchanged, tampered bytes left in place (not reverted).
+. Forged `facts.run_id` -- refused, every copied file byte-identical.
+. Forged `semantic` payload against an unchanged `--semantic-json` input --
+  refused.
+. Forged per-file `source` (substitution) -- refused. (Addition is BF-1.)
+. Forged `sources.ops_dir` -- refused.
+. Forged `facts.field_sources` provenance label -- refused. This one matters:
+  it shows the comparison really does reach nested derived facts, not just the
+  headline identity fields.
+. Authoritative source content changed after placement -- refused, placed bytes
+  preserved.
+. Partial OPS input loss after placement -- refused.
+. Full OPS directory loss after placement -- refused earlier, by the recorded
+  `sources` check.
+. Authoritative source file deleted entirely before retry -- refused by
+  `run_identity` ("no Run id found"); fails closed, placed data intact.
+. Extra unlisted file smuggled into the placed destination -- refused, `HEAD`
+  unchanged. Note the refusal comes late, from `bounded_path_commit`'s
+  `unexpected dirty path` guard (`git_facts.py:870-874`), not from archive
+  integrity logic; it is a correct fail-closed, with a generic diagnostic. See
+  NB-3.
+
+Positive controls, reproduced: a genuinely intact placement with an
+`archived_at` differing by years resumes to exactly one commit; an identical
+already-committed archive is still a `no_op` with `HEAD` unchanged; benign
+`copied_files` reordering still resumes (order-insensitivity preserved).
+
+Existing refusals preserved, all passing: the two
+`SymlinkEscapeContainmentTests` cases and the eight refusal cases of
+`InterruptedRetryTamperTests` in `tests/unit/test_archive_safety.py` (symlinked
+`archive/` and symlinked staging root refused before any outside write;
+tampered content; tampered size; tampered attempt id; tampered recorded source;
+absolute, traversal, duplicate and symlink-escaping manifest paths).
+
+`_manifest_candidate` reads sources and writes only under `staging`; no source
+mutation was observed in any refusal case, and `_verify_resumable_placement`
+correctly wraps the derivation in `try/finally` so the comparison material is
+removed on both paths. The facts the comparison now covers are fully
+deterministic from the sources -- `extract_facts` (`archive.py:309`) contains no
+clock, environment or ordering nondeterminism -- so the only legitimate
+difference really is `archived_at`, as the candidate assumes.
+
+The adapted `test_genuinely_intact_interruption_resumes_to_exactly_one_commit`
+fixture (`tests/unit/test_archive_safety.py:341`) is a correct adaptation, not a
+weakening: it replaces an invented `facts` dict -- which was never consistent
+with real authoritative extraction and so could not model a genuine interruption
+once the new check exists -- with a real `_manifest_candidate` placement against
+the fixture's own state root. Intent and coverage are preserved and no refusal
+is relaxed. The ported conformance assertions and the legacy comparison in
+`test_archive_conformance.py` and `test_archive_port.py` are untouched and pass.
+
+Scope and authority: the diff touches only `archive.py`, its two test files and
+one operator-manual paragraph. No reducer, provider, Runtime, orchestration,
+attestation/signature/snapshot infrastructure, historical Run Evidence or
+Evidence-repository mutation. The commit subject carries
+`WI-WFC-BETA1-BP5-RETRY-INTEGRITY-001` and `H001` as separate tokens. No product
+acceptance is claimed in the worker changes. `ruff check` is clean on all three
+changed source files.
+
+== Nonblocking observations
+
+[[NB-1]]
+. *Duplicate JSON names in the placed manifest publish text that was never
+  compared.* `json.loads` keeps the last occurrence, so a `manifest.json` whose
+  text carries a forged `"facts"` object *before* the genuine one parses as
+  genuine, passes the comparison, and is committed byte-for-byte with the forged
+  object in it (reproduced: forged marker present in the committed blob).
+  Duplicate names are undefined behaviour per RFC 8259 and every parser in this
+  project's path is last-wins, so the authoritative reading of the committed
+  Evidence is genuine -- which is why this is nonblocking. It shares BF-1's root
+  cause, though: the comparison runs on a parse/projection of the manifest
+  rather than on what is actually committed. Worth considering alongside BF-1.
+
+[[NB-2]]
+. *The resume path now re-copies every source file on every retry.* The new
+  check derives the candidate manifest by performing a full digest-verified copy
+  into staging, so a retry's I/O cost is now proportional to the archive size
+  rather than to the placed file count. This is a genuine observable behaviour
+  change and is the honest price of the correction, but neither the module
+  docstring nor the operator-manual paragraph mentions it; both describe only
+  the semantic strengthening. A sentence in
+  `docs/operator_manual/ch04_evidence/02_archive.adoc` would be fair to the
+  operator.
+
+[[NB-3]]
+. *Extra unlisted files in the placed destination are refused only at the commit
+  primitive.* The archive-integrity layer validates the manifest-listed files
+  and the manifest, but never asserts that the destination contains *nothing
+  else*; the refusal comes from `bounded_path_commit`'s `unexpected dirty path`
+  guard. It fails closed, but the diagnostic reads as a commit failure rather
+  than as a tamper refusal, and the safety property depends on a different
+  module than the one that documents it.
+
+[[NB-4]]
+. *Cleanup asymmetry between the two comparison call sites.* The resume branch
+  wraps `_manifest_candidate` in `try/finally` (`archive.py:763-768`); the
+  already-committed no-op branch (`archive.py:859-863`) still calls
+  `shutil.rmtree` only on the success path, so an exception during derivation
+  there leaves the comparison copy inside the Evidence repository. Pre-existing;
+  the candidate's own new call site is the correct one.
+
+[[NB-5]]
+. *Empty `.wfc-archive-staging/` directory left in the Evidence repository.*
+  Both the rename and the `rmtree` remove only the per-attempt subdirectory.
+  Git ignores empty directories, so there is no commit or cleanliness effect.
+  Pre-existing, cosmetic.
+
+[[NB-6]]
+. *Dead `resumed_commit` outcome.* `ArchiveReport.outcome` documents and
+  `render_report` handles `"resumed_commit"` (`archive.py:618`, `archive.py:936`)
+  but the resume path returns `"archived"`. Pre-existing and already recorded by
+  two earlier BP5 reviews; re-stated here only so that it is not mistaken for
+  something this candidate introduced. Not in this WorkItem's scope.
+
+== Evidence and environment
+
+* All reproductions ran in freshly created disposable Git repositories under
+  `TMPDIR`, against `HEAD` `e942f8d` and, for the differential in BF-2, against
+  a read-only `git show 5f70885:...` copy of the pre-fix module. No Git write of
+  any kind was performed in the working repository by this Hop; all scratch
+  material was removed.
+* `python -m pytest --wfc-partial tests/unit/test_archive_retry_integrity.py
+  tests/unit/test_archive_safety.py tests/unit/test_archive_port.py
+  tests/unit/test_archive_conformance.py -q` -- 82 passed. This is explicitly a
+  partial subset run and is **not** the required suite or its acceptance.
+* `python -m ruff check` on the three changed source files -- clean.
+* `python -m pytest --wfc-partial tests/unit --ignore=tests/unit/test_claude_adapter_conformance.py`
+  -- failures confined to `tests/unit/test_wfc_op.py` (4 failed, 13 errored),
+  every one of them traced to `ERROR: No matching distribution found for
+  setuptools>=68` from a nested build-isolation step. This is an agent-local
+  environmental limitation (no package downloads in this sandbox), not a product
+  defect; `test_wfc_op.py` exercises no archive code. No other test file under
+  `tests/unit` failed.
+* The required suite refuses to run without `WFC_TEST_INPUTS` and
+  `WFC_TEST_PROFILE`, and env-prefixed invocations are refused by this session's
+  command-approval surface, which has no approver. The Coordinator's full
+  task-check therefore remains separate, mandatory and decisive; nothing above
+  substitutes for it.
+
+== Verdict
+
+The candidate closes the headline gap correctly and reuses exactly the helpers
+the task named, and the great majority of the agreed invariant is genuinely met
+and independently reproduced. It is two bounded defects short of the acceptance
+it must satisfy: forged per-file manifest fields still reach a commit (BF-1,
+the invariant's "provenance ... match a newly derived manifest" clause), and the
+new reverification can itself destroy the placed uncommitted archive (BF-2, the
+invariant's "without commit or loss of placed data" clause, newly introduced by
+this candidate). Both are reproduced, both are inside the already-agreed threat
+model, and both have small, in-scope corrections that need no new authority or
+design.
+
+Verdict: **changes_required**, route `correction`. Run acceptance is not
+established by this artifact; the Coordinator's mandatory full task-check
+remains separate and decisive.
