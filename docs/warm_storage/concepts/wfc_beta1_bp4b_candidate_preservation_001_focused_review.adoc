@@ -1,0 +1,315 @@
+= BP4b candidate preservation: independent focused review
+:toc:
+:toclevels: 2
+:sectnums:
+
+This record holds every independent focused-review pass over the BP4b
+correction work. The current (and first) pass is *H004*.
+
+== Pass H004 (current)
+
+Status:: *CHANGES REQUIRED.* `F001` resolved; one *new* blocking Finding
+(proposed in this Hop, run-local ID allocated by the Coordinator).
+WorkItem:: `WI-WFC-BETA1-BP4B-CANDIDATE-PRESERVATION-001`
+Run / Hop:: `RUN-4b9a28634bfe4441ac31ed825f2cde32` / `H004`
+(`focused_review`, fresh independent reviewer, gate, blocking-only,
+`finding_authority: [resolve]`).
+Invocation:: `INV-2856d65537c54ae395b43dcdabc4c38f`.
+Reviewed correction commit:: `d2c04a0ccf77604b5bab4ed9f060c60819ff3a84`.
+Reviewed correction range::
+`f3f0a20b315877818f7c43f57a34f056b64b4616..d2c04a0ccf77604b5bab4ed9f060c60819ff3a84`.
+Reviewed product:: the *entire* BP4b product at `d2c04a0`, measured against the
+pre-implementation baseline `69099da319486155ee529d85761ad08a5b7c143a` and
+against the H002 broad review
+(link:wfc_beta1_bp4b_candidate_preservation_001_broad_review.adoc[that record]).
+Date:: 2026-11-19.
+
+=== 1. Disposition
+
+Verdict:: `changes_required`
+Route:: `correction`
+Finding disposition:: `F001` -> `resolved`; one new blocking Finding proposed
+(section 4).
+
+The H003 correction does resolve `F001`: an in-scope changed or untracked path
+whose name contains a space, a quote, a backslash or a *valid UTF-8* non-ASCII
+character is now read verbatim and preserved, at unit level and end to end.
+
+The same correction, however, introduces a new blocking regression. By
+switching the status read to `-z`, `preserve_candidate` now receives raw path
+bytes where it previously received Git's ASCII-only C-quoted form. `_run_git`
+decodes subprocess output as strict UTF-8, so a worktree path whose *name* is
+not valid UTF-8 (an ordinary possibility on Linux, where a file name is a byte
+string) now raises `UnicodeDecodeError` inside the capture step. That exception
+is not a `PreservationRefused`, so it escapes `frontdoor.preservation` and
+`frontdoor.lifecycle`, and it changes the observable BP4a exit code -- the one
+thing BP4b is explicitly forbidden to touch.
+
+The repository itself stays byte-identical in that case (no ref, no object, no
+index, worktree or HEAD change), so this is a contract and availability defect,
+not a mis-capture.
+
+=== 2. Scope of this pass
+
+`git diff --numstat f3f0a20..d2c04a0`:
+
+....
+15   6  src/workflow_coordinator/git_facts.py
+19   0  tests/unit/test_candidate_preservation.py
+....
+
+The change is confined to the status-parsing block inside the new
+`preserve_candidate` function plus one new regression test. No other function
+body in `git_facts.py` changed; `trusted_commit` and `bounded_path_commit` are
+byte-identical, `frontdoor/journal.py` and `frontdoor/lifecycle.py` are
+untouched by this Hop, and the H002 verification that the frozen BP4a contract
+is unchanged (`git_facts.py` purely additive, `lifecycle.py` +20/-2 of which
+the two deletions are the two `return _advance(...)` statements) still holds at
+`d2c04a0`. No engine, reducer, Finding, review, routing, adapter, admission,
+BP6, operator-manual or backlog file is touched; no test was weakened.
+
+Because the product as a whole is under review, every acceptance case was
+re-exercised in this Hop, not only the corrected one.
+
+=== 3. `F001` -- resolved
+
+The corrected read is
+
+[source,python]
+----
+status = read_git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+entries = status.split("\0") if status else []
+if entries and entries[-1] == "":
+    entries.pop()
+----
+
+`-z` suppresses `core.quotePath` entirely, so there is no quoting left to
+undo, and the `" M path"` shape's significant leading space is still preserved
+by the `rstrip("\n")`-only read helper.
+
+Reproduced directly against disposable repositories (authorized scope
+`("scope",)`, `HEAD` unmoved):
+
+[cols="2,2,1"]
+|===
+|Worktree state |Result at `d2c04a0` |Result at `097bc64`
+
+|untracked `scope/wip notes.txt` |preserved, ref created, blob content correct |refused "outside authorized scope"
+|untracked `scope/ümlaut.txt` |preserved, path verbatim in the captured tree |refused (octal-escaped name)
+|untracked `scope/we\ird"name.txt` |preserved |refused
+|untracked `scope/line<LF>break.txt` |preserved |refused
+|untracked `scope/tab<TAB>here.txt` |preserved |refused
+|tracked+modified `scope/t s.txt` |preserved with worktree content |refused
+|tracked+modified `scope/ümlaut.txt` |preserved with worktree content |refused
+|tracked deletion `scope/del me.txt` |correctly absent from the captured tree |refused
+|===
+
+In the combined shape (staged residue on `scope/t s.txt` staged at `v2` while
+the worktree holds `v3`, plus a space-named untracked file, plus a space-named
+deletion) the capture took the *worktree* content `v3`, the live index still
+held `v2` for that path, `git diff --cached --name-only` was unchanged, the
+porcelain status was unchanged and `HEAD` was unchanged. Glob-magic names
+(`wip[1].txt`, `star*.txt`, `q?.txt`, `-dash.txt`) are also captured correctly.
+
+The delivered regression test
+(`test_in_scope_paths_with_space_and_non_ascii_byte_are_preserved_not_refused`)
+pins the two shapes `F001` named and fails against the pre-correction parser.
+
+`F001` is therefore dispositioned *resolved*.
+
+=== 4. New blocking Finding -- an undecodable worktree path name crashes `wfc run`/`wfc resume` and changes the BP4a exit code
+
+Severity:: *Blocking.* Reproduced violation of the frozen BP4a contract ("BP4b
+adds NO new BP4a transition and changes no BP4a record, classification or exit
+code"), of acceptance case (15) ("every refusal is journaled with its reason
+and leaves the classification and BP4a exit code unchanged") and of `Deliver`
+item 3 ("else refuse with a named reason") and item 5 (a terminal
+`ext.preservation.*` record for every outcome).
+
+*Mechanism.* `_run_git` runs Git with `text=True`, i.e. strict UTF-8 decoding
+of stdout. Before H003 the porcelain status was C-quoted and therefore pure
+ASCII, so it always decoded. With `-z` Git emits the path bytes verbatim, and a
+worktree entry whose name is not valid UTF-8 (for example a Latin-1 `café.txt`
+written by a tool, or any file extracted from an archive with a legacy
+encoding) makes `subprocess.run` raise `UnicodeDecodeError` at
+`git_facts.py:950`. `UnicodeDecodeError` is a `ValueError`, so:
+
+* `run_pending_preservation` only catches `git_facts.PreservationRefused`; the
+  exception passes through (the ownership lock *is* released by its `finally`);
+* `cmd_run`/`cmd_resume` catch only `LifecycleError`, `CommissionError`,
+  `GitPreflightError`, `JournalError` and `OSError`; the exception escapes the
+  CLI entirely.
+
+*Reproduction (end to end, real `wfc run`, delivered BP4a fake-engine/
+fake-provider fixtures, request scope `["src"]`, mode `dispatch_then_crash`).*
+`WFC_FAKE_ENGINE_DIRTY_FILE` is the only variable:
+
+[cols="2,1,2,1"]
+|===
+|Dirty file |CLI result |Journal after the call |Preserved refs
+
+|`src/wip.txt` (control)
+|`CLASSIFICATION: interrupted`, exit *14*
+|`classified`, `ext.preservation.intent`, `ext.preservation.result`
+|`refs/wfc/preserved/RUN-fake-engine/1`
+
+|`src/caf<0xE9>.txt`
+|unhandled `UnicodeDecodeError`, no `CLASSIFICATION` output, process exit *1*
+|`classified`, `ext.preservation.intent` (dangling, no terminal record)
+|none
+|===
+
+`EXIT_CODES["interrupted"]` is 14; the operator-visible exit code becomes 1 and
+the classification report is never printed, although BP4a itself classified the
+Run correctly and wrote its `classified` record before preservation ran.
+
+*It is permanent for the affected Run.* A follow-up `wfc resume` on the same
+checkout raises the identical unhandled `UnicodeDecodeError` (exit 1) because
+no terminal `ext.preservation.*` record was ever written, so the replay guard
+never fires. `wfc status` still works (exit 0, classification reported, no
+`PRESERVATION` block), confirming the damage is confined to the two write
+entry points.
+
+*It is a regression of this correction, not a pre-existing defect.* The same
+end-to-end probe run against a copy of the tree with only the H003 status-parse
+hunk reverted yields, for the identical repository state: `CLASSIFICATION:
+interrupted`, exit *14*, and a clean terminal
+`ext.preservation.refused` record. The pre-correction code refused that path
+(wrongly, as `F001` describes) but refused it *honestly and within contract*.
+
+*Not a safety hole.* After the crash, `HEAD`, the branch, the live index, the
+worktree and every ref are unchanged, and `refs/wfc/preserved/` is empty.
+Nothing is mis-captured; the defect is the broken BP4a exit-code contract, the
+missing named refusal and the permanent loss of preservation for that Run.
+
+*Relation to H002.* This is the concrete reproduction of H002's non-blocking
+observation O6 ("a non-`PreservationRefused` exception escaping the glue would
+change the BP4a exit code -- not reproduced"). H003 made it reachable from an
+ordinary repository state, which is what moves it from observation to blocking
+Finding.
+
+*Correction space (non-binding, additive, no BP4a change needed).* Either
+decode the status bytes tolerantly inside `preserve_candidate` (for example run
+the status read through a new additive bytes-mode helper and decode with
+`errors="surrogateescape"`, which also lets such a path be captured, since
+Python re-encodes surrogate-escaped argv with the same convention), or -- the
+minimal form -- convert the failure into a named refusal by catching
+`UnicodeDecodeError` around the status read. A defensive conversion of any
+unexpected exception in `run_pending_preservation` into
+`ext.preservation.refused` would additionally close the whole O6 class, but
+that is a design choice for the maintainer, not a review requirement. A test
+pinning the behaviour needs a file name that is not valid UTF-8 (for example
+`os.fsdecode(b"src/caf\xe9.txt")`).
+
+=== 5. What re-verified as correct at `d2c04a0`
+
+==== Capture predicates and byte-identical state
+
+Every refusal and success shape was re-run against freshly created disposable
+repositories, fingerprinting `HEAD`, the branch, every ref and object name, the
+raw bytes of the live `.git/index` and the full `-uall -z` porcelain status
+before and after the call. In every refusal row the non-ref state was identical
+and no ref was created; in every success row the only delta was the single new
+`refs/wfc/preserved/<run_id>/1`:
+
+* dirty path outside scope (also with a space in the name) -- refused;
+* `HEAD` moved since classification -- refused;
+* configured clean/process filter -- refused;
+* FIFO / escaping symlink in scope -- refused;
+* file-count and total-byte caps -- refused with the counted reason;
+* unstable tree across the two observations -- refused;
+* clean worktree -- `not_needed`;
+* ownership lock held -- refused, journaled, repository byte-identical.
+
+==== Mutation sweep
+
+Fourteen mutations, each applied to an out-of-tree copy of `src/` + `tests/`
+and run against the two delivered BP4b test modules (baseline green):
+
+[cols="2,1"]
+|===
+|Guard removed |Verdict
+
+|`HEAD == base_head` check |killed
+|scope-containment check |killed
+|`_reject_unsafe_scope_special_files` call |killed
+|`S_ISLNK`/`S_ISREG` check (alone) |survived
+|file-count cap |killed
+|total-byte cap |killed
+|two-stable-observations check |killed
+|identical-tree idempotency early return |killed
+|configured clean/process filter check |killed
+|`GIT_INDEX_FILE` private index in `_build_candidate_tree` |killed
+|ownership-lock-free predicate |killed
+|trigger set widened to include `completed` |killed
+|terminal-record replay guard |killed
+|`quiescence` default `"unattested"` -> `"attested"` |killed
+|===
+
+The single survivor reproduces H002's M5 exactly: the escaping-symlink
+invariant is held redundantly by `_reject_unsafe_scope_special_files` and the
+`resolve(strict=True)`/`relative_to` escape check, and H002 showed the
+delivered test fails once all three layers are removed. It is not a new gap and
+is not blocking.
+
+==== Trigger, idempotency, crash resume and `wfc status`
+
+Re-confirmed through the real CLI entry point: an `interrupted` Run with
+in-scope dirty work creates `refs/wfc/preserved/RUN-fake-engine/1`, journals
+`ext.preservation.result` with `quiescence: unattested`, returns exit 14 and
+leaves the dirty worktree in place; a `completed` Run writes no
+`ext.preservation.*` record; an out-of-scope dirty path is refused while the
+BP4a classification and exit code are unchanged; repeat `run`/`resume`,
+crash-after-ref and crash-before-ref all converge on exactly one ref. No claim
+stronger than `unattested` appears anywhere in `src/`.
+
+==== Honest limits
+
+`wfc_beta1_bp4b_candidate_preservation_001_limitations.adoc` is unchanged by
+this Hop and still states unattested quiescence, the surviving-provider-process
+limitation, the non-adoption / non-acceptance / non-scope-grant /
+non-Finding-transfer boundary and the non-replacement of the manual
+salvage/successor procedure (acceptance 18).
+
+=== 6. Non-blocking observations
+
+Reported here and in the Hop summary only; `finding_authority: [resolve]` does
+not authorize residual transitions, and none of these is a reproduced violation
+of an acceptance case.
+
+O13:: *A file named with a leading colon at repository root is refused with a
+raw Git diagnostic.* With a root authorized scope (`allowed_paths=(".",)`), an
+untracked `:weird.txt` is in scope but is passed to `git add -A --` as a
+pathspec, where the leading `:` is pathspec magic:
+`PreservationRefused: fatal: pathspec ':weird.txt' did not match any files`.
+Fail-safe (repository byte-identical, no mis-capture, scope cannot be widened
+this way because magic is only recognised at offset 0 of the pathspec, which
+requires a root scope where everything is already in scope), but the durable
+reason is a raw Git error rather than a named predicate. `--literal-pathspecs`
+or `:(literal)` prefixes would close it.
+
+O14:: *The H003 regression test does not cover the undecodable-name shape.* It
+covers a space and a valid-UTF-8 non-ASCII character only, which is why the
+regression in section 4 passed the delivered suite.
+
+H002's observations O1-O12 are carried forward unchanged; this Hop did not
+re-disposition them and found no evidence contradicting any of them.
+
+=== 7. Agent-local environment limitations
+
+`tests/architecture/test_bp1_identity.py`,
+`tests/architecture/test_offline_distribution.py` and
+`tests/unit/test_wfc_op.py` fail or error in this sandbox because
+`python -m build` / `pip install` cannot reach a package index
+(`ERROR: No matching distribution found for setuptools>=68`). The required
+suite itself refuses to run without `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`, which
+are not available offline here. These were observed, not worked around; no
+dependency was downloaded and no sandbox setting was changed. All agent-side
+runs above are exploratory partial runs (`--wfc-partial`) and are *not*
+Coordinator-trusted evidence; the Coordinator's full task-check remains
+authoritative.
+
+No implementation, test, fixture or Git state was modified by this reviewer.
+All reproductions ran against disposable, from-scratch repositories and
+out-of-tree copies of the product tree; this artifact is the only repository
+change proposed by this Hop.
