@@ -529,6 +529,27 @@ def test_legacy_status_with_state_root_still_reaches_the_operator(repository: Pa
     assert payload["run_id"] == "RUN-fake-engine"
 
 
+def test_legacy_status_with_equals_state_root_still_reaches_the_operator(repository: Path, tmp_path: Path, state_home: Path):
+    state_root = tmp_path / "legacy-state-equals"
+    env = {**os.environ, "WFC_FAKE_ENGINE_MODE": "completed_consistent"}
+    head = git(repository, "rev-parse", "HEAD")
+    subprocess.run(
+        [
+            sys.executable, str(FAKE_ENGINE), "--repository", str(repository), "--state-root", str(state_root),
+            "--expected-head", head, "--work-item", "x", "--profile", "x", "--policy", "x",
+            "--components", "x", "--task", "x", "--execution-bindings", "x",
+        ],
+        env=env, check=False,
+    )
+    out = io.StringIO()
+    import contextlib
+    with contextlib.redirect_stdout(out):
+        code = cli_main(["status", f"--state-root={state_root}"])
+    assert code == 0
+    payload = json.loads(out.getvalue())
+    assert payload["run_id"] == "RUN-fake-engine"
+
+
 def test_plan_still_runs_no_project_command_alongside_the_new_lifecycle_commands(repository: Path, tmp_path: Path):
     task_path = tmp_path / "task.md"
     task_path.write_text(

@@ -27,7 +27,9 @@ def main(argv=None):
     if args[:1] in (['run'], ['resume']):
         from .lifecycle import main as lifecycle_main
         return lifecycle_main(args)
-    if args[:1] == ['status'] and '--state-root' not in args[1:]:
+    if args[:1] == ['status'] and not any(
+        arg == '--state-root' or arg.startswith('--state-root=') for arg in args[1:]
+    ):
         from .lifecycle import main as lifecycle_main
         return lifecycle_main(args)
     from ..operator import main as operator_main

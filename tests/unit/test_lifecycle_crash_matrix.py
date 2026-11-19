@@ -221,6 +221,37 @@ def test_crash_after_probe_before_commit_resume_commits_exactly_once(repository:
     assert len(commission_subjects) == 1
 
 
+def test_crash_between_materialize_and_bounded_path_commit_resume_commits_exactly_once(
+    repository: Path, tmp_path: Path, state_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """Regression for the exact boundary inside ``_do_commit``: the compiled
+    Commission and request file are already written to the worktree, but the
+    crash happens before ``bounded_path_commit`` is ever called. Resume must
+    not treat its own prior materialization as a foreign obstruction.
+    """
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    checkout_dir, journal, authorized, lock = _authorize_only(repository, request_path)
+    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    probe = L._do_probe(repository, checkout_dir, journal, authorized)
+
+    real_bounded_path_commit = L.bounded_path_commit
+    monkeypatch.setattr(
+        L, "bounded_path_commit",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulated crash before the commit call")),
+    )
+    with pytest.raises(RuntimeError):
+        L._do_commit(repository, checkout_dir, journal, authorized)
+    monkeypatch.setattr(L, "bounded_path_commit", real_bounded_path_commit)
+    J.release_lock(lock)
+
+    os.environ["WFC_FAKE_ENGINE_MODE"] = "awaiting_human"
+    L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
+    result = L.resume_lifecycle(repository)
+    assert result.classification == "awaiting_human"
+    commission_subjects = [line for line in git(repository, "log", "--oneline").splitlines() if "commission" in line]
+    assert len(commission_subjects) == 1
+
+
 def test_crash_after_verify_before_launch_resume_continues_with_no_recommit(repository: Path, tmp_path: Path, state_home: Path):
     request_path = _write_request(repository, tmp_path / "request.yaml")
     checkout_dir, journal, authorized, lock = _authorize_only(repository, request_path)

@@ -429,6 +429,26 @@ def _try_adopt_commit(
     return head
 
 
+def _materialize_commission(repository: Path, expected_texts: Mapping[str, str]) -> None:
+    """Write the compiled Commission plus the request file, tolerating exact-
+    content leftovers from a crash between materialization and the commit
+    call on a prior attempt at this same step.  Any other pre-existing
+    content at a destination path is a contradiction, not a resumable crash.
+    """
+
+    for path, text in expected_texts.items():
+        destination = repository / path
+        if destination.exists():
+            if destination.read_text(encoding="utf-8") != text:
+                raise LifecycleError(
+                    f"unexpected content already present at {path}; refusing to overwrite",
+                    classification="inconsistent",
+                )
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(text, encoding="utf-8")
+
+
 def _do_commit(repository: Path, checkout_dir: Path, journal: Journal, authorized: JournalRecord) -> JournalRecord:
     request_text = (checkout_dir / "commission" / "request.yaml").read_text(encoding="utf-8")
     config_text = (checkout_dir / "commission" / "config.yaml").read_text(encoding="utf-8")
@@ -460,8 +480,7 @@ def _do_commit(repository: Path, checkout_dir: Path, journal: Journal, authorize
             )
         commit = adopted
     else:
-        compiled.write_to(repository, overwrite=False)
-        (repository / request_file_path).write_text(request_text, encoding="utf-8")
+        _materialize_commission(repository, expected_texts)
         intent = NewPathCommitIntent(paths=all_paths, subject=subject)
         try:
             committed = bounded_path_commit(
