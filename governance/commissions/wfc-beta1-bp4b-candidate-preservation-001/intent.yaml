@@ -1,0 +1,63 @@
+schema_version: 1
+commission_id: wfc-beta1-bp4b-candidate-preservation-001
+work_item_id: WI-WFC-BETA1-BP4B-CANDIDATE-PRESERVATION-001
+authority_source: Maintainer authorizes exactly one fresh robust@v1 BP4b Run (bounded non-authoritative candidate preservation on the accepted BP4a lifecycle contract)
+  under DG-3 Variant B, up to ten Hops; no BP6 archive/report, no Runtime promotion, no push.
+program:
+  id: robust
+  revision: v1
+  source_commit: 8b5b7c6320cc67860146aceb16955c893d9f6e74
+task:
+  title: Add bounded non-authoritative candidate preservation to the installed lifecycle
+  body: |
+    Implement BP4b on top of the independently accepted BP4a lifecycle controller (Run RUN-4000d70af4544c81907960b9a1702451, review c57c1b0, Evidence 997b16b). Governing decisions: DG-3 Variant B and the "Package boundary and detail decisions, 2026-11-19" paragraph in docs/backlog/beta1_productization.adoc (BP4), and BP4b in docs/backlog/beta1_execution_plan.adoc. Read them and the BP4a code (frontdoor/lifecycle.py, frontdoor/journal.py), the BP4a limitations record and review artifacts, and git_facts.py. No subreaper, no supervising host, no process-tree supervision, no `wfc stop`.
+
+    Frozen BP4a contract (use it, do NOT change it): journal.query_lock_held(checkout_dir) and the ownership lock (try_acquire_lock/release_lock); the `classified` journal record with fields classification, run_id, run_status, end_head, state_root, checkout_state_root; opaque digest-verified `ext.*` records that the BP4a reader accepts after `classified` and ignores for every decision; BP4a classifications and exit codes; BP4a state transitions and records written before `classified`. BP4b adds NO new BP4a transition and changes no BP4a record, classification or exit code.
+
+    Deliver:
+    1. git_facts.preserve_candidate (a NEW additive function; existing function bodies, including trusted_commit and bounded_path_commit, must stay byte-identical) plus a small frontdoor/preservation.py gluing it to the journal and lifecycle.
+    2. Trigger: preservation runs for the non-completed classifications that can carry unadopted work (interrupted, awaiting_human, awaiting_human_budget, reconcile_required, stopped), never for completed, and never when no engine state exists. `wfc run` and `wfc resume` execute a pending preservation step after `classified` (idempotent, journaled as ext.* records, safe to repeat after a crash); `wfc status` stays strictly read-only: it only reports the latest preservation facts from the ext.* records.
+    3. Capture predicates (all must hold, else refuse with a named reason and leave the repository byte-identical): the ownership lock is free and is held by the capture itself for its duration; HEAD equals the classified end_head; every changed or untracked path lies inside the Run's authorized scope (any dirty path outside it is refused as unattributable provenance); no configured clean/process filter and no unsafe special files or escaping symlinks in scope; total size and file count under a documented cap; two consecutive identical tree observations. A clean worktree is recorded as nothing to preserve.
+    4. Mechanism: build the captured tree from a PRIVATE temporary index (HEAD plus the worktree content of the in-scope changed paths; the live index may contain staged residue and is never read as truth and never modified), write it with commit-tree on top of HEAD with an explicit non-authoritative subject, and create the ref refs/wfc/preserved/<run_id>/<n> with update-ref create-only. Branch, HEAD, live index, worktree, stash and Git configuration are never touched. Idempotent: an existing preserved ref of the same Run with an identical tree is reported, not duplicated. Use the trusted Git execution policy (no hooks, no signing, no fsmonitor) of git_facts.
+    5. Journal records (all ext.*): ext.preservation.intent before the effect; ext.preservation.result{ref, commit, tree, file_count, bytes, quiescence:"unattested"}; ext.preservation.refused{reason}; ext.preservation.not_needed. Crash between ref creation and the result record: the next run/resume finds the ref by identical tree and records the result without a second ref.
+    6. Honest limits, recorded in a developer-facing limitations record: quiescence is `unattested`; a surviving provider process may still write after capture; preservation is not adoption, acceptance, scope grant or Finding transfer and gives no credit toward review; it does not replace the manual salvage/successor procedure (BP7 reconciles the operator manual).
+
+    Hard rules: no engine change; no change to reducer, Finding, review, routing, adapter, admission, trusted_commit or bounded_path_commit; no BP6 archive/report; no same-Run recovery, continuation, lineage or successor logic; no supervision; no global Git configuration change; no network, no pip; Python 3.10-3.13 stdlib only; kernel modules never import frontdoor; no edits to the operator manual or backlog. CommitIntent: name every changed/new/deleted leaf individually, never directories; avoid rename-shaped changes. Deliver ONE complete candidate in the first Worker Hop; subject must contain WI-WFC-BETA1-BP4B-CANDIDATE-PRESERVATION-001 and the actual Hop ID. No Git writes by the agent.
+
+    Reviewer (fresh, adversarial): evaluate the ENTIRE product against the baseline and this task. Verify the BP4a contract is unchanged (diff of BP4a code paths and existing git_facts function bodies is empty or purely additive hook-calls), every case below with a test that fails against a mutation of the guarded behavior, byte-identical repository state (branch, HEAD, live index, worktree, refs other than the new one) after success and after every refusal, the staged-residue case (the trusted-commit rename mismatch leaves staged paths; capture must still work), idempotency and crash resume, and that no claim stronger than `unattested` is made. A reproduced explicit acceptance violation is blocking regardless of presumed risk. `finding_authority: [resolve]` does not authorize residual transitions: report non-blocking observations in the review artifact and summary only. Coordinator full task-check is mandatory and not replaceable by agent-side tests.
+  acceptance: |
+    Each case is covered by a test with its expected journal transition and safety invariant: (1) interrupted Run with in-scope dirty and untracked work: ref refs/wfc/preserved/<run_id>/1 created, branch/HEAD/live index/worktree/other refs byte-identical, quiescence unattested; (2) awaiting_human with staged residue from a refused trusted commit (rename-shaped): captured from the private index, live index untouched; (3) completed Run: no preservation; (4) clean worktree: ext.preservation.not_needed; (5) repeat run/resume: idempotent, no second ref; (6) crash after ref creation before the result record: resume records the result, no second ref; (7) crash before ref creation: resume captures once; (8) ownership lock held: refused, repository byte-identical; (9) HEAD moved since classified: refused; (10) dirty path outside the authorized scope: refused, nothing written; (11) configured clean/process filter: refused; (12) unsafe special file or escaping symlink in scope: refused; (13) size/file-count cap exceeded: refused with reason; (14) unstable tree across the two observations: refused; (15) every refusal is journaled with its reason and leaves the classification and BP4a exit code unchanged; (16) `wfc status` stays read-only and reports the preservation facts; (17) BP4a tests, the architecture import-direction guard and the existing suite pass unchanged; (18) a Beta-1 limitations record states unattested quiescence, surviving provider processes and the non-adoption boundary. Independent review with no blocking Findings; Coordinator full task-check passes; completed Run.
+  withheld_authority: No adoption, acceptance, scope widening or Finding transfer by preservation, no change to the BP4a contract, transitions, records, classifications or exit codes, no engine change, no change to reducer, Finding, review, routing, adapter,
+    admission, trusted_commit or bounded_path_commit, no BP6 archive/report, no `wfc stop`, subreaper, supervising host or process-tree supervision, no same-Run Hop recovery, continuation, lineage or successor logic,
+    no operator-manual or backlog edits, no test weakening, no global Git configuration change, no historical Run or Evidence edit, no extra Commission, Runtime promotion, push, merge or rebase.
+  escalation_default: Escalate a genuine need for new authority or design, any conflict with DG-3 Variant B or the frozen BP4a contract, any capture situation whose content or provenance cannot be established from Git and journal facts (refuse and ask), or inability to meet the matrix without changing BP4a behavior.
+scope:
+- src/workflow_coordinator/git_facts.py
+- src/workflow_coordinator/frontdoor/preservation.py
+- src/workflow_coordinator/frontdoor/lifecycle.py
+- src/workflow_coordinator/frontdoor/cli.py
+- tests/unit/test_candidate_preservation.py
+- tests/unit/test_preservation_lifecycle.py
+- tests/fixtures/bp4/fake_provider.py
+- tests/fixtures/bp4/fake_engine.py
+- docs/developer_guide/ch02_code_navigation.adoc
+- docs/warm_storage/concepts/wfc_beta1_bp4b_candidate_preservation_001_limitations.adoc
+- docs/warm_storage/concepts/wfc_beta1_bp4b_candidate_preservation_001_broad_review.adoc
+- docs/warm_storage/concepts/wfc_beta1_bp4b_candidate_preservation_001_focused_review.adoc
+personas:
+  worker: 'Senior Python/Git engineer: add bounded, byte-identical-safe candidate preservation on the frozen BP4a contract, with real-Git fixtures and crash-injection tests.'
+  independent_reviewer: 'Fresh independent adversarial reviewer: evaluate the whole preservation feature against its baseline, reproduce each safety invariant with a failing mutation and verify the BP4a contract is unchanged.'
+evidence_profile: task-check-v1
+policy_basis:
+  id: repository-standard
+  revision: v1
+  source_commit: eda4544f4e1826474f0cee59aab4c3e641ba2c28
+max_autonomous_hops: 10
+durable_artifacts:
+  broad_review:
+  - docs/warm_storage/concepts/wfc_beta1_bp4b_candidate_preservation_001_broad_review.adoc
+  focused_review:
+  - docs/warm_storage/concepts/wfc_beta1_bp4b_candidate_preservation_001_focused_review.adoc
+components_ref:
+  path: governance/self-development/components.yaml
+  source_commit: 44bf8a1057346ea7bf5ce8dc8bf015e9aa18a2b0
