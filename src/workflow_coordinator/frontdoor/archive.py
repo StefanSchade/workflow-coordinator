@@ -32,7 +32,8 @@ Two things are deliberately new, not present in the ported scripts:
   genuinely different content is refused.
 * *Destination-boundary containment.* The resolved destination and staging
   paths are refused, before any write, if any component of either escapes
-  the Evidence repository through a symlink.
+  the Evidence repository through a symlink, or if a symlink inside the
+  repository makes the two resolve to the same or a nested path.
 
 The commit itself is the one Coordinator-owned write surface
 (``git_facts.bounded_path_commit``), not a raw ``git add``/``git commit``
@@ -154,6 +155,26 @@ def assert_source_isolation(dest: Path, *sources: Path | None) -> None:
             raise ArchiveError(f"refusing: destination {dest} is nested inside source {src}")
         if dest in src.parents:
             raise ArchiveError(f"refusing: source {src} is nested inside destination {dest}")
+
+
+def assert_staging_disjoint_from_destination(staging: Path, dest: Path) -> None:
+    """Refuse when the resolved staging and destination paths are equal or
+    nested, which a tracked symlink inside the Evidence repository (for
+    example ``.wfc-archive-staging`` pointing into ``archive/``) can cause
+    even though the two paths are lexically distinct. Checked before any
+    cleanup: ``_manifest_candidate`` unconditionally removes the staging
+    tree first, and that removal must never alias the placed, not-yet-
+    committed destination."""
+
+    staging_real, dest_real = staging.resolve(), dest.resolve()
+    if staging_real == dest_real:
+        raise ArchiveError(
+            f"refusing: staging directory {staging} resolves to the same path as destination {dest}"
+        )
+    if staging_real in dest_real.parents or dest_real in staging_real.parents:
+        raise ArchiveError(
+            f"refusing: staging directory {staging} and destination {dest} resolve to nested paths"
+        )
 
 
 def assert_dest_under_archive_root(dest: Path, archive_root: Path) -> None:
@@ -657,12 +678,15 @@ def _manifests_match_ignoring_archived_at(a: dict, b: dict) -> bool:
     def strip(manifest: dict) -> dict:
         return {k: v for k, v in manifest.items() if k != "archived_at"}
 
-    def copied_key(entries: list[dict]) -> set[tuple[object, object, object, object]]:
-        # ``source`` (the per-file provenance path copied from) is compared
-        # alongside path/hash/size so a manifest claiming legitimate
-        # provenance for content that actually came from elsewhere, or vice
-        # versa, is caught -- not just a content/size mismatch.
-        return {(e.get("path"), e.get("sha256"), e.get("bytes"), e.get("source")) for e in entries}
+    def copied_key(entries: list[dict]) -> set[str]:
+        # Compare each entry whole, not a fixed projection of known keys --
+        # a genuinely derived entry has exactly the keys ``_copy_one``
+        # writes, so any *additional* key present only in the placed entry
+        # (forged provenance, for example) is otherwise invisible to a
+        # per-key comparison. The existing duplicate-path refusal
+        # (``_load_existing_manifest``) is the multiplicity guard for a
+        # placed manifest listing the same path twice.
+        return {json.dumps(e, sort_keys=True) for e in entries}
 
     a2, b2 = strip(a), strip(b)
     if copied_key(a2.pop("copied_files", [])) != copied_key(b2.pop("copied_files", [])):
@@ -834,6 +858,7 @@ def archive_run(
     assert_dest_under_archive_root(dest, identity / "archive")
     assert_no_symlink_escape(dest, identity)
     assert_no_symlink_escape(staging, identity)
+    assert_staging_disjoint_from_destination(staging, dest)
 
     if dry_run:
         planned = _plan_run_files(state_root) + (_plan_ops_files(ops_dir_resolved) if ops_dir_resolved else [])

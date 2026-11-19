@@ -227,6 +227,28 @@ class ForgedManifestFactsAreRefusedTests(RetryIntegrityTestCase):
         self.assertIn("does not match a manifest freshly derived", str(cm.exception))
         self.assertEqual(_head(self.repo), before_head)
 
+    def test_forged_per_file_source_added_as_extra_key_is_refused(self):
+        """A genuinely derived ``copied_files`` entry has exactly the four
+        keys ``_copy_one`` writes (path/source/sha256/bytes). Adding an
+        *extra* key, rather than substituting one of those four, must be
+        caught too -- a comparison that only projects known keys would miss
+        it, since a freshly derived entry can never carry that key."""
+
+        attempt = "wfc-retry-forged-extra-key-01"
+        home, state, ops_dir = self._build(attempt)
+        dest, manifest = self._place_genuine(attempt=attempt, state=state, ops_dir=ops_dir)
+        before_head = _head(self.repo)
+
+        manifest["copied_files"][0]["verified_by"] = "FORGED: WFC Coordinator trusted review"
+        manifest["copied_files"][0]["original_source"] = "/attacker/controlled/path.json"
+        (dest / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+        with self.assertRaises(ar.ArchiveError) as cm:
+            self._retry(state=state, home=home)
+        self.assertIn("does not match a manifest freshly derived", str(cm.exception))
+        self.assertEqual(_head(self.repo), before_head)
+        self.assertEqual(git(self.repo, "diff", "--cached", "--name-only").strip(), "")
+
 
 class FreshAuthoritativeSourceChangeIsRefusedTests(RetryIntegrityTestCase):
     """The underlying invariant, not just forged-manifest examples: if the

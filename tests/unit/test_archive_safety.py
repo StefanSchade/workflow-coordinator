@@ -175,6 +175,61 @@ class SymlinkEscapeContainmentTests(SafetyTestCase):
         self.assertFalse((repo / "archive" / "unclassified").exists())
 
 
+class StagingDestinationAliasTests(SafetyTestCase):
+    """A *tracked* symlink inside the Evidence repository can alias the
+    staging root and the destination even though neither individually
+    escapes the repository -- ``.wfc-archive-staging`` pointing at
+    ``archive/unclassified`` makes the two the same directory. Reverifying a
+    placed-but-uncommitted archive must refuse before ``_manifest_candidate``
+    removes the staging tree, not discover the aliasing by destroying the
+    placed archive."""
+
+    def test_aliased_staging_and_destination_is_refused_without_losing_placed_data(self):
+        attempt = "wfc-safety-staging-dest-alias-01"
+        repo = self.base / "evidence"
+        repo.mkdir()
+        (repo / "archive").mkdir()
+        (repo / "archive" / "unclassified").mkdir(parents=True)
+        (repo / "archive" / ".gitkeep").write_text("")
+        (repo / ".wfc-archive-staging").symlink_to(Path("archive") / "unclassified")
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "user.name", "Safety Fixture")
+        git(repo, "config", "user.email", "safety@example.invalid")
+        git(repo, "config", "commit.gpgsign", "false")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "fixture: staging root aliases the destination tree via a symlink")
+
+        home, state = _build_identity(self.base, attempt)
+        dest = repo / "archive" / "unclassified" / attempt
+        content = b'{"a":1}\n'
+        (dest / "run").mkdir(parents=True)
+        (dest / "run" / "sample.json").write_bytes(content)
+        write_json(dest / "manifest.json", {
+            "attempt_id": attempt,
+            "archived_at": "2026-11-19T00:00:00+00:00",
+            "sources": {"run_dir": str(state), "ops_dir": None},
+            "copied_files": [{
+                "path": "run/sample.json",
+                "source": str(state / "operator-summary.json"),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "bytes": len(content),
+            }],
+            "facts": {"run_id": f"RUN-SAFETY-{attempt}"},
+            "semantic": None,
+        })
+        before_head = _head(repo)
+        before_snapshot = _snapshot(dest)
+
+        with self.assertRaises(ar.ArchiveError) as cm:
+            ar.archive_run(state_root=state, evidence_repo=repo, home=home)
+        self.assertIn("resolves to the same path", str(cm.exception))
+
+        self.assertEqual(_head(repo), before_head)
+        self.assertEqual(git(repo, "diff", "--cached", "--name-only").strip(), "")
+        self.assertEqual(_snapshot(dest), before_snapshot,
+                          "a refused retry must never lose the placed archive")
+
+
 class InterruptedRetryTamperTests(SafetyTestCase):
     """A placed-but-uncommitted destination -- exactly what a kill between
     placement and commit leaves, per ``StagingAndRetryTests`` in
