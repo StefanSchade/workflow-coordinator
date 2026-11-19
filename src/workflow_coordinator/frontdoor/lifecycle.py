@@ -51,6 +51,7 @@ from ..implementation_identity import implementation_identity
 from ..model import RunStatus
 from ..serialization import load_run, run_execution_configuration_from_yaml
 from .config import ExecutionEnvelope, consumer_config_from_yaml, resolve_execution
+from . import preservation
 from .journal import (
     CanonicalCheckout,
     Journal,
@@ -862,12 +863,16 @@ def run_lifecycle(inputs: RunInputs) -> LifecycleResult:
     def authorize() -> tuple[JournalRecord, Any]:
         return _authorize(inputs, checkout_dir, journal)
 
-    return _advance(inputs.repository, checkout_dir, journal, authorize=authorize)
+    result = _advance(inputs.repository, checkout_dir, journal, authorize=authorize)
+    preservation.run_pending_preservation(inputs.repository, checkout_dir, journal)
+    return result
 
 
 def resume_lifecycle(repository: Path) -> LifecycleResult:
     checkout, checkout_dir, journal = _prepare_checkout(repository)
-    return _advance(repository, checkout_dir, journal, authorize=None)
+    result = _advance(repository, checkout_dir, journal, authorize=None)
+    preservation.run_pending_preservation(repository, checkout_dir, journal)
+    return result
 
 
 def status_lifecycle(repository: Path) -> LifecycleResult:
@@ -943,6 +948,17 @@ def _print_result(result: LifecycleResult) -> None:
         print(f"CHECKOUT STATE ROOT: {result.checkout_state_root}")
 
 
+def _print_preservation_status(status: preservation.PreservationStatus) -> None:
+    """Report-only: never called from any BP4a write path, never mutates."""
+
+    if status.kind == "absent":
+        return
+    print(f"PRESERVATION: {status.kind}")
+    for key in ("ref", "commit", "tree", "file_count", "bytes", "quiescence", "reason"):
+        if key in status.data:
+            print(f"  {key}: {status.data[key]}")
+
+
 def cmd_run(argv: list[str]) -> int:
     args = _parse_run_args(argv)
     try:
@@ -980,10 +996,12 @@ def cmd_status(argv: list[str]) -> int:
     try:
         repository = repository_identity(Path(args.repository))
         result = status_lifecycle(repository)
+        preservation_status = preservation.latest_preservation_status(repository)
     except (CommissionError, GitPreflightError, JournalError, OSError) as error:
         print(f"wfc status: {error}", file=sys.stderr)
         return 2
     _print_result(result)
+    _print_preservation_status(preservation_status)
     # ``status`` is purely read-only reporting (like the legacy
     # ``--state-root`` status, which always exits 0): a 0 exit means the
     # report was produced truthfully, not that the reported state is good

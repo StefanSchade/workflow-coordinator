@@ -1,0 +1,74 @@
+= BP4b candidate preservation: Beta-1 limitations
+
+Standing:: Developer-facing limitations record for `git_facts.preserve_candidate`
+and `frontdoor.preservation` (the capture step `wfc run`/`resume` perform after
+`classified`, and the facts `wfc status` reports). This is not operator
+guidance; the operator manual (BP7) owns user-facing recovery instructions.
+Nothing here overrides maintainer decision DG-3 (2026-11-19, Variant B, see
+link:../../backlog/beta1_productization.adoc#bp4[BP4]); it documents the
+consequences of that decision as implemented, and it inherits every limitation
+already recorded for BP4a in
+link:wfc_beta1_bp4a_lifecycle_controller_001_limitations.adoc[that record]
+without restating or relaxing it.
+
+== Quiescence is always `unattested`
+
+A preserved candidate's `ext.preservation.result` record always carries
+`quiescence: "unattested"`. The two consecutive identical tree observations
+taken immediately before capture reduce, but do not eliminate, the chance
+that a process is actively rewriting files in scope; they prove nothing about
+any process that is not currently writing at that exact moment. As BP4a's own
+limitations record states, the ownership lock is evidence that *something*
+launched by this lifecycle may still be running, never a quiescence proof;
+BP4b's capture inherits that same boundary and never claims more than it can
+observe.
+
+== A surviving provider process may still write after capture
+
+Per DG-3 Variant B, there is no subreaper, no supervising host process and no
+process-tree supervision. If the engine's own adapter spawned a provider
+process that outlives the engine (the case the BP4a limitations record
+documents under "Coordinator crash and surviving provider processes"), that
+process is invisible to the ownership lock and can keep writing to the
+repository after a candidate has already been captured and referenced. The
+preserved ref is a snapshot taken at one point in time, not a guarantee that
+nothing changed afterward.
+
+== Preservation is not adoption, acceptance, scope widening or Finding transfer
+
+A `refs/wfc/preserved/<run_id>/<n>` ref is inert, non-authoritative content:
+an ordinary commit object reachable only from that one ref, parented on the
+classified `end_head`, with an explicit subject marking it non-authoritative.
+Creating it does not adopt the captured work into any branch, does not imply
+acceptance or review credit, does not widen any Run's authorized scope, and
+does not transfer, resolve or otherwise disposition any Finding. A human who
+wants to use preserved content must deliberately inspect the ref and bring
+its content back through the project's normal, reviewed path; nothing in
+this package does that automatically or implicitly.
+
+== Preservation does not replace manual salvage or successor procedures
+
+`preserve_candidate` is a bounded capture primitive, not a recovery
+workflow. It does not resume the interrupted Run, does not establish Run
+lineage or a successor Run (`FTR-WFC-ATOMIC-HOP-RECOVERY` remains out of
+scope, as it is for BP4a), and does not replace the operator manual's manual
+salvage/successor guidance (owned by BP7's `ch06_recovery` reconciliation).
+An operator who needs to recover from a stopped or interrupted lifecycle must
+still follow that manual procedure; the preserved ref is additional raw
+material for that procedure, not a substitute for it.
+
+== Refusal is conservative, not exhaustive
+
+Every capture predicate (free and self-held ownership lock, `HEAD` unchanged
+since classification, every dirty or untracked path inside the Run's
+authorized scope, no configured clean/process filter, no unsafe special file
+or escaping symlink in scope, both the file-count and total-byte caps, and
+two stable tree observations) refuses honestly and leaves the repository
+byte-identical on failure. A refusal is recorded once as
+`ext.preservation.refused{reason}` and is not retried on a later `run`/
+`resume`: the underlying Run's classified facts (`end_head`, scope) are
+frozen, so a predicate that failed once for this Run will fail identically
+again. This bounds journal growth; it is not a claim that the condition could
+not, in principle, change for a reason this package does not track (for
+example, an operator manually freeing the ownership lock after a refusal
+caused by lock contention).

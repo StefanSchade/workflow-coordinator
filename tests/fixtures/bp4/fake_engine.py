@@ -46,6 +46,22 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _leave_dirty_worktree_content(repository: Path) -> None:
+    """BP4b opt-in only: write one file simulating unadopted worktree work.
+
+    Off unless ``WFC_FAKE_ENGINE_DIRTY_FILE`` is set, so every pre-existing
+    BP4a fixture behavior (a clean worktree at classification time) is
+    unchanged by default.
+    """
+
+    relative = os.environ.get("WFC_FAKE_ENGINE_DIRTY_FILE")
+    if not relative:
+        return
+    target = repository / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("fake engine: unadopted worktree work\n", encoding="utf-8")
+
+
 def main() -> int:
     mode = os.environ.get("WFC_FAKE_ENGINE_MODE", "exit_immediately")
     args = _parse_args()
@@ -71,6 +87,7 @@ def main() -> int:
     )
 
     if mode in ("dispatch_then_crash", "dispatch_then_hang"):
+        _leave_dirty_worktree_content(repository)
         write_run_snapshot(run_root / "run.json", run)
         marker = DispatchMarker(
             schema_version=1, run_id=run.run_id, hop_id="H001", sequence=1, invocation_id="INV-fake",
@@ -99,6 +116,7 @@ def main() -> int:
     from dataclasses import replace
 
     run = replace(run, status=terminal_status)
+    _leave_dirty_worktree_content(repository)
     write_run_snapshot(run_root / "run.json", run)
 
     if mode == "completed_consistent":

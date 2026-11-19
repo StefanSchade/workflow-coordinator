@@ -811,6 +811,250 @@ def trusted_commit(
     return TrustedCommit(commit=delta.end_head, delta=delta)
 
 
+# --------------------------------------------------------------------------
+# BP4b: bounded, non-authoritative candidate preservation.
+#
+# A NEW additive seam only -- it touches no code above this line. It reuses
+# the existing trusted-execution and scope-safety primitives but never stages
+# into, nor reads as truth, the registered index; it writes only a private
+# temporary index, new blob/tree/commit objects and -- on success -- one
+# create-only ref. Branch, HEAD, the live index, the worktree, the stash and
+# Git configuration are never touched. Capture is never adoption, acceptance,
+# scope widening or Finding transfer, and its quiescence source is always
+# ``"unattested"``. Locking (the BP4a ownership ``flock``) is owned entirely
+# by the caller in ``frontdoor.preservation``; this function assumes nothing
+# about it.
+# --------------------------------------------------------------------------
+
+
+class PreservationRefused(GitPreflightError):
+    """A candidate-preservation capture predicate failed; the repository is unchanged."""
+
+
+@dataclass(frozen=True)
+class PreservedCandidate:
+    """The one factual result of ``preserve_candidate``."""
+
+    status: str  # "preserved" or "not_needed"
+    ref: str | None
+    commit: str | None
+    tree: str | None
+    file_count: int
+    bytes_total: int
+    quiescence: str = "unattested"
+
+
+PRESERVATION_MAX_FILES = 2048
+PRESERVATION_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+
+_SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _isolated_index_copy(identity: Path) -> Path:
+    """A throwaway copy of the live index; reads through it never touch the real one."""
+
+    index_location = Path(_readonly_git(identity, "rev-parse", "--git-path", "index"))
+    if not index_location.is_absolute():
+        index_location = identity / index_location
+    descriptor, copied_index = tempfile.mkstemp(prefix="wfc-preserve-index-")
+    os.close(descriptor)
+    if index_location.exists():
+        shutil.copyfile(index_location, copied_index)
+    return Path(copied_index)
+
+
+def _build_candidate_tree(identity: Path, *, base_head: str, changed_paths: tuple[str, ...]) -> str:
+    """Write one tree object: ``base_head`` overlaid with the worktree content of ``changed_paths``.
+
+    Builds into a fresh private temporary index on every call -- never the
+    registered index -- and discards that index file immediately after.
+    """
+
+    descriptor, private_index = tempfile.mkstemp(prefix="wfc-preserve-tree-")
+    os.close(descriptor)
+    try:
+        env = {**_trusted_git_environment(), "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": private_index}
+
+        def build_git(*args: str) -> str:
+            completed = _run_git(identity, *args, env=env, trusted=True)
+            if completed.returncode:
+                raise PreservationRefused(completed.stderr.strip() or "Git command failed")
+            return completed.stdout.strip()
+
+        build_git("read-tree", base_head)
+        if changed_paths:
+            build_git("add", "-A", "--", *changed_paths)
+        return build_git("write-tree")
+    finally:
+        try:
+            os.unlink(private_index)
+        except FileNotFoundError:
+            pass
+
+
+def preserve_candidate(
+    repository: Path,
+    *,
+    expected_repository: Path,
+    base_head: str,
+    allowed_paths: tuple[str, ...],
+    run_id: str,
+    max_files: int = PRESERVATION_MAX_FILES,
+    max_total_bytes: int = PRESERVATION_MAX_TOTAL_BYTES,
+) -> PreservedCandidate:
+    """Capture unadopted worktree content as one inert, non-authoritative ref.
+
+    Every refusal below leaves branch, HEAD, the live index, the worktree and
+    every other ref byte-identical. The ownership-lock boundary is the
+    caller's responsibility (``frontdoor.preservation``); this function
+    performs no Git write beyond the private temporary index used to build
+    the candidate tree, the new tree/commit objects, and -- on success -- one
+    create-only ``refs/wfc/preserved/<run_id>/<n>``.
+    """
+
+    if not _SAFE_RUN_ID.fullmatch(run_id):
+        raise PreservationRefused("run id is not a safe ref path component")
+    if not allowed_paths:
+        raise PreservationRefused("preservation requires an explicit authorized scope")
+    identity = _repository_identity(repository, git_command=_readonly_git)
+    if identity != expected_repository.resolve():
+        raise PreservationRefused("repository identity mismatch")
+    if filters := _configured_external_filters(identity):
+        raise PreservationRefused(
+            "configured clean/process filter is not permitted for candidate preservation: "
+            + ", ".join(filters)
+        )
+
+    copied_index = _isolated_index_copy(identity)
+    try:
+        read_env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": str(copied_index)}
+
+        def read_git(*args: str) -> str:
+            completed = _run_git(identity, *args, env=read_env)
+            if completed.returncode:
+                raise PreservationRefused(completed.stderr.strip() or "Git command failed")
+            # Only the trailing newline is incidental; a leading status-line
+            # character (for example the significant leading space of a
+            # porcelain " M path" entry) must never be eaten by a blanket
+            # ``str.strip()``.
+            return completed.stdout.rstrip("\n")
+
+        if read_git("rev-parse", "HEAD") != base_head:
+            raise PreservationRefused("unexpected HEAD movement since classification")
+        status = read_git("status", "--porcelain=v1", "--untracked-files=all", "--no-renames")
+        tracked_paths: list[str] = []
+        untracked_paths: list[str] = []
+        for line in status.splitlines():
+            if line.startswith("?? "):
+                untracked_paths.append(line[3:])
+            elif line:
+                tracked_paths.append(line[3:])
+        submodules = tuple(
+            line for line in read_git("submodule", "status").splitlines() if line[:1] in {"-", "+"}
+        )
+        if submodules:
+            raise PreservationRefused("unresolved submodule identity")
+        if not tracked_paths and not untracked_paths:
+            return PreservedCandidate(
+                status="not_needed", ref=None, commit=None, tree=None, file_count=0, bytes_total=0,
+            )
+    finally:
+        try:
+            os.unlink(copied_index)
+        except FileNotFoundError:
+            pass
+
+    changed_paths = tuple(sorted(dict.fromkeys((*tracked_paths, *untracked_paths))))
+    try:
+        scope = tuple(_normalized_path(path, context="authorized scope", allow_root=True) for path in allowed_paths)
+    except GitPreflightError as error:
+        raise PreservationRefused(str(error)) from error
+
+    def in_scope(path: str) -> bool:
+        return any(root == "." or path == root or path.startswith(f"{root}/") for root in scope)
+
+    outside = [path for path in changed_paths if not in_scope(path)]
+    if outside:
+        raise PreservationRefused("preservation path is outside authorized scope: " + ", ".join(outside))
+
+    try:
+        _reject_unsafe_scope_special_files(identity, allowed_paths)
+    except GitPreflightError as error:
+        raise PreservationRefused(str(error)) from error
+
+    file_count = 0
+    total_bytes = 0
+    for path in changed_paths:
+        candidate = identity / path
+        if not candidate.exists() and not candidate.is_symlink():
+            continue  # a tracked deletion has no worktree object to size-check.
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(identity)
+            metadata = candidate.lstat()
+        except (OSError, ValueError) as error:
+            raise PreservationRefused(f"preservation path is unsafe: {path}") from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise PreservationRefused(f"preservation path is not a regular in-repository file: {path}")
+        file_count += 1
+        total_bytes += metadata.st_size
+    if file_count > max_files:
+        raise PreservationRefused(f"preservation file count exceeds limit: {file_count} > {max_files}")
+    if total_bytes > max_total_bytes:
+        raise PreservationRefused(f"preservation total bytes exceeds limit: {total_bytes} > {max_total_bytes}")
+
+    first_tree = _build_candidate_tree(identity, base_head=base_head, changed_paths=changed_paths)
+    second_tree = _build_candidate_tree(identity, base_head=base_head, changed_paths=changed_paths)
+    if first_tree != second_tree:
+        raise PreservationRefused("worktree is not stable: two consecutive tree observations differed")
+    tree = second_tree
+
+    try:
+        existing = _trusted_git(
+            identity, "for-each-ref", "--format=%(refname)%09%(objectname)%09%(tree)",
+            f"refs/wfc/preserved/{run_id}/",
+        )
+    except GitPreflightError as error:
+        raise PreservationRefused(str(error)) from error
+    used_indices: list[int] = []
+    for line in filter(None, existing.splitlines()):
+        name, commit_name, tree_name = line.split("\t")
+        suffix = name.rsplit("/", 1)[-1]
+        if suffix.isdigit():
+            used_indices.append(int(suffix))
+        if tree_name == tree:
+            return PreservedCandidate(
+                status="preserved", ref=name, commit=commit_name, tree=tree,
+                file_count=file_count, bytes_total=total_bytes,
+            )
+
+    message = (
+        f"wfc preserve: non-authoritative candidate capture for {run_id} "
+        "(quiescence unattested; not adoption)"
+    )
+    try:
+        commit = _trusted_git(identity, "commit-tree", tree, "-p", base_head, "-m", message)
+    except GitPreflightError as error:
+        raise PreservationRefused(str(error)) from error
+
+    next_index = max(used_indices, default=0) + 1
+    attempts_remaining = len(used_indices) + 8
+    while True:
+        candidate_ref = f"refs/wfc/preserved/{run_id}/{next_index}"
+        try:
+            _trusted_git(identity, "update-ref", candidate_ref, commit, "")
+        except GitPreflightError as error:
+            attempts_remaining -= 1
+            if attempts_remaining <= 0:
+                raise PreservationRefused(f"could not create a preservation ref: {error}") from error
+            next_index += 1
+            continue
+        return PreservedCandidate(
+            status="preserved", ref=candidate_ref, commit=commit, tree=tree,
+            file_count=file_count, bytes_total=total_bytes,
+        )
+
+
 def bounded_path_commit(
     repository: Path,
     *,
