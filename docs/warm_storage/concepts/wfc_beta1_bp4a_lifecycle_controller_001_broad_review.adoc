@@ -1,5 +1,489 @@
 = BP4a installed lifecycle controller: independent broad review
 
+This record holds both independent broad-review passes over the BP4a product.
+The current pass is *H005*; the earlier *H002* pass is retained verbatim at the
+end as the provenance of the two Findings corrected in H003.
+
+== Pass H005 (current)
+
+WorkItem:: `WI-WFC-BETA1-BP4-LIFECYCLE-CONTROLLER-001`
+Hop:: `H005` (`broad_review`, fresh independent reviewer, gate, blocking-only,
+`finding_authority: [resolve]`)
+Reviewed product:: the *entire* BP4a product at review base HEAD
+`71a10287a4ab9c4ab6143f8f3fbe98b46cb4a00a`, measured against the real
+pre-implementation baseline `9ebd04defe8d9b48ff0b8de05b38e2c955cc39f2`
+(`chore: authorize BP4a lifecycle controller commission`). The whole product
+was re-derived in this Hop; the H002/H003/H004 records were read as evidence
+leads only.
+Governing acceptance:: the Commission task for this WorkItem (`Deliver` items
+1-8, the twenty-case acceptance matrix, the hard rules and the withheld
+authority), DG-3 Variant B and the "Package boundary and detail decisions,
+2026-11-19" paragraph of `docs/backlog/beta1_productization.adoc`.
+Disposition:: *Changes required.* One blocking Finding, newly reproduced in
+this Hop: a crash inside the Commission-commit step, after the commit
+primitive's own `git add` and before its `git commit`, wedges `resume`
+permanently and produces *zero* Commission commits, defeating acceptance case
+(6). Eleven non-blocking observations are recorded. Everything else in the
+matrix that could be exercised locally was independently reproduced as
+satisfied, and both previously corrected Findings were re-verified as fixed
+*and* as pinned by tests that fail when the fix is reverted.
+
+The only repository change proposed by this Hop is this artifact. No
+implementation, test, fixture or Git state was modified; the reproductions ran
+against disposable consumer repositories and a throw-away copy of the product
+tree under the gitignored `tmp/` scratch space.
+
+=== Method
+
+Three kinds of evidence were produced.
+
+. *Real-process reproductions* through `frontdoor.cli:main` in freshly spawned
+  processes (non-TTY stdin and stdout), against disposable, from-scratch,
+  non-WFC consumer repositories created the same way the BP4a fixtures create
+  them, with the *real* engine for the happy path and the fake-engine fixture
+  for pinned interruption points.
+. *Mutation testing of the suite itself.* The product tree was copied to a
+  scratch workspace, one guarded behaviour at a time was removed there, and
+  the three BP4a test modules were run against the mutated copy (the copy's
+  own `src` first on `sys.path`, so its fixtures and spawned subprocesses also
+  resolve to the mutated code). A guard that no test detects is a matrix case
+  the suite does not really pin. Fourteen mutations were applied; the results
+  are tabulated below.
+. *Source reading* of the controller, the journal, the unchanged commit
+  primitive, the engine's start/persistence order and the adapters'
+  process-spawning flags.
+
+=== What was reproduced as correct
+
+==== Engine / controller boundary, import direction, no engine change
+
+`git diff --stat 9ebd04d..71a1028 -- src/` changes exactly three leaves:
+`frontdoor/cli.py` (+8 lines of dispatch), `frontdoor/journal.py` (new) and
+`frontdoor/lifecycle.py` (new). Nothing under `src/workflow_coordinator/`
+outside `frontdoor/` is touched, so `git_facts.py` (including `trusted_commit`
+and `bounded_path_commit`), `operator.py` (including `admit_parsed`), the
+reducer, Finding, review, routing and adapter modules are byte-identical to
+the pre-implementation baseline. No second reducer, Finding, review, routing
+or admission logic exists in the new code, and no classification path writes
+to the repository.
+
+`lifecycle.py` imports only downward (`..commissioning`, `..git_facts`,
+`..implementation_identity`, `..model`, `..serialization`, plus its own
+`frontdoor` siblings) and reuses the BP2b/BP3 seams rather than
+reimplementing them (`frontdoor.config.resolve_execution`,
+`frontdoor.request.consumer_request_from_yaml`,
+`commissioning.compile_commission`, `frontdoor.verify.verify_commission`,
+`git_facts.bounded_path_commit`). `tests/architecture/test_package_boundaries.py`
+passes (4 passed), so no kernel module imports `frontdoor`.
+
+The engine start/persistence contract the controller documents and relies on
+was re-verified in the engine source, not assumed: `operator.py` runs the
+read-only `_preflight` first (`operator.py:1776`), then creates the state root
+with an exclusive `state_root.mkdir(parents=True)` (`operator.py:1791`), then
+writes `operator-plan.json` (`operator.py:1818`), then `register_checkout`
+(`operator.py:1841`). The summary keys the controller requires before it will
+say `completed` -- `run_status`, `worktree_clean`, `final_head` -- are exactly
+the keys `operator._summary` emits (`operator.py:1074-1120`).
+
+The lock-inheritance claim about provider descendants was re-verified in the
+real adapters and the real evidence runner rather than asserted:
+`claude_adapter.py:248`, `codex_adapter.py:372` and `evidence.py:282` all call
+`subprocess.Popen` with no `pass_fds`, so the default `close_fds=True` applies
+and the ownership fd cannot reach a provider or an evidence process. The same
+default protects the controller's own baseline probe, which runs while the
+controller holds the lock.
+
+==== Real end-to-end behaviour through the installed front door
+
+Driving `frontdoor.cli:main` in separate, non-TTY processes against a
+disposable consumer repository, with the *real* engine and the fake provider
+fixture:
+
+[source,text]
+----
+run (no --yes, stdin/stdout not a TTY)
+    -> exit 20 (refused_unauthorized); both digests printed, then
+       "wfc run: authorization refused"
+       HEAD unchanged, `git status --porcelain -uall` empty,
+       $XDG_STATE_HOME/wfc never created
+run --yes
+    -> exit 0, CLASSIFICATION: completed, RUN STATUS: completed,
+       exactly one authorization prompt, engine's own STATE ROOT / RUN ROOT /
+       SUMMARY lines on stdout
+status   -> exit 0, "lifecycle already classified (no-op)"
+resume   -> exit 0, same recorded classification, journal unchanged
+----
+
+This covers the matrix's "scripted `--yes` run with a fake provider reaches a
+classified outcome with no further prompt", the no-TTY half of case (1)
+(including the `_make_confirm` TTY branch, which no unit test reaches) and
+case (17)'s no-op half.
+
+==== `ext.*` opacity and BP4b independence
+
+After the completed run above, two `ext.bp4b-preserve` records were appended
+after the `classified` record. `wfc status` output was *byte-identical*
+before and after, `wfc resume` returned the recorded classification unchanged,
+and the journal kept both records intact:
+
+[source,text]
+----
+authorize_intent, authorized, prelaunch_intent, prelaunch_passed,
+probe_intent, probe_passed, commission_commit_intent, commission_committed,
+verify_intent, verify_passed, launch_intent, launch_spawned, classified,
+ext.bp4b-preserve, ext.bp4b-preserve
+----
+
+The three surfaces BP4b needs are present and sufficient without changing any
+BP4a transition: `journal.query_lock_held` (a documented, ownership-only
+query), the `classified` record (Run ID, run status, end head, state root,
+checkout state root) and the kind-filtered `Journal.latest`, which makes any
+`ext.*` record invisible to every BP4a decision. The *reporting* half of the
+`ext.*` requirement is still missing -- see observation N1.
+
+==== The two previously corrected Findings
+
+Both were re-reproduced independently and both are now pinned by tests that
+fail when the fix is reverted (see the mutation table): reverting
+`_materialize_commission` to the pre-H003 refuse-any-leftover behaviour fails
+`test_crash_between_materialize_and_bounded_path_commit_resume_commits_exactly_once`,
+and reverting the `cli.py` dispatch guard to the bare-token test fails
+`test_legacy_status_with_equals_state_root_still_reaches_the_operator` with
+exactly the original symptom (`wfc status: error: unrecognized arguments:
+--state-root=<path>`).
+
+==== Mutation results: which matrix guards the suite really pins
+
+Each row removes one guarded behaviour from a copy of the product and runs the
+three BP4a test modules against that copy.
+
+[cols="1,3,2",options="header"]
+|===
+| Mutation | Guard removed | Detected by
+
+| `uncertain_launch`
+| unresolved `launch_intent` no longer refuses (cases 9, 10)
+| `test_launch_intent_without_completion_is_uncertain_and_refuses`
+
+| `legacy_status_equals`
+| `--state-root=VALUE` no longer routed to the operator (case 19)
+| `test_legacy_status_with_equals_state_root_still_reaches_the_operator`
+
+| `materialize_idempotent`
+| byte-identical crash leftovers no longer tolerated (case 6)
+| `test_crash_between_materialize_and_bounded_path_commit_...`
+
+| `summary_alone_completes`
+| summary-file existence alone proves completion (case 14)
+| `test_completed_status_with_inconsistent_summary_refuses`
+
+| `no_pass_fds`
+| engine child no longer inherits the ownership lock (case 11)
+| `test_killed_controller_leaves_a_surviving_engine_holding_the_lock_...`
+  (real SIGKILL of a real controller process)
+
+| `adopt_any_commit`
+| `resume` adopts any child of `base_head` (case 7)
+| `test_killed_controller_...` (and the adoption path itself)
+
+| `stale_state_root_ok`
+| an existing engine state root no longer refuses (case 3)
+| `test_prelaunch_refuses_when_engine_state_root_already_exists`
+
+| `no_digest_recheck`
+| digest drift between plan and authorization tolerated (case 2)
+| `test_digest_drift_between_plan_and_authorization_refuses_before_any_commit`
+
+| `probe_mutation_ok`
+| a probe that mutates the tree no longer refuses (case 5)
+| `test_probe_mutation_refuses_and_leaves_the_mutation_visible`
+
+| `no_executable_recheck`
+| provider executable sha256 no longer re-verified (case 15)
+| `test_executable_changed_after_authorization_refuses_before_any_effect`
+
+| `journal_root_any`
+| journal root no longer required disjoint (cases 3, 20)
+| three tests across two modules
+
+| `lock_not_exclusive`
+| no `flock` is ever taken (cases 11, 16)
+| four tests across three modules
+
+| `unbounded_relaunch`
+| relaunch after a proven spawn failure unbounded (case 9b)
+| `test_launch_failed_no_engine_proves_no_engine_exists_and_bounds_relaunch`
+
+| `journal_corruption_tolerated`
+| per-record digest check removed (case 18)
+| *nothing* -- but see N4: the guarded *behaviour* survives the mutation,
+  because both corruption tests also trip the JSON/UTF-8 guard
+|===
+
+==== Matrix cases reproduced individually
+
+Cases (1), (2), (3), (4), (5), (6) (both already-tested boundaries), (7) both
+branches, (8), (9), (9b), (11), (11b), (12), (13), (14), (15), (16), (17),
+(18), (19) (`wfc plan` runs no project command; both legacy `--state-root`
+spellings reach the operator; new status dispatched only without it) and (20)
+were each exercised and behaved as specified, either through the mutation
+sweep (which proves the behaviour is both present and pinned) or by hand. The
+three BP4a modules pass (58 tests, `--wfc-partial`), including the two genuine
+process-level tests.
+
+== Blocking Finding B3 (H005): a crash inside the Commission commit, after `git add` and before `git commit`, wedges `resume` permanently and commits zero times
+
+Acceptance case (6) requires: "crash before Commission commit: `resume` commits
+exactly once."
+
+=== The window
+
+`_do_commit` journals `commission_commit_intent` (`lifecycle.py:471`),
+materialises the compiled Commission (`lifecycle.py:483`) and then calls the
+unmodified `bounded_path_commit` (`lifecycle.py:486-489`). That primitive is
+not atomic: it runs `git add -- <paths>` (`git_facts.py:879`) and then *three
+further Git subprocesses* -- `_staged_paths`, `_staged_non_regular_paths` and
+`rev-parse HEAD` (`git_facts.py:882-891`) -- before `git commit`
+(`git_facts.py:893`). A process death anywhere in that window leaves the nine
+Commission leaves staged in the index.
+
+On the next `resume`, `_do_commit` is re-entered from the top. HEAD still
+equals `base_head`, so the adoption branch is skipped; `_materialize_commission`
+correctly tolerates its own byte-identical leftovers; and `bounded_path_commit`
+then refuses at its own `if _staged_paths(identity): raise
+TrustedCommitError("pre-existing staged state")` (`git_facts.py:868-869`).
+`_do_commit` maps that to `LifecycleError(..., classification="refused_prelaunch")`
+(`lifecycle.py:490-491`).
+
+This window is not exotic. It is also reachable by an ordinary `Ctrl-C`:
+`cmd_run`/`cmd_resume` catch only `(LifecycleError, CommissionError,
+GitPreflightError, JournalError, OSError)` (`lifecycle.py:922`,
+`lifecycle.py:935`), so a `KeyboardInterrupt` in the commit step unwinds the
+process and leaves exactly this state.
+
+=== Reproduced
+
+A real, unmaskable `os._exit(137)` was injected at exactly that point -- after
+the real `git add -- <paths>` that `bounded_path_commit` performs, before its
+`git commit` -- in a disposable consumer repository; every subsequent command
+ran as a brand-new process through `frontdoor.cli:main`:
+
+[source,text]
+----
+crash process               -> exit 137, 9 paths staged
+journal after the crash     -> authorize_intent, authorized, prelaunch_intent,
+                               prelaunch_passed, probe_intent, probe_passed,
+                               commission_commit_intent
+HEAD                        -> 53d8613e... (unmoved)
+commission commits          -> []
+
+fresh-process resume 0      -> exit 22 | wfc resume: Commission commit refused:
+                                         pre-existing staged state
+fresh-process resume 1      -> exit 22 | (identical)
+fresh-process resume 2      -> exit 22 | (identical)
+fresh-process status        -> exit 0  | CLASSIFICATION: not_launched
+                                         MESSAGE: authorized; launch not yet reached
+fresh-process run --yes     -> exit 26 | wfc run: a lifecycle already exists for
+                                         this checkout; use `wfc resume`
+
+commission commits (final)  -> []
+index (final)               -> 9 staged additions under .wfc/governance/<id>/
+journal (final)             -> ... commission_commit_intent x3
+----
+
+=== Why this is blocking
+
+* The lifecycle commits *zero* times, not once, and there is no path forward:
+  `resume` refuses identically forever and `run` refuses with
+  `refused_active_lifecycle`. The durable journal, whose whole purpose is to
+  let the next `resume` finish the mechanics, fails at the one boundary it
+  explicitly records with `commission_commit_intent`.
+* The reported classification is wrong, not merely unhelpful.
+  `refused_prelaunch` (exit 22) states that a pre-launch check failed; nothing
+  pre-launch failed. `Deliver` item 7 asks for distinct, documented exit codes
+  and the module's own contract is "a truthful, step-bounded refusal".
+* `status` compounds it by reporting `not_launched` ("authorized; launch not
+  yet reached"), which says nothing about the staged index the operator must
+  repair by hand.
+* The index is explicitly inside the acceptance model: case (1) names
+  "HEAD/index/worktree" as the state that must be left unchanged.
+* This is the same failure mode, at the immediately adjacent instruction, that
+  was already accepted as blocking and corrected in H003. The H003 correction
+  moved the wedge one call deeper rather than removing it; the candidate's new
+  case-(6) regression test stops at `bounded_path_commit`'s doorstep
+  (`tests/unit/test_lifecycle_crash_matrix.py:224-252` replaces the whole
+  primitive), so the boundary inside it remains untested.
+
+=== Correction sketch (no withheld authority required)
+
+`bounded_path_commit` and `git_facts.py` must not change, and they do not need
+to. The fix lives entirely inside `_do_commit`, on the re-entry path that a
+journaled `commission_commit_intent` already identifies: before calling the
+primitive, read `git diff --cached --name-only`; if the staged set is a subset
+of this lifecycle's own intent paths, every staged entry is an addition whose
+blob equals the expected text, and nothing else is staged, unstage exactly
+those paths (`git restore --staged -- <paths>`) and proceed -- the primitive
+then behaves exactly as on a first attempt. Anything else staged is a genuine
+contradiction and should refuse as `inconsistent` (exit 18) with the staged
+paths named, never as `refused_prelaunch`, and never auto-cleaned. A
+crash-matrix test injected at this exact boundary (after the real `git add`,
+before the real `git commit`) should accompany it.
+
+If the maintainer prefers not to let the controller touch the index at all,
+the minimum honest alternative is to detect the condition and refuse as
+`inconsistent` with an actionable message -- but that still leaves acceptance
+case (6) unmet for this window, so it is a maintainer decision rather than a
+correction.
+
+== Non-blocking observations (H005)
+
+N1:: *`ext.*` is still not reserved, and `status` still does not report it.*
+`Deliver` item 3 requires that `ext.*` records be "shown only as a count by
+status". `journal.py` contains no mention of the `ext.*` namespace and no
+schema-version marker in the record payload; the records are ignored for
+decisions only incidentally, because `Journal.latest` is kind-filtered.
+Reproduced in this Hop: after appending two `ext.*` records, `wfc status`
+output is byte-identical. Acceptance case (17) *is* satisfied; only the count
+and the explicit namespace reservation are missing. This was reported as O1 in
+the H002 pass and is unchanged.
+
+N2:: *Acceptance case (10) and `Deliver` item 5 still read differently, and the
+candidate follows item 5.* Case (10) says "`launch_intent` with lock held:
+`engine_active`"; item 5 says a `launch_intent` without a spawned/failed record
+"is `uncertain_launch`: refuse, no spawn, *regardless of lock or state-root
+status*". The candidate implements item 5, which is the safety-conservative
+reading, matches DG-3's "refuse honestly" stance, and is documented in the
+limitations record. Under the alternative reading of case (10) as
+"`launch_spawned` with lock held", the behaviour is implemented and pinned by
+the real-kill test for case (11). This was reported as O2 in the H002 pass,
+was not changed in H003, and is recorded here again only so the maintainer can
+settle which reading governs; it does not block under either reading.
+
+N3:: *Four matrix behaviours are correct but untested.* The pre-launch
+moved-HEAD refusal (part of case 3), the unresolvable probe executable (part of
+case 4), the package-identity change (half of case 15, where only the
+executable sha256 is pinned -- confirmed by the mutation sweep, which only ever
+fails the sha256 test) and the `_make_confirm` no-TTY branch (part of case 1)
+have no test. The no-TTY branch was exercised end-to-end in this Hop and is
+correct. The matrix preamble asks for a test per case.
+
+N4:: *The per-record digest is real but not independently pinned.* Removing the
+digest check from `Journal.read_all` leaves all 17 journal tests passing,
+because both corruption tests flip a byte that also breaks JSON/UTF-8 parsing.
+The guard does do real work -- demonstrated with a same-length, still-valid-JSON
+payload edit: the candidate refuses with "digest mismatch", the mutated copy
+accepts the tampered record silently. The acceptance behaviour (case 18,
+mid-journal corruption refused) holds; only the test's discrimination is weak.
+
+N5:: *A vacuous assertion survives.* `tests/unit/test_lifecycle_controller.py:369`
+reads `assert result.classification in {...} or True`, which can never fail.
+The meaningful assertion follows it, so the test is not worthless, but the line
+should go. Reported as O5 in the H002 pass; unchanged.
+
+N6:: *Lint regression grew.* `ruff check .` reports 13 errors at `71a1028`
+versus 2 at the baseline `9ebd04d` (11 at `1a2fede`): two `F401` and nine
+`F841` unused locals across the BP4a sources, fixture and tests. `make
+lint`/`make check` was already failing at the baseline, so this is a regression
+of an already-red gate rather than a newly broken one.
+
+N7:: *`_execution_overrides_from_flags` is duplicated, not reused.*
+`lifecycle.py:847-860` reimplements `plan.py:110-121` with the same semantics.
+The task's "reuse, do not reimplement" clause names `plan.py`. The two must
+stay in step for a `wfc plan` preview digest to match what `wfc run`
+authorizes, and nothing enforces that today.
+
+N8:: *Exit codes are distinct but only "documented" as a dict literal.* The 23
+values in `lifecycle.EXIT_CODES` are pairwise distinct, but neither the
+limitations record nor `ch02_code_navigation.adoc` carries an exit-code table.
+`refused_journal_root` (27) is unreachable: `JournalRootError` has no
+`.classification`, so `cmd_run`/`cmd_resume` fall back to `refused_prelaunch`
+(22). `ch02_code_navigation.adoc` also lists `checkpoint.json` among the facts
+the controller reads; it does not read it.
+
+N9:: *The ownership lock leaks on non-`LifecycleError` exceptions.* `_advance`
+releases the lock only in `except LifecycleError`. The `TrustedCommitError`
+path is converted and therefore safe, but a stray `CommissionError`,
+`GitPreflightError`, `OSError` or `UnicodeDecodeError` between acquisition and
+launch leaves the fd open. In the one-shot CLI this is harmless (the fd dies
+with the process); an in-process caller observes it as a false "active
+lifecycle already running". A `finally`-based release would remove the hazard.
+
+N10:: *Every refused re-attempt appends another `commission_commit_intent`.*
+Observed three identical intent records with no completion record in the B3
+reproduction. The write-ahead record is meant to mark "one intent per attempted
+effect"; a reader cannot now tell three crashed attempts from three refusals.
+No current decision depends on the count, so this is cosmetic today.
+
+N11:: *The bounded relaunch path does not re-verify the execution bindings.*
+On the main path `verify_commission` does check
+`sha256(envelope.text) == envelope.digest` (`frontdoor/verify.py:94-95`), so a
+tampered cached `envelope.yaml` is caught before launch. The
+`launch_failed_no_engine` relaunch in `_continue_after_launch` goes straight to
+`_do_launch` and re-verifies only the package identity and the executable
+sha256, not the cached bindings text. The state directory is inside the
+operator's own trust domain (a tamperer could equally rewrite the journal), so
+this is noted rather than treated as a gap.
+
+== Evidence and limits of this Hop
+
+Agent-side commands actually run, all read-only with respect to the product
+tree (`git status --short src tests docs` is empty after every step):
+
+* `pytest -q --wfc-partial tests/unit/test_lifecycle_{controller,crash_matrix,journal}.py`
+  -> 58 passed.
+* `pytest -q --wfc-partial tests/architecture/test_package_boundaries.py` -> 4 passed.
+* `ruff check --output-format=concise .` -> 13 errors.
+* The fourteen-mutation sweep tabulated above, plus two individual re-runs.
+* Real-process reproductions of matrix cases (1), (6), (17), (19) and the
+  `--yes` end-to-end run with the real engine, each against a fresh disposable
+  consumer repository.
+* Source verification of the engine's start/persistence order, the summary
+  keys, the adapters' and evidence runner's `close_fds` behaviour and the
+  commit primitive's internal ordering.
+
+Three limits apply to this Hop and none is a product defect:
+
+. The required suite could not be run here. `tests/conftest.py` requires
+  `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`, and the bundle directory is outside
+  this agent's sandbox read allow-list. Everything above is an explicitly
+  flagged partial subset run and is *not* required-suite acceptance. The
+  Coordinator's full task-check remains mandatory and is not replaced by
+  anything in this record.
+. `tests/architecture/test_bp1_identity.py` and
+  `tests/architecture/test_offline_distribution.py` fail agent-side because
+  `python -m build`'s isolated environment cannot download `setuptools>=68`
+  ("Could not find a version that satisfies the requirement"). That is an
+  offline-sandbox limitation of this reviewer's environment.
+. The `.venv/bin/wfc` console script in this workspace is stale: it still
+  points at `workflow_coordinator.operator:main` rather than the
+  `workflow_coordinator.frontdoor.cli:main` declared in `pyproject.toml`. All
+  front-door behaviour above was therefore driven through
+  `frontdoor.cli:main` directly. It does not affect any finding (a correct
+  `wfc` forwards bare flags to the operator anyway, so
+  `_default_engine_command` resolves to a working engine entry under either
+  install), but it is worth re-installing before any manual check in this
+  workspace.
+
+== Disposition (H005)
+
+*Changes required.* B3 is a reproduced violation of an explicit acceptance
+criterion -- case (6) -- and is blocking regardless of the window's width; the
+same failure mode at the adjacent instruction was already accepted as blocking
+in H002/H003. The correction is small, sits entirely inside
+`frontdoor/lifecycle.py` plus one crash-matrix test, and needs no authority
+this Commission withholds. N2 additionally asks the maintainer to settle which
+of two conflicting task statements governs the `launch_intent`-with-held-lock
+case; the current behaviour is safe under either reading, so it does not block.
+
+'''
+
+== Pass H002 (historical)
+
+Retained verbatim. Both Findings below were corrected in H003 (`ade01b8`),
+re-verified in H004 and re-verified again in the H005 pass above, including
+proof that each correction is now pinned by a test that fails when the fix is
+reverted.
+
 WorkItem:: `WI-WFC-BETA1-BP4-LIFECYCLE-CONTROLLER-001`
 Hop:: `H002` (`broad_review`, fresh independent reviewer, gate, blocking-only,
 `finding_authority: [resolve]`)
@@ -13,19 +497,19 @@ Governing acceptance:: the Commission task for this WorkItem (`Deliver` items
 authority), DG-3 Variant B and the "Package boundary and detail decisions,
 2026-11-19" paragraph of `docs/backlog/beta1_productization.adoc`.
 Disposition:: *Changes required.* Two blocking Findings, both reproduced in
-this Hop against the committed candidate: a crash-recovery wedge that defeats
+that Hop against the committed candidate: a crash-recovery wedge that defeats
 acceptance case (6), and a regression of the legacy `wfc status --state-root`
 path that defeats acceptance case (19). Seven non-blocking observations are
-recorded. Everything else in the matrix that this Hop could exercise locally
+recorded. Everything else in the matrix that that Hop could exercise locally
 was independently reproduced as satisfied.
 
 The prior Hop's summary was read as an evidence lead only. Every statement
-below was reproduced in this Hop. The only repository change proposed by this
-Hop is this artifact; no implementation, test or Git state was modified.
+below was reproduced in that Hop. The only repository change proposed by that
+Hop was this artifact; no implementation, test or Git state was modified.
 
-== What was reproduced as correct
+=== What was reproduced as correct
 
-=== Engine / controller boundary
+==== Engine / controller boundary
 
 `git show --stat 1a2fede` changes exactly ten leaves:
 `src/workflow_coordinator/frontdoor/{cli,journal,lifecycle}.py`, five files
@@ -60,7 +544,7 @@ real adapters, not merely asserted: `codex_adapter.py:372` and
 the default `close_fds=True` applies and the ownership fd cannot reach a
 provider process.
 
-=== Real end-to-end behaviour through the installed front door
+==== Real end-to-end behaviour through the installed front door
 
 Driving `frontdoor.cli:main` in a separate process against a disposable
 consumer repository, with the *real* engine and the fake provider fixture:
@@ -80,7 +564,7 @@ run --yes                        -> exit 0, classified completed
 This covers the matrix's "scripted `--yes` run with a fake provider reaches a
 classified outcome with no further prompt" and the no-TTY half of case (1).
 
-=== Matrix cases reproduced individually
+==== Matrix cases reproduced individually
 
 Cases (1), (2), (3) (executable, dirty tree, moved HEAD, journal root not
 disjoint, existing state root, active lifecycle), (4) (failure, timeout and
@@ -89,14 +573,14 @@ unresolvable executable), (5), (7) both branches, (8), (9), (9b), (11),
 (16), (17), (18), (19) `wfc plan` and the space-separated legacy status form,
 and (20) were each exercised and behaved as specified. Three of these are
 behaviours the candidate's own suite does not pin and that were therefore
-driven by hand in this Hop -- see observation O3.
+driven by hand in that Hop -- see observation O3.
 
 The three new test files pass (56 tests, `--wfc-partial`), including the two
 genuine process-level tests: a real `SIGKILL` of a controller subprocess
 whose fake-engine child survives and keeps the `flock`, and a real
 `pass_fds` inheritance test plus its negative counterpart.
 
-=== BP4b independence
+==== BP4b independence
 
 `journal.query_lock_held`, the `classified` record (Run ID, run status, end
 head, state root, checkout state root) and the fact that `Journal.latest` is
@@ -106,7 +590,7 @@ append `ext.*` records without changing any BP4a transition. Appending two
 recorded classification unchanged and left the journal otherwise untouched.
 (The *reporting* half of the `ext.*` requirement is missing -- see O1.)
 
-== Blocking Finding B1: a crash between materialising the Commission files and `bounded_path_commit` wedges `resume` permanently
+=== Blocking Finding B1: a crash between materialising the Commission files and `bounded_path_commit` wedges `resume` permanently
 
 Acceptance case (6) requires: "crash before Commission commit: resume commits
 exactly once."
@@ -161,7 +645,7 @@ boundary; the task's "crash injection at every step boundary" is not met here.
 
 The correction is narrow and needs no withheld authority. With the files
 already materialised and `write_to` skipped, the existing unmodified
-`bounded_path_commit` accepts them directly -- verified in this Hop:
+`bounded_path_commit` accepts them directly -- verified in that Hop:
 
 [source,text]
 ----
@@ -175,7 +659,7 @@ guarded by the primitive itself.) The fix therefore lives entirely inside
 consult `commission_commit_intent` before re-materialising -- plus a test
 that injects the crash at this exact boundary.
 
-== Blocking Finding B2: the legacy `wfc status --state-root=<path>` form no longer reaches the operator
+=== Blocking Finding B2: the legacy `wfc status --state-root=<path>` form no longer reaches the operator
 
 Acceptance case (19) requires that legacy `wfc status --state-root` "behave as
 before" and that the new status be "dispatched only without `--state-root`".
@@ -217,7 +701,7 @@ Correction: treat an argument equal to `--state-root` *or* starting with
 `--state-root=` as the legacy marker, and cover both spellings in the
 dispatch test.
 
-== Non-blocking observations
+=== Non-blocking observations (H002)
 
 O1:: *`ext.*` is not actually reserved, and status does not report it.*
 `Deliver` item 3 requires that `ext.*` records be "shown only as a count by
@@ -248,7 +732,7 @@ governs*; if case (10) is meant literally, this becomes a correction.
 O3:: *Three matrix behaviours are correct but untested.* The prelaunch
 moved-HEAD refusal (part of case 3), the unresolvable probe executable (part
 of case 4) and the package-identity change (half of case 15, where only the
-executable sha256 is pinned) were each driven by hand in this Hop and
+executable sha256 is pinned) were each driven by hand in that Hop and
 produced `refused_prelaunch`, `refused_probe` and `refused_identity_changed`
 respectively. The matrix preamble asks for a test per case; these lack one.
 The no-TTY detection inside `_make_confirm` is likewise only covered through
@@ -287,7 +771,7 @@ hazard. The same code path also leaves the materialised Commission files in
 the worktree when `bounded_path_commit` raises `TrustedCommitError`, reported
 as `refused_prelaunch`.
 
-== Evidence and limits of this Hop
+=== Evidence and limits of the H002 Hop
 
 Agent-side commands actually run, all read-only with respect to the
 repository:
@@ -300,18 +784,18 @@ repository:
   (15), (17), (19) and the `--yes` end-to-end run, each against a fresh
   disposable consumer repository under `$TMPDIR`.
 
-Two limits apply to this Hop and neither is a product defect:
+Two limits applied to that Hop and neither is a product defect:
 
-. The required suite could not be run here. `tests/conftest.py` requires
+. The required suite could not be run there. `tests/conftest.py` requires
   `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`, and the bundle directory is outside
-  this agent's sandbox read allow-list. Everything above is a clearly partial
+  that agent's sandbox read allow-list. Everything above is a clearly partial
   subset run and is *not* required-suite acceptance. The Coordinator's full
   task-check remains mandatory and is not replaced by anything in this record.
 . `tests/architecture/test_bp1_identity.py` and
   `tests/architecture/test_offline_distribution.py` fail agent-side because
   `python -m build`'s isolated environment cannot download its build
   requirements (`pip ... returned non-zero exit status 1`). That is an
-  offline-sandbox limitation of this reviewer's environment, not a finding
+  offline-sandbox limitation of that reviewer's environment, not a finding
   against the candidate.
 
 Separately, the `.venv/bin/wfc` console script in this workspace is stale: it
@@ -323,7 +807,7 @@ under either entry point, since a correct `wfc` forwards bare flags to the
 operator anyway), but it is worth re-installing before any manual check of
 `wfc run` in this workspace.
 
-== Disposition
+=== Disposition (H002)
 
 *Changes required.* B1 and B2 are reproduced violations of explicit
 acceptance criteria -- cases (6) and (19) -- and are blocking regardless of
