@@ -1,0 +1,71 @@
+= BP4a lifecycle controller: Beta-1 limitations
+
+Standing:: Developer-facing limitations record for `frontdoor.lifecycle`
+(`wfc run`/`resume`/`status`). This is not operator guidance; the operator
+manual (BP7) owns user-facing recovery instructions. Nothing here overrides
+maintainer decision DG-3 (2026-11-19, Variant B, see
+link:../../backlog/beta1_productization.adoc#bp4[BP4]); it documents the
+consequences of that decision as implemented.
+
+== Coordinator crash and surviving provider processes
+
+The lifecycle controller launches the existing engine
+(`operator.py`'s bare-flag entry, via the installed `wfc` script) as an
+ordinary child process and hands it the one ownership `flock` the engine
+inherits via `pass_fds`. There is no Linux subreaper, no supervising host
+process, and no process-tree supervision: if the Coordinator (the lifecycle
+controller process itself) is killed, the engine keeps running and keeps
+holding the lock -- `resume`/`status` correctly report `engine_active` and
+take no action, which is the intended behavior. But if the *engine* itself
+later spawns a provider process (the adapter's own `subprocess.Popen`, with
+the default `close_fds=True` and no `pass_fds`) and then the engine dies
+before that provider finishes, the provider process does not inherit the
+ownership lock and is not tracked by anything in this package. Such a
+provider process can keep running, and can keep writing to the repository or
+elsewhere, entirely outside the lock's visibility. This is an accepted,
+documented Beta-1 limitation, not a defect: DG-3 explicitly supersedes a
+subreaper or new supervising host as mandatory for Beta 1.
+
+== No quiescence proof
+
+The ownership lock is evidence that *something* launched by a lifecycle
+attempt on this checkout may still be running (lock held) or that no such
+holder currently exists (lock free). It is deliberately not a quiescence
+proof: a free lock never proves that no process is still writing to the
+repository (see the surviving-provider case above), and it never proves that
+an engine was never started at all. This is why, after any launch attempt
+whose outcome cannot be directly observed (an unresolved `launch_intent`, or
+a dead controller's `launch_spawned` record read by a brand-new `resume`),
+the lifecycle classifies conservatively rather than inferring safety from a
+free lock alone. BP4b's candidate-preservation slice inherits this same
+limitation and must record its own quiescence source as `unattested`.
+
+== Uncertain launch is always refused
+
+A `launch_intent` journal record with no matching `launch_spawned` or
+`launch_failed_no_engine` completion record means the previous controller
+crashed in the narrow window around the actual `Popen` call, and the
+*outcome of that specific attempt* is permanently unknowable from the journal
+and filesystem alone -- not merely low-confidence. `resume` therefore always
+refuses in this state (`uncertain_launch`), regardless of whether the
+ownership lock is currently free or held, and regardless of whether the
+engine's external state root exists. This is the one documented case where
+BP4a will not continue a lifecycle at all: there is no mechanically safe way
+to tell a genuinely failed spawn apart from a spawn that succeeded a moment
+before the crash, and DG-3 requires refusing honestly rather than inventing
+an exactly-once guarantee. A synchronously observed spawn failure
+(`launch_failed_no_engine`) is the only outcome that *does* prove no engine
+process exists, and only that outcome permits a bounded relaunch (at most
+three attempts total, each separately journaled).
+
+== One execution adapter per Run
+
+A lifecycle attempt launches exactly one engine process for exactly one Run,
+using the one `(adapter, model, reasoning)` binding resolved and cached at
+authorization time (`frontdoor.config.resolve_execution`); nothing in BP4a
+reconciles, retries with a different provider, or falls back to a second
+adapter if the first one fails. A `launch_failed_no_engine` retry reuses the
+identical cached execution envelope and provider executable identity (both
+re-verified unchanged since authorization); it never substitutes a different
+one. Changing providers mid-lifecycle is out of scope for Beta 1 and would
+require a new authorized Commission.
