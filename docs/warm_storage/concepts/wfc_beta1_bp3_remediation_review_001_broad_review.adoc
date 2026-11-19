@@ -1,0 +1,410 @@
+= Independent BP3 remediation acceptance review (R1, R4, R2): broad review
+
+WorkItem:: `WI-WFC-BETA1-BP3-REMEDIATION-REVIEW-001`
+Hop:: `H001` (`broad_review`, fresh independent reviewer, gate, blocking-only,
+`finding_authority: [resolve]`)
+Reviewed candidate:: `374c78ba9969013c54f425b9ea5ed8602603fe9d`
+(`fix(frontdoor): WI-WFC-BETA1-BP3-REMEDIATION-001 H001 correct BP3
+plan/init/bounded-commit residuals`), against authorization base
+`1e08d77b92060b8f86a9c10ba3649722ea661c01`
+(`chore: authorize focused BP3 remediation`).
+Review base HEAD:: `b46d181b988ea0a4ae0f0534d16cc514ee632ed0`
+Governing contracts:: `governance/commissions/wfc-beta1-bp3-remediation-001`
+(task, intent, scope) for the three residuals, and
+`governance/commissions/wfc-beta1-bp3-init-plan-commit-001/task.md` for the
+original BP3 plan/init/bounded-commit acceptance the residuals were measured
+against. The corrected material is residuals R1, R4 and R2 of
+link:wfc_beta1_bp3_init_plan_commit_001_broad_review.adoc[the BP3
+init/plan/commit broad review] (`56de52d`, of candidate `80f14d0`).
+Context, not acceptance credit:: the predecessor remediation review
+link:wfc_beta1_bp3_remediation_001_broad_review.adoc[`1bbc0c2`] and archived
+`RUN-69816e710bab4edd84967599cbfbefb9` evidence were read as context only. No
+statement below rests on them; where this review's own reproduction agrees with
+the predecessor that is noted as agreement, not as inherited credit.
+Disposition:: *Accept.* No blocking Findings. Each of the three original
+acceptance criteria was independently reproduced as *violated* on the pre-fix
+tree and as *corrected* on the candidate, in this Hop, through production entry
+points. Four non-blocking observations are recorded; none is a reproduced
+violation of an explicit acceptance criterion of this remediation.
+
+This is a fresh review-first Run, not a same-Run continuation. The historical
+BP3 review, the predecessor remediation review and their Runs are
+byte-unchanged by this Hop; the only repository change proposed here is this
+artifact.
+
+== Method and negative control
+
+Every behavioural claim below was produced in this Hop by driving production
+entry points -- the installed CLI seam `workflow_coordinator.frontdoor.cli:main`
+and `git_facts.bounded_path_commit` itself -- against disposable, from-scratch
+consumer Git repositories created under the session scratch root outside the
+reviewed checkout, and deleted afterwards. No probe wrote anywhere inside the
+reviewed repository.
+
+Each criterion was measured twice:
+
+* against the candidate's live `src/` (the reviewed checkout), and
+* against a *pre-fix* tree: a read-only `git archive 374c78b` export whose
+  three implementation files (`frontdoor/init.py`, `frontdoor/plan.py`,
+  `git_facts.py`) were replaced by their `1e08d77` versions and loaded ahead of
+  the installed package on `sys.path` (asserted by the absence of
+  `git_facts.repository_head`).
+
+The second run is this review's own negative control. Without it a passing
+assertion would not show that the correction is what makes it pass. The probes
+were written from the Commission acceptance text, not derived from the
+candidate's tests, and are deliberately broader in places (marker written
+*outside* the worktree, positive controls, extra escape forms, extra injection
+boundaries).
+
+== Candidate scope is exactly the authorized surface
+
+`git diff --numstat 1e08d77..374c78b` is eight leaves, every one named in the
+Commission's `scope`:
+
+[cols="4,1"]
+|===
+|Path |+/-
+
+|`src/workflow_coordinator/frontdoor/init.py` |+28 / -3
+|`src/workflow_coordinator/frontdoor/plan.py` |+2 / -2
+|`src/workflow_coordinator/git_facts.py` |+41 / -0
+|`tests/unit/test_frontdoor_init_plan.py` |+122 / -0
+|`tests/unit/test_bounded_path_commit.py` |+51 / -0
+|`docs/backlog/beta1_productization.adoc` |+17 / -0
+|`docs/backlog/_open.adoc` |+6 / -3
+|`docs/backlog/BUG-WFC-COMMISSION-RENDER-CHECK-WRITES-BUNDLE.adoc` |+9 / -4
+|===
+
+Both test files and `git_facts.py` are pure additions -- zero deleted lines --
+so no existing assertion or existing trusted check was removed, relaxed or
+re-scoped. In `git_facts.py` the only edit inside `bounded_path_commit` is one
+inserted guard; `trusted_commit`, `_trusted_git`, `_trusted_git_environment`,
+`_configured_external_filters`, `observe_repository`, `_observe_hop`,
+`salvage_inventory` and `preflight_hop` are untouched. `init.py`'s three
+deletions are exactly the old `from pathlib import Path` line and the two lines
+that used `--config-path` verbatim. Nothing in the withheld surface
+(compiler/`commissioning.py`, providers, reducer, `operator.py`, Runtime,
+`scripts/`, workflow programs, legacy render/check CLI, BP4/BP5 mechanisms)
+appears in the diff, and the implement Hop wrote no review artifact. The commit
+subject is Conventional-Commit shaped and carries
+`WI-WFC-BETA1-BP3-REMEDIATION-001` and `H001` as separate bounded tokens.
+
+== R1: no repository-configured external Git helper runs via `wfc plan`
+
+The correction routes `wfc plan`'s default `--guidance-commit` lookup through
+the new `git_facts.repository_head` (`rev-parse --show-toplevel` then
+`rev-parse HEAD`, both on the existing lock-free `_readonly_git` path) instead
+of `observe_repository`, whose `git status` is the command that consults
+`core.fsmonitor`.
+
+Independent probe. One disposable consumer repository, seeded and committed
+*before* anything hostile is configured; then `core.fsmonitor` set to a real
+`0o755` helper that appends its argv to a marker file *outside* the worktree
+(so detection does not depend on the worktree snapshot), plus a
+`core.hooksPath` directory holding marker hooks (`post-index-change`,
+`pre-commit`, `post-checkout`, `reference-transaction`, `post-rewrite`), plus
+the Commission-style project check `checks/check.sh` wired as
+`--evidence-argv`. Every non-`.git` file's `mtime` was then set to the epoch, so
+the index's cached stat data is stale -- the one state in which a status-reading
+porcelain really refreshes the index and would invoke the monitor. `wfc plan`
+was invoked through `frontdoor.cli:main` on the default `--guidance-commit`
+path.
+
+Candidate -- 9/9 probe checks pass:
+
+* exit `0`, preview printed, and the printed `guidance_commit` equals the
+  repository's pre-invocation HEAD, so the default HEAD lookup *was* reached
+  (the assertion is not vacuous by early exit);
+* the marker file does not exist: no `core.fsmonitor` helper and no hook ran;
+* `HEAD` unchanged, raw `.git/index` bytes unchanged, and a full recursive
+  worktree snapshot comparing bytes, symlink targets and `st_mode` is identical
+  before and after;
+* `PROJECT_COMMAND_WAS_RUN` absent (no project check executed) and
+  `.wfc/governance` absent (no Commission published).
+
+Positive control, in the same fixture after measuring: a plain
+`git status --porcelain` *does* fire the helper (marker records
+`fsmonitor 2 <nanosecond token>` and `hook-post-index-change`). The fixture is
+therefore live, not inert.
+
+Negative control on the pre-fix tree, same fixture shape: `wfc plan` exits `0`
+*and* the helper executes twice (`fsmonitor 2 <token>` twice) *and* writes
+`HELPER_WROTE_WORKTREE.txt` into the worktree. That is this review's own
+reproduction of residual R1 against the original BP3 contract ("Plan is
+entirely read-only: no project commands, shell checks, hooks, baseline probes,
+providers, Commission publication or Git commits; no mutation of worktree
+files, index or HEAD"). On the candidate it is gone.
+
+No previously existing trusted check was lost: pre-fix `plan.py` consumed only
+`observe_repository(...).head`, and `observe_repository` reports facts without
+refusing on dirty or submodule state, so nothing that could previously refuse a
+plan invocation was removed. The complete set of Git commands the plan path now
+uses is `rev-parse --show-toplevel` and `rev-parse HEAD` (`frontdoor/plan.py`
+lines 268 and 294 are its only `git_facts` entries), plus
+`commissioning`'s pinned-guidance reads inside the same measured invocation;
+all were exercised by the probe above, and none of them reads the index.
+
+== R4: `wfc init --config-path` cannot leave the selected repository
+
+`init._validated_config_destination` runs before any `mkdir` or `write_text`
+(`init.py:83` versus `init.py:106`-`107`): it rejects an empty or unnormalized
+value, rejects an absolute path, rejects any `''`/`'.'`/`'..'` segment, then
+resolves the destination and requires the result to be `relative_to` the
+repository identity -- itself already resolved by `repository_identity` -- which
+is what catches a symlink escape, including one in the final component.
+
+Independent probe, one disposable repository containing a preexisting directory
+symlink `linked -> <outside>` and a preexisting dangling file symlink
+`dangling.yaml -> <outside>/not-yet-there.yaml`, with sentinel files outside.
+For every case the probe compares, before and after: the outside directory's
+entry list and sentinel bytes, the full repository worktree snapshot
+(bytes/modes/link targets), raw `.git/index` bytes, `HEAD`, and
+`git status --porcelain --untracked-files=all`.
+
+Refused with exit `2`, empty stdout, a `wfc init: ...` diagnostic, and *no*
+mutation anywhere -- outside, inside, index or status -- in all seven forms:
+absolute path to the outside directory; `../outside/traverse.yaml`;
+`linked/escape.yaml` (symlinked parent, argument contains no `..`);
+`dangling.yaml` (symlinked final component); `nested/../../outside/mixed.yaml`;
+`/etc/wfc-escape.yaml`; and an absolute path under the invoking user's home
+directory. `/etc/wfc-escape.yaml` and the home-directory target were confirmed
+absent afterwards. Total 36/36 probe checks pass.
+
+Valid in-repository initialization is preserved: `nested/dir/config.yaml`
+succeeds in the same repository *after* the refusals (exit `0`, file written,
+nothing staged, shows as untracked); the default `.wfc/config.yaml` succeeds in
+a clean repository; a second invocation still exits non-zero with
+`refusing to overwrite` and leaves the existing config byte-identical; and
+invoking with `--repository <repo>/src` still resolves to the repository root
+via Git identity rather than writing under `src/`.
+
+Negative control on the pre-fix tree: the absolute, `..`-traversal and
+symlinked-parent forms each exited `0`, printed `wrote Consumer Config: ...`,
+and wrote the Consumer Config *outside* the repository (the outside directory
+gained `abs.yaml`, `trav.yaml` and `esc.yaml` in turn). That is this review's
+own reproduction of residual R4; on the candidate all three are refused before
+any directory creation.
+
+== R2: a deterministic pre-staging symlink swap cannot publish an unauthorized commit
+
+`bounded_path_commit` now calls `_staged_non_regular_paths` -- an index-mode
+inspection via `git ls-files --stage -- <paths>` on the trusted Git path --
+immediately after `git add` and *before* `git commit` (`git_facts.py:885`),
+refusing any intent path whose staged mode is not `100644`/`100755`.
+
+Independent probe, deterministic injection by wrapping `git_facts._trusted_git`
+and performing the swap exactly at a chosen boundary inside one real call.
+
+Boundary 1 -- swap fires *before* `git add` executes, i.e. the window the
+historical review reproduced, after the pre-staging `lstat` check has already
+passed. Candidate, both a symlink to a file *outside* the repository and a
+symlink to an in-repository tracked file:
+
+* refused with `TrustedCommitError: staged path is no longer a regular file
+  (validated, then swapped before commit); left staged in the index but not
+  committed: src/new.py`;
+* `HEAD` unchanged and `git rev-list --count --all` still `1` -- no commit
+  published;
+* the intent subject appears in no `git log --all` output;
+* enumerating every blob reachable from any ref (`rev-list --objects --all` plus
+  `cat-file`) shows neither the attacker content, nor the attacker *path* as a
+  symlink target blob, nor even the validated content -- nothing was published;
+* the residue is exactly one staged, uncommitted index entry
+  (`git diff --cached --name-only` = `src/new.py`,
+  `git ls-files --stage` = `120000 ...`), which the refusal message states
+  explicitly. The consequence is fail-closed: a subsequent
+  `bounded_path_commit` refuses on `pre-existing staged state`, and this matches
+  the existing, unchanged
+  `test_deterministic_staging_failure_reports_truthfully_without_reset`
+  behaviour, which deliberately does not reset either.
+
+Negative control on the pre-fix tree, same injection: the call *returned
+success* and published a second commit whose tree entry is
+`120000 blob ... src/new.py` with blob content equal to the outside path, under
+the authorized subject. That is this review's own reproduction of residual R2 --
+an accepted, published, unauthorized commit, exactly the condition the task
+describes as not remediable by a post-commit error.
+
+Boundary 2 -- swap fires *after* the staged-mode inspection returns and before
+`git commit`. Probed on the candidate: a commit *is* published, but its tree
+entry is `100644 blob` with content equal to the validated bytes
+(`legitimate content`), because `git add` has already frozen the authorized
+blob into the index and `git commit ... --` publishes the index. The call then
+fails closed with `post-commit observation does not match commit intent`
+carrying its `GitDelta`, because the swapped worktree no longer matches. So this
+boundary publishes an *authorized* commit and reports honestly; it is not a
+publication of unauthorized content. This is the structural reason the guard's
+placement is sound rather than merely narrow, and it is the limit of what the
+guard claims. Agrees with the predecessor review's boundary analysis,
+independently reproduced here.
+
+Authorized semantics, authority and protections are preserved, verified on the
+candidate in the same probe:
+
+* a legitimate new leaf still commits exactly `('src/new.py',)` and leaves
+  `git status --porcelain` empty;
+* a *preexisting* symlink intent path is still refused before staging
+  (`commit intent path is not a regular file`) with nothing staged -- the
+  original BP3 symlink refusal is intact, and the `100755` executable mode is
+  inside the guard's allow-list, so no legitimate executable leaf becomes a new
+  refusal;
+* a repository-configured `filter.evil.clean` is still refused before staging
+  (`configured clean/process filter is not permitted for bounded path commit`),
+  the filter never executes, and `HEAD` is unmoved;
+* repository hooks never run on the bounded-commit path: with a
+  `core.hooksPath` holding marker `pre-commit`, `prepare-commit-msg`,
+  `commit-msg` and `post-commit` hooks, a successful `bounded_path_commit`
+  leaves the marker absent, while an ordinary `git commit` in the *same*
+  repository immediately afterwards writes all four -- a positive control
+  showing the hook fixture is live.
+
+No general race-freedom guarantee is asserted or required; the reproduced swap
+is what was tested and what is corrected.
+
+== The added tests genuinely fail on the old behaviour
+
+The two changed test files were run against the pre-fix export described above:
+*5 failed, 33 passed*, where the five failures are exactly the five added
+tests -- `test_plan_never_runs_a_repository_configured_fsmonitor_helper`,
+the three `test_init_rejects_*_before_any_mutation` tests, and
+`test_refuses_symlink_swap_between_validation_and_staging`
+(`DID NOT RAISE TrustedCommitError`, i.e. the unauthorized commit was
+published). On the candidate the same two files are *38 passed*. All fixtures
+are disposable `tmp_path` repositories; no path outside the fixture is written.
+
+== Documentation claims are accurate and claim nothing more
+
+`docs/backlog/beta1_productization.adoc`, `docs/backlog/_open.adoc` and
+`docs/backlog/BUG-WFC-COMMISSION-RENDER-CHECK-WRITES-BUNDLE.adoc` each state
+that `WI-WFC-BETA1-BP3-REMEDIATION-001` *implements* a correction for R1/R4/R2
+and that its own independent review and Coordinator `task-check` are
+outstanding. None asserts review acceptance, product closure or Runtime
+promotion; `_open.adoc` keeps "Product acceptance remains open". The BUG
+record's own non-scope (`scripts/wfc_op.py::cmd_commission_render`,
+`render_commission`, `RenderedCommission.write_to`,
+`commission check`/`verify_render_manifest`) is restated unchanged and its
+lifecycle stays open. The described mechanisms match the code as read and as
+probed here. `docs/developer_guide/ch02_code_navigation.adoc` is in scope but
+unchanged, and its module-level text never named the plan path's HEAD lookup, so
+the correction does not make it stale.
+
+== Non-blocking observations
+
+None of these is a reproduced violation of an explicit acceptance criterion of
+this remediation, and none is proposed as a Finding.
+
+N1 (staged *mode*, not staged *content*):: the new guard validates the staged
+index mode. A swap performed in the same pre-`git add` window to a different
+*regular* file still publishes that content -- reproduced on the candidate: a
+plain content replacement returns success and commits
+`swapped regular content` at mode `100644`, with no error. The pre-fix tree
+behaves identically, so this is not a regression. It is also outside the
+acceptance criterion, which names the symlink swap, and the task explicitly
+withholds any universal race-freedom requirement. A future hardening in the same
+shape as the existing guard would hash the validated bytes before `git add` and
+compare them with the staged blob OID before `git commit`. Agrees with the
+predecessor review's N1.
+
+N2 (ungraceful diagnostic on an unresolvable in-repository parent):: with a
+preexisting self-referential symlink `loop` inside the repository,
+`wfc init --config-path loop/escaped.yaml` passes validation (its resolution
+neither escapes nor is detectable as an escape) and then raises an uncaught
+`FileExistsError` out of `main()` from `destination.parent.mkdir(...)` instead
+of the command's usual `wfc init: ...` / exit `2`;
+`--config-path plainfile/config.yaml`, where `plainfile` is an existing regular
+file, behaves the same way. Verified in both cases: no escape, nothing written
+anywhere, `HEAD`, index and status unchanged. The `mkdir`/`write_text` lines are
+outside the diff, so this unhandled-`OSError` surface is identical pre- and
+post-fix. Diagnostic robustness only. Agrees with the predecessor review's N2.
+
+N3 (R1 is corrected on the plan path, not in the shared observation seam)::
+`_readonly_git` still inherits ordinary Git policy and does not pass
+`-c core.fsmonitor=false`, so a repository-configured `core.fsmonitor` can
+still run for the other `observe_repository` callers (`operator.py`,
+`frontdoor/verify.py`, `vertical.py`). The plan path no longer reaches any
+index-reading command, which is what R1 requires and what this Commission
+authorizes; hardening the shared seam is outside this Commission's scope. A
+`-c core.fsmonitor=false` on `_readonly_git` would be the obvious candidate for
+a later WorkItem. Agrees with the predecessor review's N3.
+
+N4 (normalization strictness differs from the trusted-commit path, and a
+degenerate intent):: `init._validated_config_destination` is deliberately
+modelled on `git_facts._normalized_path` but is slightly laxer: it silently
+accepts `a//b.yaml`, `./rel.yaml` and `sub/./ok2.yaml` (writing `a/b.yaml`,
+`rel.yaml`, `sub/ok2.yaml`) where `_normalized_path` would refuse them as
+"ambiguous after normalization". Every such path still resolves inside the
+repository, so no criterion is affected. Separately, an empty
+`NewPathCommitIntent(paths=())` now makes `_staged_non_regular_paths` run
+`git ls-files --stage --` with no pathspec, which lists the *whole* index; in a
+repository containing any tracked symlink the refusal message therefore names
+an unrelated tracked path and claims residue that does not exist (reproduced:
+`... left staged in the index but not committed: src/link.py` with
+`git diff --cached` empty). The outcome is still fail-closed -- refusal, `HEAD`
+unchanged, nothing staged; pre-fix the same input failed later at `git commit`
+instead -- and no acceptance criterion or existing assertion covers an empty
+intent. Message quality only. Not reported by the predecessor review.
+
+A further note, not a defect: `--config-path` values inside `.git/` (for example
+a not-yet-existing `.git/hooks/pre-commit`, or `.git/config-escape.yaml`) are
+still accepted, because they are inside the repository. The written bytes are
+the generated YAML Consumer Config at default non-executable mode, the flag is
+operator-supplied, and "strictly inside the selected consumer repository" is
+exactly the boundary R4 states. Pre-fix behaves the same. Outside both the
+criterion and this review's mandate.
+
+== Evidence and limits
+
+Everything above is agent-side exploratory validation, *not* Coordinator-trusted
+evidence. The full Coordinator `task-check` remains independently mandatory and
+was not run in this Hop.
+
+The required suite refuses to run without `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`,
+so every pytest run here was an explicitly flagged `--wfc-partial` subset and is
+never required-suite acceptance. Runs performed:
+
+* `tests/unit/test_frontdoor_init_plan.py` + `tests/unit/test_bounded_path_commit.py`
+  on the candidate: *38 passed*; on the pre-fix export: *5 failed, 33 passed*.
+* `tests/unit/test_bounded_path_commit.py`, `tests/unit/test_frontdoor_init_plan.py`,
+  `tests/unit/test_git_facts.py`, `tests/unit/test_slice4b_git_authority.py`
+  (the Git-authority and front-door surface): *108 passed*.
+* `tests/unit` + `tests/architecture`: *1067 passed, 2 skipped, 28 failed, 13
+  errors*. All failures and errors are confined to four files that neither
+  appear in the candidate diff nor import `frontdoor`/`git_facts`:
+  `tests/unit/test_claude_adapter_conformance.py` (22),
+  `tests/unit/test_wfc_op.py` (4 failed + 13 errors),
+  `tests/architecture/test_bp1_identity.py::test_installed_identity_and_real_preflight`,
+  `tests/architecture/test_offline_distribution.py::test_clean_isolated_distribution_and_wheel_install`.
+* `ruff check` on all five changed source/test leaves: clean.
+
+Those failures are agent-local environmental limitations of this sandbox, with
+the diagnostics quoted here, and are deliberately *not* classified as product
+defects: the `test_wfc_op.py`/`test_bp1_identity.py`/`test_offline_distribution.py`
+failures are a nested build-isolation `pip install` that cannot download
+`setuptools>=68` with no network access
+(`ERROR: No matching distribution found for setuptools>=68`), and
+`test_claude_adapter_conformance.py` fails on sandbox filesystem policy
+(`OSError: [Errno 30] Read-only file system` while creating its short `/tmp`
+scratch symlink). This matches the limitation the historical BP3 review recorded
+for the same sandbox. The review did not attempt to relax sandbox or network
+restrictions to make them pass.
+
+Residual verification limits, stated plainly: the R2 injection is deterministic
+rather than concurrent, so it demonstrates the reproduced swap is handled and
+not that no interleaving exists; N1 bounds what the guard checks; and the two
+inherited-`setuptools` suites above were not executed here at all, so any
+packaging-level regression would have to be caught by the Coordinator's own
+evidence rather than by this Hop.
+
+== Disposition
+
+Accept, requested route `accept`. No blocking Findings. The current Run carries
+no authoritative Findings, so no Finding disposition is submitted: the
+historical labels R1, R4 and R2 are cited above as provenance and evidence
+only, not as current-Run Finding IDs, and the review gate's
+`finding_authority: [resolve]` is left unused. The four observations above are
+recorded here and in the result summary rather than as Finding deltas.
+
+Every fixture, export and probe used by this review was disposable, lived
+outside the reviewed checkout, and has been removed; the reviewed checkout's
+tracked state is unchanged apart from this artifact.
