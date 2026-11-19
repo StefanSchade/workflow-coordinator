@@ -1,0 +1,417 @@
+= BP5 final assurance: independent broad review
+
+WorkItem:: `WI-WFC-BETA1-BP5-FINAL-ASSURANCE-001`
+Hop:: `H002` (`broad_review`, independent reviewer)
+Verdict:: **changes_required** -- two blocking findings; requested route
+`correction`.
+Pre-implementation baseline reviewed against:: `54b99ba788206fe61ea89cdeee96db434d4a1c79`
+(`chore: authorize BP5 archive port commission`).
+Reviewed candidate:: the **entire** resulting BP5 product diff
+`54b99ba..f4447aa` (44 files, +5709/-3), including all inherited ancestry
+(`cd9d35d`, `e26e838`, `36a47d0`, `fb9b0f8`, WIP `d1b7881`, `9a4a38f`,
+`0cfc25d`) and `H001`'s worker-verification artifact -- not only the fresh
+`H001` diff or its report.
+Role:: This is a review verdict for the Coordinator. It does not establish Run
+acceptance; the Coordinator's full task-check remains mandatory and separate.
+No product, test, fixture or documentation byte was changed by this Hop. This
+artifact is the only change proposed.
+
+Historical review artifacts `e26e838` and `fb9b0f8`, the non-authoritative WIP
+`d1b7881`/`fc922a7`, and `H001`'s worker-verification artifact were read as
+evidence leads only. Every claim below was independently reproduced in this
+session against HEAD `f4447aa`. No historical label is treated as a current-Run
+Finding.
+
+== Blocking findings
+
+=== BF-1 -- the fixture-collision fix (item A) is incomplete: the required full suite still fails
+
+*Reproduced violation of an explicit acceptance criterion.*
+
+`WI-WFC-BETA1-BP5-ARCHIVE-COMPLETION-001` item A requires fixing the test
+fixture collision "without weakening `tests/unit/test_wfc_op.py`" and states
+"Full Coordinator suite must pass"; its Acceptance requires "existing
+preparation test and full suite pass". This Commission's Acceptance likewise
+requires "original applicable conformance" and a passing Coordinator full
+task-check.
+
+The candidate renames only the checkout's `run.json` to `run.fixture.json`.
+`tests/unit/test_wfc_op.py::test_prepare_never_creates_a_run_or_checkout`
+makes **three** assertions, not one:
+
+[source,python]
+----
+tests/unit/test_wfc_op.py:358    assert not list(ops.glob("**/run.json"))
+tests/unit/test_wfc_op.py:359    assert not list(ops.glob("**/operator-plan.json"))
+tests/unit/test_wfc_op.py:360    assert not list(ops.glob("**/operator-summary.json"))
+----
+
+The candidate commits two fixture files whose basenames match assertions 2
+and 3:
+
+[source,shell]
+----
+$ git ls-tree -r --name-only HEAD \
+    | grep -E '(^|/)(run\.json|operator-plan\.json|operator-summary\.json)$'
+tests/fixtures/bp5/real_run/run/operator-plan.json
+tests/fixtures/bp5/real_run/run/operator-summary.json
+----
+
+These reach `ops/` by construction. `tests/unit/test_wfc_op.py`'s
+`make_runtime()` is a full local clone of *this* repository
+(`test_wfc_op.py:138-144`), and `prepare` exports the pinned Runtime commit's
+whole tracked tree into the OPS directory --
+`scripts/wfc_op.py:400-422`, `src = ops / "runtime-src"`, populated by
+`git archive <head> | tar -x -C <ops>/runtime-src`. Nothing in
+`scripts/wfc_op.py` ever removes `runtime-src` (no `rmtree` exists in that
+module), so it is still present when the assertions run. There is no
+`.gitattributes` in the repository and `export-ignore` is `unspecified` for
+both fixture paths, so `git archive` includes them.
+
+Reproduced directly, by materialising exactly what `export_runtime()` writes
+and then running the test's own `glob` expressions against it:
+
+[source,shell]
+----
+$ mkdir -p tmp/h002-export-probe/runtime-src
+$ git archive HEAD | tar -x -C tmp/h002-export-probe/runtime-src
+$ python -I tmp/h002-probe/glob_probe.py tmp/h002-export-probe
+assert not list(ops.glob('**/run.json')) -> assertion holds
+assert not list(ops.glob('**/operator-plan.json')) -> ASSERTION FAILS
+    .../runtime-src/tests/fixtures/bp5/real_run/run/operator-plan.json
+assert not list(ops.glob('**/operator-summary.json')) -> ASSERTION FAILS
+    .../runtime-src/tests/fixtures/bp5/real_run/run/operator-summary.json
+----
+
+`glob_probe.py` is a three-line throwaway that runs the test's own three
+`ops.glob("**/<name>")` expressions against the directory given to it and
+prints whether each `assert not list(...)` would hold; it was written under
+the ignored `tmp/` tree and removed afterwards, so the reproduction above is
+re-runnable with nothing but `git archive` plus
+`find <dir> -name operator-plan.json -o -name operator-summary.json -o -name run.json`,
+which returns the same two paths.
+
+The same probe against the pre-implementation baseline is clean, so this is
+introduced by the BP5 candidate and is not pre-existing:
+
+[source,shell]
+----
+$ mkdir -p tmp/h002-export-probe-base/runtime-src
+$ git archive 54b99ba788206fe61ea89cdeee96db434d4a1c79 \
+    | tar -x -C tmp/h002-export-probe-base/runtime-src
+$ python -I tmp/h002-probe/glob_probe.py tmp/h002-export-probe-base
+assert not list(ops.glob('**/run.json')) -> assertion holds
+assert not list(ops.glob('**/operator-plan.json')) -> assertion holds
+assert not list(ops.glob('**/operator-summary.json')) -> assertion holds
+----
+
+Assessment: the original failure was masked by assertion ordering. Assertion 1
+fails first on the pre-rename fixture, so renaming `run.json` alone makes the
+test fail one line later instead of passing. The collision class is the
+basename, not the single file: any committed fixture file named
+`operator-plan.json` or `operator-summary.json` anywhere in the tracked tree
+breaks this test. `test_wfc_op.py` itself is untouched by the candidate
+(confirmed: it is not in `git diff --name-only 54b99ba..HEAD`), so this is not
+test weakening -- it is an unfixed collision.
+
+This finding is blocking regardless of presumed risk: it is a reproduced
+failure of a named existing regression test and therefore of the mandatory
+full suite.
+
+Minimal remedies available inside the already-authorised BP5 fixture scope
+(the choice is the implementer's, and none of them require new design
+authority or touching `test_wfc_op.py`): apply the same neutral-name treatment
+already used for `run.json` to the other two colliding basenames and
+materialise them back in the disposable relocated state root
+(`tests/unit/test_archive_equivalence.py::_relocate_real_run` already does
+exactly this for one file), updating `tests/fixtures/bp5/PROVENANCE.txt`
+accordingly while preserving the original bytes and SHA-256 of each file. Any
+remedy must keep every digest in `PROVENANCE.txt` equal to the real archived
+`manifest.json`'s own `copied_files[].sha256`, and must not introduce a new
+rename-shaped trusted-commit change beyond what
+`docs/backlog/BUG-WFC-TRUSTED-COMMIT-RENAME-RECONCILIATION.adoc` already
+tracks.
+
+=== BF-2 -- a ported legacy conformance assertion is silently neutralised, and the behaviour change it guarded is undocumented
+
+*Reproduced violation of an explicit acceptance criterion.*
+
+The original BP5 task requires copying the legacy conformance tests
+"preserving all applicable checks and documenting any unavoidable
+non-applicable legacy-proof case"; the completion Commission's review
+paragraph requires "retain full original assertions"; this Commission's
+withheld authority forbids test weakening.
+
+`tests/unit/test_archive_port.py:317` carries a permanently dead branch:
+
+[source,python]
+----
+self.assertIn(f"checkout:   {CHECKOUT}" if False else f"repository: {TARGET_REPO}", proc.stdout)
+----
+
+The `if False` arm is the legacy assertion. In the legacy source
+(`build/wfc/bp5-evidence-inputs/tests/test_wfc_archive_run.py:312,315`)
+`test_manifest_identity_cannot_forge_run_probe_records` asserted both
+`checkout:   <CHECKOUT>` *is* present and
+`checkout:   00000000-dead-beef-dead-beefdeadbeef` is *not* -- i.e. that a
+forged `run_id` carrying embedded `checkout_id` control text cannot forge the
+report's own checkout field. Both assertions are gone from the port: the
+positive one is disabled by `if False`, and the negative one is absent
+entirely.
+
+The property is now untestable because the port removed the field. The legacy
+wrapper printed it (`tests/fixtures/bp5/legacy/wfc-archive-run:502`,
+`printf 'checkout:   %s\n' "$checkout_id"`), whereas
+`archive.py::render_report` (`archive.py:899-932`) emits no `checkout:` line
+at all; `ArchiveReport.checkout_id` is populated on every path and never
+rendered. `test_archive_port.py`'s module docstring enumerates four documented
+porting adaptations and explicitly claims the old commit *body*'s "identity
+narrative is on stdout instead" -- which is inaccurate for `checkout_id`,
+which did not move but disappeared. The `H001` worker-verification artifact's
+section 5 likewise asserts that every non-1:1 legacy case "is each named and
+explained in the port modules' own docstrings"; this one is not.
+
+This is bounded and cheap to resolve either way, and both ways stay inside the
+authorised BP5 candidate files: render the `checkout:` line in
+`render_report()` and restore both legacy assertions, or keep the report
+surface as it is and document the omission explicitly in
+`test_archive_port.py`'s adaptation list alongside the other four, replacing
+the `if False` construct with a plain assertion. What is not acceptable under
+the stated criteria is an inert assertion that reads as if it were still
+checking the ported property.
+
+== Verified: what does hold
+
+=== Preserved-ancestry provenance
+
+The maintainer-preserved WIP matches its own descriptor exactly, so nothing
+was substituted before `H001` began:
+
+[source,shell]
+----
+$ git diff --binary --full-index a6aaeaf d1b7881 | sha256sum
+70587c0ac31c542f405da6e6bd59e39bc03b7f7a7a66d1bf3b99181aece7ab03
+----
+
+which is the SHA-256 `d1b7881`'s own commit message claims. `d1b7881..HEAD`
+adds only governance/documentation leaves (the BUG note, the backlog entry,
+this Commission's rendered inputs and the `H001` artifact); no product, test or
+fixture byte differs between the preserved candidate and HEAD.
+
+=== Source equivalence and fixture portability (test A)
+
+All twelve digests in `tests/fixtures/bp5/PROVENANCE.txt` were recomputed from
+the tracked bytes and match. More importantly, all ten `real_run/**` files
+were compared against the **real archived** `manifest.json`'s own
+`copied_files[].sha256` *and* `bytes` (read from
+`build/wfc/bp5-evidence-inputs/archive/unclassified/wfc-beta1-bp3-remediation-review-001-20261119-01/manifest.json`):
+every digest and every byte count matches, including
+
+----
+b65eee56b2a96a149b8c2eea7ec3c1d7750d9e4869019d68cfde5d36d711f861  11557 bytes
+  archived as  run/checkouts/de335f62-.../run.json
+  committed as real_run/run/checkouts/de335f62-.../run.fixture.json
+----
+
+the exact original digest this Commission's task names. The committed fixture
+is therefore provably byte-identical to the actually archived original Run
+content, not merely internally self-consistent.
+
+`tests/unit/test_archive_equivalence.py` re-verifies three provenance digests
+in `setUp`, relocates a disposable copy of the archived state root/OPS
+directory under a throwaway `HOME`, edits only the four fields that literally
+encode the relocation (`operator-plan.json`'s `state_root` and
+`execution_bindings_source`; `preparation-pins.txt`'s `state_root=` and
+`execution_bindings=`), runs the frozen legacy wrapper as a real subprocess
+against one disposable Evidence repository and the installed
+`archive_run()` against another, and compares the two `manifest.json` objects
+in full except `archived_at`, asserting exactly one commit on each side. The
+relocation is transparently described in both the module docstring and
+`PROVENANCE.txt`. No committed test reads `build/wfc/**` at run time (the only
+occurrences are docstring/provenance prose), so the fixtures are portable.
+
+=== Containment (test B)
+
+`assert_no_symlink_escape()` (`archive.py:172-187`) walks each component
+between the repository root and the target and refuses any existing component
+that is a symlink resolving outside the resolved root. It is applied to both
+the destination and the staging root *before* any write
+(`archive.py:805-806`), ahead of the cleanliness check and all placement.
+`tests/unit/test_archive_safety.py::SymlinkEscapeContainmentTests` exercises
+real filesystem effects for a tracked `archive/` symlink and a tracked
+`.wfc-archive-staging/` symlink, asserting the outside tree's recursive
+listing and every file's bytes are unchanged, HEAD is unchanged,
+`git status --porcelain` is empty, and no destination/staging directory was
+created inside the repository -- not merely that an error was raised.
+
+=== Tamper refusal and intact retry (test C)
+
+`_load_existing_manifest()` + `_safe_manifest_relpath()`
+(`archive.py:665-710`) validate every manifest-recorded path before any
+filesystem access: non-string/empty/whitespace-padded/backslash, absolute,
+`.`/`..`/empty component, non-canonical, duplicate, and symlink-escape under
+the destination are each refused with a distinct message, and a listed file
+that is absent is refused. `_verify_resumable_placement()`
+(`archive.py:713-745`) then refuses a mismatched `attempt_id`, mismatched
+recorded `sources.run_dir`/`sources.ops_dir`, and any copied file whose size
+or SHA-256 no longer matches the manifest -- all before the commit is
+attempted. The eleven tests in `InterruptedRetryTamperTests` reproduce each of
+these against a hand-placed, placed-but-uncommitted destination (the exact
+state a kill between placement and commit leaves) and assert HEAD unchanged,
+the index clean, the outside sentinel unread, and the placed data left exactly
+as it was rather than reverted or deleted. The positive control shows a
+genuinely intact interruption still resumes to exactly one commit.
+`StagingAndRetryTests` proves the same half end to end through the real CLI:
+resume to exactly one commit with an unchanged `copied_files` list, a kill
+before placement leaving no destination, an identical repeat being a no-op
+with HEAD unchanged, a same-attempt-different-identity destination refused and
+left untouched, an unrelated dirty path blocking and surviving, and a
+pre-existing staged entry refused and left staged.
+
+=== Trusted Git authority and no writes outside the destination
+
+`src/workflow_coordinator/git_facts.py` is byte-unchanged from the baseline
+(`git diff --stat 54b99ba HEAD -- src/workflow_coordinator/git_facts.py` is
+empty), so the BP3 trusted primitive was not modified, as withheld authority
+requires. `src/workflow_coordinator/frontdoor/cli.py` gains exactly three
+lines dispatching `archive`, matching the existing `init`/`plan` pattern.
+
+`archive_run()` commits only through
+`bounded_path_commit(..., allowed_paths=(dest_rel,), intent=NewPathCommitIntent(paths=<exact sorted leaf list> + manifest.json))`
+(`archive.py:873-879`). Reading that primitive (`git_facts.py:814-916`)
+confirms it refuses any configured clean/process filter, resolves hooks to
+`/dev/null` and commits `--no-verify`, refuses unexpected HEAD movement before
+and during, refuses unresolved submodules, refuses any intent path that
+already names a blob at base HEAD (so modification or deletion of a tracked
+path is impossible here), refuses directory-shaped, symlink and non-regular
+intent paths, requires the set of dirty worktree paths to equal the intent set
+exactly (so an extra file planted under the destination during an interruption
+is refused as an "unexpected dirty path" rather than left uncommitted and
+unnoticed), requires staged paths to equal the intent exactly, re-checks for a
+validated-then-swapped non-regular path, and verifies the resulting single
+commit, its subject and its changed-path set by independent post-commit
+observation. `archive.py` reads and writes no global Git configuration.
+`GitBehaviourTests` confirms only the new destination's own paths are ever
+committed with unrelated dirty/untracked/ignored state present, that the
+subject is exactly `evidence: archive <attempt>`, that no push is attempted
+even with a configured remote, and that the Run ledger is untouched.
+`SourceImmutabilityTests` confirms the state and OPS trees are left
+byte-identical.
+
+=== Recorded conformance exceptions
+
+Independently recounted: legacy `test_archive_helpers.py` 21 tests ->
+`tests/unit/test_archive_conformance.py` 19; legacy
+`test_wfc_archive_run.py` 40 -> `tests/unit/test_archive_port.py` 43
+(`grep -c 'def test_'` on all four files). The two unported helper tests
+(`test_archive_proof_has_the_same_guard`,
+`test_archive_proof_shares_the_same_archive_root`) are named and justified in
+the conformance module's docstring as out of the Run/OPS archiver's scope, and
+`archive_proof.py` indeed has no installed counterpart. Four wrapper-side
+adaptations and three renames are documented in `test_archive_port.py`'s
+docstring and were each checked individually against the legacy source as
+faithful semantic ports. The one undocumented omission is BF-2 above.
+
+The narrowed cleanliness rule is a deliberate, documented relaxation of the
+legacy full-tree `git status --porcelain` gate
+(`tests/fixtures/bp5/legacy/wfc-archive-run:429`): `_assert_narrow_cleanliness`
+refuses any staged state and any dirty path outside the attempt's own
+destination and staging prefixes. This matches the governing second-pass
+review's commit-ownership wording and the port docstring, and is confirmed
+intentional rather than a drift.
+
+=== Agent-side test execution (not Coordinator-trusted evidence)
+
+[source,shell]
+----
+$ .venv/bin/python -m pytest --wfc-partial \
+    tests/unit/test_archive_conformance.py tests/unit/test_archive_equivalence.py \
+    tests/unit/test_archive_port.py tests/unit/test_archive_safety.py
+74 passed in 5.48s
+$ .venv/bin/python -m pytest --wfc-partial -q tests/unit/test_wfc_doc_catalog.py
+18 passed
+----
+
+All four BP5 modules pass, including the real old/new equivalence test. Note
+that passing these four modules is exactly what BF-1 shows is insufficient:
+the collision BF-1 describes lives in `tests/unit/test_wfc_op.py`, which these
+runs do not touch.
+
+== Nonblocking observations
+
+These are recorded here and in the result summary only. They are not Finding
+transitions; this Hop's `finding_authority` is `resolve` and no current-Run
+Finding exists.
+
+. *Resume reverification does not re-derive the manifest from sources.*
+  `_verify_resumable_placement()` checks `attempt_id`, recorded sources and
+  each file's own digest/size against the placed manifest, but unlike the
+  already-committed no-op path (`archive.py:829-837`, which compares a freshly
+  computed candidate manifest) it does not re-derive `facts`/`semantic`. A
+  tamperer who edits a placed file *and* consistently rewrites its digest plus
+  the extracted facts would resume. This is outside the properties item C
+  enumerates (changed data/digest, size, attempt and source identity, unsafe
+  paths), all of which are correctly refused, so it is not treated as an
+  acceptance violation -- but a future hardening pass could reuse
+  `_manifests_match_ignoring_archived_at()` on the resume path too.
+. *Dead `resumed_commit` outcome.* `ArchiveReport.outcome` documents
+  (`archive.py:614`) and `render_report()` maps (`archive.py:903`) a
+  `"resumed_commit"` value that no code path ever assigns -- the resume path
+  returns `outcome="archived"` (`archive.py:884`). Cosmetic dead enumeration
+  text with no observable behavioural difference; already assessed nonblocking
+  by the two prior independent reviews and still open. Not re-raised.
+. *Cross-attempt staging leftovers block archiving.* `_assert_narrow_cleanliness`
+  allows dirty paths only under the *current* attempt's destination and
+  staging prefixes, so leftover `.wfc-archive-staging/<other-attempt>/...`
+  from a different killed attempt is reported as "not clean outside the
+  archive destination". The ported test only covers the same-attempt case
+  (`test_stale_staging_from_a_prior_killed_attempt_does_not_block_a_fresh_archive`
+  reuses `fx.attempt`). The behaviour errs safe (refuse, mutate nothing) and
+  the operator documentation's cleanliness wording is not wrong, but the
+  cross-attempt case is undocumented and untested.
+. *Ignored-destination edge case.* `_path_is_tracked_clean()` infers "already
+  committed" from the absence of status lines, so a destination that existed
+  but was git-ignored would be reported as `no_op` with `commit: None` rather
+  than refused. Not reachable in the real Evidence repository layout, where
+  `archive/` is tracked.
+. *Equivalence compares manifests, not raw trees.* Re-checked and still
+  assessed as sufficient: the manifest carries every copied file's path,
+  SHA-256 and byte count, and both sides are driven from the identical
+  relocated state root and OPS directory.
+
+== Agent-local environmental limitations
+
+Reported with actual diagnostics, per the operating contract; none is
+classified as a product defect, and none of them is the basis of BF-1 or BF-2,
+both of which were established by direct reproduction instead.
+
+* The required full suite could not be executed here: every invocation that
+  sets `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE` (which `tests/conftest.py:102-130`
+  requires for anything but a `--wfc-partial` subset) was refused by this
+  session's command-approval surface, which has no approver. Consequently
+  `tests/unit/test_wfc_op.py`'s `prepared`-fixture tests, which build two real
+  venvs, could not be run directly.
+* Without that bundle, PEP-517 build isolation cannot resolve `setuptools>=68`
+  offline, so `tests/architecture/test_bp1_identity.py::test_installed_identity_and_real_preflight`
+  and `tests/architecture/test_offline_distribution.py::test_clean_isolated_distribution_and_wheel_install`
+  fail locally with `ERROR: No matching distribution found for setuptools>=68`.
+* `tests/unit/test_claude_adapter_conformance.py` reports 22 failures here,
+  all from `OSError: [Errno 30] Read-only file system: ... -> '/tmp/...'` --
+  this sandbox's `/tmp` restriction, unrelated to BP5. The remainder of
+  `tests/unit` (excluding `test_wfc_op.py`) shows no other failures.
+
+== Conclusion
+
+The BP5 product is close, and most of what this Commission asked to be proved
+is genuinely proved: provenance, real old/new archive parity on the actual
+retained Run, symlink/destination containment with real filesystem evidence,
+tamper and identity refusal with placed data and HEAD preserved, intact
+single-commit retry and no-op repeat, unmodified trusted Git authority, and
+documented conformance coverage. But BF-1 is a reproduced failure of an
+existing named regression test and therefore of the mandatory full suite, and
+BF-2 is an inert ported assertion with an undocumented behaviour change behind
+it. Both are explicit acceptance criteria of the Commission the candidate
+descends from, so neither can be downgraded for low presumed risk or legacy
+parity. Verdict: **changes_required**, route `correction`, scoped to the BP5
+fixture/provenance and `frontdoor/archive.py`/`test_archive_port.py` files
+already authorised -- no new design, architecture or authority is needed.
