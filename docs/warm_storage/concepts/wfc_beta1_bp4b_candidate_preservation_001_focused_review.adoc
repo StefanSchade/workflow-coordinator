@@ -4,10 +4,342 @@
 :sectnums:
 
 This record holds every independent focused-review pass over the BP4b
-correction work. The current pass is *H006*; earlier passes are kept verbatim
+correction work. The current pass is *H008*; earlier passes are kept verbatim
 below it, newest first.
 
-== Pass H006 (current)
+== Pass H008 (current)
+
+Status:: *CHANGES REQUIRED.* `F003` and `F004` both resolved at the exact
+mechanisms they name; one *new* blocking Finding proposed in this Hop
+(run-local ID allocated by the Coordinator).
+WorkItem:: `WI-WFC-BETA1-BP4B-CANDIDATE-PRESERVATION-001`
+Run / Hop:: `RUN-4b9a28634bfe4441ac31ed825f2cde32` / `H008`
+(`focused_review`, fresh independent reviewer, gate, blocking-only,
+`finding_authority: [resolve]`).
+Invocation:: `INV-a90b2d9abc4a4ffe9076afa64239af25`.
+Reviewed correction commit:: `cf3bbe0a415622d29fe6b38de1f9f76f1af76864`.
+Reviewed correction range::
+`68f7bcfd1d2079b0d3e86ef7131a8bb7787ef1f6..cf3bbe0a415622d29fe6b38de1f9f76f1af76864`.
+Reviewed product:: the *entire* BP4b product at `cf3bbe0`, measured against the
+pre-implementation baseline `69099da319486155ee529d85761ad08a5b7c143a`, the
+H002 broad review and the H004/H006 passes recorded below.
+Date:: 2026-11-20.
+
+=== 1. Disposition
+
+Verdict:: `changes_required`
+Route:: `correction`
+Finding disposition:: `F003` -> `resolved` (section 3); `F004` -> `resolved`
+(section 4); one new blocking Finding proposed (section 5).
+
+The H007 correction resolves both open Findings at the mechanism each one
+names, and each of its three regression tests is a genuine mutation test
+(section 6). The encoding chain `F001` -> `F002` -> `F003` -> `F004` is closed:
+this pass found no further undecodable-path or unencodable-reason escape on
+the preservation path, and the whole safety matrix re-measured clean, this
+time with instrumentation that cannot itself disturb the live index.
+
+One *new* blocking Finding is proposed, and it is different in kind from the
+whole preceding chain: it is the first preservation failure that is *not*
+fail-safe. The "no configured clean/process filter" capture predicate fails
+*open* when the filter's Git-config subsection name is not valid UTF-8, so an
+operator-configured external program executes during the capture and the
+preserved tree records the *filter's output* instead of the worktree content,
+while `ext.preservation.result` asserts the opposite (section 5). Its root
+cause is frozen BP4a code that this reviewer has no authority to see changed,
+and the identical bypass is reproduced on `trusted_commit`; a BP4b-local,
+additive correction is nevertheless feasible and is described in section 5.
+
+=== 2. Scope of this pass
+
+`git diff --numstat 68f7bcf..cf3bbe0`:
+
+....
+12   1  src/workflow_coordinator/frontdoor/lifecycle.py
+18   7  src/workflow_coordinator/git_facts.py
+29   0  tests/unit/test_candidate_preservation.py
+61   0  tests/unit/test_preservation_lifecycle.py
+....
+
+The seven `git_facts.py` deletions are the rewrite of the `build_git` closure
+inside `_build_candidate_tree` (new BP4b code) and the `_run_git_raw` signature
+line; the one `lifecycle.py` deletion is the `print` line inside
+`_print_preservation_status` (new BP4b code). Measured against the baseline,
+`git diff 69099da..cf3bbe0 -- src/workflow_coordinator/git_facts.py` still
+removes *zero* lines, so every pre-existing `git_facts` function body --
+`_run_git`, `_git`, `_readonly_git`, `_trusted_git`,
+`_configured_external_filters`, `trusted_commit`, `bounded_path_commit` -- is
+byte-identical to the baseline. The only deletions anywhere under `src/` across
+`69099da..cf3bbe0` remain the two `return _advance(...)` statements that H001
+split into `result = _advance(...)` plus the additive preservation hook call.
+`journal.py` is untouched. No engine, reducer, Finding, review, routing,
+adapter, admission, BP6, operator-manual or backlog file is touched, and no
+test was weakened or deleted (all four H007 test hunks are pure additions).
+
+`_run_git_raw` gained a `trusted` keyword defaulting to `False`, so the two
+H005 call sites (`status`, `submodule status`) keep their previous execution
+policy exactly; only the new `_build_candidate_tree` call sites pass
+`trusted=True`, and they receive the same `-c core.hooksPath=/dev/null
+-c commit.gpgSign=false -c core.fsmonitor=false` argv `_run_git` builds. The
+trusted environment (`_trusted_git_environment()` plus `GIT_OPTIONAL_LOCKS=0`
+and the private `GIT_INDEX_FILE`) is unchanged. Independently confirmed: with
+`core.hooksPath` pointed at a directory of marker-writing `post-index-change`,
+`pre-commit`, `post-commit`, `reference-transaction`, `pre-applypatch` and
+`post-checkout` hooks, *zero* hooks execute during a capture.
+
+The whole product was re-exercised in this Hop, not only the corrected lines.
+
+=== 3. `F003` -- resolved
+
+`F003`'s named mechanism (strict UTF-8 decode of Git's *stderr* in
+`_build_candidate_tree`, reached whenever Git itself refuses to index an
+in-scope path) is gone, and its end-to-end reproduction inverts.
+
+Probe D -- the identical scenario `F003` reports, through `lifecycle.cmd_run`
+with the delivered `fake_engine.py`/`fake_provider.py`, a from-scratch
+disposable consumer repository, authorized scope `["src"]`, mode
+`dispatch_then_crash`, and a probe engine wrapper that leaves the dirty file
+`src/caf<0xE9>.txt` unreadable (mode `000`):
+
+....
+CLASSIFICATION: interrupted      EXIT 14      no escaping exception
+journal: ... classified, ext.preservation.intent, ext.preservation.refused
+  reason: 'error: open("src/caf\udce9.txt"): Permission denied\n
+           error: unable to index file ...\nfatal: adding files failed'
+refs/wfc/preserved/: empty;  HEAD / branch / live index / worktree unchanged
+wfc status -> exit 0, prints PRESERVATION: refused and the reason
+wfc resume -> exit 14, no second attempt, journal unchanged
+....
+
+The ASCII control (`src/wip.txt`, mode `000`) behaves identically apart from
+the reason text, as it already did before the correction. The same probe run
+against an out-of-tree copy of `src/` at `72bd29e` still produces `F003`'s
+unhandled `UnicodeDecodeError`, `None`/1 exit instead of 14, no
+`CLASSIFICATION` line and a journal left at `... classified,
+ext.preservation.intent` -- so the H007 hunk is demonstrably the cause of the
+inversion, not an environment difference.
+
+At unit level, `preserve_candidate` on a disposable repository with an
+unreadable untracked `scope/caf<0xE9>-unreadable.txt` now raises a named
+`PreservationRefused` and leaves HEAD, the live index, the worktree and every
+ref byte-identical.
+
+=== 4. `F004` -- resolved
+
+`F004`'s named mechanism (a lone surrogate from `os.fsdecode` reaching a
+strict-encoding stdout inside `_print_preservation_status`) is gone.
+
+Probe B -- an ordinary out-of-scope refusal (dirty `lib/caf<0xE9>.txt`,
+authorized scope `["src"]`) built through the real `wfc run`, then `wfc status`
+run in a *separate process* whose stdout is a pipe (`sys.stdout.encoding =
+utf-8`, `errors = strict`), so nothing in the harness can mask the encode:
+
+....
+corrected cf3bbe0:  status exit 0; prints
+                    "PRESERVATION: refused" and
+                    "  reason: preservation path is outside authorized scope:
+                       lib/caf\udce9.txt"
+pre-correction 72bd29e (same probe, same repository shape):
+                    status exit 1; prints the BP4a block and
+                    "PRESERVATION: refused", then
+                    UnicodeEncodeError: 'utf-8' codec can't encode character
+                    '\udce9' in position 64
+....
+
+`_stdout_safe` is the right shape for this: it encodes with
+`backslashreplace` against `sys.stdout.encoding` and decodes the result back,
+so the operator sees a lossless, unambiguous rendering of the offending byte
+rather than a replacement character, and the transformation is a no-op for
+every ordinary ASCII or UTF-8 reason. It is applied to every
+`status.data` value the printer emits, not only to `reason`, and the printer
+remains report-only. The journal record itself was and remains sound
+(`json.dumps` defaults to `ensure_ascii=True`).
+
+=== 5. New blocking Finding -- the clean/process-filter predicate fails *open* for a non-UTF-8 filter name, and the preserved tree then records the filter's output rather than the worktree content
+
+Invariant:: A configured clean/process filter is refused (Deliver item 3;
+acceptance case 11), and a `refs/wfc/preserved/<run_id>/<n>` ref together with
+its `ext.preservation.result` record states a tree actually built from the
+worktree content of the in-scope changed paths (Deliver items 4 and 5).
+Blocking.
+
+`preserve_candidate` delegates the predicate to `_configured_external_filters`,
+which asks Git for `config --null --name-only --get-regexp
+'^filter\..*\.(clean|process)$'`. Under a UTF-8 locale -- the ordinary case --
+Git's own regex match does not report a key whose subsection name is not valid
+UTF-8, so the predicate returns `()` and the capture proceeds. Git nevertheless
+*applies* that filter while building the candidate tree, because
+`.gitattributes` selects it by the same raw bytes.
+
+Reproduced end to end through the real `wfc run` (disposable consumer
+repository, authorized scope `["src"]`, mode `dispatch_then_crash`,
+`.git/config` carrying `[filter "caf<0xE9>"] clean = <script>` and a committed
+`.gitattributes` line `src/wip.txt filter=caf<0xE9>`, where the script appends
+to a marker file and rewrites its input to the fixed string
+`SUBSTITUTED-BY-FILTER`):
+
+....
+CLASSIFICATION: interrupted      EXIT 14      no refusal
+ext.preservation.result {ref: refs/wfc/preserved/RUN-fake-engine/1,
+                         commit: 78489c4..., tree: dce1dee...,
+                         file_count: 1, bytes: 37, quiescence: unattested}
+worktree content of src/wip.txt : 'fake engine: unadopted worktree work\n'
+captured blob for  src/wip.txt : 'SUBSTITUTED-BY-FILTER'
+filter executions during the run: 4
+....
+
+So the durable record asserts a capture of the in-scope worktree content and
+reports `bytes: 37` (the worktree size) for an object that is not that content
+and is 22 bytes long, and an external program chosen by a worktree file ran
+four times inside the capture. This is exactly the hazard acceptance case 11
+exists to prevent, and it is the first BP4b failure in this Run that is not
+fail-safe: every earlier Finding refused or crashed without writing anything,
+whereas this one writes a ref and journals a false provenance fact.
+
+At unit level, with a substituting filter and both name shapes:
+
+....
+ASCII name "probe":     --get-regexp -> b'filter.probe.clean\n'
+                        _configured_external_filters -> ('filter.probe.clean',)
+                        preserve_candidate -> REFUSED (named); 0 filter runs
+                        trusted_commit     -> TrustedCommitError; 0 filter runs
+non-UTF-8 name "caf\xe9":
+                        --get-regexp (LC_ALL unset / C.UTF-8) -> b''
+                        --get-regexp (LC_ALL=C)               -> b'filter.caf\xe9.clean\n'
+                        _configured_external_filters -> ()
+                        preserve_candidate -> preserved; blob
+                                              'SUBSTITUTED-BY-FILTER'; 5 filter runs
+                        trusted_commit     -> COMMITTED; blob
+                                              'SUBSTITUTED-BY-FILTER'; 5 filter runs
+....
+
+Two things follow, and the Finding is reported with both of them stated.
+
+. *The root cause is frozen BP4a code.* `_configured_external_filters` is
+byte-identical to the baseline and is shared with `trusted_commit` and
+`bounded_path_commit`; the probe above reproduces the identical bypass on the
+Coordinator's authoritative commit surface. This reviewer has no authority to
+require a change there, and the task forbids one.
+. *A BP4b-local correction is nevertheless feasible and additive*, entirely
+inside the new `preserve_candidate` code and without touching any BP4a
+function body -- for example running the filter probe with a byte-safe
+locale (`LC_ALL=C`) or reading `git config --list -z` as raw bytes and
+matching on bytes, in a new BP4b-owned helper. The BP4a-side exposure should
+be recorded for the maintainer separately; it is not this WorkItem's to fix.
+
+If the maintainer would rather accept the inherited BP4a gap than let BP4b
+diverge from the frozen predicate, that is a semantic decision for the
+maintainer and the correction Hop should escalate rather than widen its own
+scope. It is recorded here as blocking because acceptance case 11 is
+explicit, the reproduction is end to end through the delivered product, and
+the failure direction is open rather than safe.
+
+=== 6. What re-verified as correct at `cf3bbe0`
+
+* *The H007 regression tests are genuine mutation tests.* Run against an
+out-of-tree copy of `src/` at `72bd29e` with the delivered test files
+unchanged, exactly the three new tests fail and the other 23 pass:
+`test_unreadable_non_utf8_path_in_scope_is_refused_not_an_unhandled_crash` and
+`test_unreadable_non_utf8_path_is_refused_not_an_unhandled_crash_through_resume`
+with `F003`'s `UnicodeDecodeError`, and
+`test_status_reports_a_refusal_reason_with_non_utf8_bytes_without_crashing`
+with `F004`'s `UnicodeEncodeError` at `lifecycle.py:959`.
+* *Byte-identical repository state, measured without instrumentation
+artifacts.* The first measurement pass in this Hop appeared to show the live
+index changing across a capture; that was the reviewer's own `git status`
+settling a racily-clean index, not the product. Re-measured by reading
+`.git/index` directly (no Git call) immediately before and after
+`preserve_candidate`, after settling the index first, the live index, the
+whole worktree (content, mode, symlink targets), HEAD and every pre-existing
+ref are byte-identical in *every* case: in-scope capture, out-of-scope
+refusal, staged residue, FIFO refusal, cap refusal, `not_needed`, and the
+non-UTF-8 variants of each. The only state change on success is the one new
+`refs/wfc/preserved/<run_id>/<n>`.
+* *Staged residue (acceptance 2).* Live index at `v2`, worktree at `v3`:
+capture takes `v3`, `git diff --cached --name-only` still lists `scope/a.txt`,
+`git show :scope/a.txt` is still `v2`, and `.git/index` is byte-identical.
+* *Capture predicates.* Out-of-scope dirty path, escaping symlink, FIFO
+alongside dirty content, file-count cap and byte cap all refuse with a named
+reason and write nothing; `HEAD` movement, a held ownership lock and an
+unstable tree are covered by the delivered suite.
+* *Trigger, idempotency, crash resume, `not_needed`, `completed`.* A repeat
+capture returns the existing ref by identical tree and creates no second ref;
+through the lifecycle, `run` then `status` then `resume` leaves the journal
+and `refs/wfc/preserved/` unchanged; `wfc status` wrote no journal record in
+any probe.
+* *No claim stronger than `unattested`.* `quiescence: "unattested"` is still
+the only quiescence value anywhere under `src/`, and the capture commit
+subject still reads `quiescence unattested; not adoption`.
+* *Limitations record (acceptance 18)* unchanged and still states unattested
+quiescence, surviving provider processes, the non-adoption boundary and the
+non-replacement of manual salvage.
+* *Suites.* `tests/unit` plus `tests/architecture` run in this Hop: the only
+failures are the 41 results in `test_claude_adapter_conformance.py`,
+`test_wfc_op.py`, `test_bp1_identity.py` and `test_offline_distribution.py`,
+all of them the sandbox/network limitations recorded in section 8 and in the
+earlier passes. In particular
+`test_bp1_identity.py::test_roles_match_reviewed_sources_and_kernel_import_direction`
+(the kernel/frontdoor import-direction guard, acceptance 17) passes, as do
+every BP4a lifecycle, crash-matrix, journal, `git_facts` and
+`bounded_path_commit` test.
+
+=== 7. Non-blocking observations
+
+Reported here and in the Hop summary only; `finding_authority: [resolve]` does
+not authorize residual transitions.
+
+O18:: *A special file alone in scope is reported as `not_needed`, not
+refused.* `git status` does not list a FIFO, so when the only thing in scope
+is a FIFO the capture takes the "clean worktree" early return before
+`_reject_unsafe_scope_special_files` ever runs, and the journal records
+`ext.preservation.not_needed`. With any other dirty content present the same
+FIFO is refused with a named reason, which is what acceptance case 12 asks
+for and what the delivered test pins. Nothing is captured or written either
+way, so this is a reporting nuance rather than a safety gap, but "nothing to
+preserve" is a slightly stronger statement than the observation supports.
+O19:: *An operator-configured `core.fsmonitor` hook executes during the
+capture's observation reads.* Counted strictly across `preserve_candidate`:
+four executions with `core.fsmonitor` set, zero hook executions with
+`core.hooksPath` set. The four come from the non-trusted read closures
+(`rev-parse HEAD`, `status`, `submodule status`, the private-index
+`rev-parse --git-path index`), which mirror BP4a's own `observe_repository`
+and `_readonly_git` convention for read-only observation verbatim, so this is
+inherited rather than introduced. It is worth noting only because the
+fsmonitor hook influences which paths `git status` reports, and therefore
+which paths a capture includes. Passing `trusted=True` on the two BP4b read
+closures would close it in one word without touching any BP4a body.
+O20:: *`ext.preservation.result.bytes` is a worktree `lstat` sum, not the
+size of the captured objects.* Ordinarily the two agree; section 5's
+reproduction is the case where they visibly do not. Even after section 5 is
+corrected, the field is a pre-capture measurement rather than a property of
+the ref, which is worth one sentence in the limitations record.
+
+H002's O1-O12, H004's O13-O14 and H006's O15-O17 are carried forward. O15 and
+O16 are now addressed by the H007 correction (O16's `read_git` remains
+`text=True`, but it is still the case that no path name is interpolated
+there). O17 stands unchanged: the refusal reason for a Git-reported failure is
+still a raw multi-line Git diagnostic rather than a named predicate.
+
+=== 8. Agent-local environment limitations
+
+`tests/architecture/test_bp1_identity.py::test_installed_identity_and_real_preflight`,
+`tests/architecture/test_offline_distribution.py`, `tests/unit/test_wfc_op.py`
+and `tests/unit/test_claude_adapter_conformance.py` fail or error in this
+sandbox: the first three because `python -m build` / `pip install` cannot
+reach a package index (`ERROR: No matching distribution found for
+setuptools>=68`), the last because the adapter's temporary-directory symlink
+target under `/tmp` is not writable here. These were observed, not worked
+around; no dependency was downloaded and no sandbox setting was changed. All
+agent-side runs above are exploratory partial runs (`--wfc-partial`) and are
+*not* Coordinator-trusted evidence; the Coordinator's full task-check remains
+authoritative.
+
+No implementation, test, fixture or Git state was modified by this reviewer.
+All reproductions ran against disposable, from-scratch repositories created
+under the ignored `tmp/` scratch tree and removed afterwards; this artifact is
+the only repository change proposed by this Hop.
+
+== Pass H006
 
 Status:: *CHANGES REQUIRED.* `F002` resolved at the exact mechanism it names;
 two *new* blocking Findings proposed in this Hop (run-local IDs allocated by
