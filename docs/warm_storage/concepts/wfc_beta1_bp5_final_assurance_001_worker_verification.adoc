@@ -272,3 +272,156 @@ worker-verification artifact, not any prior worker or review record, is the
 basis offered for the independent broad review this Commission requires;
 Run acceptance remains solely that review's and the Coordinator's full
 task-check's to establish.
+
+== 10. H003 correction (addendum, does not alter sections 1-9 above)
+
+Hop:: `H003` (`correct`, worker), base HEAD `61e54c694d2f06da1c7b814f2a22e3e11cba39a9`.
+Trigger:: the independent `H002` broad review's two blocking findings, both
+independently reproduced first, then corrected within the files this
+Commission authorizes.
+
+=== F001 -- `operator-plan.json`/`operator-summary.json` fixture collision
+
+Reproduced before fixing, exactly as `H002` described:
+
+[source,shell]
+----
+$ git archive HEAD | tar -tf - | grep -E "(^|/)(run\.json|operator-plan\.json|operator-summary\.json)$"
+tests/fixtures/bp5/real_run/run/operator-plan.json
+tests/fixtures/bp5/real_run/run/operator-summary.json
+----
+
+`run.json` does not appear (already renamed to `run.fixture.json`); the two
+others do, and `tests/unit/test_wfc_op.py::test_prepare_never_creates_a_run_or_checkout`
+globs the whole runtime export for exactly those two literal names, so they
+still fail that assertion.
+
+The direct fix -- renaming these two the same way `run.json` was renamed --
+was deliberately not used. It would stage an identical-content delete+add in
+this Hop's own commit, which this repository's Git empirically collapses to
+the destination path only under default rename detection (reproduced in a
+disposable scratch repository, not this one: a same-content delete-plus-add
+commit shows `git diff --cached --name-only` returning only the new path, and
+`--name-status` reporting `R100`), exactly the staged-path/CommitIntent
+mismatch `docs/backlog/BUG-WFC-TRUSTED-COMMIT-RENAME-RECONCILIATION.adoc`
+documents as an open, unfixed limitation. Introducing a second instance of it
+in this Hop's own trusted commit was avoided as instructed.
+
+Instead: `tests/fixtures/bp5/real_run/run/operator-plan.json` and
+`operator-summary.json` are deleted outright (a pure deletion, paired with no
+content-similar addition anywhere in this Hop's diff, so no rename pairing is
+possible), and their exact original bytes are embedded verbatim as
+`_OPERATOR_PLAN_JSON`/`_OPERATOR_SUMMARY_JSON` string constants in the
+already-tracked `tests/unit/test_archive_equivalence.py` (a modification to
+an existing path, never eligible as a rename's "added" side), which
+`_relocate_real_run` now materializes into the disposable relocated state
+root exactly where `shutil.copytree` used to carry them from the committed
+fixture tree. `tests/fixtures/bp5/PROVENANCE.txt` is updated accordingly.
+Digest parity with the original fixture bytes (and hence with
+`build/wfc/bp5-evidence-inputs/PROVENANCE.txt` and the real archived
+`manifest.json`) is verified, not assumed:
+
+[source,shell]
+----
+$ sha256sum tests/fixtures/bp5/real_run/run/operator-plan.json \
+            tests/fixtures/bp5/real_run/run/operator-summary.json   # before deletion
+80803321703b1c08e65742443c98fd6cf9f6e1e78be336244a03e15f95191f82  operator-plan.json
+bd6cb02f37965335a947df64cf58fb84ee895e3783839cec222eb0c8a938f2be  operator-summary.json
+----
+
+matches `test_archive_equivalence.RealRunEquivalenceTests.setUp`'s own
+digest assertions against the embedded constants (`_OPERATOR_PLAN_JSON +
+"\n"`, `_OPERATOR_SUMMARY_JSON + "\n"`, the trailing newline restoring the
+exact original byte count), both of which pass.
+
+With this change, no tracked path anywhere in the repository is named
+`operator-plan.json` or `operator-summary.json` (confirmed by re-running the
+`git ls-tree -r --name-only HEAD` search `H002` used), so `git archive`'s
+export of this repository's own HEAD -- the mechanism `scripts/wfc_op.py`
+uses to build the runtime tree -- can no longer place either name under
+`ops/runtime-src`. `scripts/wfc_op.py` and `tests/unit/test_wfc_op.py`
+themselves are outside this Commission's `authorized_scope` and were not
+touched; this fix removes the collision at its source (the fixture tree)
+rather than modifying either.
+
+=== F002 -- dead `if False` branch in `test_archive_port.py`
+
+Before changing anything, the legacy source and the actual new behavior were
+read, not assumed. `build/wfc/bp5-evidence-inputs/tests/test_wfc_archive_run.py`'s
+`checkout:` assertions (lines 312/315) read the git commit **body**
+(`git log -1 --format=%B`), not stdout -- confirmed by reading the test
+method directly, which binds its own `body` variable from that command and
+asserts against it, never against `proc.stdout`. The legacy wrapper's
+`report()` stdout function (`wfc-archive-run:453-463`) never printed a
+`checkout:` line either; only the separately-generated commit-message block
+(`wfc-archive-run:496-508`) did. `src/workflow_coordinator/frontdoor/archive.py`'s
+commit is made via `NewPathCommitIntent(paths=paths, subject=...)` --
+subject-only, no body at all (confirmed by reading `git_facts.NewPathCommitIntent`,
+which has no body field) -- so there is no commit-body surface in the new
+implementation for a `checkout:` line to live on, and `render_report`'s
+stdout format never had one either.
+
+The forged-`checkout_id` protection this guarded is not missing from the
+port: `archive.run_identity`'s `_agree("checkout_id", ...)` call refuses the
+entire archive (`ArchiveError`, `"checkout_id disagrees..."`) when
+`operator-summary.json` and `checkout-association.json` disagree, which is
+fail-closed and strictly stronger than the legacy display-time scrubbing the
+dead branch's sibling test was modeled on. This is already exercised by the
+pre-existing `RefusalTests.test_disagreeing_checkout_id_across_sources_is_rejected`
+in the same file, confirmed present and passing before this Hop touched
+anything.
+
+Fix: the dead `f"checkout:   {CHECKOUT}" if False else f"repository: {TARGET_REPO}"`
+ternary in `test_manifest_identity_cannot_forge_report_fields` is replaced
+with the plain `self.assertIn(f"repository: {TARGET_REPO}", proc.stdout)`
+assertion it always actually executed, with a one-line comment pointing at
+the refusal test that covers `checkout_id`'s own property. The module
+docstring's documented-adaptations list gets one new bullet stating
+explicitly that `checkout_id` is the one identity field that moved from
+commit-body display to a fail-closed upstream refusal rather than to stdout,
+so no reviewer re-reads this as an unexplained gap. No test assertion was
+weakened; the one dead/inert branch was replaced by the assertion it already
+silently reduced to, and the property it nominally guarded is independently,
+already covered elsewhere.
+
+=== Evidence (agent-side, not Coordinator-trusted)
+
+[source,shell]
+----
+$ python -m pytest --wfc-partial -q \
+    tests/unit/test_archive_conformance.py tests/unit/test_archive_equivalence.py \
+    tests/unit/test_archive_port.py tests/unit/test_archive_safety.py
+........................................................................ [ 97%]
+..                                                                       [100%]
+==== WFC PARTIAL RUN: subset only, NOT the required suite or its acceptance ====
+----
+
+All 76 tests across the four touched/adjacent BP5 files pass (74 from
+section 8 above, plus the two new provenance-digest assertions added to
+`RealRunEquivalenceTests.setUp`). The same agent-local limitation recorded in
+section 8 still applies: this session's command-approval surface refuses any
+invocation setting `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`, so the required full
+suite and `test_wfc_op.py`'s own venv-building fixture could not be executed
+here either; this is an environmental limitation of this agent invocation,
+not evidence that `test_wfc_op.py` still fails -- the fixture-tree analysis
+above, not a local run of that file, is what establishes the F001 fix.
+
+=== H003 CommitIntent
+
+Changed leaves only (no directories): `tests/fixtures/bp5/PROVENANCE.txt`,
+`tests/fixtures/bp5/real_run/run/operator-plan.json` (deleted),
+`tests/fixtures/bp5/real_run/run/operator-summary.json` (deleted),
+`tests/unit/test_archive_equivalence.py`, `tests/unit/test_archive_port.py`,
+and this artifact. No rename-shaped pair exists in this set (the two deleted
+leaves have no content-similar added leaf anywhere in the same intent, by
+construction -- see F001 above).
+
+=== H003 summary
+
+Both `H002` blocking findings were independently reproduced, then corrected
+within `authorized_scope` without a rename-shaped commit, without touching
+`scripts/wfc_op.py`, `tests/unit/test_wfc_op.py` or any Git-attributes/global
+Git configuration, and without weakening any existing assertion. This
+addendum, like section 1-9 above, is technical verification evidence for an
+independent reviewer; it is not a Finding disposition (no `finding_authority`
+is projected for this Hop) and not a claim of Run acceptance.

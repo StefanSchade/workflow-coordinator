@@ -35,7 +35,15 @@ record, mirrored here for the wrapper half of the port):
   in the commit *body*; here it is reported on stdout instead, so ported
   assertions that read the commit body for run/work-item/repository/file
   counts are adapted to read stdout, with the subject-only assertion
-  unchanged.
+  unchanged. ``checkout_id`` is the one identity field from that old
+  commit-body narrative that is not ported into the stdout report at all --
+  ``archive.render_report`` never emits it, so there is no "checkout:" text
+  to assert on in either direction. Its forgery-resistance property is still
+  fully preserved, just moved upstream from display-time scrubbing to
+  ``archive.run_identity``'s own fail-closed ``checkout_id`` agreement check
+  (``RefusalTests.test_disagreeing_checkout_id_across_sources_is_rejected``
+  below), which is strictly stronger: a disagreeing/forged checkout_id now
+  refuses the whole archive rather than merely being omitted from the report.
 
 ``StagingAndRetryTests`` below is new: it proves the BP5 additions the old
 scripts never had (staging, atomic placement, idempotent retry) and the
@@ -314,7 +322,10 @@ class IdentityConsistencyTests(WrapperTestCase):
         manifest = self.manifest(dest)
 
         self.assertEqual(manifest["facts"]["run_id"], forged_run_id)
-        self.assertIn(f"checkout:   {CHECKOUT}" if False else f"repository: {TARGET_REPO}", proc.stdout)
+        # checkout_id is not part of this assertion: the port never reports it
+        # (see module docstring); its own forgery protection is the fail-closed
+        # RefusalTests.test_disagreeing_checkout_id_across_sources_is_rejected.
+        self.assertIn(f"repository: {TARGET_REPO}", proc.stdout)
         self.assertIn(f"files:      {len(manifest['copied_files'])}", proc.stdout)
         self.assertNotIn("files:      99999", proc.stdout)
         self.assertNotIn("repository: /attacker/claimed/repository", proc.stdout)
