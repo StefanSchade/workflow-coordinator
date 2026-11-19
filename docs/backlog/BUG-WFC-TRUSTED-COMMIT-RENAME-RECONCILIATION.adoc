@@ -1,0 +1,58 @@
+= BUG-WFC-TRUSTED-COMMIT-RENAME-RECONCILIATION -- Rename-Shaped CommitIntent Staged-Path Mismatch
+
+Type:: bug -- Coordinator trusted-commit usability / exact-leaf reconciliation
+Status:: open; observed operational recurrence of a previously documented limitation; no fix authorized by this record
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest].
+Date:: 2026-11-19
+
+== Observation and provenance
+
+BP5 completion Run `RUN-49357f88d4ee4a60b6a111353d5d8664`, WorkItem
+`WI-WFC-BETA1-BP5-ARCHIVE-COMPLETION-001`, H001, baseline `a6aaeaf`, stopped
+`awaiting_human` with `trusted_commit:staged paths differ from commit intent`.
+The Coordinator had staged the exact-scope fixture rename from
+`tests/fixtures/bp5/real_run/run/checkouts/de335f62-6d24-4e17-809e-0347f0277dc3/run.json`
+to the identical-content `run.fixture.json`, along with other authorized leaves;
+no commit was made. The index was left staged. Evidence commit `c0b1a67`
+archives the historical Run. The maintainer preserved its exact binary diff as
+non-authoritative WIP `d1b7881` (SHA-256
+`70587c0ac31c542f405da6e6bd59e39bc03b7f7a7a66d1bf3b99181aece7ab03`).
+The original structured provider response is not persisted, so this record
+cannot independently reconstruct the exact submitted CommitIntent. The
+error and staged rename support the known mechanism below; they do not prove
+which paths the provider submitted.
+
+== Known limitation and safety boundary
+
+`git_facts._staged_paths()` uses `git diff --cached --name-only` without
+`--no-renames`. With rename detection enabled, a same-content delete/add is
+reported as the destination only. `trusted_commit()` compares that result
+against the exact intent path set and refuses when they differ; listing only
+the destination cannot conceal the deleted source because dirty-path and
+scope checks remain authoritative. `tests/unit/test_slice4b_git_authority.py::test_rename_intent_still_refuses_under_rename_detection`
+reproduces both refusals; two focused cases passed on 2026-11-19. Earlier
+link:BUG-WFC-SEC-03-GIT-SCOPE-COMMIT-AUTHORITY.adoc[SEC-03] intentionally
+preserved this limitation while correcting range observation to show both
+leaves. The Operator Manual already warns about rename-shaped intents. This
+is an observed recurrence of an explicitly known design limitation, not a
+newly discovered security regression. Its fail-closed refusal protects scope
+and may leave staged state that the operator must preserve and investigate.
+
+== Possible direction and acceptance for separate work
+
+Investigate explicit `--no-renames` for staged-path observation, and audit
+all relevant dirty/index/post-commit observations for consistent exact-leaf
+semantics. Do not decide a fix here. A future change must retain pre-existing
+index refusal, exact source and destination authorization, clean/filter and
+hook protection, HEAD checks, exact commit scope and post-commit checks;
+no unauthorized path or commit may be accepted. Regression tests should cover
+same-content rename and delete-plus-similar-add with `diff.renames` enabled,
+disabled and copies settings; both authorized leaves, each omitted leaf,
+out-of-scope source/destination, unrelated dirty/staged paths, and accurate
+failure residue. Test both ordinary `trusted_commit` and any affected shared
+bounded-path behavior. Never rely on changing global Git configuration.
+
+This record does not authorize implementation, alter historical Evidence,
+change SEC-03 acceptance, or imply Runtime promotion. Directory-shaped
+CommitIntents remain a distinct issue:
+link:BUG-WFC-COMMIT-INTENT-DIRECTORY-PATH-RECONCILIATION.adoc[directory reconciliation].
