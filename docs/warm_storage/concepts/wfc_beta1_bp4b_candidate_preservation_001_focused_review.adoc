@@ -4,10 +4,247 @@
 :sectnums:
 
 This record holds every independent focused-review pass over the BP4b
-correction work. The current pass is *H008*; earlier passes are kept verbatim
+correction work. The current pass is *H010*; earlier passes are kept verbatim
 below it, newest first.
 
-== Pass H008 (current)
+== Pass H010 (current)
+
+Status:: *ACCEPT.* `F005` resolved at the exact mechanism it names. No new
+blocking Finding; the BP4b product is independently assessed as complete
+against the task and the frozen BP4a contract.
+WorkItem:: `WI-WFC-BETA1-BP4B-CANDIDATE-PRESERVATION-001`
+Run / Hop:: `RUN-4b9a28634bfe4441ac31ed825f2cde32` / `H010`
+(`focused_review`, fresh independent reviewer, gate, blocking-only,
+`finding_authority: [resolve]`).
+Invocation:: `INV-e396ebf4a18b4a7d9f97c6fe9504f59f`.
+Reviewed correction commit:: `6cc9bc1c8b5db323943cf2f5ed918b60129e4995`.
+Reviewed correction range::
+`b01431c2b2e4cf6f898e6d077b2023d40fa21678..6cc9bc1c8b5db323943cf2f5ed918b60129e4995`.
+Reviewed product:: the *entire* BP4b product at `6cc9bc1`, measured against the
+pre-implementation baseline `69099da319486155ee529d85761ad08a5b7c143a`, the
+H002 broad review and the H004/H006/H008 passes recorded below.
+Date:: 2026-11-20.
+
+=== 1. Disposition
+
+Verdict:: `accept`
+Route:: `correction`
+Finding disposition:: `F005` -> `resolved` (section 3). No new Finding.
+
+The H009 correction closes the one remaining blocking Finding at the mechanism
+it names, with a purely additive BP4b-owned helper and a single call-site
+change inside `preserve_candidate`. The frozen BP4a surface is provably
+untouched: *every* pre-existing `git_facts` definition is byte-identical to the
+baseline (section 2), including `_configured_external_filters` itself, which
+`F005` named as the root cause and which this reviewer had no authority to see
+changed. The maintainer-facing BP4a-side exposure that `F005` recorded as its
+own qualification (a) is unchanged and is carried forward as a non-blocking
+observation in section 6, not as a BP4b defect.
+
+The whole acceptance matrix re-measured clean at `6cc9bc1`, and the
+`F001` -> `F002` -> `F003` -> `F004` encoding chain and `F005` all stay
+inverted. This pass found no reproduced violation of any explicit acceptance
+criterion.
+
+=== 2. Scope of this pass
+
+`git diff --numstat b01431c..6cc9bc1`:
+
+....
+32   1  src/workflow_coordinator/git_facts.py
+19   0  tests/unit/test_candidate_preservation.py
+....
+
+The single deletion is the `preserve_candidate` call site
+`if filters := _configured_external_filters(identity):`, a line *added by BP4b
+itself* at H001; the test hunk is a pure addition. Nothing else changed.
+
+*The BP4a contract is provably unchanged.* `git diff --numstat
+69099da..6cc9bc1 -- src/workflow_coordinator/git_facts.py` is `327 0`: across
+the whole product, not one baseline line of `git_facts.py` is removed or
+modified. Verified structurally as well, by parsing both revisions and
+comparing each definition's source segment byte-for-byte: zero removed, zero
+changed, and the only additions are `PreservationRefused`,
+`PreservedCandidate`, `_run_git_raw`, `_isolated_index_copy`,
+`_configured_external_filters_byte_safe`, `_build_candidate_tree`,
+`preserve_candidate` and the latter's three local closures. `_run_git`,
+`_git`, `_readonly_git`, `_trusted_git`, `_trusted_git_environment`,
+`_configured_external_filters`, `_reject_unsafe_scope_special_files`,
+`trusted_commit` and `bounded_path_commit` are byte-identical to the baseline.
+Both insertion hunks sit *between* top-level definitions. The only deletions
+anywhere under `src/` across `69099da..6cc9bc1` remain the two
+`return _advance(...)` statements that H001 split into `result = _advance(...)`
+plus the additive preservation hook call. `journal.py` is untouched; no
+engine, reducer, Finding, review, routing, adapter, admission, BP6,
+operator-manual or backlog file is touched; no test was weakened or deleted.
+
+=== 3. `F005` -- resolved
+
+The Finding: the clean/process-filter capture predicate (Deliver item 3,
+acceptance case 11) failed *open* when the filter's Git-config subsection name
+is not valid UTF-8, because `_configured_external_filters` delegates the match
+to Git's own locale-dependent `config --get-regexp`; the capture then
+proceeded, Git still applied the filter when building the candidate tree, and
+the ref plus `ext.preservation.result` recorded the filter's output and a
+mismatched size instead of the worktree content. The only BP4b failure in this
+Run that was not fail-safe.
+
+The correction (`6cc9bc1`) adds `_configured_external_filters_byte_safe`,
+which reads `git config --list -z` through `_run_git_raw` as *raw bytes* and
+applies the key pattern itself against those bytes, with no locale-dependent
+matching anywhere, and points `preserve_candidate`'s own call site at it. The
+frozen helper keeps its two BP4a callers.
+
+Reproduced as inverted, end to end and at unit level:
+
+* *End to end through the real lifecycle* (disposable consumer repo, scope
+`["src"]`, `dispatch_then_crash`, delivered `fake_engine.py`/`fake_provider.py`,
+`.git/config` carrying `[filter "caf<0xE9>"] clean = <substituting script>` and
+a *committed* `.gitattributes` line `src/wip.txt filter=caf<0xE9>`):
+`CLASSIFICATION: interrupted`, `wfc run` exit *14*, journal
+`... classified, ext.preservation.intent, ext.preservation.refused` with
+`reason: configured clean/process filter is not permitted for candidate
+preservation: filter.caf\udce9.clean`, *zero* external-filter executions across
+the entire run, and `refs/wfc/preserved/` empty. The BP4a classification and
+exit code are unchanged, and the refusal is named and journaled
+(acceptance 15).
+* *`wfc status` still reports it* (separate process, piped stdout,
+`encoding=utf-8 errors=strict`, so no in-harness capture can mask an encode
+failure): exit 0, prints `PRESERVATION: refused` *and* the full reason line
+with the undecodable byte rendered as `\udce9` by `_stdout_safe`. `F004`
+therefore stays inverted for this new reason shape as well.
+* *Unit level, with the filter executions counted strictly across
+`preserve_candidate`*: the non-UTF-8 filter name now yields a named
+`PreservationRefused`, *0* filter executions, no ref, and HEAD, every ref, the
+live `.git/index` (read directly, no Git call), `git status` output and
+`.git/config` byte-identical. Emulating the pre-H009 call site on the same
+repository reproduces `F005` exactly: `PreservedCandidate(status='preserved',
+ref='refs/wfc/preserved/RUN-probe/1', bytes_total=30)`, *4* filter executions,
+and the captured blob for `scope/a.txt` is `b'SUBSTITUTED-BY-FILTER'` while the
+worktree holds `b'WORKTREE-CONTENT-v2\n'`.
+* *Genuine mutation test.* Against an out-of-tree copy of `src/` with only the
+H009 call site reverted and the delivered test file unchanged, exactly one test
+fails -- `test_configured_clean_filter_with_non_utf8_subsection_name_is_refused`
+with `Failed: DID NOT RAISE PreservationRefused` -- and the other 15 tests in
+that file pass.
+
+*The new predicate is parity-or-stronger, never weaker and never noisier.*
+Probed side by side against the frozen helper on nine configurations: an ASCII
+`filter.probe.clean`, `filter.x.process`, a filter reached indirectly through
+`include.path`, a subsection name containing a space and a dot, and an
+uppercase `CLEAN` variable are all reported identically by both and all refuse;
+`filter.x.smudge` alone, no filter at all, a missing `include.path` (which Git
+documents as ignorable) and -- the false-positive trap -- an `alias` whose
+*value* contains an embedded newline followed by the literal text
+`filter.evil.clean` are all reported as `()` by both, and the capture proceeds.
+Only the non-UTF-8 subsection name differs, in the safe direction. The helper
+puts only the *key* into the refusal reason, never a config value, so no
+operator secret can reach the durable journal record.
+
+=== 4. What re-verified as correct at `6cc9bc1`
+
+* *Capture predicates.* Non-UTF-8 and ASCII clean/process filters, an
+out-of-scope dirty path, an escaping symlink, a FIFO alongside dirty content,
+the file-count cap, the byte cap, HEAD movement since `classified`, a held
+ownership lock and an unstable tree across the two observations each refuse
+with a named reason and write nothing.
+* *Byte-identical repository state.* Across every capture and every refusal
+probed in this Hop, HEAD, every pre-existing ref, the live `.git/index` (read
+directly as bytes), the worktree and `.git/config` are byte-identical; the only
+state change on success is the one new `refs/wfc/preserved/<run_id>/<n>`.
+* *Staged residue, idempotency, crash resume, `not_needed`, `completed`,
+read-only `status`.* Covered by the delivered suite, which passes in full:
+`tests/unit/test_candidate_preservation.py` (16 tests) and
+`tests/unit/test_preservation_lifecycle.py` (11), together with
+`tests/unit/test_git_facts.py` (40) and
+`tests/unit/test_bounded_path_commit.py` (25) -- 92 tests, all passing.
+* *No claim stronger than `unattested`.* `quiescence: "unattested"` remains
+the only quiescence value anywhere under `src/`, and the capture commit subject
+still reads `quiescence unattested; not adoption`.
+* *Limitations record (acceptance 18)* unchanged and still states unattested
+quiescence, surviving provider processes, the non-adoption boundary and the
+non-replacement of manual salvage.
+* *Suites (acceptance 17).* `tests/unit` plus `tests/architecture` run in this
+Hop: the only failures are the same 41 results in
+`test_claude_adapter_conformance.py`, `test_wfc_op.py`, `test_bp1_identity.py`
+and `test_offline_distribution.py`, every one of them a sandbox/network
+limitation recorded in section 7. `tests/architecture/test_package_boundaries.py`
+passes, and so does
+`test_bp1_identity.py::test_roles_match_reviewed_sources_and_kernel_import_direction`
+(the kernel/frontdoor import-direction guard), as do every BP4a lifecycle,
+crash-matrix, journal, `git_facts` and `bounded_path_commit` test.
+
+=== 5. Withheld authority
+
+Nothing in `6cc9bc1` adopts, accepts, widens scope or transfers a Finding; no
+BP4a record, classification, exit code or transition is added or changed; no
+engine, reducer, Finding, review, routing, adapter or admission code is
+touched; `trusted_commit` and `bounded_path_commit` are byte-identical; there
+is no BP6 archive/report, no `wfc stop`, no supervision, no same-Run recovery
+or successor logic, no global Git configuration change, no operator-manual or
+backlog edit, and no test weakening. The new helper's `git config --list` read
+is read-only.
+
+=== 6. Non-blocking observations
+
+Reported here and in the Hop summary only; `finding_authority: [resolve]` does
+not authorize residual transitions.
+
+O21:: *The BP4a-side filter bypass that `F005` named is unchanged, by design,
+and is for the maintainer.* `_configured_external_filters` is byte-identical to
+the baseline and still returns `()` for a filter key whose config subsection is
+not valid UTF-8 under a UTF-8 locale (confirmed again in this Hop: the frozen
+helper reports `()` for the very configuration the byte-safe helper refuses).
+`trusted_commit` and `bounded_path_commit` therefore keep the exposure
+`F005`'s qualification (a) described. That is correct for *this* WorkItem --
+changing either primitive is withheld authority -- but it should be recorded
+for the maintainer as a BP4a-side item, together with the follow-on that BP4b
+and BP4a now apply two different filter predicates and the duplication should
+be unified in whichever direction the maintainer chooses.
+O22:: *Content-transforming `gitattributes` other than clean/process filters
+still reshape the captured blob.* Measured at `6cc9bc1`: with
+`scope/* text eol=crlf` (or plain `text`) and a CRLF worktree file, the capture
+succeeds and the captured blob is `b'line1\nline2\n'` while the worktree holds
+`b'line1\r\nline2\r\n'`, and `ext.preservation.result.bytes` reports the
+worktree `lstat` size (14) rather than the object size (12). This is ordinary,
+documented `git add` behaviour, identical to what BP4a's own `trusted_commit`
+does and faithfully round-tripped on checkout while the attribute stands, and
+EOL normalisation is not a clean/process filter, so acceptance case 11 is not
+engaged and nothing executes externally. It is noted only because Deliver item
+4 says "the worktree content of the in-scope changed paths", and because one
+sentence in the limitations record would make the boundary explicit. `ident`
+was probed too and does not transform on the clean side.
+O23:: *`_configured_external_filters_byte_safe` turns a failing
+`git config --list` into a refusal carrying Git's raw diagnostic*, which is
+fail-safe but shares O17's shape: the reason is a Git message rather than a
+named predicate.
+
+H002's O1-O12, H004's O13-O14, H006's O15-O17 and H008's O18-O20 are carried
+forward unchanged. O20 remains the closest neighbour of O22 above.
+
+=== 7. Agent-local environment limitations
+
+`tests/architecture/test_bp1_identity.py::test_installed_identity_and_real_preflight`,
+`tests/architecture/test_offline_distribution.py`, `tests/unit/test_wfc_op.py`
+and `tests/unit/test_claude_adapter_conformance.py` fail or error in this
+sandbox: the first three because `python -m build` / `pip install` cannot reach
+a package index (`ERROR: No matching distribution found for setuptools>=68`),
+the last because the adapter's temporary-directory symlink target under `/tmp`
+is not writable here (`OSError: [Errno 30] Read-only file system`). These were
+observed, not worked around; no dependency was downloaded and no sandbox
+setting was changed. Several reviewer conveniences were also refused by the
+sandbox (writing a scratch script through a runtime-expanded path, reading a
+scratch file with `sed`/`head`); each was worked around with a literal path and
+cost no evidence. All agent-side runs above are exploratory partial runs
+(`--wfc-partial`) and are *not* Coordinator-trusted evidence; the Coordinator's
+full task-check remains authoritative.
+
+No implementation, test, fixture or Git state was modified by this reviewer.
+All reproductions ran against disposable, from-scratch repositories created
+under `$TMPDIR` and outside the repository; this artifact is the only
+repository change proposed by this Hop.
+
+== Pass H008
 
 Status:: *CHANGES REQUIRED.* `F003` and `F004` both resolved at the exact
 mechanisms they name; one *new* blocking Finding proposed in this Hop
