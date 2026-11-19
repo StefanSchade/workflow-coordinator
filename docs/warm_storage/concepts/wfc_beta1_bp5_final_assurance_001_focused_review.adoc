@@ -1,0 +1,511 @@
+= Preserved BP5 archive candidate: independent focused review
+
+WorkItem:: `WI-WFC-BETA1-BP5-FINAL-ASSURANCE-001`
+Hop:: `H004` (`focused_review`, gate, blocking-only, `finding_authority: [resolve]`)
+Review base HEAD:: `aa7ec12cbf6abe7a2bdd32e4e10f2a822e70a9bd`
+Correction under review:: `aa7ec12`
+(`fix(bp5): ... H003 correct F001/F002 without a rename-shaped commit`), the
+single bounded `H003` correction answering the two open blocking Findings.
+Pre-implementation baseline:: `54b99ba788206fe61ea89cdeee96db434d4a1c79`
+Preserved candidate ancestry:: `fc922a7` and `d1b7881` (maintainer-preserved
+WIP, declared non-authoritative by this Commission's task), `9a4a38f`,
+`0cfc25d`, then this Run's own `f4447aa` (`H001`), `61e54c6` (`H002`) and
+`aa7ec12` (`H003`).
+Predecessor broad review:: `H002`, recorded in
+`wfc_beta1_bp5_final_assurance_001_broad_review.adoc` (`61e54c6`), which
+reproduced every other acceptance clause as satisfied and raised exactly two
+blocking Findings (`BF-1`/`F001`, `BF-2`/`F002`).
+Disposition:: *Accept.* `F001` and `F002` are both resolved. The fixture/test
+name collision is gone at its source and the repaired state is now
+byte-equivalent to the clean baseline on the exact mechanism the failing
+assertions use; the inert ported assertion is replaced by the assertion it
+always actually executed, and the one genuinely non-portable legacy proof is
+now named in the module's documented adaptation list. No new blocking Finding.
+Prior-Hop and prior-review claims were treated as leads and re-reproduced
+here, not accepted on their own authority.
+
+This Hop made no product, test, fixture or documentation change. The only
+repository change proposed is this artifact. Nothing under
+`build/wfc/bp5-evidence-inputs/` was mutated: its 17-file tree fingerprints to
+`d1c3b9140d4f3001a79023053388af73e0541d51f2316681f0e6c2b53174513a` after every
+probe below, and `git status --porcelain` is unchanged from the start of this
+Hop. Every probe ran in a disposable `$TMPDIR` directory or a disposable clone.
+
+== Scope of this review
+
+The task directs the independent reviewer at the *entire* resulting BP5 product
+against `54b99ba` and the original acceptance, including the preserved
+ancestry -- not only the fresh `H003` diff or `H001`'s verification report.
+This review therefore re-derived the whole product diff, re-ran the A/B/C
+evidence from the code rather than from the reports, and independently
+re-reproduced both Findings at the pre-fix revision before judging the fix.
+
+[source,shell]
+----
+$ git diff --stat 54b99ba..HEAD
+ 43 files changed, 6326 insertions(+), 3 deletions(-)
+----
+
+Product surface touched outside documentation, fixtures and tests is exactly
+two files: `src/workflow_coordinator/frontdoor/archive.py` (new, 966 lines) and
+a three-line `archive` dispatch added to
+`src/workflow_coordinator/frontdoor/cli.py`. Nothing in the withheld-authority
+list was touched: `git_facts.py`, `operator.py`, the providers, reducer,
+compiler, workflow programs, `scripts/wfc_op.py`, `.gitattributes`,
+`.gitignore`, `pyproject.toml` and the conftest files are all byte-identical to
+`54b99ba`.
+
+[source,shell]
+----
+$ git diff --stat 54b99ba..HEAD -- tests/unit/test_wfc_op.py scripts/wfc_op.py \
+    src/workflow_coordinator/operator.py
+(no output)
+$ git diff --stat 54b99ba..HEAD -- .gitattributes .gitignore pyproject.toml \
+    conftest.py tests/conftest.py
+(no output)
+----
+
+== Preserved ancestry: the candidate is what it claims to be
+
+Independently recomputed, confirming `H001`'s section 1 and the digest
+`d1b7881`'s own commit message states:
+
+[source,shell]
+----
+$ git diff --binary --full-index a6aaeaf d1b7881 | sha256sum
+70587c0ac31c542f405da6e6bd59e39bc03b7f7a7a66d1bf3b99181aece7ab03  (32510 bytes)
+----
+
+(`--full-index` matters: without it the abbreviated index lines hash
+differently. That is an invocation detail of the probe, not a discrepancy in
+the preserved candidate.)
+
+The WIP ancestry is not treated here as acceptance credit for anything. This
+Commission's task explicitly preserves it as non-authoritative material to be
+inspected, and forbids reimplementing BP5 from scratch; the support for
+publishing content that descends from it is this Run's own independent
+verification (`H001`), broad review (`H002`), correction (`H003`) and this
+focused review -- plus the Coordinator's own mandatory full task-check, which
+no artifact here substitutes for. No unsupported trusted publication under WIP
+ancestry was found, so no escalation on that ground.
+
+== `F001` -- fixture/test name collision: resolved
+
+=== Reproduced at the pre-fix revision, clean at HEAD, clean at baseline
+
+The failing assertions
+(`tests/unit/test_wfc_op.py:358-360`, inside
+`test_prepare_never_creates_a_run_or_checkout`) glob the whole prepared `ops`
+tree for the literal names `run.json`, `operator-plan.json` and
+`operator-summary.json`. The population mechanism is
+`scripts/wfc_op.py:400-422` (`export_runtime`: `git archive <head>` piped into
+`tar -x -C ops/runtime-src`) fed from `make_runtime()`'s local clone of this
+repository (`tests/unit/test_wfc_op.py:138-144`), plus
+`make_development()`'s clone (`tests/unit/test_wfc_op.py:111-129`). Both are
+clones and `git archive` exports tracked content only, so the question is
+decidable from the tracked tree alone.
+
+Probed directly on the three revisions that matter:
+
+[source,shell]
+----
+$ git archive <rev> --format=tar -o $TMPDIR/<rev>.tar   # for each revision
+$ python3 -I -c '<report tar members whose basename is one of the three names>'
+54b99ba baseline -> CLEAN (all three globs hold)
+61e54c6 pre-fix  -> ['tests/fixtures/bp5/real_run/run/operator-plan.json',
+                     'tests/fixtures/bp5/real_run/run/operator-summary.json']
+aa7ec12 HEAD     -> CLEAN (all three globs hold)
+----
+
+`H002`'s `BF-1` was therefore a genuine reproduced failure, and `aa7ec12`
+restores exactly the baseline-equivalent condition on the exact surface the
+assertions read. Confirmed independently against the tracked index as well:
+
+[source,shell]
+----
+$ git ls-files -- ':(glob)**/operator-plan.json' ':(glob)**/operator-summary.json' \
+                  ':(glob)**/run.json' operator-plan.json operator-summary.json run.json
+(no output)
+----
+
+The only paths on disk still carrying those names live under
+`build/wfc/bp5-evidence-inputs/archive/...`, which `git ls-files` confirms is
+untracked (`.gitignore`d staged read-only evidence input), so it cannot enter
+either clone, either `git archive` export, or either venv install.
+
+=== The fix is byte-faithful, and loses nothing
+
+`H003` deleted the two fixture files outright and embedded their exact bytes as
+`_OPERATOR_PLAN_JSON`/`_OPERATOR_SUMMARY_JSON` in the already-tracked
+`tests/unit/test_archive_equivalence.py`, materialising them into the
+disposable relocated state root in `_relocate_real_run`
+(`tests/unit/test_archive_equivalence.py:88-90`) exactly where `shutil.copytree`
+previously carried them. Verified three ways, not taken on trust:
+
+* the embedded constants plus their restored trailing newline are
+  byte-identical to the *deleted git blobs* at `61e54c6`
+  (`git cat-file -p 61e54c6:<path>`): `True` for both;
+* they are byte-identical to the *actually archived originals* under
+  `build/wfc/bp5-evidence-inputs/archive/.../run/`: `True` for both;
+* their digests are `80803321...91f82` (3816 bytes) and `bd6cb02f...8f2be`
+  (3449 bytes), matching `tests/fixtures/bp5/PROVENANCE.txt`, the staged
+  `build/wfc/bp5-evidence-inputs/PROVENANCE.txt` and the real archived
+  `manifest.json`'s own `copied_files[].sha256`/`bytes`.
+
+`RealRunEquivalenceTests.setUp` now asserts those two digests itself, so a
+future edit to the constants fails loudly rather than silently drifting.
+
+=== No rename-shaped change, no test weakening
+
+The limitation `H003` was instructed to avoid recreating
+(`docs/backlog/BUG-WFC-TRUSTED-COMMIT-RENAME-RECONCILIATION.adoc`) is
+reproduced by a same-content delete+add inside one commit. `aa7ec12` contains
+no such pair: with this repository's default rename detection active, the
+commit's own name-status shows two pure deletions and no `R`:
+
+[source,shell]
+----
+$ git diff --name-status 61e54c6..aa7ec12
+M	docs/warm_storage/concepts/wfc_beta1_bp5_final_assurance_001_worker_verification.adoc
+M	tests/fixtures/bp5/PROVENANCE.txt
+D	tests/fixtures/bp5/real_run/run/operator-plan.json
+D	tests/fixtures/bp5/real_run/run/operator-summary.json
+M	tests/unit/test_archive_equivalence.py
+M	tests/unit/test_archive_port.py
+----
+
+This is exactly `H003`'s declared CommitIntent leaf set, and the reasoning
+behind it holds: a modification to an already-tracked path is never eligible as
+a rename's added side, so the relocated bytes cannot pair with either deletion.
+
+`tests/unit/test_wfc_op.py` and `scripts/wfc_op.py` are byte-identical to
+`54b99ba` (shown above), so the collision was removed at its source rather than
+by relaxing the assertions that caught it. No assertion anywhere was deleted,
+weakened or guarded.
+
+*Disposition: `F001` resolved.*
+
+== `F002` -- neutralised ported conformance assertion: resolved
+
+=== The finding's own framing, re-checked against the sources
+
+`F002` reported `tests/unit/test_archive_port.py:317`'s
+`assertIn(f"checkout:   {CHECKOUT}" if False else f"repository: {TARGET_REPO}", ...)`
+as an inert assertion whose paired negative (forged checkout id must not
+appear) was missing, with the guarded property dropped because
+`render_report` emits no `checkout:` line. Read against the actual sources, the
+inertness and the missing negative are real, and the explanation is narrower
+than "silently dropped":
+
+* the legacy assertions at
+  `build/wfc/bp5-evidence-inputs/tests/test_wfc_archive_run.py:312` and `:315`
+  read the git *commit body* (`body = git(fx.repo, "log", "-1", "--format=%B")`),
+  not `proc.stdout` -- confirmed by reading the whole method, whose only stdout
+  assertion is the final `files:` line;
+* `git_facts.NewPathCommitIntent` (`src/workflow_coordinator/git_facts.py:69-79`)
+  carries `paths` and `subject` only, with no body field, and
+  `archive.py:874` constructs it that way -- so the new implementation has
+  no commit-body surface at all for a `checkout:` line to live on;
+* `archive.render_report` (`archive.py:899-932`) emits no `checkout:` line and
+  never reads the populated `ArchiveReport.checkout_id`.
+
+The legacy proof is therefore genuinely non-applicable rather than merely
+unported, which is precisely the case the original acceptance requires to be
+*documented*.
+
+=== The guarded property is covered, and more strongly
+
+`archive.run_identity` (`archive.py:469`) resolves `checkout_id` through
+`_agree("checkout_id", ("operator-summary.json", summary),
+("checkout-association.json", assoc))`, which raises `ArchiveError` on
+disagreement. That is fail-closed refusal of the whole archive, strictly
+stronger than the legacy display-time scrubbing. It is exercised by the
+pre-existing `RefusalTests.test_disagreeing_checkout_id_across_sources_is_rejected`,
+which I ran directly alongside the repaired test:
+
+[source,shell]
+----
+$ python -m pytest --wfc-partial -v \
+    "tests/unit/test_archive_port.py::RefusalTests::test_disagreeing_checkout_id_across_sources_is_rejected" \
+    "tests/unit/test_archive_port.py::IdentityConsistencyTests"
+4 passed
+----
+
+The forgery test itself still asserts every *reportable* field the legacy
+negative assertions guarded: `repository` and `files` positives, plus negatives
+for `files:      99999`, `repository: /attacker/claimed/repository` and
+`ops:        /attacker/claimed/ops` (`test_archive_port.py:328-332`). The
+injection vector the legacy test defended against -- a newline-bearing
+`run_id` smuggling TSV fields through the wrapper's internal protocol -- has no
+analogue in the port, which reads JSON directly.
+
+=== The remedy matches what the Finding asked for
+
+`F002` offered two bounded remedies: render the line and restore both
+assertions, or document the omission in the adaptation list and replace the
+inert construct with a plain assertion. `H003` took the second, exactly:
+`test_archive_port.py:328` is now a plain
+`self.assertIn(f"repository: {TARGET_REPO}", proc.stdout)` with a comment
+pointing at the covering refusal test, and the module docstring's documented-
+adaptation list gains a bullet naming `checkout_id` as the one identity field
+that moved from commit-body display to upstream fail-closed refusal rather
+than to stdout. No inert or skipped construct remains anywhere in the BP5 test
+modules:
+
+[source,shell]
+----
+$ rg -n 'if False|if True|@unittest.skip|pytest.skip|xfail' tests/unit/test_archive_*.py
+No matches found
+----
+
+*Disposition: `F002` resolved.*
+
+== Re-verified independently: the rest of the product
+
+=== Conformance port completeness and recorded exceptions
+
+Mechanically diffed the legacy test-name sets against the ported modules. Of
+40 names in `test_wfc_archive_run.py` and 21 in `test_archive_helpers.py`, nine
+do not appear verbatim; every one is accounted for:
+
+* documented as unportable in `test_archive_conformance.py`'s docstring (2):
+  `test_archive_proof_has_the_same_guard`,
+  `test_archive_proof_shares_the_same_archive_root` (they drove
+  `scripts/archive_proof.py`, which has no installed counterpart);
+* documented in `test_archive_port.py`'s adaptation list (5):
+  `test_wrapper_is_executable`,
+  `test_evidence_repository_without_the_archiver_is_rejected`, and the three
+  `ArchiverFailurePropagationTests`
+  (`test_a_missing_manifest_blocks_the_commit`,
+  `test_failure_during_planning_prevents_the_real_archive`,
+  `test_failure_during_the_real_archive_is_propagated_without_a_commit`);
+* ported under an adapted name (2): `test_existing_destination_is_rejected` ->
+  `test_existing_destination_with_different_content_is_rejected` plus
+  `test_existing_destination_from_a_genuinely_different_run_is_refused_not_overwritten`
+  (the split reflects BP5's new idempotent retry); and
+  `test_manifest_identity_cannot_forge_run_probe_records` ->
+  `test_manifest_identity_cannot_forge_report_fields`.
+
+No silently dropped legacy check was found.
+
+=== Provenance and fixture portability (item A)
+
+Every remaining digest in `tests/fixtures/bp5/PROVENANCE.txt` was recomputed
+from the tracked bytes: 10 verified, 0 mismatched, and no fixture file under
+`real_run/**` or `legacy/*` is unlisted. The specific digest this Commission's
+task names is confirmed on both sides of the neutral rename:
+
+[source,shell]
+----
+b65eee56b2a96a149b8c2eea7ec3c1d7750d9e4869019d68cfde5d36d711f861  11557
+  tests/fixtures/bp5/real_run/run/checkouts/.../run.fixture.json
+b65eee56b2a96a149b8c2eea7ec3c1d7750d9e4869019d68cfde5d36d711f861  11557
+  build/wfc/bp5-evidence-inputs/archive/.../run/checkouts/.../run.json
+----
+
+`tests/fixtures/bp5/legacy/wfc-archive-run` retains mode `100755`, which the
+equivalence test needs to invoke it as a real subprocess.
+
+Portability is demonstrated rather than argued: the equivalence test ran to
+completion in this sandbox, under this sandbox's own `$TMPDIR`, with the
+relocated throwaway `HOME` -- i.e. with none of the original
+`/home/stefan/wfc-state` or `/home/stefan/wfc-ops` paths reachable.
+
+=== Real old/new archive parity, and the relocation is honestly described
+
+`test_old_and_new_archivers_produce_identical_manifests_for_the_same_real_run`
+runs the frozen legacy wrapper as a real subprocess and the installed
+`archive_run()` against two disposable Evidence repositories from one relocated
+copy of the real archived Run, then compares the full manifests modulo
+`archived_at` and asserts exactly one commit on each side. It passes.
+
+Going further than the test, I compared the new archiver's output against the
+*actually stored* original archive manifest:
+
+[source,shell]
+----
+attempt_id equal: True        semantic equal: True
+copied_files: 8 of 10 path/sha256/bytes triples identical
+only differing: run/operator-plan.json, ops/preparation-pins.txt
+facts differing: ops_source, pinned_revisions  (path-bearing values only)
+----
+
+The two differing files are exactly the two that `_relocate_real_run` rewrites
+(`state_root`/`execution_bindings_source` in `operator-plan.json`,
+`state_root`/`execution_bindings` in `preparation-pins.txt`), and the two
+differing facts are exactly the path-bearing ones. No run fact differs. That is
+precisely what `tests/fixtures/bp5/PROVENANCE.txt:11-15` discloses -- "the
+equivalence test relocates a disposable working copy and edits only the
+path-metadata fields that encode that relocation -- never a run fact" -- so the
+necessary temporary path relocation is transparently described, and the claim
+is accurate as written.
+
+=== Containment (item B)
+
+`SymlinkEscapeContainmentTests` covers both required directions -- a tracked
+`archive/` symlink out of the repository and a symlink staging root -- and both
+assert refusal with the specific message plus a four-way "nothing happened"
+check: outside content snapshot unchanged, outside directory listing unchanged,
+HEAD unchanged, `git status --porcelain` empty, and the sibling directory never
+created. These are real filesystem-effect tests, not mocks. The enforcement
+sits at `archive.py:802-806` (`assert_source_isolation` on both destination and
+staging, `assert_dest_under_archive_root`, `assert_no_symlink_escape` on both)
+before any write.
+
+=== Tamper refusal, identity and path refusal, intact retry, no-op (item C)
+
+Every property item C enumerates is covered by a passing test that also asserts
+HEAD is unmoved, the index is clean, and placed data is preserved rather than
+reverted:
+
+* changed data with an unchanged digest -> `"does not match its recorded digest"`;
+  changed size -> `"does not match its recorded size"`;
+* wrong attempt identity -> `"staged for attempt"`; wrong recorded sources ->
+  `"different sources"`;
+* unsafe absolute path and `../../` traversal -> `"unsafe file path"`, with the
+  outside file proven unread; duplicate path -> `"duplicate file path"`;
+  symlinked escape inside the destination -> `"escapes the archive destination
+  via a symlink"`;
+* intact resume -> exactly one commit
+  (`test_genuinely_intact_interruption_resumes_to_exactly_one_commit`, and
+  `test_kill_after_placement_before_commit_resumes_to_exactly_one_commit`
+  against a manifest from a real `archive_run()` call);
+* identical repeat -> `ARCHIVE ALREADY UP TO DATE`, HEAD unmoved
+  (`test_second_archive_of_the_same_attempt_is_a_no_op`).
+
+=== Trusted Git authority and no writes outside the destination
+
+The commit goes through the pre-existing `git_facts.bounded_path_commit` with
+`allowed_paths=(dest_rel,)` and an explicit leaf-path `NewPathCommitIntent`
+(`archive.py:873-879`); `archive.py` contains no raw `git add`/`git commit`,
+and its only direct Git reads go through a non-mutating `_run_git` helper.
+`git_facts.py` itself is unchanged from `54b99ba`, so no trusted-Git
+implementation change was made. `_assert_narrow_cleanliness`
+(`archive.py:584`, called at `archive.py:818`) admits dirt only under the
+attempt's own destination and staging prefixes, and
+`test_unrelated_dirty_path_elsewhere_blocks_archiving_and_is_left_untouched`
+and `test_unauthorized_pre_staged_index_state_is_refused` prove the refusals
+leave the foreign work exactly as it was. The surrounding authority suites all
+pass:
+
+[source,shell]
+----
+$ python -m pytest --wfc-partial \
+    tests/unit/test_archive_conformance.py tests/unit/test_archive_equivalence.py \
+    tests/unit/test_archive_port.py tests/unit/test_archive_safety.py \
+    tests/unit/test_bounded_path_commit.py tests/unit/test_git_facts.py \
+    tests/unit/test_slice4b_git_authority.py tests/unit/test_frontdoor_init_plan.py
+182 passed in 14.07s
+----
+
+=== Scope compliance of the correction
+
+All six leaves `H003` changed are inside this Commission's
+`work_item_scope_ceiling`
+(`governance/commissions/wfc-beta1-bp5-final-assurance-001/policy.yaml:9-34`),
+including the two deleted fixture paths at lines 25-26. No governance,
+workflow-program, provider, reducer, compiler or global Git configuration file
+was touched, and no Commission, Runtime promotion, push, merge or rebase
+occurred.
+
+== Agent-side test execution (not Coordinator-trusted evidence)
+
+[source,shell]
+----
+$ python -m pytest --wfc-partial tests/unit \
+    --ignore=tests/unit/test_wfc_op.py --ignore=tests/unit/test_claude_adapter_conformance.py
+1024 passed, 1 skipped in 99.85s
+----
+
+These are exploratory agent-side results. The Coordinator's own full
+task-check remains the only trusted evidence, and neither this artifact nor
+`H003`'s worker verification establishes Run acceptance.
+
+== Agent-local environmental limitations
+
+None of these is a product defect, and none is the basis of any disposition
+above.
+
+* `tests/unit/test_wfc_op.py` cannot execute here at all: its fixture builds
+  two real venvs, and PEP-517 build isolation cannot resolve `setuptools>=68`
+  with pip forced offline and no find-links bundle
+  (`ERROR: Could not find a version that satisfies the requirement
+  setuptools>=68 (from versions: none)`). This is why `F001`'s disposition
+  rests on the decisive `git archive`/`git ls-files` evidence about the exact
+  mechanism those assertions read, rather than on a local run of that file.
+  `H003`'s report of the same limitation is accurate.
+* `tests/unit/test_claude_adapter_conformance.py` reports 22 failures here, all
+  from the sandbox refusing the test's fake-executable subprocess launch
+  (`ClaudeCliError: local pre-acceptance executable launch failure` from
+  `claude_adapter.py:259`). Proven pre-existing and unrelated: the same file,
+  run from a disposable clone checked out at `54b99ba`, fails identically, and
+  both the test file and `claude_adapter.py` are byte-identical to `54b99ba`.
+* `tests/integration/test_execution_boundary_bwrap.py` and
+  `test_nested_claude_bwrap_qualification.py` fail because nested bubblewrap is
+  unavailable inside this sandbox (`bwrap: ... requires unprivileged user
+  namespaces`). `tests/integration/` is byte-identical to `54b99ba`.
+
+== Nonblocking observations
+
+Recorded here and in the result summary only. These are not Finding
+transitions and none is an acceptance violation; `finding_authority` for this
+Hop is `[resolve]` and the only current-Run Findings are `F001` and `F002`.
+
+. *Test count in the `H003` addendum is off by two.* Section 10 of
+  `wfc_beta1_bp5_final_assurance_001_worker_verification.adoc` says "All 76
+  tests across the four touched/adjacent BP5 files pass". `--collect-only`
+  gives 74 (19 + 1 + 43 + 11), and the pytest output pasted directly above the
+  sentence in the same artifact shows 74 dots. The two additions are new
+  *assertions* inside the single existing equivalence test, not two new test
+  cases. The pass/fail evidence is sound; only the label is wrong, and the
+  artifact is outside this Hop's authorized scope to edit.
+. *The committed `real_run/` tree is no longer a complete reconstruction of the
+  archived Run's state root.* Two of its ten files now exist only as string
+  constants inside `tests/unit/test_archive_equivalence.py`. This is a correct
+  and well-documented trade against recreating the rename-reconciliation
+  limitation, and the bytes are provably intact, but a reader browsing the
+  fixture directory alone no longer sees the whole state root. The two
+  `PROVENANCE.txt` lines for those files also no longer parse as
+  `sha256sum`-format entries; nothing in the repository parses that file
+  programmatically, so this is cosmetic.
+. *The operator manual's generic wording outlives its one exception.*
+  `docs/operator_manual/ch04_evidence/02_archive.adoc` still says the old
+  wrapper's commit body "is reported on stdout instead". True for every field
+  an operator reads, but `checkout_id` is the documented exception, and that
+  exception is now recorded only in `test_archive_port.py`'s docstring. Fine
+  as an operator summary; worth a sentence if that section is ever revised.
+. *One legacy positive assertion in the forgery test is not carried over.* The
+  legacy test asserted `ops:        none` in the commit body alongside the
+  negatives. The port keeps the `ops:` negative
+  (`test_archive_port.py:332`) but not the positive. The forgery property --
+  the point of that test -- is fully asserted; the dropped line is redundant
+  display coverage.
+. *`H002`'s five nonblocking observations were re-checked and still stand as
+  nonblocking*, and are not re-raised: resume reverification does not
+  re-derive `facts`/`semantic` from sources (outside the properties item C
+  enumerates, all of which refuse correctly); the dead `resumed_commit`
+  outcome value that no path assigns; cross-attempt staging leftovers being
+  refused by `_assert_narrow_cleanliness` while only the same-attempt case is
+  tested; the git-ignored-destination edge case in `_path_is_tracked_clean()`,
+  unreachable in the real Evidence layout; and equivalence comparing manifests
+  rather than raw trees, which I re-confirmed is sufficient because the
+  manifest carries every copied file's path, SHA-256 and byte count and both
+  sides are driven from one relocated source.
+
+== Conclusion
+
+The entire BP5 product -- inherited code, tests, fixtures and documentation --
+was reviewed against `54b99ba` and the original acceptance, not just the
+`H003` diff. Both open blocking Findings are resolved by a correction that is
+byte-faithful, in scope, free of any rename-shaped change, and free of test
+weakening; the fix for `F001` restores exactly the baseline condition on the
+mechanism that caught it, and the fix for `F002` is the documented remedy the
+Finding itself specified. Source equivalence, recorded conformance exceptions,
+fixture portability, real old/new manifest and file-digest parity, trusted Git
+authority, destination containment, tamper and identity and path refusal,
+single-commit intact retry and the identical-repeat no-op all hold under
+independent re-verification. No new blocking Finding.
+
+*Accept.* Run acceptance itself remains the Coordinator's to establish through
+its mandatory full task-check; this artifact is review evidence, not that
+decision.
