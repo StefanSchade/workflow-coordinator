@@ -1,0 +1,301 @@
+= BP4a installed lifecycle controller: independent focused review
+
+WorkItem:: `WI-WFC-BETA1-BP4-LIFECYCLE-CONTROLLER-001`
+Hop:: `H004` (`focused_review`, gate, blocking-only, `finding_authority: [resolve]`)
+Review base HEAD:: `ade01b8b7e2a727eee841c35dbc23ba927abda99`
+Correction under review:: `ade01b8`
+(`fix(frontdoor): ... H003 make Commission materialization resume-safe and
+recognize --state-root=VALUE`), the single bounded `H003` correction answering
+the two open blocking Findings.
+Candidate under review:: `1a2fede` (`H001`), as corrected by `ade01b8`.
+Pre-implementation baseline:: `9ebd04d`.
+Predecessor broad review:: `H002`, recorded in
+`wfc_beta1_bp4a_lifecycle_controller_001_broad_review.adoc` (`666aa47`), which
+raised exactly two blocking Findings.
+Disposition:: *Accept.* `F001` and `F002` are both resolved. Each was
+re-reproduced here from scratch -- not taken on the prior Hop's word -- against
+the pre-correction code, and each reproduction is then shown to produce the
+required behaviour at the review base HEAD. The correction introduces no new
+blocking Finding. Two non-blocking observations are recorded for the
+maintainer in the last section; `finding_authority: [resolve]` does not
+authorize residual transitions, so they are recorded here and in the result
+summary only.
+
+This Hop made no product, test or fixture change. The only repository change
+proposed is this artifact.
+
+== What `H003` actually changed
+
+[source,shell]
+----
+$ git show --stat ade01b8
+ src/workflow_coordinator/frontdoor/cli.py       |  4 +++-
+ src/workflow_coordinator/frontdoor/lifecycle.py | 23 ++++++++++++++++--
+ tests/unit/test_lifecycle_controller.py         | 21 +++++++++++++++++
+ tests/unit/test_lifecycle_crash_matrix.py       | 31 +++++++++++++++++++++++++
+ 4 files changed, 76 insertions(+), 3 deletions(-)
+----
+
+Four files, all inside the `H002` per-file scope. In the two test files the
+diff is pure addition: no existing assertion was relaxed, renamed, skipped or
+deleted, so no previously reproduced invariant can have been weakened by test
+edits.
+
+Across the whole WorkItem (`9ebd04d..ade01b8`) the engine and its primitives
+remain byte-identical: `git_facts.py`, `operator.py`, `commissioning.py` and
+the reducer appear in no diff. `frontdoor/cli.py` carries `+8` lines in total.
+The withheld-authority boundary therefore still holds after the correction --
+in particular the correction did *not* reach into
+`commissioning.CompiledCommission.write_to`, `bounded_path_commit` or
+`trusted_commit`, which is exactly the constraint `H002` said a fix must
+respect.
+
+== `F001`: resolved
+
+=== The reproduction, rebuilt independently
+
+`H002` reported the defect from in-process reasoning plus three controller
+processes. This Hop rebuilt the reproduction from scratch as a *real crash*,
+because the invariant at stake -- acceptance case (6), "crash before the
+Commission commit: resume commits exactly once" -- is about surviving process
+death, not about an exception being caught.
+
+The driver authorizes, runs pre-launch and the baseline probe, enters
+`_do_commit`, and then hard-kills the process with `os._exit(137)` at the exact
+instant `bounded_path_commit` would have been called: after
+`commission_commit_intent` is journaled and after the compiled Commission and
+request file are materialized in the worktree, before any commit exists.
+Nothing is unwound, no `finally` runs, the lock file descriptor dies with the
+process. A second, fresh process then invokes the installed `wfc resume` entry
+point.
+
+=== Against the pre-correction code the reproduction fails
+
+`src/workflow_coordinator/frontdoor/lifecycle.py` and `frontdoor/cli.py`
+restored from `1a2fede` (read-only `git show`), everything else at the review
+base:
+
+----
+CRASH: hard exit at the bounded_path_commit call site
+wfc resume: refusing to overwrite existing compiled file: .wfc/governance/bp4-crash/work-item.yaml
+RESUME_EXIT=22
+COMMISSION_COMMITS=0
+STATUS_PORCELAIN='?? .wfc/governance/'
+----
+
+Exit 22 is `refused_prelaunch` -- the `getattr(error, "classification",
+"refused_prelaunch")` default in `cmd_resume`, because `CommissionError` is not
+a `LifecycleError` and carries no classification. Zero Commission commits
+exist, and the lifecycle cannot progress. The reproduction is therefore not
+vacuous: it genuinely fails against the code `H002` reviewed.
+
+=== Against the review base HEAD it holds
+
+Same driver, same crash point, unmodified `ade01b8` sources:
+
+----
+CRASH: hard exit at the bounded_path_commit call site
+CLASSIFICATION: awaiting_human
+RESUME_EXIT=10
+COMMISSION_COMMITS=1
+  cb9d106 feat(commission): commission bp4-crash for WI-BP4-CRASH
+STATUS_PORCELAIN=''
+----
+
+Exactly one Commission commit, the documented `awaiting_human` exit code 10,
+and a clean worktree. Acceptance case (6) now holds at the boundary that
+previously broke it.
+
+=== The fix does not weaken the invariant it relaxes
+
+`_materialize_commission` (`lifecycle.py:432-449`) replaces
+`compiled.write_to(repository, overwrite=False)` plus the separate request
+write. It is a faithful re-expression of
+`CompiledCommission.write_to` (`commissioning.py:655-663`) over
+`compiled.texts` plus the request leaf, with one relaxation: a destination that
+already exists with *byte-identical* content is a no-op instead of a refusal.
+Anything else raises `LifecycleError(classification="inconsistent")`.
+
+Three checks that the relaxation is safe:
+
+. *It is not reachable outside the crash window.* `_do_prelaunch`
+(`lifecycle.py:327-331`) refuses unless `observe_repository(...).clean`, and
+`GitFacts.clean` (`git_facts.py:45-46`) is false when there is any non-ignored
+untracked path. A fresh `wfc run` with a pre-planted `.wfc/governance/...`
+tree is refused at pre-launch with `refused_prelaunch` before materialization
+is ever entered. The relaxed path is reachable only on `resume`, where
+`prelaunch_passed` and `probe_passed` are already journaled -- i.e. precisely
+the crash window.
+. *Identical content changes nothing that gets committed.* The tolerated bytes
+are by definition the bytes the controller would otherwise have written, and
+the authorized Commission digest is re-checked first (`lifecycle.py:459-463`,
+`refused_drift`) so a drifted Commission never reaches materialization.
+. *Non-identical leftovers still refuse, and do not auto-clean.* Verified by
+crashing as above, then appending one comment line to an already-materialized
+leaf, then resuming:
++
+----
+TAMPERED=.wfc/governance/bp4-crash/components.yaml
+wfc resume: unexpected content already present at .wfc/governance/bp4-crash/components.yaml; refusing to overwrite
+RESUME_EXIT=18
+COMMISSION_COMMITS=0
+STATUS_PORCELAIN='?? .wfc/governance/'
+----
++
+Exit 18 is the documented `inconsistent` code, no commit is created, and the
+controller does not clean the tree -- consistent with the task's "never
+auto-cleaned" rule.
+
+=== The added regression test pins the right boundary
+
+`test_crash_between_materialize_and_bounded_path_commit_resume_commits_exactly_once`
+(`tests/unit/test_lifecycle_crash_matrix.py:224-252`) injects the failure by
+replacing `L.bounded_path_commit` and asserts exactly one Commission commit
+after `resume`. That is the same boundary the real-process driver used. It
+complements, and does not replace, the pre-existing
+`test_crash_after_probe_before_commit_...`, whose crash point sits one step
+earlier -- which is why the broken boundary was previously untested.
+
+== `F002`: resolved
+
+=== Dispatch behaviour measured at three revisions
+
+A real engine state root was produced with the `bp4` fake-engine fixture, then
+`frontdoor.cli:main` was driven with six spellings of the legacy option. "`Handler`"
+below is `OPERATOR` when the legacy operator JSON report was produced, and
+`LIFECYCLE-REJECTED` when the new lifecycle status parser rejected the
+argument.
+
+[cols="2,1,1,1"]
+|===
+|Spelling |`9ebd04d` (baseline) |`1a2fede` (`H001`) |`ade01b8` (base HEAD)
+
+|`--state-root <path>`
+|`0` / OPERATOR |`0` / OPERATOR |`0` / OPERATOR
+
+|`--state-root=<path>`
+|`0` / OPERATOR |`2` / LIFECYCLE-REJECTED |`0` / OPERATOR
+
+|`--state-roo <path>`
+|`0` / OPERATOR |`2` / LIFECYCLE-REJECTED |`2` / LIFECYCLE-REJECTED
+
+|`--state-ro <path>`
+|`0` / OPERATOR |`2` / LIFECYCLE-REJECTED |`2` / LIFECYCLE-REJECTED
+
+|`--state-ro=<path>`
+|`0` / OPERATOR |`2` / LIFECYCLE-REJECTED |`2` / LIFECYCLE-REJECTED
+
+|`--state <path>`
+|`0` / OPERATOR |`2` / LIFECYCLE-REJECTED |`2` / LIFECYCLE-REJECTED
+|===
+
+The reproduced violation -- the `--state-root=<path>` row -- is corrected: both
+standard spellings of the option named in acceptance case (19) again reach the
+legacy operator with exit 0 and the operator's JSON report, as at baseline. The
+guard (`cli.py:30-32`) now tests `arg == '--state-root' or
+arg.startswith('--state-root=')`, and
+`test_legacy_status_with_equals_state_root_still_reaches_the_operator`
+(`tests/unit/test_lifecycle_controller.py:532-550`) pins the previously
+uncovered spelling against a real state root rather than a stub.
+
+The remaining rows are argparse prefix-abbreviation spellings; they changed at
+`H001`, not at `H003`, and are recorded as a non-blocking observation below.
+
+=== `wfc status` with no `--state-root`, and the untouched neighbours
+
+The new lifecycle status is still dispatched for `status` without the option,
+and `init`, `plan`, `archive` and the bare-flag preflight are reached by
+unchanged branches of `cli.py`. The suite's
+`test_plan_still_runs_no_project_command_alongside_the_new_lifecycle_commands`
+still passes, so acceptance case (19)'s `wfc plan` clause is unaffected by the
+correction.
+
+== Agent-side validation, and its limits
+
+Agent-side results are exploratory. Coordinator-owned full task-check is the
+trusted evidence and is not replaced by anything in this section.
+
+The BP4a-relevant subset passes in full at the review base HEAD:
+
+[source,shell]
+----
+$ .venv/bin/python -m pytest --wfc-partial \
+    tests/unit/test_lifecycle_crash_matrix.py \
+    tests/unit/test_lifecycle_controller.py \
+    tests/unit/test_lifecycle_journal.py -q
+..........................................................               [100%]
+----
+
+58 tests, including the real `fork`/`kill -9` lock-inheritance tests and the
+full classification matrix. The architecture import-direction guard
+(`tests/architecture/test_package_boundaries.py`, 4 tests) also passes.
+
+The wider `tests/unit` plus `tests/architecture` run has pre-existing failures
+in this sandbox that are *agent-local environment limitations, not candidate
+defects*: `tests/unit/test_wfc_op.py` and
+`tests/architecture/test_offline_distribution.py` fail because `pip` cannot
+reach an index (`ERROR: Could not find a version that satisfies the requirement
+setuptools>=68 (from versions: none)`), and
+`tests/unit/test_claude_adapter_conformance.py` fails at
+`subprocess.Popen` with `ClaudeCliError: local pre-acceptance executable launch
+failure`. None of these modules imports `frontdoor.lifecycle` or
+`frontdoor.journal`, and all are outside the files this WorkItem touched. The
+suite also refuses to run as the required suite without `WFC_TEST_INPUTS` and
+`WFC_TEST_PROFILE`, which are not available here; every run above was an
+explicitly flagged `--wfc-partial` subset.
+
+== Non-blocking observations
+
+Recorded for the maintainer. Neither is proposed as a Finding and neither
+blocks acceptance.
+
+=== O1: argparse prefix abbreviations of `--state-root` no longer reach the operator
+
+As the table above shows, `wfc status --state-ro <path>` and the other
+unambiguous prefix abbreviations of `--state-root` were accepted by the legacy
+operator at baseline (argparse's `allow_abbrev` is on by default, including for
+the `status` subparser at `operator.py:280-281`) and now hit the new lifecycle
+status, which rejects them with a usage error and exit 2.
+
+Not raised as blocking, for three reasons. The failure is loud and inert -- a
+usage error, no lifecycle effect, nothing silently misdispatched. Acceptance
+case (19) names the option `--state-root`, whose two standard, guaranteed
+spellings both behave as at baseline after the correction; prefix abbreviation
+is an argparse convenience that is itself unstable under any future option
+addition. And the clean fix is to set `allow_abbrev=False` on the legacy
+parser, which is in `operator.py` -- explicitly withheld from this Commission;
+approximating argparse's abbreviation algorithm inside the `cli.py` guard would
+be worse than the problem. This is a maintainer design call, best taken
+together with BP7.
+
+=== O2: a non-UTF-8 leftover at a Commission destination escapes as a traceback
+
+`_materialize_commission` reads a pre-existing destination with
+`destination.read_text(encoding="utf-8")` (`lifecycle.py:442`). If that file is
+not valid UTF-8, the resulting `UnicodeDecodeError` is a `ValueError`, which
+`cmd_resume`'s `except (LifecycleError, CommissionError, GitPreflightError,
+JournalError, OSError)` does not catch. Reproduced by crashing at the
+materialization boundary, overwriting one materialized leaf with `b"\xff\xfe
+not utf-8 \x00"`, and resuming: a traceback instead of the documented
+`inconsistent` exit 18.
+
+The safety invariant still holds -- it refuses, creates no commit, dispatches
+no provider and mutates nothing -- so only the exit code and the message
+quality degrade, on a path that requires planting a non-UTF-8 file at an exact
+Commission destination inside the crash window. It is also not a class the
+correction invented: `_do_commit` already reads the cached request and config
+with `read_text(encoding="utf-8")` at `lifecycle.py:453-454` with the same
+exposure, present since `H001` and unflagged by the broad review. Wrapping the
+comparison read in `except (OSError, ValueError)` and raising
+`classification="inconsistent"` would close it.
+
+== Scope of this review
+
+This Hop verified the `H003` correction and that it did not disturb the
+invariants `H002` had reproduced -- the latter largely by showing that the
+touched surface is four files with pure-addition test diffs and no engine or
+Git-primitive change. A full fresh adversarial pass over the whole controller
+(engine boundary, every crash-matrix case against a mutation,
+launch-uncertainty rules, lock inheritance, BP4b independence) against the
+corrected HEAD is what the requested `renew_broad_review` route exists for and
+is not claimed here.
