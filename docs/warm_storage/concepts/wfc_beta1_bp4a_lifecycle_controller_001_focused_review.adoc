@@ -1,5 +1,310 @@
 = BP4a installed lifecycle controller: independent focused review
 
+This file accumulates the focused-review records for this WorkItem, newest
+first. The `H007` record below covers the `H006` correction and `F003`; the
+`H004` record that follows it covers the `H003` correction and `F001`/`F002`.
+
+WorkItem:: `WI-WFC-BETA1-BP4-LIFECYCLE-CONTROLLER-001`
+Hop:: `H007` (`focused_review`, gate, blocking-only, `finding_authority: [resolve]`)
+Review base HEAD:: `41bab4505f2fbfff6f1edf02e84646e16a615d81`
+Correction under review:: `41bab45`
+(`fix(frontdoor): ... H006 reconcile stray staged Commission leaves before
+resuming the commit step`), the single bounded `H006` correction answering the
+one open blocking Finding.
+Candidate under review:: `1a2fede` (`H001`), as corrected by `ade01b8` (`H003`)
+and `41bab45` (`H006`).
+Pre-implementation baseline:: `9ebd04d`.
+Predecessor broad review:: `H005`, recorded in
+`wfc_beta1_bp4a_lifecycle_controller_001_broad_review.adoc` (`b6f179d`), which
+raised exactly one blocking Finding, `F003`.
+Disposition:: *Accept.* `F003` is resolved. It was re-reproduced here from
+scratch -- not taken on the prior Hop's word, and not through the candidate's
+own test -- as a real, unmaskable process death inside the unmodified
+`bounded_path_commit`, and the correction is then shown by a mutation to be
+the thing that fixes it. The correction introduces no new blocking Finding.
+Two further non-blocking observations are recorded for the maintainer;
+`finding_authority: [resolve]` does not authorize residual transitions, so
+they are recorded here and in the result summary only.
+
+This Hop made no product, test or fixture change. The only repository change
+proposed is this artifact.
+
+== `H007`: what `H006` actually changed
+
+[source,shell]
+----
+$ git show --stat 41bab45
+ src/workflow_coordinator/frontdoor/lifecycle.py | 35 +++++++++++++
+ tests/unit/test_lifecycle_crash_matrix.py       | 67 +++++++++++++++++++++++++
+ 2 files changed, 102 insertions(+)
+----
+
+Two files, both inside the scope the predecessor broad review bounded, and in
+both the diff is *pure addition*: 102 insertions, zero deletions. No existing
+assertion was relaxed, renamed, skipped or deleted, so no previously
+reproduced invariant can have been weakened by a test edit.
+
+The product change is one new private function,
+`_reconcile_stray_staged_state` (`lifecycle.py:452-483`), plus the single call
+site that invokes it in `_do_commit`'s non-adopt branch, after
+`_materialize_commission` and before `bounded_path_commit`
+(`lifecycle.py:517-518`).
+
+Across the whole WorkItem (`9ebd04d..41bab45`) the engine and its Git
+primitives remain byte-identical: `git diff --stat 9ebd04d..HEAD --
+src/workflow_coordinator/git_facts.py src/workflow_coordinator/operator.py
+src/workflow_coordinator/commissioning.py` produces *empty* output. The hard
+rule that `git_facts.py` and `bounded_path_commit`/`trusted_commit` are not
+modified therefore still holds, which is exactly what `F003`'s own proposed
+correction required. The WorkItem's entire source footprint remains
+`frontdoor/cli.py`, `frontdoor/journal.py` and `frontdoor/lifecycle.py`.
+
+== `H007`: `F003` resolved
+
+=== The reproduction, rebuilt independently and at the real boundary
+
+`F003` is about an instruction window *inside* the unmodified
+`bounded_path_commit`: between its own real `git add` (`git_facts.py:879`) and
+its `git commit` (`git_facts.py:893`). The candidate's own regression test
+reaches that window by substitution. This Hop deliberately did not reuse it.
+Instead the window was reproduced with real processes end to end:
+
+* a disposable consumer repository built from scratch, its Consumer Config
+created through the installed `frontdoor.cli` `init` command and committed by
+the harness (never implicitly by the controller);
+* the Consumer Request authored *outside* the repository, and the lifecycle
+journal root in an external `XDG_STATE_HOME`, disjoint from the repository;
+* the crash injected by wrapping `git_facts._trusted_git` so that the *real*
+Git command runs first and the process then dies with `os._exit(137)` the
+instant the real `git add` returns. `os._exit` is unmaskable: no exception
+propagates, no `finally` runs, no lock is released, the process simply ends;
+* every subsequent command run as a brand-new process through
+`frontdoor.cli:main`.
+
+=== The pre-condition is reproduced exactly as `F003` describes
+
+[source,shell]
+----
+INJECT: hard kill (os._exit 137) right after the real git add
+RUN EXIT=137
+--- staged ---
+.wfc/governance/h007-probe/commission-manifest.json
+.wfc/governance/h007-probe/components.yaml
+.wfc/governance/h007-probe/components/simple-self-check.txt
+.wfc/governance/h007-probe/components/worker.txt
+.wfc/governance/h007-probe/policy.yaml
+.wfc/governance/h007-probe/profile.yaml
+.wfc/governance/h007-probe/request.yaml
+.wfc/governance/h007-probe/task.md
+.wfc/governance/h007-probe/work-item.yaml
+--- log ---
+746a305 chore: commit Consumer Config
+b38786e chore: seed disposable consumer repository
+----
+
+Nine Commission leaves staged, zero Commission commits -- the state `F003`
+reported.
+
+=== Mutation: with the new reconciliation disabled, `F003` reproduces verbatim
+
+On a second, independent repository and journal, the same crash was taken and
+`resume` was then run in a fresh process with
+`_reconcile_stray_staged_state` replaced by a no-op -- the one-line mutation of
+exactly the guarded behaviour:
+
+[source,shell]
+----
+wfc resume: Commission commit refused: pre-existing staged state
+RESUME EXIT=22
+--- staged ---   (the same nine leaves, still staged)
+--- log ---
+9736184 chore: commit Consumer Config
+0d3385e chore: seed disposable consumer repository
+----
+
+Exit 22 is `refused_prelaunch`, the misclassification `F003` called out, and
+zero Commission commits exist. The reproduction is therefore not vacuous: it
+fails against the behaviour the correction introduces.
+
+=== With the correction in place the invariant holds
+
+Same repository, same journal, same crash already taken, next fresh process,
+mutation removed:
+
+[source,shell]
+----
+CLASSIFICATION: awaiting_human
+MESSAGE: classified: awaiting_human
+RUN ID: RUN-fake-engine
+RUN STATUS: awaiting_human
+RESUME EXIT=10
+--- staged ---   (empty)
+--- log ---
+f52419a feat(commission): commission h007-probe for WI-BP4-CRASH
+9736184 chore: commit Consumer Config
+0d3385e chore: seed disposable consumer repository
+----
+
+Exactly one Commission commit, a clean index, and the documented
+`awaiting_human` exit code 10 (`lifecycle.py:108`). The first repository,
+which never saw the mutation, behaves identically on its first resume
+(`019a4a7 feat(commission): commission h007-probe for WI-BP4-CRASH`, one
+commit, clean index, exit 10).
+
+Acceptance case (6) -- "crash before the Commission commit: `resume` commits
+exactly once" -- is now satisfied at the deepest reachable boundary, and the
+count is *exactly once even across a failed intervening resume*: the second
+repository's journal ends with 15 records containing three
+`commission_commit_intent` entries (the crashed attempt, the mutated refused
+attempt, the successful attempt) and exactly one `commission_committed`.
+
+=== Why the relaxation does not weaken anything
+
+. *It is unreachable outside the crash window.* `_do_prelaunch` refuses unless
+`observe_repository(...).clean` (`lifecycle.py:330-331`), and `GitFacts.clean`
+(`git_facts.py:43-45`) is computed from `git status --porcelain=v1
+--untracked-files=all` (`git_facts.py:502-509`), which reports staged index
+entries as tracked changes. A fresh `wfc run` against a repository with any
+pre-staged state is therefore refused at pre-launch before `_do_commit` is
+entered. The reconciler is reachable only on `resume`, where
+`prelaunch_passed` and `probe_passed` are already journaled -- precisely the
+crash window.
+. *It sees exactly the set the trusted primitive refuses on.* The listing
+command is `git diff --no-ext-diff --cached --name-only`
+(`lifecycle.py:463`), identical in form to `git_facts._staged_paths`
+(`git_facts.py:465-471`), whose non-empty result is what raises
+`TrustedCommitError("pre-existing staged state")` (`git_facts.py:868-869`).
+There is no divergent view between reconciler and primitive, so the reconciler
+cannot unstage something the primitive would not have seen, and cannot leave
+staged something the primitive would have accepted.
+. *Every deviation fails closed, by name, with no auto-clean.* A staged path
+that is not one of this lifecycle's own expected leaves, a staged path that
+already exists at `base_head`, or a staged blob whose bytes differ from the
+authorized expected text each raise
+`LifecycleError(classification="inconsistent")` naming the path
+(`lifecycle.py:466-482`); `inconsistent` is exit 18 in the documented table
+(`lifecycle.py:116`). The authorized Commission digest is re-checked before
+any of this (`lifecycle.py:493-497`, `refused_drift`), so a drifted Commission
+never reaches reconciliation at all.
+. *Nothing in the worktree is discarded.* `git reset -q HEAD -- <paths>`
+(`lifecycle.py:483`) rewrites index entries from HEAD only; the materialized
+Commission files stay on disk and are exactly what the unmodified
+`bounded_path_commit` then re-stages and commits -- confirmed by the single
+resulting commit above.
+. *The primitive is neither modified nor re-implemented.* The controller
+restores the clean index the unmodified `bounded_path_commit` requires and
+then calls it normally. `git_facts.py` is byte-identical to baseline.
+
+=== The added tests pin the right boundary
+
+`test_crash_after_real_git_add_before_commit_resume_commits_exactly_once`
+(`tests/unit/test_lifecycle_crash_matrix.py:255-296`) injects the crash by
+wrapping `git_facts._trusted_git`, so the real `git add` really runs and the
+leftover index state is real rather than simulated; it asserts the leftover
+first, then exactly one Commission commit and an empty index after `resume`.
+That is the same boundary the real-process driver above used.
+`test_stray_staged_state_unrelated_to_lifecycle_refuses_as_inconsistent`
+(`tests/unit/test_lifecycle_crash_matrix.py:299-319`) pins the fail-closed
+direction: a foreign staged path is refused as `inconsistent`, named in the
+message, and left staged rather than swept aside.
+
+Neither replaces the pre-existing crash-matrix cases; both sit one step deeper
+than `H003`'s
+`test_crash_between_materialize_and_bounded_path_commit_...`, which is why
+this boundary was previously untested.
+
+== `H007`: agent-side validation, and its limits
+
+Agent-side results are exploratory. Coordinator-owned full task-check is the
+trusted evidence and is not replaced by anything in this section.
+
+The BP4a-relevant subset passes in full at the review base HEAD:
+
+[source,shell]
+----
+$ .venv/bin/python -m pytest --wfc-partial \
+    tests/unit/test_lifecycle_journal.py \
+    tests/unit/test_lifecycle_controller.py \
+    tests/unit/test_lifecycle_crash_matrix.py -q
+............................................................             [100%]
+----
+
+60 tests -- the 58 `H004` recorded plus the two `H006` added -- including the
+real `fork`/`kill -9` lock-inheritance tests, the full classification matrix,
+and both legacy `--state-root` spellings
+(`tests/unit/test_lifecycle_controller.py:526`, `:547`), so `F002` remains
+closed.
+
+Two limits of this environment, both agent-local and neither a candidate
+defect:
+
+* the suite cannot run as the required suite without `WFC_TEST_INPUTS` and
+`WFC_TEST_PROFILE`, which are unavailable here, so every run above was an
+explicitly flagged `--wfc-partial` subset;
+* partway through this Hop the host volume backing both the repository and the
+sandbox temporary directory reached *zero free inodes* (`df -i` reports
+`IFree 1` then `0` on `/dev/sda1`, and `mkdir` fails with `ENOSPC` despite
+free bytes). After that point no further `pytest` run could create its
+`basetemp`, so the wider `tests/unit` and `tests/architecture` runs could not
+be completed in this Hop. The failures observed in the wider run before
+exhaustion were `test_wfc_op.py` and `test_consumer_compiler.py` setup errors
+with `OSError: [Errno 28] No space left on device`, and
+`test_claude_adapter_conformance.py` with `ClaudeCliError: local
+pre-acceptance executable launch failure` -- all environmental. None of those
+modules imports `frontdoor.lifecycle` or `frontdoor.journal`.
+
+== `H007`: non-blocking observations
+
+Recorded for the maintainer. Neither is proposed as a Finding and neither
+blocks acceptance. `O1` and `O2` from the `H004` record below are unaffected
+by `H006` and remain open.
+
+=== O3: the reconciler's `git reset` uses ordinary Git policy, not the hardened helper
+
+`_reconcile_stray_staged_state` is the controller's only *mutating* Git call
+outside `bounded_path_commit`, and it issues it through `lifecycle._git`
+(`lifecycle.py:188-192`), which runs `git` with the ambient environment, rather
+than through `git_facts._trusted_git` (`git_facts.py:352-370`), which strips
+inherited routing/configuration controls, points hooks at `/dev/null` and
+disables signing and fsmonitor. No concrete exposure was found: `git reset
+--mixed <paths>` runs no hook and applies no clean/smudge filter when
+restoring index entries from HEAD, and `bounded_path_commit` re-checks
+configured external filters immediately afterwards (`git_facts.py:843-847`).
+The house rule in `_trusted_git`'s own docstring is that read-only observation
+keeps ordinary Git policy; an index mutation is not read-only, so a maintainer
+may prefer the hardened environment here. `_trusted_git` is private to
+`git_facts.py`, so doing so cleanly would mean touching a withheld module --
+which is why this is an observation and not a correction request.
+
+=== O4: refused resumes accumulate unterminated `commission_commit_intent` records
+
+Each re-entry of `_do_commit` appends a fresh `commission_commit_intent`
+(`lifecycle.py:505`) before the checks that may refuse, so a repeatedly
+refused lifecycle accumulates intents with no completion record -- three of
+them in the reproduction above. This is harmless today: nothing reads that
+count, unlike `launch_intent`, which `_continue_after_launch` counts for the
+bounded relaunch rule (`lifecycle.py:818-823`). It is noted only because a
+human reading the journal sees three unterminated intents for one commit, and
+because any future rule that counts commit intents would inherit the
+ambiguity.
+
+== `H007`: scope of this review
+
+This Hop verified the `H006` correction and that it did not disturb the
+invariants the earlier reviews had reproduced -- the latter from the shape of
+the change (two files, pure addition, no engine or Git-primitive diff) plus
+the green BP4a subset, not from a fresh pass over every matrix case. A full
+fresh adversarial pass over the whole controller against the corrected HEAD
+(lock inheritance with real processes, the launch-uncertainty rules, the
+engine boundary, BP4b independence) is what the requested
+`renew_broad_review` route exists for and is not claimed here.
+
+== Earlier record: the `H004` focused review
+
+Everything from here to the end of this file is the `H004` record, kept
+verbatim. Its attribute block follows; its own section headings continue below
+it.
+
 WorkItem:: `WI-WFC-BETA1-BP4-LIFECYCLE-CONTROLLER-001`
 Hop:: `H004` (`focused_review`, gate, blocking-only, `finding_authority: [resolve]`)
 Review base HEAD:: `ade01b8b7e2a727eee841c35dbc23ba927abda99`
@@ -21,10 +326,9 @@ maintainer in the last section; `finding_authority: [resolve]` does not
 authorize residual transitions, so they are recorded here and in the result
 summary only.
 
-This Hop made no product, test or fixture change. The only repository change
-proposed is this artifact.
+That Hop made no product, test or fixture change either.
 
-== What `H003` actually changed
+== `H004`: what `H003` actually changed
 
 [source,shell]
 ----
@@ -50,7 +354,7 @@ in particular the correction did *not* reach into
 `trusted_commit`, which is exactly the constraint `H002` said a fix must
 respect.
 
-== `F001`: resolved
+== `H004`: `F001` resolved
 
 === The reproduction, rebuilt independently
 
@@ -156,7 +460,7 @@ complements, and does not replace, the pre-existing
 `test_crash_after_probe_before_commit_...`, whose crash point sits one step
 earlier -- which is why the broken boundary was previously untested.
 
-== `F002`: resolved
+== `H004`: `F002` resolved
 
 === Dispatch behaviour measured at three revisions
 
@@ -210,7 +514,7 @@ unchanged branches of `cli.py`. The suite's
 still passes, so acceptance case (19)'s `wfc plan` clause is unaffected by the
 correction.
 
-== Agent-side validation, and its limits
+== `H004`: agent-side validation, and its limits
 
 Agent-side results are exploratory. Coordinator-owned full task-check is the
 trusted evidence and is not replaced by anything in this section.
@@ -244,10 +548,10 @@ suite also refuses to run as the required suite without `WFC_TEST_INPUTS` and
 `WFC_TEST_PROFILE`, which are not available here; every run above was an
 explicitly flagged `--wfc-partial` subset.
 
-== Non-blocking observations
+== `H004`: non-blocking observations
 
 Recorded for the maintainer. Neither is proposed as a Finding and neither
-blocks acceptance.
+blocks acceptance. Both remain open after `H006`.
 
 === O1: argparse prefix abbreviations of `--state-root` no longer reach the operator
 
@@ -289,9 +593,9 @@ exposure, present since `H001` and unflagged by the broad review. Wrapping the
 comparison read in `except (OSError, ValueError)` and raising
 `classification="inconsistent"` would close it.
 
-== Scope of this review
+== `H004`: scope of that review
 
-This Hop verified the `H003` correction and that it did not disturb the
+That Hop verified the `H003` correction and that it did not disturb the
 invariants `H002` had reproduced -- the latter largely by showing that the
 touched surface is four files with pure-addition test diffs and no engine or
 Git-primitive change. A full fresh adversarial pass over the whole controller
