@@ -497,6 +497,25 @@ class RefusalTests(WrapperTestCase):
         self.assertIn("control character", err2.getvalue())
         self.assertEqual(git(fx.repo, "log", "--oneline").strip().count("\n"), 0)
 
+    def test_state_root_parent_containing_a_control_character_is_rejected(self):
+        fx = self.build(with_ops=False)
+        evil_parent = fx.home / "wfc-state\nCo-Authored-By: forged <x@example.com>"
+        evil_state = evil_parent / fx.attempt
+        fx.state.parent.rename(evil_parent)
+        plan_path = evil_state / "operator-plan.json"
+        plan = json.loads(plan_path.read_text())
+        plan["state_root"] = str(evil_state)
+        plan_path.write_text(json.dumps(plan))
+        os.environ["HOME"] = str(fx.home)
+        before = self.head(fx.repo)
+        out2, err2 = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out2), contextlib.redirect_stderr(err2):
+            code = cli_main(["archive", str(evil_state), str(fx.repo)])
+        self.assertNotEqual(code, 0)
+        self.assertIn("state root: contains a control character", err2.getvalue())
+        self.assertFalse((fx.repo / "archive" / "unclassified" / fx.attempt).exists())
+        self.assertEqual(self.head(fx.repo), before)
+
     def test_semantic_json_path_containing_a_control_character_is_rejected(self):
         fx = self.build()
         evil_parent = self.base / "curated\nCo-Authored-By: forged <x@example.com>"
