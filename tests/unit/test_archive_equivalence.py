@@ -1,0 +1,155 @@
+"""Old-vs-new equivalence on a real retained Run (BP5 acceptance).
+
+Archives the same real retained Run (``RUN-6538d0568bce47a899dab7677ea9c2e1``,
+Evidence repository HEAD ``bc65ff777bb75602792e416519a7a3025d723c67``) with
+both the established old wrapper/archiver (frozen, hash-verified, at
+``tests/fixtures/bp5/legacy/``) and the new installed ``frontdoor.archive``
+module, into two disposable Git Evidence repositories, and compares the
+resulting ``manifest.json`` byte for byte except ``archived_at`` -- exactly
+the second-pass review's BP5 equivalence test.
+
+Sandbox note, reported rather than hidden: the Run's actual original state
+root and OPS directory live under ``/home/stefan/wfc-state`` and
+``/home/stefan/wfc-ops``, which this agent's sandbox cannot read. The already
+-archived, hash-verified copy of that same Run's files is committed at
+``tests/fixtures/bp5/real_run/`` (provenance and digests in
+``tests/fixtures/bp5/PROVENANCE.txt``, matching both
+``build/wfc/bp5-evidence-inputs/PROVENANCE.txt`` and the archived
+``manifest.json``'s own ``copied_files`` digests). This test reconstructs a
+disposable working copy of the original state root/OPS directory from that
+archived copy -- ``real_run/run/`` and ``real_run/ops/`` mirror the archiver's
+own ``run/``/``ops/`` destination layout one for one -- and relocates it under
+a throwaway ``HOME``. The only fields edited are the two that literally
+encode that relocated location (``operator-plan.json``'s ``state_root``/
+``execution_bindings_source`` and ``preparation-pins.txt``'s ``state_root=``/
+``execution_bindings=``); every other recorded fact, including the Run's own
+identity and every other pin, is left exactly as retained. Both archivers
+read the identical resulting state root and OPS directory, so the comparison
+is not weakened by the relocation.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import unittest
+from pathlib import Path
+
+from workflow_coordinator.frontdoor import archive as ar
+
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "bp5"
+REAL_RUN = FIXTURES / "real_run"
+LEGACY = FIXTURES / "legacy"
+ATTEMPT_ID = "wfc-beta1-bp3-remediation-review-001-20261119-01"
+REAL_GIT = shutil.which("git")
+
+
+def git(repository: Path, *args: str) -> str:
+    return subprocess.run(
+        [REAL_GIT, "-C", str(repository), *args], capture_output=True, text=True, check=True,
+    ).stdout
+
+
+def _relocate_real_run(base: Path) -> tuple[Path, Path, Path]:
+    """A disposable, relocated working copy of the archived Run's own state
+    root and OPS directory, under a throwaway HOME. Returns
+    ``(home, state_root, ops_dir)``."""
+
+    home = base / "home"
+    state_root = home / "wfc-state" / ATTEMPT_ID
+    ops_dir = home / "wfc-ops" / ATTEMPT_ID
+    shutil.copytree(REAL_RUN / "run", state_root)
+    shutil.copytree(REAL_RUN / "ops", ops_dir)
+
+    plan_path = state_root / "operator-plan.json"
+    plan = json.loads(plan_path.read_text())
+    assert plan["state_root"].startswith("/home/stefan/wfc-state/")
+    assert plan["execution_bindings_source"].startswith("/home/stefan/wfc-ops/")
+    plan["state_root"] = str(state_root)
+    plan["execution_bindings_source"] = str(ops_dir / "execution-bindings.yaml")
+    plan_path.write_text(json.dumps(plan))
+
+    pins_path = ops_dir / "preparation-pins.txt"
+    lines = pins_path.read_text().splitlines()
+    rewritten = []
+    for line in lines:
+        if line.startswith("state_root="):
+            rewritten.append(f"state_root={state_root}")
+        elif line.startswith("execution_bindings="):
+            rewritten.append(f"execution_bindings={ops_dir / 'execution-bindings.yaml'}")
+        else:
+            rewritten.append(line)
+    pins_path.write_text("\n".join(rewritten) + "\n")
+
+    return home, state_root, ops_dir
+
+
+def _init_evidence_repo(repo: Path, *, with_legacy_archiver: bool) -> None:
+    (repo / "archive").mkdir(parents=True)
+    (repo / "archive" / ".gitkeep").write_text("")
+    if with_legacy_archiver:
+        (repo / "scripts").mkdir()
+        shutil.copy2(LEGACY / "archive_run.py", repo / "scripts" / "archive_run.py")
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.name", "Equivalence Fixture")
+    git(repo, "config", "user.email", "equivalence@example.invalid")
+    git(repo, "config", "commit.gpgsign", "false")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "fixture baseline")
+
+
+def _strip_archived_at(manifest: dict) -> dict:
+    return {k: v for k, v in manifest.items() if k != "archived_at"}
+
+
+class RealRunEquivalenceTests(unittest.TestCase):
+    def setUp(self):
+        for path, expected in (
+            (REAL_RUN / "run" / "operator-plan.json", "80803321703b1c08e65742443c98fd6cf9f6e1e78be336244a03e15f95191f82"),
+            (LEGACY / "archive_run.py", "31621e72ac8811bb74e528401610c10c7bf5b6e27756d53bca617235ec1acf26"),
+            (LEGACY / "wfc-archive-run", "21f602b94771b3f3ee1955074078c1ee904e6a20bf0fe846194b067524482683"),
+        ):
+            import hashlib
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            self.assertEqual(actual, expected, f"provenance digest mismatch for {path}")
+
+    def test_old_and_new_archivers_produce_identical_manifests_for_the_same_real_run(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            home, state_root, ops_dir = _relocate_real_run(base)
+
+            repo_old = base / "evidence-old"
+            repo_new = base / "evidence-new"
+            _init_evidence_repo(repo_old, with_legacy_archiver=True)
+            _init_evidence_repo(repo_new, with_legacy_archiver=False)
+
+            wrapper = LEGACY / "wfc-archive-run"
+            env = {**os.environ, "HOME": str(home)}
+            proc = subprocess.run(
+                [str(wrapper), str(state_root), str(repo_old)],
+                capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(proc.returncode, 0, f"old wrapper failed:\n{proc.stdout}\n{proc.stderr}")
+
+            report = ar.archive_run(state_root=state_root, evidence_repo=repo_new, home=home)
+            self.assertEqual(report.outcome, "archived")
+
+            dest_old = repo_old / "archive" / "unclassified" / ATTEMPT_ID
+            dest_new = repo_new / "archive" / "unclassified" / ATTEMPT_ID
+            manifest_old = json.loads((dest_old / "manifest.json").read_text())
+            manifest_new = json.loads((dest_new / "manifest.json").read_text())
+
+            self.assertNotEqual(manifest_old["archived_at"], None)
+            self.assertNotEqual(manifest_new["archived_at"], None)
+            self.assertEqual(_strip_archived_at(manifest_old), _strip_archived_at(manifest_new))
+
+            # Exactly one commit on each side, touching only its own attempt directory.
+            self.assertEqual(git(repo_old, "rev-list", "--count", "HEAD").strip(), "2")
+            self.assertEqual(git(repo_new, "rev-list", "--count", "HEAD").strip(), "2")
+
+
+if __name__ == "__main__":
+    unittest.main()

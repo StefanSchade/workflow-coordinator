@@ -1,0 +1,517 @@
+#!/usr/bin/env bash
+#
+# wfc-archive-run -- deterministic operator wrapper around scripts/archive_run.py.
+#
+#   wfc-archive-run <state-root> <evidence-repo> [--semantic-json PATH] [--dry-run]
+#
+# This wrapper contains no copying, containment, hashing, manifest or
+# fact-extraction logic of its own. scripts/archive_run.py in the supplied
+# evidence repository remains the single implementation of all of that. The
+# wrapper only derives the archiver's arguments from authoritative Run state,
+# checks preconditions, runs the archiver (plan first, then for real),
+# validates the manifest it wrote, and commits exactly the new archive
+# directory locally.
+#
+# It never writes to the state root or the OPS directory, never touches
+# Runtime, never edits project_memory/run_ledger.adoc, and never pushes.
+
+set -euo pipefail
+
+PROG=${0##*/}
+
+die() {
+	printf '%s: %s\n' "$PROG" "$*" >&2
+	exit 1
+}
+
+usage() {
+	cat <<'USAGE'
+usage: wfc-archive-run <state-root> <evidence-repo> [options]
+
+Archives a completed WFC Run's evidence into the evidence repository and makes
+one local commit. The two positional arguments are sufficient for the normal
+case; everything else is derived from authoritative Run state.
+
+  <state-root>     WFC Run state directory, e.g. ~/wfc-state/<attempt-id>
+  <evidence-repo>  a checkout of workflow-coordinator-run-evidence
+
+options:
+  --semantic-json PATH  curated semantic annotation, passed verbatim to
+                        scripts/archive_run.py. When it carries both a
+                        "domain" and a "workstream", the archive is filed
+                        under archive/<domain>/<workstream>/<attempt-id>.
+  --dry-run             plan only: write nothing, commit nothing.
+  -h, --help            this text.
+
+Without --semantic-json the Run is filed under archive/unclassified/<attempt-id>.
+The wrapper never infers a semantic classification, and never pushes.
+USAGE
+}
+
+# ----------------------------------------------------------------- arguments
+
+semantic_arg=
+dry_run=0
+positional=()
+while (($#)); do
+	case $1 in
+	--dry-run)
+		dry_run=1
+		shift
+		;;
+	--semantic-json)
+		(($# >= 2)) || die "--semantic-json requires a PATH"
+		semantic_arg=$2
+		shift 2
+		;;
+	--semantic-json=*)
+		semantic_arg=${1#--semantic-json=}
+		shift
+		;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	--)
+		shift
+		while (($#)); do
+			positional+=("$1")
+			shift
+		done
+		;;
+	-*) die "unknown option: $1 (try --help)" ;;
+	*)
+		positional+=("$1")
+		shift
+		;;
+	esac
+done
+
+if ((${#positional[@]} != 2)); then
+	usage >&2
+	die "expected exactly 2 positional arguments (state-root, evidence-repo), got ${#positional[@]}"
+fi
+
+# ------------------------------------------------------------ path resolution
+
+# Resolve a directory to a physical absolute path without depending on the
+# caller's working directory or on realpath(1).
+resolve_dir() { (cd -- "$1" >/dev/null 2>&1 && pwd -P); }
+
+resolve_file() {
+	local dir base resolved
+	dir=$(dirname -- "$1")
+	base=$(basename -- "$1")
+	resolved=$(resolve_dir "$dir") || return 1
+	[[ -f $resolved/$base ]] || return 1
+	printf '%s\n' "$resolved/$base"
+}
+
+state_root=$(resolve_dir "${positional[0]}") ||
+	die "state root is not a directory: ${positional[0]}"
+repo=$(resolve_dir "${positional[1]}") ||
+	die "evidence repository is not a directory: ${positional[1]}"
+
+case $state_root in
+*[[:cntrl:]]*) die "refusing state root: contains a control character" ;;
+esac
+
+attempt_id=${state_root##*/}
+[[ -n $attempt_id ]] || die "cannot derive an attempt id from state root: $state_root"
+case $attempt_id in
+. | .. | -*) die "refusing implausible attempt id derived from state root: $attempt_id" ;;
+*[[:cntrl:]]*) die "refusing attempt id derived from state root: contains a control character" ;;
+esac
+
+archiver=$repo/scripts/archive_run.py
+[[ -f $archiver ]] ||
+	die "not a WFC evidence repository (no scripts/archive_run.py): $repo"
+
+repo_top=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) ||
+	die "not a git repository: $repo"
+repo_top=$(resolve_dir "$repo_top")
+[[ $repo_top == "$repo" ]] ||
+	die "evidence repository path is not the repository root (root is $repo_top): $repo"
+
+semantic=
+if [[ -n $semantic_arg ]]; then
+	semantic=$(resolve_file "$semantic_arg") ||
+		die "--semantic-json is not a readable file: $semantic_arg"
+	case $semantic in
+	*[[:cntrl:]]*) die "refusing --semantic-json path: contains a control character" ;;
+	esac
+fi
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/wfc-archive-run.XXXXXX")
+trap 'rm -rf -- "$tmp"' EXIT
+
+# ----------------------------------------------------------------- JSON probes
+
+# All JSON reading lives in this one helper. It reads authoritative Run state
+# and the manifest the archiver wrote, and never writes anything. Refusals exit
+# non-zero with an explanation, which run_probe turns into a wrapper failure.
+probe() {
+	python3 - "$@" <<'PYEOF'
+import json, os, sys
+from pathlib import Path
+
+mode = sys.argv[1]
+
+
+def fail(msg):
+    sys.stderr.write("wfc-archive-run: " + msg + "\n")
+    raise SystemExit(1)
+
+
+def emit(key, value):
+    if value is None:
+        return
+    text = str(value).replace("\t", " ").replace("\n", " ").replace("\r", " ")
+    sys.stdout.write(f"{key}\t{text}\n")
+
+
+def load(path):
+    try:
+        return json.loads(Path(path).read_text())
+    except Exception:
+        return None
+
+
+def norm(path):
+    try:
+        return Path(path).resolve()
+    except Exception:
+        return Path(os.path.normpath(str(path)))
+
+
+def pick(key, *sources):
+    for src in sources:
+        value = src.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+if mode == "facts":
+    state = Path(sys.argv[2])
+    summary = load(state / "operator-summary.json") or {}
+    plan = load(state / "operator-plan.json") or {}
+    assoc = load(state / "checkout-association.json") or {}
+    run = {}
+    checkouts = state / "checkouts"
+    if checkouts.is_dir():
+        for directory in sorted(p for p in checkouts.iterdir() if p.is_dir()):
+            candidate = load(directory / "run.json")
+            if candidate:
+                run = candidate
+                break
+
+    plan_state_root = pick("state_root", plan)
+    if plan_state_root and norm(plan_state_root) != norm(state):
+        fail(f"state root {state} disagrees with the Run's own operator-plan.json "
+             f"state_root ({plan_state_root}); refusing to archive a mismatched state root")
+
+    def agree(key, *labeled_sources):
+        # First non-empty value for `key` across labeled_sources ((label,
+        # dict) pairs, in priority order). Refuses outright when two
+        # sources that each carry their own non-empty value for `key`
+        # disagree, instead of silently picking whichever is checked
+        # first -- a Run whose own authoritative state disagrees with
+        # itself is never archived as if it were coherent.
+        found = [(label, source[key].strip()) for label, source in labeled_sources
+                 if isinstance(source.get(key), str) and source.get(key).strip()]
+        distinct = sorted({value for _, value in found})
+        if len(distinct) > 1:
+            detail = ", ".join(f"{label}={value!r}" for label, value in found)
+            fail(f"{key} disagrees between this Run's own authoritative state "
+                 f"({detail}); refusing to archive a Run whose own state "
+                 f"disagrees with itself")
+        return found[0][1] if found else None
+
+    emit("run_id", agree("run_id",
+                          ("operator-summary.json", summary),
+                          ("operator-plan.json", plan),
+                          ("checkouts/*/run.json", run)))
+    emit("work_item_id", agree("work_item_id",
+                                ("operator-summary.json", summary),
+                                ("operator-plan.json", plan),
+                                ("checkouts/*/run.json", run)))
+    emit("run_status", pick("run_status", summary) or pick("status", run))
+    emit("checkout_id", agree("checkout_id",
+                               ("operator-summary.json", summary),
+                               ("checkout-association.json", assoc)))
+
+    repository = pick("repository", plan)
+    canonical_path = pick("canonical_path", assoc)
+    if repository and canonical_path and repository != canonical_path:
+        fail(f"repository disagrees between operator-plan.json ({repository!r}) and "
+             f"checkout-association.json canonical_path ({canonical_path!r}); refusing "
+             f"to archive a Run whose own state disagrees with itself")
+    emit("repository", repository or canonical_path)
+
+elif mode == "ops":
+    state, candidate, attempt_id = Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+    plan = load(state / "operator-plan.json") or {}
+    bindings = pick("execution_bindings_source", plan)
+    recorded = Path(bindings).parent if bindings else None
+
+    if not candidate.is_dir():
+        if recorded is not None and recorded.is_dir():
+            fail(f"default OPS directory {candidate} is absent, but this Run's preparation "
+                 f"records OPS evidence at {recorded}; refusing to archive without it")
+        emit("ops_absent", candidate)
+        raise SystemExit(0)
+
+    if recorded is not None and norm(recorded) != norm(candidate):
+        fail(f"OPS directory {candidate} is not the one recorded in this Run's preparation "
+             f"({recorded}); refusing to archive incoherent OPS evidence")
+
+    pins = candidate / "preparation-pins.txt"
+    if pins.is_file():
+        # A coherence check on two keys only. The archiver stays the single
+        # implementation of pin extraction into the manifest; reading them here
+        # by import would mean executing archive_run.py just to compare strings.
+        values = {}
+        for line in pins.read_text(errors="replace").splitlines():
+            key, sep, value = line.strip().partition("=")
+            if sep and key.isidentifier():
+                values.setdefault(key, value.strip())
+        pinned_attempt = values.get("attempt_id")
+        if pinned_attempt and pinned_attempt != attempt_id:
+            fail(f"OPS directory {candidate} was prepared for attempt {pinned_attempt}, "
+                 f"not {attempt_id}; refusing to archive incoherent OPS evidence")
+        pinned_state = values.get("state_root")
+        if pinned_state and norm(pinned_state) != norm(state):
+            fail(f"OPS directory {candidate} was prepared for state root {pinned_state}, "
+                 f"not {state}; refusing to archive incoherent OPS evidence")
+    emit("ops_dir", candidate)
+
+elif mode == "semantic":
+    path = Path(sys.argv[2])
+    try:
+        payload = json.loads(path.read_text())
+    except Exception as exc:
+        fail(f"--semantic-json is not valid JSON: {path}: {exc}")
+    if not isinstance(payload, dict):
+        fail(f"--semantic-json must contain a JSON object: {path}")
+    domain, workstream = payload.get("domain"), payload.get("workstream")
+    present = [n for n, v in (("domain", domain), ("workstream", workstream)) if v is not None]
+    if not present:
+        raise SystemExit(0)
+    if len(present) != 2:
+        fail(f'--semantic-json supplies "{present[0]}" without its counterpart; supply both '
+             '"domain" and "workstream" to file the Run under an existing taxonomy entry, '
+             "or neither to file it under archive/unclassified/")
+
+    def segment(name, value):
+        if not isinstance(value, str) or not value.strip():
+            fail(f'--semantic-json "{name}" must be a non-empty string')
+        value = value.strip()
+        if value in (".", "..") or not all(c.isalnum() or c in "._-" for c in value):
+            fail(f'--semantic-json "{name}" is not usable as one path segment: {value!r}')
+        return value
+
+    emit("domain", segment("domain", domain))
+    emit("workstream", segment("workstream", workstream))
+
+elif mode == "plan-count":
+    payload = load(sys.argv[2])
+    if not isinstance(payload, dict) or not isinstance(payload.get("would_copy"), list):
+        fail("archive_run.py --dry-run did not report a would_copy plan")
+    emit("planned", len(payload["would_copy"]))
+
+elif mode == "verify":
+    dest, attempt_id, stdout_path = Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+    manifest_path = dest / "manifest.json"
+    if not manifest_path.is_file():
+        fail(f"archive_run.py wrote no manifest at {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except Exception as exc:
+        fail(f"archived manifest does not parse: {manifest_path}: {exc}")
+    if manifest.get("attempt_id") != attempt_id:
+        fail(f"archived manifest attempt_id {manifest.get('attempt_id')!r} != {attempt_id!r}")
+    copied = manifest.get("copied_files")
+    if not isinstance(copied, list) or not copied:
+        fail(f"archived manifest lists no copied files: {manifest_path}")
+    for entry in copied:
+        rel = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(rel, str) or not (dest / rel).is_file():
+            fail(f"archived manifest lists a file that is not present: {rel!r}")
+    reported = load(stdout_path) or {}
+    if reported.get("files_copied") != len(copied):
+        fail(f"archive_run.py reported {reported.get('files_copied')!r} copied files "
+             f"but the manifest lists {len(copied)}")
+    emit("files", len(copied))
+
+    # The commit message and human-readable report must describe exactly
+    # what this manifest records, never a value a different, earlier
+    # algorithm guessed from raw state before the archive existed.
+    # Re-derive the identity fields archive_run.py itself tracks from the
+    # manifest it just wrote, emitting even when absent (as an empty
+    # string) so a stale pre-archive guess is overwritten rather than left
+    # standing uncorrected.
+    facts = manifest.get("facts") or {}
+    for key, value in (("run_id", facts.get("run_id")),
+                        ("work_item_id", facts.get("work_item_id")),
+                        ("run_status", facts.get("run_status") or facts.get("status"))):
+        emit(key, "" if value is None else value)
+
+else:
+    fail(f"internal error: unknown probe mode {mode!r}")
+PYEOF
+}
+
+# run_probe <name> <mode> [args...] -- run a probe and assign the TAB-separated
+# key/value pairs it emits to shell variables. A probe refusal aborts here;
+# process substitution is deliberately avoided so the exit status is not lost.
+run_probe() {
+	local name=$1 key value
+	shift
+	probe "$@" >"$tmp/$name.tsv" ||
+		die "cannot continue: probe '$name' refused (see above)"
+	while IFS=$'\t' read -r key value; do
+		case $key in
+		run_id) run_id=$value ;;
+		work_item_id) work_item_id=$value ;;
+		run_status) run_status=$value ;;
+		checkout_id) checkout_id=$value ;;
+		repository) repository=$value ;;
+		ops_dir) ops_dir=$value ;;
+		ops_absent) ops_absent=$value ;;
+		domain) domain=$value ;;
+		workstream) workstream=$value ;;
+		planned) planned=$value ;;
+		files) files=$value ;;
+		*) die "internal error: unexpected probe key: $key" ;;
+		esac
+	done <"$tmp/$name.tsv"
+}
+
+# --------------------------------------------------------- derive Run identity
+
+run_id= work_item_id= run_status= checkout_id= repository=
+run_probe facts facts "$state_root"
+[[ -n $run_id ]] || die "no Run id found under $state_root: not a WFC Run state root (expected operator-summary.json, operator-plan.json or checkouts/*/run.json)"
+
+# ---------------------------------------------------- derive matching OPS root
+
+ops_dir= ops_absent=
+ops_candidate=${HOME:?HOME is not set}/wfc-ops/$attempt_id
+run_probe ops ops "$state_root" "$ops_candidate" "$attempt_id"
+
+if [[ -n $ops_dir ]]; then
+	ops_display=$ops_dir
+else
+	ops_display="none (absent: $ops_absent)"
+fi
+
+# --------------------------------------------------------- derive destination
+
+domain= workstream=
+if [[ -n $semantic ]]; then
+	run_probe semantic semantic "$semantic"
+fi
+
+if [[ -n $domain ]]; then
+	dest_rel=archive/$domain/$workstream/$attempt_id
+else
+	dest_rel=archive/unclassified/$attempt_id
+fi
+dest=$repo/$dest_rel
+
+if [[ -e $dest ]]; then
+	die "archive destination already exists, refusing to overwrite it: $dest_rel"
+fi
+
+# ----------------------------------------------------------------- clean tree
+
+if [[ -n $(git -C "$repo" status --porcelain) ]]; then
+	die "evidence repository is not clean; commit or stash local changes first: $repo"
+fi
+
+# ------------------------------------------------------------- run the archiver
+
+archiver_args=(--run-dir "$state_root" --dest "$dest")
+if [[ -n $ops_dir ]]; then
+	archiver_args+=(--ops-dir "$ops_dir")
+fi
+if [[ -n $semantic ]]; then
+	archiver_args+=(--semantic-json "$semantic")
+fi
+
+# Always plan first, so a failing plan prevents the real archive and the
+# operator never repeats identical deterministic arguments by hand.
+if ! python3 "$archiver" "${archiver_args[@]}" --dry-run >"$tmp/plan.json" 2>"$tmp/plan.err"; then
+	cat -- "$tmp/plan.err" >&2
+	die "archive plan failed; nothing was written"
+fi
+
+planned=
+run_probe plan plan-count "$tmp/plan.json"
+
+report() {
+	printf '%s\n\n' "$1"
+	printf 'attempt:    %s\n' "$attempt_id"
+	printf 'run:        %s\n' "$run_id"
+	if [[ -n $work_item_id ]]; then printf 'work item:  %s\n' "$work_item_id"; fi
+	if [[ -n $run_status ]]; then printf 'run status: %s\n' "$run_status"; fi
+	if [[ -n $repository ]]; then printf 'repository: %s\n' "$repository"; fi
+	printf 'source:     %s\n' "$state_root"
+	printf 'ops:        %s\n' "$ops_display"
+	printf 'dest:       %s\n' "$dest_rel"
+	printf 'semantic:   %s\n' "${semantic:-none supplied}"
+}
+
+if ((dry_run)); then
+	report "DRY RUN -- NOTHING WRITTEN"
+	printf 'files:      %s planned\n' "$planned"
+	printf 'commit:     not performed\n'
+	printf 'push:       not performed\n'
+	exit 0
+fi
+
+if ! python3 "$archiver" "${archiver_args[@]}" >"$tmp/archive.json" 2>"$tmp/archive.err"; then
+	cat -- "$tmp/archive.err" >&2
+	die "archive_run.py failed"
+fi
+
+files=
+run_probe verify verify "$dest" "$attempt_id" "$tmp/archive.json"
+
+# ------------------------------------------------------------- local commit
+
+git -C "$repo" add -- "$dest"
+
+staged=0
+while IFS= read -r -d '' path; do
+	case $path in
+	"$dest_rel"/*) staged=$((staged + 1)) ;;
+	*) die "refusing to commit: staged path outside the new archive destination: $path" ;;
+	esac
+done < <(git -C "$repo" diff --cached --name-only -z)
+((staged > 0)) || die "refusing to commit: nothing was staged under $dest_rel"
+
+{
+	printf 'evidence: archive %s\n\n' "$attempt_id"
+	printf 'Mechanical archive created by scripts/wfc-archive-run. Semantic\n'
+	printf 'significance is not inferred here and the run ledger is untouched.\n\n'
+	printf 'run:        %s\n' "$run_id"
+	if [[ -n $work_item_id ]]; then printf 'work item:  %s\n' "$work_item_id"; fi
+	if [[ -n $run_status ]]; then printf 'run status: %s\n' "$run_status"; fi
+	if [[ -n $checkout_id ]]; then printf 'checkout:   %s\n' "$checkout_id"; fi
+	if [[ -n $repository ]]; then printf 'repository: %s\n' "$repository"; fi
+	printf 'state root: %s\n' "$state_root"
+	printf 'ops:        %s\n' "${ops_dir:-none}"
+	printf 'files:      %s allow-listed files, byte-verified by scripts/archive_run.py\n' "$files"
+	printf 'semantic:   %s\n' "${semantic:-none supplied}"
+} >"$tmp/commit-msg"
+
+git -C "$repo" commit -q -F "$tmp/commit-msg"
+commit=$(git -C "$repo" rev-parse HEAD)
+
+report "ARCHIVED WFC RUN"
+printf 'files:      %s\n' "$files"
+printf 'manifest:   valid\n'
+printf 'commit:     %s\n' "$commit"
+printf 'push:       not performed\n'

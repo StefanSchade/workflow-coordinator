@@ -21,5 +21,8 @@ def main(argv=None):
     if args[:1] == ['plan']:
         from .plan import main as plan_main
         return plan_main(args[1:])
+    if args[:1] == ['archive']:
+        from .archive import main as archive_main
+        return archive_main(args[1:])
     from ..operator import main as operator_main
     return operator_main(args)
