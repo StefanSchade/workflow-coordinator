@@ -20,9 +20,15 @@ Two things are deliberately new, not present in the ported scripts:
   itself is verified; a partial copy is never observable at the
   destination.
 * *Idempotent retry.* A destination already fully placed but not yet
-  committed resumes directly at the commit step; a destination already
-  committed with matching content is a no-op; only a destination that
-  exists with genuinely different content is refused.
+  committed resumes at the commit step only after reverifying the placed
+  attempt id, recorded sources and every copied file's own digest/size
+  against the manifest -- so an interruption followed by tampering is
+  refused rather than published; a destination already committed with
+  matching content is a no-op; only a destination that exists with
+  genuinely different content is refused.
+* *Destination-boundary containment.* The resolved destination and staging
+  paths are refused, before any write, if any component of either escapes
+  the Evidence repository through a symlink.
 
 The commit itself is the one Coordinator-owned write surface
 (``git_facts.bounded_path_commit``), not a raw ``git add``/``git commit``
@@ -51,7 +57,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ..git_facts import (
     GitPreflightError,
@@ -153,6 +159,32 @@ def assert_dest_under_archive_root(dest: Path, archive_root: Path) -> None:
         raise ArchiveError(
             f"refusing: destination {dest} is not under this repository's archive root {archive_root}"
         ) from None
+
+
+def _is_contained(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def assert_no_symlink_escape(path: Path, repo_root: Path) -> None:
+    """Refuse ``path`` (lexically under ``repo_root``) when any existing
+    ancestor component between ``repo_root`` and ``path`` is a symlink whose
+    target resolves outside ``repo_root`` -- checked before any write, so a
+    tracked symlink (for example ``archive/`` pointing outside the Evidence
+    repository) cannot place data outside it even though the eventual commit
+    would separately, but only afterward, refuse to commit it."""
+
+    repo_root_real = repo_root.resolve()
+    current = repo_root
+    for part in path.relative_to(repo_root).parts:
+        current = current / part
+        if current.is_symlink() and not _is_contained(current.resolve(), repo_root_real):
+            raise ArchiveError(
+                f"refusing: {current} is a symlink escaping the evidence repository root {repo_root_real}"
+            )
 
 
 def sha256_of(path: Path) -> str:
@@ -630,6 +662,31 @@ def _manifests_match_ignoring_archived_at(a: dict, b: dict) -> bool:
     return a2 == b2
 
 
+def _safe_manifest_relpath(rel: object, *, dest: Path) -> Path:
+    """Validate a manifest-recorded ``copied_files`` entry path before any
+    filesystem access: refuse absolute, traversal or otherwise ambiguous
+    paths, and refuse a symlink anywhere along it that escapes ``dest``, so a
+    crafted or tampered manifest can never make this read (or later commit)
+    outside the archive destination."""
+
+    if not isinstance(rel, str) or not rel or rel != rel.strip() or "\\" in rel:
+        raise ArchiveError(f"existing archived manifest lists an unsafe file path: {rel!r}")
+    candidate = PurePosixPath(rel)
+    if candidate.is_absolute() or any(part in ("", ".", "..") for part in candidate.parts):
+        raise ArchiveError(f"existing archived manifest lists an unsafe file path: {rel!r}")
+    if candidate.as_posix() != rel:
+        raise ArchiveError(f"existing archived manifest lists an ambiguous file path: {rel!r}")
+    dest_real = dest.resolve()
+    target = dest
+    for part in candidate.parts:
+        target = target / part
+        if target.is_symlink() and not _is_contained(target.resolve(), dest_real):
+            raise ArchiveError(
+                f"existing archived manifest file path escapes the archive destination via a symlink: {rel!r}"
+            )
+    return target
+
+
 def _load_existing_manifest(dest: Path) -> dict:
     manifest_path = dest / "manifest.json"
     if not manifest_path.is_file():
@@ -641,11 +698,51 @@ def _load_existing_manifest(dest: Path) -> dict:
     copied = manifest.get("copied_files")
     if not isinstance(copied, list) or not copied:
         raise ArchiveError(f"existing archived manifest lists no copied files: {manifest_path}")
+    seen_paths: set[str] = set()
     for entry in copied:
         rel = entry.get("path") if isinstance(entry, dict) else None
-        if not isinstance(rel, str) or not (dest / rel).is_file():
+        target = _safe_manifest_relpath(rel, dest=dest)
+        if rel in seen_paths:
+            raise ArchiveError(f"existing archived manifest lists a duplicate file path: {rel!r}")
+        seen_paths.add(rel)
+        if not target.is_file():
             raise ArchiveError(f"existing archived manifest lists a file that is not present: {rel!r}")
     return manifest
+
+
+def _verify_resumable_placement(
+    manifest: dict, *, dest: Path, attempt_id: str, state_root: Path, ops_dir: Path | None,
+) -> None:
+    """Re-verify a placed-but-uncommitted archive before trusting it for
+    commit. An interruption between placement and commit leaves data that
+    this process (or an attacker) could tamper with before the retry; refuse
+    unless the attempt id, the recorded sources and every copied file's own
+    digest and size still match the manifest exactly, so a genuinely intact
+    interruption is the only thing that can resume."""
+
+    if manifest.get("attempt_id") != attempt_id:
+        raise ArchiveError(
+            f"placed archive at {dest} was staged for attempt {manifest.get('attempt_id')!r}, "
+            f"not {attempt_id!r}; refusing to commit a mismatched archive"
+        )
+    sources = manifest.get("sources") or {}
+    expected_ops = str(ops_dir) if ops_dir else None
+    if sources.get("run_dir") != str(state_root) or sources.get("ops_dir") != expected_ops:
+        raise ArchiveError(
+            f"placed archive at {dest} was staged from different sources than this archive run; "
+            "refusing to commit a mismatched archive"
+        )
+    for entry in manifest["copied_files"]:
+        rel = entry["path"]
+        target = dest / rel
+        if entry.get("bytes") != target.stat().st_size:
+            raise ArchiveError(
+                f"placed archive file does not match its recorded size, refusing to commit: {rel}"
+            )
+        if entry.get("sha256") != sha256_of(target):
+            raise ArchiveError(
+                f"placed archive file does not match its recorded digest, refusing to commit: {rel}"
+            )
 
 
 def archive_run(
@@ -705,6 +802,8 @@ def archive_run(
     assert_source_isolation(dest, state_root, ops_dir_resolved)
     assert_source_isolation(staging, state_root, ops_dir_resolved)
     assert_dest_under_archive_root(dest, identity / "archive")
+    assert_no_symlink_escape(dest, identity)
+    assert_no_symlink_escape(staging, identity)
 
     if dry_run:
         planned = _plan_run_files(state_root) + (_plan_ops_files(ops_dir_resolved) if ops_dir_resolved else [])
@@ -748,7 +847,11 @@ def archive_run(
                 ops_candidate=ops_candidate, destination_relative=dest_rel, semantic_path=resolved_semantic,
                 files=len(manifest["copied_files"]), commit=commit or None,
             )
-        # Placed but never committed (killed between copy and commit): resume.
+        # Placed but never committed (killed between copy and commit): resume,
+        # but only once the placed data is reverified against its own manifest.
+        _verify_resumable_placement(
+            manifest, dest=dest, attempt_id=attempt_id, state_root=state_root, ops_dir=ops_dir_resolved,
+        )
         copied = manifest["copied_files"]
     else:
         try:

@@ -26,6 +26,11 @@ encode that relocated location (``operator-plan.json``'s ``state_root``/
 identity and every other pin, is left exactly as retained. Both archivers
 read the identical resulting state root and OPS directory, so the comparison
 is not weakened by the relocation.
+
+The checkout's ``run.json`` is committed under the neutral fixture name
+``run.fixture.json`` (identical bytes and SHA-256) to avoid a committed-
+fixture/test collision; the relocation step below materializes it back to
+``run.json`` only inside the disposable, temporary relocated state root.
 """
 
 from __future__ import annotations
@@ -62,6 +67,10 @@ def _relocate_real_run(base: Path) -> tuple[Path, Path, Path]:
     ops_dir = home / "wfc-ops" / ATTEMPT_ID
     shutil.copytree(REAL_RUN / "run", state_root)
     shutil.copytree(REAL_RUN / "ops", ops_dir)
+
+    checkout_dir = next((state_root / "checkouts").iterdir())
+    fixture_run_json = checkout_dir / "run.fixture.json"
+    fixture_run_json.rename(checkout_dir / "run.json")
 
     plan_path = state_root / "operator-plan.json"
     plan = json.loads(plan_path.read_text())
