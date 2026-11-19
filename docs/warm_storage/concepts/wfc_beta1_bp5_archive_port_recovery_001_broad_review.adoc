@@ -1,0 +1,341 @@
+= Recovered BP5 archive port: independent broad review
+
+WorkItem:: `WI-WFC-BETA1-BP5-ARCHIVE-PORT-RECOVERY-001`
+Hop:: `H002` (`broad_review`, fresh independent reviewer, gate, blocking-only,
+`finding_authority: [resolve]`)
+Reviewed product:: the *entire* BP5 product as it stands at review base HEAD
+`cd9d35d47437068ab5eacbdf29fea768b9c21c50`, measured against the real
+pre-implementation baseline `54b99ba788206fe61ea89cdeee96db434d4a1c79`
+(`chore: authorize BP5 archive port commission`) -- not against a successor
+diff. The product material is the preserved candidate `fc922a7`
+(`wip(bp5): preserve interrupted archive port candidate`); `cd9d35d` adds only
+this recovery Commission's own governance inputs.
+Governing acceptance:: the original BP5 Commission
+`governance/commissions/wfc-beta1-bp5-archive-port-001/task.md` and this
+recovery Commission's task, which restates it.
+Predecessor Run:: `RUN-54acb740a0b944a29ad82587c3d5183d` stopped
+`awaiting_human` before a candidate commit (trusted commit refused unexpected
+untracked fixture leaves); evidence `3d4a1a5`. Its agent claims and the prior
+Hop `H001` summary of this Run were read as *evidence leads only*. Every
+statement below was reproduced in this Hop.
+Disposition:: *Changes required.* One blocking Finding: an applicable legacy
+conformance test is neither ported nor documented, in direct violation of the
+explicit acceptance criterion that the port carry "existing applicable
+conformance tests". Everything else in the acceptance set was independently
+reproduced as satisfied, including the real-run old-vs-new equivalence, the
+retry/idempotence guarantees and the Git boundaries. Six non-blocking
+observations are recorded.
+
+No historical Run, archive or Evidence-repository record was modified by this
+Hop. The only repository change proposed is this artifact.
+
+== Provenance of the preserved candidate: verified exactly
+
+The maintainer's preservation descriptor was reproduced, and it matches:
+
+[source,shell]
+----
+$ git diff --binary --full-index 54b99ba..fc922a7 | sha256sum
+dd87b35ae88321ca48cef4acb73cc3585731b5b9de26718f4b76f8420d976671
+$ git diff --name-only 54b99ba..fc922a7 | wc -l
+20
+----
+
+This is a *correction of a prior-Hop statement*: `H001` reported that the
+quoted provenance SHA-256 could not be reproduced here. It reproduces exactly;
+the earlier attempts simply omitted `--full-index` (without it the same pipe
+yields `ad4e80e3fc9f...`, because abbreviated blob indices are rendering
+state, not content). All 20 preserved tracked/untracked leaves are therefore
+confirmed byte-identical to what the maintainer preserved, and the candidate
+under review is the real interrupted candidate.
+
+Staged legacy inputs were verified against their own source-of-truth, and the
+committed fixtures against both:
+
+* `build/wfc/bp5-evidence-inputs/{scripts,tests}` -- all five files recompute
+  to the SHA-256 values in that directory's `PROVENANCE.txt` (Evidence
+  repository HEAD `bc65ff777bb75602792e416519a7a3025d723c67`).
+* `tests/fixtures/bp5/legacy/{archive_run.py,wfc-archive-run}` -- byte-identical
+  to the staged originals (`diff` empty), and matching `tests/fixtures/bp5/PROVENANCE.txt`.
+* All ten `tests/fixtures/bp5/real_run/**` leaves -- recompute to the digests in
+  both `PROVENANCE.txt` files *and* to the `copied_files[].sha256` values inside
+  the canonical archived `manifest.json` of
+  `RUN-6538d0568bce47a899dab7677ea9c2e1`.
+
+== Port fidelity: archiver core
+
+`src/workflow_coordinator/frontdoor/archive.py` was read line by line against
+`tests/fixtures/bp5/legacy/archive_run.py`. The archiver half is a faithful
+port, not a rewrite:
+
+* `RUN_ROOT_ALLOW`, `CHECKOUT_ALLOW`, `OPS_ROOT_ALLOW`, `OPS_SUBDIR_ALLOW`,
+  `BULK_DIR_DENY`, `RUN_IDENTITY_FIELDS`, `PIN_FILES_IN_PRIORITY` are verbatim,
+  element for element and in the same order.
+* `assert_source_isolation`, `sha256_of`, `matches_any`, `_copy_one`
+  (legacy `copy_one`), `collect_run_files`, `collect_ops_files`, `load_json`,
+  `parse_kv_file`, `_fill_from` and `extract_facts` are semantically identical;
+  the only changes are `SystemExit` becoming `ArchiveError` and
+  `assert_dest_under_archive_root` taking the archive root as a parameter
+  instead of deriving it from `__file__`.
+* No-clobber (`if dest.exists(): raise ... refusing to overwrite`) and the
+  before/after digest verification around `shutil.copy2` are preserved
+  unchanged, including the identical `copied` record shape
+  (`path`/`source`/`sha256`/`bytes`).
+* The manifest is assembled with the same keys in the same order and written
+  with the same `json.dumps(..., indent=2, sort_keys=False) + "\n"`.
+
+One subtlety was checked specifically because it could silently break
+byte-equivalence: the legacy wrapper passes an *unresolved* `--ops-dir` which
+`archive_run.py` then resolves, while the new module derives the OPS
+candidate itself. `archive.py:697` keeps exactly that split
+(`ops_dir_resolved` is used for copying, facts and the manifest; the
+unresolved candidate only for the human report), so a symlinked `HOME` cannot
+make the two implementations disagree. This is deliberate, commented work.
+
+== Port fidelity: wrapper orchestration
+
+Against `tests/fixtures/bp5/legacy/wfc-archive-run`, the orchestration half
+preserves every refusal: the `operator-plan.json` `state_root` agreement
+check, the `_agree()` cross-source disagreement refusals for
+`run_id`/`work_item_id`/`checkout_id`, the `repository` vs `canonical_path`
+refusal, `run_status` fallback order, the recorded-OPS-location and
+`preparation-pins.txt` `attempt_id`/`state_root` coherence refusals, the
+`--semantic-json` object/partial-classification/path-segment refusals, the
+`archive/unclassified/<attempt>` default, the control-character guards, and
+the `evidence: archive <attempt>` commit subject.
+
+Three differences are authorized and correctly bounded:
+
+. *Narrowed cleanliness.* Legacy refused any dirty repository; the port
+  (`_assert_narrow_cleanliness`) refuses anything staged and anything dirty
+  outside the attempt's own destination and staging directory. This is the
+  narrowing the task mandates. It is also *stricter* in one respect: it uses
+  `--untracked-files=all` where legacy used the default.
+. *Existing destination.* Legacy refused unconditionally; the port
+  distinguishes committed-and-identical (no-op), placed-but-uncommitted
+  (resume to commit) and genuinely-different (refusal). Mandated.
+. *Repository marker.* Legacy keyed "is this an evidence repository" on
+  `scripts/archive_run.py`; the port keys on the repository's own `archive/`
+  directory, since the archiver is now in-process. Documented in the port
+  test docstring.
+
+== BP3 Git primitive: reused unchanged
+
+`src/workflow_coordinator/git_facts.py` does not appear among the 20 changed
+paths of `54b99ba..fc922a7`, so `bounded_path_commit` is provably untouched.
+Reading it confirms the port gets the whole guarantee set for free: refusal of
+any intent path already a blob at base HEAD, of directory-shaped intents, of
+symlinked or non-regular leaves (`S_ISLNK`), of pre-existing staged state, of
+any unexpected dirty path, of configured clean/process filters; `commit
+--no-verify` (no hooks); and a post-commit observation requiring exactly one
+commit whose changed-path set equals the intent exactly. `archive.py:770-776`
+passes leaf-exact paths with `allowed_paths=(dest_rel,)` and reuses
+`attempt_id` as both `work_item_id` and `hop_id` so the legacy subject passes
+`commit_subject_error` unchanged. No raw `git add`/`git commit`, no hooks, no
+uncontrolled staging, no writes to sources.
+
+== Real-run equivalence: independently reproduced
+
+`tests/unit/test_archive_equivalence.py` archives the real retained Run
+`RUN-6538d0568bce47a899dab7677ea9c2e1` with the frozen legacy
+wrapper/archiver and with the installed module, into two disposable Git
+Evidence repositories, and asserts full `manifest.json` equality after
+stripping only `archived_at`. It passes. The comparison is substantive, not
+vacuous: the canonical manifest for that Run carries 10 copied files, a
+complete identity merge (`run_id`, `work_item_id`, policy/profile ids and
+revisions, `baseline_head`/`current_head`/`final_head`, `hops`, `adapters`,
+`models`, `reasoning_levels`, `workflow_roles`, `evidence_commands`,
+`checkouts`, `field_sources`) and 19 pin values -- all inside the compared
+region, together with every `copied_files[].sha256`, `bytes` and `source`.
+Both sides are also asserted to produce exactly one commit.
+
+The relocation exception is handled as the task requires and is reported
+here explicitly. This agent's sandbox cannot read `/home/stefan/wfc-state` or
+`/home/stefan/wfc-ops`, so the test reconstructs a disposable working copy of
+the Run's own state-root and OPS layout from the hash-verified archived copy
+and relocates it under a throwaway `HOME`. Exactly four path-metadata fields
+are rewritten -- `operator-plan.json`'s `state_root` and
+`execution_bindings_source`, and `preparation-pins.txt`'s `state_root=` and
+`execution_bindings=` -- each guarded by an assertion that the original value
+was the real `/home/stefan/...` location. Every other retained fact survives
+untouched, including `attempt_id`, `scratch_root`, `scratch_path`,
+`development_path`/`development_head`, `runtime_path`/`runtime_head` and
+`evidence_path`/`evidence_head`. Both archivers are then handed the *same*
+resulting state root and OPS directory, so the relocation cannot weaken the
+comparison. `setUp` re-verifies the frozen legacy scripts' digests before
+each run, so the "old" side cannot silently drift.
+
+== Retry safety, idempotence and refusals: reproduced
+
+`tests/unit/test_archive_port.py::StagingAndRetryTests` covers each acceptance
+clause with a dedicated, passing test:
+
+* a simulated kill between copy and commit leaves the placement intact and no
+  commit, and the retry yields *exactly one* commit with identical
+  `copied_files`;
+* a kill before placement leaves no destination at all, leaves the repository
+  reporting clean, and the retry succeeds with exactly one commit;
+* a completed identical repeat is a no-op (`ARCHIVE ALREADY UP TO DATE`, HEAD
+  unmoved);
+* a destination holding a genuinely different Run is refused, with HEAD and
+  the existing manifest unchanged -- nothing silently overwritten;
+* an unrelated dirty path blocks archiving and is left byte-identical, still
+  untracked, not swept into any commit and not reverted;
+* stale staging from a prior killed attempt is cleared rather than merged;
+* a pre-staged index entry from someone else is refused and left staged.
+
+`GitBehaviourTests` additionally confirms the commit touches only the new
+destination, that no push is attempted, and that the run ledger is untouched;
+`SourceImmutabilityTests` confirms the state and OPS trees are left byte
+identical.
+
+== Test execution
+
+`tests/unit/test_archive_conformance.py`, `test_archive_port.py` and
+`test_archive_equivalence.py`: *62 passed* (19 + 42 + 1) under
+`--wfc-partial`.
+
+The whole `tests/unit` subset reports 26 failures and 13 errors, *all* of them
+confined to two modules that the BP5 diff does not touch, and all traceable to
+agent-local environment limits rather than product behaviour:
+
+* `test_wfc_op.py` (4 failed, 13 errors) --
+  `ERROR: Could not find a version that satisfies the requirement setuptools>=68
+  (from versions: none)`: offline `pip` build isolation.
+* `test_claude_adapter_conformance.py` (22 failed) --
+  `OSError: [Errno 30] Read-only file system` creating a symlink under `/tmp`:
+  this session's write sandbox permits `$TMPDIR` but not `/tmp` directly.
+
+These are environmental, not BP5 regressions, and not findings against this
+product. They are reported rather than hidden; Coordinator-owned trusted
+evidence is executed separately.
+
+== Blocking Finding
+
+=== BF-1: an applicable legacy conformance test is silently dropped
+
+*Criterion violated.* "Installed `wfc archive` ports canonical behavior and
+existing *applicable* conformance tests", and the task's instruction to
+preserve "all applicable checks" while "documenting any unavoidable
+non-applicable legacy-proof case" and not inventing "a replacement smaller
+suite".
+
+*Reproduction.* Enumerating both suites:
+
+[cols="3,1,1"]
+|===
+|Legacy suite |Tests |Ported
+
+|`tests/test_archive_helpers.py` |21 |19
+|`tests/test_wfc_archive_run.py` |40 |35
+|*Total* |*61* |*54*
+|===
+
+Seven legacy tests have no port. Six are documented: the two
+`archive_proof.py` cases (`test_archive_proof_has_the_same_guard`,
+`test_archive_proof_shares_the_same_archive_root`) in
+`test_archive_conformance.py`'s docstring, and `test_wrapper_is_executable`
+plus the three `ArchiverFailurePropagationTests` in
+`test_archive_port.py`'s docstring. Each of those six justifications is sound.
+
+The seventh,
+`test_state_root_parent_containing_a_control_character_is_rejected`
+(legacy `test_wfc_archive_run.py:482-499`), is *not ported and not
+documented*. A search of `tests/` for it, and for any ancestor-path
+control-character case, returns nothing.
+
+It is applicable, not a legacy-only proof. The legacy wrapper's guard
+(`wfc-archive-run:115-117`, `case $state_root in *[[:cntrl:]]*`) has a direct
+counterpart in the port: `archive.py:666` calls
+`_reject_control_characters(str(state_root), label="state root")` on the whole
+resolved state-root path, and `_reject_control_characters`
+(`archive.py:359-361`) scans every character, so a control character in any
+ancestor component is refused with `refusing state root: contains a control
+character` -- the same property the legacy test pinned with
+`"state root: contains a control character"`. The guard therefore exists and a
+faithful port of the test would pass. *This is a coverage and documentation
+gap, not a product defect* -- which is why it is a bounded correction rather
+than an escalation.
+
+Two aggravating details make the gap more than bookkeeping:
+
+. The surviving `test_attempt_id_containing_a_control_character_is_rejected`
+  (`test_archive_port.py:483-498`) asserts only the generic substring
+  `"control character"`, where legacy pinned a guard-specific message. Because
+  `archive.py:666` runs before `derive_attempt_id` at `archive.py:667`, and
+  the attempt id is a substring of the state-root path, that test is in fact
+  satisfied by the *state-root* guard; `derive_attempt_id`'s own
+  control-character branch is unreachable through `archive_run()`. Legacy's two
+  distinct, separately-pinned tests thus collapse into one unpinned test, and
+  the ancestor-path case has no coverage at all.
+. The property at stake is commit-message and report injection hardening via a
+  path component -- exactly the class of guard the Commission asked to be
+  carried over intact.
+
+*Suggested bounded correction* (within the existing per-file scope, no new
+paths): port the missing test into
+`tests/unit/test_archive_port.py::RefusalTests`, asserting the state-root
+guard's own message and that no destination and no commit result; and, while
+there, tighten the attempt-id test's assertion so the two guards remain
+distinguishable -- or, if the author concludes the ancestor case is genuinely
+non-applicable, record that conclusion in the module docstring alongside the
+other six. No product change is required.
+
+*Note on a prior-Hop lead.* `H001` reported "61 tests, matching the original
+legacy suite's count". The arithmetic is coincidental: 19 + 42 = 61, but 7 of
+those 42 are the *new* `StagingAndRetryTests`, so only 54 legacy tests were
+actually ported. Count parity is not coverage parity, and it concealed this
+gap.
+
+== Non-blocking observations
+
+None of the following is a reproduced violation of an explicit acceptance
+criterion, and none is dispositioned as an authoritative Finding here.
+
+. *Dead `resumed_commit` outcome.* `ArchiveReport.outcome` documents
+  `"resumed_commit"` (`archive.py:582`) and `render_report` handles it
+  (`archive.py:801`), but the resume path returns `outcome="archived"`
+  (`archive.py:781`). The branch is unreachable.
+. *Resume path does not re-verify placed content.* When the destination is
+  placed but uncommitted, `_load_existing_manifest` checks that the manifest
+  parses, lists a non-empty `copied_files`, and that each listed file is
+  present -- but not that `manifest["attempt_id"]` equals the derived attempt
+  id, nor that the files still match their recorded digests. The legacy
+  wrapper's `verify` probe did assert the `attempt_id` equality
+  (`wfc-archive-run:332-333`). In practice the atomic `os.rename` means only
+  this tool's own interrupted run can produce that state, and the no-op path
+  does compare manifests; the exposure is narrow. Adding the `attempt_id`
+  assertion on the resume path would close it cheaply.
+. *Lexical destination containment vs a symlinked `archive/`.*
+  `assert_dest_under_archive_root` is a lexical `relative_to` check, so an
+  evidence repository whose `archive/` is a symlink out of the tree would let
+  `os.rename` place the staging directory outside the repository.
+  `bounded_path_commit` still refuses (the paths produce no in-repo worktree
+  mutation), so no commit results. This is *exact parity with the legacy
+  archiver*, so it is preserved behaviour rather than a port regression, and
+  closing it would be a semantic change beyond this Commission.
+. *Equivalence test comparison surface.* The test compares the two manifests
+  but not the two archives' on-disk file trees directly, and `setUp`
+  re-verifies 3 of the 12 fixture provenance digests. The manifest comparison
+  already covers every copied file's digest and byte count, so this is
+  belt-and-braces rather than a gap.
+. *Dry-run planner is slightly stricter than legacy.* `_plan_run_files`
+  filters `is_file()` where the legacy preview did not, and iterates
+  `checkouts` directories only. The planned count could differ from legacy
+  only if an allow-listed *name* were a directory -- impossible for the
+  current allow-lists. The port's behaviour is the more correct one.
+. *Documentation is scoped and honest.* The operator manual addition states
+  plainly that this is a standalone, directly invoked capability, that
+  self-development still archives through `wfc-op archive`, and that `wfc
+  run`'s lifecycle does not call it. No local-destination, BP4 lifecycle or
+  BP6 projection/retention work appears anywhere in the diff, and `DEC-WFC-023`
+  is untouched. The committed tests reference `build/wfc/bp5-evidence-inputs/`
+  only in prose docstrings, never as a path dependency, so they are portable.
+
+== Route
+
+Requested route: *correction*, scoped to `tests/unit/test_archive_port.py`
+(test and docstring only). `finding_authority: [resolve]` does not authorize
+`residual`; the six observations above are recorded here and in the result
+summary rather than as authoritative Finding transitions. No agent Git write
+was performed in this Hop.
