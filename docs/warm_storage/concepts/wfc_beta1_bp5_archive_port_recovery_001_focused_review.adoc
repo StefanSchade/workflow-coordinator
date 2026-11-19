@@ -1,0 +1,244 @@
+= Recovered BP5 archive port: independent focused review
+
+WorkItem:: `WI-WFC-BETA1-BP5-ARCHIVE-PORT-RECOVERY-001`
+Hop:: `H004` (`focused_review`, gate, blocking-only, `finding_authority: [resolve]`)
+Review base HEAD:: `36a47d033ff7545ea699f63092e553c0ae97d462`
+Correction under review:: `36a47d0`
+(`test(bp5): ... H003 port state-root-parent control-character refusal test`),
+the single bounded `H003` correction answering the open blocking Finding
+`F001`.
+Pre-implementation baseline:: `54b99ba788206fe61ea89cdeee96db434d4a1c79`
+Predecessor broad review:: `H002`, recorded in
+`wfc_beta1_bp5_archive_port_recovery_001_broad_review.adoc` (`e26e838`), which
+reproduced every other acceptance clause as satisfied and raised exactly one
+blocking Finding.
+Disposition:: *Accept.* `F001` is resolved: the previously unported,
+undocumented legacy conformance test is now ported faithfully, it exercises the
+property the legacy test pinned, it passes, and it required no product change.
+No new blocking Finding. Prior-Hop claims were treated as leads and
+re-reproduced here.
+
+This Hop made no product, test or fixture change. The only repository change
+proposed is this artifact.
+
+== What `H003` actually changed
+
+[source,shell]
+----
+$ git show --stat 36a47d0
+ tests/unit/test_archive_port.py | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+----
+
+Nineteen added lines, one file, no deletions and no modifications to any
+existing line. `tests/unit/test_archive_port.py` is inside the per-file scope
+the broad review proposed. No product file, no fixture, no documentation and no
+Git primitive was touched, so none of `H002`'s reproduced port-fidelity,
+equivalence, retry-safety or Git-boundary conclusions can have been disturbed by
+this correction; they rest on unchanged bytes.
+
+`git status --porcelain` reports no tracked modification and no untracked
+product, test or fixture path. Apart from this artifact itself, the only
+untracked entries are this session's own environment-overlay dotfiles in the
+working directory
+(`.bash_profile`, `.bashrc`, `.claude/`, `.gitconfig`, `.idea`, `.mcp.json`,
+`.profile`, `.ripgreprc`, `.vscode`, `.zprofile`, `.zshrc`); they are sandbox
+artifacts, not candidate material, and are deliberately excluded from this
+Hop's CommitIntent.
+
+== `F001`: resolved
+
+=== The ported test is a faithful port, not a re-invention
+
+Legacy source
+(`build/wfc/bp5-evidence-inputs/tests/test_wfc_archive_run.py:482-499`) against
+the port (`tests/unit/test_archive_port.py:500-518`), clause by clause:
+
+[cols="1,1,1"]
+|===
+|Legacy clause |Ported clause |Faithful
+
+|`fx = self.build(with_ops=False)` |same |yes
+|parent renamed to a name containing `\n` |same (`home/wfc-state` -> `home/wfc-state\n...`, matching the port fixture's own layout) |yes
+|`operator-plan.json` `state_root` rewritten to the resulting ancestor path |same |yes
+|`before = self.head(fx.repo)` |same |yes
+|invoke the real entry point |`cli_main(["archive", str(evil_state), str(fx.repo)])` -- the installed CLI, as every other test in this module does |yes
+|`assertNotEqual(returncode, 0)` |`assertNotEqual(code, 0)` |yes
+|`assertIn("state root: contains a control character", stderr)` |identical string |yes
+|`assertFalse(dest.exists())` |identical |yes
+|`assertEqual(self.head(fx.repo), before)` |identical |yes
+|===
+
+The one legacy line with no counterpart is `fx.state = evil_state`, which the
+legacy test needed only because its helper re-read `fx.state`; the port passes
+`evil_state` to the CLI explicitly, so the assignment would be dead. The
+guard-specific message is asserted, exactly as the broad review's suggested
+correction asked -- not the generic `"control character"` substring.
+
+=== It pins the state-root guard, and nothing else can satisfy it
+
+`label="state root"` has exactly one call site in the product:
+
+[source,shell]
+----
+$ grep -n '_reject_control_characters(' src/workflow_coordinator/frontdoor/archive.py
+359:def _reject_control_characters(value: str, *, label: str) -> None:
+370:    _reject_control_characters(attempt_id, label="attempt id derived from state root")
+666:    _reject_control_characters(str(state_root), label="state root")
+683:        _reject_control_characters(str(resolved_semantic), label="--semantic-json path")
+----
+
+`refusing state root: contains a control character` can therefore only be
+produced by `archive.py:666`, operating on the whole resolved state-root path.
+The fixture's attempt basename is clean, so neither `derive_attempt_id`'s own
+branch (`archive.py:370`, different message) nor any other refusal can make the
+assertion pass. The test is non-vacuous by construction: the ancestor-component
+property is the only thing that can satisfy it, and the assertion would fail if
+the guard at `archive.py:666` were removed or narrowed to the basename.
+
+=== The residual "aggravating detail" from `F001` is legacy parity, not a defect
+
+`F001` additionally observed that the surviving
+`test_attempt_id_containing_a_control_character_is_rejected` is in fact
+satisfied by the state-root guard, leaving `derive_attempt_id`'s own
+control-character branch unreachable through `archive_run()`. `H003` left that
+test as it was. That is correct, and it is not a blocking residue: the legacy
+wrapper has the *same* guard ordering and the legacy test made the *same* loose
+assertion.
+
+[source,shell]
+----
+$ sed -n '116,124p' tests/fixtures/bp5/legacy/wfc-archive-run
+*[[:cntrl:]]*) die "refusing state root: contains a control character" ;;
+esac
+
+attempt_id=${state_root##*/}
+[[ -n $attempt_id ]] || die "cannot derive an attempt id from state root: $state_root"
+case $attempt_id in
+. | .. | -*) die "refusing implausible attempt id derived from state root: $attempt_id" ;;
+*[[:cntrl:]]*) die "refusing attempt id derived from state root: contains a control character" ;;
+esac
+----
+
+The state-root case precedes the attempt-id case in the legacy wrapper exactly
+as it does at `archive.py:666-667` (`wfc-archive-run:115-117` precedes
+`wfc-archive-run:121-124`), and the legacy
+`test_attempt_id_containing_a_control_character_is_rejected`
+(`test_wfc_archive_run.py:468-480`) asserts only `"control character"`. The
+port reproduces legacy behaviour and legacy coverage precisely. The broad
+review offered the tightening as an optional "while there"; under
+blocking-only policy it is not an acceptance violation, and changing it is not
+required. It is recorded below as a non-blocking observation.
+
+The gap `F001` actually named -- an *applicable, undocumented, unported* legacy
+check -- no longer exists. `F001` is resolved.
+
+== Conformance enumeration: re-counted independently
+
+[cols="3,1,1,1,2"]
+|===
+|Legacy suite |Legacy tests |Ported file |Tests now |Legacy tests without a port
+
+|`tests/test_archive_helpers.py` |21 |`tests/unit/test_archive_conformance.py` |19 |2, both documented (`test_archive_proof_has_the_same_guard`, `test_archive_proof_shares_the_same_archive_root`)
+|`tests/test_wfc_archive_run.py` |40 |`tests/unit/test_archive_port.py` |43 (36 ported + 7 new `StagingAndRetryTests`) |4, all documented (`test_wrapper_is_executable`, three `ArchiverFailurePropagationTests`)
+|*Total* |*61* |-- |*62* |*6, all documented*
+|===
+
+Counted from `grep -n '    def test_'` on each file. Every one of the 61 legacy
+tests is now either ported or documented in the porting module's own docstring;
+the previously undocumented seventh case is the one `H003` ported. Renames were
+checked individually and each is accounted for by a documented adaptation:
+`test_manifest_identity_cannot_forge_run_probe_records` ->
+`..._cannot_forge_report_fields` (commit-body facts now reported on stdout),
+`test_evidence_repository_without_the_archiver_is_rejected` ->
+`..._without_an_archive_directory_is_rejected` (in-process archiver), and
+`test_existing_destination_is_rejected` ->
+`test_existing_destination_with_different_content_is_rejected` (the mandated
+idempotence narrowing, paired with
+`test_existing_destination_from_a_genuinely_different_run_is_refused_not_overwritten`).
+
+== Test execution (agent-side, not Coordinator-trusted evidence)
+
+[source,shell]
+----
+$ .venv/bin/python -m pytest --wfc-partial -q \
+    tests/unit/test_archive_port.py tests/unit/test_archive_conformance.py \
+    tests/unit/test_archive_equivalence.py
+...............................................................      [100%]
+==== WFC PARTIAL RUN: subset only, NOT the required suite or its acceptance ====
+
+$ .venv/bin/python -m pytest --wfc-partial tests/unit/test_archive_port.py \
+    -k "control_character" -v
+collected 43 items / 40 deselected / 3 selected
+tests/unit/test_archive_port.py ...                                  [100%]
+======================= 3 passed, 40 deselected in 0.17s =======================
+----
+
+63 passed (19 conformance + 43 port + 1 equivalence), up from the 62 `H002`
+recorded, the difference being exactly the one new test. No skips, no xfails.
+All three control-character refusal tests -- attempt id, state-root ancestor,
+`--semantic-json` path -- pass. Coordinator-owned trusted evidence is executed
+separately; these agent-side results are exploratory validation only.
+
+The real-run equivalence test was re-read in this Hop, not merely re-run:
+`tests/unit/test_archive_equivalence.py` runs the frozen, digest-verified legacy
+wrapper as a subprocess against one disposable Git Evidence repository and
+`frontdoor.archive.archive_run()` against another, over the identical relocated
+state root and OPS directory under a throwaway `HOME`, then asserts full
+`manifest.json` equality after stripping only `archived_at`, plus exactly one
+commit on each side. It is substantive, and it passes. The relocation exception
+is documented in the test's own docstring and in `H002`'s artifact, with each
+rewritten path field guarded by an assertion that the original value was the
+real `/home/stefan/...` location.
+
+== Non-blocking observations
+
+None is a reproduced violation of an explicit acceptance criterion, and none is
+dispositioned as an authoritative Finding. `finding_authority: [resolve]` does
+not authorize `residual`.
+
+. *Attempt-id control-character test remains loosely asserted.* As analysed
+  above this is exact legacy parity, so it is not an acceptance violation.
+  Tightening `test_attempt_id_containing_a_control_character_is_rejected` to the
+  guard-specific message `"attempt id derived from state root: contains a
+  control character"` would still fail today, because `archive.py:666` fires
+  first -- so the honest options are to leave it as legacy parity (current
+  state) or to test `derive_attempt_id` directly as a unit. Either is a future
+  choice, not a BP5 obligation.
+. *`H002`'s artifact now carries superseded counts.* The broad review records
+  "35 ported" and "54 total" for the wrapper half; after `H003` the figures are
+  36 and 55. That artifact correctly records the state at its own Hop and was
+  deliberately not edited here (this Hop has no scope over it); the current
+  enumeration is the table above.
+. *The six observations in `H002`'s artifact remain open and unaddressed*
+  (dead `resumed_commit` outcome, resume path not re-verifying
+  `manifest["attempt_id"]`, lexical destination containment under a symlinked
+  `archive/`, equivalence comparison surface, slightly stricter dry-run planner,
+  documentation scope). Each was assessed there as non-blocking, and nothing in
+  `H003`'s test-only change alters that assessment. They are carried forward as
+  observations, not Findings.
+. *Agent-local environment limits persist* and are unchanged from `H002`:
+  `tests/unit/test_wfc_op.py` and `tests/unit/test_claude_adapter_conformance.py`
+  fail offline (`pip` build isolation cannot fetch `setuptools>=68`; a symlink
+  cannot be created directly under `/tmp` in this sandbox). Neither module is
+  touched by the BP5 diff. These are environmental, not BP5 regressions.
+. *Non-vacuity of the new test was established by call-site uniqueness*, not by
+  mutating the product: this Hop has no scope to edit
+  `src/workflow_coordinator/frontdoor/archive.py`, so no guard-removal
+  experiment was run against the repository. A scratch monkeypatch probe outside
+  the repository was attempted and blocked by this session's tool restrictions
+  (heredoc authoring and writes outside the working directory are refused). The
+  argument given above is nonetheless complete: the asserted string has exactly
+  one producer in the product.
+
+== Route
+
+Verdict: *accept*. `F001` is proposed `resolved` with new material evidence
+(independent re-port comparison, guard call-site uniqueness, legacy
+guard-ordering parity, re-counted enumeration, passing targeted run). No
+blocking Finding remains, so no correction is requested; the `requested_route`
+field carries `renew_broad_review` only because the permitted-route vocabulary
+for this Hop offers no accepting route -- acceptance is carried by
+`verdict: accept`, and the product needs no further change. Completion remains
+subject to full Coordinator task-check, which is mandatory and separately
+executed. No agent Git write was performed in this Hop.
