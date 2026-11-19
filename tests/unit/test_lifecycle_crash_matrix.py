@@ -252,6 +252,73 @@ def test_crash_between_materialize_and_bounded_path_commit_resume_commits_exactl
     assert len(commission_subjects) == 1
 
 
+def test_crash_after_real_git_add_before_commit_resume_commits_exactly_once(
+    repository: Path, tmp_path: Path, state_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """Regression for the boundary one instruction deeper than the H003 fix:
+    the crash happens inside the real, unmodified ``bounded_path_commit``,
+    after its own real ``git add`` has staged the Commission leaves but
+    before its ``git commit`` runs. Resume must reconcile that leftover
+    staged state and still commit exactly once, never refuse forever.
+    """
+
+    import workflow_coordinator.git_facts as git_facts
+
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    checkout_dir, journal, authorized, lock = _authorize_only(repository, request_path)
+    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    probe = L._do_probe(repository, checkout_dir, journal, authorized)
+
+    real_trusted_git = git_facts._trusted_git
+
+    def crashing_trusted_git(repo_arg, *args, **kwargs):
+        result = real_trusted_git(repo_arg, *args, **kwargs)
+        if args[:1] == ("add",):
+            raise RuntimeError("simulated crash immediately after the real `git add`")
+        return result
+
+    monkeypatch.setattr(git_facts, "_trusted_git", crashing_trusted_git)
+    with pytest.raises(RuntimeError):
+        L._do_commit(repository, checkout_dir, journal, authorized)
+    monkeypatch.setattr(git_facts, "_trusted_git", real_trusted_git)
+
+    staged_after_crash = git(repository, "diff", "--cached", "--name-only").splitlines()
+    assert staged_after_crash  # the real `git add` left the index dirty.
+    assert [line for line in git(repository, "log", "--oneline").splitlines() if "commission" in line] == []
+    J.release_lock(lock)
+
+    os.environ["WFC_FAKE_ENGINE_MODE"] = "awaiting_human"
+    L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
+    result = L.resume_lifecycle(repository)
+    assert result.classification == "awaiting_human"
+    assert git(repository, "diff", "--cached", "--name-only") == ""
+    commission_subjects = [line for line in git(repository, "log", "--oneline").splitlines() if "commission" in line]
+    assert len(commission_subjects) == 1
+
+
+def test_stray_staged_state_unrelated_to_lifecycle_refuses_as_inconsistent(
+    repository: Path, tmp_path: Path, state_home: Path,
+):
+    """A foreign staged path must never be silently swept aside as if it
+    were this lifecycle's own leftover.
+    """
+
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    checkout_dir, journal, authorized, lock = _authorize_only(repository, request_path)
+    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    probe = L._do_probe(repository, checkout_dir, journal, authorized)
+
+    foreign = repository / "src" / "unrelated.txt"
+    foreign.write_text("not part of this Commission\n", encoding="utf-8")
+    git(repository, "add", "--", "src/unrelated.txt")
+
+    with pytest.raises(L.LifecycleError) as excinfo:
+        L._do_commit(repository, checkout_dir, journal, authorized)
+    assert excinfo.value.classification == "inconsistent"
+    assert "src/unrelated.txt" in str(excinfo.value)
+    assert git(repository, "diff", "--cached", "--name-only").splitlines() == ["src/unrelated.txt"]
+
+
 def test_crash_after_verify_before_launch_resume_continues_with_no_recommit(repository: Path, tmp_path: Path, state_home: Path):
     request_path = _write_request(repository, tmp_path / "request.yaml")
     checkout_dir, journal, authorized, lock = _authorize_only(repository, request_path)

@@ -449,6 +449,40 @@ def _materialize_commission(repository: Path, expected_texts: Mapping[str, str])
         destination.write_text(text, encoding="utf-8")
 
 
+def _reconcile_stray_staged_state(repository: Path, base_head: str, expected_texts: Mapping[str, str]) -> None:
+    """Undo index leftovers from a crash inside a prior attempt at this exact
+    step, after that attempt's own ``git add`` (inside ``bounded_path_commit``)
+    but before its ``git commit``. ``bounded_path_commit`` itself is never
+    modified or re-entered here; this only restores the clean index it
+    requires before staging again. Reconciliation proceeds only when every
+    currently staged path is one of this lifecycle's own expected new leaves,
+    absent at ``base_head``, with byte-identical staged content; anything
+    else staged is a contradiction, refused by name with no auto-clean.
+    """
+
+    staged = sorted(filter(None, _git(repository, "diff", "--no-ext-diff", "--cached", "--name-only").splitlines()))
+    if not staged:
+        return
+    unexpected = sorted(set(staged) - set(expected_texts))
+    if unexpected:
+        raise LifecycleError(
+            "unexpected staged state blocks the Commission commit: " + ", ".join(unexpected),
+            classification="inconsistent",
+        )
+    for path in staged:
+        if _git_succeeds(repository, "cat-file", "-e", f"{base_head}:{path}"):
+            raise LifecycleError(
+                f"staged path already exists at base HEAD, refusing to reconcile: {path}",
+                classification="inconsistent",
+            )
+        if _git_blob_text(repository, "", path) != expected_texts[path]:
+            raise LifecycleError(
+                f"staged content does not match the expected Commission text, refusing to reconcile: {path}",
+                classification="inconsistent",
+            )
+    _git(repository, "reset", "-q", "HEAD", "--", *staged)
+
+
 def _do_commit(repository: Path, checkout_dir: Path, journal: Journal, authorized: JournalRecord) -> JournalRecord:
     request_text = (checkout_dir / "commission" / "request.yaml").read_text(encoding="utf-8")
     config_text = (checkout_dir / "commission" / "config.yaml").read_text(encoding="utf-8")
@@ -481,6 +515,7 @@ def _do_commit(repository: Path, checkout_dir: Path, journal: Journal, authorize
         commit = adopted
     else:
         _materialize_commission(repository, expected_texts)
+        _reconcile_stray_staged_state(repository, base_head, expected_texts)
         intent = NewPathCommitIntent(paths=all_paths, subject=subject)
         try:
             committed = bounded_path_commit(
