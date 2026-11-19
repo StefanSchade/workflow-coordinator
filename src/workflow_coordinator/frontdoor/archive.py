@@ -21,10 +21,14 @@ Two things are deliberately new, not present in the ported scripts:
   destination.
 * *Idempotent retry.* A destination already fully placed but not yet
   committed resumes at the commit step only after reverifying the placed
-  attempt id, recorded sources and every copied file's own digest/size
-  against the manifest -- so an interruption followed by tampering is
-  refused rather than published; a destination already committed with
-  matching content is a no-op; only a destination that exists with
+  attempt id and recorded sources, every copied file's own digest/size
+  against the manifest, and the manifest itself (identity, per-file
+  provenance, facts and semantic payload, ``archived_at`` aside) against a
+  manifest freshly derived from the current authoritative Run/OPS sources --
+  so an interruption followed by tampering (including a file and its own
+  recorded digest altered together, or a falsified fact/source/semantic
+  field) is refused rather than published; a destination already committed
+  with matching content is a no-op; only a destination that exists with
   genuinely different content is refused.
 * *Destination-boundary containment.* The resolved destination and staging
   paths are refused, before any write, if any component of either escapes
@@ -653,8 +657,12 @@ def _manifests_match_ignoring_archived_at(a: dict, b: dict) -> bool:
     def strip(manifest: dict) -> dict:
         return {k: v for k, v in manifest.items() if k != "archived_at"}
 
-    def copied_key(entries: list[dict]) -> set[tuple[object, object, object]]:
-        return {(e.get("path"), e.get("sha256"), e.get("bytes")) for e in entries}
+    def copied_key(entries: list[dict]) -> set[tuple[object, object, object, object]]:
+        # ``source`` (the per-file provenance path copied from) is compared
+        # alongside path/hash/size so a manifest claiming legitimate
+        # provenance for content that actually came from elsewhere, or vice
+        # versa, is caught -- not just a content/size mismatch.
+        return {(e.get("path"), e.get("sha256"), e.get("bytes"), e.get("source")) for e in entries}
 
     a2, b2 = strip(a), strip(b)
     if copied_key(a2.pop("copied_files", [])) != copied_key(b2.pop("copied_files", [])):
@@ -712,13 +720,21 @@ def _load_existing_manifest(dest: Path) -> dict:
 
 def _verify_resumable_placement(
     manifest: dict, *, dest: Path, attempt_id: str, state_root: Path, ops_dir: Path | None,
+    semantic_payload: dict | None, staging: Path,
 ) -> None:
     """Re-verify a placed-but-uncommitted archive before trusting it for
     commit. An interruption between placement and commit leaves data that
-    this process (or an attacker) could tamper with before the retry; refuse
-    unless the attempt id, the recorded sources and every copied file's own
-    digest and size still match the manifest exactly, so a genuinely intact
-    interruption is the only thing that can resume."""
+    this process (or an attacker) could tamper with before the retry.
+    Checking the placed files against their own recorded digest only proves
+    internal self-consistency: a file altered together with a matching
+    altered digest in its own manifest, or an outright falsified fact,
+    source or semantic field, would still pass that check. Refuse unless
+    (a) the attempt id and recorded sources match this archive run, (b)
+    every placed file still matches its own manifest entry, and (c) the
+    placed manifest itself, ignoring only ``archived_at``, matches a
+    manifest freshly derived from the current authoritative Run/OPS sources
+    -- so a genuinely intact interruption is the only thing that can
+    resume."""
 
     if manifest.get("attempt_id") != attempt_id:
         raise ArchiveError(
@@ -743,6 +759,20 @@ def _verify_resumable_placement(
             raise ArchiveError(
                 f"placed archive file does not match its recorded digest, refusing to commit: {rel}"
             )
+
+    try:
+        candidate_manifest, _ = _manifest_candidate(
+            attempt_id=attempt_id, state_root=state_root, ops_dir=ops_dir,
+            semantic_payload=semantic_payload, staging=staging,
+        )
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    if not _manifests_match_ignoring_archived_at(manifest, candidate_manifest):
+        raise ArchiveError(
+            f"placed archive at {dest} does not match a manifest freshly derived from the "
+            "current authoritative Run/OPS sources; refusing to commit a mismatched or "
+            "tampered archive"
+        )
 
 
 def archive_run(
@@ -848,9 +878,12 @@ def archive_run(
                 files=len(manifest["copied_files"]), commit=commit or None,
             )
         # Placed but never committed (killed between copy and commit): resume,
-        # but only once the placed data is reverified against its own manifest.
+        # but only once the placed data is reverified against its own manifest
+        # and against a manifest freshly derived from the current
+        # authoritative Run/OPS sources.
         _verify_resumable_placement(
             manifest, dest=dest, attempt_id=attempt_id, state_root=state_root, ops_dir=ops_dir_resolved,
+            semantic_payload=semantic_payload, staging=staging,
         )
         copied = manifest["copied_files"]
     else:

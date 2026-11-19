@@ -22,6 +22,11 @@ pre-fix port, and closed here without redesign:
   constructs a placed-but-uncommitted destination directly (the same state an
   interruption between placement and commit leaves) and tampers with it the
   same way a resumed, interrupted process could be tampered with.
+  ``test_archive_retry_integrity.py`` extends this: a file tampered together
+  with a matching altered digest in its own manifest, or a falsified fact,
+  source or semantic field, cannot pass self-consistency alone -- the
+  manifest itself must also match one freshly derived from the current
+  authoritative Run/OPS sources.
 
 Both areas are otherwise covered by existing ported/equivalence tests
 (``test_archive_port.py``, ``test_archive_conformance.py``,
@@ -339,15 +344,28 @@ class InterruptedRetryTamperTests(SafetyTestCase):
         commit. (A repeated already-committed archive being a no-op is
         covered by ``test_archive_port.py``'s
         ``test_second_archive_of_the_same_attempt_is_a_no_op`` against a
-        manifest produced by a real ``archive_run()`` call; this test's
-        hand-placed manifest only needs to prove the new resume
-        reverification itself, not re-prove the ported no-op property.)"""
+        manifest produced by a real ``archive_run()`` call.)
+
+        The placed manifest here is built the same way a real placement
+        would build it -- via ``ar._manifest_candidate`` against this
+        fixture's own authoritative state root -- and then moved straight
+        into the destination without committing, exactly the state a kill
+        between the atomic rename and the commit leaves. A hand-rolled
+        manifest with invented ``facts`` would no longer be "genuinely
+        intact": it would disagree with a manifest freshly derived from the
+        authoritative sources, which is precisely the new check this test
+        must not trip for an untampered resume."""
 
         attempt = "wfc-safety-intact-resume-01"
         repo, home, state = self._repo_and_identity(attempt)
         dest = repo / "archive" / "unclassified" / attempt
-        entry = self._place_file(dest, "run/sample.json", b'{"a":1}\n')
-        self._place(dest, attempt=attempt, state=state, copied_files=[entry])
+        staging = repo / ".wfc-archive-staging" / attempt
+        manifest, _ = ar._manifest_candidate(
+            attempt_id=attempt, state_root=state, ops_dir=None, semantic_payload=None, staging=staging,
+        )
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        staging.rename(dest)
         before_head = _head(repo)
 
         report = ar.archive_run(state_root=state, evidence_repo=repo, home=home)
