@@ -941,14 +941,23 @@ def preserve_candidate(
 
         if read_git("rev-parse", "HEAD") != base_head:
             raise PreservationRefused("unexpected HEAD movement since classification")
-        status = read_git("status", "--porcelain=v1", "--untracked-files=all", "--no-renames")
+        # ``-z`` (not the newline-terminated default) is required here: Git's
+        # default porcelain output applies C-style quoting to any path with a
+        # space, a quote, a backslash or a non-ASCII byte (core.quotePath),
+        # and the quoted literal would then fail the in_scope() containment
+        # test for an ordinary in-scope filename.  ``-z`` reports every path
+        # verbatim, NUL-separated, with no quoting to undo.
+        status = read_git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+        entries = status.split("\0") if status else []
+        if entries and entries[-1] == "":
+            entries.pop()
         tracked_paths: list[str] = []
         untracked_paths: list[str] = []
-        for line in status.splitlines():
-            if line.startswith("?? "):
-                untracked_paths.append(line[3:])
-            elif line:
-                tracked_paths.append(line[3:])
+        for entry in entries:
+            if entry.startswith("?? "):
+                untracked_paths.append(entry[3:])
+            elif entry:
+                tracked_paths.append(entry[3:])
         submodules = tuple(
             line for line in read_git("submodule", "status").splitlines() if line[:1] in {"-", "+"}
         )

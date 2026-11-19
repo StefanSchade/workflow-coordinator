@@ -84,6 +84,25 @@ def test_dirty_and_untracked_in_scope_is_preserved_and_repository_otherwise_unto
     assert after_refs - before_refs == {f"{outcome.ref} {outcome.commit}"}
 
 
+def test_in_scope_paths_with_space_and_non_ascii_byte_are_preserved_not_refused(repo: Path):
+    # F001 regression: Git's default porcelain C-quotes any path with a
+    # space, quote, backslash or non-ASCII byte; an in-scope path must not
+    # be read as the literal quoted string and refused as out-of-scope.
+    base = head(repo)
+    (repo / "scope" / "wip notes.txt").write_text("untracked with space\n", encoding="utf-8")
+    (repo / "scope" / "ümlaut.txt").write_text("untracked non-ascii\n", encoding="utf-8")
+    (repo / "scope" / "a.txt").write_text("v2\n", encoding="utf-8")
+
+    outcome = GF.preserve_candidate(
+        repo, expected_repository=repo, base_head=base, allowed_paths=("scope",), run_id="RUN-quoted",
+    )
+
+    assert outcome.status == "preserved"
+    assert outcome.file_count == 3
+    assert git(repo, "show", f"{outcome.commit}:scope/wip notes.txt") == "untracked with space"
+    assert git(repo, "show", f"{outcome.commit}:scope/ümlaut.txt") == "untracked non-ascii"
+
+
 def test_repeat_capture_is_idempotent_no_second_ref(repo: Path):
     base = head(repo)
     (repo / "scope" / "a.txt").write_text("v2\n", encoding="utf-8")
