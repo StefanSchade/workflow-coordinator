@@ -351,3 +351,64 @@ def test_status_command_reports_preservation_facts_without_mutating(
 
     after = journal.read_all()
     assert before == after  # status is read-only: no new journal record.
+
+
+# --------------------------------------------------------------------------
+# Non-UTF-8 worktree path names (F003/F004 regressions).
+# --------------------------------------------------------------------------
+
+def test_unreadable_non_utf8_path_is_refused_not_an_unhandled_crash_through_resume(
+    repository: Path, tmp_path: Path, state_home: Path,
+):
+    # F003 regression: an in-scope path Git itself cannot index (here,
+    # unreadable) must come back as a named ``ext.preservation.refused``
+    # through the real ``wfc resume`` entry point, with BP4a's own
+    # classification and exit code unchanged -- not an unhandled
+    # UnicodeDecodeError escaping resume_lifecycle.
+    raw_name = b"caf\xe9-unreadable.txt"
+    dirty_relative = "src/" + os.fsdecode(raw_name)
+    result, checkout_dir, journal = _classify_without_preservation(
+        repository, tmp_path, "awaiting_human", commission_id="bp4b-f003", dirty_file=dirty_relative,
+    )
+    assert result.classification == "awaiting_human"
+    dirty_path = repository / "src" / os.fsdecode(raw_name)
+    assert dirty_path.exists()
+    dirty_path.chmod(0)
+    try:
+        resumed = L.resume_lifecycle(repository)
+    finally:
+        dirty_path.chmod(0o644)
+
+    assert resumed.classification == "awaiting_human"
+    assert resumed.exit_code == L.EXIT_CODES["awaiting_human"]
+    status = P.latest_preservation_status(repository)
+    assert status.kind == "refused"
+    assert "reason" in status.data
+    refs = git(repository, "for-each-ref", "--format=%(refname)", f"refs/wfc/preserved/{result.run_id}/")
+    assert refs == ""
+
+
+def test_status_reports_a_refusal_reason_with_non_utf8_bytes_without_crashing(
+    repository: Path, tmp_path: Path, state_home: Path, capsys,
+):
+    # F004 regression: a journaled refusal reason can embed a worktree path
+    # that is not valid UTF-8 (``os.fsdecode`` admits a lone surrogate). The
+    # strictly-read-only ``wfc status`` must still print that reason and
+    # exit 0, not die with an unhandled UnicodeEncodeError before reporting
+    # the one fact the operator needs.
+    raw_name = b"caf\xe9.txt"
+    dirty_relative = "lib/" + os.fsdecode(raw_name)  # "lib" is outside the authorized "src" scope.
+    result = _run_with_fake_engine(
+        repository, tmp_path, "awaiting_human", commission_id="bp4b-f004", dirty_file=dirty_relative,
+    )
+    assert result.classification == "awaiting_human"
+    status = P.latest_preservation_status(repository)
+    assert status.kind == "refused"
+    assert "reason" in status.data
+
+    capsys.readouterr()
+    exit_code = L.cmd_status(["--repository", str(repository)])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "PRESERVATION: refused" in captured.out
+    assert "reason:" in captured.out

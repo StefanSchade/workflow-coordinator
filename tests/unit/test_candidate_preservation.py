@@ -124,6 +124,35 @@ def test_in_scope_path_not_valid_utf8_is_preserved_not_an_unhandled_crash(repo: 
     assert git(repo, "show", f"{outcome.commit}:scope/{decoded_name}") == "non-utf8 filename content"
 
 
+def test_unreadable_non_utf8_path_in_scope_is_refused_not_an_unhandled_crash(repo: Path):
+    # F003 regression: Git reports an unindexable worktree path (for
+    # example one it cannot open) in *stderr* of the ``git add`` that
+    # ``_build_candidate_tree`` runs while building the candidate tree --
+    # not only in the ``status`` output F002 already covers. A strict UTF-8
+    # decode of that stderr must not raise UnicodeDecodeError out of
+    # preserve_candidate for a non-UTF-8 name; it must be read tolerantly
+    # and reported as a named PreservationRefused.
+    base = head(repo)
+    raw_name = b"caf\xe9-unreadable.txt"
+    target = repo / "scope" / os.fsdecode(raw_name)
+    target.write_bytes(b"non-utf8 filename content\n")
+    target.chmod(0)
+    before_status = git(repo, "status", "--porcelain=v1")
+    before_refs = refs_snapshot(repo)
+    try:
+        with pytest.raises(GF.PreservationRefused):
+            GF.preserve_candidate(
+                repo, expected_repository=repo, base_head=base,
+                allowed_paths=("scope",), run_id="RUN-unreadable",
+            )
+    finally:
+        target.chmod(0o644)
+
+    assert head(repo) == base
+    assert git(repo, "status", "--porcelain=v1") == before_status
+    assert refs_snapshot(repo) == before_refs
+
+
 def test_repeat_capture_is_idempotent_no_second_ref(repo: Path):
     base = head(repo)
     (repo / "scope" / "a.txt").write_text("v2\n", encoding="utf-8")

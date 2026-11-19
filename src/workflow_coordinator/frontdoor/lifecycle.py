@@ -948,6 +948,17 @@ def _print_result(result: LifecycleResult) -> None:
         print(f"CHECKOUT STATE ROOT: {result.checkout_state_root}")
 
 
+def _stdout_safe(text: str) -> str:
+    """A journaled refusal reason can embed a worktree path that is not valid
+    UTF-8 (``os.fsdecode`` admits lone surrogates); print it losslessly
+    rather than letting a strict-encoding stdout raise ``UnicodeEncodeError``
+    and abort the report before the operator sees the reason.
+    """
+
+    encoding = sys.stdout.encoding or "utf-8"
+    return text.encode(encoding, "backslashreplace").decode(encoding, "replace")
+
+
 def _print_preservation_status(status: preservation.PreservationStatus) -> None:
     """Report-only: never called from any BP4a write path, never mutates."""
 
@@ -956,7 +967,7 @@ def _print_preservation_status(status: preservation.PreservationStatus) -> None:
     print(f"PRESERVATION: {status.kind}")
     for key in ("ref", "commit", "tree", "file_count", "bytes", "quiescence", "reason"):
         if key in status.data:
-            print(f"  {key}: {status.data[key]}")
+            print(f"  {key}: {_stdout_safe(str(status.data[key]))}")
 
 
 def cmd_run(argv: list[str]) -> int:

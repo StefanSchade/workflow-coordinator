@@ -322,7 +322,7 @@ def _run_git(
 
 
 def _run_git_raw(
-    repository: Path, *args: str, env: dict[str, str] | None = None,
+    repository: Path, *args: str, env: dict[str, str] | None = None, trusted: bool = False,
 ) -> subprocess.CompletedProcess[bytes]:
     """Like ``_run_git`` but with undecoded stdout/stderr.
 
@@ -331,9 +331,20 @@ def _run_git_raw(
     path, which would otherwise escape candidate preservation as an unhandled
     exception rather than a named, journaled refusal. This read-only helper
     lets a caller decode such output itself, with ``os.fsdecode`` symmetry.
+    Git also reports an unindexable path (for example one it cannot open) in
+    *stderr*, so any preservation-owned command that can fail on worktree
+    content -- not only the status read -- needs this same undecoded path.
     """
+    configuration = (
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        "-c",
+        "commit.gpgSign=false",
+        "-c",
+        "core.fsmonitor=false",
+    ) if trusted else ()
     return subprocess.run(
-        ("git", "-C", str(repository), *args),
+        ("git", "-C", str(repository), *configuration, *args),
         check=False,
         text=False,
         stdout=subprocess.PIPE,
@@ -897,16 +908,16 @@ def _build_candidate_tree(identity: Path, *, base_head: str, changed_paths: tupl
     try:
         env = {**_trusted_git_environment(), "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": private_index}
 
-        def build_git(*args: str) -> str:
-            completed = _run_git(identity, *args, env=env, trusted=True)
+        def build_git(*args: str) -> bytes:
+            completed = _run_git_raw(identity, *args, env=env, trusted=True)
             if completed.returncode:
-                raise PreservationRefused(completed.stderr.strip() or "Git command failed")
-            return completed.stdout.strip()
+                raise PreservationRefused(os.fsdecode(completed.stderr).strip() or "Git command failed")
+            return completed.stdout.rstrip(b"\n")
 
         build_git("read-tree", base_head)
         if changed_paths:
             build_git("add", "-A", "--", *changed_paths)
-        return build_git("write-tree")
+        return os.fsdecode(build_git("write-tree"))
     finally:
         try:
             os.unlink(private_index)
