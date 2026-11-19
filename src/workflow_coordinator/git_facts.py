@@ -321,6 +321,28 @@ def _run_git(
     )
 
 
+def _run_git_raw(
+    repository: Path, *args: str, env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Like ``_run_git`` but with undecoded stdout/stderr.
+
+    A worktree path need not be valid UTF-8; a strict text decode of Git's
+    output (as ``_run_git`` performs) raises ``UnicodeDecodeError`` for such a
+    path, which would otherwise escape candidate preservation as an unhandled
+    exception rather than a named, journaled refusal. This read-only helper
+    lets a caller decode such output itself, with ``os.fsdecode`` symmetry.
+    """
+    return subprocess.run(
+        ("git", "-C", str(repository), *args),
+        check=False,
+        text=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        shell=False,
+    )
+
+
 def _git(repository: Path, *args: str, check: bool = True) -> str:
     completed = _run_git(repository, *args)
     if check and completed.returncode:
@@ -939,6 +961,12 @@ def preserve_candidate(
             # ``str.strip()``.
             return completed.stdout.rstrip("\n")
 
+        def read_git_raw(*args: str) -> bytes:
+            completed = _run_git_raw(identity, *args, env=read_env)
+            if completed.returncode:
+                raise PreservationRefused(os.fsdecode(completed.stderr).strip() or "Git command failed")
+            return completed.stdout.rstrip(b"\n")
+
         if read_git("rev-parse", "HEAD") != base_head:
             raise PreservationRefused("unexpected HEAD movement since classification")
         # ``-z`` (not the newline-terminated default) is required here: Git's
@@ -946,11 +974,15 @@ def preserve_candidate(
         # space, a quote, a backslash or a non-ASCII byte (core.quotePath),
         # and the quoted literal would then fail the in_scope() containment
         # test for an ordinary in-scope filename.  ``-z`` reports every path
-        # verbatim, NUL-separated, with no quoting to undo.
-        status = read_git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
-        entries = status.split("\0") if status else []
-        if entries and entries[-1] == "":
-            entries.pop()
+        # verbatim, NUL-separated, with no quoting to undo. The read is raw
+        # bytes, decoded with ``os.fsdecode`` (not Git's own text decode),
+        # because a worktree path need not be valid UTF-8 and a strict decode
+        # would raise instead of yielding a refusal or a capture.
+        status = read_git_raw("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+        raw_entries = status.split(b"\0") if status else []
+        if raw_entries and raw_entries[-1] == b"":
+            raw_entries.pop()
+        entries = [os.fsdecode(entry) for entry in raw_entries]
         tracked_paths: list[str] = []
         untracked_paths: list[str] = []
         for entry in entries:
@@ -959,7 +991,8 @@ def preserve_candidate(
             elif entry:
                 tracked_paths.append(entry[3:])
         submodules = tuple(
-            line for line in read_git("submodule", "status").splitlines() if line[:1] in {"-", "+"}
+            line for line in os.fsdecode(read_git_raw("submodule", "status")).splitlines()
+            if line[:1] in {"-", "+"}
         )
         if submodules:
             raise PreservationRefused("unresolved submodule identity")

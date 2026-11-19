@@ -103,6 +103,27 @@ def test_in_scope_paths_with_space_and_non_ascii_byte_are_preserved_not_refused(
     assert git(repo, "show", f"{outcome.commit}:scope/ümlaut.txt") == "untracked non-ascii"
 
 
+def test_in_scope_path_not_valid_utf8_is_preserved_not_an_unhandled_crash(repo: Path):
+    # F002 regression: ``-z`` delivers the raw path bytes Git read from the
+    # worktree, and a filename need not be valid UTF-8 (unlike the F001
+    # cases above, which are all valid UTF-8). A strict text decode of that
+    # status output must not raise UnicodeDecodeError out of
+    # preserve_candidate; it must be read (via os.fsdecode/surrogateescape)
+    # and captured like any other in-scope path.
+    base = head(repo)
+    raw_name = b"caf\xe9.txt"
+    (repo / "scope" / os.fsdecode(raw_name)).write_bytes(b"non-utf8 filename content\n")
+
+    outcome = GF.preserve_candidate(
+        repo, expected_repository=repo, base_head=base, allowed_paths=("scope",), run_id="RUN-nonutf8",
+    )
+
+    assert outcome.status == "preserved"
+    assert outcome.file_count == 1
+    decoded_name = os.fsdecode(raw_name)
+    assert git(repo, "show", f"{outcome.commit}:scope/{decoded_name}") == "non-utf8 filename content"
+
+
 def test_repeat_capture_is_idempotent_no_second_ref(repo: Path):
     base = head(repo)
     (repo / "scope" / "a.txt").write_text("v2\n", encoding="utf-8")
