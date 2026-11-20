@@ -2,9 +2,280 @@
 
 This record holds every independent broad-review pass over the BP6c product
 (WorkItem `WI-WFC-BETA1-BP6C-LIFECYCLE-ARCHIVE-WIRING-002`). The current pass
-is *H002*.
+is *H009*; earlier passes are kept below it, unedited, as the review history.
 
-== Pass H002 (current)
+== Pass H009 (current)
+
+WorkItem:: `WI-WFC-BETA1-BP6C-LIFECYCLE-ARCHIVE-WIRING-002`
+Hop:: `H009` (`broad_review`, fresh independent adversarial reviewer, gate,
+blocking-only, `finding_authority: [resolve]`)
+Reviewed product:: the *entire* BP6c product at review base HEAD
+`f62602b116b4cf5f8c7ce3a8b9a00ac01afee348`, measured against the
+pre-implementation baseline `b9564da163455d9b392d8a907eabe6ea2e736985` and the
+independently accepted BP4a, BP4b, BP5, BP6a and BP6b products beneath it.
+The candidate is the full chain `72725d7` (H001 implementation), `213fb08`
+(H003 correction for F001/F002/F003) and `bf499b9` (H007 correction for
+F004/F005), plus the three review artifacts.
+Governing acceptance:: the Commission task for this WorkItem (`Deliver` items
+1-6, the fifteen-case acceptance matrix, the binding identity decision
+(a)-(d), the hard rules and the withheld authority), BP6 in
+`docs/backlog/beta1_execution_plan.adoc` and
+`docs/backlog/beta1_productization.adoc` (including the 2026-11-20
+package-boundary paragraphs), and the `Lifecycle`,
+`Commit ownership, idempotency and integrity` and `contract-report` sections
+of `docs/warm_storage/concepts/wfc_beta1_product_boundary_review_second_pass.adoc`.
+Disposition:: *Accept.* No blocking Finding. Every one of the fifteen
+acceptance cases was reproduced against the installed product, and each was
+confirmed to have at least one mutation-sensitive test. Four non-blocking
+observations are recorded below (one new, three carried forward); because
+`finding_authority: [resolve]` does not authorize residual transitions they
+are reported here and in the Hop summary only.
+Finding state:: `F001`-`F005` are all already `resolved` in the authoritative
+Run ledger and nothing in this pass re-opens any of them. This Hop therefore
+submits no Finding delta.
+
+The only repository change proposed by this Hop is this artifact. No
+implementation, test, fixture, document or Git state was modified by the
+reviewer, and the reviewer made no Git write; every probe and mutation ran in
+the repository's ignored `tmp/review-bp6c-h009/` scratch, against
+`git archive` exports of the reviewed tree and of the baseline tree.
+
+=== Method
+
+This pass deliberately did not re-use the earlier passes' probes. It was
+driven from the task text, with an independently written end-to-end probe and
+an independently chosen mutation set, so that agreement with H002/H004/H006/H008
+is corroboration rather than repetition.
+
+. *Baseline diff reading.* `git diff b9564da..HEAD` over all fifteen leaves,
+  plus the full text of `frontdoor/postrun.py`, the `lifecycle.py`,
+  `archive.py` and `audit.py` hunks, and the frozen-file hunks, read against
+  BP4a's `_advance`/`EXIT_CODES`, BP4b's preservation step, BP5's
+  `resolve_ops_dir`/`archive_run` and BP6a/BP6b's privacy guard and retention
+  paths.
+. *An independent end-to-end CLI probe* (`tmp/review-bp6c-h009/probe_e2e.py`,
+  fourteen tests). Drives the real `cli_main(["run"...])`,
+  `cli_main(["resume"...])` and `cli_main(["status"...])` with the
+  repository's own BP4 fake engine/provider fixtures, throwaway consumer
+  repositories, `tmp_path`-scoped Evidence repositories and an isolated
+  `XDG_STATE_HOME`, asserting on captured stdout, on `git rev-list --count`
+  in the Evidence repository, on the placed `audit.json` and on the journal.
+  All fourteen pass against the reviewed tree.
+. *Independent mutation testing* (`tmp/review-bp6c-h009/mutate.py`, eleven
+  mutations `N1`-`N11`). Each applied alone to a freshly extracted
+  `git archive HEAD` export and run against the BP6c suite. Nine killed,
+  two survived (observation 1).
+. *Targeted boundary probes* (`p01_user_match.py`, `p02_identity.py`,
+  `probe_tokens.py`, `probe_edges.py`): the whole-component/whole-token
+  matching rule in both directions, identity derivation and validation over
+  fifteen inputs, the set of plausible OS account names that a real
+  product-path `audit.json` would still refuse, and the two post-run reads
+  that sit outside the F001 `try` blocks.
+. *Suite execution* (agent-side, `--wfc-partial`, not Coordinator-trusted
+  evidence). The BP6c suites (53 tests), the three frozen BP4a/BP4b lifecycle
+  suites (54), the BP5/BP6a/BP6b archive/audit/report/evidence/init suites
+  (310), `tests/architecture`, and `tests/unit` + `tests/integration` as a
+  whole, with every failure cross-checked against a baseline export.
+
+=== Acceptance matrix, re-verified independently
+
+[cols="1,3"]
+|===
+|Case |Independent result at `f62602b`
+
+|(1) completed Run
+|`cli_main(["run"...])` exits 0, prints `CLASSIFICATION: completed` *and* the
+`WFC RUN` report block, and leaves exactly one archive commit beside the
+`wfc init` commit (`git rev-list --count HEAD == 2`), with `audit.json` in
+that same commit and `ext.archive.result{retention: "local"}` journalled.
+
+|(2) stopped and interrupted Runs
+|`awaiting_human`, `stopped` and `dispatch_then_crash`/`interrupted` each
+exit with BP4a's own unchanged code (10/13/14, never 0), print their own
+classification, archive exactly once, and carry their own classification into
+`audit.lifecycle.classification`. The printed report never contains
+`outcome     completed`, always contains `the task is not complete` and a
+`next` line, and the audit's `lifecycle` block contains no `completed`.
+
+|(3) no engine state
+|`exit_immediately`/`engine_exited_before_state` exits 16, writes no
+`ext.archive.*` record at all, adds no commit, and places no `audit.json` or
+`manifest.json` anywhere under the Evidence repository's `archive/`.
+
+|(4) Evidence repository absent
+|Exit code unchanged (0), `CLASSIFICATION: completed` printed, the loud
+`ARCHIVE SKIPPED` line printed naming the configured location and `wfc init`,
+no report printed, `ext.archive.skipped{reason: "evidence_repository_absent"}`
+journalled, and neither the configured directory nor its parent created.
+
+|(5) archive/audit failure or privacy refusal
+|A pre-placed conflicting destination yields `CLASSIFICATION: completed`
+*plus* exit 32, `ARCHIVE FAILED` printed, `ext.archive.refused{reason_code:
+"archive_refused"}` journalled and the `classified` record untouched;
+removing the cause and running `wfc resume` archives exactly once, and a
+further `wfc resume` adds no commit. The privacy-guard trigger is covered by
+the delivered `test_privacy_guard_refusal_is_archive_failed_then_resume_succeeds_once_resolved`,
+which mutation `N6` kills.
+
+|(6) idempotency and crash resume
+|Repeat `resume` after success: no second commit, exactly one
+`ext.archive.result` in the journal, Evidence `HEAD` unchanged. Crash after
+the archive commit but before the result record (journal rewritten without
+that record): `resume` exits 0, re-records the same
+`destination_relative`, and leaves Evidence `HEAD` byte-identical. Crash
+before the archive (skipped, then the Evidence repository created): `resume`
+archives exactly once and is idempotent on repeat.
+
+|(7) audit carries the lifecycle facts
+|All three BP4b outcomes reproduced end to end through the installed
+lifecycle: `not_needed` (clean `stopped`), `refused` (out-of-scope dirty
+worktree) and `result` (in-scope dirty worktree, `interrupted`), each
+matching `audit.lifecycle.preservation.outcome` and
+`audit.lifecycle.classification`. Mutation `N4` (running the post-run step
+*before* BP4b's preservation step) is killed, so the ordering the facts
+depend on is pinned; `N8` (never passing the lifecycle facts) is killed.
+
+|(8) read-only `wfc status`, no STATE mutation
+|`wfc status` prints `ARCHIVE: result` with the journalled fields and exits
+0; the engine state root is byte-identical (recursive `read_bytes` map)
+across a `status` and a `resume` after a successful archive. Mutation `N3`
+(making `latest_postrun_status` append one journal record) is killed. OPS and
+scratch do not exist on the installed product path at all: `archive_run`
+derives `ops_candidate` as `$HOME/wfc-ops/<attempt_id>`, which the
+Run-derived identity never matches, and the narrowed `resolve_ops_dir`
+returns `None` for a product-shaped plan.
+
+|(9) three retention modes
+|`local` and `discard` track only `audit.json`; `commit` tracks
+`audit.json`, `manifest.json`, `.gitignore` and `run/*` -- verified through
+`git ls-files` in the Evidence repository, per mode, through the lifecycle.
+
+|(10) no leak in `ext.*` records
+|Every `ext.archive.*` record's values contain no absolute path, no scratch
+path and no `$HOME`; `destination_relative` is repository-relative,
+`commit` is a hex id, `retention` a mode, `reason_code`/`reason` closed
+vocabularies. The exception's own prose is printed only, never journalled.
+
+|(11) privacy fix, both directions
+|The two names the task calls out are now clear: with OS user `ci` or `ops`,
+the privacy guard accepts a complete, real product-path `audit.json`
+(`probe_tokens.py`). Whole-value, whole-path-component and whole-token leaks
+are still refused (`p01_user_match.py`), and the end-to-end refusal is pinned:
+mutation `N5` (back to plain substring matching) and `N6` (never refusing the
+user name) are both killed.
+
+|(12) existing suites
+|BP6c (53), the three frozen lifecycle suites (54), the BP5/BP6a/BP6b
+archive/audit/report/evidence/init suites (310) and
+`tests/architecture/test_package_boundaries.py` +
+`test_product_invariants.py` are green. The failures in
+`tests/unit`+`tests/integration` (`test_wfc_op.py`,
+`test_claude_adapter_conformance.py`, `test_execution_boundary_bwrap.py`,
+`test_nested_claude_bwrap_qualification.py`, `test_bp1_identity.py`,
+`test_offline_distribution.py`) reproduce on a baseline export and are
+agent-local environment limitations with the diagnostics to prove it: `pip`
+cannot reach `setuptools>=68` offline, and `bwrap` reports "No permissions to
+create new namespace". None of them touches a file this candidate changes.
+
+|(13a) two Runs, one Evidence repository
+|Two checkouts sharing `repository_name: probe-consumer` and one Evidence
+repository archive to distinct destinations keyed by their own lower-cased
+Run ids, each exactly once, each with its own `audit.json` whose
+`run.run_id` matches; repeat `resume` of either adds no commit. No identity
+contains `engine-state`, and mutation `N7` (falling back to
+`derive_attempt_id`) is killed. One checkout can host only one Run -- BP4a's
+`_advance` refuses a second `wfc run` with `refused_active_lifecycle` -- so
+the unscoped per-checkout `ext.archive.result` lookup cannot mask a second
+Run.
+
+|(13) frozen BP4a/BP4b surfaces
+|The diff touches exactly fifteen leaves. No source file outside
+`frontdoor/{postrun,lifecycle,archive,audit}.py` is changed at all:
+`operator.py`, `git_facts.py`, `preservation.py`, `journal.py`, `config.py`,
+`report.py`, `cli.py` and `init.py` are byte-identical to the baseline. No
+`EXIT_CODES` line appears in the `lifecycle.py` diff and the `classified`
+record is untouched; `ARCHIVE_FAILED_EXIT_CODE = 32` is additive, documented,
+absent from `EXIT_CODES`, never a classification, and read only by
+`cmd_run`/`cmd_resume`. The three frozen test files differ by one
+`--evidence-repository` isolation hunk each, with no assertion weakened --
+and because `wfc init` *creates* that location, those suites now exercise the
+real archive path with every pinned exit code still pinned. `audit.py` adds a
+`private_tokens` parameter only; `_TOP_KEYS` and the schema are unchanged.
+No `.wfc/config.yaml` exists in the tree.
+
+|(14) limitations record
+|Present, developer-facing and honest across all six required subjects. One
+sentence overstates its scope (observation 2).
+|===
+
+=== Non-blocking observations
+
+. *Two `ext.archive.result` details are unpinned.* Mutation `N1` (deleting
+  the `journal.append("ext.archive.intent", ...)` call, required by `Deliver`
+  item 2 *before* the archive effect) and `N2` (hard-coding
+  `"retention": "local"` instead of `settings.raw`, so `wfc status` would
+  misreport the mode for a `commit` or `discard` consumer) both survive the
+  whole BP6c suite. The shipped product does both correctly, and the
+  acceptance list pins the intent record only negatively (absent when no
+  archive happens) and retention only through `git ls-files`; two short
+  assertions in `test_postrun_lifecycle.py` would close the gap.
+. *A tampered placed `audit.json` whose top level is `null` or a JSON array
+  crashes `wfc resume` with an uncaught `AttributeError`.*
+  `postrun._read_report_text` guards `OSError`/`ValueError` around
+  `json.loads` but then hands whatever it parsed to `report.build_report`,
+  which calls `.get` on it. Every realistic tamper shape fails safe instead
+  -- an empty file, invalid JSON and a truncated object all give exit 0 with
+  a truthful `status is unknown -- not reported as success` report -- and the
+  crash is unreachable without rewriting the package's own committed output
+  into a non-object, which is outside every boundary the acceptance list
+  names. A single `isinstance(audit_doc, dict)` check would remove it.
+  Relatedly, `postrun._cached_config` reads and parses the checkout's cached
+  Consumer Config outside any `try`: a corrupt or deleted
+  `<checkout>/commission/config.yaml` makes `wfc resume` exit 22
+  (`refused_prelaunch`) printing no classification for a Run the journal
+  records as `completed` -- the F001 shape at a boundary F001's two named
+  triggers did not cover. It needs state-home corruption to reach, and BP4a's
+  own frozen stages read that same file just as unguarded, so this is
+  consistency with the frozen design rather than a new defect; the
+  limitations record's claim that the step is caught "at every call site that
+  can raise them" is nonetheless slightly broader than the code.
+. *Carried forward from H002, still accurate.* A `repository_name` beginning
+  with `.` or `_` derives an identity
+  `validate_explicit_attempt_identity` rejects, so archiving refuses
+  permanently with `archive_refused` (observation 1 of H002, re-reproduced in
+  `p02_identity.py`); the OS user name occurring as a whole token of
+  `repository_name` refuses permanently with `privacy_guard_refused`
+  (observation 2); and a hyphenated or dotted OS user name
+  (`gitlab-runner`, `stefan.schade`) can match only as a whole path component
+  or whole value, never as a free token in prose, because `_TOKEN_RE` splits
+  on `-` and `.` (observation 3). All three fail closed, all three follow the
+  maintainer-specified rule literally, and the acceptance-named real-leak
+  case is still refused.
+. *The set of plausible OS account names that now cause a false refusal is
+  small and structural.* Against a complete product-path `audit.json`
+  (`raw: commit`, `interrupted`, preservation `result`), the only names out of
+  fifty tested that still refuse are ones equal to an audit schema key or a
+  fixed structural token: `schema`, `run`, `governance`, `hops`, `findings`,
+  `lifecycle`, `raw`, `limits` (matched as a `<key>`) and `wfc` (matched
+  inside `refs/wfc/preserved/...`). `ci`, `ops`, `dev`, `build`, `runner`,
+  `jenkins`, `git`, `deploy`, `ubuntu`, `gitlab-runner` and the rest are all
+  accepted. These residual collisions fail closed, never leak, and are
+  outside the acceptance list's "short OS user name (for example `ci` or
+  `ops`)".
+
+=== Agent-local environment
+
+`tests/architecture/test_bp1_identity.py`,
+`tests/architecture/test_offline_distribution.py` and `tests/unit/test_wfc_op.py`
+fail in the agent shell because `python -m build`/`pip` cannot download
+`setuptools>=68` without the offline wheel bundle, and the `bwrap` integration
+suites fail because this kernel refuses unprivileged user namespaces. Both
+reproduce identically on a `b9564da` export. All agent-side runs were
+`--wfc-partial` subsets and are explicitly *not* required-suite acceptance and
+not Coordinator-trusted evidence; the Coordinator's own full task-check is the
+trusted evidence for this Hop.
+
+== Pass H002
 
 WorkItem:: `WI-WFC-BETA1-BP6C-LIFECYCLE-ARCHIVE-WIRING-002`
 Hop:: `H002` (`broad_review`, fresh independent reviewer, gate, blocking-only,
