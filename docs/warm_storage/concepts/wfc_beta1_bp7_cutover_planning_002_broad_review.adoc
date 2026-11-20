@@ -1,0 +1,443 @@
+= BP7 cutover planning (successor Run): independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the BP7
+self-development cutover plan for WorkItem
+`WI-WFC-BETA1-BP7-CUTOVER-PLANNING-002`, the planning successor to the
+preempted `...-001` Run. The current pass is *H002*; later passes are added
+above this one and earlier passes are kept unedited. The predecessor Run's
+own review record
+(`wfc_beta1_bp7_cutover_planning_001_broad_review.adoc`) is frozen evidence
+and was not touched.
+
+== Pass H002 (current)
+
+WorkItem:: `WI-WFC-BETA1-BP7-CUTOVER-PLANNING-002`
+Hop:: `H002` (`broad_review`, fresh independent adversarial reviewer, gate,
+blocking-only, `finding_authority: [resolve]`)
+Reviewed product:: the whole planning candidate at review base HEAD
+`2921b9f4bd040538a7878ff108176e630fcf18ba`:
+`docs/backlog/beta1_bp7_cutover_plan.adoc` (800 lines) as re-verified and
+corrected by this Run's H001 commit `2921b9f`, carried forward from the
+frozen predecessor Run (`d4f0d15`, correction `24f6d4f`), together with the
+inbound BP7-section links in `docs/backlog/beta1_productization.adoc`
+(line 496), `docs/backlog/beta1_execution_plan.adoc` (line 547) and
+`docs/backlog/_open.adoc` (line 154).
+Governing acceptance:: the Commission task for this WorkItem (deliverables
+1-6, the BP9/closure checklist, the binding inputs DG-4 (a) and DG-5 (a),
+the maintainer BP7 specification, the hard rules and the withheld
+authority), `[[bp7]]` in `docs/backlog/beta1_productization.adoc`
+(including the "Maintainer specification for planning, 2026-11-20" at lines
+509-520), and the BP7 Commission entry, `<<decision-gates>>`,
+`=== Batch 3`/`=== Batch 4`, "Real release gates" and
+`<<closure-versus-tag>>` in `docs/backlog/beta1_execution_plan.adoc`.
+Disposition:: *Changes required.* Two blocking Findings, both inside the
+plan document and both correctable without any product change. The
+substance of the candidate is otherwise strong: every capability-level claim
+this pass could test against the real tree held, including the central
+configuration recommendation, which was executed against the real parser
+rather than read.
+Finding state:: the Run carries no authoritative Finding at the start of
+this pass; this Hop proposes two new blocking Findings and disposes nothing.
+
+The only repository change proposed by this Hop is this artifact. No
+implementation, test, fixture, manual chapter, backlog record, Run state,
+historical review or Evidence content was modified, and the reviewer made no
+Git write.
+
+=== Method
+
+Three passes, deliberately not organised around the plan's own narrative:
+
+. *Citation pass.* Every file/function/line citation in the plan was opened
+  in the real tree at the review base HEAD and checked on three axes: the
+  symbol exists, it is in the named file, and it does what the plan says.
+. *Independent-search pass.* `tests/`, `pyproject.toml`, `.gitignore`,
+  `governance/` and the packaging metadata were searched independently of
+  the plan's own claims, to find what the plan does *not* mention. Blocking
+  Finding 1 came out of this pass, not out of the plan's text.
+. *Execution pass.* The one claim that can be executed cheaply and locally
+  was executed: the recommended `.wfc/config.yaml` body from
+  `<<config-recommendation>>` was parsed by the real
+  `frontdoor.config.consumer_config_from_yaml` and resolved by the real
+  `resolve_evidence`, and the archive-equivalence module the plan rests
+  section 3 and C1b on was actually run.
+
+Agent-local limitations, reported rather than worked around:
+
+* The sibling Evidence repository is not readable from this reviewer's
+  sandbox (`ls` on `../workflow-coordinator-run-evidence` reports no such
+  file or directory, which this sandbox cannot distinguish from a read
+  denial), so its present on-disk shape, its root `.gitignore` and its
+  actual location relative to this checkout could not be confirmed. The
+  plan states this same limitation and converts it into preconditions 5 and
+  6 of `<<risks>>`, which is the correct handling; it is not a candidate
+  defect.
+* `python -m pytest` is not available in the ambient interpreter, and the
+  required suite refuses to run without a verified offline-input bundle
+  (`WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`). The equivalence module was
+  therefore run through the project venv in the suite's own explicitly
+  labelled partial mode:
+  `.venv/bin/python -m pytest tests/unit/test_archive_equivalence.py -q
+  --wfc-partial` -> `1 passed`. That is agent-side exploratory validation of
+  one plan claim, not Coordinator-trusted evidence and not a suite result.
+
+=== Blocking Finding 1 -- C5's acceptance cannot be met within C5's own stated scope: `tests/conftest.py` pins six required-real `test_wfc_op.py` node ids
+
+*Where.* `<<sequence>>`, row C5 (`wfc-beta1-bp7-retirement-001`): scope
+"Remove or stub `scripts/wfc_op.py` and its own direct test,
+`tests/unit/test_wfc_op.py`; ... and the parts of
+`tests/unit/test_commissioning.py` and
+`tests/architecture/test_self_development_governance.py` that exercise it";
+acceptance "Full suite green without `scripts/wfc_op.py`, without the v1
+compile path, and without any quarantined file".
+
+*What is actually in the tree.* `tests/conftest.py:21-33` defines
+
+[source,python]
+----
+_REQUIRED_REAL = frozenset(
+    "tests/unit/test_wfc_op.py::" + name for name in (
+        "test_prepare_positive_produces_complete_envelope_and_leaves_state_absent",
+        "test_status_completed_run",
+        "test_prepare_final_revalidation_refuses_on_drift_during_preparation",
+        "test_canonical_preflight_refusal_propagates_and_proves_pinned_runtime_code",
+        "test_launch_uses_the_frozen_prepared_path_not_a_later_ambient_path",
+        "test_launch_sh_safely_quotes_shell_significant_paths",
+    )
+) | frozenset({
+    "tests/architecture/test_offline_distribution.py::test_clean_isolated_distribution_and_wheel_install",
+    "tests/unit/test_neutral_consumer_evidence.py::test_shell_consumer_uses_real_evidence_runner",
+})
+----
+
+and enforces it, in required (non-`--wfc-partial`) mode only:
+`pytest_collection_finish` (`tests/conftest.py:36-40`) records which of
+those node ids were selected, `pytest_runtest_makereport`
+(`tests/conftest.py:43-49`) records their per-phase outcomes, and
+`pytest_sessionfinish` (`tests/conftest.py:134-144`) computes
+`missing = sorted(node for node in _REQUIRED_REAL if node not in
+state.get("selected_real", set()) or reports.get(node) != {"setup":
+"passed", "call": "passed", "teardown": "passed"})` and, if that list is
+non-empty, sets `session.exitstatus = pytest.ExitCode.TESTS_FAILED`.
+
+*Why this is blocking, not polish.* Six of the eight required-real node ids
+live in the module C5 deletes. Deleting `tests/unit/test_wfc_op.py` without
+amending `tests/conftest.py` makes every required-mode suite run fail by
+construction -- including the Coordinator's own `task-check`, whose argv is
+`("python", "-m", "pytest", "-q")` with no `--wfc-partial`
+(`commissioning.py:334`, the `repository-standard` evidence-command
+literal). C5's stated acceptance ("Full suite green without
+`scripts/wfc_op.py`") is therefore not reachable from C5's stated scope: the
+one file that decides it is not named anywhere in the plan. This is exactly
+the class the task calls "an unfulfillable acceptance" and "a missing
+essential package", and it is the single most load-bearing acceptance in the
+whole decomposition, since C5 is the Commission that performs the cutover.
+
+*A second, semantic half the plan should not leave implicit.* Those six node
+ids are not incidental coverage: they are the suite's designated *real*
+(un-faked) proof that preparation pinning, final revalidation, canonical
+preflight refusal, frozen launch paths and shell quoting actually work. The
+plan must say what happens to that guarantee -- whether the required-real
+set simply loses the Harness entries at retirement, or whether equivalent
+product-path node ids (for example from
+`tests/unit/test_lifecycle_controller.py` or `tests/unit/test_postrun_archive.py`)
+take their place. That is a bounded technical choice the plan should
+recommend, not an open maintainer decision; but it must appear, because the
+required-real set is the mechanism by which this repository refuses to
+accept a green suite that never really ran the critical paths.
+
+*What would resolve it.* Inside the plan document: add `tests/conftest.py`
+to C5's scope with its `_REQUIRED_REAL` amendment named explicitly, state
+the recommended disposition of the six Harness node ids, and extend C5's
+acceptance to assert the required-mode (not partial) suite is green. No
+product change is implied by this Finding, and none is authorized by it.
+
+For completeness, two neighbouring items were checked and are *not* part of
+this Finding: `tests/fixtures/offline-test-inputs/py313-linux-x86_64-collected-nodes.txt`
+contains 49 `test_wfc_op` lines, but no code in `scripts/`, `src/` or
+`tests/` reads a `collected-nodes` file, so it is an informational record
+rather than an enforced gate; and `pyproject.toml`'s `[project.scripts]`
+declares only `wfc = "workflow_coordinator.frontdoor.cli:main"`, so
+retirement needs no packaging change and the plan's scope-ceiling claim
+(`<<config-recommendation>>`) survives this check.
+
+=== Blocking Finding 2 -- the required effort estimates are absent: no Hop estimate and no reasoning for any sub-Commission
+
+*Where.* `<<sequence>>`, the `|Effort` column of the sub-Commission table.
+
+*What the plan actually contains.* The complete set of effort entries is:
+C1 `S`; C1b `S`; the external Runtime promotion `--`; Proof Run 1 "Small (1
+real Run; Hop count depends on the chosen task, not fixed by this plan)";
+Proof Run 2 "Small"; C5 `M`. A full-document search for `Hop`, `effort`,
+`small`, `medium` and `large` (case-insensitive) finds no other effort
+statement anywhere in the plan: no Hop estimate for C1, C1b or C5, no
+reasoning for any of the six classes, and no legend defining `S` and `M`.
+
+*Why this is blocking.* The task's deliverable 4 requires, verbatim,
+"estimated effort in Hops and a rough token/effort class (small/medium/large)
+with the reasoning", and the Acceptance requires "independently testable
+sub-Commissions with effort estimates". Two of the three required components
+-- the Hop estimate and the reasoning -- are missing for all three real
+Commissions, and the third is given as undefined abbreviations. This is a
+reproduced violation of an explicit acceptance criterion, which the review
+contract forbids downgrading because the fix is small or the risk low. It
+also has a practical consequence inside the plan's own recommendation: the
+plan commits `max_autonomous_hops: 10` as the repository ceiling
+(`<<config-recommendation>>`), and `compile_commission` refuses any
+`ConsumerRequest.max_autonomous_hops` above that ceiling
+(`commissioning.py:705`), so whoever commissions C1, C1b and C5 must choose
+a per-Commission Hop number that this plan declines to estimate.
+
+*What would resolve it.* Inside the plan document: give each of C1, C1b and
+C5 an estimated Hop range and one clause of reasoning (what drives the
+estimate -- for C5, for instance, the breadth of the manual edit set plus a
+required-mode suite run), spell the class as small/medium/large, and keep
+the honest "depends on the chosen task" qualification for the two proof
+Runs, where it is appropriate rather than a gap.
+
+=== Verification log: claims checked and found accurate
+
+This is the part of the review that matters for the next Hop's trust
+budget. All of the following were verified directly against the tree at the
+review base HEAD and are *correct as the plan states them*; a correction Hop
+should not re-litigate them.
+
+[cols="3,4",options="header"]
+|===
+|Plan claim |Verification
+
+|The recommended `.wfc/config.yaml` works with no additive product change
+|Executed, not read: the plan's exact YAML body parses through
+`consumer_config_from_yaml`
+(`repository_name=workflow-coordinator`, `governance_dir=.wfc/governance`,
+ceiling `('src','tests','scripts','docs')`, `max_autonomous_hops=10`,
+`default_execution={}`) and `resolve_evidence` resolves it to
+`<repo parent>/workflow-coordinator-run-evidence` with `raw='commit'`.
+`resolve_evidence` (`config.py:253-287`) is pure path arithmetic on
+`Path(os.path.normpath(repository_root / candidate))` (line 276), touching
+the filesystem in no branch, so C1's stated pure-function acceptance is
+feasible exactly as written. `.gitignore` does not exclude `.wfc`, so the
+file can be committed.
+
+|The Evidence binding needs no write to the sibling repository
+|`init.py:93-123 ensure_evidence_repository` returns `"reused"` for a path
+that is a Git repository root with an `archive/` directory, writing nothing
+(lines 101-113); `init.py:210-213` prints "`wfc init` never commits it".
+Both as described.
+
+|Hop-ceiling equivalence, including the "not `:423`" distinction
+|`commissioning.py:705` is the consumer-path ceiling check; `:423` is the v1
+`CommissionIntent` check; `request.py:132-134` and `config.py:154-156`
+validate positive integers; `COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS = 20`
+(`model.py:25`) is enforced at `serialization.py:531` and
+`operator.py:213-220` and `operator.py:425`. Every citation exact.
+
+|Guidance is a genuinely new required input
+|`ConsumerRequest.guidance` is a required field (`request.py:64`, required
+key list `request.py:113`), `GuidanceRef` is pinned at a 40-character SHA
+(`request.py:44-49`, `88-93`), the component is bound on every phase of
+both closed programs, and `compile_commission` refuses any request scope
+overlapping the guidance path or `governance_dir`
+(`commissioning.py:709-714`). The legacy side really does bind nothing:
+`standalone-development-profile.yaml:10,30,55,75` are all
+`repository_policy: []`.
+
+|Role texts are byte-identical today
+|`diff` of all three `governance/self-development/prompts/*.txt` against
+`src/workflow_coordinator/resources/roles/*.txt`: no differences.
+`RESOURCE_DIGESTS` exists in `implementation_identity.py:9-14` and is
+imported as `_PACKAGE_RESOURCE_DIGESTS` (`commissioning.py:26`), checked on
+every call in `_package_resource_text` (`commissioning.py:605-618`).
+
+|No scratch allocator and no venv/export machinery in `frontdoor/*`
+|Confirmed by search; `_default_engine_command`
+(`lifecycle.py:77-94`) does exactly what the plan says -- `wfc` next to
+`sys.executable`, else `shutil.which("wfc")`, else `RuntimeError`. The
+bootstrap hazard the plan derives from this is real and correctly reasoned.
+
+|Archive equivalence: allow-lists, destination, manifest, commit mechanics
+|`RUN_ROOT_ALLOW`/`CHECKOUT_ALLOW`/`OPS_ROOT_ALLOW` at `archive.py:85-120`;
+`destination_for` at `746-749`; `_manifests_match_ignoring_archived_at` at
+`856-873`; `bounded_path_commit` used at `1154`/`1183`; the
+commit-body-to-stdout difference is independently documented in
+`ch04_evidence/02_archive.adoc:84-86`. `archive_run` spans `981-1168`,
+`validate_explicit_attempt_identity` is applied at `1021` whenever an
+explicit identity is supplied, `derive_attempt_id` (`545`) remains the
+legacy fallback, and `postrun._attempt_identity` (`postrun.py:86`) supplies
+the Run-derived value at `postrun.py:224-228`. All accurate.
+
+|The equivalence comparison already exists, is committed and passes
+|`tests/unit/test_archive_equivalence.py`: the legacy archiver hashes are
+pinned in `setUp` at lines 147-152, and
+`test_old_and_new_archivers_produce_identical_manifests_for_the_same_real_run`
+(line 154 ff.) runs both archivers against relocated disposable copies into
+two throwaway Evidence repositories and compares manifests with
+`archived_at` stripped. Ran it in partial mode: passes.
+
+|Proof-Run precondition 6 (the `audit.json` ignore guard)
+|`_assert_audit_path_not_ignored` (`archive.py:254-267`) refuses before any
+write and is called at `archive.py:1081`; the per-Attempt negation
+`_ATTEMPT_COMMIT_GITIGNORE` (`archive.py:165-171`) is written at
+`archive.py:1229`, inside the retention-aware path, and indeed cannot undo a
+root-level exclusion. The precondition is correctly derived.
+
+|"No quarantined file exists"
+|Confirmed independently: `quarantin*` appears only in Commission task prose
+(`governance/commissions/.../task.md`), nowhere under `src/`, `tests/`,
+`scripts/`, `governance/*.yaml` or `pyproject.toml`. `addopts = "-q"`
+(`pyproject.toml:38`) deselects nothing and the `historical_governance`
+marker is registered at `pyproject.toml:43`, with
+`tests/architecture/test_historical_governance_parse.py` present as the plan
+says.
+
+|The v1 compile path's users are exactly the ones C5 names
+|`commission_intent_from_yaml`, `render_commission`,
+`verify_render_manifest` and `_repository_standard_record` appear in exactly
+three files: `commissioning.py`, `tests/unit/test_commissioning.py` and
+`scripts/wfc_op.py` (whose import block is `scripts/wfc_op.py:80-83`). The
+`# ---` boundary at `commissioning.py:580` is where the plan says it is.
+
+|DG-4, DG-5, Batch 3/Batch 4 and the tag boundary
+|`beta1_execution_plan.adoc`: DG-4 and DG-5 decision rows (lines 744-755)
+match option (a) as the plan quotes them; Batch 3's Commission list does
+include `wfc-beta1-bp9-beta-gate-001` (line 662), so C1's declared
+deviation from the Batch-4 prerequisite is correctly flagged rather than
+hidden; Batch 4 is "optional ... may follow the tag" (line 692); BP7's
+timing is listed under "Explicit post-Beta items, not gates" (line 586-589);
+`<<closure-versus-tag>>` exists with the five-item post-Beta sequence. The
+plan sets or prepares nothing about the tag, and says so three times.
+
+|Every maintainer specification item
+|`beta1_productization.adoc:509-520` -- existing sibling repository stays
+authoritative, no new repository at the XDG default, `raw: commit`, curated
+history separate, "no absolute home paths as a product rule", strict
+separation of state root/OPS/scratch/Evidence target, no second archive path
+beside the product function. The recommendation honours each: a relative
+path only, `raw: commit`, section 3's explicit single-archive-path rule, and
+the ledger left maintainer-owned per
+`ch04_evidence/02_archive.adoc#semantic-ledger`.
+
+|Manual anchors and sections C5 must touch
+|All present: `[[harness-preparation]]`
+(`ch03_running/01_preparation.adoc:191`), `[[selfdev-offline-inputs]]`
+(line 256), `[[installed-archive]]` and `[[semantic-ledger]]`
+(`ch04_evidence/02_archive.adoc:59`, `:98`), "Temporary storage before
+test-heavy Runs" (`ch05_self_development/01_topology_budget.adoc:80`),
+"never mutates itself" (same file, line 20), "Non-automation boundary" and
+the "create salvage commits" sentence (`ch06_recovery/01_outcomes.adoc:203`,
+`:206`), "the historical Run record itself is never rewritten" (line 22),
+and `ch08_examples/02_command_flow.adoc`. The ch04 note the plan calls
+superseded really does still say "`wfc run`'s own lifecycle does not yet
+call it" (lines 93-96), and BP4b's `_TRIGGER_CLASSIFICATIONS`
+(`preservation.py:30-32`) plus its "does not replace the manual
+salvage/successor procedure" docstring (lines 1-10) are as cited, so the
+ch06 reconciliation is correctly characterised as bounded.
+|===
+
+Structural checks also passed: the predecessor/successor relation is
+non-circular (C1 and C1b have no technical predecessor and may run in
+parallel; promotion follows both; Proof Run 1 follows promotion; Proof Run 2
+follows Proof Run 1; C5 follows both proof Runs), every sub-Commission has
+an acceptance that can be evaluated by someone other than its author, the
+plan claims no product capability that does not exist, and the document
+renders cleanly under Asciidoctor with its internal cross-references
+resolving.
+
+=== Non-blocking observations
+
+Recorded for the record only. None of these is a Finding, none blocks
+acceptance, and a correction Hop is free to leave all of them alone.
+
+. *Stale self-described base HEAD.* The preamble says every citation "was
+  checked against the source tree at commit `3d7c7ca` (this plan's own base
+  HEAD)". `3d7c7ca` is the *predecessor* Run's commissioning commit; this
+  Run's base HEAD is `2921b9f`. The substance is unaffected:
+  `git diff --stat 3d7c7ca..HEAD` touches only `docs/` and
+  `governance/commissions/`, no file under `src/`, `tests/`, `scripts/` or
+  `pyproject.toml`, so every code citation verified at `3d7c7ca` is still
+  valid here -- which this pass confirmed by re-checking them all at
+  `2921b9f` anyway.
+. *Two line citations drifted inside their own construct.* The
+  `("src","tests","scripts","docs")` literal is at `commissioning.py:328`,
+  not `:333` (which is the `evidence_commands` line of the same predicate);
+  and the `phase["components"]["repository_policy"] = [...]` fill is
+  `commissioning.py:640`, inside `_consumer_program_template`, not
+  "`compile_commission` (`commissioning.py:641-644`)" -- 641-644 is `return
+  template` and the following `@dataclass`. Both capability claims are true
+  as stated (`compile_commission` does bind the component on every phase,
+  via that helper), so this is citation hygiene, not a false claim. A few
+  ranges likewise over-reach their construct by one or two lines
+  (`scripts/wfc_op.py:137-175`, `archive.py:86-120`,
+  `_package_resource_text` `605-616`, `test_archive_equivalence.py` `154-191`).
+. *Two quotations attributed to the epic are the execution plan's.* "Only
+  BP7 switches self-development itself onto the new path" is
+  `beta1_execution_plan.adoc:128`, and "no retroactive rewrite of historical
+  Commissions" is `beta1_execution_plan.adoc:519` (which itself attributes
+  the exclusion to the epic; the epic's own nearest wording is "Retirement
+  is not a reason to keep historical Commissions executable with current
+  APIs", `beta1_productization.adoc:524`). Both constraints are binding
+  either way, so nothing substantive changes -- but `<<open-decisions>>`'s
+  "Not open" list goes one step further and tells the maintainer the epic
+  "already settles" that the historical `governance/self-development/*`
+  files are "never deleted". Non-deletion is the plan's own (well-founded)
+  inference from the no-rewrite exclusion and from the fact that the
+  retained tree is what keeps `historical_governance` coverage passing; it
+  reads more honestly as a recommendation than as a closed question.
+. *Attempt identity in the manifest.* `manifest.json` records `attempt_id`
+  (`archive.py:845-846`), so a proof Run's *real* archived manifest (Attempt
+  identity derived from `repository_name` + `run_id`) can never be
+  field-equal to a legacy-archiver manifest of the same facts, which derives
+  the identity from the state root basename. The plan's method still works
+  -- the comparison runs both archivers over the same disposable copy, where
+  both derive the same basename identity -- but section 3's "byte-compatible
+  apart from `archived_at`" and the later "differently *shaped* Attempt
+  identifiers" sit close enough together to be misread. One sentence saying
+  the comparison normalises identity by construction (same copy, no explicit
+  identity) would remove the ambiguity.
+. *C1b's second fixture has no stated provenance.* C1b runs before any proof
+  Run, yet its acceptance requires that the generalized comparison accept "a
+  second, independently committed, hash-pinned fixture copy of a different
+  retained Run's STATE/OPS facts". Such a copy must come from an existing
+  archived Run in the sibling Evidence repository (feasible, read-only, and
+  precedented by `tests/fixtures/bp5/PROVENANCE.txt`), but the plan does not
+  say so, and this reviewer cannot confirm the sibling repository's
+  contents.
+. *The guidance document's path is unstated.* C1's scope says "the new
+  guidance document path" without naming it. Because
+  `compile_commission` refuses any request scope that overlaps the guidance
+  path (`commissioning.py:709-714`), the choice has a lasting consequence
+  for every future self-development Commission's scope (a guidance file
+  under `docs/` forecloses a Commission scoped at `docs/` wholesale). This
+  is a bounded technical choice the plan could recommend rather than leave
+  to C1.
+. *`default_execution: {}` versus decision 3.* The recommended YAML body
+  shows an empty mapping with a "filled per item 3" comment, while item 3
+  says the values are settled "Before C1's config is committed". Harmless,
+  but the sample as printed is not the file the plan intends to be
+  committed.
+. *"No Run state is moved" is never stated.* The maintainer specification
+  includes it and the plan honours it in practice (nothing in C1-C5 moves
+  state), but the plan's state/OPS/scratch row discusses only the shape of
+  the separation. A single explicit sentence would close the constraint
+  checklist.
+. *Relative-path fragility is correctly disclosed but carries real weight.*
+  This reviewer could not confirm that the Evidence repository is in fact
+  the sibling of this checkout, which is precisely why preconditions 5 and 6
+  of `<<risks>>` matter. They are the right mitigation for the only real
+  weakness of recommendation (a); worth re-reading before Proof Run 1, not
+  worth re-planning.
+
+=== Verdict
+
+*Changes required.* Two blocking Findings: C5's acceptance is unfulfillable
+within its own stated scope because `tests/conftest.py`'s required-real node
+ids are not named (Finding 1), and the plan omits the required Hop estimates
+and effort reasoning for its sub-Commissions (Finding 2). Both are
+correctable inside `docs/backlog/beta1_bp7_cutover_plan.adoc` alone, with no
+product change and no new authority. Everything else this pass could test --
+the gap analysis, the executed configuration recommendation, the
+archive-equivalence definition, the proof-Run and retirement sequencing,
+DG-4/DG-5 compliance, the tag boundary and the BP9/closure checklist -- held
+up against the real code, manifests and manual.
