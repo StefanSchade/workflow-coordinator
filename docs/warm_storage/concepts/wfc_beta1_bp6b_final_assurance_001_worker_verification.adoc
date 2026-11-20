@@ -1,0 +1,350 @@
+= BP6b final assurance: worker verification
+
+WorkItem:: `WI-WFC-BETA1-BP6B-FINAL-ASSURANCE-001`
+Hop:: `H001` (`implement`, worker)
+Role:: This is technical verification evidence for an independent reviewer. It
+is **not** a review verdict and does not claim Run acceptance; only a
+`broad_review` Hop with `finding_authority` can accept or disposition a
+Finding. This Hop reports no Finding operation.
+Baseline:: `9ebb6d5` (`docs: record BP6a acceptance and BP6b/BP6c split`).
+Candidate inspected:: the full resulting BP6b product diff `9ebb6d5..HEAD`
+(HEAD at the start of this Hop: `b589af8`), i.e. the implementation
+`9bd356f`, the H002 broad-review correction `bbad81f` (closing Findings
+`F001`/`F002`), and the H005 documentation correction `5465890` (closing the
+documentation Finding referred to as `F003` in this Commission's own task
+text). The historical reviews `e3bba06` (broad, H002) and `fb30678`
+(focused, H004) are read as evidence leads only, independently reproduced
+below, not as acceptance credit: `RUN-18a6ae0575fd4641ba89e30bf468f7ec`
+stopped mechanically (`invalid_finding_delta`) and is neither resumed nor
+mutated by this Run.
+Product change made by this Hop:: none. This artifact is the only change
+proposed; every check below ran against disposable fixtures and repositories,
+never the real Evidence repository.
+
+== Scope and method
+
+Every claim below was independently reproduced in this session against the
+actual repository state at the stated base HEAD, not merely read from a
+prior artifact. Commands are agent-side; per the operating contract they are
+exploratory validation, not Coordinator-trusted evidence. Disposable
+fixtures were built fresh under a `tempfile.TemporaryDirectory()`; the real
+Evidence repository was never touched.
+
+== 1. Diff basis and scope
+
+[source,shell]
+----
+$ git diff 9ebb6d5..HEAD --stat -- src tests docs/developer_guide \
+    docs/warm_storage/concepts/wfc_beta1_bp6b_evidence_retention_001_limitations.adoc
+ docs/developer_guide/ch02_code_navigation.adoc     |  22 +
+ ...a1_bp6b_evidence_retention_001_limitations.adoc | 154 +++++++
+ src/workflow_coordinator/frontdoor/archive.py      | 406 +++++++++++++++++-
+ src/workflow_coordinator/frontdoor/config.py       | 104 +++++
+ src/workflow_coordinator/frontdoor/init.py         | 130 +++++-
+ src/workflow_coordinator/frontdoor/report.py       |  38 +-
+ tests/unit/test_archive_retention.py               | 465 +++++++++++++++++++++
+ tests/unit/test_evidence_config.py                 | 163 ++++++++
+ tests/unit/test_init_evidence.py                   | 174 ++++++++
+ tests/unit/test_report_status_coverage.py          |  98 +++++
+ 10 files changed, 1737 insertions(+), 17 deletions(-)
+----
+
+The full repository diff `9ebb6d5..HEAD` (25 files) adds exactly these ten
+product/test/doc files plus governance records for the two Commissions
+(`wfc-beta1-bp6b-evidence-retention-001`, `wfc-beta1-bp6b-final-assurance-001`)
+and the two historical review artifacts (`..._broad_review.adoc`,
+`..._focused_review.adoc`); no file outside this Commission's
+`authorized_scope` or the prior Commission's own scope was touched. Confirmed
+with `git diff 9ebb6d5..HEAD --stat` (no arguments) and manual inspection of
+every listed path.
+
+== 2. Config: defaults, validation, resolution (acceptance case 1)
+
+`tests/unit/test_evidence_config.py` (22 tests) independently re-read and
+re-run: unknown `evidence` keys, an invalid `raw` value, a non-empty
+single-line `repository` requirement, relative-vs-absolute `repository`
+resolution against the payload root, the `$XDG_DATA_HOME`-then-`~/.local/share`
+fallback, and a config *without* an `evidence` block parsing and digesting
+exactly as before BP6b (checked against the unchanged `test_consumer_compiler.py`
+suite, not merely the tautological raw-text digest comparison the prior
+broad review's observation 7 already named -- that observation stands,
+unchanged, as non-blocking). All pass; `resolve_evidence`'s own module-level
+docstring and code were read line by line and match this behavior exactly.
+
+== 3. `wfc init` Evidence-repository creation (acceptance case 2)
+
+Independently reproduced outside the test harness (not just by re-running
+`test_init_evidence.py`), against three fresh disposable payload/evidence
+directory pairs built under `tempfile.TemporaryDirectory()`:
+
+* **Creates a new repository.** `wfc init --evidence-repository PATH` on an
+  absent path creates `archive/`, writes the managed `.gitignore` block
+  (`archive/**/manifest.json`, `archive/**/run/**`, `archive/**/ops/**`
+  between the documented markers), makes exactly one commit
+  (`git rev-list --count HEAD` == `1`), configures no remote
+  (`git remote` is empty), and prints `NOTHING WAS PUSHED: the Evidence
+  repository has no remote configured.` The payload repository's own HEAD and
+  working tree are unchanged except the one new untracked `.wfc/` Consumer
+  Config directory (`git status --porcelain` == `?? .wfc/`), confirming the
+  payload repository is never modified beyond the one file `wfc init`
+  already wrote before BP6b.
+* **Reuses an existing valid repository untouched.** A second `wfc init`
+  pointed at an already-`ensure_evidence_repository`-created path reports
+  "reusing existing" and leaves `git rev-parse HEAD` identical to before the
+  call.
+* **Refuses a foreign non-empty directory before writing anything.** A
+  directory containing an unrelated file (no `archive/`, no `.git`) is
+  refused with a message containing `refusing`; the directory's listing is
+  unchanged (`unrelated-file.txt` only) and no `.git` was created.
+
+All three independently reproduced; see the H001 CommitIntent evidence
+script below for the exact commands.
+
+== 4. Retention-aware archive: tracked sets per mode (acceptance cases 3-6)
+
+Independently reproduced with the real `wfc` CLI dispatch
+(`frontdoor.cli.main`) against fresh fixtures (not `test_archive_retention.py`'s
+own fixtures, built independently with the same shape), and real `git`
+subprocess calls (`ls-files`, `status --porcelain`):
+
+* **`local`.** `git ls-files` in the Evidence repository holds exactly
+  `.gitignore`, `archive/.gitkeep`, and the one Attempt's
+  `.../audit.json` -- no `manifest.json`, no `run/`, no `ops/`. Those raw
+  files exist on disk at the destination. `git status --porcelain` is empty.
+* **`commit`.** `audit.json`, `manifest.json`, and at least one path each
+  under `run/` and `ops/` are all tracked; `git status --porcelain` is empty.
+* **`discard`.** The destination directory contains only `audit.json` on
+  disk; the tracked set is identical in shape to `local`'s (`.gitignore`,
+  `archive/.gitkeep`, the one `audit.json`).
+* **`raw_retention=None`.** Reproduced against a plain legacy-style Evidence
+  repository (no BP6b-managed `.gitignore` block, built by hand exactly like
+  BP5's own fixtures): no `audit.json` is written anywhere, the tracked set
+  includes `manifest.json` and `run/operator-plan.json`, and no tracked path
+  anywhere ends in `audit.json` -- the unmodified BP5 shape.
+
+== 5. One commit per Attempt, idempotency, crash resume, tamper refusal (acceptance cases 7-9)
+
+Independently reproduced per mode, real Git evidence:
+
+* **One commit per Attempt.** For each of `local`/`commit`/`discard`,
+  `git rev-list --count <before>..HEAD` after one archive call is exactly
+  `1`.
+* **Idempotent re-archive.** A second identical archive call per mode prints
+  `ALREADY UP TO DATE` and leaves `git rev-parse HEAD` unchanged (no second
+  commit).
+* **Crash resume (`local`, `commit`).** `_commit_retention_archive` patched to
+  raise after placement, reproducing a kill between placement and commit:
+  `git rev-parse HEAD` is unchanged by the simulated crash itself, and a
+  follow-up archive call resumes to exactly one commit (`ARCHIVED`,
+  `rev-list --count <before>..HEAD` == `1`), not two.
+* **Tamper refusal (`local`, `commit`).** After the same simulated crash, a
+  placed-but-uncommitted raw file (`run/operator-summary.json`) is tampered
+  byte-for-byte length-preserving; the follow-up archive call is refused with
+  `does not match its recorded digest` and a non-zero exit code.
+* **Different-content refusal (`discard`).** Reproduced via
+  `tests/unit/test_archive_retention.py::DiscardRetentionTests::test_different_audit_is_refused_not_overwritten`,
+  independently re-read and re-run: changing the underlying Run facts after
+  a `discard` archive and re-archiving is refused with `different content`,
+  and the placed `audit.json` is left byte-identical to before.
+* **Missing/insufficient `.gitignore` refusal (`local`).** Overwriting the
+  managed `.gitignore` with an unrelated pattern and re-archiving with
+  `--raw-retention local` is refused *before any write*: non-zero exit,
+  `does not exclude` in the error, no destination directory created, no
+  `.wfc-archive-staging` left behind.
+
+== 6. Privacy: no known private string reaches Evidence history (acceptance case 10)
+
+Independently reproduced with `git rev-list --objects --all` plus
+`git cat-file -t`/`-p` over every resulting object (not merely `git
+ls-files`, which only shows the current tree), for both `local` and
+`discard` retention, against a fixture whose `HOME` and OS-derived user name
+are both distinctive canary strings: neither string appears in any blob in
+the Evidence repository's complete object history. A privacy-guard refusal
+(forged absolute-path `governing_inputs` key, the same reproduction the BP6a
+broad review used) writes and commits nothing: no destination directory is
+created, `git status --porcelain` is empty, and `git rev-parse HEAD` is
+unchanged; the error message names only the governing field, never the
+forged path itself.
+
+== 7. `wfc report`/`wfc audit` exit 3; fixed next-choice coverage (acceptance cases 11-12 of the original matrix, renumbered as "wfc report" above)
+
+Independently reproduced against a freshly built `tests/fixtures/bp6/archive_builder.build_attempt`
+fixture with a forged absolute-path `governing_inputs` key: `wfc report
+<attempt-dir>` exits `3`, prints nothing to stdout, and never names the
+forged path in its stderr message. `rp._NEXT_HUMAN_CHOICE` was independently
+diffed against `{s.value for s in model.RunStatus} - {"completed"}` and
+`set(frontdoor.lifecycle.EXIT_CODES) - {"completed"}`: both set differences
+are empty, confirming every real status/classification has a fixed line
+(re-running `tests/unit/test_report_status_coverage.py`'s 36 tests, which
+pin this parametrically, also passes).
+
+== 8. No push, no remote, no network (acceptance case 13)
+
+`git diff 9ebb6d5..HEAD` over `archive.py`/`init.py`/`config.py`/`report.py`
+contains no `push`, `remote add`, `fetch`, or `clone` invocation anywhere;
+the only occurrence of the word "push" in the diff is the
+`NOTHING WAS PUSHED` stdout line `init.py` prints. Every Evidence repository
+built during this Hop's own verification (listed in section 11) has an empty
+`git remote` output.
+
+== 9. Import-direction guard, BP4/BP5/BP6a and the existing suite (acceptance case 14)
+
+[source,shell]
+----
+$ python3 -c "
+import ast, pathlib
+offenders = []
+for p in pathlib.Path('src/workflow_coordinator').rglob('*.py'):
+    if 'frontdoor' in p.parts:
+        continue
+    tree = ast.parse(p.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and 'frontdoor' in node.module:
+            offenders.append((str(p), node.module))
+        if isinstance(node, ast.Import):
+            offenders += [(str(p), a.name) for a in node.names if 'frontdoor' in a.name]
+print('offenders:', offenders)
+"
+offenders: []
+----
+
+Independently confirms no kernel module imports `frontdoor`, re-checking the
+hard rule "kernel modules never import frontdoor" directly by AST rather than
+trusting `test_package_boundaries.py` alone.
+
+[source,shell]
+----
+$ python -m pytest --wfc-partial \
+    tests/architecture/test_package_boundaries.py \
+    tests/unit/test_archive_conformance.py tests/unit/test_archive_equivalence.py \
+    tests/unit/test_archive_port.py tests/unit/test_archive_safety.py \
+    tests/unit/test_archive_retry_integrity.py \
+    tests/unit/test_audit_privacy.py tests/unit/test_audit_projection.py \
+    tests/unit/test_report.py \
+    tests/unit/test_evidence_config.py tests/unit/test_init_evidence.py \
+    tests/unit/test_archive_retention.py tests/unit/test_report_status_coverage.py -q
+........................................................................ [ 28%]
+........................................................................ [ 56%]
+........................................................................ [ 85%]
+.....................................                                    [100%]
+==== WFC PARTIAL RUN: subset only, NOT the required suite or its acceptance ====
+----
+
+All pass (exit code 0), 263 collected tests across every BP4/BP5/BP6a/BP6b
+module the BP6b task names as "neighbouring", plus the architecture
+import-direction/boundary guard.
+
+A broader `--wfc-partial` run across every file under `tests/unit/` and
+`tests/architecture/` (run three separate times) failed only in
+`tests/unit/test_wfc_op.py` (nested `pip install` needs network: `No matching
+distribution found for setuptools>=68`), `tests/architecture/test_bp1_identity.py`
+and `tests/architecture/test_offline_distribution.py` (the same PEP-517
+build-isolation network need), and `tests/unit/test_claude_adapter_conformance.py`
+(needs a live Claude executable/sandbox facility this session does not have)
+-- the exact four environment-bound modules the H002 broad review's own
+observation 9 already named, reproduced here independently and unchanged by
+this candidate. `tests/unit/test_candidate_preservation.py::test_repeat_capture_is_idempotent_no_second_ref`
+failed in exactly one of the three full runs and passed cleanly both in
+isolation and paired with `test_archive_retention.py`; this is pre-existing,
+order-independent flakiness in a BP4b-scope file outside this Commission's
+`authorized_scope`, not a regression introduced by BP6b -- reported here as a
+non-blocking observation, not corrected (out of scope, and the task
+authorizes correcting only a demonstrable material defect inside the BP6b
+scope). No other failure appeared in any of the three full runs.
+
+`.venv/bin/ruff check` over all ten BP6b-touched product/test files reports
+"All checks passed!".
+
+== 10. Limitations record (acceptance case 15)
+
+`docs/warm_storage/concepts/wfc_beta1_bp6b_evidence_retention_001_limitations.adoc`
+was independently re-read against the actual code (not merely against its
+own prose): every retention mode's kept/not-kept set, the `discard`-mode
+ephemeral-manifest rationale, the managed-`.gitignore`-is-repository-wide
+caveat, the `raw_retention=None` incompatibility-with-a-managed-repository
+caveat (and the `_path_is_tracked_clean` HEAD-tree fix that makes its refusal
+consistent rather than a false no-op), the data-home-placement-is-a-package-
+decision statement, and -- the H005 correction's own subject -- the explicit
+"Nothing is ever pushed; the Evidence repository has no remote" section, all
+match the code exactly as described in sections 1-9 above.
+
+== 11. Independent real-Git reproduction (this Hop's own evidence, outside the existing test files)
+
+A standalone script (not part of the product, not committed, run from
+`tmp/final-assurance-h001/verify_retention.py` and removed before this Hop
+ends; `tmp/` is repository-ignored) independently drives the real `wfc`
+dispatch (`frontdoor.cli.main`, the same entry point `test_archive_retention.py`
+and `test_init_evidence.py` use) and real `git` subprocesses against fourteen
+fresh disposable fixtures, never reusing the existing test files' own
+fixtures or assertions:
+
+[source,shell]
+----
+$ python tmp/final-assurance-h001/verify_retention.py
+ok:   wfc init creates a new Evidence repository: archive/, managed .gitignore, one commit, no remote
+ok:   wfc init reuses an existing valid Evidence repository untouched
+ok:   wfc init refuses a foreign non-empty directory before writing anything
+ok:   local retention: git ls-files shows only audit.json + .gitignore + .gitkeep, raw files on disk, status clean
+ok:   commit retention: audit.json, manifest.json, run/ and ops/ are all tracked
+ok:   discard retention: only audit.json exists at the destination, tracked set is minimal
+ok:   raw_retention=None is byte-identical to the BP5 legacy destination against a plain legacy repository
+ok:   one commit per Attempt, in every retention mode
+ok:   re-archive is a no-op per mode: no second commit, raw files untouched
+ok:   crash between placement and commit resumes without a second commit (local and commit modes)
+ok:   tamper of a placed-but-uncommitted raw file is refused in local and commit modes
+ok:   local retention refuses before any write when .gitignore does not cover the raw paths
+ok:   privacy: local and discard retention history contains none of the known private strings, across every blob
+ok:   a privacy-guard refusal writes and commits nothing, and `wfc report` on it exits 3
+
+14 independent real-Git checks passed.
+----
+
+Every fixture in this script was built under `tempfile.TemporaryDirectory()`
+and discarded on exit; no path under the real Evidence repository, the real
+`$HOME`, or any tracked repository path was read or written by it.
+
+== 12. Non-blocking observations carried forward
+
+The H002 broad review's nine non-blocking observations (the `local` coverage
+probe testing effective-ignore rather than the committed block specifically,
+`.wfc-archive-staging/` not being covered by the managed block, `discard`'s
+transient in-worktree staging before removal, an un-projectable Attempt being
+unarchivable in all modes, a slightly-misleading refusal message on a
+mixed-mode re-archive, the duplicated `git_facts` trusted-policy snippet in
+`init.py`, a theoretically-possible commit-less adopted Evidence repository,
+the tautological config digest test, and the four environment-bound test
+failures) were re-read against the current candidate in this Hop and remain
+accurate and still non-blocking; none of them reproduces a violation of an
+explicit acceptance case, a privacy/retention property, or a crash on a
+plausible input, so none is corrected here, consistent with "correct only a
+demonstrable material defect inside the authorized BP6b scope; do not add
+features." The `test_candidate_preservation.py` flakiness noted in section 9
+above is a new observation from this Hop, equally non-blocking and equally
+out of this Commission's `authorized_scope`.
+
+== Summary
+
+No material defect was found in the BP6b candidate against baseline
+`9ebb6d5`. No product, test, fixture or documentation byte needed to change;
+every acceptance-matrix property named by the historical BP6b Commission's
+task -- configuration defaults/validation, `wfc init` Evidence-repository
+creation/reuse/refusal, the three retention modes' exact tracked sets, one
+commit per Attempt, idempotent re-archive, crash resume, tamper refusal,
+missing-`.gitignore` refusal, the `discard`-mode different-content refusal,
+privacy across the complete Evidence object history, a privacy-guard
+refusal's write-and-commit-nothing property, `wfc report`/`wfc audit`'s
+exit-3 mapping, the fixed next-choice table's full coverage, no push/remote/
+network, the import-direction guard, and the limitations record -- was
+independently reproduced with real Git in disposable repositories, not taken
+on faith from the historical review artifacts or from the existing test
+suite's own pass/fail status alone. This worker-verification artifact, not
+any prior worker or review record, is the basis offered for the independent
+broad review this Commission requires; Run acceptance remains solely that
+review's and the Coordinator's full `task-check`'s to establish.
+
+== H001 CommitIntent
+
+Changed leaves only (no directories): this artifact,
+`docs/warm_storage/concepts/wfc_beta1_bp6b_final_assurance_001_worker_verification.adoc`.
+No other product, test, fixture or documentation byte was changed by this
+Hop. No rename-shaped pair exists in this set.
