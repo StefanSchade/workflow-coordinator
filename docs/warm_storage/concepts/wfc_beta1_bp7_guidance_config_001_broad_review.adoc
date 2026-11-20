@@ -1,0 +1,247 @@
+= BP7 C1 self-development Consumer Config, guidance and verification test: broad review
+
+WorkItem:: `WI-WFC-BETA1-BP7-GUIDANCE-CONFIG-001`
+Hop:: `H002` (`broad_review`, fresh independent reviewer, gate, blocking-only,
+`finding_authority: [resolve]`)
+Reviewed candidate:: `a6ffa90058bdd6a5fc867bcedfd829bf26b81a77`
+(`test(WI-WFC-BETA1-BP7-GUIDANCE-CONFIG-001/H001): verify committed
+self-development Consumer Config and note its existence in the operator
+manual`), together with the maintainer-owned baseline inputs committed in
+`6fb1c8f49a63f06a2a4d37b5e9a7f07412c5542a` (`.wfc/config.yaml`,
+`.wfc/governance/repository-policy.md`), which the Commission names as part of
+the C1 deliverable to be verified here.
+Review base HEAD:: `a6ffa90058bdd6a5fc867bcedfd829bf26b81a77`
+Governing contracts:: `governance/commissions/wfc-beta1-bp7-guidance-config-001`
+(task, intent, policy, profile) and `docs/backlog/beta1_bp7_cutover_plan.adoc`
+sections `config-recommendation`, `sequence` C1 and `open-decisions` items 2
+and 3.
+Disposition:: *Accept.* No blocking Findings. Every explicit acceptance
+criterion was reproduced in this Hop against the real parser, the real
+`resolve_execution`/`resolve_evidence` and the real `compile_commission`, not
+against a reimplementation. Four non-blocking observations are recorded below;
+none is a reproduced violation of an explicit acceptance criterion, a value the
+parser rejects, a guidance rule without an existing source in this repository,
+or an insensitive assertion.
+
+== Method
+
+All behavioural claims were produced in this Hop with the repository's own
+development interpreter (`.venv/bin/python`), reading production code paths:
+`workflow_coordinator.frontdoor.config` (`consumer_config_from_yaml`,
+`resolve_evidence`, `resolve_execution`) and
+`workflow_coordinator.commissioning.compile_commission`. Mutation sensitivity
+and the Commission preview were driven from throwaway scripts under the
+gitignored `tmp/` scratch (`/tmp/` is not writable for pytest scratch here);
+those scripts were deleted after use and are not part of the proposed change.
+`.wfc/` was read only, never edited. No Git write was performed by this Hop;
+the only repository change proposed is this artifact.
+
+== What the candidate and the baseline inputs actually contain
+
+`git show --stat a6ffa90` changes exactly two leaves:
+`tests/unit/test_self_development_consumer_config.py` (new, 82 lines) and
+`docs/operator_manual/ch05_self_development/01_topology_budget.adoc` (+8
+lines, pure insertion). `git diff 6fb1c8f..a6ffa90 -- .wfc` is empty, so the
+maintainer-owned inputs are byte-unchanged by the Worker Hop. `git diff
+6fb1c8f..HEAD -- src scripts governance tests` shows no `src/`, `scripts/` or
+`governance/self-development` change; the `governance/commissions/...` entries
+in that range belong to the Coordinator's own commission commits (`3c4acbc`,
+`48b86b1`), not to `a6ffa90`. No existing test file was touched, no second
+archive path exists, and no Run state moved.
+
+== Committed `.wfc/config.yaml`: verified against the real parser
+
+* It parses: `consumer_config_from_yaml` accepts the committed bytes.
+  `governance_dir: .wfc/governance` passes the A1 path-shape predicate used by
+  `commissioning._path`; `adapter: claude_cli` is inside `_ADAPTERS`;
+  `raw: commit` is inside `EVIDENCE_RAW_CHOICES`. No key is outside the
+  `_mapping` required/optional vocabulary, so no value is invented: an invented
+  key would be refused as a forbidden field.
+* Every value matches the plan's `config-recommendation` block verbatim except
+  `default_execution`, which the plan deliberately left to `open-decisions`
+  item 3. `work_item_scope_ceiling` equals the existing `repository-standard@v1`
+  literal `("src", "tests", "scripts", "docs")`
+  (`src/workflow_coordinator/commissioning.py:327-329`) and
+  `max_autonomous_hops: 10` equals the same record's ceiling
+  (`commissioning.py:331`) -- not an invented list.
+* `default_execution` matches the bindings the maintainer is in fact already
+  using for self-development, which is what `open-decisions` item 3 recommends:
+  `tests/fixtures/bp5/real_run/ops/execution-bindings.yaml` records exactly
+  `independent_reviewer: claude_cli/claude-opus-5/high` and
+  `worker: claude_cli/claude-sonnet-5/high`.
+* No absolute and no `$HOME`-derived value: the only path-shaped values are
+  `.wfc/governance`, the four relative ceiling entries and
+  `../workflow-coordinator-run-evidence`.
+* `resolve_evidence(config, Path("/payload/workflow-coordinator"), {})` returns
+  `EvidenceSettings(path=/payload/workflow-coordinator-run-evidence,
+  raw="commit")`, i.e. `repository_root.parent /
+  "workflow-coordinator-run-evidence"`, with an empty environment and against a
+  path that does not exist -- the function never touches the filesystem
+  (`config.py:253-287`), so the acceptance criterion's "pure function, no
+  Evidence filesystem access" holds as stated.
+* End-to-end acceptance by the product Front Door, not only by the small
+  parser: a read-only probe built a Consumer Request for `robust@v1` and ran
+  `compile_commission(request, config, repository=<this repository>)` with
+  `guidance_path=.wfc/governance/repository-policy.md` at HEAD. It compiled
+  successfully, which also exercises the governance-overlap refusal
+  (`commissioning.py:709-717`) with the committed `governance_dir` and proves
+  the guidance is readable from a commit via `_git_text`.
+  `resolve_execution(config, {}, ("worker", "independent_reviewer"))` resolves
+  both roles with no flags, which is the stated point of committing them.
+
+== Committed guidance document: source-grounded, no new standard
+
+The document is 45 lines, states its own subordination ("If a source and this
+file differ, the source governs") and restates existing material. Checked rule
+by rule against the named sources:
+
+* The four "Changes and tests" rules restate
+  `docs/developer_guide/ch03_engineering_conventions.adoc:11-39` (local
+  understandability and rationale ownership; tracing affected contracts and
+  tests that detect a meaningful regression, including both sides of a shared
+  result or persistence seam; producer/consumer handoff identity, shape,
+  ordering and ownership; deterministic core with filesystem/Git/provider/
+  evidence effects at explicit boundaries and untrusted provider output). All
+  four are present in that source.
+* "Edit only files inside the WorkItem scope; report a needed change outside it
+  instead of making it" and "Do not invent commit IDs, acceptance or closure"
+  restate `docs/backlog/README.adoc:26-30` ("Upkeep at actual milestones")
+  almost literally.
+* "Agents do not write to Git ... the Coordinator commits" and the
+  "CommitIntent names every changed leaf" rule restate
+  `docs/operator_manual/ch02_commissioning/01_authority.adoc:116-120`,
+  `ch02_commissioning/02_authoring.adoc:64` ("Coordinator-owned commit"),
+  `ch06_recovery/02_successors.adoc:190` ("All Git writes ...") and
+  `ch04_evidence/01_acceptance.adoc:167-175` (leaf-exact, no directory, no
+  absolute path).
+* The Finding-authority rule restates the configured review model
+  (`ch02_commissioning/03_review.adoc`) and the agent operating contract's own
+  Finding-authority clause; it matches this Commission's own instruction that a
+  Worker reports no Finding operation.
+* `docs/ai_info/doc_conventions.adoc` and the `CLAUDE.md:12-14` cold-storage
+  statement are cited accurately.
+
+== Worker test: mutation-sensitive, not tautological
+
+`tests/unit/test_self_development_consumer_config.py` passes
+(`.venv/bin/python -m pytest --wfc-partial tests/unit/test_self_development_consumer_config.py`:
+7 passed). Its expectations are inlined literals, and the Evidence expectation
+is derived from the test's own `repository_root`, not read back out of the
+config, so no assertion is self-satisfying.
+
+Sensitivity was reproduced in this Hop by redirecting the module's
+`_CONFIG_PATH`/`_GUIDANCE_PATH` at a scratch copy and mutating one committed
+value at a time (the committed file was never modified). Each mutation is
+caught by the corresponding assertion, and the unmutated baseline passes:
+
+[cols="2,3",options="header"]
+|===
+|Single mutation |Failing test
+
+|`repository_name`, `governance_dir`
+|`..._repository_name_and_governance_dir`
+
+|ceiling entry renamed, ceiling entry dropped, ceiling order changed,
+`max_autonomous_hops` 10 -> 9
+|`..._scope_ceiling_and_hop_limit`
+
+|worker `model`, worker `reasoning`, reviewer `model`, reviewer `adapter`,
+whole `independent_reviewer` binding removed
+|`..._default_execution_bindings`
+
+|`evidence.repository` retargeted, `raw: commit` -> `local`, whole `evidence`
+block removed
+|`..._resolve_evidence_resolves_to_the_sibling_evidence_repository_with_commit_raw`
+
+|`evidence.repository` replaced by an absolute `/home/...` path
+|`..._text_contains_no_absolute_or_home_path` *and* the `resolve_evidence` test
+
+|`schema_version: 1` -> `2`
+|all five parsing tests (parser refusal)
+
+|guidance file missing, guidance file whitespace-only
+|`..._guidance_document_exists_and_is_non_empty`
+|===
+
+No test outside the new file was selected to carry this verification, and
+targeted neighbouring suites still pass in this Hop:
+`tests/architecture/test_product_invariants.py`,
+`tests/architecture/test_package_boundaries.py`,
+`tests/unit/test_a3_operating_contract.py` (23 passed) and
+`tests/unit/test_wfc_doc_catalog.py`,
+`tests/architecture/test_self_development_governance.py`,
+`tests/unit/test_evidence_config.py` (85 passed). These are agent-side
+exploratory runs, not Coordinator-trusted evidence; the independent
+Coordinator task-check governs acceptance.
+
+== Operator-manual note: accurate
+
+The eight inserted lines are a pure insertion into
+`ch05_self_development/01_topology_budget.adoc` directly after the existing
+sibling-Evidence paragraph, and record exactly the three required facts: that
+`.wfc/config.yaml` and `.wfc/governance/repository-policy.md` are committed at
+the Development repository root; that the config's `evidence` block names that
+same sibling Evidence repository with `raw: commit`; and that self-development
+still runs through `scripts/wfc_op.py` until BP7 retirement, which is what the
+cutover plan's `sequence` section states. No surrounding manual text was
+rewritten, and `doc_conventions.adoc:33-34` explicitly requires no `Updated::`
+refresh for an ordinary edit.
+
+== Non-blocking observations
+
+. *Guidance citation precision (maintainer-owned input).* Three rules are
+  grounded in existing practice but not in the source named next to them.
+  "Never weaken or delete a test to make a change pass" is attributed to
+  `ch03_engineering_conventions.adoc` ("same source"), which does not contain
+  it; its actual grounding is
+  `docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc:69` ("quietly
+  weaken binding criteria") plus repeated Commission wording ("without
+  weakening the real-leak refusal"). "A review checks the whole product against
+  its baseline, not only the last correction" names no source; it restates the
+  standing broad-review Commission wording ("evaluate the ENTIRE product
+  against the baseline and this task", e.g.
+  `governance/commissions/wfc-beta1-bp6c-lifecycle-archive-wiring-001/task.md`)
+  and `ch02_commissioning/03_review.adoc:39-41`, but read unqualified it
+  overshoots that same chapter's normative bounded-rereview guidance
+  (`03_review.adoc:41-58`: a rereview should normally narrow rather than reopen
+  the full adversarial surface). "Committed artifacts contain no secrets and no
+  absolute home-directory paths" names no source; it restates the BP6b
+  retention/privacy practice and the cutover plan's own "No absolute `$HOME`
+  path is ever written". Not blocking: each rule exists as practice in this
+  repository, the document's own precedence clause subordinates it to its
+  sources, and no new standard is imposed. Recommended, if the maintainer
+  revisits the file: qualify the review rule as applying to an *initial*
+  independent review and add the three missing citations.
+. *Both default roles make a worker-only program unresolvable.* Reproduced:
+  `resolve_execution(config, {}, ("worker",))` refuses with "execution config
+  defaults name roles the selected program does not use:
+  independent_reviewer" (`config.py:216-221`). With both bindings committed, a
+  Run on a program whose role set excludes `independent_reviewer` (for example
+  `simple@v1`, which also refuses an `independent_reviewer` persona) needs a
+  config edit or a different program. This is a direct consequence of
+  `open-decisions` item 3's recommendation, not a defect, but it is worth
+  knowing before Proof Run 1 picks a program.
+. *Absolute-path scan does not see list items.* The test's loop takes
+  `line.split(":", 1)[-1]`, so an absolute value written as a YAML sequence
+  item (`  - /abs`) would yield `- /abs` and escape the `startswith("/")`
+  check. Harmless for the committed file and for any realistic mutation: the
+  only list is `work_item_scope_ceiling`, whose entries must already satisfy
+  the A1 repository-relative shape in `commissioning._path` (an absolute entry
+  is a parse refusal), the exact ceiling tuple is asserted separately, and the
+  `/home/` substring check covers the whole text.
+. *"changes no behavior on its own" is precise only for the Harness path.*
+  `plan.py:35`, `lifecycle.py:71` and `init.py:30` all default `--config` to
+  `.wfc/config.yaml`, so committing the file is exactly what lets a no-flag
+  `wfc plan`/`wfc run` against this checkout resolve a Consumer Config at all
+  (previously such an invocation exited 2 with "cannot read Consumer Config").
+  The sentence is accurate for what the chapter describes -- no product code
+  and no current self-development path behaviour changes -- and the following
+  sentence prevents a misleading reading, so this is wording precision only.
+
+== Environment note
+
+In this reviewer session the sandbox materializes shell dotfiles and tool
+directories (`.bashrc`, `.claude/`, ...) inside the checkout, so a local
+`git status` shows them as untracked. They are session artifacts outside the
+Coordinator's own checkout, no tracked file is modified, and they are unrelated
+to the candidate.
