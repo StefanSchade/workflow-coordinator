@@ -1,0 +1,267 @@
+= BP6a audit projection and report: independent focused review
+:toc:
+:toclevels: 2
+:sectnums:
+
+This record holds every independent focused-review pass over the BP6a
+correction work. The current (and first) pass is *H004*.
+
+== Pass H004 (current)
+
+Status:: *ACCEPT.* `F001` resolved at the exact gap it names. No new blocking
+Finding.
+WorkItem:: `WI-WFC-BETA1-BP6A-AUDIT-PROJECTION-001`
+Run / Hop:: `RUN-b8d979037ac64c538d3118135558b767` / `H004` (`focused_review`,
+fresh independent reviewer, gate, blocking-only,
+`finding_authority: [resolve]`).
+Invocation:: `INV-f9510b94908a4fe7ab842793cd1eb0df`.
+Reviewed correction commit:: `9de0e923792ba7c529f49d8d531e75d5b0e52933`.
+Reviewed correction range::
+`4b73b2c2e0fd0c956b770e255a0cc107d70febd8..9de0e923792ba7c529f49d8d531e75d5b0e52933`.
+Reviewed product:: the BP6a product at `9de0e92`, measured against the
+pre-implementation baseline `05631155256a8850c53331f95d3345e9daef9d4f`, the
+Commission task for this WorkItem and the H002 broad review
+(link:wfc_beta1_bp6a_audit_projection_001_broad_review.adoc[that record]).
+Date:: 2026-11-20.
+
+=== 1. Disposition
+
+Verdict:: `accept`
+Route:: `renew_broad_review`
+Finding disposition:: `F001` -> `resolved` (section 3). No new Finding.
+
+The H003 correction closes `F001` exactly where the Finding placed it: in
+`tests/unit/test_audit_projection.py`, and nowhere else. All three fields the
+Finding named -- `attempt_id`, `anomaly_count` and `run.semantic_stop_present`
+-- are now pinned by assertions that this reviewer independently proved
+mutation-sensitive, in both directions where the field is a boolean. The
+implementation is provably untouched by the correction, which is what `F001`
+asked for ("No implementation change is needed").
+
+This pass found no reproduced violation of any explicit acceptance criterion,
+no privacy-property violation and no crash on a plausible archive shape. Three
+non-blocking observations are added in section 6 and, because
+`finding_authority: [resolve]` does not authorize residual transitions, they
+are reported there and in the Hop summary only.
+
+=== 2. Scope of this pass
+
+`git diff --numstat 4b73b2c..9de0e92`:
+
+....
+24   1  tests/unit/test_audit_projection.py
+....
+
+The single deletion is the rewrapped argument line of the existing
+`test_every_frozen_field_has_the_exact_source_value` call to `_project`, which
+gained `attempt_id="wfc-fixture-bp6-mutated-attempt-id-01"`; every other hunk
+is a pure addition (one assertion plus three new test functions). No existing
+assertion was removed, relaxed or renamed, and no parametrization was narrowed.
+
+*The implementation is provably unchanged.* `git diff --numstat 5cd70d2..9de0e92`
+is `396 0 docs/.../wfc_beta1_bp6a_audit_projection_001_broad_review.adoc` plus
+the `24 1` test hunk above: across the whole correction history,
+`src/workflow_coordinator/frontdoor/audit.py`, `report.py` and `cli.py`, the
+`tests/fixtures/bp6` builder, the BP6a limitations record and
+`docs/developer_guide/ch02_code_navigation.adoc` are byte-identical to the
+reviewed implementation commit `5cd70d2`. The worktree is clean at `9de0e92`
+apart from this reviewer's artifact. `archive.py`, `journal.py`,
+`lifecycle.py`, `preservation.py`, `git_facts.py`, the reducer, Finding,
+review, routing, adapter and admission code were already untouched at `5cd70d2`
+and remain so.
+
+=== 3. `F001` -- resolved
+
+The Finding: three fields of the frozen `wfc.audit/1` allow-list carried no
+mutation-sensitive assertion, so the acceptance preamble and case (1) were not
+met for them -- `attempt_id` was asserted nowhere, `anomaly_count` only as
+`== 0` on an anomaly-free fixture, and `run.semantic_stop_present` only as
+`is False` on a fixture with no semantic stop.
+
+Reproduced as inverted, by mutation, independently of the H003 Hop's own
+claims. Method: `git archive HEAD` into an ignored scratch tree outside the
+product (`tmp/review-h004/`, removed afterwards); each mutation applied to
+that copy's `audit.py` only; the three delivered BP6a modules then run in full
+with `PYTHONDONTWRITEBYTECODE=1` and `--rootdir` pointed at the copy, so that
+the copy's `src/` -- not the repository's -- is the module under test. That
+substitution was *proved*, not assumed: a deliberate sanity mutation
+(`"schema": SCHEMA` -> `"schema": "MUTANT-SANITY-CHECK"`) failed
+`test_every_frozen_field_has_the_exact_source_value` with
+`assert 'MUTANT-SANITY-CHECK' == 'wfc.audit/1'`, so a surviving mutation below
+could not be an artifact of the repository's editable install shadowing the
+copy. Each mutation was reverted exactly before the next, and the copy was
+confirmed byte-identical to the worktree `src/` (`diff -r`) at the end.
+
+[cols="3,2,2",options="header"]
+|===
+|Mutation in the copy's `audit.py` |Suite result |Killed by
+
+|`"attempt_id": attempt_id` -> `"attempt_id": "MUTANT-CONSTANT-ATTEMPT-ID"`
+|2 failed, 73 passed
+|`test_every_frozen_field_has_the_exact_source_value`,
+`test_mutating_the_attempt_id_changes_the_projection`
+
+|`anomaly_count = len(run_doc.get("anomalies") or [])` -> `anomaly_count = 0`
+|1 failed, 74 passed (`assert 0 == 1`)
+|`test_anomaly_count_reflects_the_number_of_supplied_anomalies`
+
+|`"semantic_stop_present": run_doc.get("semantic_stop") is not None` ->
+ `False`
+|1 failed, 74 passed (`assert False is True`)
+|`test_semantic_stop_present_reflects_whether_a_semantic_stop_was_recorded`
+
+|the same field -> `True` (the opposite collapse)
+|2 failed, 73 passed
+|`test_every_frozen_field_has_the_exact_source_value`,
+`test_semantic_stop_present_reflects_whether_a_semantic_stop_was_recorded`
+|===
+
+Each of the three mutations that `F001` reported as surviving the H002 suite is
+now killed, and the boolean is pinned at both values, so neither a constant
+`True` nor a constant `False` survives. The anomaly test pins three distinct
+counts (0, 1, 3), so a mutation that merely saturates the count
+(`min(len(...), 1)`, a presence flag) is killed as well. On the unmutated
+module all 75 tests in the three delivered modules pass
+(`test_audit_projection.py` 42, `test_audit_privacy.py` 13,
+`test_report.py` 20).
+
+The new tests are not tautologies: the two `attempt_id` assertions compare two
+independently built attempts *and* pin the projected value literally, and the
+anomaly test asserts the projected count against the number of anomalies the
+fixture supplied rather than against the projection itself.
+
+=== 4. What re-verified as correct at `9de0e92`
+
+* *No other frozen-list field has `F001`'s defect shape.* Three further
+wrong-source mutations -- the plausible copy/paste class rather than
+"hardcode the expected value" -- were applied simultaneously to the copy and
+all three were killed: `hops_used`/`hop_limit` read from each other's key,
+`policy_id`/`policy_revision` read from the profile keys and vice versa, and
+`argv_digest` read from the observation's `path_digest`. They failed
+`test_every_frozen_field_has_the_exact_source_value` plus two `test_report.py`
+tests. Every remaining field of the frozen list is asserted against its exact
+source value, and the fields whose asserted value coincides with a fixture
+default are additionally varied elsewhere (`status` and `stop_reason` across
+four stop statuses, `worktree_clean` as `None` under a missing summary,
+`human_question_present` at both values, `outcome` under a changed Hop
+outcome, Finding `state` across `open`/`resolved`, `raw.retention` across all
+three choices, `limits` across four named codes).
+* *The privacy property still holds and is untouched.*
+`tests/unit/test_audit_privacy.py` is byte-identical to `5cd70d2` and all 13
+tests pass, including the full-canary projection (fake home, user name,
+scratch/state/ops paths, Git remote URL, persona, provider diagnostics, hop
+and observation summaries, Finding invariant and evidence prose, human
+question, semantic-stop question, semantic notes -- in nested dicts and list
+elements), the regex check for any JSON string beginning with `/` or a drive
+letter, the guard's refusal naming only the JSON path, and `wfc audit` exiting
+3 while writing nothing. The H003 correction routes a canary anomaly string
+into the new count-bearing fixtures but never into an assertion that could
+mask a leak; the leak check for anomaly prose remains the privacy module's
+`test_full_canary_run_leaks_nothing`, whose fixture supplies an anomaly
+canary.
+* *The report never reports success for a stop or an unknown status.*
+`tests/unit/test_report.py` is byte-identical to `5cd70d2` and all 20 tests
+pass: four stop statuses plus `interrupted` and `uncertain_launch` assert
+`status != "completed"` and the fixed next-choice line from
+`_NEXT_HUMAN_CHOICE`, and an unrecognized status is `unknown` with
+`status_known is False` and an explicit "not reported as success" line.
+* *Digests, determinism and create-only writing* re-ran green unchanged:
+`raw.files` digests and byte counts are asserted equal to the manifest's
+`copied_files` entries, `manifest_sha256` against an independently computed
+`hashlib.sha256` of the manifest file, byte-identical output for two
+independently built identical trees, different bytes when one fact changes,
+and `write_audit` create-only, idempotent, refusing differing content, leaving
+the manifest and every raw file byte-identical and invoking no subprocess.
+* *Neighbouring suites (acceptance 14).*
+`tests/architecture/test_package_boundaries.py`,
+`test_product_invariants.py`, `tests/unit/test_archive_conformance.py`,
+`test_archive_safety.py`, `test_candidate_preservation.py` and
+`test_lifecycle_controller.py` pass (79 tests) in the scratch copy. Against
+the real worktree, the whole of `tests/unit` (minus the two environmentally
+blocked modules named in section 7) plus
+`tests/architecture/test_package_boundaries.py`,
+`test_product_invariants.py` and `test_bp1_identity.py` -- 1211 collected
+tests -- ran with *exactly one* failure and one skip: the failure is
+`test_bp1_identity.py::test_installed_identity_and_real_preflight`, which
+fails here because `python -m build`'s PEP 517 isolation cannot reach a
+package index (`ERROR: No matching distribution found for setuptools>=68`),
+the same diagnostic H002 recorded and independent of this candidate. The
+kernel/frontdoor import-direction guard in that same module passes, as do the
+BP4a/BP4b/archive, commissioning, reducer, journal and doc-catalogue modules.
+* *Limitations record (acceptance 15)* unchanged from `5cd70d2` and still
+states the derivation limits, the reserved and null `usage`, the absent
+lifecycle/archive/`evidence.raw`/`wfc init` wiring and the non-retrofitting of
+pre-projection archives.
+
+=== 5. Withheld authority
+
+Nothing in `9de0e92` touches it. The correction adds test assertions only: no
+engine change, no `archive.py`/`journal.py`/`lifecycle.py`/`preservation.py`/
+`git_facts.py` change, no reducer, Finding, review, routing, adapter or
+admission change, no lifecycle or `wfc init` wiring, no `evidence.raw`
+configuration, no Findings-schema change, no lineage or continuation field, no
+fabricated usage, no operator-manual or backlog edit, no test weakened or
+deleted, no historical archive or Evidence rewritten, and no Git or Evidence
+commit written by the new code. The commit is a single-file modification, not
+rename-shaped. No Git write was performed by this reviewer.
+
+=== 6. Non-blocking observations
+
+Reported here and in the Hop summary only; `finding_authority: [resolve]` does
+not authorize residual transitions.
+
+O9:: *`attempt_id`'s source is pinned only up to an equivalent mutant.* The
+projection reads `manifest["attempt_id"]`; a mutation reading
+`attempt_dir.name` instead survives the new tests, because the fixture names
+the directory after the attempt id. That is not reachable as a defect:
+`archive.py` derives the attempt id from the state-root basename, places the
+archive at `.../archive/<domain>/<workstream>/<attempt_id>`, and
+`_place_archive` refuses a manifest whose `attempt_id` disagrees with the
+destination -- so for any archive this repository's archiver writes the two
+sources are the same string. Recorded only because the assertion pins the
+*value*, not the source key.
+O10:: *The new anomaly test does not itself assert that the anomaly prose is
+absent*, though `F001`'s suggested correction mentioned it. It supplies
+`PROVIDER_PROSE_CANARY` as an anomaly and asserts only the count; the prose
+exclusion for exactly that fixture shape is covered by
+`test_audit_privacy.py::test_full_canary_run_leaks_nothing`. Coverage is
+therefore complete across the suite, just split across two modules.
+O11:: *The H003 Hop summary's test count is off.* It reports "all 78 tests
+across the three delivered BP6a test modules pass"; collection at `9de0e92`
+yields 75 (42 + 13 + 20), consistent with H002's 72 plus the three new test
+functions. The suite itself is green; only the number in the prose is wrong.
+
+H002's O1-O8 are carried forward unchanged; this pass found no evidence
+contradicting any of them, and the H003 correction neither addresses nor
+worsens any of them.
+
+=== 7. Agent-local environment limitations
+
+`tests/unit/test_commissioning.py` errors in the out-of-tree scratch copy
+because its fixture runs `git clone --local` against the product root and the
+copy is a plain `git archive` extraction, not a repository
+(`fatal: repository '.../tmp/review-h004' does not exist`). That is an
+artifact of this reviewer's own method, not a candidate defect; the module was
+therefore re-run against the real worktree, where the clone fixture works.
+`tests/unit/test_wfc_op.py` and `tests/unit/test_claude_adapter_conformance.py`
+were excluded from the wider run: as recorded in the H002 pass they fail here
+because a nested `pip install` cannot reach a package index
+(`No matching distribution found for setuptools>=68`) and because the
+adapter's temporary-directory symlink target under `/tmp` is not writable in
+this sandbox. `tests/architecture/test_bp1_identity.py::test_installed_identity_and_real_preflight`
+fails for the first of those two reasons and was observed, not worked around;
+`tests/architecture/test_offline_distribution.py` was not run for the same
+reason. Nothing was downloaded and no sandbox setting was changed.
+Several reviewer conveniences were refused by the sandbox (compound `git diff`
+invocations, `python -c` with a runtime-expanded path, `find -exec`); each was
+worked around with a literal path or a single command and cost no evidence.
+
+All agent-side runs above are exploratory partial runs (`--wfc-partial`) and
+are *not* Coordinator-trusted evidence; the Coordinator's full task-check
+remains authoritative.
+
+No implementation, test, fixture, document or Git state was modified by this
+reviewer. Every mutation ran in a `git archive` extraction of `HEAD` under the
+repository's ignored `tmp/` scratch tree, which was removed afterwards (an
+earlier, unmutated extraction remains only in the session's own `$TMPDIR`);
+this artifact is the only repository change proposed by this Hop.
