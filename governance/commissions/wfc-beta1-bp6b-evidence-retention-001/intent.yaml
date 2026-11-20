@@ -1,0 +1,63 @@
+schema_version: 1
+commission_id: wfc-beta1-bp6b-evidence-retention-001
+work_item_id: WI-WFC-BETA1-BP6B-EVIDENCE-RETENTION-001
+authority_source: Maintainer authorizes exactly one fresh robust@v1 BP6b Run (optional `evidence` configuration, Evidence-repository creation in `wfc init`, retention-aware archive holding `audit.json`, and two BP6a review observations)
+  under DG-2 as recorded in the epic, up to ten Hops; no lifecycle wiring, no Runtime promotion, no push.
+program:
+  id: robust
+  revision: v1
+  source_commit: 8b5b7c6320cc67860146aceb16955c893d9f6e74
+task:
+  title: Add Evidence retention settings, Evidence-repository creation and the retention-aware archive
+  body: |
+    Implement BP6b on the independently accepted BP5 archive port (frontdoor/archive.py) and BP6a projection (frontdoor/audit.py, frontdoor/report.py). Governing text: BP6 in docs/backlog/beta1_execution_plan.adoc and docs/backlog/beta1_productization.adoc (including the 2026-11-20 package-boundary paragraph), and in docs/warm_storage/concepts/wfc_beta1_product_boundary_review_second_pass.adoc the sections `Destination`, `What is committed`, `Audit projection`, `Commit ownership, idempotency and integrity` and the configuration example. Read the BP5 and BP6a limitations records and review artifacts first. BP6b does NOT touch `wfc run`/`wfc resume`/lifecycle/journal/preservation (that is BP6c) and never pushes.
+
+    Decisions already made (do not reopen): raw retention values are `local` (default), `commit`, `discard`; only an explicit `commit` may put raw files into Git; the projection comes from persisted facts only; no retention cap.
+
+    Deliver:
+    1. Consumer Config (frontdoor/config.py, additive): an optional `evidence` mapping with keys `repository` and `raw`, strictly validated (unknown keys refused, `raw` one of local|commit|discard, `repository` a non-empty single-line path, relative paths resolved against the payload repository root). Absent block = defaults: raw `local`; repository `<data home>/wfc/evidence/<repository_name>` where data home is `$XDG_DATA_HOME`, falling back to `~/.local/share`. A resolver `resolve_evidence(config, repository_root, environ=None) -> EvidenceSettings(path, raw)`. The existing `required` key set, digests and parsing of configs WITHOUT an `evidence` block stay exactly as they are (existing tests pass unchanged).
+    2. `wfc init` (frontdoor/init.py, additive flags `--evidence-repository PATH`, `--evidence-raw local|commit|discard`, `--no-evidence-repository`): after writing the Consumer Config exactly as today, create the Evidence repository when absent: a new Git repository with `archive/` and a root `.gitignore` containing a managed block that excludes raw files for the local mode (`archive/**/manifest.json`, `archive/**/run/`, `archive/**/ops/`), one initial commit through the trusted Git execution policy of git_facts (no hooks, no signing, no fsmonitor), NO remote configured. An existing valid Evidence repository (has `archive/`) is reused untouched; an existing non-empty directory that is not one is refused before anything is written; the payload repository is never modified except the one Consumer Config file as today. The `evidence` block is written into the config only when a non-default repository or raw value was requested. Output names the Evidence location and says nothing was pushed.
+    3. Retention-aware archive (frontdoor/archive.py, additive keyword `raw_retention=None` plus `--raw-retention` on `wfc archive`): with `None` the behavior and bytes are EXACTLY today's (BP5 tests unchanged, no audit.json). With `local|commit|discard`: the Attempt is staged and verified as today, `audit.json` is projected with frontdoor.audit.project_audit from the verified staged copy (raw.retention recorded) and written into the staging directory, then placed atomically. `commit`: audit.json, manifest.json, run/ and ops/ are committed. `local`: all raw files are placed on disk but only audit.json is committed (raw excluded by the managed `.gitignore` block; if the block is missing or does not cover the raw paths, refuse before any write with a named reason). `discard`: raw files are not placed at the destination at all; only audit.json is placed and committed. ONE commit per Attempt, made with bounded_path_commit with every committed leaf named individually; commit intents never name ignored files. The privacy guard of audit.py applies: a refusal writes nothing and commits nothing. Known private strings for the guard are derived from the environment (home directory, user name, state and ops directories of the Attempt).
+    4. Idempotency and integrity in every retention mode: a re-archive of an identical Attempt is a no-op (no second commit); an interrupted placement resumes only after re-verification as today (manifest and digests for `local`/`commit`; for `discard`, audit.json equality against a freshly projected one); an Attempt destination that exists with different content is refused; tamper cases of BP5 keep refusing in `local`/`commit`. Raw files that exist locally in `local` mode are never rewritten by a later archive of the same Attempt.
+    5. Two BP6a review observations (frontdoor/report.py, frontdoor/cli.py, minimal): (a) `wfc report <attempt-dir>` maps a privacy-guard refusal (ProjectionError) to exit code 3 with a message that names only the JSON path, like `wfc audit`; (b) the fixed next-choice table covers EVERY `model.RunStatus` value and every lifecycle classification in frontdoor.lifecycle.EXIT_CODES with a fixed truthful line, and a genuinely unknown value is still reported as unknown. No change to audit.py field list or schema.
+    6. Developer-facing limitations record: what each retention mode keeps, where raw files live, that `local` raw files are not backed up by Git, that nothing is pushed, that default data-home placement is a decision of this package, that archives written before BP6 receive no audit.json.
+
+    Hard rules: no engine change; no change to journal.py, lifecycle.py, preservation.py, git_facts.py, the audit allow-list/schema, reducer, Finding, review, routing, adapter or admission; no lifecycle wiring; no change to `wfc run` behavior or exit codes; no push, no remote, no network, no pip; Python 3.10-3.13 stdlib plus the existing PyYAML dependency only; kernel modules never import frontdoor; no edits to the operator manual or backlog. CommitIntent: name every changed/new/deleted leaf individually, never directories; avoid rename-shaped changes. Deliver ONE complete candidate in the first Worker Hop; subject must contain WI-WFC-BETA1-BP6B-EVIDENCE-RETENTION-001 and the actual Hop ID. No Git writes by the agent.
+
+    Reviewer (fresh, adversarial): evaluate the ENTIRE product against the baseline and this task. For each acceptance case require a test that fails against a mutation of the guarded behavior; verify with real Git that `git ls-files` and the complete object history of the Evidence repository contain only what the retention mode allows and none of the known private strings in `local`/`discard`; verify one commit per Attempt, idempotent re-archive and crash resume per mode; verify `retention=None` is byte-identical to today's behavior. Blocking = a reproduced violation of an explicit acceptance case, of the privacy/retention property, or a crash on a plausible input. Exotic inputs outside the acceptance list are non-blocking observations, not Findings. `finding_authority: [resolve]` does not authorize residual transitions: report non-blocking observations only in the review artifact and summary. Coordinator full task-check is mandatory and not replaceable by agent-side tests.
+  acceptance: |
+    Each case has a mutation-sensitive test: (1) config: defaults, valid and invalid `evidence` blocks, relative and absolute repository, XDG fallback, configs without the block parse and digest exactly as before; (2) `wfc init` creates a new Evidence repository (archive/, managed .gitignore, one commit, no remote), reuses a valid one untouched, refuses a foreign non-empty directory before writing anything, and leaves the payload repository modified only by the Consumer Config; (3) `local`: `git ls-files` in the Evidence repository shows only audit.json files and .gitignore, the raw files exist on disk, `git status` is clean; (4) `commit`: audit.json, manifest.json, run/ and ops/ are tracked; (5) `discard`: only audit.json exists at the destination; (6) `None`: legacy behavior and manifest bytes unchanged, no audit.json; (7) one commit per Attempt in every mode, containing audit.json; (8) re-archive no-op per mode, no second commit, raw files untouched; (9) crash between placement and commit resumes per mode without a second commit; tamper refusal in `local`/`commit`; different audit refused in `discard`; (10) privacy: the Evidence history (all blobs) contains none of the known home, user name, scratch/state/ops strings in `local` and `discard`; a guard refusal writes and commits nothing; (11) `local` with a missing or insufficient `.gitignore` refuses before writing; (12) `wfc report <attempt-dir>` exits 3 on a guard refusal; every RunStatus and lifecycle classification has a fixed next-choice line, an unknown value is reported unknown; (13) no push, no remote, no network; (14) architecture import-direction guard, BP4/BP5/BP6a tests and the existing suite pass unchanged; (15) a BP6b limitations record states the retention semantics and limits. Independent review with no blocking Findings; Coordinator full task-check passes; completed Run.
+  withheld_authority: No lifecycle, run or resume wiring, no change to journal.py, lifecycle.py, preservation.py or git_facts.py, no change to the audit field list or schema, no engine change, no change to reducer, Finding, review, routing, adapter or admission, no repository-local archive destination, no push or remote, no operator-manual or backlog edits, no test weakening, no rewrite of any historical archive or Evidence, no extra Commission, Runtime promotion, push, merge or rebase.
+  escalation_default: Escalate a genuine need for new authority or design, any conflict with the recorded DG-2 decisions, any need to change the audit schema or BP4a/BP4b/lifecycle behavior, or inability to meet the matrix without changing BP5 archive semantics for `raw_retention=None`.
+scope:
+- src/workflow_coordinator/frontdoor/config.py
+- src/workflow_coordinator/frontdoor/init.py
+- src/workflow_coordinator/frontdoor/archive.py
+- src/workflow_coordinator/frontdoor/report.py
+- src/workflow_coordinator/frontdoor/cli.py
+- tests/unit/test_evidence_config.py
+- tests/unit/test_init_evidence.py
+- tests/unit/test_archive_retention.py
+- tests/unit/test_report_status_coverage.py
+- tests/fixtures/bp6/archive_builder.py
+- docs/developer_guide/ch02_code_navigation.adoc
+- docs/warm_storage/concepts/wfc_beta1_bp6b_evidence_retention_001_limitations.adoc
+- docs/warm_storage/concepts/wfc_beta1_bp6b_evidence_retention_001_broad_review.adoc
+- docs/warm_storage/concepts/wfc_beta1_bp6b_evidence_retention_001_focused_review.adoc
+personas:
+  worker: 'Senior Python/Git engineer: add retention-aware archiving and Evidence-repository creation on the existing archive port, with real-Git tests proving what is and is not committed.'
+  independent_reviewer: 'Fresh independent adversarial reviewer: prove with real Git what each retention mode commits, check idempotency, crash resume and byte-identical legacy behavior, and verify no private string reaches Evidence history.'
+evidence_profile: task-check-v1
+policy_basis:
+  id: repository-standard
+  revision: v1
+  source_commit: eda4544f4e1826474f0cee59aab4c3e641ba2c28
+max_autonomous_hops: 10
+durable_artifacts:
+  broad_review:
+  - docs/warm_storage/concepts/wfc_beta1_bp6b_evidence_retention_001_broad_review.adoc
+  focused_review:
+  - docs/warm_storage/concepts/wfc_beta1_bp6b_evidence_retention_001_focused_review.adoc
+components_ref:
+  path: governance/self-development/components.yaml
+  source_commit: 44bf8a1057346ea7bf5ce8dc8bf015e9aa18a2b0
