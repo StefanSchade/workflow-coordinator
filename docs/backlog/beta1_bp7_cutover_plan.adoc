@@ -46,7 +46,7 @@ permitted `components_ref.path`).
 |`compile_commission` (`commissioning.py:666-780`) compiles a closed
 `ConsumerRequest`/`ConsumerConfig` (`frontdoor/request.py`,
 `frontdoor/config.py`) against exactly `simple@v1`/`robust@v1`
-(`commissioning.py:620-636 _consumer_program_template`); `direct@v1` is
+(`commissioning.py:621-640 _consumer_program_template`); `direct@v1` is
 withheld from the consumer compiler.
 |*Narrowed by design, not a missing capability.* `robust@v1`'s fixed
 four-phase shape (`implement`/`broad_review`/`correct`/`focused_review`,
@@ -103,9 +103,12 @@ invocation, while still allowing an ad hoc override.
 hard ceiling (`operator.py:213-220,425`); `COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS
 = 20` (`model.py:25`).
 |Identical mechanism: `ConsumerRequest.max_autonomous_hops` checked against
-`ConsumerConfig.max_autonomous_hops` and the same hard ceiling
-(`commissioning.py:705,423`, `frontdoor/request.py:132-134`,
-`frontdoor/config.py:154-156`).
+`ConsumerConfig.max_autonomous_hops` at `commissioning.py:705` (not `:423`,
+which is the separate, legacy v1 `CommissionIntent` path's own ceiling
+check), with the inputs validated as positive integers at
+`frontdoor/request.py:132-134` and `frontdoor/config.py:154-156`; the
+Coordinator's hard ceiling itself is enforced downstream of either path, at
+`serialization.py:531` and `operator.py:213-220,425`.
 |*Fully equivalent.* No gap.
 
 |Evidence command(s)
@@ -127,7 +130,7 @@ shape `robust@v1` fixes structurally. No gap.
 (e.g. `docs/backlog/FTR-WFC-EVIDENCE-FAILURE-DISPOSITION-HARDENING_implementation_review_001.adoc`).
 |`ConsumerRequest.durable_artifacts["broad_review"/"focused_review"]`
 (`frontdoor/request.py:135-155`), substituted into the `artifact_key: A` scope
-slot by `compile_commission` (`commissioning.py:702-705,642-644`).
+slot by `compile_commission` (`commissioning.py:748-754,640`).
 |*Fully equivalent.* No gap. (This very Commission's own `authorized_scope`
 already uses this exact shape.)
 
@@ -139,7 +142,7 @@ separate dev/evidence venv from the live pinned Development checkout.
 |*None.* No function in `frontdoor/*.py` builds a venv, exports a commit, or
 installs anything. `wfc run`/`resume` locate the already-installed `wfc`
 console script next to the running interpreter or on `PATH`
-(`_default_engine_command`, `frontdoor/lifecycle.py:71-93`) and invoke it.
+(`_default_engine_command`, `frontdoor/lifecycle.py:77-93`) and invoke it.
 |*Intentional removal, per DG-5, not a backfill-worthy gap* -- "the normative
 preparation sequence moves to ... a consumer-provided, WFC-probed
 environment; WFC provisions no project environments." But DG-5 removes the
@@ -151,7 +154,7 @@ precondition it implies.
 
 |Offline reviewed-input-bundle verification
 |A dedicated profile, `fetch`/`verify`/`exec` commands and staging, owned by
-the Developer Guide (ch03 `[[selfdev-offline-inputs]]`); exercised around
+the Operator Manual (ch03 `[[selfdev-offline-inputs]]`); exercised around
 both `prepare` and `launch`.
 |*None found* anywhere under `src/workflow_coordinator/frontdoor/`.
 |*Intentionally out of Front-Door scope under DG-5*, for the same reason as
@@ -228,7 +231,7 @@ independently accepted (BP6a/BP6b).
 a *new* directory, never under `governance/`.
 |*New, deliberately separate location*, not a gap. `compile_commission`
 refuses any `ConsumerRequest.scope` that overlaps `governance_dir` or the
-guidance path (`commissioning.py:644-646`), so the legacy `governance/` tree
+guidance path (`commissioning.py:709-714`), so the legacy `governance/` tree
 and the new `.wfc/governance/` tree cannot collide, and the hard-coded v1
 `_COMPONENT_MANIFEST_PATH` check (`commissioning.py:352`) never runs on the
 consumer path at all.
@@ -358,7 +361,18 @@ nothing currently in the tree requires touching `governance/` itself (no
 concrete "quarantined file" exists anywhere under `src/`, `tests/`,
 `scripts/`, or `governance/` as of this Hop -- verified by search -- so this
 plan does not invent one; the retirement Commission should re-check for one
-when it starts).
+when it starts). Nothing is deselected by default today either: `pytest`'s
+`addopts` carry no `-m` deselection (`pyproject.toml:38 addopts = "-q"`); what
+does exist, and is not a quarantined file in the sense the second-pass
+migration review meant, is the registered `historical_governance` marker
+(`pyproject.toml:43`) and the small
+`tests/architecture/test_historical_governance_parse.py` smoke check that
+already replaced an earlier, much larger bundle test -- both of which keep
+passing after retirement because `governance/self-development/` is retained
+as frozen historical input, per the epic's own "no retroactive rewrite"
+rule; C5's acceptance should cite these two by name rather than only the
+general "without any quarantined file" phrasing it inherits from the
+execution plan.
 
 No additive product change is needed for the Evidence binding itself. One
 additive *input* (not a code change) is required regardless of which config
@@ -488,7 +502,14 @@ new, small `repository_policy` guidance document (content per
 document path, a short manual note recording its existence.
 |None technical (BP1-BP6 already independently accepted); gated only on
 <<open-decisions>> items 2 and 3 being settled by the maintainer before this
-Commission starts.
+Commission starts. This deliberately deviates from the execution plan's
+general Batch 4 starting prerequisite ("Batch 3 fully accepted; a maintainer
+Runtime promotion ...", `beta1_execution_plan.adoc` `=== Batch 4`), whose
+named Batch 3 includes `wfc-beta1-bp9-beta-gate-001`
+(`beta1_execution_plan.adoc` `=== Batch 3`): C1 only authors a config file
+and a guidance document, touches no code path BP9 could affect, and does not
+itself start any self-hosted Run, so it can run ahead of Batch 3 without
+weakening that batch boundary for anything that actually executes.
 |`consumer_config_from_yaml` parses the committed file without error;
 `resolve_evidence(config, repository_root)` resolves to
 `repository_root.parent / "workflow-coordinator-run-evidence"` with
@@ -553,10 +574,19 @@ a one-off.
 
 |C5
 |`wfc-beta1-bp7-retirement-001` (== the execution plan's own BP7 Commission)
-|Remove or stub `scripts/wfc_op.py`; remove the v1 `CommissionIntent` compile
-path and `_repository_standard_record` literal check from
-`commissioning.py`; re-check for and remove any quarantined file actually
-present at that time (none exists as of this plan); update the manual
+|Remove or stub `scripts/wfc_op.py` and its own direct test,
+`tests/unit/test_wfc_op.py`; remove the v1 `CommissionIntent` compile path --
+`commission_intent_from_yaml`, `render_commission`, `verify_render_manifest`
+and `_repository_standard_record` (`commissioning.py:182-579` roughly, the
+block the module's own `# ---` comment boundary at line 580 separates from
+the consumer-only code below it; these are also the only functions
+`scripts/wfc_op.py` imports from `commissioning.py`, per
+`scripts/wfc_op.py:80-83`) -- and the parts of
+`tests/unit/test_commissioning.py` and
+`tests/architecture/test_self_development_governance.py` that exercise it or
+the legacy `governance/self-development/` tree directly; re-check for and
+remove any quarantined file actually present at that time (none exists as of
+this plan); update the manual
 sections named in the execution plan: `ch03_running/01_preparation.adoc`
 (the `[[harness-preparation]]` subsection and steps 4/5 of the canonical
 sequence, per DG-5's wording), `ch03_running/02_launch_status.adoc`,
@@ -616,7 +646,7 @@ applies. But DG-5 removes the Harness's *fresh-export-per-Attempt* step
 (`export_runtime`, `scripts/wfc_op.py:400-424`), which is exactly what
 guaranteed Runtime stayed frozen even while Development's own working tree
 was being edited by the same self-development Run. The product's
-`_default_engine_command` (`frontdoor/lifecycle.py:71-93`) simply finds
+`_default_engine_command` (`frontdoor/lifecycle.py:77-93`) simply finds
 `wfc` next to the running interpreter or on `PATH`. *If that resolves to an
 editable install of the very Development checkout under modification*, a
 Hop editing `src/workflow_coordinator/...` could change the behavior of a
@@ -672,6 +702,18 @@ still-binding operator discipline, not retire it.
 . The real sibling Evidence repository confirmed reachable at
   `../workflow-coordinator-run-evidence` relative to the actual Development
   checkout being used -- not a scratch clone lacking that sibling.
+. That sibling Evidence repository's own root `.gitignore` confirmed not to
+  exclude `audit.json` at the Attempt's destination: every raw retention mode
+  commits it, and `archive._assert_audit_path_not_ignored`
+  (`frontdoor/archive.py:254-267`) refuses the whole archive before any write
+  if a pattern (for example a broad `*.json`) excludes it; `raw: commit`'s own
+  raw files (`manifest.json`, `run/**`, `ops/**`) are separately re-included
+  by a per-Attempt `.gitignore` the archiver writes into the Attempt's own
+  destination (`_ATTEMPT_COMMIT_GITIGNORE`, `archive.py:165-171`, written at
+  `archive.py:1229`), which cannot by itself fix an `audit.json` exclusion
+  coming from the repository's *own* root `.gitignore`. This plan's own
+  sandbox cannot read the sibling repository to check this; it is a real
+  precondition to verify on the actual deployment, not assumed clear here.
 . DG-4/DG-5 already resolved.
 . The maintainer has selected Proof Run 1's actual task content (a separate
   decision; see <<open-decisions>> item 1 -- this plan does not pick it).
