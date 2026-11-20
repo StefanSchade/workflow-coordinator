@@ -176,6 +176,17 @@ def _checkout_dir_and_journal(repository: Path) -> tuple[Path, J.Journal]:
     return checkout_dir, J.Journal(checkout_dir / "journal.jsonl")
 
 
+def _cli_run_argv(repository: Path, request_path: Path) -> list[str]:
+    return [
+        "run", "--repository", str(repository), "--request", str(request_path),
+        "--executable", str(FAKE_PROVIDER),
+        "--execution-override", "worker.adapter=codex_cli",
+        "--execution-override", "worker.model=fixture-model",
+        "--execution-override", "worker.reasoning=medium",
+        "--yes",
+    ]
+
+
 def _attempt_identity(repository: Path, run_id: str = "RUN-fake-engine") -> str:
     from workflow_coordinator.frontdoor.config import consumer_config_from_yaml
 
@@ -389,6 +400,60 @@ def test_evidence_repository_absent_is_skipped_not_a_failure(
 
 
 # --------------------------------------------------------------------------
+# Acceptance 1/4: `wfc run`/`wfc resume` (the actual CLI entry points, not the
+# ``LifecycleResult`` dataclass) print the consolidated report on success and
+# the loud ARCHIVE SKIPPED line when the Evidence repository is absent --
+# Deliver item 1(d)/1(c). Driven through ``cli_main`` with ``capsys`` so a
+# mutation that guts ``_print_postrun_notice`` is actually caught.
+# --------------------------------------------------------------------------
+
+def test_cli_run_and_resume_print_the_consolidated_report_for_a_completed_run(
+    repository: Path, tmp_path: Path, state_home: Path, evidence_path: Path, capsys,
+):
+    os.environ["WFC_FAKE_ENGINE_MODE"] = "completed_consistent"
+    L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
+    request_path = _write_request(repository, tmp_path / "request.yaml", commission_id="bp6c-cli-report")
+
+    capsys.readouterr()
+    exit_code = cli_main(_cli_run_argv(repository, request_path))
+    captured = capsys.readouterr()
+    assert exit_code == L.EXIT_CODES["completed"]
+    assert "WFC RUN" in captured.out
+    assert "CLASSIFICATION: completed" in captured.out
+
+    capsys.readouterr()
+    resume_exit_code = cli_main(["resume", "--repository", str(repository)])
+    resumed_captured = capsys.readouterr()
+    assert resume_exit_code == L.EXIT_CODES["completed"]
+    assert "WFC RUN" in resumed_captured.out  # the read-only reprint still happens on `resume`.
+
+
+def test_cli_run_prints_the_loud_archive_skipped_line(
+    tmp_path: Path, state_home: Path, capsys,
+):
+    repo = _seed_repository(tmp_path)
+    absent_evidence = tmp_path / "never-created-evidence"
+    assert cli_main([
+        "init", "--repository", str(repo), "--scope-ceiling", "src",
+        "--evidence-repository", str(absent_evidence), "--no-evidence-repository",
+    ]) == 0
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "chore: commit Consumer Config")
+
+    os.environ["WFC_FAKE_ENGINE_MODE"] = "completed_consistent"
+    L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
+    request_path = _write_request(repo, tmp_path / "request.yaml", commission_id="bp6c-cli-skip")
+
+    capsys.readouterr()
+    exit_code = cli_main(_cli_run_argv(repo, request_path))
+    captured = capsys.readouterr()
+    assert exit_code == L.EXIT_CODES["completed"]  # unchanged: a skip is not a failure.
+    assert "ARCHIVE SKIPPED" in captured.out
+    assert "wfc init" in captured.out
+    assert not absent_evidence.exists()
+
+
+# --------------------------------------------------------------------------
 # Acceptance 5/6: a genuine destination conflict refuses with the additive
 # exit code, the engine classification stands, and `wfc resume` retries and
 # succeeds once the cause is removed.
@@ -474,6 +539,43 @@ def test_non_writable_evidence_repository_is_refused_not_an_uncaught_exception(
     assert resumed.exit_code == L.EXIT_CODES["completed"]
     _, journal = _checkout_dir_and_journal(repository)
     assert journal.latest(("ext.archive.result",)) is not None
+
+
+def test_privacy_guard_refusal_is_archive_failed_then_resume_succeeds_once_resolved(
+    repository: Path, tmp_path: Path, state_home: Path, evidence_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    # Acceptance 5's second named trigger: a privacy-guard refusal, not an
+    # archive/audit failure. The default Run-derived Attempt identity for
+    # ``repository`` is ``consumer-repo-run-fake-engine`` (repository name
+    # ``consumer-repo``, default fake-engine run id ``RUN-fake-engine``); an
+    # OS user name that is a whole token of that identity (``fake``) makes
+    # ``frontdoor.audit``'s privacy guard refuse the projection that embeds
+    # ``attempt_id``, exercising the ``privacy_guard_refused`` branch of
+    # ``postrun._reason_code_for`` through the installed lifecycle.
+    monkeypatch.setattr(A.getpass, "getuser", lambda: "fake")
+
+    result = _run_with_fake_engine(repository, tmp_path, "completed_consistent", commission_id="bp6c-privacy-refusal")
+    assert result.classification == "completed"  # the engine outcome stands.
+    assert result.exit_code == L.ARCHIVE_FAILED_EXIT_CODE
+    assert result.postrun_notice is not None
+    assert "ARCHIVE FAILED (privacy_guard_refused)" in result.postrun_notice
+    assert str(tmp_path) not in result.postrun_notice  # no path leak in the printed notice.
+
+    _, journal = _checkout_dir_and_journal(repository)
+    fact = journal.latest(("ext.archive.refused",))
+    assert fact is not None
+    assert fact.data == {"reason_code": "privacy_guard_refused"}
+    assert git(evidence_path, "status", "--porcelain=v1") == ""  # nothing was ever placed or committed.
+
+    # Remove the cause (a distinct OS user name), then `wfc resume` retries
+    # and succeeds exactly once.
+    monkeypatch.setattr(A.getpass, "getuser", lambda: "someone-else")
+    resumed = L.resume_lifecycle(repository)
+    assert resumed.classification == "completed"
+    assert resumed.exit_code == L.EXIT_CODES["completed"]
+    _, journal = _checkout_dir_and_journal(repository)
+    assert journal.latest(("ext.archive.result",)) is not None
+    assert journal.count("ext.archive.result") == 1
 
 
 def test_unresolvable_default_evidence_location_is_refused_not_an_uncaught_exception(
