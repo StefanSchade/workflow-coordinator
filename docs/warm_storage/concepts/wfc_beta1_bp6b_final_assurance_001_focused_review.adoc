@@ -1,0 +1,338 @@
+= BP6b final assurance: independent focused review of the F001 correction
+:toc: macro
+:toclevels: 2
+
+Standing:: Independent focused review for
+`WI-WFC-BETA1-BP6B-FINAL-ASSURANCE-001`, Run
+`RUN-b5b62321c8214823905e90fe035a2415`, Hop `H004`, at HEAD
+`5cc6079b26c5580f48164df79252f2e3414f27b1`. Subject: the `H003` correction
+of the single open blocking Finding `F001` (authored by `H002`, recorded as
+`BF-1` in
+`wfc_beta1_bp6b_final_assurance_001_broad_review.adoc`), evaluated against
+the BP6b product baseline `9ebb6d5`. This artifact is review evidence, not
+acceptance: Run acceptance remains the Coordinator's full `task-check` to
+establish, and the whole-product acceptance statement belongs to a fresh
+broad review at this HEAD (see _Requested route_).
+
+toc::[]
+
+== Verdict
+
+*accept* for the correction, and `F001` is *resolved*.
+
+The `H003` correction is exactly, and only, what `F001` prescribed: five
+additive mutation-sensitive tests in `tests/unit/test_archive_retention.py`,
+no product byte, no audit-schema byte, no lifecycle byte, no weakened or
+deleted test. This Hop re-ran every mutation `F001` named, one at a time,
+against a disposable copy of the source tree, and *all five are now
+detected*, each by the corresponding new test. The retention, privacy,
+one-commit, idempotency and per-mode crash-resume behaviour of the product
+was independently re-reproduced with real Git at this HEAD (76/76
+reviewer-owned checks) and holds.
+
+No blocking Finding is open after this Hop. Four non-blocking observations
+are recorded in section _Non-blocking observations_; `finding_authority:
+[resolve]` does not authorize residual transitions, so none of them is a
+Finding.
+
+== Basis
+
+=== What changed, and what did not
+
+[source]
+----
+git diff --name-status eeb3576..5cc6079
+M       tests/unit/test_archive_retention.py
+
+git diff --numstat eeb3576..5cc6079
+86      0       tests/unit/test_archive_retention.py
+----
+
+The correction is *86 insertions and 0 deletions in one test leaf*. Nothing
+else in the repository changed:
+
+* `git diff --stat 5465890..HEAD -- src docs/developer_guide` is *empty*:
+  `src/` is byte-identical to the BP6b product commit `5465890` and to the
+  tree `H002` broad-reviewed. Every behavioural property `H002` reproduced
+  therefore still holds by construction, and this review re-reproduced the
+  central ones anyway (section _Independent real-Git reproduction at this
+  HEAD_).
+* `git diff --name-only cf56a97..HEAD` yields exactly
+  `docs/warm_storage/concepts/wfc_beta1_bp6b_final_assurance_001_broad_review.adoc`
+  and `tests/unit/test_archive_retention.py` -- the broad-review artifact and
+  the corrected test leaf, nothing else.
+* `git diff --name-status --diff-filter=MDR 9ebb6d5 HEAD -- tests` is
+  *empty* across the whole product range: no pre-existing test was modified,
+  deleted or renamed by BP6b or by this Commission, so *no test was
+  weakened*. `tests/unit/test_archive_retention.py` is a file BP6b itself
+  added, and `H003` only appended to it.
+* `git diff --name-only 9ebb6d5 HEAD` touches none of the withheld-authority
+  leaves: no `journal.py`, `lifecycle.py`, `preservation.py`,
+  `git_facts.py`, `frontdoor/audit.py`, `reducer.py`, `admission.py`, no
+  engine, Finding, review, routing or adapter module, and no operator
+  manual. The only backlog leaf in the range,
+  `docs/backlog/beta1_productization.adoc`, is the maintainer commit
+  `499efd4`, outside both Commissions and not made by BP6b or by this Run.
+* The authorized scope of this Hop is the focused-review artifact alone.
+  This Hop changed no product, test or documentation byte other than
+  creating this file.
+
+=== Structural check of the corrected test leaf
+
+`tests/unit/test_archive_retention.py` parses to 29 test methods with *no
+duplicated method name in any class* (checked by AST, per class:
+`LocalRetentionTests` 10, `CommitRetentionTests` 5, `DiscardRetentionTests`
+6, `LegacyRetentionNoneTests` 1, `PrivacyAcrossHistoryTests` 2,
+`LegacyRetentionConflictTests` 1, `LocalRetentionAuditGitignoreConflictTests`
+1, `PrivacyGuardEnvironmentDerivedStringsTests` 3). No added test shadows an
+existing one, so nothing was silently replaced.
+
+== F001 / BF-1: mutation re-probe
+
+Method: a disposable copy of `src/`, `tests/`, `scripts/` and
+`pyproject.toml` under `$TMPDIR` (never the working tree). One mutation at a
+time was applied to the copy's
+`src/workflow_coordinator/frontdoor/archive.py`; the corrected
+`tests/unit/test_archive_retention.py` was then re-run against it. The
+unmutated copy passes (29/29), and the same control mutation `H002` used
+(`local` retention also committing `manifest.json`) is detected, so the probe
+is sound. The `committed_paths` mutation was applied *occurrence-selectively*,
+because the anchor line exists twice; the resume-path occurrence inside
+`_resume_or_noop_kept_raw` is the one `F001` names.
+
+[cols="1,3,2,3",options="header"]
+|===
+| # | Mutation of guarded behaviour | Result | Detecting test and failure reason
+
+| 1
+| `_resume_or_noop_discard`: `if _path_is_tracked_clean(identity, dest_rel):`
+  -> `if True:`
+| *DETECTED*
+| `DiscardRetentionTests::test_crash_between_placement_and_commit_resumes_without_a_second_commit`
+  -- `AssertionError: 'ARCHIVED' not found in 'ARCHIVE ALREADY UP TO
+  DATE...'`. This is precisely the false-success class the historical BP6b
+  `F001` correction was raised for, and it is now guarded.
+
+| 2
+| resume path of `_resume_or_noop_kept_raw`:
+  `committed_paths = _committed_paths_for_retention(...)` ->
+  `(f"{dest_rel}/{AUDIT_FILENAME}",)`
+| *DETECTED*
+| `CommitRetentionTests::test_crash_between_placement_and_commit_resumes_without_a_second_commit`
+  -- the resume no longer exits 0: `commit failed: unexpected dirty path:
+  .../manifest.json, .../ops/..., .../run/...`. See observation 1 on the
+  manifestation.
+
+| 3
+| `_resume_or_noop_discard`: `if entries != [AUDIT_FILENAME]:` -> `if False:`
+| *DETECTED*
+| `DiscardRetentionTests::test_destination_with_unexpected_entries_is_refused_not_treated_as_valid`
+  -- `'not a valid discard-retention placement' not found in 'wfc archive:
+  commit failed: commit intent path already exists at base HEAD: ...'`
+
+| 4
+| `_resume_or_noop_kept_raw`: `if not audit_path.is_file():` -> `if False:`
+| *DETECTED*
+| `LocalRetentionTests::test_archive_destination_without_audit_json_is_refused`
+  -- the mutant raises `FileNotFoundError` instead of the structured
+  refusal. See observation 1.
+
+| 5
+| already-committed no-op branch: `if _project_audit_text(dest, ...) !=
+  existing_audit_text:` -> `if False:`
+| *DETECTED*
+| `LocalRetentionTests::test_tampered_but_committed_audit_json_is_not_silently_treated_as_up_to_date`
+  -- `AssertionError: 0 == 0`, i.e. the mutant exits 0 and silently treats a
+  committed-but-inconsistent `audit.json`/`manifest.json` pair as up to
+  date. The guarded semantics are caught exactly.
+
+| ctrl
+| `_committed_paths_for_retention`: `local`/`discard` also commit
+  `manifest.json`
+| *DETECTED*
+| 14 tests fail, including the two privacy-across-history tests -- probe
+  soundness confirmed.
+
+| ctrl2
+| fresh-archive occurrence of `committed_paths` (not the one `F001` names)
+| *DETECTED*
+| `CommitRetentionTests::test_audit_manifest_run_and_ops_are_all_tracked`,
+  `::test_one_commit_per_attempt`, `::test_rearchive_is_a_no_op` -- the
+  pre-existing coverage of acceptance case 4 on the fresh path was already
+  sound; only its resume path was unguarded.
+|===
+
+`F001`'s prescription is satisfied in full: every mutation it enumerated now
+fails a test, the correction is purely additive, and it is confined to the
+test leaf `F001` named.
+
+== Independent real-Git reproduction at this HEAD
+
+Because the acceptance list's properties must be re-established at the
+candidate HEAD -- not inherited from the broad review -- this Hop re-ran a
+reviewer-owned harness (deliberately not the project's own test fixtures)
+against `5cc6079`. Disposable Evidence repositories were created through the
+real product entry point `frontdoor.init.ensure_evidence_repository`, every
+invocation went through the real installed `frontdoor.cli` dispatch in a
+subprocess, and all verification used real `git`. *The real Evidence
+repository was never touched.* 76 checks, all passing:
+
+Per mode (`local`, `commit`, `discard`), fresh archive::
+* exit 0, reports `ARCHIVED`;
+* `git rev-list --count <before>..HEAD` == *1* -- one commit per Attempt;
+* `git diff-tree -r HEAD` touches only paths under
+  `archive/unclassified/<attempt>/`;
+* `local` and `discard`: `git ls-files` == `{.gitignore, archive/.gitkeep,
+  archive/unclassified/<attempt>/audit.json}` exactly; `commit`:
+  `audit.json`, `manifest.json`, the per-Attempt `.gitignore`, `run/**` and
+  `ops/**` all tracked (14 tracked leaves);
+* `local`: raw `manifest.json` and `run/` present on disk and *untracked*;
+  `discard`: `audit.json` is the *only* entry at the destination;
+* worktree clean after the archive;
+* *privacy across the whole object database*: for `local` and `discard`,
+  every blob returned by `git cat-file --batch-all-objects` (3 blobs) was
+  read and contains *no* known private string (the fixture's canary user
+  name and canary secret), and no path in `git rev-list --objects --all`
+  (11 objects) contains one. For `commit`, the raw OPS bytes *are* in
+  history, as that mode is defined to do (2 hits, expected);
+* `git remote` is empty and the reflog contains no push -- nothing is
+  pushed, no remote exists;
+* re-archive is idempotent: exit 0, `ARCHIVE ALREADY UP TO DATE`, no new
+  commit.
+
+Per mode, crash between placement and commit, then resume::
+A child process patched `_commit_retention_archive` to raise, so the archive
+died exactly between placement and commit; the resume was then driven
+through the real CLI.
+* the crashed run creates *no* commit, leaves `audit.json` placed on disk,
+  and leaves it *untracked*;
+* the resume exits 0 and reports `ARCHIVED` (not `ALREADY UP TO DATE`);
+* total commits for the Attempt after the resume: *1* in every mode;
+* `commit` mode's resume commits the *full* per-mode set --
+  `audit.json`, `manifest.json`, `.gitignore`, `run/**`, `ops/**` -- not
+  `audit.json` alone;
+* `local` mode's resume keeps the raw files on disk and untracked;
+  `discard` mode's resume leaves only `audit.json` at the destination and
+  its history is still free of every known private string;
+* worktree clean after the resume, and a further archive is a no-op with
+  still exactly one commit.
+
+Harness and raw output are kept out of the commit under the gitignored
+`tmp/review-bp6b-final-h004/` (`r1_modes.py`, `r1_modes.out`,
+`r2_reasons.py`, `r3_m2detail.py`).
+
+== Regression evidence (agent-side, exploratory)
+
+All suite results below are agent-side partial runs that the project's own
+harness banners as "WFC PARTIAL RUN: subset only, NOT the required suite or
+its acceptance". They are not Coordinator-trusted evidence.
+
+* `tests/unit/test_archive_retention.py`: *29/29 pass* (24 before the
+  correction, 5 added).
+* The twelve-file BP6b and neighbouring suite named by the Commission
+  (`test_archive_retention`, `test_archive_port`,
+  `test_archive_retry_integrity`, `test_archive_safety`,
+  `test_archive_conformance`, `test_archive_equivalence`,
+  `test_evidence_config`, `test_init_evidence`, `test_report_status_coverage`,
+  `test_audit_privacy`, `test_audit_projection`, `test_report`): *254/254
+  pass*.
+* `tests/unit` + `tests/architecture`: 1408 passed, 2 skipped, 28 failed, 13
+  errored. Every failure and error is in one of the four environment-bound
+  families `H002` already recorded, none of them in a BP6b module or its
+  tests: `test_claude_adapter_conformance.py` (22, read-only `/tmp` symlink
+  target), `test_wfc_op.py` (4 failed + 13 errored, nested `pip install`
+  cannot reach a package index: `No matching distribution found for
+  setuptools>=68`), `tests/architecture/test_bp1_identity.py` (1) and
+  `tests/architecture/test_offline_distribution.py` (1), both PEP 517 build
+  isolation without a package index. The correction adds no failure.
+* The *required* suite could not be run agent-side at all: it needs
+  `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE` pointing at a verified offline wheel
+  bundle, and no such bundle exists on this machine. This is an agent-local
+  environmental limitation, not a product defect, and the Coordinator's full
+  `task-check` is unaffected by it and remains mandatory.
+
+== Acceptance cases: status at this HEAD
+
+* Cases 3-5, 7, 8, 10, 13 (per-mode retention, tracked sets, privacy,
+  one commit per Attempt, idempotency, no push/no remote): re-reproduced by
+  this Hop with real Git, see above.
+* Case 9 (crash between placement and commit resumes *per mode* without a
+  second commit) and case 4 on its resume path: behaviour re-reproduced for
+  all three modes by this Hop, *and* the mutation-sensitive test the
+  acceptance list requires now exists for `commit` and `discard` -- this is
+  the `F001` closure.
+* Cases 1, 2, 6, 11, 12, 10b, 14, 15 (config defaults/validation, `wfc init`
+  Evidence-repository creation, `raw_retention=None` byte-identity,
+  `local` `.gitignore` coverage refusal, `wfc report` exit 3 and the fixed
+  next-choice line, guard refusals writing nothing, neighbouring guard
+  suites, limitations record): reproduced by `H002` against a `src/` tree
+  that is *byte-identical* to this HEAD, and still covered by the 254
+  passing tests above. The limitations record's explicit statement was
+  re-read at this HEAD: section "Nothing is ever pushed; the Evidence
+  repository has no remote" ... "`wfc archive` never adds one, never
+  fetches, and never pushes, in any retention mode".
+
+== Non-blocking observations
+
+Recorded here and in the Hop summary only. None is a Finding.
+
+. *Two of the five mutants are detected through a collateral failure mode
+  rather than through the semantic assertion the test also carries.*
+  Mutation 2 makes the `commit`-mode resume fail with the trusted-commit
+  layer's own `unexpected dirty path` refusal rather than, as `F001`'s prose
+  predicted, reporting `ARCHIVED` with a partial commit; mutation 4 makes the
+  mutant raise `FileNotFoundError` instead of the structured refusal. In both
+  cases the test *does* fail against the mutation, which is exactly the
+  acceptance standard ("a test that fails against a mutation of the guarded
+  behavior"), and both tests additionally assert the semantics that matter --
+  the full per-mode tracked set including `manifest.json`, `run/**` and
+  `ops/**`, and the refusal message -- so an exit-0 variant would also be
+  caught. Worth knowing when reading the tests, not a defect.
+. *The new `discard` crash-resume test asserts only that `git status
+  --porcelain` is non-empty* at the crashed-but-not-committed point, where
+  the analogous `local` test asserts something about the reported paths. This
+  Hop's own reproduction checked the stronger property directly (the placed
+  `audit.json` is specifically absent from `git ls-files`), and it holds. A
+  future tightening is optional, not required by any acceptance case.
+. *The four non-blocking observations carried by the `H002` broad review
+  remain open by design and remain non-blocking*: the legacy `None` path
+  reporting `ALREADY UP TO DATE` against a retention-aware destination
+  (operator error the limitations record already warns against), mode-switch
+  refusals naming a structural rather than the real cause, `wfc init`'s
+  bootstrap commit not being rolled back on failure, and the environment-bound
+  test families. The correction neither addresses nor worsens any of them,
+  and acting on them is outside this Commission.
+. *Pre-existing style, untouched by the correction*: one assertion in
+  `LocalRetentionTests::test_only_audit_json_and_gitignore_are_tracked_and_raw_files_are_on_disk`
+  uses a bare `assert` rather than `self.assertEqual`, so it would vanish
+  under `python -O`. The project does not run tests under `-O`; noted only
+  for completeness.
+
+== Limitations of this review
+
+* No Coordinator-trusted evidence was executed here. Every suite result in
+  this artifact is an agent-side `--wfc-partial` exploratory run, and the
+  required suite could not be run agent-side (no verified offline wheel
+  bundle). The Coordinator's full `task-check` remains mandatory and is not
+  replaced by anything recorded here.
+* This is a *focused* review: its subject is the `H003` correction, plus the
+  re-reproduction of the acceptance properties listed above at this HEAD. It
+  does not restate the whole-product broad review; `src/` being
+  byte-identical to the tree `H002` reviewed is what makes that sound.
+* The real Evidence repository was never used; all Git evidence comes from
+  disposable repositories.
+* Concurrency (two archives racing for one Attempt) was not exercised; it is
+  outside the acceptance list.
+* `wfc init`'s bootstrap-commit failure path was again not reproduced
+  (observation 3 is read from the code, as in the broad review).
+
+== Requested route
+
+*renew_broad_review.* The correction is accepted and `F001` is resolved, so
+there is nothing left to correct. The candidate HEAD has nevertheless moved
+since the only whole-product broad review (`H002` at `cf56a97`, which ended
+`changes_required`), and this Commission's acceptance requires the *entire*
+BP6b product to be independently reviewed against `9ebb6d5` with no blocking
+Findings. A fresh broad review at `5cc6079` is the admitted transition that
+establishes that statement; Run acceptance then still requires the
+Coordinator's full `task-check`.
