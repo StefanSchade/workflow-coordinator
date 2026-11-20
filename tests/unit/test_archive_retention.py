@@ -224,6 +224,36 @@ class LocalRetentionTests(RetentionTestCase):
         dest_rel = f"archive/unclassified/{fx.attempt}"
         ar._assert_local_retention_gitignore_coverage(fx.repo, dest_rel)
 
+    def test_archive_destination_without_audit_json_is_refused(self):
+        fx = self.build()
+        self.archive_ok(fx, "--raw-retention", "local")
+        dest = self.dest(fx)
+        dest_rel = dest.relative_to(fx.repo).as_posix()
+        (dest / "audit.json").unlink()
+        git(fx.repo, "add", "-A", "--", dest_rel)
+        git(fx.repo, "commit", "-q", "-m", "chore: simulate a destination missing audit.json")
+
+        code, out, err = self.run_archive(fx, "--raw-retention", "local")
+        self.assertNotEqual(code, 0)
+        self.assertIn(f"archive destination exists but has no {ar.AUDIT_FILENAME}", err)
+
+    def test_tampered_but_committed_audit_json_is_not_silently_treated_as_up_to_date(self):
+        fx = self.build()
+        self.archive_ok(fx, "--raw-retention", "local")
+        dest = self.dest(fx)
+        dest_rel = dest.relative_to(fx.repo).as_posix()
+        audit_path = dest / "audit.json"
+        original = audit_path.read_text()
+        tampered = original.replace('"retention": "local"', '"retention": "tampered"')
+        self.assertNotEqual(tampered, original)
+        audit_path.write_text(tampered)
+        git(fx.repo, "add", "--", f"{dest_rel}/audit.json")
+        git(fx.repo, "commit", "-q", "-m", "chore: simulate a tampered but committed audit.json")
+
+        code, out, err = self.run_archive(fx, "--raw-retention", "local")
+        self.assertNotEqual(code, 0)
+        self.assertIn("does not match a projection of its own manifest", err)
+
 
 class CommitRetentionTests(RetentionTestCase):
     def test_audit_manifest_run_and_ops_are_all_tracked(self):
@@ -270,6 +300,33 @@ class CommitRetentionTests(RetentionTestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("does not match its recorded digest", err)
 
+    def test_crash_between_placement_and_commit_resumes_without_a_second_commit(self):
+        from unittest import mock
+
+        fx = self.build()
+        before = self.head(fx.repo)
+        with mock.patch.object(ar, "_commit_retention_archive", side_effect=RuntimeError("simulated crash")):
+            with self.assertRaises(RuntimeError):
+                ar.archive_run(state_root=fx.state, evidence_repo=fx.repo, raw_retention="commit", home=fx.home)
+        dest = self.dest(fx)
+        dest_rel = dest.relative_to(fx.repo).as_posix()
+        self.assertTrue((dest / "manifest.json").is_file())
+        self.assertTrue((dest / "audit.json").is_file())
+        self.assertEqual(self.head(fx.repo), before)
+
+        code, out, err = self.archive_ok(fx, "--raw-retention", "commit")
+        self.assertIn("ARCHIVED", out)
+        self.assertEqual(git(fx.repo, "rev-list", "--count", f"{before}..HEAD").strip(), "1")
+
+        # The crash-resume commit must carry the same full per-mode tracked
+        # set as a fresh commit-mode archive, not just the placed audit.json.
+        tracked = set(git(fx.repo, "ls-files", "--", dest_rel).splitlines())
+        self.assertIn(f"{dest_rel}/manifest.json", tracked)
+        self.assertIn(f"{dest_rel}/audit.json", tracked)
+        self.assertTrue(any(p.startswith(f"{dest_rel}/run/") for p in tracked))
+        self.assertTrue(any(p.startswith(f"{dest_rel}/ops/") for p in tracked))
+        self.assertEqual(git(fx.repo, "status", "--porcelain").strip(), "")
+
 
 class DiscardRetentionTests(RetentionTestCase):
     def test_only_audit_json_exists_at_the_destination(self):
@@ -314,6 +371,35 @@ class DiscardRetentionTests(RetentionTestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("different content", err)
         self.assertEqual((dest / "audit.json").read_text(), original)
+
+    def test_crash_between_placement_and_commit_resumes_without_a_second_commit(self):
+        from unittest import mock
+
+        fx = self.build()
+        before = self.head(fx.repo)
+        with mock.patch.object(ar, "_commit_retention_archive", side_effect=RuntimeError("simulated crash")):
+            with self.assertRaises(RuntimeError):
+                ar.archive_run(state_root=fx.state, evidence_repo=fx.repo, raw_retention="discard", home=fx.home)
+        dest = self.dest(fx)
+        self.assertEqual(sorted(p.name for p in dest.iterdir()), ["audit.json"])
+        self.assertEqual(self.head(fx.repo), before)
+        status_lines = [line for line in git(fx.repo, "status", "--porcelain").splitlines() if line]
+        self.assertTrue(status_lines, "expected the placed but uncommitted audit.json to be visible to git status")
+
+        code, out, err = self.archive_ok(fx, "--raw-retention", "discard")
+        self.assertIn("ARCHIVED", out)
+        self.assertEqual(git(fx.repo, "rev-list", "--count", f"{before}..HEAD").strip(), "1")
+        self.assertEqual(git(fx.repo, "status", "--porcelain").strip(), "")
+
+    def test_destination_with_unexpected_entries_is_refused_not_treated_as_valid(self):
+        fx = self.build()
+        self.archive_ok(fx, "--raw-retention", "discard")
+        dest = self.dest(fx)
+        (dest / "unexpected.txt").write_text("stray")
+
+        code, out, err = self.run_archive(fx, "--raw-retention", "discard")
+        self.assertNotEqual(code, 0)
+        self.assertIn("not a valid discard-retention placement", err)
 
 
 class LegacyRetentionNoneTests(RetentionTestCase):
