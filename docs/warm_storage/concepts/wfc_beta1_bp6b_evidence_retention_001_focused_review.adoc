@@ -1,0 +1,462 @@
+= BP6b evidence retention: independent focused review
+:toc:
+:toclevels: 2
+:sectnums:
+
+This record holds every independent focused-review pass over the BP6b
+correction work. The current (and first) pass is *H004*.
+
+== Pass H004 (current)
+
+Status:: *CHANGES REQUIRED.* Both H002 Findings (`F001`, `F002`) are resolved
+at exactly the gaps they name, independently reproduced and independently
+proved mutation-sensitive. One new blocking Finding, documentation-only: the
+BP6b limitations record does not state that nothing is pushed, which
+deliverable 6 requires of it and which acceptance case 15 certifies.
+WorkItem:: `WI-WFC-BETA1-BP6B-EVIDENCE-RETENTION-001`
+Run / Hop:: `RUN-18a6ae0575fd4641ba89e30bf468f7ec` / `H004` (`focused_review`,
+fresh independent reviewer, gate, blocking-only,
+`finding_authority: [resolve]`).
+Invocation:: `INV-f2d020a7968f49d4b5425bfda870ed5b`.
+Reviewed correction commit:: `bbad81f668104d7dec9fc1e1eadbe9e28ae6f8db`.
+Reviewed correction range::
+`e3bba06b26ffb65b684612484fd72af242c98535..bbad81f668104d7dec9fc1e1eadbe9e28ae6f8db`.
+Reviewed product:: the whole BP6b product at `bbad81f`, measured against the
+pre-implementation baseline `9ebb6d5` (the commit before the BP6b
+Commission), the Commission task for this WorkItem, and the H002 broad review
+(link:wfc_beta1_bp6b_evidence_retention_001_broad_review.adoc[that record]).
+Date:: 2026-11-20.
+
+=== 1. Disposition
+
+Verdict:: `changes_required`
+Route:: `correction`
+Finding disposition:: `F001` -> `resolved` (section 3), `F002` -> `resolved`
+(section 4). One new blocking Finding (section 5).
+
+The H003 correction closes both Findings inside `frontdoor/archive.py` and
+nowhere else, exactly where the Findings placed them. Every retention mode was
+re-verified against real Git: `git ls-files`, the complete object history
+(`git rev-list --objects --all` with every blob catted), the per-commit tree,
+the commit count, the reflog, the remote list, idempotent re-archive, crash
+resume and the tamper refusals. `raw_retention=None` was re-verified
+byte-for-byte against the pre-BP6b archiver by running both implementations
+over the same fixture path in two separate processes.
+
+No reproduced violation of the privacy or retention property, and no crash on
+any plausible input, was found in this pass. Five new non-blocking
+observations are added in section 7 and, because `finding_authority:
+[resolve]` does not authorize residual transitions, they are reported there
+and in the Hop summary only.
+
+=== 2. Scope of this pass
+
+`git diff --numstat e3bba06 bbad81f`:
+
+....
+35   0  docs/warm_storage/concepts/wfc_beta1_bp6b_evidence_retention_001_limitations.adoc
+81  11  src/workflow_coordinator/frontdoor/archive.py
+91   0  tests/unit/test_archive_retention.py
+....
+
+The whole BP6b range (`9ebb6d5..bbad81f`) touches
+`frontdoor/{archive,config,init,report}.py`, four *new* test modules, the
+limitations record, the BP6b review record, `docs/developer_guide`'s
+navigation chapter and the Commission's own governance files. No pre-existing
+test file is modified or deleted anywhere in the range (all four test modules
+are `+N/0` new files), so "existing tests pass unchanged" is a structural
+property here, not only an observed one. `audit.py`, `journal.py`,
+`lifecycle.py`, `preservation.py`, `git_facts.py`, the reducer, Finding,
+review, routing, adapter and admission surfaces, the operator manual and the
+backlog are untouched in the whole range.
+
+The eleven deletions in `archive.py` are the rewrapped `_project_audit_text`
+signature, the rewritten `_path_is_tracked_clean` docstring and its single
+`return True`; no guard, refusal or assertion was removed or relaxed.
+
+=== 3. `F001` -- resolved
+
+The Finding: `_path_is_tracked_clean` decided "already committed" from the
+absence of a `git status --porcelain --untracked-files=all` line under the
+destination, and `git status` never lists an ignored path, so an
+entirely-ignored destination was read as committed -- a false
+`ARCHIVE ALREADY UP TO DATE` with `commit: None` and nothing in `git ls-files`.
+
+==== What the correction does
+
+`_path_is_tracked_in_head` (new) asks `git ls-tree -r --name-only HEAD --
+<dest_rel>`, and `_path_is_tracked_clean` now requires both status silence
+*and* presence in the HEAD tree. A second new guard,
+`_assert_audit_path_not_ignored`, refuses up front when the Evidence
+repository's own `.gitignore` would exclude `audit.json` itself.
+
+==== Independent reproduction of the fixed behaviour
+
+Both reproductions from the Finding were re-run through the real
+`frontdoor.cli.main` against an Evidence repository created by the product's
+own `ensure_evidence_repository`:
+
+* *Legacy `raw_retention=None` into a managed (`local`-default) Evidence
+  repository.* Call 1 exits 1 with `commit failed: commit intent path has no
+  worktree mutation: ...` after placing the nine raw files; calls 2 and 3 exit
+  1 with the *same* message. `ARCHIVE ALREADY UP TO DATE` never appears,
+  `git rev-list --count HEAD` stays at 1 (the `wfc init` bootstrap commit), and
+  `git ls-files` stays `{.gitignore, archive/.gitkeep}`. The previously
+  reported false success is gone and the refusal is now stable across repeats.
+* *`local` retention in a repository whose `.gitignore` also covers
+  `audit.json`* (managed block plus an operator-added `*.json`). Refused
+  before any write: `refusing: this Evidence repository's .gitignore excludes
+  archive/unclassified/<attempt>/audit.json, but every raw retention mode
+  commits it; adjust the .gitignore before archiving`. Destination absent,
+  `.wfc-archive-staging` absent, `git status --porcelain` empty, commit count
+  unchanged -- on the first call and on two repeats. The same input is refused
+  identically in `commit` and `discard` retention, which the Finding did not
+  require but is the consistent outcome.
+
+The residue the first legacy call leaves (a placed, uncommitted destination)
+is afterwards refused by name in every mode -- `archive destination exists but
+has no audit.json` for `local`/`commit`, `not a valid discard-retention
+placement (expected only audit.json, found ['manifest.json', 'ops', 'run'])`
+for `discard` -- never silently reconciled and never reported as success. The
+limitations record now admits this incompatibility *and* the fact that the
+previous behaviour was a false success (lines 80-90).
+
+==== Mutation sensitivity
+
+Reverting only the new HEAD requirement (`return
+_path_is_tracked_in_head(...)` -> `return True`) in a copy of the source tree
+fails
+`LegacyRetentionConflictTests::test_legacy_archive_into_a_local_retention_repo_refuses_consistently_not_falsely`
+and nothing else. Removing only the `_assert_audit_path_not_ignored(identity,
+dest_rel)` call fails
+`LocalRetentionAuditGitignoreConflictTests::test_refuses_before_any_write_when_gitignore_also_covers_audit_json`
+and nothing else. Both mutants leave every BP5/BP6a/BP6b test passing
+otherwise, which is the right shape: the new tests guard the new behaviour and
+only it.
+
+=== 4. `F002` -- resolved
+
+The Finding: `_project_audit_text` called `project_audit` without
+`private_strings`, so only BP6a's prefix-only absolute-path/URL heuristic
+applied, and a repository-relative value that merely repeated the OS user name
+reached the committed `audit.json` and the Evidence history in `local` and
+`discard`.
+
+==== What the correction does
+
+`_attempt_private_strings` derives the four strings the task names -- `HOME`,
+`getpass.getuser()` (guarded by `try/except`), the state root and the resolved
+OPS directory -- once per Attempt, and they are threaded into *every*
+`project_audit` call site: initial placement, the kept-raw no-op/resume
+re-projection, and the `discard` ephemeral re-projection.
+
+==== Independent reproduction of the fixed behaviour
+
+With a repository-relative `governing_inputs` key `docs/canary-<os-user>/governance.adoc`:
+
+[cols="1,1,1,1,1",options="header"]
+|===
+|Mode |Exit |stderr |Destination / staging |Commits added
+
+|`local` |3 |`privacy guard refused projection at governance.governing_inputs.<key>` |absent / per-attempt staging absent, `git status` clean |0
+|`commit` |3 |same |absent |0
+|`discard` |3 |same |absent |0
+|===
+
+In all three cases `git rev-list --objects --all` contains no blob holding the
+token. A control run with a benign token (`zzz-not-private-zzz`) still exits 0
+and commits normally, so the guard is discriminating, not blanket. The
+Finding's untested second clause of acceptance case 10 -- a guard refusal
+writes nothing and commits nothing -- now has three tests and was
+independently confirmed (HEAD unchanged, destination absent, per-attempt
+staging directory removed, worktree clean).
+
+Whole-history privacy was re-measured independently for a clean Attempt, with
+six tokens (`HOME`, state root, OPS directory, a `USER=` canary planted in
+`ops/run.log`, the real OS user name, and the scratch root): zero blob hits in
+`local` and `discard`, on the first archive and after a crash-resume. `commit`
+retention does carry them, which is the mode's explicit purpose.
+
+==== Mutation sensitivity
+
+Three independent mutations each fail all three
+`PrivacyGuardEnvironmentDerivedStringsTests` tests and nothing else: dropping
+the `_attempt_private_strings(...)` call (`private_strings = ()`), dropping
+only the user name from the derived tuple, and dropping `private_strings` from
+the initial-placement call site. Reverting the whole pre-correction
+`archive.py` fails all five new tests. One mutation survives -- see
+observation 2.
+
+=== 5. New blocking Finding
+
+==== F-C -- the limitations record does not state that nothing is pushed
+
+Deliverable 6 enumerates six facts the developer-facing limitations record
+must state: what each retention mode keeps, where raw files live, that `local`
+raw files are not backed up by Git, *that nothing is pushed*, that the default
+data-home placement is a decision of this package, and that archives written
+before BP6 receive no `audit.json`. Acceptance case 15 certifies that record.
+
+Five of the six are stated. The sixth is absent:
+`docs/warm_storage/concepts/wfc_beta1_bp6b_evidence_retention_001_limitations.adoc`
+contains no statement that nothing is pushed and no statement that the
+Evidence repository has no remote. The only occurrence of either word in the
+whole 143-line record is "a Git remote URL", inside the description of the
+privacy guard's heuristic. The same is true of the H001 version of the record,
+so the gap has existed since the record was created.
+
+The H002 broad review's acceptance matrix row 15 states that the record "says
+... that nothing is pushed". That certification is inaccurate, which is why
+the gap has not been dispositioned before now.
+
+The *behaviour* is correct and was independently verified in this pass: after
+`wfc init` and after an archive in each of the three retention modes, `git
+remote -v` is empty, the local Git config holds no `remote` section, no
+`.git/FETCH_HEAD` exists, the reflog holds only the local commits, `wfc init`
+prints `NOTHING WAS PUSHED: the Evidence repository has no remote
+configured.`, and `wfc archive` prints `push: not performed`. So this is a
+documentation-only correction, confined to the limitations record; no code,
+test or behaviour change is implied, and nothing else in acceptance case 15 is
+in question (the record is otherwise unusually complete and honest).
+
+Blocking because it is a reproduced, objectively verifiable omission of a
+statement the task explicitly requires of a required deliverable, and because
+the one artifact that should have caught it certified it instead.
+
+=== 6. Acceptance matrix, re-verified in this pass
+
+[cols="1,4",options="header"]
+|===
+|Case |Result
+
+|1 config
+|Yes. A Consumer Config without an `evidence` block parses identically under
+the pre-BP6b and the candidate `config.py` (two processes, same text): the
+only difference is the additive `evidence=None` dataclass field; `raw_text` is
+stored verbatim, and every consumer digest is `sha256(config.raw_text)`, so
+digests are unchanged by construction. Strict validation re-probed on 16
+inputs: unknown key, non-`local|commit|discard` `raw`, non-string/boolean
+`raw`, empty, whitespace-only, multi-line and list-valued `repository`, and a
+non-mapping or null `evidence` are all refused with a named reason; relative
+`../side-evidence` resolves against the payload root, absolute passes through,
+`raw`-only and `{}` take the data-home default. XDG: `$XDG_DATA_HOME` wins,
+empty or unset falls back to `~/.local/share`.
+
+|2 `wfc init`
+|Yes. New: `archive/.gitkeep` plus the managed `.gitignore`, exactly one
+commit (`chore: initialize WFC Evidence repository`, `%G?` = `N`, i.e.
+unsigned), no remote, and the payload repository dirty only by
+`?? .wfc/config.yaml`. Existing valid repository: HEAD and index
+byte-identical afterwards, "reusing existing". Foreign non-empty directory:
+exit 2, `... exists, is non-empty, and is not a WFC Evidence repository ...;
+nothing was written`, the foreign directory still holds only its own file.
+`--no-evidence-repository` writes the config and nothing else. Default
+placement: `<XDG_DATA_HOME>/wfc/evidence/<repository_name>`, and no `evidence`
+block is written into the config for default values. Output names the Evidence
+location and says nothing was pushed.
+
+|3 `local`
+|Yes. `git ls-files` = `{.gitignore, archive/.gitkeep,
+archive/unclassified/<attempt>/audit.json}`; `manifest.json`, `run/` and
+`ops/` exist on disk; `git status --porcelain --untracked-files=all` empty.
+
+|4 `commit`
+|Yes. `audit.json`, `manifest.json`, all of `run/` and all of `ops/` tracked,
+plus the per-Attempt negation `.gitignore` leaf; worktree clean.
+`git check-ignore -v` on every committed leaf returns nothing in all three
+modes, so no commit intent names an ignored file.
+
+|5 `discard`
+|Yes. The destination holds exactly `['audit.json']`; `manifest.json` and
+`run/` absent; tracked set is `{.gitignore, archive/.gitkeep, <dest>/audit.json}`.
+
+|6 `None`
+|Yes, byte-identical. Both implementations were run over the *same* fixture
+path in separate processes with separate `sys.path` roots. The manifest bytes
+are equal apart from the `archived_at` timestamp; the tracked set, the commit
+tree, the commit subject and body, the destination listing and the whole
+operator-facing stdout are equal; no `audit.json` is written by either.
+
+|7 one commit per Attempt
+|Yes, in all three modes: `rev-list --count before..HEAD` = 1, the commit
+contains `audit.json`, the commit has exactly one parent (the previous HEAD),
+and the subject is `evidence: archive <attempt>`. No tree entry is a directory.
+
+|8 re-archive no-op
+|Yes. Two further identical calls per mode: exit 0, `ARCHIVE ALREADY UP TO
+DATE`, HEAD unchanged, commit count unchanged, and every placed file's
+`st_mtime_ns` unchanged -- so `local` raw files are not rewritten.
+
+|9 crash resume / tamper
+|Yes. With `_commit_retention_archive` patched to raise, the destination is
+placed and no commit is made; the next real call re-verifies, prints
+`ARCHIVED`, and the total commits added for the Attempt is 1; a third call is
+a no-op. Tamper of a placed, uncommitted raw file is refused in `local` and
+`commit` (`placed archive file does not match its recorded digest, refusing to
+commit: run/operator-summary.json`, 0 commits). In `discard`, changing the
+underlying Run facts is refused as `archive destination already exists with
+different content` and the placed `audit.json` is left byte-identical.
+
+|10 privacy
+|Yes. See section 4: zero private-string blobs across the entire object
+history in `local` and `discard`, and a guard refusal writes and commits
+nothing.
+
+|11 missing/insufficient `.gitignore`
+|Yes, and now in both directions: a block that does not cover the raw paths is
+refused with `does not exclude ...`, and one that *also* covers `audit.json`
+is refused with `excludes ...`. Both refuse before any write (destination and
+staging absent, worktree clean).
+
+|12 `wfc report` / next-choice table
+|Yes. A forged absolute `governing_inputs` key in an archived Attempt makes
+`wfc report <attempt-dir>` exit 3 with `wfc report: privacy guard refused
+projection at governance.governing_inputs.<key>` -- the same JSON path, and
+only the JSON path, that `wfc audit` reports (verified side by side). The
+fixed table covers every `model.RunStatus` value and every
+`frontdoor.lifecycle.EXIT_CODES` classification with no gaps and no extra
+entries, and an unrecognized status is still reported `unknown` with the
+unknown next action.
+
+|13 no push, no remote, no network
+|Behaviour yes (see section 5): no remote, no `FETCH_HEAD`, no network call in
+any code path exercised; `wfc init` and `wfc archive` both say so in their
+output. The *record* of this fact is what `F-C` is about.
+
+|14 guards and existing suites
+|Yes, with one environmental caveat. `tests/architecture/test_package_boundaries.py`,
+`test_product_invariants.py`, `test_replays.py`,
+`test_historical_governance_parse.py` and `test_self_development_governance.py`
+pass; kernel modules still do not import `frontdoor`. All of BP5's archive
+modules, both BP6a modules, `test_report.py`,
+`test_frontdoor_init_plan.py`, `test_consumer_compiler.py`,
+`test_bounded_path_commit.py`, `test_lifecycle_controller.py`,
+`test_lifecycle_crash_matrix.py`, `test_lifecycle_journal.py`,
+`test_candidate_preservation.py` and `test_preservation_lifecycle.py` pass
+unchanged. `ruff check .` reports 17 pre-existing errors, none of them in any
+file BP6b touches. Four modules fail for agent-environment reasons only
+(observation 5).
+
+|15 limitations record
+|*No* -- one of the six required statements is missing. See `F-C`. The other
+five are present, and the record additionally documents the `None`-versus-
+managed-block incompatibility, the `discard` resume rebuild, the managed
+block's repository-wide nature and the derived private strings.
+|===
+
+=== 7. Non-blocking observations
+
+Observations, not Findings; recorded here and in the Hop summary only. The
+nine observations of the H002 broad review are not repeated.
+
+. *A short OS user name makes every retention-aware archive refuse.* The task
+  requires the OS user name to be handed to the privacy guard as a known
+  private string, and `audit.py`'s guard is a plain substring test over every
+  value *and every mapping key* of the projection. The projection therefore
+  contains the substrings `ops` (in `run.hops_used`), `ci` (in
+  `run/checkout-asso**ci**ation.json`), `run`, `op`, `id`, `a` and others. With
+  `LOGNAME`/`USER` set to `ops`, `ci` or `a`, a completely benign Attempt is
+  refused in every retention mode with exit 3 and a confusing location
+  (`privacy guard refused projection at raw.files[3].path`). `root` happens not
+  to collide. The behaviour is the specified design (substring matching plus a
+  bare user name) and it errs on the safe side -- it refuses rather than
+  leaking -- so it is not a Finding against this task, but a service account
+  named `ci` or `ops` is plausible enough that BP6c (or a DG-2 decision) should
+  settle the matching rule: a minimum length, a word/path-boundary
+  requirement, or matching the user name only inside path-shaped values.
+. *One private-string call site has no test.* Dropping `private_strings` from
+  the kept-raw no-op/resume re-projection in `_resume_or_noop_kept_raw` (while
+  leaving the initial placement correct) makes no delivered test fail. The
+  threading is correct in the candidate; it is the test coverage that stops at
+  the initial placement, because the resume path re-projects from an already
+  guarded, already placed Attempt and so cannot be reached by a planted
+  private string through the delivered fixtures. Worth a test that plants the
+  string into the Run facts *after* a crash-resume placement.
+. *A human-deleted destination leaves the Evidence worktree dirty.* After a
+  successful `local` archive, removing the whole destination directory and
+  re-archiving re-places the files and then refuses honestly at the commit
+  boundary (`commit intent path already exists at base HEAD:
+  <dest>/audit.json`, 0 commits), but leaves `M <dest>/audit.json` in the
+  worktree. Pruning only the raw files (the plausible "save space" action the
+  limitations record's own warning invites) is refused cleanly with `archive
+  destination exists but has no manifest.json` and leaves nothing dirty.
+  Deleting only `audit.json` is refused with `archive destination exists but
+  has no audit.json`. None of these is a false success, and all are outside
+  the acceptance list.
+. *A NUL byte in `evidence.repository` escapes as `ValueError`.* Config
+  validation enforces "single-line" by rejecting newlines, not other control
+  characters, so `repository: "ev\u0000dir"` is accepted and
+  `ensure_evidence_repository` then raises an uncaught `ValueError: mkdir:
+  embedded null character in path` rather than a named `CommissionError`. This
+  is unreachable through `wfc init` today (a NUL cannot travel in `argv`, and
+  `wfc init` refuses to overwrite an existing config), so it matters only for
+  the BP6c caller that will read a hand-edited config. A tab is accepted and
+  works. `archive.py` already has `_reject_control_characters` for exactly
+  this class of value.
+. *Environmental test failures in this sandbox, unchanged by this candidate.*
+  The required suite cannot run here at all: `WFC_TEST_INPUTS`/
+  `WFC_TEST_PROFILE` name an offline wheel bundle that is not present, so every
+  result in this record comes from `--wfc-partial` subset runs, which the
+  harness itself labels "NOT the required suite or its acceptance".
+  `tests/architecture/test_offline_distribution.py` and `test_bp1_identity.py`
+  fail with `ERROR: No matching distribution found for setuptools>=68` (PEP 517
+  build isolation without network or bundle); `tests/unit/test_wfc_op.py` runs
+  a nested `pip install`; `tests/unit/test_claude_adapter_conformance.py` needs
+  to create a symlink under a read-only `/tmp`. Agent-local limitation, not a
+  product defect, and no substitute for the Coordinator's own full
+  `task-check`.
+
+Also noted, without product consequence: the managed block `wfc init` writes
+is `archive/**/manifest.json`, `archive/**/run/**`, `archive/**/ops/**`,
+whereas the task names `archive/**/run/` and `archive/**/ops/`. The effect was
+measured, not assumed -- in `local` retention nothing under `run/` or `ops/`
+is tracked and the worktree is clean -- so the two forms are equivalent here.
+The new `_path_is_tracked_in_head` pathspec was also probed for glob magic
+(`archive/unclassified/wfc-h004-probe*`, `...-0?`): `ls-tree` does not expand
+it, so a glob-shaped attempt id cannot be mistaken for a committed sibling,
+and an attempt whose directory name literally contains `*` archives and
+commits correctly.
+
+=== 8. Suites and probes (agent-side, exploratory)
+
+* `tests/unit/test_archive_retention.py`, `test_evidence_config.py`,
+  `test_init_evidence.py`, `test_report_status_coverage.py`,
+  `test_archive_port.py`, `test_archive_equivalence.py`,
+  `test_archive_conformance.py`, `test_archive_retry_integrity.py`,
+  `test_archive_safety.py`, `test_audit_projection.py`,
+  `test_audit_privacy.py`, `test_report.py`, `test_bounded_path_commit.py`,
+  `test_frontdoor_init_plan.py` and `tests/architecture/test_package_boundaries.py`:
+  291 tests, all pass.
+* BP4 lifecycle and preservation modules plus `tests/architecture`: pass except
+  the two build-isolation modules of observation 5.
+* Mutation sweep: 7 mutants of `archive.py` (whole pre-correction file, plus
+  six targeted single-edit mutants) run against the delivered BP6b, BP5 and
+  BP6a test modules through a copied source tree and a pytest `pythonpath`
+  override. 6 of 7 are detected by a delivered test, each by the test that
+  guards precisely that behaviour; the survivor is observation 2.
+* Independent probes (own fixture, own Evidence repository built by the
+  product's own `ensure_evidence_repository`, every invocation through the real
+  `frontdoor.cli.main`): F001 reproductions, F002 reproductions with and
+  without a benign control, per-mode `ls-files`/history/commit/idempotency/
+  resume/tamper matrix, `None`-versus-baseline byte comparison, `wfc init`
+  cases, report/audit guard parity, next-choice coverage, committed-leaf
+  ignore check, operator pruning and deletion cases, and the user-name
+  collision probe of observation 1.
+
+These are exploratory agent-side results. They are not Coordinator-trusted
+evidence and do not replace the mandatory full `task-check`.
+
+=== 9. Hard rules and withheld authority
+
+No engine change. `journal.py`, `lifecycle.py`, `preservation.py`,
+`git_facts.py`, `audit.py` (field list, allow-list and schema included), the
+reducer, Finding, review, routing, adapter and admission surfaces, the
+operator manual and the backlog are untouched in the whole BP6b range. No
+lifecycle wiring and no change to `wfc run` behaviour or exit codes. No push,
+no remote, no network, no `pip` in any product path. Standard library plus the
+existing PyYAML dependency only; `getpass` is new in `archive.py` and is
+standard library. Kernel modules do not import `frontdoor`
+(`test_package_boundaries.py`). No test was weakened, renamed or deleted; no
+historical archive or Evidence was rewritten. No repository-local archive
+destination. This reviewer performed no Git write and made no change outside
+this record.
