@@ -1,0 +1,320 @@
+= BP7 C1b generalized archive-equivalence harness and BP7 fixture: broad review
+
+WorkItem:: `WI-WFC-BETA1-BP7-ARCHIVE-EQUIVALENCE-HARNESS-002`
+Hop:: `H002` (`broad_review`, fresh adversarial reviewer, gate, blocking-only,
+`finding_authority: [resolve]`)
+Reviewed candidate:: `fd4a802cd446bfb08e5d27cf4bbe4137b3b88211`
+(`test(WI-WFC-BETA1-BP7-ARCHIVE-EQUIVALENCE-HARNESS-002/H001): generalize
+archive-equivalence comparison with a BP7 fixture and mutation test`)
+Review base HEAD:: `fd4a802cd446bfb08e5d27cf4bbe4137b3b88211`
+Baseline for the regression diff:: `e2e43de42a79cb016258cf35d6e5150cc89a72ee`
+(the commissioning commit, i.e. `fd4a802^`)
+Governing contracts:: `governance/commissions/wfc-beta1-bp7-archive-equivalence-harness-002`
+(task, intent, policy, profile) and `docs/backlog/beta1_bp7_cutover_plan.adoc`
+sections `archive-equivalence`, `sequence` C1b and `effort-reasoning`.
+Disposition:: *Accept.* No blocking Findings. Every explicit acceptance
+criterion was reproduced in this Hop: the BP5 case is unchanged in method and
+assertions (the pre-change test code itself was re-executed against the
+candidate tree and passes), the second fixture is a byte-verbatim,
+digest-verified copy of the named archived Run, the comparison is proven able
+to fail, nothing outside scope changed, no secret leaks, and the developer
+note is accurate. Five non-blocking observations are recorded below; none is a
+reproduced violation of an explicit acceptance criterion, a weakened
+assertion, or a violated hard rule.
+
+== Method
+
+All behavioural claims below were produced in this Hop with the repository's
+own development interpreter (`.venv/bin/python`) against the real
+`workflow_coordinator.frontdoor.archive` module and the real frozen legacy
+wrapper, never against a reimplementation. Digest verification was done by
+reading bytes directly, independently of the candidate's own `setUp`. The
+Operator-staged input tree `build/wfc/bp7-evidence-inputs/` was read only, and
+was not trusted blindly: every file in it was re-hashed against the digests
+and byte counts recorded in its own `manifest.json` `copied_files` before any
+comparison against the committed fixture. The sibling Evidence repository was
+never read. No Git write was performed by this Hop; the only repository change
+proposed is this artifact.
+
+== 1. The staged Operator input verifies against its own manifest
+
+`build/wfc/bp7-evidence-inputs/wfc-beta1-bp7-guidance-config-001-20261120-01/`
+contains exactly the 10 files its `manifest.json` `copied_files` records, plus
+that manifest; no extra and no missing file. All 10 re-hash to the recorded
+`sha256` *and* match the recorded `bytes`:
+
+[cols="2,1"]
+|===
+|Path (in the archived copy) |Verified
+
+|`run/operator-plan.json` |`8c67a19d…`, 4373 B
+|`run/operator-summary.json` |`d955bb2b…`, 5013 B
+|`run/checkout-association.json` |`3dc3c0aa…`, 313 B
+|`run/checkouts/847ae207-…/checkpoint.json` |`f802a685…`, 9770 B
+|`run/checkouts/847ae207-…/execution-evidence.json` |`2dfc8753…`, 2885 B
+|`run/checkouts/847ae207-…/run.json` |`98acce45…`, 8811 B
+|`run/checkouts/847ae207-…/structured-result.schema.json` |`57a09fb6…`, 2506 B
+|`ops/execution-bindings.yaml` |`b37c1035…`, 202 B
+|`ops/launch.sh` |`5c79a0da…`, 1489 B
+|`ops/preparation-pins.txt` |`4592ca16…`, 1210 B
+|===
+
+The manifest's own identity fields match the Commission's named Run:
+`attempt_id = wfc-beta1-bp7-guidance-config-001-20261120-01`,
+`facts.run_id = RUN-dd7b7d19c1c645b9a470551ad36f4784`,
+`facts.work_item_id = WI-WFC-BETA1-BP7-GUIDANCE-CONFIG-001`,
+`facts.hop_used = 2` (the completed, two-Hop Attempt the task names).
+
+== 2. `tests/fixtures/bp7/` is a verbatim, hash-pinned copy of that Run
+
+Byte comparison, committed fixture against the staged archived copy, was done
+file by file (not digest-only): all eight committed `real_run/` files are
+*byte-identical* to their archived originals, with
+`run/checkouts/847ae207-…/run.json` committed under the neutral name
+`run.fixture.json` with unchanged bytes, exactly as BP5's provenance
+prescribes. There is no unexpected and no missing committed file.
+
+Every one of the 12 digest lines in `tests/fixtures/bp7/PROVENANCE.txt` was
+parsed and re-verified in this Hop against three independent sources: the
+committed bytes, the archived `manifest.json` `copied_files` digests, and (for
+the two embedded constants) the module constants' own bytes. All 12 agree. The
+two `(shared)` lines correctly pin the BP5 legacy archiver that every case
+reuses.
+
+The collision rules are applied exactly as BP5 documents them:
+`operator-plan.json` and `operator-summary.json` are not committed as files
+but embedded verbatim in the test module as
+`_BP7_OPERATOR_PLAN_JSON`/`_BP7_OPERATOR_SUMMARY_JSON`; I confirmed both are
+byte-identical (4373 B and 5013 B) to the archived originals once the trailing
+newline the test re-adds is accounted for, so no content was invented or
+reformatted. `git show fd4a802 --name-status -M` reports only `A` and `M`
+entries: no delete, no rename, no rename-shaped delete+add pair. Committed
+file modes follow BP5's pattern (`launch.sh` `100755`, everything else
+`100644`).
+
+Reconstruction fidelity was then proven end to end rather than asserted: the
+installed archiver, run against the relocated fixture, reproduces the original
+archived manifest's *file set exactly* (10 of 10 paths, none missing, none
+extra), and 8 of the 10 `copied_files` digests are bit-identical to the
+original archived digests. The only two that differ,
+`run/operator-plan.json` and `ops/preparation-pins.txt`, are precisely the two
+files the documented relocation step rewrites. Comparing `facts` against the
+original archived `facts` shows the same picture: the key sets are equal and
+only `ops_source` and `pinned_revisions` (the fields that literally encode the
+relocated location) differ; `run_id`, `work_item_id`, `policy_id`,
+`policy_revision`, `profile_id`, `profile_revision`, `hop_limit`, `hop_used`
+and the recorded heads all reproduce the archived values. No run fact was
+altered, and nothing had to be omitted, so the escalation branch of the task
+(omitted file / non-reconstructible layout) does not apply.
+
+== 3. The BP5 case is unchanged in method and assertions
+
+* *Strongest check.* The pre-change test module (`fd4a802^:tests/unit/
+  test_archive_equivalence.py`) was executed verbatim against the candidate
+  tree in this Hop: `test_old_and_new_archivers_produce_identical_manifests_
+  for_the_same_real_run` → `OK`. The original BP5 acceptance code still passes
+  unmodified against today's fixtures, which is a stronger regression
+  statement than reading the diff.
+* The original node id survives unchanged (`FixtureCase.test_method_name`
+  pins it) and was run explicitly by node id: pass. The module now collects 3
+  tests (BP5, BP7, mutation) and all 3 pass.
+* The BP5 descriptor data is identical to the old module-level constants:
+  `BP5.attempt_id == ATTEMPT_ID`, `BP5.real_run == REAL_RUN`,
+  `LEGACY == LEGACY`, and both embedded BP5 constants compare equal to the
+  pre-change ones (checked programmatically, not by eye).
+* `git`, `_init_evidence_repo` and `_strip_archived_at` are textually
+  unchanged in the diff; `_relocate_real_run` is parameterized only
+  (`ATTEMPT_ID` → `case.attempt_id`, `REAL_RUN` → `case.real_run`, the two
+  literal embedded-file writes → a loop over `case.embedded_files`), with the
+  relocation edits and the `/home/stefan/wfc-state/`,
+  `/home/stefan/wfc-ops/` precondition asserts intact.
+* No assertion was weakened. The comparison moved into the shared
+  `_assert_manifests_equivalent`, keeping all three statements (both
+  `archived_at` non-null, equality after stripping `archived_at`), and the
+  "exactly one new commit on each side" `rev-list --count == 2` checks are
+  still made for every case. The one textual change,
+  `manifest_old["archived_at"]` → `manifest_old.get("archived_at")`, is
+  equivalent-or-stricter: a missing key now fails the assertion instead of
+  raising `KeyError`, and both outcomes are test failures.
+* `setUp` still hash-pins the frozen legacy archiver (both files) and now
+  checks the embedded-file digests of *every* `FixtureCase`, not just BP5's.
+
+== 4. The comparison can fail (mutation sensitivity), and what it cannot see
+
+The delivered `test_manifest_comparison_detects_a_real_difference` exercises
+the real comparison predicate, not a copy of it. I probed what it actually
+catches by mutating the module in memory:
+
+* `_strip_archived_at` weakened to also drop `copied_files` → *detected*
+  (test fails).
+* `_assert_manifests_equivalent` replaced by a no-op → *detected*.
+* The two `archived_at`-non-null assertions removed → *not* detected
+  (observation 2 below).
+
+I also tested the other disjunct of the acceptance wording ("a tampered
+fixture byte … makes the comparison fail") directly: a single flipped byte in
+a disposable copy of `tests/fixtures/bp7/real_run/run/
+checkout-association.json`, run through the full two-archiver comparison,
+*still passes*. This is not a defect in the candidate; it is structural. Both
+archivers read the same relocated state root, so a tampered fixture byte
+yields the same new digest on both sides and cannot break an old-vs-new
+equality check. The manifest-difference branch the Worker implemented is
+therefore the feasible one, and the acceptance criterion ("a tampered fixture
+byte *or* a manifest difference") is met. The fixture bytes themselves are
+instead pinned by `PROVENANCE.txt` plus independent re-verification, as done
+in section 2 of this review; see observation 1 for the hardening that would
+automate it.
+
+== 5. Scope, secrets and hard rules
+
+* `git diff e2e43de fd4a802 -- tests/fixtures/bp5 src scripts
+  tests/unit/test_wfc_op.py governance docs/backlog Makefile pyproject.toml`
+  is *empty*: no change to `archive.py`, `scripts/wfc_op.py`,
+  `tests/fixtures/bp5/`, product code, other tests, policy or program.
+* The commit touches 11 leaves, all in scope: the test module, the nine new
+  `tests/fixtures/bp7/` leaves, and the developer note. No directory-shaped,
+  deleted or renamed path. The subject carries the WorkItem ID and the actual
+  Hop ID (`H001`).
+* The staged `build/wfc/` inputs are not committed (still ignored), and the
+  test module contains no reference to `build/`, to
+  `workflow-coordinator-run-evidence`, or to `scripts/wfc_op.py`: the
+  comparison reads only committed fixtures, and no second archive path was
+  created.
+* Secret scan over every new fixture file and the test module (API-key,
+  token, password, credential, bearer, private-key, e-mail and IPv4
+  patterns): no hit except the synthetic `equivalence@example.invalid` Git
+  identity the test itself configures. No credential material is committed.
+* Absolute-path scan: the BP7 fixture records the same `/home/stefan/wfc-state`,
+  `/home/stefan/wfc-ops`, `/home/stefan/wfc-scratch`,
+  `/home/stefan/repos/spreadsheet-handling/*` and
+  `/home/stefan/.local/bin/claude` shapes BP5's committed fixture already
+  contains, and `tests/fixtures/bp7/PROVENANCE.txt` records the state-root/OPS
+  relocation rule the same way BP5's does. Two PATH entries are new in kind
+  (observation 3).
+* `git status --short` shows no tracked modification and no Worker scratch
+  left behind; the only untracked entries are this review artifact and the
+  sandbox's own home-overlay dotfiles (`.bashrc`, `.claude/`, `.vscode`, …),
+  which were already present when this Hop started and are not part of any
+  commit.
+* The BP5 collision names are respected: no `run.json`, `operator-plan.json`
+  or `operator-summary.json` file is committed anywhere under
+  `tests/fixtures/bp7/`, which is what `tests/unit/test_wfc_op.py:356-360`
+  (globbing the whole OPS export for those three literal names) requires.
+  Every name that *is* committed (`checkpoint.json`,
+  `execution-evidence.json`, `checkout-association.json`,
+  `structured-result.schema.json`, `launch.sh`, `preparation-pins.txt`,
+  `execution-bindings.yaml`) is a name BP5 already commits, so no new
+  collision class is introduced.
+
+== 6. The developer note is accurate
+
+`docs/developer_guide/ch02_code_navigation.adoc:130-149`. No developer-guide
+section previously described the equivalence test, so the "short new
+paragraph in the most fitting chapter" branch of the task applies; the
+code-navigation chapter, which already orients readers to test modules, is a
+fitting home. Each claim was checked:
+
+* "for each `FixtureCase` in its `FIXTURE_CASES` tuple … runs the frozen
+  legacy archiver … and the installed `frontdoor.archive.archive_run` end to
+  end … asserts the two `manifest.json` files are equal once `archived_at` is
+  stripped" — matches the code and the observed behaviour.
+* "`tests/fixtures/bp5/legacy/`, shared by every case" — correct; `LEGACY` is
+  a single module constant and `tests/fixtures/bp7/` contains no `legacy/`
+  copy, which `tests/fixtures/bp7/PROVENANCE.txt` also states.
+* "reads only committed, hash-pinned, disposable fixture copies under
+  `tests/fixtures/`, never the live sibling Evidence repository" — verified by
+  grep over the module.
+* "never invokes `scripts/wfc_op.py archive` a second time against a real Run
+  — that would be a second archive path" — verified, and consistent with
+  `docs/backlog/beta1_bp7_cutover_plan.adoc` `archive-equivalence`.
+* The "how to add a further fixture" recipe (commit a verbatim copy under a
+  new `tests/fixtures/<name>/real_run/`, follow the collision/relocation rules
+  in the two `PROVENANCE.txt` files, write a matching `PROVENANCE.txt`, add
+  one `FixtureCase` to `FIXTURE_CASES`) is exactly what the BP7 case did.
+* The AsciiDoc cross-reference uses the chapter's existing
+  `link:{developer-docs}/…` convention (attribute defined at line 3, same
+  form as lines 120, 155, 169) and resolves to the real anchor
+  `[[archive-equivalence]]` at `docs/backlog/beta1_bp7_cutover_plan.adoc:386`.
+
+== 7. Test execution in this Hop (agent-local, not Coordinator evidence)
+
+[source]
+----
+.venv/bin/python -m pytest tests/unit/test_archive_equivalence.py -v --wfc-partial
+  → 3 passed
+.venv/bin/python -m pytest <all three node ids explicitly> --wfc-partial
+  → 3 passed
+.venv/bin/python -m pytest tests/unit -q --wfc-partial \
+  --ignore=tests/unit/test_wfc_op.py \
+  --ignore=tests/unit/test_claude_adapter_conformance.py \
+  --ignore=tests/unit/test_codex_adapter_conformance.py \
+  --ignore=tests/unit/test_codex_adapter_smoke.py
+  → all collected tests pass (one pre-existing skip)
+----
+
+The four ignored modules fail in this sandbox for documented environmental
+reasons unrelated to the candidate, each reproduced and read rather than
+assumed:
+
+* `tests/unit/test_wfc_op.py` (4 failures, 11 setup errors) — the nested
+  `prepare` fixture cannot build its venvs offline: `pip … REFUSED … ERROR:
+  Could not find a version that satisfies the requirement setuptools>=68
+  (from versions: none)`, with pytest reporting `offline inputs: none (pip
+  forced offline without find-links)`. This is the known offline-build-isolation
+  limitation, not a product defect, and it is the reason the repository-wide
+  collision test `test_prepare_never_creates_a_run_or_checkout` could not be
+  executed here; its requirement was instead verified statically in section 5.
+* the adapter-conformance modules — `OSError: [Errno 30] Read-only file
+  system: … -> '/tmp/wfc-claude-…'`; this sandbox forbids writing `/tmp`
+  directly, the same limitation an earlier BP7 review already recorded.
+
+Trusted evidence remains the Coordinator-executed `task-check`; nothing above
+substitutes for it.
+
+== Non-blocking observations
+
+. *Committed fixture bytes are not pinned by any automated check.* `setUp`
+  hash-pins the legacy archiver and the embedded `operator-plan.json`/
+  `operator-summary.json` constants, but not the eight committed
+  `real_run/` files; and, as section 4 shows, a tampered byte in those files
+  is invisible to the two-archiver comparison. This is inherited from the
+  accepted BP5 module and is not a violation of this task (which asks to
+  *keep* the existing self-checks), but adding the `PROVENANCE.txt` digests of
+  each fixture's `real_run/` files to its `FixtureCase` and verifying them in
+  `setUp` would make fixture tampering self-detecting instead of relying on
+  reviewer re-verification.
+. *The mutation test does not cover the `archived_at`-non-null assertions.*
+  Removing those two statements from `_assert_manifests_equivalent` leaves the
+  mutation test green. A fourth case (a manifest whose `archived_at` is
+  `null`) would close that gap.
+. *Two new host-local PATH entries.* `tests/fixtures/bp7/real_run/ops/
+  launch.sh` records `/home/stefan/.local/bin` and
+  `/home/stefan/.nvm/versions/node/v22.23.2/bin` in its frozen `PATH`, path
+  shapes BP5's fixture does not contain (BP5 already commits
+  `/home/stefan/.local/bin/claude` and the repository paths). They are
+  verbatim archived content with no credential material, and omitting them
+  would break the verbatim-copy requirement; recorded only so a future
+  fixture author knows the operator's inherited `PATH` becomes committed
+  fixture content.
+. *`FIXTURE_CASES` growth is a module edit.* The plan's C1b wording ("accepts
+  a second … fixture copy … without a code change") is satisfied in the sense
+  the task prescribes — the comparison logic is untouched and a new Run is
+  added as descriptor data — but adding a fixture still means editing the test
+  module (one `FixtureCase`, plus two embedded constants whenever the Run
+  carries the documented `operator-plan`/`operator-summary` collision). A
+  data-file-driven descriptor list would be a larger design than this task
+  authorizes.
+. *Fixture-name ergonomics.* The generated BP7 node id is
+  `…_for_bp7`, while BP5 keeps the longer historical
+  `…_for_the_same_real_run`. Intentional (the BP5 node id is pinned for
+  regression), but the two shapes read inconsistently in test output.
+
+== Conclusion
+
+Accept. The BP5 regression is proven by re-running the pre-change test code
+itself; the BP7 fixture is a byte-verbatim, triply cross-checked copy of the
+named archived Run whose reconstruction reproduces the original archived file
+set and every non-relocation fact; the comparison is demonstrably able to
+fail; scope, secret and rename-shape rules hold; and the developer note is
+accurate. No blocking Finding is opened, and no Finding disposition is
+reported, since this Run carries no authoritative Finding to dispose.
