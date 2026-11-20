@@ -1,0 +1,396 @@
+= BP6a audit projection and report: independent broad review
+
+This record holds every independent broad-review pass over the BP6a product.
+The current (and first) pass is *H002*.
+
+== Pass H002 (current)
+
+WorkItem:: `WI-WFC-BETA1-BP6A-AUDIT-PROJECTION-001`
+Hop:: `H002` (`broad_review`, fresh independent reviewer, gate, blocking-only,
+`finding_authority: [resolve]`)
+Reviewed product:: the *entire* BP6a product at review base HEAD
+`5cd70d2a6468dc1840e20f1ac975c4e77a3dd7f6`, measured against the
+pre-implementation baseline `05631155256a8850c53331f95d3345e9daef9d4f`
+(`docs: record BP6a/BP6b package boundary`).
+Governing acceptance:: the Commission task for this WorkItem (`Deliver` items
+1-6, the fifteen-case acceptance matrix, the hard rules and the withheld
+authority), DG-1 (b) and the maintainer-recommended DG-2 specifics, BP6 in
+`docs/backlog/beta1_execution_plan.adoc` and
+`docs/backlog/beta1_productization.adoc`, and the `Audit projection`, `What
+stays verifiable without the raw files`, `contract-audit` and
+`contract-report` sections of
+`docs/warm_storage/concepts/wfc_beta1_product_boundary_review_second_pass.adoc`.
+Disposition:: *Changes required.* One blocking Finding (F001, below): three
+fields of the frozen `wfc.audit/1` allow-list -- `attempt_id`,
+`anomaly_count` and `run.semantic_stop_present` -- carry no
+mutation-sensitive assertion, so acceptance case (1) ("completed Run projects
+every field of the frozen list with the exact source values", each case
+"covered by a test with a mutation-sensitive assertion") is not met for them.
+Each was reproduced by replacing the projected field with a constant and
+observing the delivered suite stay green. The underlying projection is
+*correct*; the gap is in the matrix, not in `audit.py`. Everything else in the
+matrix reproduced as specified, including the privacy property, which
+survived every attack attempted here. Eight non-blocking observations are
+recorded at the end and, because `finding_authority: [resolve]` does not
+authorize residual transitions, they are reported here and in the Hop summary
+only.
+
+The only repository change proposed by this Hop is this artifact. No
+implementation, test, fixture, document or Git state was modified by the
+reviewer; every mutation and probe ran in out-of-tree copies of the product
+tree under `$TMPDIR`.
+
+=== Method
+
+Five kinds of evidence were produced.
+
+. *Baseline diff reading.* `git show --stat` over the single candidate
+  commit and the full text of every new or changed leaf, to establish what
+  the candidate did and did not touch.
+. *Source-of-truth cross-reading.* Every projected field was traced back to
+  the engine writer that persists it, not to the fixture: `model.Run`,
+  `model.HopSummary`, `model.Finding`, `model.Observation`,
+  `model.StagedQualificationAttempt`, `model.StatFingerprint`,
+  `serialization.run_to_json`/`_json_value`, `operator.py`'s
+  `operator-plan.json`/`operator-summary.json` construction and
+  `_prepared_evidence_plan`, and `frontdoor/archive.py`'s manifest and
+  allow-lists.
+. *Mutation testing of the delivered suite.* The product tree was copied out
+  of the repository; one guarded behaviour at a time was removed in that copy
+  and the three delivered BP6a test modules were run against it. Nineteen
+  mutations were applied; sixteen were killed, three survived (F001). Every
+  survivor was re-verified with `__pycache__` removed and
+  `PYTHONDONTWRITEBYTECODE=1`, and each surviving mutation's presence in the
+  mutated source was asserted, after two mutations initially "survived"
+  because my own line anchors had missed by one line and sed had changed
+  nothing.
+. *Direct behavioural probes* of `project_audit`, `write_audit` and the
+  `wfc audit`/`wfc report` dispatch against synthetic attempt trees built
+  with the delivered `tests/fixtures/bp6` helper and then tampered with
+  outside it.
+. *Suite execution.* The three new modules (72 tests) plus
+  `tests/architecture`, the five archive modules, the BP4a lifecycle
+  controller, BP4b candidate preservation and preservation lifecycle modules
+  and the doc catalogue; then all of `tests/unit`.
+
+The real Evidence repository was never read (it is not present in this
+environment at `../workflow-coordinator-run-evidence`), and no test touches
+it. Field shapes were therefore established from the engine writers, as the
+task's fallback directs.
+
+=== Blocking Finding
+
+[[f001]]
+==== F001 -- three fields of the frozen allow-list have no mutation-sensitive assertion
+
+Invariant:: Acceptance preamble and case (1): "Each case is covered by a test
+with a mutation-sensitive assertion: (1) completed Run projects every field
+of the frozen list with the exact source values." The frozen list names
+`schema`, `attempt_id`, `run {...}`, `governance {...}`, `hops [...]`,
+`findings [...]`, `anomaly_count`, `lifecycle`, `raw {...}`. The task also
+requires the synthetic fixture set to include "a Run with an anomaly".
+
+Reproduction:: Each mutation below was applied to an out-of-tree copy of
+`src/workflow_coordinator/frontdoor/audit.py`; the three delivered modules
+(`tests/unit/test_audit_projection.py`, `tests/unit/test_audit_privacy.py`,
+`tests/unit/test_report.py`) were then run in full.
+
+[cols="3,2,1",options="header"]
+|===
+|Mutation |Projected result |Suite
+
+|`"attempt_id": attempt_id` -> `"attempt_id": "REDACTED-ATTEMPT"`
+|every `audit.json` reports a constant attempt identity
+|green, 72 passed
+
+|`anomaly_count = len(run_doc.get("anomalies") or [])` -> `anomaly_count = 0`
+|a Run with anomalies reports none
+|green, 72 passed
+
+|`"semantic_stop_present": run_doc.get("semantic_stop") is not None` ->
+ `"semantic_stop_present": False`
+|a semantic stop is reported as absent
+|green, 72 passed
+|===
+
+Why no test catches it::
+`attempt_id` is never asserted anywhere in the three modules (`rg
+'attempt_id'` over them returns no assertion; the report renderer puts it on
+the `WFC RUN` line, but `test_report.py` only asserts the literal `"WFC
+RUN"`). `anomaly_count` is asserted exactly once, as `== 0`, on a fixture
+with no anomalies -- the degenerate value, so the assertion has no
+discriminating power; the only fixture that does supply an anomaly is
+`test_audit_privacy._canary_attempt`, which asserts only that the anomaly
+*prose* does not leak, which is insensitive to the count. The fixture builder
+does support `anomalies=`, so the "Run with an anomaly" tree the task asks for
+is buildable but never built with an assertion on its count.
+`run.semantic_stop_present` is asserted exactly once, as `is False`, on a
+fixture with no semantic stop; `_canary_attempt` does build a semantic stop
+but asserts only that its question text does not leak.
+
+Not an implementation defect:: the projection itself is right. Against the
+unmutated module, a probe attempt built with
+`attempt_id='probe-attempt-20261120-01'`, three anomalies and a semantic stop
+projects `attempt_id='probe-attempt-20261120-01'`, `anomaly_count=3` and
+`semantic_stop_present=True`. F001 is a matrix gap: the suite does not pin
+three fields it is required to pin.
+
+Smallest correction:: extend `tests/unit/test_audit_projection.py` only --
+assert `audit["attempt_id"]` against a non-default `attempt_id` in the
+completed-projection test, add an anomaly-bearing Run asserting
+`anomaly_count` equals the number of anomalies supplied (and that the anomaly
+strings do not appear), and assert `semantic_stop_present is True` for a Run
+carrying a semantic stop. No implementation change is needed or wanted.
+
+=== Acceptance matrix, case by case
+
+Each row states what was reproduced and, where a mutation was run, which
+delivered assertion killed it. "Killed" means the mutation made at least one
+delivered test fail.
+
+[cols="1,4,3",options="header"]
+|===
+|Case |Reproduced |Mutation evidence
+
+|1
+|Partly. Every other field of the frozen list is read from a named source key
+and asserted with its exact source value; `_assert_keys` enforces default
+deny on every assembled section, and `test_top_level_keys_are_exactly_the_frozen_set`
+/ `test_hop_entry_keys_are_exactly_the_frozen_set` pin the key sets. Field
+names were checked against the engine: `hops_used` correctly reads the
+persisted `hop_used`; `final_head`/`worktree_clean` come from
+`operator-summary.json`; governance identity comes from `run.json` and the
+plan's `agent_operating_contract.provenance()` (`contract_id`/`version`/`sha256`);
+`executable_identity_stable` compares the plan's
+`evidence.selected_commands[].stat_fingerprint` with the observation's, whose
+serialized shapes do match key for key.
+|`hops_used` <- `hop_limit`: killed (projection + two report tests). Hop
+`outcome`, `role`, `adapter`, `model`, `reasoning`, `applied_route`,
+`commits`, `finding_delta_ids` are each asserted with exact values, so a
+wrong-source mutation is caught. *Three fields survived: see F001.*
+
+|2
+|Yes, and this is the strongest part of the candidate. The canary fixture
+plants a fake home, user name, scratch/state/ops paths, a Git remote URL,
+persona text, provider diagnostics, hop and observation summaries, Finding
+invariant and evidence prose, a human question, a semantic-stop question, a
+`reconcile_reason`, commit subjects, `next_explicit_action` and semantic
+notes -- in nested dicts and in list elements -- and none reaches the output.
+The output is also regex-checked for any JSON string that starts with `/` or a
+drive letter. Prose is unreachable by construction (no source object is ever
+copied) and the final guard is a real refusal, not a drop: it raises
+`ProjectionError` naming only the JSON path, and the test asserts the value is
+absent from the message.
+|Guard disabled: killed. Absolute-path check removed: killed.
+Private-string check removed: killed. Projecting the full `executable` path
+instead of the basename: killed (the guard refuses, failing nine tests).
+Routing hop `summary` prose into the allow-listed `usage` field: killed.
+Routing a Finding `invariant` into `disposition`: killed. Routing a
+preservation free-text `reason` into `quiescence`: killed.
+
+|3
+|Yes. `raw.files` copies `path`/`sha256`/`bytes` from the manifest's
+`copied_files` and nothing else -- in particular not the archiver's absolute
+`source` field, which the test asserts is absent. `manifest_sha256` is the
+digest of the manifest file itself. Nothing is recomputed from disk, so a raw
+digest cannot silently disagree with the manifest.
+|Digest not copied from the manifest: killed. `manifest_sha256` is asserted
+against an independently computed `hashlib.sha256` of the file, and a mutated
+manifest entry is asserted to flow through unchanged.
+
+|4
+|Yes. Findings project exactly `finding_id`, `state`, `blocking`,
+`disposition`, `introduced_by_hop`, `changed_by_hop`; `invariant`,
+`evidence_refs`, `successor_ref`, `external_work_item_ref` and
+`correction_obligation` are never read.
+|`disposition` <- `invariant`: killed by both the exact-dict assertion and
+the canary assertion.
+
+|5
+|Yes, for `awaiting_human`, `awaiting_human_budget`, `reconcile_required` and
+`stopped`: status and `stop_reason` project exactly, `human_question_present`
+is `True` with the question text absent, and `status != "completed"` is
+asserted. All four are real `model.RunStatus` values.
+|`stop_reason` is asserted both null and non-null;
+`human_question_present` is asserted both `True` and `False`, so collapsing
+it to a constant is caught.
+
+|6
+|Yes. `interrupted`, `uncertain_launch`, a preservation result (all eight
+allow-listed facts) and a preservation refusal (`reason_code`, never
+`reason`) project as supplied; absent lifecycle facts yield `lifecycle: null`
+plus `no_lifecycle_facts`, and a classification without preservation yields
+`preservation_not_recorded`. Both classifications are real
+`frontdoor.lifecycle.EXIT_CODES` keys.
+|`no_lifecycle_facts` limit dropped: killed. Preservation `reason` leaked
+into an allow-listed slot: killed.
+
+|7
+|Yes. `usage` is a literal `None` per Hop; the test asserts `is None` *and*
+`!= 0`.
+|`"usage": 0`: killed (two tests).
+
+|8
+|Yes. A missing `operator-plan.json` nulls `governance` with
+`governance_not_recorded`; a missing `operator-summary.json` nulls
+`worktree_clean` with `run_summary_not_recorded` and falls back to the Run's
+own persisted `current_head`; a missing `execution-evidence.json` yields empty
+per-Hop evidence with `trusted_evidence_not_recorded`. None crashes. A
+missing `manifest.json` is an `AuditError` refusal, not a traceback.
+|Turning the missing-summary branch into a raise: killed.
+
+|9
+|Yes. Byte-identical output for two independently built identical trees;
+different bytes when one fact changes; newline-terminated; `sort_keys=True`;
+no timestamp. `limits` is sorted, `raw.files` is sorted by path and `hops` by
+`(sequence, hop_id)`, so the ordering is stable rather than incidental.
+|See observation 6 for the limit of this case's mutation sensitivity.
+
+|10
+|Yes. `write_audit` writes beside `manifest.json` through
+`tempfile.mkstemp` + `os.replace`, returns a no-op for byte-identical
+existing content, refuses differing content with `AuditError` while leaving
+the existing bytes untouched, and leaves the manifest and every raw file
+byte-identical. `audit.py` imports no `subprocess` and no `git_facts`; the
+test additionally monkeypatches `subprocess.run`/`Popen` to raise.
+|Create-only refusal removed: killed.
+
+|11
+|Yes. `wfc audit` on a lifecycle file carrying `/etc/shadow` exits 3, writes
+no `audit.json`, and the offending value is absent from stderr. The guard
+runs inside `project_audit`, before any byte is written, so a refusal cannot
+leave a partial file. Usage and structural refusals correctly exit 2, not 3.
+|Refusal exit code changed to 2: killed.
+
+|12
+|Yes, for completed, finding-bearing, `awaiting_human`,
+`awaiting_human_budget`, `reconcile_required`, `stopped`, `interrupted` and
+`uncertain_launch`, in text and `--json` (the JSON render is asserted to
+parse back to the same dict). Only open *and* blocking Findings are listed,
+by identifier. An unrecognized status is reported as `unknown` with an
+explicit "not reported as success" line. Exactly one `next` line is rendered,
+from the fixed table, and only when the status is not `completed`.
+|Dropping the `stopped` row from the fixed table: killed. Removing the
+next-choice assignment: killed (seven tests, including
+`test_unknown_status_is_reported_as_unknown_never_as_success`). `success` is
+consumed only by `next_action` and `not_done`, both asserted, so collapsing
+it to `True` fails the same assertions.
+
+|13
+|Yes. `wfc audit` and `wfc report` dispatch additively from `cli.py`, after
+`archive` and before `run`/`resume`/`status`; no existing branch is reordered
+or shadowed, and `--version --json` still works. Exit codes 0/2/3 for
+`audit`, 0/2 for `report`.
+|See observation 1 for the one exit-code path that is not covered.
+
+|14
+|Yes, within this environment. `tests/architecture` (import-direction guard
+included), the five archive modules, the BP4a lifecycle controller, BP4b
+candidate preservation, preservation lifecycle and the doc catalogue all
+pass. Two architecture tests
+(`test_bp1_identity::test_installed_identity_and_real_preflight`,
+`test_offline_distribution::test_clean_isolated_distribution_and_wheel_install`)
+and `test_wfc_op.py` plus `test_claude_adapter_conformance.py` fail here for
+agent-local environmental reasons only -- `pip` cannot reach a package index
+("No matching distribution found for setuptools>=68") and `/tmp` is mapped
+read-only -- with identical diagnostics independent of this candidate. See
+observation 8.
+|n/a
+
+|15
+|Yes. `wfc_beta1_bp6a_audit_projection_001_limitations.adoc` states the
+derivation limits (archive-derived, never re-verified, trusted outcomes are
+attested observation), the reserved and null `usage` with DG-1 cited, the
+absent lifecycle/archive/`evidence.raw`/`wfc init` wiring, the frozen field
+list, the report's refusal to upgrade a stop, and that pre-projection
+archives are not retrofitted.
+|n/a
+|===
+
+=== Hard rules and withheld authority
+
+Clean. The candidate's ten leaves are
+`docs/developer_guide/ch02_code_navigation.adoc`, the BP6a limitations record,
+`frontdoor/audit.py`, `frontdoor/cli.py`, `frontdoor/report.py`,
+`tests/fixtures/bp6/__init__.py`, `tests/fixtures/bp6/archive_builder.py` and
+the three test modules. `archive.py`, `journal.py`, `lifecycle.py`,
+`preservation.py`, `git_facts.py`, the reducer, Finding, review, routing,
+adapter and admission code are untouched; `cli.py`'s change is six added
+lines of additive dispatch. No lifecycle wiring, no `evidence.raw`
+configuration, no `wfc init` change, no archive or Git commit written by the
+new code (no `subprocess`, no `git_facts` import), no lineage or continuation
+field, no fabricated usage, no operator-manual or backlog edit, no existing
+test weakened or deleted, no historical archive rewritten. The two new
+modules are stdlib-only and 3.10-compatible (`from __future__ import
+annotations` throughout; no `match`, no 3.11+ typing at runtime). Kernel
+modules do not import `frontdoor`, per the passing architecture guard. The
+field list matches the task's frozen list, not the second-pass sample's wider
+sketch (`project`, `commission`, `coordinator`, `authorization` and
+`anomalies[]` are correctly absent, and `argv_digest` correctly follows the
+engine's persisted name rather than the sketch's `argv_sha256`).
+
+=== Non-blocking observations
+
+These are observations, not Findings. They are recorded here and in the Hop
+summary only.
+
+. *`wfc report` on an attempt directory does not map a guard refusal to an
+  exit code.* `report.main` catches `ReportError` and `AuditError` but not
+  `ProjectionError`, and `_load_audit_source` calls `project_audit` for a
+  directory argument. Reproduced: with an absolute path injected as a
+  `governing_inputs` key, `wfc audit` exits 3 naming
+  `governance.governing_inputs.<key>`, while `wfc report` on the same
+  directory propagates `ProjectionError` as an uncaught traceback. No value
+  leaks and the guard still refuses; only the documented exit code is lost.
+  Reaching it needs an archive whose plan records an absolute governing-input
+  path, which admission (`_admit_a1`, `_relative_path`) does not produce, so
+  this is outside the acceptance list rather than a defect in it.
+. *`governing_inputs` is the one bulk copy.* `dict(plan_doc.get("governing_inputs")
+  or {})` copies the plan's map wholesale instead of rebuilding it entry by
+  entry. It is safe for the shape the engine writes (repository-relative path
+  -> digest string) and both keys and values pass through the guard, but it is
+  the single place where the "never copy a source object" rule is satisfied by
+  the source's shape rather than by construction.
+. *The absolute-path test is prefix-only.* `_string_violation` flags a string
+  that *starts* with `/`, a drive letter or `\\`; an absolute path embedded
+  inside a longer string is caught only through a caller-supplied private
+  string. This matches the task's wording ("any string value is an absolute
+  path") and no allow-listed field can carry such a string today.
+. *Several real statuses read as `unknown`.* `model.RunStatus` also has
+  `ready`, `running`, `awaiting_supervisor` and `suspended`, and
+  `frontdoor.lifecycle.EXIT_CODES` also has `inconsistent`, `engine_active`,
+  `engine_exited_before_state`, `not_launched` and the `refused_*` family.
+  All of them fall outside the task's frozen six-entry table and are reported
+  as `unknown`. That is the specified and honest behaviour, but an archived
+  mid-flight or refused Run reads as `unknown` rather than as what it is.
+. *An Attempt with no `run.json` is refused, not nulled.* `_find_checkout`
+  raising `AuditError` ("not a projectable attempt") is the right call for a
+  core source, but it means an archive of a Run that never reached checkout
+  registration -- the shape a true `uncertain_launch` can leave -- cannot be
+  projected at all, even to carry the supplied lifecycle facts.
+. *Determinism is only pinned within one process.* Both determinism tests
+  compare two renderings made in the same interpreter. The code is in fact
+  cross-process stable (`limits` is `sorted(set(...))`, lists are explicitly
+  ordered, `sort_keys=True`), but a mutation dropping only the `sorted()`
+  around `limits` would not be caught by the delivered suite, since `set`
+  iteration order is stable within a process.
+. *`audit.json` is created mode 0600.* `tempfile.mkstemp` creates the
+  temporary file with owner-only permissions and `os.replace` preserves them,
+  so the published record is less readable than the manifest beside it
+  (0644). Harmless for BP6a, worth a thought when BP6b commits the file.
+. *Environmental test failures in this sandbox.* Four modules cannot run
+  here: `tests/architecture/test_bp1_identity.py` and
+  `test_offline_distribution.py` need PEP 517 build isolation, which needs a
+  package index; `tests/unit/test_wfc_op.py` runs a nested `pip install`;
+  `tests/unit/test_claude_adapter_conformance.py` needs a writable `/tmp`
+  symlink target. All four fail with `No matching distribution found for
+  setuptools>=68` or `[Errno 30] Read-only file system`, independent of this
+  candidate. This is an agent-local limitation, not a product defect, and
+  does not substitute for the Coordinator's own full task-check.
+
+=== Verdict
+
+Changes required. One blocking Finding (F001), eight non-blocking
+observations. The projection, the guard, the writer, the report and the
+dispatch are otherwise exactly what the task specifies; the correction needed
+is confined to `tests/unit/test_audit_projection.py`.
