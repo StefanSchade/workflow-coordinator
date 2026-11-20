@@ -111,6 +111,45 @@ def _fingerprint(path: str) -> StatFingerprint:
     )
 
 
+DISCOVERABLE_SIBLING_PROBE_LIMIT = 5
+
+
+def _discoverable_path_siblings(
+    authored_argv0: str,
+    repository: Path,
+    environment: EnvironmentSnapshot,
+    *,
+    limit: int = DISCOVERABLE_SIBLING_PROBE_LIMIT,
+) -> tuple[str, ...]:
+    """Bounded, read-only PATH probe for executable sibling names (e.g. ``python3``
+    for ``python``). Informational only: never selects or substitutes a resolution.
+    """
+
+    if os.path.isabs(authored_argv0) or "/" in authored_argv0:
+        return ()
+    root = repository.resolve()
+    siblings: list[str] = []
+    seen: set[str] = set()
+    for entry in environment.values["PATH"].split(os.pathsep):
+        base = entry if os.path.isabs(entry) else os.path.join(root, entry)
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            continue
+        for name in names:
+            if name == authored_argv0 or not name.startswith(authored_argv0) or name in seen:
+                continue
+            try:
+                _fingerprint(os.path.join(base, name))
+            except (FileNotFoundError, NotADirectoryError, PermissionError, ExecutableResolutionError):
+                continue
+            seen.add(name)
+            siblings.append(name)
+            if len(siblings) >= limit:
+                return tuple(siblings)
+    return tuple(siblings)
+
+
 def resolve_executable(
     authored_argv0: str,
     repository: Path,
@@ -140,8 +179,16 @@ def resolve_executable(
             canonical_path=os.path.realpath(candidate),
             stat_fingerprint=fingerprint,
         )
+    siblings = _discoverable_path_siblings(authored_argv0, repository, environment)
+    siblings_note = (
+        f"discoverable PATH siblings (informational only, not selected): {', '.join(siblings)}"
+        if siblings
+        else "no discoverable PATH siblings"
+    )
     raise ExecutableResolutionError(
         f"executable does not resolve to an executable regular file: {authored_argv0}"
+        f"; {siblings_note}"
+        "; supply a conforming environment by prepending its prepared bin/ directory to PATH"
     )
 
 
