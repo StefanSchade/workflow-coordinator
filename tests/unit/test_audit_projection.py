@@ -40,10 +40,11 @@ class TestCompletedProjection:
         audit = _project(
             tmp_path, hops=hops, hop_used=1, findings=findings, run_id="RUN-abc", work_item_id="WI-ABC-001",
             policy_id="repository-standard", policy_revision="7", profile_id="robust", profile_revision="3",
-            baseline_head="a" * 40, final_head="b" * 40,
+            baseline_head="a" * 40, final_head="b" * 40, attempt_id="wfc-fixture-bp6-mutated-attempt-id-01",
         )
 
         assert audit["schema"] == "wfc.audit/1"
+        assert audit["attempt_id"] == "wfc-fixture-bp6-mutated-attempt-id-01"
         run = audit["run"]
         assert run["run_id"] == "RUN-abc"
         assert run["work_item_id"] == "WI-ABC-001"
@@ -126,6 +127,28 @@ class TestCompletedProjection:
         ]
         audit = _project(tmp_path, hops=hops, hop_used=1)
         assert audit["hops"][0]["outcome"] == "changes_required"
+
+    def test_mutating_the_attempt_id_changes_the_projection(self, tmp_path):
+        base = _project(tmp_path / "base", attempt_id="wfc-fixture-bp6-base-attempt-01")
+        mutated = _project(tmp_path / "mutated", attempt_id="wfc-fixture-bp6-mutated-attempt-02")
+        assert base["attempt_id"] != mutated["attempt_id"]
+        assert mutated["attempt_id"] == "wfc-fixture-bp6-mutated-attempt-02"
+
+    def test_anomaly_count_reflects_the_number_of_supplied_anomalies(self, tmp_path):
+        none = _project(tmp_path / "none", anomalies=())
+        one = _project(tmp_path / "one", anomalies=(ab.PROVIDER_PROSE_CANARY,))
+        three = _project(tmp_path / "three", anomalies=(
+            ab.PROVIDER_PROSE_CANARY, "second-anomaly-canary", "third-anomaly-canary",
+        ))
+        assert none["anomaly_count"] == 0
+        assert one["anomaly_count"] == 1
+        assert three["anomaly_count"] == 3
+
+    def test_semantic_stop_present_reflects_whether_a_semantic_stop_was_recorded(self, tmp_path):
+        absent = _project(tmp_path / "absent", semantic_stop=None)
+        present = _project(tmp_path / "present", semantic_stop={"category": "canary-semantic-stop"})
+        assert absent["run"]["semantic_stop_present"] is False
+        assert present["run"]["semantic_stop_present"] is True
 
 
 class TestExecutableIdentityStability:
