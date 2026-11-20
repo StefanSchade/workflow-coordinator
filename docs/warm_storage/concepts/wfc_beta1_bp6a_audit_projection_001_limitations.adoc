@@ -1,0 +1,75 @@
+= BP6a audit projection: Beta-1 limitations
+
+Standing:: Developer-facing limitations record for `frontdoor.audit`
+(`project_audit`/`write_audit`, `wfc audit`) and `frontdoor.report`
+(`build_report`, `wfc report`). This is not operator guidance; the operator
+manual (BP7) owns user-facing recovery instructions. Nothing here overrides
+the BP6a/BP6b package boundary recorded in
+link:../../backlog/beta1_productization.adoc#bp6[BP6] and
+link:../../backlog/_open.adoc[the open backlog]; it documents the
+consequences of that boundary as implemented.
+
+== The projection is derived evidence, not independent re-verification
+
+`project_audit` reads the raw files a `wfc archive` run already copied and
+verified (`manifest.json` and its `copied_files` digests); it never re-reads
+the original Run/OPS sources, never recomputes a digest against a file on
+disk, and never contacts Git. `audit.json` is only as trustworthy as the
+archive it was built from; the table in the second-pass review's "What stays
+verifiable without the raw files" section states exactly what a third party
+can and cannot re-check from the projection alone. Trusted-evidence outcomes
+in particular (exit classification, output digests) are the Coordinator's
+attested observation, never independently reproducible once the output
+bodies are gone.
+
+== Nothing is wired in yet
+
+BP6a adds no caller. `wfc run`/`wfc resume` do not invoke `project_audit` or
+`write_audit`; there is no `evidence.raw` configuration key, `wfc init`
+creates no Evidence repository, and no archive or Evidence commit is made by
+this code. `lifecycle` facts (the frontdoor-level classification such as
+`interrupted` or `uncertain_launch`, and any BP4b preservation fact) are
+accepted only as an already-built mapping supplied by the caller; BP6a itself
+never classifies a lifecycle or inspects a preservation ref. Supplying that
+mapping, archiving automatically, and committing `audit.json` into an
+Evidence repository are BP6b's work.
+
+== Token usage is reserved, never reported
+
+Per DG-1 (fast-follow, 2026-11-20), every Hop's `usage` field is `null`. No
+adapter in this package reports provider token consumption; `null` means
+"not reported," never "zero." A later adapter that supplies usage data is an
+additive fill of this same reserved field, not a schema break.
+
+== The field list is frozen to facts already persisted
+
+`wfc.audit/1`'s allow-list is deliberately narrow: no Finding invariant or
+evidence text, no persona or provider prose, no diagnostics, no commit
+subjects, and no lineage or continuation fields. A fact the archived files do
+not carry is omitted or projected as `null`, with a named code in `limits`
+(for example `governance_not_recorded`, `run_summary_not_recorded`,
+`trusted_evidence_not_recorded`, `no_lifecycle_facts`,
+`preservation_not_recorded`, `usage_not_reported`); nothing is inferred to
+fill the gap. A later schema revision that wants a currently-excluded fact
+needs its own version (`wfc.audit/2`); this package does not retroactively
+widen `wfc.audit/1`.
+
+== The report never upgrades a stop to success
+
+`build_report` treats only the single reported status (the supplied
+lifecycle classification if present, otherwise the engine's own `run.status`)
+as authoritative, and maps a status outside its fixed, closed vocabulary to
+`"unknown"` rather than passing an unrecognized value through -- a future
+engine status this package has never seen is reported as unknown, never
+silently treated as completed. The one next-human-choice line per stop
+status is a fixed, generic instruction, not a diagnosis of this specific
+Run; it names who must act, not what they must decide.
+
+== Pre-projection archives are not retrofitted
+
+An archive directory written before this package existed has no
+`audit.json` and none is added retroactively; by the second-pass review's own
+rule, the absence of `audit.json` is itself how a reader identifies a
+pre-projection archive. `write_audit` only ever adds a new, create-only file
+beside an existing `manifest.json`; it never rewrites, migrates or backfills
+an older archive.

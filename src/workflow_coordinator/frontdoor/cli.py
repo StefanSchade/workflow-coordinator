@@ -24,6 +24,12 @@ def main(argv=None):
     if args[:1] == ['archive']:
         from .archive import main as archive_main
         return archive_main(args[1:])
+    if args[:1] == ['audit']:
+        from .audit import main as audit_main
+        return audit_main(args[1:])
+    if args[:1] == ['report']:
+        from .report import main as report_main
+        return report_main(args[1:])
     if args[:1] in (['run'], ['resume']):
         from .lifecycle import main as lifecycle_main
         return lifecycle_main(args)
