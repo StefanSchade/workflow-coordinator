@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..commissioning import CommissionError
 from ..git_facts import GitPreflightError
 from . import archive
 from . import audit as audit_module
@@ -127,7 +128,11 @@ def _reason_code_for(error: Exception) -> str:
         return "audit_structural_error"
     if isinstance(error, archive.ArchiveError):
         return "archive_refused"
-    return "git_preflight_failed"
+    if isinstance(error, GitPreflightError):
+        return "git_preflight_failed"
+    if isinstance(error, CommissionError):
+        return "evidence_configuration_error"
+    return "archive_io_error"
 
 
 def _skip_notice(evidence_path: Path) -> str:
@@ -187,9 +192,22 @@ def run_pending_postrun(repository: Path, checkout_dir: Path, journal: Journal) 
         return PostrunStatus(kind="absent", data={})
 
     config = _cached_config(checkout_dir)
-    settings = resolve_evidence(config, repository)
-
     result_record = journal.latest(("ext.archive.result",))
+    try:
+        settings = resolve_evidence(config, repository)
+    except CommissionError as error:
+        # Evidence settings could not be resolved (for example a default
+        # location with neither $XDG_DATA_HOME nor $HOME set). A Run already
+        # archived before this is still reported truthfully (best-effort,
+        # without a recomputed report); otherwise this is a genuine refusal,
+        # never an uncaught exception that would hide the engine outcome.
+        if result_record is not None:
+            return PostrunStatus(kind="result", data=dict(result_record.data), report_text=None)
+        reason_code = _reason_code_for(error)
+        fact = {"reason_code": reason_code}
+        journal.append("ext.archive.refused", fact)
+        return PostrunStatus(kind="refused", data=fact, notice=_failure_notice(reason_code, error))
+
     if result_record is not None:
         fact = dict(result_record.data)
         report_text = _read_report_text(settings.path, fact)
@@ -208,7 +226,9 @@ def run_pending_postrun(repository: Path, checkout_dir: Path, journal: Journal) 
             state_root=Path(state_root), evidence_repo=settings.path,
             raw_retention=settings.raw, lifecycle=lifecycle_facts, attempt_identity=attempt_identity,
         )
-    except (archive.ArchiveError, audit_module.ProjectionError, audit_module.AuditError, GitPreflightError) as error:
+    except (
+        archive.ArchiveError, audit_module.ProjectionError, audit_module.AuditError, GitPreflightError, OSError,
+    ) as error:
         reason_code = _reason_code_for(error)
         fact = {"reason_code": reason_code}
         journal.append("ext.archive.refused", fact)

@@ -7,7 +7,11 @@ terminal classification, then asserts the post-run archive/audit/report step
 behaves as specified -- while independently pinning that BP4a's own
 classification and exit codes are unaffected. Every Consumer Config here
 names an explicit, ``tmp_path``-scoped ``evidence.repository`` so this file
-never resolves the real default Evidence location. The Attempt identity
+never resolves the real default Evidence location -- except the one test
+that deliberately exercises that resolution failing (no ``evidence.repository``
+configured, ``$HOME``/``$XDG_DATA_HOME`` both unset), which never reads or
+writes anything under a real default location since resolution itself
+refuses first. The Attempt identity
 used throughout is the maintainer-decided, Run-derived one
 (``<repository_name>-<run_id>``, lower-cased), never the engine state root's
 own ``engine-state`` basename.
@@ -261,6 +265,70 @@ def test_stopped_and_interrupted_runs_are_archived_and_reported_truthfully(
 
 
 # --------------------------------------------------------------------------
+# Acceptance 7: the audit carries the BP4b preservation fact, distinctly, for
+# all three of its outcomes (result, refused, not_needed) -- each driven
+# through the real lifecycle so the specific shape BP4b actually produces
+# lands, unmodified, under the archive's own ``lifecycle.preservation``.
+# --------------------------------------------------------------------------
+
+def test_audit_preservation_is_not_needed_for_a_clean_stopped_run(
+    repository: Path, tmp_path: Path, state_home: Path, evidence_path: Path,
+):
+    result = _run_with_fake_engine(repository, tmp_path, "stopped", commission_id="bp6c-preservation-not-needed")
+    assert result.classification == "stopped"
+
+    _, journal = _checkout_dir_and_journal(repository)
+    assert journal.latest(("ext.preservation.not_needed",)) is not None
+
+    audit = _read_audit(evidence_path, repository)
+    assert audit["lifecycle"]["preservation"] == {
+        "outcome": "not_needed", "ref": None, "commit": None, "tree": None,
+        "file_count": None, "bytes": None, "quiescence": None, "reason_code": None,
+    }
+
+
+def test_audit_preservation_is_refused_for_an_out_of_scope_dirty_worktree(
+    repository: Path, tmp_path: Path, state_home: Path, evidence_path: Path,
+):
+    result = _run_with_fake_engine(
+        repository, tmp_path, "awaiting_human", commission_id="bp6c-preservation-refused",
+        dirty_file="outside-scope.txt",
+    )
+    assert result.classification == "awaiting_human"
+
+    _, journal = _checkout_dir_and_journal(repository)
+    preserved = journal.latest(("ext.preservation.refused",))
+    assert preserved is not None
+    assert "outside authorized scope" in preserved.data["reason"]
+
+    audit = _read_audit(evidence_path, repository)
+    assert audit["lifecycle"]["preservation"] == {
+        "outcome": "refused", "ref": None, "commit": None, "tree": None,
+        "file_count": None, "bytes": None, "quiescence": None, "reason_code": preserved.data["reason"],
+    }
+
+
+def test_audit_preservation_is_result_for_an_interrupted_run_with_an_in_scope_dirty_worktree(
+    repository: Path, tmp_path: Path, state_home: Path, evidence_path: Path,
+):
+    result = _run_with_fake_engine(
+        repository, tmp_path, "dispatch_then_crash", commission_id="bp6c-preservation-result",
+        dirty_file="src/wip.txt",
+    )
+    assert result.classification == "interrupted"
+
+    _, journal = _checkout_dir_and_journal(repository)
+    preserved = journal.latest(("ext.preservation.result",))
+    assert preserved is not None
+
+    audit = _read_audit(evidence_path, repository)
+    assert audit["lifecycle"]["preservation"]["outcome"] == "result"
+    assert audit["lifecycle"]["preservation"]["ref"] == preserved.data["ref"]
+    assert audit["lifecycle"]["preservation"]["commit"] == preserved.data["commit"]
+    assert audit["lifecycle"]["preservation"]["quiescence"] == "unattested"
+
+
+# --------------------------------------------------------------------------
 # Acceptance 3: no engine state -> no archive at all.
 # --------------------------------------------------------------------------
 
@@ -369,6 +437,87 @@ def test_archive_conflict_is_refused_then_resume_succeeds_once_removed(
     assert resumed.classification == "completed"
     assert resumed.exit_code == L.EXIT_CODES["completed"]
     _, journal = _checkout_dir_and_journal(repository)
+    assert journal.latest(("ext.archive.result",)) is not None
+
+
+# --------------------------------------------------------------------------
+# Acceptance 5: every failure shape the post-run step can hit is a named
+# ``ext.archive.refused``, never an unhandled exception that would hide the
+# engine's own completed classification behind an unrelated exit code.
+# --------------------------------------------------------------------------
+
+def test_non_writable_evidence_repository_is_refused_not_an_uncaught_exception(
+    repository: Path, tmp_path: Path, state_home: Path, evidence_path: Path,
+):
+    # The destination is a real, existing Evidence repository, but this
+    # process cannot write into it (a non-writable directory, not a missing
+    # one -- the ``ARCHIVE SKIPPED`` path does not apply).
+    original_mode = evidence_path.stat().st_mode
+    os.chmod(evidence_path, 0o500)
+    try:
+        result = _run_with_fake_engine(repository, tmp_path, "completed_consistent", commission_id="bp6c-no-write")
+    finally:
+        os.chmod(evidence_path, original_mode)
+
+    assert result.classification == "completed"  # the engine outcome stands.
+    assert result.exit_code == L.ARCHIVE_FAILED_EXIT_CODE
+    assert result.postrun_notice is not None
+    assert "ARCHIVE FAILED" in result.postrun_notice
+
+    _, journal = _checkout_dir_and_journal(repository)
+    fact = journal.latest(("ext.archive.refused",))
+    assert fact is not None
+    assert fact.data == {"reason_code": "archive_io_error"}
+
+    resumed = L.resume_lifecycle(repository)
+    assert resumed.classification == "completed"
+    assert resumed.exit_code == L.EXIT_CODES["completed"]
+    _, journal = _checkout_dir_and_journal(repository)
+    assert journal.latest(("ext.archive.result",)) is not None
+
+
+def test_unresolvable_default_evidence_location_is_refused_not_an_uncaught_exception(
+    tmp_path: Path, state_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    # No ``evidence.repository`` configured at all, so the step must resolve
+    # the default location (``<data home>/wfc/evidence/<repository_name>``)
+    # itself -- and that resolution fails with neither $XDG_DATA_HOME nor
+    # $HOME set, exactly as ``frontdoor.config.resolve_evidence`` documents.
+    repo = _seed_repository(tmp_path)
+    assert cli_main([
+        "init", "--repository", str(repo), "--scope-ceiling", "src", "--no-evidence-repository",
+    ]) == 0
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "chore: commit Consumer Config")
+
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    result = _run_with_fake_engine(repo, tmp_path, "completed_consistent", commission_id="bp6c-no-home")
+    assert result.classification == "completed"  # the engine outcome stands.
+    assert result.exit_code == L.ARCHIVE_FAILED_EXIT_CODE
+    assert result.postrun_notice is not None
+    assert "ARCHIVE FAILED" in result.postrun_notice
+
+    _, journal = _checkout_dir_and_journal(repo)
+    fact = journal.latest(("ext.archive.refused",))
+    assert fact is not None
+    assert fact.data == {"reason_code": "evidence_configuration_error"}
+    # No intent was ever recorded: resolution failed before any archive attempt.
+    assert journal.latest(("ext.archive.intent",)) is None
+
+    # `wfc resume` retries and succeeds once the cause (an unresolvable
+    # default Evidence location) is actually removed: $HOME set to a real
+    # path, and the default repository it now resolves to already exists.
+    restored_home = tmp_path / "restored-home"
+    default_evidence = restored_home / ".local" / "share" / "wfc" / "evidence" / repo.name
+    from workflow_coordinator.frontdoor.init import ensure_evidence_repository
+    assert ensure_evidence_repository(default_evidence) == "created"
+    monkeypatch.setenv("HOME", str(restored_home))
+
+    resumed = L.resume_lifecycle(repo)
+    assert resumed.classification == "completed"
+    assert resumed.exit_code == L.EXIT_CODES["completed"]
+    _, journal = _checkout_dir_and_journal(repo)
     assert journal.latest(("ext.archive.result",)) is not None
 
 

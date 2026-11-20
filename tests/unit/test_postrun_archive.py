@@ -256,6 +256,56 @@ class PostrunArchiveLifecycleTests(unittest.TestCase):
             )
 
 
+class ResolveOpsDirProductShapeTests(unittest.TestCase):
+    """``frontdoor.archive.resolve_ops_dir`` must tell apart the product
+    lifecycle's own per-checkout cached envelope path (never OPS evidence)
+    from self-development's own ``execution-bindings.yaml`` (always OPS
+    evidence when present): both are recorded, verbatim, as
+    ``execution_bindings_source`` in ``operator-plan.json`` by the one real
+    engine, so the distinction can only be the basename check itself."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name)
+
+    def _state_root(self, *, execution_bindings_source: str) -> Path:
+        state_root = self.base / "engine-state"
+        state_root.mkdir()
+        write_json(state_root / "operator-plan.json", {
+            "schema_version": 2, "state_root": str(state_root),
+            "execution_bindings_source": execution_bindings_source,
+        })
+        return state_root
+
+    def test_product_lifecycle_envelope_cache_is_never_mistaken_for_recorded_ops_evidence(self):
+        # The product lifecycle's own per-checkout commission directory
+        # really exists on disk (it holds the cached envelope used as this
+        # Run's ``--execution-bindings`` argv) -- but its basename is
+        # ``envelope.yaml``, never ``execution-bindings.yaml``.
+        checkout_commission = self.base / "checkouts" / "cid" / "commission"
+        checkout_commission.mkdir(parents=True)
+        (checkout_commission / "envelope.yaml").write_text("schema_version: 1\n", encoding="utf-8")
+        state_root = self._state_root(execution_bindings_source=str(checkout_commission / "envelope.yaml"))
+        missing_ops_candidate = self.base / "home" / "wfc-ops" / "consumer-repo-run-x"  # never created.
+
+        self.assertIsNone(ar.resolve_ops_dir(state_root, missing_ops_candidate, "consumer-repo-run-x"))
+
+    def test_self_development_execution_bindings_yaml_recorded_but_missing_is_still_refused(self):
+        # The self-development shape both versions of this function must
+        # still refuse: ``execution-bindings.yaml`` really was prepared (it
+        # is on disk), but the default OPS candidate this call resolves is a
+        # different, missing directory.
+        prepared_ops = self.base / "home" / "wfc-ops" / "wfc-fixture-attempt"
+        prepared_ops.mkdir(parents=True)
+        (prepared_ops / "execution-bindings.yaml").write_text("schema_version: 1\n", encoding="utf-8")
+        state_root = self._state_root(execution_bindings_source=str(prepared_ops / "execution-bindings.yaml"))
+        missing_ops_candidate = self.base / "home" / "wfc-ops" / "other-attempt"
+
+        with self.assertRaises(ar.ArchiveError):
+            ar.resolve_ops_dir(state_root, missing_ops_candidate, "other-attempt")
+
+
 class ValidateExplicitAttemptIdentityTests(unittest.TestCase):
     def test_accepts_lower_case_safe_identity(self):
         self.assertEqual(ar.validate_explicit_attempt_identity("consumer-repo-run-abc123"), "consumer-repo-run-abc123")

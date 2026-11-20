@@ -72,7 +72,17 @@ def main() -> int:
         return 9
 
     state_root.mkdir(parents=True)
-    atomic_write_json(state_root / "operator-plan.json", {"schema_version": 2, "coordinator": "fake-engine"})
+    atomic_write_json(state_root / "operator-plan.json", {
+        "schema_version": 2, "coordinator": "fake-engine",
+        # The real engine (operator.py) always records the exact argv value
+        # it was launched with here. The installed product lifecycle passes
+        # its own per-checkout cached envelope file (never named
+        # ``execution-bindings.yaml``, which only self-development's own
+        # preparation sequence writes) -- reproducing that shape is load-
+        # bearing: ``frontdoor.archive.resolve_ops_dir`` must not mistake it
+        # for recorded-but-missing OPS evidence (see BP6c's identity note).
+        "execution_bindings_source": args.execution_bindings,
+    })
     if mode == "mkdir_only":
         return 9
 
