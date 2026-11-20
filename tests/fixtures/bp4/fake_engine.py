@@ -79,8 +79,9 @@ def main() -> int:
     association = register_checkout(state_root, repository)
     run_root = checkout_state_root(state_root, association)
 
+    run_id = os.environ.get("WFC_FAKE_ENGINE_RUN_ID", "RUN-fake-engine")
     run = Run(
-        schema_version=2, run_id="RUN-fake-engine", work_item_id="WI-FAKE", profile_id="fake-profile",
+        schema_version=2, run_id=run_id, work_item_id="WI-FAKE", profile_id="fake-profile",
         profile_revision="1", policy_id="fake-policy", policy_revision="1", repository=str(repository),
         baseline_head=args.expected_head, current_head=args.expected_head, phase="implement",
         status=RunStatus.RUNNING, hop_limit=5, hop_used=0,

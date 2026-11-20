@@ -74,7 +74,10 @@ def repository(tmp_path: Path) -> Path:
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "chore: seed disposable consumer repository")
 
-    assert cli_main(["init", "--repository", str(repo), "--scope-ceiling", "src"]) == 0
+    assert cli_main([
+        "init", "--repository", str(repo), "--scope-ceiling", "src",
+        "--evidence-repository", str(repo.parent / "evidence-repo"),
+    ]) == 0
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "chore: commit Consumer Config")
     return repo

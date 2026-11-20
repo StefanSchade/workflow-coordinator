@@ -81,6 +81,8 @@ _LIMIT_TRUSTED_EVIDENCE_NOT_RECORDED = "trusted_evidence_not_recorded"
 
 _WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _REMOTE_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://|\bgit@[\w.\-]+:")
+_PATH_COMPONENT_RE = re.compile(r"[\\/]")
+_TOKEN_RE = re.compile(r"[^0-9A-Za-z_]+")
 
 
 class AuditError(RuntimeError):
@@ -377,7 +379,23 @@ def _build_raw_section(manifest: dict, manifest_path: Path, raw_retention: str) 
     return section
 
 
-def _string_violation(value: str, private_strings: Sequence[str]) -> bool:
+def _whole_component_or_token_match(value: str, names: Sequence[str]) -> bool:
+    """True when ``value`` contains one of ``names`` as an exact path
+    component (split on ``/``/``\\``) or an exact token (split on anything
+    but letters, digits and underscore) -- never as a mere substring of a
+    longer component or token. Used for matching that must not collide on
+    an incidental substring, such as a short OS user name."""
+
+    wanted = {name for name in names if name}
+    if not wanted:
+        return False
+    pieces = set(_PATH_COMPONENT_RE.split(value)) | set(_TOKEN_RE.split(value))
+    return bool(wanted & pieces)
+
+
+def _string_violation(
+    value: str, private_strings: Sequence[str], private_tokens: Sequence[str] = (),
+) -> bool:
     stripped = value
     if stripped.startswith("/") or _WINDOWS_ABS_RE.match(stripped) or stripped.startswith("\\\\"):
         return True
@@ -386,22 +404,24 @@ def _string_violation(value: str, private_strings: Sequence[str]) -> bool:
     for private in private_strings:
         if private and private in value:
             return True
-    return False
+    return _whole_component_or_token_match(value, private_tokens)
 
 
-def _guard_privacy(value: Any, path: str, private_strings: Sequence[str]) -> None:
+def _guard_privacy(
+    value: Any, path: str, private_strings: Sequence[str], private_tokens: Sequence[str] = (),
+) -> None:
     if isinstance(value, str):
-        if _string_violation(value, private_strings):
+        if _string_violation(value, private_strings, private_tokens):
             raise ProjectionError(f"privacy guard refused projection at {path or '<root>'}")
     elif isinstance(value, Mapping):
         for key, item in value.items():
-            if isinstance(key, str) and _string_violation(key, private_strings):
+            if isinstance(key, str) and _string_violation(key, private_strings, private_tokens):
                 raise ProjectionError(f"privacy guard refused projection at {path}.<key>")
             child_path = f"{path}.{key}" if path else str(key)
-            _guard_privacy(item, child_path, private_strings)
+            _guard_privacy(item, child_path, private_strings, private_tokens)
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            _guard_privacy(item, f"{path}[{index}]", private_strings)
+            _guard_privacy(item, f"{path}[{index}]", private_strings, private_tokens)
 
 
 def project_audit(
@@ -410,6 +430,7 @@ def project_audit(
     raw_retention: str = "local",
     lifecycle: Mapping[str, Any] | None = None,
     private_strings: Sequence[str] = (),
+    private_tokens: Sequence[str] = (),
 ) -> dict:
     """Build the ``wfc.audit/1`` projection of ``attempt_dir``.
 
@@ -417,7 +438,12 @@ def project_audit(
     raw archive (``wfc archive`` already verified it). Raises ``AuditError``
     when the attempt directory is not a projectable archive, and
     ``ProjectionError`` when the built projection would carry an absolute
-    path, a caller-supplied private string, or a Git remote URL.
+    path, a caller-supplied private string or private token, or a Git remote
+    URL. ``private_strings`` matches as a plain substring; ``private_tokens``
+    matches only a whole path component or whole token (see
+    ``_whole_component_or_token_match``), so a short value (for example an
+    OS user name) does not collide with an unrelated field that merely
+    contains it as a substring.
     """
 
     attempt_dir = Path(attempt_dir)
@@ -467,7 +493,9 @@ def project_audit(
     }
     _assert_keys(audit, _TOP_KEYS, context="audit document")
 
-    _guard_privacy(audit, "", tuple(s for s in private_strings if s))
+    _guard_privacy(
+        audit, "", tuple(s for s in private_strings if s), tuple(t for t in private_tokens if t),
+    )
     return audit
 
 
@@ -502,6 +530,7 @@ def write_audit(
     raw_retention: str = "local",
     lifecycle: Mapping[str, Any] | None = None,
     private_strings: Sequence[str] = (),
+    private_tokens: Sequence[str] = (),
 ) -> Path:
     """Project and write ``audit.json`` beside ``manifest.json``, create-only.
 
@@ -512,7 +541,8 @@ def write_audit(
 
     attempt_dir = Path(attempt_dir)
     audit = project_audit(
-        attempt_dir, raw_retention=raw_retention, lifecycle=lifecycle, private_strings=private_strings,
+        attempt_dir, raw_retention=raw_retention, lifecycle=lifecycle,
+        private_strings=private_strings, private_tokens=private_tokens,
     )
     text = render_audit_json(audit)
     target = attempt_dir / "audit.json"

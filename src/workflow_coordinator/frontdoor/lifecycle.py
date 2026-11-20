@@ -33,7 +33,7 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -51,7 +51,7 @@ from ..implementation_identity import implementation_identity
 from ..model import RunStatus
 from ..serialization import load_run, run_execution_configuration_from_yaml
 from .config import ExecutionEnvelope, consumer_config_from_yaml, resolve_execution
-from . import preservation
+from . import postrun, preservation
 from .journal import (
     CanonicalCheckout,
     Journal,
@@ -130,6 +130,16 @@ EXIT_CODES: dict[str, int] = {
     "no_lifecycle": 31,
 }
 
+# BP6c (additive; every value in EXIT_CODES above is frozen and unchanged):
+# the post-classification archive/audit/report step itself refused or
+# failed. This is never a ``LifecycleResult.classification`` value -- the
+# engine outcome's own classification is reported unchanged, so this stays
+# outside EXIT_CODES's classification-keyed domain (which `wfc report`'s
+# fixed next-choice table is pinned against, one line per real
+# classification). It only ever replaces the *exit code* a caller sees, via
+# ``LifecycleResult.postrun_exit_override``.
+ARCHIVE_FAILED_EXIT_CODE = 32
+
 _TERMINAL_CLASSIFICATIONS = frozenset({
     "completed", "awaiting_human", "awaiting_human_budget", "reconcile_required",
     "stopped", "interrupted", "engine_exited_before_state",
@@ -153,9 +163,16 @@ class LifecycleResult:
     end_head: str | None = None
     state_root: str | None = None
     checkout_state_root: str | None = None
+    # BP6c additions: never set by anything upstream of the post-run step,
+    # so every existing construction of this dataclass is unaffected.
+    postrun_exit_override: int | None = None
+    postrun_notice: str | None = None
+    postrun_report_text: str | None = None
 
     @property
     def exit_code(self) -> int:
+        if self.postrun_exit_override is not None:
+            return self.postrun_exit_override
         return EXIT_CODES.get(self.classification, 1)
 
 
@@ -857,6 +874,23 @@ def _prepare_checkout(repository: Path) -> tuple[CanonicalCheckout, Path, Journa
     return checkout, checkout_dir, journal
 
 
+def _apply_postrun(result: LifecycleResult, status: postrun.PostrunStatus) -> LifecycleResult:
+    """Fold the post-run archive/audit/report step's outcome into the
+    lifecycle result. Never changes ``classification``, ``run_id`` or any
+    other engine-outcome field -- only adds a print-only notice/report and,
+    on refusal only, overrides the reported exit code (``archive_failed``)."""
+
+    if status.kind == "absent":
+        return result
+    if status.kind == "refused":
+        return replace(
+            result, postrun_exit_override=ARCHIVE_FAILED_EXIT_CODE, postrun_notice=status.notice,
+        )
+    if status.kind == "skipped":
+        return replace(result, postrun_notice=status.notice)
+    return replace(result, postrun_report_text=status.report_text)
+
+
 def run_lifecycle(inputs: RunInputs) -> LifecycleResult:
     checkout, checkout_dir, journal = _prepare_checkout(inputs.repository)
 
@@ -865,14 +899,16 @@ def run_lifecycle(inputs: RunInputs) -> LifecycleResult:
 
     result = _advance(inputs.repository, checkout_dir, journal, authorize=authorize)
     preservation.run_pending_preservation(inputs.repository, checkout_dir, journal)
-    return result
+    postrun_status = postrun.run_pending_postrun(inputs.repository, checkout_dir, journal)
+    return _apply_postrun(result, postrun_status)
 
 
 def resume_lifecycle(repository: Path) -> LifecycleResult:
     checkout, checkout_dir, journal = _prepare_checkout(repository)
     result = _advance(repository, checkout_dir, journal, authorize=None)
     preservation.run_pending_preservation(repository, checkout_dir, journal)
-    return result
+    postrun_status = postrun.run_pending_postrun(repository, checkout_dir, journal)
+    return _apply_postrun(result, postrun_status)
 
 
 def status_lifecycle(repository: Path) -> LifecycleResult:
@@ -970,6 +1006,27 @@ def _print_preservation_status(status: preservation.PreservationStatus) -> None:
             print(f"  {key}: {_stdout_safe(str(status.data[key]))}")
 
 
+def _print_postrun_status(status: postrun.PostrunStatus) -> None:
+    """Report-only: never called from any BP4a write path, never mutates."""
+
+    if status.kind == "absent":
+        return
+    print(f"ARCHIVE: {status.kind}")
+    for key in ("outcome", "commit", "destination_relative", "retention", "reason_code", "reason"):
+        if key in status.data:
+            print(f"  {key}: {_stdout_safe(str(status.data[key]))}")
+
+
+def _print_postrun_notice(result: LifecycleResult) -> None:
+    """``wfc run``/``wfc resume`` only: the loud ARCHIVE SKIPPED/FAILED line
+    and, on a successful archive, the consolidated report text."""
+
+    if result.postrun_notice:
+        print(_stdout_safe(result.postrun_notice))
+    if result.postrun_report_text:
+        sys.stdout.write(_stdout_safe(result.postrun_report_text))
+
+
 def cmd_run(argv: list[str]) -> int:
     args = _parse_run_args(argv)
     try:
@@ -986,6 +1043,7 @@ def cmd_run(argv: list[str]) -> int:
         print(f"wfc run: {error}", file=sys.stderr)
         return EXIT_CODES.get(classification, 2)
     _print_result(result)
+    _print_postrun_notice(result)
     return result.exit_code
 
 
@@ -999,6 +1057,7 @@ def cmd_resume(argv: list[str]) -> int:
         print(f"wfc resume: {error}", file=sys.stderr)
         return EXIT_CODES.get(classification, 2)
     _print_result(result)
+    _print_postrun_notice(result)
     return result.exit_code
 
 
@@ -1008,11 +1067,13 @@ def cmd_status(argv: list[str]) -> int:
         repository = repository_identity(Path(args.repository))
         result = status_lifecycle(repository)
         preservation_status = preservation.latest_preservation_status(repository)
+        postrun_status = postrun.latest_postrun_status(repository)
     except (CommissionError, GitPreflightError, JournalError, OSError) as error:
         print(f"wfc status: {error}", file=sys.stderr)
         return 2
     _print_result(result)
     _print_preservation_status(preservation_status)
+    _print_postrun_status(postrun_status)
     # ``status`` is purely read-only reporting (like the legacy
     # ``--state-root`` status, which always exits 0): a 0 exit means the
     # report was produced truthfully, not that the reported state is good

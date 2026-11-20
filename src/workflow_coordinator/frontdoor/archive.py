@@ -58,13 +58,14 @@ import getpass
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from ..git_facts import (
     GitPreflightError,
@@ -182,19 +183,33 @@ _DISCARD_MANIFEST_ARCHIVED_AT = "not-persisted (discard raw retention)"
 
 
 def _project_audit_text(
-    attempt_dir: Path, *, raw_retention: str, private_strings: Sequence[str] = (),
+    attempt_dir: Path, *, raw_retention: str, lifecycle: Mapping[str, Any] | None = None,
+    private_strings: Sequence[str] = (), private_tokens: Sequence[str] = (),
 ) -> str:
     return render_audit_json(
-        project_audit(attempt_dir, raw_retention=raw_retention, private_strings=private_strings)
+        project_audit(
+            attempt_dir, raw_retention=raw_retention, lifecycle=lifecycle,
+            private_strings=private_strings, private_tokens=private_tokens,
+        )
     )
 
 
-def _attempt_private_strings(*, home_dir: Path, state_root: Path, ops_dir: Path | None) -> tuple[str, ...]:
-    """Known private strings for ``frontdoor.audit``'s privacy guard: this
-    Attempt's HOME, OS user name, state root and OPS directory -- so a value
-    or key that merely repeats one of these, without itself looking like an
-    absolute path or a Git remote URL (the only things BP6a's own heuristic
-    catches on its own), is refused too."""
+def _attempt_private_strings(
+    *, home_dir: Path, state_root: Path, ops_dir: Path | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Known private material for ``frontdoor.audit``'s privacy guard, split
+    by matching rule: ``(private_strings, private_tokens)``.
+
+    This Attempt's HOME, state root and OPS directory are matched as plain
+    substrings -- a value or key that merely repeats one of these absolute
+    paths, without itself looking like an absolute path or a Git remote URL
+    (the only things BP6a's own heuristic catches on its own), is refused
+    too. The OS user name is matched only as a whole path component or whole
+    token (see ``frontdoor.audit._whole_component_or_token_match``): a short
+    user name (for example ``ci`` or ``ops``) must not refuse an unrelated
+    value or key that merely *contains* it as a substring, while a genuine
+    leak of the user name as its own path component or token is still
+    refused."""
 
     strings = [str(home_dir), str(state_root)]
     if ops_dir is not None:
@@ -203,9 +218,8 @@ def _attempt_private_strings(*, home_dir: Path, state_root: Path, ops_dir: Path 
         user = getpass.getuser()
     except Exception:
         user = None
-    if user:
-        strings.append(user)
-    return tuple(s for s in strings if s)
+    tokens = [user] if user else []
+    return tuple(s for s in strings if s), tuple(t for t in tokens if t)
 
 
 def _path_is_ignored(repository: Path, relpath: str) -> bool:
@@ -538,6 +552,32 @@ def derive_attempt_id(state_root: Path) -> str:
     return attempt_id
 
 
+# BP6c identity decision: the product lifecycle (``frontdoor.postrun``) never
+# derives an Attempt identity from the engine state root's own directory name
+# -- BP4a always names that directory ``engine-state``, identical across
+# every checkout on a machine, so every Run of every consumer would collide
+# on one destination. It instead builds an explicit, Run-derived identity
+# (``<repository_name>-<run_id>``, lower-cased) and passes it in here;
+# ``archive_run`` validates it with the same strictness as a state-root-
+# derived id, plus a closed, path-safe character set, since this value can
+# originate from an operator-authored Consumer Config field.
+_ATTEMPT_IDENTITY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+def validate_explicit_attempt_identity(value: str) -> str:
+    """Validate a caller-supplied, explicit Attempt identity (BP6c).
+
+    Used only for ``archive_run``'s additive ``attempt_identity`` parameter;
+    the legacy ``derive_attempt_id`` path (engine state root basename) is
+    unchanged and keeps its own, looser plausibility checks.
+    """
+
+    if not isinstance(value, str) or not _ATTEMPT_IDENTITY_RE.match(value):
+        raise ArchiveError(f"refusing implausible explicit attempt identity: {value!r}")
+    _reject_control_characters(value, label="explicit attempt identity")
+    return value
+
+
 def _pick(key: str, *sources: dict) -> str | None:
     for src in sources:
         value = src.get(key)
@@ -625,7 +665,17 @@ def run_identity(state_root: Path) -> RunIdentity:
 def resolve_ops_dir(state_root: Path, ops_candidate: Path, attempt_id: str) -> Path | None:
     plan = load_json(state_root / "operator-plan.json") or {}
     bindings = _pick("execution_bindings_source", plan)
-    recorded = Path(bindings).parent if bindings else None
+    # ``execution_bindings_source`` only names OPS evidence when it points at
+    # the conventional ``execution-bindings.yaml`` leaf (see
+    # ``OPS_ROOT_ALLOW``) the self-development preparation sequence has
+    # always written there. BP6c's installed product lifecycle passes its
+    # own, differently-named cached envelope file as the same engine argv
+    # (a per-checkout cache, never an OPS directory); that recorded parent
+    # must not be mistaken for recorded-but-missing OPS evidence below.
+    recorded = (
+        Path(bindings).parent
+        if bindings and Path(bindings).name == "execution-bindings.yaml" else None
+    )
 
     if not ops_candidate.is_dir():
         if recorded is not None and recorded.is_dir():
@@ -930,7 +980,8 @@ def _verify_resumable_placement(
 
 def archive_run(
     *, state_root: Path, evidence_repo: Path, semantic_path: Path | None = None, dry_run: bool = False,
-    home: Path | None = None, raw_retention: str | None = None,
+    home: Path | None = None, raw_retention: str | None = None, lifecycle: Mapping[str, Any] | None = None,
+    attempt_identity: str | None = None,
 ) -> ArchiveReport:
     """Archive ``state_root`` (and its matching OPS directory, if any) into
     ``evidence_repo``, making exactly one scoped commit.
@@ -944,6 +995,19 @@ def archive_run(
     ``frontdoor.config.EVIDENCE_RAW_CHOICES`` (BP6b: ``audit.json`` is
     projected from the verified staged copy and placed/committed per the
     chosen mode; see ``_archive_run_retention_aware``).
+
+    ``lifecycle`` is caller-supplied lifecycle facts (BP6c: the frontdoor
+    classification and the latest BP4b preservation fact), stored verbatim
+    within ``frontdoor.audit``'s allow-list; it is only used when
+    ``raw_retention`` is not ``None`` and is otherwise ignored, exactly like
+    the legacy path ignores retention altogether.
+
+    ``attempt_identity`` is an additive, explicit Attempt identity (BP6c:
+    the product lifecycle derives it from the Consumer Config repository
+    name and the Run id, never from the engine state root's own directory
+    name). When given, it replaces ``derive_attempt_id(state_root)``
+    entirely, for every ``raw_retention`` value including ``None``. Omitted,
+    every byte of BP5's legacy ``derive_attempt_id`` behaviour is unchanged.
     """
 
     if raw_retention is not None and raw_retention not in EVIDENCE_RAW_CHOICES:
@@ -953,7 +1017,10 @@ def archive_run(
     if not state_root.is_dir():
         raise ArchiveError(f"missing state root: {state_root}")
     _reject_control_characters(str(state_root), label="state root")
-    attempt_id = derive_attempt_id(state_root)
+    attempt_id = (
+        validate_explicit_attempt_identity(attempt_identity)
+        if attempt_identity is not None else derive_attempt_id(state_root)
+    )
 
     evidence_repo = evidence_repo.expanduser().resolve()
     if not evidence_repo.is_dir():
@@ -1014,7 +1081,7 @@ def archive_run(
         _assert_audit_path_not_ignored(identity, dest_rel)
         if raw_retention == "local":
             _assert_local_retention_gitignore_coverage(identity, dest_rel)
-        private_strings = _attempt_private_strings(
+        private_strings, private_tokens = _attempt_private_strings(
             home_dir=home_dir, state_root=state_root, ops_dir=ops_dir_resolved,
         )
         return _archive_run_retention_aware(
@@ -1022,7 +1089,7 @@ def archive_run(
             state_root=state_root, ops_dir=ops_dir, ops_dir_resolved=ops_dir_resolved,
             ops_candidate=ops_candidate, semantic_payload=semantic_payload, resolved_semantic=resolved_semantic,
             dest=dest, dest_rel=dest_rel, staging=staging, identity_facts=identity_facts,
-            private_strings=private_strings,
+            private_strings=private_strings, private_tokens=private_tokens, lifecycle=lifecycle,
         )
 
     final_run_id, final_work_item_id, final_run_status = (
@@ -1126,6 +1193,7 @@ def _archive_run_retention_aware(
     ops_dir: Path | None, ops_dir_resolved: Path | None, ops_candidate: Path,
     semantic_payload: dict | None, resolved_semantic: Path | None, dest: Path, dest_rel: str,
     staging: Path, identity_facts: RunIdentity, private_strings: Sequence[str] = (),
+    private_tokens: Sequence[str] = (), lifecycle: Mapping[str, Any] | None = None,
 ) -> ArchiveReport:
     if dest.exists():
         if raw_retention == "discard":
@@ -1134,14 +1202,14 @@ def _archive_run_retention_aware(
                 ops_dir=ops_dir, ops_dir_resolved=ops_dir_resolved, ops_candidate=ops_candidate,
                 semantic_payload=semantic_payload, resolved_semantic=resolved_semantic, dest=dest,
                 dest_rel=dest_rel, staging=staging, identity_facts=identity_facts,
-                private_strings=private_strings,
+                private_strings=private_strings, private_tokens=private_tokens, lifecycle=lifecycle,
             )
         return _resume_or_noop_kept_raw(
             raw_retention=raw_retention, identity=identity, base_head=base_head, attempt_id=attempt_id,
             state_root=state_root, ops_dir=ops_dir, ops_dir_resolved=ops_dir_resolved,
             ops_candidate=ops_candidate, semantic_payload=semantic_payload, resolved_semantic=resolved_semantic,
             dest=dest, dest_rel=dest_rel, staging=staging, identity_facts=identity_facts,
-            private_strings=private_strings,
+            private_strings=private_strings, private_tokens=private_tokens, lifecycle=lifecycle,
         )
 
     audit_only = staging / ".wfc-discard-placement"
@@ -1152,7 +1220,10 @@ def _archive_run_retention_aware(
             archived_at=_DISCARD_MANIFEST_ARCHIVED_AT if raw_retention == "discard" else None,
         )
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n")
-        audit_text = _project_audit_text(staging, raw_retention=raw_retention, private_strings=private_strings)
+        audit_text = _project_audit_text(
+            staging, raw_retention=raw_retention, lifecycle=lifecycle,
+            private_strings=private_strings, private_tokens=private_tokens,
+        )
         (staging / AUDIT_FILENAME).write_text(audit_text)
         if raw_retention == "commit":
             (staging / ".gitignore").write_text(_ATTEMPT_COMMIT_GITIGNORE)
@@ -1195,6 +1266,7 @@ def _resume_or_noop_kept_raw(
     ops_dir: Path | None, ops_dir_resolved: Path | None, ops_candidate: Path,
     semantic_payload: dict | None, resolved_semantic: Path | None, dest: Path, dest_rel: str,
     staging: Path, identity_facts: RunIdentity, private_strings: Sequence[str] = (),
+    private_tokens: Sequence[str] = (), lifecycle: Mapping[str, Any] | None = None,
 ) -> ArchiveReport:
     """Resume/no-op for ``local``/``commit`` retention: ``manifest.json`` was
     placed (atomically, together with ``audit.json`` and, for ``commit``,
@@ -1218,7 +1290,11 @@ def _resume_or_noop_kept_raw(
             raise ArchiveError(
                 f"archive destination already exists with different content, refusing to overwrite: {dest_rel}"
             )
-        if _project_audit_text(dest, raw_retention=raw_retention, private_strings=private_strings) != existing_audit_text:
+        recomputed = _project_audit_text(
+            dest, raw_retention=raw_retention, lifecycle=lifecycle,
+            private_strings=private_strings, private_tokens=private_tokens,
+        )
+        if recomputed != existing_audit_text:
             raise ArchiveError(
                 f"placed {AUDIT_FILENAME} does not match a projection of its own manifest, "
                 f"refusing to treat it as up to date: {dest_rel}/{AUDIT_FILENAME}"
@@ -1240,7 +1316,11 @@ def _resume_or_noop_kept_raw(
         manifest, dest=dest, attempt_id=attempt_id, state_root=state_root, ops_dir=ops_dir_resolved,
         semantic_payload=semantic_payload, staging=staging,
     )
-    if _project_audit_text(dest, raw_retention=raw_retention, private_strings=private_strings) != existing_audit_text:
+    recomputed = _project_audit_text(
+        dest, raw_retention=raw_retention, lifecycle=lifecycle,
+        private_strings=private_strings, private_tokens=private_tokens,
+    )
+    if recomputed != existing_audit_text:
         raise ArchiveError(
             f"placed {AUDIT_FILENAME} at {dest} does not match a projection of its own manifest; "
             "refusing to commit a mismatched or tampered archive"
@@ -1267,7 +1347,8 @@ def _resume_or_noop_discard(
     *, identity: Path, base_head: str, attempt_id: str, state_root: Path, ops_dir: Path | None,
     ops_dir_resolved: Path | None, ops_candidate: Path, semantic_payload: dict | None,
     resolved_semantic: Path | None, dest: Path, dest_rel: str, staging: Path, identity_facts: RunIdentity,
-    private_strings: Sequence[str] = (),
+    private_strings: Sequence[str] = (), private_tokens: Sequence[str] = (),
+    lifecycle: Mapping[str, Any] | None = None,
 ) -> ArchiveReport:
     """Resume/no-op for ``discard`` retention: no raw file and no
     ``manifest.json`` is ever placed, so every check rebuilds an ephemeral
@@ -1290,7 +1371,8 @@ def _resume_or_noop_discard(
         )
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n")
         candidate_audit_text = _project_audit_text(
-            staging, raw_retention="discard", private_strings=private_strings,
+            staging, raw_retention="discard", lifecycle=lifecycle,
+            private_strings=private_strings, private_tokens=private_tokens,
         )
     finally:
         shutil.rmtree(staging, ignore_errors=True)

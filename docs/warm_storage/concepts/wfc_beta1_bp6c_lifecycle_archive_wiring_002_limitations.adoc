@@ -1,0 +1,157 @@
+= BP6c lifecycle archive wiring: Beta-1 limitations
+
+Standing:: Developer-facing limitations record for `frontdoor.postrun`
+(the post-classification archive/audit/report step `wfc run`/`wfc resume`
+perform, and the facts `wfc status` reports), the additive threading of
+`lifecycle` facts and an explicit `attempt_identity` through
+`frontdoor.archive.archive_run`, and the privacy-guard fix in
+`frontdoor.audit`. This is not operator guidance; the operator manual (BP7)
+owns user-facing recovery instructions. Nothing here overrides the
+BP6a/BP6b/BP6c package boundary recorded in
+link:../../backlog/beta1_productization.adoc#bp6[BP6] and
+link:../../backlog/_open.adoc[the open backlog]; it documents the
+consequences of that boundary as implemented, and it inherits every
+limitation already recorded for BP4a, BP4b, BP6a and BP6b without restating
+or relaxing them.
+
+== What the post-run step proves, and what it does not
+
+A recorded `ext.archive.result` proves only that the Evidence repository now
+holds a committed, digest-verified copy of this Attempt's engine state (and,
+per the configured retention mode, its raw files), together with a sanitized
+`audit.json` that carries the BP4a classification and the latest BP4b
+preservation fact. It does not prove the underlying Run succeeded -- a
+`stopped` or `interrupted` Run is archived and reported exactly as truthfully
+as a `completed` one, never upgraded to success. It does not re-verify
+anything BP5/BP6a did not already verify (see those packages' own
+limitations records for what stays checkable without the raw files), and it
+does not supervise, resume or reinterpret the engine: the lifecycle
+controller adds this step strictly after the engine already ended, using
+only the classification and facts already recorded.
+
+== Attempt identity is derived from the Run, never from the state-root directory name
+
+A first BP6c candidate (preserved, non-authoritative, at
+`refs/wfc/preserved/bp6c-h001`) reused `frontdoor.archive.derive_attempt_id`
+unchanged, which names every Attempt after the engine state root's own
+directory basename. BP4a's lifecycle controller always names that directory
+`engine-state`, relative to a per-checkout directory under
+`$XDG_STATE_HOME/wfc/checkouts/<checkout-id>` -- stable and collision-free
+*within* one checkout, but identical across *every* checkout on a machine.
+The maintainer decided (Option 1) that the product lifecycle instead passes
+an explicit, Run-derived Attempt identity into `archive_run`:
+`frontdoor.postrun._attempt_identity` builds
+`<repository_name>-<run_id>` from the checkout's cached Consumer Config and
+the `classified` journal record's own Run id, lower-cased and restricted to
+`[a-z0-9._-]`; `archive_run`'s additive `attempt_identity` parameter
+(`archive.validate_explicit_attempt_identity`) uses it in place of
+`derive_attempt_id` for every call this package makes, regardless of
+`raw_retention`. Omitted entirely, `archive_run`'s legacy
+state-root-basename derivation is unchanged byte-for-byte (BP5 and
+Self-Development callers, including `wfc archive` itself, pass no
+`attempt_identity` and are unaffected). Two checkouts of consumers sharing
+one `repository_name` and one Evidence repository now archive to distinct
+destinations as long as their Run ids differ, which the real engine
+guarantees for every separate `wfc run`; nothing in this package deduplicates
+or renames an identity a caller explicitly supplies.
+
+== A per-checkout cached envelope file is not an OPS directory
+
+`frontdoor.archive.resolve_ops_dir` (BP5, ported) previously treated *any*
+existing directory named by a Run's own `operator-plan.json`
+`execution_bindings_source` field as recorded OPS evidence, and refused to
+archive when the conventional `$HOME/wfc-ops/<attempt>` default was absent.
+The installed product lifecycle passes its own per-checkout cached envelope
+file (`envelope.yaml`, inside the lifecycle's journal-adjacent checkout
+directory) as that same engine argument, which is not an OPS directory at
+all and always exists once a Run is authorized -- every real-engine
+Run through `wfc run`/`resume` would otherwise be refused archiving
+unconditionally. The fix narrows `resolve_ops_dir` to recognize recorded OPS
+evidence only when `execution_bindings_source` names the conventional
+`execution-bindings.yaml` leaf (see `archive.OPS_ROOT_ALLOW`), the name the
+self-development preparation sequence has always written there; every
+existing BP5 test fixture already uses that exact name, so this narrowing
+changes no existing behavior and is not a retention-semantics change.
+
+== The Evidence repository is a destination, never a state root
+
+`frontdoor.postrun` only ever *reads* the engine's STATE root (to archive
+from it) and only ever *writes* to the separately configured Evidence
+repository. It never creates, deletes or mutates anything under STATE, OPS
+or scratch, and `wfc status` remains strictly read-only. A consumer who
+deletes or moves their STATE root after a successful archive loses nothing
+from the Evidence repository's own committed history, but a *pending*
+(not yet archived) Attempt's raw files are gone with it -- archiving, not
+the engine's own STATE retention, is this package's only durability
+mechanism for that content.
+
+== `local` raw files are not backed up by Git; nothing is ever pushed
+
+With the default `evidence.raw: local`, only `audit.json` is committed; the
+raw files BP5 always placed stay on disk beside it, excluded by the Evidence
+repository's managed `.gitignore`. Losing or corrupting that local Evidence
+checkout loses those raw files permanently -- Git's own history offers no
+protection for them. This is unchanged from BP6b and applies identically
+whether the archive was triggered manually (`wfc archive`) or automatically
+by this package. No retention mode, including `commit`, ever configures or
+uses a remote: every commit this package makes stays local to the Evidence
+repository's own `.git` directory.
+
+== `ARCHIVE SKIPPED` is not a failure, and is retried every time
+
+When the configured Evidence repository does not exist, the post-run step
+records `ext.archive.skipped{reason: "evidence_repository_absent"}`, prints
+a loud `ARCHIVE SKIPPED` line naming the configured location, and leaves
+BP4a's own exit code unchanged -- a skip is deliberately indistinguishable,
+at the exit-code level, from a step that was never needed. Unlike BP4b's own
+`ext.preservation.refused` (which is recorded once and never retried, because
+its causes are frozen Run facts), neither `ext.archive.skipped` nor
+`ext.archive.refused` is cached: every `wfc run`/`wfc resume` call that has
+not yet reached `ext.archive.result` re-attempts the whole step from
+scratch. Creating the Evidence repository (`wfc init` against the configured
+location) and running `wfc resume` is therefore sufficient to pick the
+Attempt up later; there is no separate "unskip" operation.
+
+== `archive_failed` is an additive exit code, never a classification
+
+A refusal or failure of the archive/audit step (a genuine destination
+conflict, a structural archive error, or the privacy guard refusing a
+projection) is recorded as `ext.archive.refused{reason_code}` and reported
+through the documented, additive, currently-unused exit code `32`
+(`frontdoor.lifecycle.ARCHIVE_FAILED_EXIT_CODE`). This code is never a
+`LifecycleResult.classification` value and never appears in
+`frontdoor.lifecycle.EXIT_CODES`; the engine's own classification is always
+reported truthfully alongside it, and `wfc report`'s fixed next-choice table
+needs no entry for it for exactly that reason. `reason_code` is one of a
+small closed vocabulary (`archive_refused`, `audit_structural_error`,
+`privacy_guard_refused`, `git_preflight_failed`); the underlying exception's
+own prose, which can carry an absolute path, is never written into the
+journal record, only printed to the console for this one invocation.
+`wfc resume` retries unconditionally once the cause is removed.
+
+== The short-user-name privacy false-refusal is fixed by whole-component/token matching
+
+`frontdoor.audit`'s privacy guard previously matched every caller-supplied
+private string (including the OS user name) as a plain substring against
+every projected value and key. A short user name (for example `ci` or
+`ops`) then collided with an unrelated field that merely *contains* it --
+`run.hops_used`, or a raw file path segment like
+`checkout-asso**ci**ation.json` -- refusing every retention-aware archive
+for that environment. `frontdoor.archive._attempt_private_strings` now
+splits its known-private material into `private_strings` (the Attempt's
+`HOME`, state root and OPS directory, still matched as plain substrings) and
+`private_tokens` (the OS user name alone, matched only as a whole path
+component or whole token via
+`frontdoor.audit._whole_component_or_token_match`). A genuine leak of the
+user name as its own path component or token is still refused; the fix is
+local to how the user name is matched and changes nothing else about the
+guard, the retention semantics, or any other private string.
+
+== BP7 is not part of this package
+
+The self-development Evidence configuration (binding this repository's own
+`wfc run`/`resume` to the existing `workflow-coordinator-run-evidence`
+checkout, with `raw: commit`) and any cutover from the historical Harness
+path are BP7's work, not this package's. This package changes no
+`.wfc/config.yaml` for this repository and makes no Evidence-repository
+decision on this repository's behalf.
