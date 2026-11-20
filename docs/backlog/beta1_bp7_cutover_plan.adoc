@@ -189,7 +189,15 @@ gap, not the state/OPS shape.
 |Mechanical archive
 |`scripts/archive_run.py`/`scripts/wfc-archive-run` in the sibling Evidence
 repository, invoked via `_invoke_canonical_archive`/`cmd_archive`
-(`scripts/wfc_op.py:1138-1237`).
+(`scripts/wfc_op.py:1138-1237`). A frozen, hash-verified copy of that same
+wrapper/archiver already lives in this repository at
+`tests/fixtures/bp5/legacy/` (digests asserted in
+`tests/unit/test_archive_equivalence.py:147-152`) and is already exercised,
+end to end, against a committed copy of a real retained Run's facts
+(`tests/fixtures/bp5/real_run/`, provenance in
+`tests/fixtures/bp5/PROVENANCE.txt`) by
+`test_old_and_new_archivers_produce_identical_manifests_for_the_same_real_run`
+(`tests/unit/test_archive_equivalence.py:154-191`).
 |`frontdoor/archive.py` (1496 lines): a direct, parameterized port -- same
 allow-lists (`RUN_ROOT_ALLOW`/`CHECKOUT_ALLOW`/`OPS_ROOT_ALLOW`,
 `archive.py:86-120`), same `destination_for` shape
@@ -402,11 +410,22 @@ reviewer does not mistake either for a defect):
 * *Attempt-identity derivation.* The product derives the Attempt id
   deterministically from `repository_name` + the engine's own `run_id`
   (`postrun.py:86-100 _attempt_identity`), explicitly *never* from the engine
-  state root's directory name. The Harness instead uses whatever string the
-  operator chose at `prepare --attempt`
-  (`derive_attempt_id`/`validate_explicit_attempt_identity`,
-  `scripts/wfc_op.py:545-580`). The two proof Runs will therefore carry
-  differently *shaped* Attempt identifiers (e.g.
+  state root's directory name; the postrun path passes that explicit value
+  through `validate_explicit_attempt_identity` (`archive.py:567`), which
+  `archive_run` uses whenever an explicit `attempt_identity` is supplied
+  (`archive.py:1021`). The Harness instead uses whatever string the operator
+  chose at `prepare --attempt`, validated by `validate_attempt`
+  (`scripts/wfc_op.py:176-198`), which names both roots (`ops_root`/
+  `state_root`, `scripts/wfc_op.py:201-206`), is consumed at
+  `scripts/wfc_op.py:778`, and is recorded as `attempt_id=` by
+  `write_preparation_pins` (`scripts/wfc_op.py:569-582`); the legacy archiver
+  then re-derives the same string from the state root's own basename. The
+  product retains that identical basename-derivation logic as its own
+  `derive_attempt_id` (`archive.py:545`), for byte-identical legacy behaviour
+  when no explicit identity is given (`archive.py:1008-1022`), but the
+  product lifecycle itself never calls it that way -- `postrun` always
+  supplies the explicit, Run-derived identity instead. The two proof Runs
+  will therefore carry differently *shaped* Attempt identifiers (e.g.
   `workflow-coordinator-<run-id>` versus a hand-chosen
   `wfc-<slug>-<date>-<n>`); this is an acceptable, already-decided difference
   in identity derivation, not an equivalence failure.
@@ -415,18 +434,27 @@ reviewer does not mistake either for a defect):
   is an addition, not a compatibility requirement the legacy archive needs to
   match.
 
-How equivalence is demonstrated without a second archive path: the
-comparison is an offline, read-only check against a *copy* of the same
-STATE/OPS facts the real proof Run already produced -- reusing the same
-fact-extraction functions (`archive.py:454 extract_facts`,
-`archive.py:621 run_identity`) the port already exercises, the same pattern
-BP5 already used for its own equivalence test (execution plan, "Access
-verified versus inaccessible"). It never invokes
-`scripts/wfc_op.py archive` a second time against the real Evidence
-repository for the same proof Run; doing so would create a second archive
-path beside the product function, which the maintainer specification
-explicitly forbids. The committed comparison lives in the new sub-Commission
-C1b (see <<sequence>>), as a test fixture/tool, not as a second live archive.
+How equivalence is demonstrated without a second archive path: this
+repository already contains the comparison, committed and passing --
+`tests/unit/test_archive_equivalence.py`'s
+`test_old_and_new_archivers_produce_identical_manifests_for_the_same_real_run`
+(lines 154-191) runs the frozen legacy wrapper (`tests/fixtures/bp5/legacy/
+wfc-archive-run`, hash-pinned in `setUp`, lines 147-152) and
+`frontdoor.archive.archive_run` end to end, each against its own disposable
+*copy* of the same retained Run's STATE/OPS facts
+(`tests/fixtures/bp5/real_run/`, provenance in
+`tests/fixtures/bp5/PROVENANCE.txt`), into two throwaway Git Evidence
+repositories, and asserts the two resulting `manifest.json` files are equal
+once `archived_at` is stripped -- a stronger check than comparing extracted
+facts alone, since it exercises both archivers' full file-copy and commit
+paths, not just `archive.py:454 extract_facts`/`archive.py:621 run_identity`
+in isolation. It never invokes `scripts/wfc_op.py archive` a second time
+against the real Evidence repository for the same proof Run; doing so would
+create a second archive path beside the product function, which the
+maintainer specification explicitly forbids. Sub-Commission C1b (see
+<<sequence>>) generalizes this already-accepted BP5 module so the same
+disposable-copy, two-archiver comparison can be pointed at each proof Run's
+own retained facts, rather than building a new comparison from nothing.
 
 The curated `workflow-coordinator-run-evidence/project_memory/
 run_ledger.adoc` stays exactly as described in
@@ -472,19 +500,22 @@ and commit for the next step.
 
 |C1b
 |`wfc-beta1-bp7-archive-equivalence-harness-001`
-|Build the offline, read-only comparison described in
-<<archive-equivalence>>: given a sample STATE/OPS fact set, assert the
-product's extracted facts and manifest shape match what
-`scripts/archive_run.py`'s own extraction would produce, modulo
-`archived_at` and the two named acceptable differences. Scope: a new test
-module under `tests/` plus the comparison tool it needs; no change to
-`archive.py` or `wfc_op.py` themselves.
+|Generalize the already-accepted BP5 equivalence module described in
+<<archive-equivalence>> (`tests/unit/test_archive_equivalence.py`, backed by
+the frozen, hash-pinned legacy archiver at `tests/fixtures/bp5/legacy/`) so
+its disposable-copy, two-archiver comparison can be pointed at additional
+retained Runs, including each proof Run's own facts, instead of only the one
+BP5 fixture Run it currently hard-codes. Scope: `tests/unit/
+test_archive_equivalence.py` and any new fixture files it needs under
+`tests/fixtures/`; no change to `archive.py` or `wfc_op.py` themselves.
 |None technical; may run in parallel with C1.
-|The comparison test passes against at least one real historical Attempt's
-already-archived manifest (read-only, from the existing Evidence repository,
-never written to) and against a synthetic fixture; it is reusable, unmodified,
-for both proof Runs below.
-|S/M
+|The generalized comparison still passes, unmodified in method, against the
+existing BP5 fixture Run (regression), and additionally accepts a second,
+independently committed, hash-pinned fixture copy of a different retained
+Run's STATE/OPS facts without a code change; it is reusable for both proof
+Runs below, each of which supplies its own such fixture copy rather than the
+comparison reading the live sibling Evidence repository directly.
+|S
 
 |(external)
 |Maintainer Runtime promotion of the accepted BP1-BP6 implementation
@@ -504,7 +535,10 @@ item 1 for task selection.
 in <<risks>> satisfied.
 |Run completes (or reaches a classified terminal state) end to end on the
 product Front Door; the automatic BP6c archive commits into the sibling
-Evidence repository; C1b's comparison, re-run against this Run's own facts,
+Evidence repository; a hash-pinned fixture copy of this Run's own retained
+STATE/OPS facts and its archived manifest is committed under `tests/
+fixtures/` the same way the BP5 copy was (`tests/fixtures/bp5/
+PROVENANCE.txt`), and C1b's generalized comparison, run against that copy,
 reports equivalence; a ledger entry is added per existing convention.
 |Small (1 real Run; Hop count depends on the chosen task, not fixed by this
 plan)
@@ -514,7 +548,7 @@ plan)
 |A second, different small real task, to demonstrate the path is regular, not
 a one-off.
 |Proof Run 1 completed and its archive-equivalence comparison accepted.
-|Same as Proof Run 1, independently.
+|Same as Proof Run 1, independently, with its own fixture copy.
 |Small
 
 |C5
