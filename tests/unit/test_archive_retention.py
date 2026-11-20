@@ -219,6 +219,26 @@ class LocalRetentionTests(RetentionTestCase):
         self.assertIn("ARCHIVED", out)
         self.assertEqual(git(fx.repo, "rev-list", "--count", f"{before}..HEAD").strip(), "1")
 
+    def test_crash_resume_with_a_tampered_placed_audit_json_is_refused_not_committed(self):
+        from unittest import mock
+
+        fx = self.build()
+        before = self.head(fx.repo)
+        with mock.patch.object(ar, "_commit_retention_archive", side_effect=RuntimeError("simulated crash")):
+            with self.assertRaises(RuntimeError):
+                ar.archive_run(state_root=fx.state, evidence_repo=fx.repo, raw_retention="local", home=fx.home)
+        dest = self.dest(fx)
+        audit_path = dest / "audit.json"
+        original = audit_path.read_text()
+        tampered = original.replace('"retention": "local"', '"retention": "tampered"')
+        self.assertNotEqual(tampered, original)
+        audit_path.write_text(tampered)
+
+        code, out, err = self.run_archive(fx, "--raw-retention", "local")
+        self.assertNotEqual(code, 0)
+        self.assertIn("does not match a projection of its own manifest", err)
+        self.assertEqual(self.head(fx.repo), before)
+
     def test_managed_gitignore_coverage_is_probed_without_requiring_the_files_to_exist(self):
         fx = self.build()
         dest_rel = f"archive/unclassified/{fx.attempt}"
@@ -326,6 +346,26 @@ class CommitRetentionTests(RetentionTestCase):
         self.assertTrue(any(p.startswith(f"{dest_rel}/run/") for p in tracked))
         self.assertTrue(any(p.startswith(f"{dest_rel}/ops/") for p in tracked))
         self.assertEqual(git(fx.repo, "status", "--porcelain").strip(), "")
+
+    def test_crash_resume_with_a_tampered_placed_audit_json_is_refused_not_committed(self):
+        from unittest import mock
+
+        fx = self.build()
+        before = self.head(fx.repo)
+        with mock.patch.object(ar, "_commit_retention_archive", side_effect=RuntimeError("simulated crash")):
+            with self.assertRaises(RuntimeError):
+                ar.archive_run(state_root=fx.state, evidence_repo=fx.repo, raw_retention="commit", home=fx.home)
+        dest = self.dest(fx)
+        audit_path = dest / "audit.json"
+        original = audit_path.read_text()
+        tampered = original.replace('"retention": "commit"', '"retention": "tampered"')
+        self.assertNotEqual(tampered, original)
+        audit_path.write_text(tampered)
+
+        code, out, err = self.run_archive(fx, "--raw-retention", "commit")
+        self.assertNotEqual(code, 0)
+        self.assertIn("does not match a projection of its own manifest", err)
+        self.assertEqual(self.head(fx.repo), before)
 
 
 class DiscardRetentionTests(RetentionTestCase):
