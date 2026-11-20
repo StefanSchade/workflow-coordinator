@@ -77,6 +77,18 @@ against the many pre-BP6b Evidence repositories that never had the block. A
 production caller choosing a retention mode (BP6c) is expected to always
 supply one explicitly, never fall back to `None`.
 
+This incompatibility is refused consistently, not silently papered over: the
+legacy path's own "is this destination already committed" check
+(`_path_is_tracked_clean`) requires the path to actually appear in the Git
+history at `HEAD`, not merely that `git status` is silent about it -- `git
+status` never lists a path a `.gitignore` excludes, so an entirely-ignored
+destination used to be misread as an already-committed no-op after its first,
+genuinely failed, attempt (files placed on disk, commit refused). Every call
+against the same mismatched destination now fails the same honest way instead
+of reporting a false `ARCHIVE ALREADY UP TO DATE` on the second and later
+calls; it still requires a human to either point the legacy path at a
+repository without the conflicting block, or remove the destination.
+
 == Default data-home placement is a decision of this package, not the engine
 
 The default Evidence location (`<data home>/wfc/evidence/<repository_name>`,
@@ -98,6 +110,29 @@ resume logic expects `manifest.json` to be present; `discard` resume logic
 expects only `audit.json`. Pointing a retention-aware archive at a
 destination placed by a different retention mode (or by the legacy path) is
 refused as a structural mismatch, not silently reconciled.
+
+== The privacy guard's known private strings are derived once per Attempt
+
+`frontdoor.audit.project_audit`'s privacy guard takes a caller-supplied
+`private_strings` sequence in addition to its own built-in absolute-path/URL
+heuristic; a value or key that merely repeats a private string without
+itself looking like an absolute path or a Git remote URL is otherwise
+invisible to the built-in heuristic alone. `frontdoor.archive` supplies this
+Attempt's `HOME`, OS user name (`getpass.getuser()`), state root and OPS
+directory for every retention-aware projection it makes (initial placement,
+every no-op re-check, and every crash-resume re-verification). It does not
+scan the raw copied files themselves for these strings -- only the fields
+`project_audit`'s own allow-list actually reads reach the guard at all -- and
+it does not accept caller-supplied additional private strings the way `wfc
+audit --private-string` does; a project with its own additional private
+vocabulary (for example an internal hostname) must still rely on the
+built-in heuristic or run `wfc audit` directly with its own `--private-string`
+flags for anything `wfc archive` places outside this fixed set. Before any
+raw-retention write, `wfc archive` also refuses if this Evidence repository's
+own `.gitignore` would exclude `audit.json` itself (for example a
+broad-enough operator-added pattern) -- every retention mode commits
+`audit.json`, so that case is refused up front rather than discovered only
+once an already-placed attempt's commit step fails.
 
 == No retention cap, no cross-Attempt accounting
 

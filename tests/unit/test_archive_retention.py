@@ -9,6 +9,7 @@ writes) and drives every invocation through the real installed
 from __future__ import annotations
 
 import contextlib
+import getpass
 import io
 import json
 import os
@@ -372,3 +373,93 @@ class PrivacyAcrossHistoryTests(RetentionTestCase):
         for blob in _all_blob_contents(fx.repo):
             self.assertNotIn(home_bytes, blob)
             self.assertNotIn(b"canary-retention-user", blob)
+
+
+class LegacyRetentionConflictTests(RetentionTestCase):
+    """F001 regression: a destination entirely excluded by this Evidence
+    repository's own managed ``.gitignore`` (the default a fresh ``wfc init``
+    writes) must never be reported as an already-committed no-op merely
+    because ``git status`` is silent about it."""
+
+    def test_legacy_archive_into_a_local_retention_repo_refuses_consistently_not_falsely(self):
+        fx = self.build()
+        # fx.repo was created by the real ensure_evidence_repository with its
+        # default managed .gitignore (local retention), which the legacy
+        # raw_retention=None path's own committed raw files collide with.
+        code1, out1, err1 = self.run_archive(fx)
+        self.assertNotEqual(code1, 0, f"stdout:\n{out1}\nstderr:\n{err1}")
+        dest = self.dest(fx)
+        self.assertTrue(dest.exists())
+        self.assertEqual(git(fx.repo, "rev-list", "--count", "HEAD").strip(), "1")
+
+        code2, out2, err2 = self.run_archive(fx)
+        self.assertNotEqual(code2, 0, f"stdout:\n{out2}\nstderr:\n{err2}")
+        self.assertNotIn("ALREADY UP TO DATE", out2)
+        self.assertEqual(git(fx.repo, "rev-list", "--count", "HEAD").strip(), "1")
+
+
+class LocalRetentionAuditGitignoreConflictTests(RetentionTestCase):
+    """F001 regression: a local .gitignore that also happens to cover
+    ``audit.json`` (e.g. an operator-added broad pattern) must be refused
+    before any write, exactly like insufficient raw-path coverage."""
+
+    def test_refuses_before_any_write_when_gitignore_also_covers_audit_json(self):
+        fx = self.build()
+        gitignore = fx.repo / ".gitignore"
+        gitignore.write_text(gitignore.read_text() + "*.json\n")
+        git(fx.repo, "add", ".gitignore")
+        git(fx.repo, "commit", "-q", "-m", "chore: operator broadens gitignore")
+
+        code, out, err = self.run_archive(fx, "--raw-retention", "local")
+        self.assertNotEqual(code, 0)
+        self.assertIn("excludes", err)
+        self.assertFalse(self.dest(fx).exists())
+        self.assertFalse((fx.repo / ".wfc-archive-staging").exists())
+        self.assertEqual(git(fx.repo, "status", "--porcelain").strip(), "")
+
+
+class PrivacyGuardEnvironmentDerivedStringsTests(RetentionTestCase):
+    """F002 regression: the privacy guard must be given this Attempt's HOME,
+    OS user name, state root and OPS directory, not just BP6a's own
+    prefix-only absolute-path/URL heuristic -- so a repository-relative
+    value that merely repeats one of those strings is refused too."""
+
+    def _plant_user_name_in_governing_inputs(self, fx) -> str:
+        user = getpass.getuser()
+        plan_path = fx.state / "operator-plan.json"
+        plan = json.loads(plan_path.read_text())
+        plan["governing_inputs"] = {f"docs/canary-{user}/governance.adoc": "0" * 64}
+        write_json(plan_path, plan)
+        return user
+
+    def test_local_retention_refuses_on_a_relative_governing_inputs_key_naming_the_os_user(self):
+        fx = self.build()
+        self._plant_user_name_in_governing_inputs(fx)
+
+        code, out, err = self.run_archive(fx, "--raw-retention", "local")
+        self.assertEqual(code, 3, f"stdout:\n{out}\nstderr:\n{err}")
+        self.assertIn("privacy guard refused projection", err)
+        self.assertFalse(self.dest(fx).exists())
+        self.assertFalse((fx.repo / ".wfc-archive-staging" / fx.attempt).exists())
+        self.assertEqual(git(fx.repo, "status", "--porcelain").strip(), "")
+        self.assertEqual(git(fx.repo, "rev-list", "--count", "HEAD").strip(), "1")
+
+    def test_discard_retention_refuses_on_the_same_input(self):
+        fx = self.build()
+        self._plant_user_name_in_governing_inputs(fx)
+
+        code, out, err = self.run_archive(fx, "--raw-retention", "discard")
+        self.assertEqual(code, 3, f"stdout:\n{out}\nstderr:\n{err}")
+        self.assertFalse(self.dest(fx).exists())
+        self.assertEqual(git(fx.repo, "rev-list", "--count", "HEAD").strip(), "1")
+
+    def test_a_guard_refusal_writes_and_commits_nothing(self):
+        fx = self.build()
+        self._plant_user_name_in_governing_inputs(fx)
+        before = self.head(fx.repo)
+
+        code, out, err = self.run_archive(fx, "--raw-retention", "local")
+        self.assertEqual(code, 3)
+        self.assertEqual(self.head(fx.repo), before)
+        self.assertFalse(self.dest(fx).exists())
+        self.assertFalse((fx.repo / ".wfc-archive-staging" / fx.attempt).exists())

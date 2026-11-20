@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import getpass
 import hashlib
 import json
 import os
@@ -63,6 +64,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from typing import Sequence
 
 from ..git_facts import (
     GitPreflightError,
@@ -179,8 +181,31 @@ _ATTEMPT_COMMIT_GITIGNORE = (
 _DISCARD_MANIFEST_ARCHIVED_AT = "not-persisted (discard raw retention)"
 
 
-def _project_audit_text(attempt_dir: Path, *, raw_retention: str) -> str:
-    return render_audit_json(project_audit(attempt_dir, raw_retention=raw_retention))
+def _project_audit_text(
+    attempt_dir: Path, *, raw_retention: str, private_strings: Sequence[str] = (),
+) -> str:
+    return render_audit_json(
+        project_audit(attempt_dir, raw_retention=raw_retention, private_strings=private_strings)
+    )
+
+
+def _attempt_private_strings(*, home_dir: Path, state_root: Path, ops_dir: Path | None) -> tuple[str, ...]:
+    """Known private strings for ``frontdoor.audit``'s privacy guard: this
+    Attempt's HOME, OS user name, state root and OPS directory -- so a value
+    or key that merely repeats one of these, without itself looking like an
+    absolute path or a Git remote URL (the only things BP6a's own heuristic
+    catches on its own), is refused too."""
+
+    strings = [str(home_dir), str(state_root)]
+    if ops_dir is not None:
+        strings.append(str(ops_dir))
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = None
+    if user:
+        strings.append(user)
+    return tuple(s for s in strings if s)
 
 
 def _path_is_ignored(repository: Path, relpath: str) -> bool:
@@ -209,6 +234,22 @@ def _assert_local_retention_gitignore_coverage(identity: Path, dest_rel: str) ->
             "exclude every raw path a local-retention archive would place on disk ("
             + ", ".join(uncovered) + "); re-run `wfc init` against it, or add the managed "
             "block yourself, before archiving with --raw-retention local"
+        )
+
+
+def _assert_audit_path_not_ignored(identity: Path, dest_rel: str) -> None:
+    """Refuse, before any write, when this Evidence repository's own
+    ``.gitignore`` would exclude ``audit.json`` -- every raw retention mode
+    commits it, so an operator-added pattern that happens to also cover it
+    (for example a broad ``*.json``) must be refused up front rather than
+    discovered only once placement has already happened and the commit
+    itself then fails."""
+
+    probe = f"{dest_rel}/{AUDIT_FILENAME}"
+    if _path_is_ignored(identity, probe):
+        raise ArchiveError(
+            f"refusing: this Evidence repository's .gitignore excludes {probe}, but every "
+            "raw retention mode commits it; adjust the .gitignore before archiving"
         )
 
 
@@ -693,14 +734,33 @@ def _assert_narrow_cleanliness(repository: Path, *, allowed_prefixes: tuple[str,
             )
 
 
+def _path_is_tracked_in_head(repository: Path, path_rel: str) -> bool:
+    completed = subprocess.run(
+        ("git", "-C", str(repository), "ls-tree", "-r", "--name-only", "HEAD", "--", path_rel),
+        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    return completed.returncode == 0 and bool(completed.stdout.strip())
+
+
 def _path_is_tracked_clean(repository: Path, path_rel: str) -> bool:
-    """True when nothing under ``path_rel`` is staged or dirty (it is either
-    absent or fully committed)."""
+    """True when nothing under ``path_rel`` is staged or dirty, and it is
+    actually committed at HEAD.
+
+    ``git status`` never lists a path excluded by ``.gitignore``, so status
+    silence alone is not proof of a commit: a destination entirely covered
+    by this Evidence repository's own managed ``.gitignore`` (for example a
+    legacy ``raw_retention=None`` archive placed into a repository whose
+    default retention is ``local``) would otherwise be read as already
+    committed when it was never committed at all, reporting a false success
+    and leaving the destination permanently mismatched on every later
+    attempt. Requiring the path to actually appear in the HEAD tree closes
+    that gap without changing the outcome for any path that was genuinely
+    committed."""
 
     for line in _status_lines(repository):
         if _status_path(line) == path_rel or _status_path(line).startswith(f"{path_rel}/"):
             return False
-    return True
+    return _path_is_tracked_in_head(repository, path_rel)
 
 
 @dataclass(frozen=True)
@@ -951,13 +1011,18 @@ def archive_run(
     _assert_narrow_cleanliness(identity, allowed_prefixes=(dest_rel, staging_rel))
 
     if raw_retention is not None:
+        _assert_audit_path_not_ignored(identity, dest_rel)
         if raw_retention == "local":
             _assert_local_retention_gitignore_coverage(identity, dest_rel)
+        private_strings = _attempt_private_strings(
+            home_dir=home_dir, state_root=state_root, ops_dir=ops_dir_resolved,
+        )
         return _archive_run_retention_aware(
             raw_retention=raw_retention, identity=identity, base_head=base_head, attempt_id=attempt_id,
             state_root=state_root, ops_dir=ops_dir, ops_dir_resolved=ops_dir_resolved,
             ops_candidate=ops_candidate, semantic_payload=semantic_payload, resolved_semantic=resolved_semantic,
             dest=dest, dest_rel=dest_rel, staging=staging, identity_facts=identity_facts,
+            private_strings=private_strings,
         )
 
     final_run_id, final_work_item_id, final_run_status = (
@@ -1060,7 +1125,7 @@ def _archive_run_retention_aware(
     *, raw_retention: str, identity: Path, base_head: str, attempt_id: str, state_root: Path,
     ops_dir: Path | None, ops_dir_resolved: Path | None, ops_candidate: Path,
     semantic_payload: dict | None, resolved_semantic: Path | None, dest: Path, dest_rel: str,
-    staging: Path, identity_facts: RunIdentity,
+    staging: Path, identity_facts: RunIdentity, private_strings: Sequence[str] = (),
 ) -> ArchiveReport:
     if dest.exists():
         if raw_retention == "discard":
@@ -1069,12 +1134,14 @@ def _archive_run_retention_aware(
                 ops_dir=ops_dir, ops_dir_resolved=ops_dir_resolved, ops_candidate=ops_candidate,
                 semantic_payload=semantic_payload, resolved_semantic=resolved_semantic, dest=dest,
                 dest_rel=dest_rel, staging=staging, identity_facts=identity_facts,
+                private_strings=private_strings,
             )
         return _resume_or_noop_kept_raw(
             raw_retention=raw_retention, identity=identity, base_head=base_head, attempt_id=attempt_id,
             state_root=state_root, ops_dir=ops_dir, ops_dir_resolved=ops_dir_resolved,
             ops_candidate=ops_candidate, semantic_payload=semantic_payload, resolved_semantic=resolved_semantic,
             dest=dest, dest_rel=dest_rel, staging=staging, identity_facts=identity_facts,
+            private_strings=private_strings,
         )
 
     audit_only = staging / ".wfc-discard-placement"
@@ -1085,7 +1152,7 @@ def _archive_run_retention_aware(
             archived_at=_DISCARD_MANIFEST_ARCHIVED_AT if raw_retention == "discard" else None,
         )
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n")
-        audit_text = _project_audit_text(staging, raw_retention=raw_retention)
+        audit_text = _project_audit_text(staging, raw_retention=raw_retention, private_strings=private_strings)
         (staging / AUDIT_FILENAME).write_text(audit_text)
         if raw_retention == "commit":
             (staging / ".gitignore").write_text(_ATTEMPT_COMMIT_GITIGNORE)
@@ -1127,7 +1194,7 @@ def _resume_or_noop_kept_raw(
     *, raw_retention: str, identity: Path, base_head: str, attempt_id: str, state_root: Path,
     ops_dir: Path | None, ops_dir_resolved: Path | None, ops_candidate: Path,
     semantic_payload: dict | None, resolved_semantic: Path | None, dest: Path, dest_rel: str,
-    staging: Path, identity_facts: RunIdentity,
+    staging: Path, identity_facts: RunIdentity, private_strings: Sequence[str] = (),
 ) -> ArchiveReport:
     """Resume/no-op for ``local``/``commit`` retention: ``manifest.json`` was
     placed (atomically, together with ``audit.json`` and, for ``commit``,
@@ -1151,7 +1218,7 @@ def _resume_or_noop_kept_raw(
             raise ArchiveError(
                 f"archive destination already exists with different content, refusing to overwrite: {dest_rel}"
             )
-        if _project_audit_text(dest, raw_retention=raw_retention) != existing_audit_text:
+        if _project_audit_text(dest, raw_retention=raw_retention, private_strings=private_strings) != existing_audit_text:
             raise ArchiveError(
                 f"placed {AUDIT_FILENAME} does not match a projection of its own manifest, "
                 f"refusing to treat it as up to date: {dest_rel}/{AUDIT_FILENAME}"
@@ -1173,7 +1240,7 @@ def _resume_or_noop_kept_raw(
         manifest, dest=dest, attempt_id=attempt_id, state_root=state_root, ops_dir=ops_dir_resolved,
         semantic_payload=semantic_payload, staging=staging,
     )
-    if _project_audit_text(dest, raw_retention=raw_retention) != existing_audit_text:
+    if _project_audit_text(dest, raw_retention=raw_retention, private_strings=private_strings) != existing_audit_text:
         raise ArchiveError(
             f"placed {AUDIT_FILENAME} at {dest} does not match a projection of its own manifest; "
             "refusing to commit a mismatched or tampered archive"
@@ -1200,6 +1267,7 @@ def _resume_or_noop_discard(
     *, identity: Path, base_head: str, attempt_id: str, state_root: Path, ops_dir: Path | None,
     ops_dir_resolved: Path | None, ops_candidate: Path, semantic_payload: dict | None,
     resolved_semantic: Path | None, dest: Path, dest_rel: str, staging: Path, identity_facts: RunIdentity,
+    private_strings: Sequence[str] = (),
 ) -> ArchiveReport:
     """Resume/no-op for ``discard`` retention: no raw file and no
     ``manifest.json`` is ever placed, so every check rebuilds an ephemeral
@@ -1221,7 +1289,9 @@ def _resume_or_noop_discard(
             semantic_payload=semantic_payload, staging=staging, archived_at=_DISCARD_MANIFEST_ARCHIVED_AT,
         )
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n")
-        candidate_audit_text = _project_audit_text(staging, raw_retention="discard")
+        candidate_audit_text = _project_audit_text(
+            staging, raw_retention="discard", private_strings=private_strings,
+        )
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
