@@ -1,0 +1,357 @@
+= BP7 cutover planning: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the BP7
+self-development cutover plan (WorkItem
+`WI-WFC-BETA1-BP7-CUTOVER-PLANNING-001`). The current pass is *H002*; later
+passes are added above this one and earlier passes are kept unedited.
+
+== Pass H002 (current)
+
+WorkItem:: `WI-WFC-BETA1-BP7-CUTOVER-PLANNING-001`
+Hop:: `H002` (`broad_review`, fresh independent adversarial reviewer, gate,
+blocking-only, `finding_authority: [resolve]`)
+Reviewed product:: the whole planning candidate at review base HEAD
+`d4f0d15486ec5550ea07834aafcbeca6a6aac353`, i.e. the single H001 commit
+`d4f0d15` and its four paths: the new
+`docs/backlog/beta1_bp7_cutover_plan.adoc` (724 lines) plus the three link
+insertions in `docs/backlog/beta1_productization.adoc`,
+`docs/backlog/beta1_execution_plan.adoc` and `docs/backlog/_open.adoc`.
+Governing acceptance:: the Commission task for this WorkItem (deliverables
+1-6, the BP9/closure checklist, the binding inputs DG-4 (a) and DG-5 (a), the
+maintainer BP7 specification quoted in the task, the hard rules and the
+withheld authority), `[[bp7]]` in `docs/backlog/beta1_productization.adoc`,
+the BP7 Commission entry and `<<decision-gates>>`/`<<closure-versus-tag>>` in
+`docs/backlog/beta1_execution_plan.adoc`.
+Disposition:: *Changes required.* Two blocking Findings, both narrow and both
+correctable inside the plan document alone. Everything else in the candidate
+held up under direct source verification, including the parts that were
+easiest to get wrong.
+Finding state:: the Run carries no authoritative Finding at the start of this
+pass; this Hop proposes two new blocking Findings and disposes nothing.
+
+The only repository change proposed by this Hop is this artifact. No
+implementation, test, fixture, manual chapter, backlog record, Run state,
+historical review or Evidence content was modified, and the reviewer made no
+Git write.
+
+=== Method
+
+Every file/function/line citation in the plan was opened in the real tree at
+the review base HEAD and checked for three things: that the named symbol
+exists, that it is in the named file, and that it does what the plan says it
+does. Behavioural claims were read out of the code rather than out of the
+earlier reviews the plan descends from, since the plan's own preamble makes
+the stronger claim that it was verified against the source. The Harness side
+(`scripts/wfc_op.py`, `governance/self-development/*`) was checked
+symmetrically with the product side (`src/workflow_coordinator/frontdoor/*`,
+`commissioning.py`). `tests/` and `pyproject.toml` were searched
+independently of the plan, which is how both Findings below were reached.
+
+Agent-local limitation, reported rather than worked around: the sibling
+Evidence repository `../workflow-coordinator-run-evidence` and the real
+Harness roots `~/wfc-ops`/`~/wfc-state` are outside this reviewer's sandbox
+read set, so claims about the sibling repository's present on-disk shape
+could not be confirmed directly. This limitation is itself relevant evidence
+for Finding 2 and is treated as such, not as a defect in the candidate.
+
+=== Blocking Finding 1 -- two product functions attributed to the Harness
+
+Invariant:: Deliverable 1's "Name each missing capability with the file/
+function where it lives today. Do not assume capabilities; verify", reinforced
+by the plan's own preamble ("every number and file/function citation below was
+checked against the source tree").
+
+The archive-equivalence section states, at
+`docs/backlog/beta1_bp7_cutover_plan.adoc:406-411`:
+
+[quote]
+____
+The Harness instead uses whatever string the operator chose at `prepare
+--attempt` (`derive_attempt_id`/`validate_explicit_attempt_identity`,
+`scripts/wfc_op.py:545-580`).
+____
+
+Neither symbol exists anywhere in `scripts/wfc_op.py`. Both are *product*
+functions:
+
+* `derive_attempt_id` -- `src/workflow_coordinator/frontdoor/archive.py:545`
+  (returns `state_root.name`).
+* `validate_explicit_attempt_identity` --
+  `src/workflow_coordinator/frontdoor/archive.py:567`.
+
+The cited line range `545-580` is in fact `archive.py`'s own line range for
+those two functions, so the filename is the part that is wrong. The error is
+not cosmetic in context: `validate_explicit_attempt_identity` is the function
+the *product* postrun path uses (`frontdoor/archive.py:1021`), and
+`derive_attempt_id` implements precisely the state-root-basename derivation
+that the immediately preceding sentence of the plan says the product
+"explicitly *never*" does -- so the bullet as written assigns to the Harness
+the one product function whose behaviour it has just denied, and hides from
+the reader that the product retains a legacy-compatible derivation path
+(`archive.py:1008-1022`, docstring: "every byte of BP5's legacy
+`derive_attempt_id` behaviour is unchanged").
+
+The substantive claim about the Harness is correct and was verified; only its
+citation is false. The Harness's attempt identity is the operator-supplied
+`--attempt` string, validated by `validate_attempt`
+(`scripts/wfc_op.py:176-198`), used to name both roots (`ops_root`/
+`state_root`, `scripts/wfc_op.py:201-206`, `~/wfc-ops/<attempt>` and
+`~/wfc-state/<attempt>`), consumed at `scripts/wfc_op.py:778` and recorded as
+`attempt_id=` by `write_preparation_pins` (`scripts/wfc_op.py:569-582`); the
+legacy archiver then re-derives the same string from the state root's
+basename.
+
+Required correction:: replace the parenthetical with the Harness symbols that
+exist, and state the product's own `derive_attempt_id` fallback for what it is
+(retained, legacy-compatible, unused by the product lifecycle) rather than
+attributing it to `wfc_op.py`.
+
+=== Blocking Finding 2 -- C1b commissions an archive-equivalence comparison the repository already contains, with an acceptance that cannot be met
+
+Invariant:: Deliverable 4's "independently testable Commissions with ...
+acceptance and tests" and the acceptance criterion "a gap analysis verified
+against the code"; the reviewer's blocking criteria "no capability is assumed
+that does not exist" and "an unfulfillable acceptance".
+
+The plan locates the legacy archiver only outside this repository --
+"`scripts/archive_run.py`/`scripts/wfc-archive-run` in the sibling Evidence
+repository" (`beta1_bp7_cutover_plan.adoc:189-192`, repeated at `374` and
+`478`) -- and then commissions C1b
+(`beta1_bp7_cutover_plan.adoc:473-487`) to "Build the offline, read-only
+comparison described in <<archive-equivalence>>", scoped as "a new test module
+under `tests/` plus the comparison tool it needs". A search of `tests/` shows
+both halves of that work already exist, committed, and the plan names neither:
+
+* `tests/unit/test_archive_equivalence.py` (191 lines, docstring "Old-vs-new
+  equivalence on a real retained Run (BP5 acceptance)"). Its single test,
+  `test_old_and_new_archivers_produce_identical_manifests_for_the_same_real_run`
+  (line 154), reconstructs a disposable copy of a real retained Run, archives
+  it with *both* the legacy wrapper and `frontdoor.archive.archive_run` into
+  two throwaway Git Evidence repositories, and asserts the two `manifest.json`
+  files are equal after stripping `archived_at` -- a *stronger* comparison
+  than the fact-extraction-only check the plan's section 3 proposes
+  (`beta1_bp7_cutover_plan.adoc:417-429`), and it additionally asserts exactly
+  one commit per side.
+* `tests/fixtures/bp5/legacy/archive_run.py` and
+  `tests/fixtures/bp5/legacy/wfc-archive-run` -- a frozen copy of the legacy
+  archiver, with its SHA-256 digests asserted in `setUp`
+  (`tests/unit/test_archive_equivalence.py:147-152`), plus the committed
+  real-Run fact set `tests/fixtures/bp5/real_run/` plus
+  `tests/fixtures/bp5/PROVENANCE.txt`.
+
+Two consequences make this blocking rather than cosmetic:
+
+. *The stated C1b acceptance cannot be met.* It requires the comparison to
+  pass "against at least one real historical Attempt's already-archived
+  manifest (read-only, from the existing Evidence repository, never written
+  to)". `tests/unit/test_archive_equivalence.py`'s own docstring records why
+  BP5 did not do that: "the Run's actual original state root and OPS directory
+  live under `/home/stefan/wfc-state` and `/home/stefan/wfc-ops`, which this
+  agent's sandbox cannot read", which is why the hash-verified copy is
+  committed under `tests/fixtures/bp5/`. This reviewer's own sandbox reproduces
+  the same limitation for `../workflow-coordinator-run-evidence`. An acceptance
+  clause that requires an agent Hop to read the live Evidence repository is
+  therefore not satisfiable on the known deployment, and the already-solved
+  committed-fixture route -- the one C1b should inherit -- is the thing the plan
+  does not mention.
+. *The effort and scope statements are wrong in a way that matters.* C1b is
+  sized "S/M" for building a comparison from nothing; the real remaining work
+  is narrower and different in kind (generalize an existing, fixture-pinned
+  module so it can be pointed at a second and third Run, including a proof
+  Run's own facts). Equally, section 3's "how equivalence is demonstrated"
+  paragraph describes reusing `extract_facts`/`run_identity` when the accepted
+  BP5 precedent already runs the frozen legacy archiver end to end; adopting
+  the weaker method would lose evidence the project already has.
+
+Required correction:: name `tests/unit/test_archive_equivalence.py` and
+`tests/fixtures/bp5/legacy/` in the gap analysis and in section 3, restate C1b
+as an extension/generalization of that module (adjusting its effort note
+accordingly), and replace the "from the existing Evidence repository"
+acceptance clause with one the committed-fixture route can actually satisfy.
+The same substitution is needed for each proof Run's acceptance bullet
+(`beta1_bp7_cutover_plan.adoc:505-508`, "C1b's comparison, re-run against this
+Run's own facts"), which inherits the identical read-access assumption for the
+Run's own state root under `journal.state_home()`.
+
+=== What was verified and holds
+
+Recorded because a later pass should not have to redo it. All line references
+below are the real ones at the review base HEAD.
+
+Gap analysis, product side::
+* `compile_commission` (`commissioning.py:666`) compiles a closed
+  `ConsumerRequest`/`ConsumerConfig`; `direct@v1` is withheld from the
+  consumer compiler (`commissioning.py:634-637`) -- verified.
+* `repository_policy` is unconditionally filled on every phase of both closed
+  programs (`commissioning.py:639-640`), `ConsumerRequest.guidance` is a
+  required, SHA-pinned field (`frontdoor/request.py:88-93,113,168`), and every
+  legacy self-development phase declares `repository_policy: []`
+  (`governance/self-development/standalone-development-profile.yaml:10,30,55,75`
+  -- exact lines as cited). The plan's central "genuine new input, not a
+  product gap" conclusion is correct.
+* `robust@v1`'s four phases are exactly
+  `implement`/`broad_review`/`correct`/`focused_review`
+  (`commissioning.py:293-296`) with roles `worker`/`independent_reviewer`
+  (`commissioning.py:289`), consistent with `frontdoor/request.py:20-28`.
+* The three role texts are byte-identical between
+  `governance/self-development/prompts/` and
+  `src/workflow_coordinator/resources/roles/` (`diff` clean on all three), and
+  are digest-pinned through
+  `implementation_identity.RESOURCE_DIGESTS` into
+  `commissioning.py:605-618 _package_resource_text` -- the plan's "equivalent
+  today, different source of truth" row is accurate.
+* "No function in `frontdoor/*.py` builds a venv, exports a commit, or
+  installs anything", and "no scratch allocator exists in `frontdoor/*.py`":
+  both confirmed by independent search (the only `venv`/`scratch` hits in
+  `frontdoor/` are an archive allow-list exclusion at `archive.py:134` and
+  three comments). `_default_engine_command`
+  (`frontdoor/lifecycle.py:77-93`) does resolve `wfc` next to
+  `sys.executable` or on `PATH`, which is what the plan's Runtime-freeze
+  hazard rests on; that hazard is real and correctly reasoned.
+* Separation invariant: `state_home()` (`frontdoor/journal.py:53-56`),
+  `checkout_directory` (`:110-112`), `require_disjoint_journal_root`
+  (`:100-107`, docstring as quoted) and `engine-state` as a checkout
+  subdirectory (`frontdoor/lifecycle.py:309`) -- all as described.
+* Archive wiring: `postrun.run_pending_postrun` is called from both `wfc run`
+  and `wfc resume` (`frontdoor/lifecycle.py:902,909`) with the payload
+  repository, and `resolve_evidence` is reached from there -- so the plan's
+  statement that the manual's `[[installed-archive]]` "not yet called by `wfc
+  run`" note (`ch04_evidence/02_archive.adoc:95-96`) is superseded is correct.
+* `_attempt_identity` (`frontdoor/postrun.py:85-100`) derives
+  `<repository_name>-<run_id>` and is explicitly never state-root-derived --
+  verified verbatim, including the module-level identity decision at
+  `postrun.py:14-21`.
+
+Configuration recommendation:: The decisive claim -- that
+`evidence.repository: ../workflow-coordinator-run-evidence` with `raw: commit`
+needs *no additive product change* -- is correct.
+`resolve_evidence` (`frontdoor/config.py:253-287`) resolves a relative
+setting, including a `..`-escaping one, with
+`Path(os.path.normpath(repository_root / candidate))`, touches no filesystem,
+and takes its `raw` from `EVIDENCE_RAW_CHOICES` (`config.py:26`); the
+`repository_root` it receives is the real payload repository. `.wfc/config.yaml`
+is also the product's own default (`lifecycle.py:DEFAULT_CONFIG_PATH`,
+`init.py:30`), the recommended key set matches
+`consumer_config_from_yaml`'s required/optional sets exactly
+(`config.py:140-145`), `work_item_scope_ceiling` does reuse the
+`repository-standard@v1` literal (`commissioning.py:327-330`), and
+`default_execution: {}` parses (`config.py:157-160`) while
+`resolve_execution` (`config.py:235-239`) still refuses an unfilled role --
+which is exactly how the plan frames open decision 3. Option (b)/(c)'s
+rejection on "no layering mechanism exists today" is also correct: `--config`
+names one file read once (`frontdoor/plan.py:279-293`,
+`frontdoor/lifecycle.py:956`) and nothing merges a second source.
+`ensure_evidence_repository` (`init.py:93-123`) does return `"reused"`
+without writing for an existing Git-root-plus-`archive/` path, and `wfc init`
+never commits the config (`init.py:208-212`); `--no-evidence-repository`
+exists (`init.py:160`). Every maintainer constraint named in the task is met
+by the recommendation: no absolute home path is encoded, the existing sibling
+stays the authoritative target, the XDG default never applies once
+`evidence.repository` is explicit, `raw: commit` is set, no Run state moves,
+the curated ledger stays separate, and the single-archive-path rule is stated
+as a procedural rule for the proof Runs.
+
+Sequence, DG-4/DG-5 and the tag:: DG-4 and DG-5 are recorded resolved,
+2026-11-20, with the wording the task quotes
+(`beta1_execution_plan.adoc:744-758`), and the plan reopens neither. Nothing
+in the candidate sets, prepares, dates or conditions the `0.1.0b1` tag; the
+closure-versus-tag distinction is carried correctly
+(`beta1_execution_plan.adoc:849-866`), as is "BP7 is not a release gate"
+(`:583`) and "This optional batch may follow the tag" (`:691-692`). The
+maintainer-reserved items (Runtime promotion, authorizing each proof Run,
+push, tag) are stated and not claimed. C5's manual section list was checked
+against the real documents and is accurate, including `[[harness-preparation]]`
+(`ch03_running/01_preparation.adoc:191`), canonical-sequence steps 4 and 5
+(`:108-110` -- the two export/venv steps DG-5 amends),
+`[[selfdev-offline-inputs]]` (`:256`), `[[installed-archive]]` and
+`[[semantic-ledger]]` (`ch04_evidence/02_archive.adoc:59,98`), and
+`ch05_self_development/01_topology_budget.adoc:80` "Temporary storage before
+test-heavy Runs". The `ch06` reconciliation is correctly characterized: the
+"Non-automation boundary" section does still say "create salvage commits"
+(`ch06_recovery/01_outcomes.adoc:203-206`) while
+`frontdoor/preservation.py:30-32` triggers on five classifications and its
+docstring (`:9`) already says it "does not replace the manual
+salvage/successor procedure". Predecessor ordering among C1, C1b, the two
+proof Runs and C5 is acyclic, and the stop condition (C5 not before two
+recorded equivalence-verified Runs) matches DG-4.
+
+BP9/closure checklist:: Every factual claim checks out --
+`BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`,
+`TECH-DEBT-WFC-LEGACY-COMMIT-MECHANICS.adoc` and
+`FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT.adoc` all exist; DG-1 and
+DG-2 are recorded resolved and DG-6 is recorded still open
+(`beta1_execution_plan.adoc:729,737,766,790`); BP7 is absent from the release-
+gate list; closure is not release authorization.
+
+=== Non-blocking observations
+
+`finding_authority: [resolve]` does not authorize a residual transition, so
+these are recorded here only. None of them blocks acceptance.
+
+. *Line-number drift in several otherwise-correct citations.* The
+  scope-overlap refusal is `commissioning.py:709-714`, not `644-646`
+  (plan line 224); the `artifact_key` substitution is `commissioning.py:750-754`,
+  not `702-705` (plan line 130); `_consumer_program_template` is `621-641`
+  (plan line 49); `_default_engine_command` is `77-93` (plan line 141). In each
+  case the named symbol and its behaviour are right.
+. *The hop-ceiling row's second citation points at the wrong check.*
+  `commissioning.py:423` (plan line 107) is the *v1* intent path's
+  policy-ceiling comparison. On the consumer path, `compile_commission:705`
+  checks the Consumer Config ceiling and the Coordinator hard ceiling is
+  enforced downstream in `serialization.py:531` and `operator.py:213,425`, not
+  in `commissioning.py`. The row's conclusion ("fully equivalent, no gap")
+  still holds.
+. *`[[selfdev-offline-inputs]]` is in the Operator Manual*
+  (`docs/operator_manual/ch03_running/01_preparation.adoc:256`), not in a
+  Developer Guide as plan line 154 says. The chapter and anchor are right.
+. *C5's scope does not name the test modules the retirement touches.*
+  `tests/unit/test_wfc_op.py` exists and exercises the Harness directly, the
+  v1 compile path is covered by parts of `tests/unit/test_commissioning.py`,
+  and `tests/architecture/test_self_development_governance.py` reads the legacy
+  governance tree. C5's own acceptance ("full suite green without
+  `scripts/wfc_op.py`, without the v1 compile path") forces this work, so
+  nothing is unfulfillable, but naming the files would make C5
+  implementation-ready in the sense the task asks for.
+. *The "no quarantined file exists" statement is defensible but less useful
+  than it could be* (plan lines 349-353). Nothing is deselected by default
+  (`pyproject.toml:38 addopts = "-q"`), so no file is quarantined in the sense
+  the second-pass review's R1-D8 specified. What does exist is the registered
+  marker `historical_governance` (`pyproject.toml:43`) and the small
+  `tests/architecture/test_historical_governance_parse.py` smoke check that
+  replaced the original 8,003-line bundle test; naming those two, and the fact
+  that they keep passing because `governance/self-development/` is retained as
+  frozen input, would answer the execution plan's "without the quarantined
+  file" acceptance clause directly.
+. *C1's predecessor line omits a governing batch prerequisite.* Plan line 462
+  says "None technical (BP1-BP6 already independently accepted)", while the
+  execution plan's Batch 4 starting prerequisite is "Batch 3 fully accepted"
+  (`beta1_execution_plan.adoc:685-688`), and Batch 3 includes
+  `wfc-beta1-bp9-beta-gate-001` (`:660-661`). Deviating may well be right for
+  a config/guidance-authoring sub-Commission, but the deviation should be
+  stated rather than left implicit.
+. *One `raw: commit` precondition is missing from the proof-Run checklist.*
+  Archiving into the pre-existing sibling Evidence repository additionally
+  requires that repository's `.gitignore` not exclude the destination
+  `audit.json`, which `archive._assert_audit_path_not_ignored`
+  (`frontdoor/archive.py:254-267`) refuses before any write; commit-mode raw
+  files are re-included by the per-Attempt `.gitignore` the archiver itself
+  writes (`archive.py:1169-1175` and `config.py:29-38`). This reviewer cannot
+  read the sibling repository to check whether a conflicting pattern is
+  present, which is precisely why it belongs in the plan's precondition list
+  next to "Evidence repository confirmed reachable".
+. *Rendering.* All five AsciiDoc files involved (the four touched by H001 and
+  this artifact) are plain, self-contained AsciiDoc; no Asciidoctor run is
+  claimed by this reviewer, and the H001 render claim is reported as the
+  Worker's own, not as reviewer evidence.
+
+=== Scope and authority
+
+Nothing outside the authorized scope was written. No product code, test,
+script, manual, policy, program or config was changed; no `.wfc/config.yaml`
+was created; no Commission, Run state, archive, historical review or Evidence
+content was touched; no tag was set or prepared; no Git write was performed by
+the reviewer. The two Findings above are reported for correction by a Worker
+Hop with the authority to edit `docs/backlog/beta1_bp7_cutover_plan.adoc`;
+this pass takes no implementation action of its own.
