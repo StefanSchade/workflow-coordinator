@@ -1,0 +1,204 @@
+= Evidence-command resolution diagnostics (BP7 proof Run 1): focused review
+:toc: macro
+
+Authority:: informative -- independent review evidence for its own bounded
+outcome. It records neither acceptance nor closure; the maintainer records
+independent acceptance in the controlling BUG record.
+WorkItem:: WI-WFC-PROOF1-EVIDENCE-DIAGNOSTICS-001
+Candidate:: `4d0ee1ad8cce9254e467b039507f4b0e304bf58e`
+Comparison base:: `16a303416c3d3a10c9c00bf98127054f0641a3f3` (the whole product
+change, not only the last correction)
+Prior review:: `docs/warm_storage/concepts/wfc_proof1_evidence_diagnostics_broad_review.adoc`
+(H002, changes required)
+Governing records:: `docs/backlog/BUG-WFC-EVIDENCE-COMMAND-RESOLUTION-DIAGNOSTICS.adoc`
+(scope and non-scope), `docs/backlog/README.adoc` (milestone upkeep),
+`docs/cold_storage/backlog/done/BUG-WFC-SELF-DEVELOPMENT-PREFLIGHT-PYTHON-ALIAS-IDENTITY.adoc`
+and `docs/cold_storage/backlog/done/BUG-WFC-PREFLIGHT-ARCHITECTURE-TEST-AMBIENT-PATH.adoc`
+(both closed; neither may be reopened, amended or contradicted).
+Disposition:: Accept. No blocking finding. The prior review's blocking finding
+on the BUG record's implementation-milestone note is resolved; the code, tests
+and record held up under independent adversarial re-derivation.
+
+== Candidate under review
+
+Four leaves changed across `16a3034..4d0ee1a`:
+
+----
+docs/backlog/BUG-WFC-EVIDENCE-COMMAND-RESOLUTION-DIAGNOSTICS.adoc
+docs/warm_storage/concepts/wfc_proof1_evidence_diagnostics_broad_review.adoc
+src/workflow_coordinator/evidence.py
+tests/unit/test_evidence_resolution_diagnostics.py
+----
+
+The second is the H002 review artifact. The implementation itself touches one
+source file and one new focused test module. `git diff --numstat` over the full
+range is empty for `tests/unit/test_a2_evidence_commands.py`,
+`src/workflow_coordinator/operator.py` and
+`src/workflow_coordinator/commissioning.py`, so the existing evidence suite and
+both preflight call sites are byte-identical to the base.
+
+== The prior blocking finding is resolved
+
+The H002 finding was that the implementation-milestone note claimed
+`tests/unit/test_a2_evidence_commands.py` among the changed paths -- a file the
+WorkItem required to stay unchanged -- and omitted the record's own path. The
+note now reads (`docs/backlog/BUG-WFC-EVIDENCE-COMMAND-RESOLUTION-DIAGNOSTICS.adoc:124-128`)
+the three leaves the implementation commit actually touched, plus an explicit
+sentence that `tests/unit/test_a2_evidence_commands.py` was not modified and was
+re-run unchanged as a regression check. Independently re-derived:
+`git diff --stat 16a3034 dabb215` reports exactly those three leaves.
+
+The same correction reconciled the stale `Next action::` header, which still
+directed investigation of `python`/`python3` diagnostics "under a separately
+authorized bounded Commission" after that work had landed; it now names the
+outstanding independent-acceptance milestone and states that no further
+implementation is authorized under the record. That is the reconciliation
+`docs/backlog/README.adoc:58-59` asks for at an actual milestone.
+
+Nothing else in the record moved. The `Status::` line still keeps the BUG
+*open*, names the authorizing WorkItem, invents no commit ID and says
+independent acceptance is outstanding; `Not authorized here::` and the
+`Non-scope` section are untouched. No milestone the maintainer owns
+(independent acceptance, product closure) was asserted by an agent.
+
+== Independently reproduced behavior
+
+`pytest` is not installed in this review shell and cannot be downloaded (no
+network), so every claim below was re-derived with a stdlib-only harness under
+`tmp/review-h004/` (git-ignored scratch, not committed): a direct behavior
+probe, a base/candidate resolution-parity matrix, a minimal `pytest` API shim
+that executes the committed test modules, and a nine-mutant generator. This is
+exploratory agent-side validation; the authoritative suite run is the
+Coordinator-owned `task-check`.
+
+=== The three required message facts are present
+
+An authored bare `python` that does not resolve on a snapshotted `PATH`
+containing `python3` raises the pre-existing type (`ExecutableResolutionError`,
+still an `OSError`) with the pre-existing prefix, followed by the new clauses:
+
+----
+executable does not resolve to an executable regular file: python; discoverable
+PATH siblings (informational only, not selected): python3; supply a conforming
+environment by prepending its prepared bin/ directory to PATH
+----
+
+`prepare_evidence_commands` still wraps it unchanged, so the operator-facing
+form carries the policy-authored command name as before: `evidence command
+task-check: executable does not resolve to an executable regular file: python;
+...`. With no discoverable sibling the clause reads `no discoverable PATH
+siblings` rather than being omitted, so the message shape is stable.
+
+=== Resolution, fingerprinting, alias handling and preflight are unchanged
+
+* A 17-case matrix (bare resolvable and unresolvable, symlinked `argv[0]` both
+  spellings, non-executable regular file, dangling symlink, repository-relative
+  `PATH` entry, absolute `argv[0]` present and missing, slash-containing
+  `argv[0]` present and missing, `PATH=""` resolvable and unresolvable, absent
+  `PATH` key falling back to `os.defpath`, multi-entry first match, multi-entry
+  unresolvable, embedded NUL in `PATH`) produces structurally identical
+  outcomes on the base and candidate trees: same success/exception class, same
+  invocation and canonical basenames, same fingerprint shape. The embedded-NUL
+  case still raises `ValueError` from the candidate loop on both trees, i.e. the
+  probe cannot change that path -- it is only reached after every candidate
+  `os.stat` raised one of the caught exceptions.
+* No alias substitution: with `python3` present and `python` authored, `python3`
+  resolves on its own and authored `python` is still refused. Injecting the
+  forbidden behavior (resolve the first discoverable sibling) is killed by four
+  of the committed tests.
+* `operator.py` and `commissioning.py` are untouched, so `_preflight` still
+  refuses fail-closed; the refusal simply carries a longer message. No consumer
+  compares the message for equality -- the only textual assertion anywhere,
+  `pytest.raises(EvidencePreparationError, match="executable regular file")` at
+  `tests/unit/test_a2_evidence_commands.py:259`, is a `re.search` and still
+  matches.
+
+=== The probe is bounded, read-only and quiet
+
+* *Read-only.* A prefix-matching sibling whose body would `touch` a marker is
+  listed but never executed; after the full `resolve_executable` refusal the
+  marker does not exist and the directory listing, sizes and `st_mtime_ns` of
+  every entry are unchanged.
+* *Bounded.* `DISCOVERABLE_SIBLING_PROBE_LIMIT` is 5 and is enforced across
+  `PATH` entries. Worst case measured with five ~250-character sibling names:
+  1456-byte message.
+* *Selective.* The authored name itself, unrelated names, non-executable
+  regular files, directories named like a sibling and dangling symlinks are all
+  excluded; names are de-duplicated across `PATH` entries.
+* *Tolerant.* A `PATH` made of a missing directory, a regular file and a mode
+  `0o000` directory is skipped without raising and the later entries are still
+  probed.
+* *No path disclosure.* Only basenames enter the message; neither the `PATH`
+  entries nor the repository path appear. Committed material contains no
+  absolute home-directory path.
+
+=== Tests and mutation sensitivity
+
+`tests/unit/test_evidence_resolution_diagnostics.py` passes 10/10 under the
+shim. `tests/unit/test_a2_evidence_commands.py` behaves identically on base and
+candidate: 48 cases pass on both and the same 6 are unsupported on both,
+because they need `pytest` fixtures (`monkeypatch`, `argv`, `repository`) the
+shim does not provide -- an agent-local harness limitation, not a candidate
+defect. Nine mutants of `evidence.py` were run against the committed focused
+module:
+
+[cols="3,1,4"]
+|===
+|Mutant |Result |Killed by
+
+|Diagnostics enrichment reverted to the old message |killed |3 tests
+|First discoverable sibling substituted for the authored command |killed |4 tests
+|Bound declared but no longer enforced |killed |bound test
+|Probe executes each sibling to "verify" it |killed |read-only test
+|Executable-regular-file check dropped from the probe |killed |2 tests
+|Authored name no longer excluded from the probe |killed |exclusion test
+|Prefix filter dropped (every `PATH` name reported) |killed |exclusion test
+|`DISCOVERABLE_SIBLING_PROBE_LIMIT` raised 5 -> 10000 |survived |--
+|Path-like `argv[0]` early return removed |survived |--
+|===
+
+The two survivors reproduce what H002 reported and neither is a violated
+acceptance criterion: boundedness is pinned behaviorally (removing enforcement
+is killed) while the specific small value is not, and the path-like early
+return is an equivalent-output optimization, since a `listdir` basename can
+never start with `./python` or `/usr/bin/python`.
+
+== Non-blocking observations
+
+* *Undecodable sibling names reach the message verbatim.* A prefix-matching
+  executable whose filename is not valid UTF-8 (for example `python\xff3`) is
+  listed through `os.listdir`'s surrogate-escaped name, so `str(error)` holds a
+  lone surrogate and raises `UnicodeEncodeError` when printed to a UTF-8
+  console. The refusal itself is unaffected -- the same exception type is still
+  raised and the outcome stays fail-closed -- and the journal is safe because
+  `frontdoor/journal.py` serializes with `json.dumps(..., ensure_ascii=True)`.
+  Reproducing it needs an invalid-UTF-8 executable name sharing the authored
+  token's prefix on `PATH`, which a conforming environment does not have.
+  Encoding probed names with `errors="replace"`, or skipping names that fail to
+  round-trip, would remove the case if the maintainer wants it closed.
+* The bound test derives its expectation from the constant, so the intended
+  small value is not pinned; an absolute upper assertion alongside it would pin
+  both. (Carried from H002, independently reproduced.)
+* Cross-`PATH`-entry de-duplication (`name in seen`) is uncovered by the
+  committed tests. It is an implementation nicety, not a BUG-record obligation.
+* The informational clause matches on name prefix, so for a different authored
+  token it can list non-interpreter siblings (`git` -> `git-lfs`). The clause
+  labels them "informational only, not selected", which is what the record's
+  desired direction asks for.
+* *Outside this WorkItem's scope:* the overview card at
+  `docs/backlog/_open.adoc:398-400` still reads "investigate actionable
+  missing-tool/environment messages before selecting a correction", which the
+  implementation has overtaken. The overview is the maintainer's to update and
+  was correctly left unchanged. Its "never silently substitute `python3`"
+  constraint remains honored.
+
+== Non-scope confirmation
+
+No automatic alias substitution was introduced; `resolve_executable`'s `PATH`
+walk, `_fingerprint` and the `realpath` canonical-identity model are untouched;
+`_preflight`'s fail-closed refusal semantics are untouched; and neither closed
+Python-alias/preflight record is reopened, amended or contradicted. Nothing
+outside `src/workflow_coordinator/evidence.py`, its focused tests, the BUG
+record and the two review artifacts changed. This review changed only its own
+artifact and performed no Git write, push, merge, rebase, Runtime promotion or
+tag.
