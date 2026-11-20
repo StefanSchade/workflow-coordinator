@@ -116,6 +116,23 @@ def test_sibling_probe_is_empty_for_path_like_authored_commands(tmp_path, author
     assert evidence._discoverable_path_siblings(authored_argv0, tmp_path, snapshot) == ()
 
 
+def test_sibling_probe_symlink_loop_does_not_change_refusal_exception_type(tmp_path):
+    loop = tmp_path / "python3"
+    loop.symlink_to(loop)
+    snapshot = snapshot_environment({"PATH": str(tmp_path)})
+
+    assert evidence._discoverable_path_siblings("python", tmp_path, snapshot) == ()
+    with pytest.raises(ExecutableResolutionError):
+        resolve_executable("python", tmp_path, snapshot)
+    with pytest.raises(EvidencePreparationError):
+        prepare_evidence_commands(
+            ("task-check",),
+            {"task-check": EvidenceCommand(("python", "-m", "pytest"), 10)},
+            tmp_path,
+            environ={"PATH": str(tmp_path)},
+        )
+
+
 def test_resolution_is_unchanged_for_resolvable_commands_and_no_alias_substitution(tmp_path):
     python3 = make_executable(tmp_path / "python3")
     snapshot = snapshot_environment({"PATH": str(tmp_path)})

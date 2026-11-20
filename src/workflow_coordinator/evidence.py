@@ -141,7 +141,7 @@ def _discoverable_path_siblings(
                 continue
             try:
                 _fingerprint(os.path.join(base, name))
-            except (FileNotFoundError, NotADirectoryError, PermissionError, ExecutableResolutionError):
+            except OSError:
                 continue
             seen.add(name)
             siblings.append(name)
