@@ -72,6 +72,8 @@ from ..git_facts import (
     repository_head,
     repository_identity,
 )
+from .audit import AuditError, ProjectionError, project_audit, render_audit_json
+from .config import EVIDENCE_RAW_CHOICES
 
 # --------------------------------------------------------------------------
 # Ported allow-lists (verbatim from the Evidence repository's archive_run.py)
@@ -141,6 +143,73 @@ PIN_FILES_IN_PRIORITY = ("pinned-revisions.txt", "preparation-pins.txt")
 
 class ArchiveError(RuntimeError):
     """A refusal in the ported archiver/wrapper; never a partial mutation."""
+
+
+# --------------------------------------------------------------------------
+# BP6b: retention-aware archive (additive). ``raw_retention=None`` leaves
+# every byte of the above BP5 behaviour unchanged; see ``archive_run``.
+# --------------------------------------------------------------------------
+
+AUDIT_FILENAME = "audit.json"
+
+# Written into the attempt's own destination directory only for ``commit``
+# retention, as one more committed leaf. The managed root ``.gitignore`` a
+# fresh Evidence repository carries (``frontdoor.config.evidence_gitignore_block``)
+# uses content-style globs (``run/**``, not ``run/``) precisely so this
+# per-Attempt negation can re-include this one Attempt's own raw files --
+# Git refuses to re-include anything beneath a directory excluded by a
+# trailing-slash pattern, no matter where a negation is written.
+_ATTEMPT_COMMIT_GITIGNORE = (
+    "# >>> wfc commit-mode raw retention for this attempt (do not edit by hand) >>>\n"
+    "!manifest.json\n"
+    "!run/**\n"
+    "!ops/**\n"
+    "# <<< wfc commit-mode raw retention for this attempt <<<\n"
+)
+
+# ``manifest.json``'s ``archived_at`` is a wall-clock timestamp that cannot be
+# reproduced from scratch; for ``local``/``commit`` retention this is fine
+# because the first-placed ``manifest.json`` is kept forever and later reads
+# reproject from that one placed file. ``discard`` retention never places
+# ``manifest.json`` anywhere, so every resume/no-op check must rebuild one
+# from scratch to reproject ``audit.json`` -- a real timestamp there would
+# make that rebuild (and therefore ``audit.json`` itself) non-reproducible,
+# breaking idempotency. This fixed placeholder keeps the rebuild
+# deterministic; it is never written to disk anywhere durable.
+_DISCARD_MANIFEST_ARCHIVED_AT = "not-persisted (discard raw retention)"
+
+
+def _project_audit_text(attempt_dir: Path, *, raw_retention: str) -> str:
+    return render_audit_json(project_audit(attempt_dir, raw_retention=raw_retention))
+
+
+def _path_is_ignored(repository: Path, relpath: str) -> bool:
+    completed = subprocess.run(
+        ("git", "-C", str(repository), "check-ignore", "-q", "--no-index", "--", relpath),
+        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    return completed.returncode == 0
+
+
+def _assert_local_retention_gitignore_coverage(identity: Path, dest_rel: str) -> None:
+    """Refuse ``local`` retention, before any write, unless this Evidence
+    repository's ``.gitignore`` already excludes every raw path this Attempt
+    would place -- a missing or insufficient block would otherwise let raw
+    files land on disk unprotected from an accidental future commit."""
+
+    probes = (
+        f"{dest_rel}/manifest.json",
+        f"{dest_rel}/run/.wfc-coverage-probe",
+        f"{dest_rel}/ops/.wfc-coverage-probe",
+    )
+    uncovered = [probe for probe in probes if not _path_is_ignored(identity, probe)]
+    if uncovered:
+        raise ArchiveError(
+            "refusing local raw retention: this Evidence repository's .gitignore does not "
+            "exclude every raw path a local-retention archive would place on disk ("
+            + ", ".join(uncovered) + "); re-run `wfc init` against it, or add the managed "
+            "block yourself, before archiving with --raw-retention local"
+        )
 
 
 def assert_source_isolation(dest: Path, *sources: Path | None) -> None:
@@ -654,7 +723,7 @@ class ArchiveReport:
 
 def _manifest_candidate(
     *, attempt_id: str, state_root: Path, ops_dir: Path | None, semantic_payload: dict | None,
-    staging: Path,
+    staging: Path, archived_at: str | None = None,
 ) -> tuple[dict, list[dict]]:
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
@@ -665,7 +734,7 @@ def _manifest_candidate(
     facts = extract_facts(state_root, ops_dir)
     manifest = {
         "attempt_id": attempt_id,
-        "archived_at": datetime.now(timezone.utc).isoformat(),
+        "archived_at": archived_at if archived_at is not None else datetime.now(timezone.utc).isoformat(),
         "sources": {"run_dir": str(state_root), "ops_dir": str(ops_dir) if ops_dir else None},
         "copied_files": copied,
         "facts": facts,
@@ -801,7 +870,7 @@ def _verify_resumable_placement(
 
 def archive_run(
     *, state_root: Path, evidence_repo: Path, semantic_path: Path | None = None, dry_run: bool = False,
-    home: Path | None = None,
+    home: Path | None = None, raw_retention: str | None = None,
 ) -> ArchiveReport:
     """Archive ``state_root`` (and its matching OPS directory, if any) into
     ``evidence_repo``, making exactly one scoped commit.
@@ -809,7 +878,16 @@ def archive_run(
     ``home`` overrides ``$HOME`` for deriving the default OPS directory
     (``<home>/wfc-ops/<attempt-id>``); it defaults to the real environment,
     exactly as the ported wrapper derived it.
+
+    ``raw_retention`` is ``None`` (BP5 legacy: every byte of behaviour below
+    is unchanged, no ``audit.json``) or one of
+    ``frontdoor.config.EVIDENCE_RAW_CHOICES`` (BP6b: ``audit.json`` is
+    projected from the verified staged copy and placed/committed per the
+    chosen mode; see ``_archive_run_retention_aware``).
     """
+
+    if raw_retention is not None and raw_retention not in EVIDENCE_RAW_CHOICES:
+        raise ArchiveError(f"--raw-retention must be one of: {', '.join(EVIDENCE_RAW_CHOICES)}")
 
     state_root = state_root.expanduser().resolve()
     if not state_root.is_dir():
@@ -871,6 +949,16 @@ def archive_run(
         )
 
     _assert_narrow_cleanliness(identity, allowed_prefixes=(dest_rel, staging_rel))
+
+    if raw_retention is not None:
+        if raw_retention == "local":
+            _assert_local_retention_gitignore_coverage(identity, dest_rel)
+        return _archive_run_retention_aware(
+            raw_retention=raw_retention, identity=identity, base_head=base_head, attempt_id=attempt_id,
+            state_root=state_root, ops_dir=ops_dir, ops_dir_resolved=ops_dir_resolved,
+            ops_candidate=ops_candidate, semantic_payload=semantic_payload, resolved_semantic=resolved_semantic,
+            dest=dest, dest_rel=dest_rel, staging=staging, identity_facts=identity_facts,
+        )
 
     final_run_id, final_work_item_id, final_run_status = (
         identity_facts.run_id, identity_facts.work_item_id, identity_facts.run_status,
@@ -946,6 +1034,231 @@ def archive_run(
     )
 
 
+def _committed_paths_for_retention(raw_retention: str, *, dest_rel: str, copied: list[dict]) -> tuple[str, ...]:
+    audit_rel = f"{dest_rel}/{AUDIT_FILENAME}"
+    if raw_retention == "commit":
+        return tuple(sorted(f"{dest_rel}/{entry['path']}" for entry in copied)) + (
+            f"{dest_rel}/manifest.json", f"{dest_rel}/.gitignore", audit_rel,
+        )
+    return (audit_rel,)
+
+
+def _commit_retention_archive(
+    *, identity: Path, base_head: str, attempt_id: str, dest_rel: str, committed_paths: tuple[str, ...],
+):
+    intent = NewPathCommitIntent(paths=committed_paths, subject=f"evidence: archive {attempt_id}")
+    try:
+        return bounded_path_commit(
+            identity, expected_repository=identity, base_head=base_head, allowed_paths=(dest_rel,),
+            intent=intent, work_item_id=attempt_id, hop_id=attempt_id,
+        )
+    except TrustedCommitError as error:
+        raise ArchiveError(f"commit failed: {error}") from error
+
+
+def _archive_run_retention_aware(
+    *, raw_retention: str, identity: Path, base_head: str, attempt_id: str, state_root: Path,
+    ops_dir: Path | None, ops_dir_resolved: Path | None, ops_candidate: Path,
+    semantic_payload: dict | None, resolved_semantic: Path | None, dest: Path, dest_rel: str,
+    staging: Path, identity_facts: RunIdentity,
+) -> ArchiveReport:
+    if dest.exists():
+        if raw_retention == "discard":
+            return _resume_or_noop_discard(
+                identity=identity, base_head=base_head, attempt_id=attempt_id, state_root=state_root,
+                ops_dir=ops_dir, ops_dir_resolved=ops_dir_resolved, ops_candidate=ops_candidate,
+                semantic_payload=semantic_payload, resolved_semantic=resolved_semantic, dest=dest,
+                dest_rel=dest_rel, staging=staging, identity_facts=identity_facts,
+            )
+        return _resume_or_noop_kept_raw(
+            raw_retention=raw_retention, identity=identity, base_head=base_head, attempt_id=attempt_id,
+            state_root=state_root, ops_dir=ops_dir, ops_dir_resolved=ops_dir_resolved,
+            ops_candidate=ops_candidate, semantic_payload=semantic_payload, resolved_semantic=resolved_semantic,
+            dest=dest, dest_rel=dest_rel, staging=staging, identity_facts=identity_facts,
+        )
+
+    audit_only = staging / ".wfc-discard-placement"
+    try:
+        manifest, copied = _manifest_candidate(
+            attempt_id=attempt_id, state_root=state_root, ops_dir=ops_dir_resolved,
+            semantic_payload=semantic_payload, staging=staging,
+            archived_at=_DISCARD_MANIFEST_ARCHIVED_AT if raw_retention == "discard" else None,
+        )
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n")
+        audit_text = _project_audit_text(staging, raw_retention=raw_retention)
+        (staging / AUDIT_FILENAME).write_text(audit_text)
+        if raw_retention == "commit":
+            (staging / ".gitignore").write_text(_ATTEMPT_COMMIT_GITIGNORE)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if raw_retention == "discard":
+            audit_only.mkdir(parents=True)
+            (audit_only / AUDIT_FILENAME).write_text(audit_text)
+            os.rename(audit_only, dest)
+        else:
+            os.rename(staging, dest)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    finally:
+        if raw_retention == "discard":
+            shutil.rmtree(staging, ignore_errors=True)
+
+    facts = manifest.get("facts") or {}
+    final_run_id = facts.get("run_id")
+    final_work_item_id = facts.get("work_item_id")
+    final_run_status = facts.get("run_status") or facts.get("status")
+
+    committed_paths = _committed_paths_for_retention(raw_retention, dest_rel=dest_rel, copied=copied)
+    committed = _commit_retention_archive(
+        identity=identity, base_head=base_head, attempt_id=attempt_id, dest_rel=dest_rel,
+        committed_paths=committed_paths,
+    )
+
+    return ArchiveReport(
+        outcome="archived", attempt_id=attempt_id, run_id=final_run_id, work_item_id=final_work_item_id,
+        run_status=final_run_status, checkout_id=identity_facts.checkout_id, repository=identity_facts.repository,
+        state_root=state_root, ops_dir=ops_dir, ops_candidate=ops_candidate, destination_relative=dest_rel,
+        semantic_path=resolved_semantic, files=(0 if raw_retention == "discard" else len(copied)),
+        commit=committed.commit,
+    )
+
+
+def _resume_or_noop_kept_raw(
+    *, raw_retention: str, identity: Path, base_head: str, attempt_id: str, state_root: Path,
+    ops_dir: Path | None, ops_dir_resolved: Path | None, ops_candidate: Path,
+    semantic_payload: dict | None, resolved_semantic: Path | None, dest: Path, dest_rel: str,
+    staging: Path, identity_facts: RunIdentity,
+) -> ArchiveReport:
+    """Resume/no-op for ``local``/``commit`` retention: ``manifest.json`` was
+    placed (atomically, together with ``audit.json`` and, for ``commit``,
+    the per-Attempt ``.gitignore``) and is kept forever, so every check below
+    reprojects ``audit.json`` from that one placed file -- never from a
+    freshly rebuilt manifest, whose own ``archived_at`` would differ."""
+
+    manifest = _load_existing_manifest(dest)
+    audit_path = dest / AUDIT_FILENAME
+    if not audit_path.is_file():
+        raise ArchiveError(f"archive destination exists but has no {AUDIT_FILENAME}: {dest}")
+    existing_audit_text = audit_path.read_text(encoding="utf-8")
+
+    if _path_is_tracked_clean(identity, dest_rel):
+        candidate_manifest, _ = _manifest_candidate(
+            attempt_id=attempt_id, state_root=state_root, ops_dir=ops_dir_resolved,
+            semantic_payload=semantic_payload, staging=staging,
+        )
+        shutil.rmtree(staging, ignore_errors=True)
+        if not _manifests_match_ignoring_archived_at(manifest, candidate_manifest):
+            raise ArchiveError(
+                f"archive destination already exists with different content, refusing to overwrite: {dest_rel}"
+            )
+        if _project_audit_text(dest, raw_retention=raw_retention) != existing_audit_text:
+            raise ArchiveError(
+                f"placed {AUDIT_FILENAME} does not match a projection of its own manifest, "
+                f"refusing to treat it as up to date: {dest_rel}/{AUDIT_FILENAME}"
+            )
+        facts = manifest.get("facts") or {}
+        commit = _run_git(identity, "log", "-1", "--format=%H", "--", dest_rel).strip()
+        return ArchiveReport(
+            outcome="no_op", attempt_id=attempt_id, run_id=facts.get("run_id"),
+            work_item_id=facts.get("work_item_id"), run_status=facts.get("run_status") or facts.get("status"),
+            checkout_id=identity_facts.checkout_id, repository=identity_facts.repository, state_root=state_root,
+            ops_dir=ops_dir, ops_candidate=ops_candidate, destination_relative=dest_rel,
+            semantic_path=resolved_semantic, files=len(manifest["copied_files"]), commit=commit or None,
+        )
+
+    # Placed but never committed (killed between placement and commit):
+    # resume, but only once re-verified against the current authoritative
+    # Run/OPS sources and against the placed audit.json's own projection.
+    _verify_resumable_placement(
+        manifest, dest=dest, attempt_id=attempt_id, state_root=state_root, ops_dir=ops_dir_resolved,
+        semantic_payload=semantic_payload, staging=staging,
+    )
+    if _project_audit_text(dest, raw_retention=raw_retention) != existing_audit_text:
+        raise ArchiveError(
+            f"placed {AUDIT_FILENAME} at {dest} does not match a projection of its own manifest; "
+            "refusing to commit a mismatched or tampered archive"
+        )
+    copied = manifest["copied_files"]
+    facts = manifest.get("facts") or {}
+
+    committed_paths = _committed_paths_for_retention(raw_retention, dest_rel=dest_rel, copied=copied)
+    committed = _commit_retention_archive(
+        identity=identity, base_head=base_head, attempt_id=attempt_id, dest_rel=dest_rel,
+        committed_paths=committed_paths,
+    )
+
+    return ArchiveReport(
+        outcome="archived", attempt_id=attempt_id, run_id=facts.get("run_id"),
+        work_item_id=facts.get("work_item_id"), run_status=facts.get("run_status") or facts.get("status"),
+        checkout_id=identity_facts.checkout_id, repository=identity_facts.repository, state_root=state_root,
+        ops_dir=ops_dir, ops_candidate=ops_candidate, destination_relative=dest_rel,
+        semantic_path=resolved_semantic, files=len(copied), commit=committed.commit,
+    )
+
+
+def _resume_or_noop_discard(
+    *, identity: Path, base_head: str, attempt_id: str, state_root: Path, ops_dir: Path | None,
+    ops_dir_resolved: Path | None, ops_candidate: Path, semantic_payload: dict | None,
+    resolved_semantic: Path | None, dest: Path, dest_rel: str, staging: Path, identity_facts: RunIdentity,
+) -> ArchiveReport:
+    """Resume/no-op for ``discard`` retention: no raw file and no
+    ``manifest.json`` is ever placed, so every check rebuilds an ephemeral
+    manifest (with a fixed ``archived_at`` placeholder, never a real
+    timestamp, so the rebuild is reproducible) purely to reproject
+    ``audit.json`` and compare it with the one placed file that exists."""
+
+    entries = sorted(path.name for path in dest.iterdir())
+    if entries != [AUDIT_FILENAME]:
+        raise ArchiveError(
+            f"archive destination exists but is not a valid discard-retention placement "
+            f"(expected only {AUDIT_FILENAME}, found {entries}): {dest}"
+        )
+    existing_audit_text = (dest / AUDIT_FILENAME).read_text(encoding="utf-8")
+
+    try:
+        manifest, _copied = _manifest_candidate(
+            attempt_id=attempt_id, state_root=state_root, ops_dir=ops_dir_resolved,
+            semantic_payload=semantic_payload, staging=staging, archived_at=_DISCARD_MANIFEST_ARCHIVED_AT,
+        )
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=False) + "\n")
+        candidate_audit_text = _project_audit_text(staging, raw_retention="discard")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+    if existing_audit_text != candidate_audit_text:
+        raise ArchiveError(
+            f"archive destination already exists with different content, refusing to overwrite: "
+            f"{dest_rel}/{AUDIT_FILENAME}"
+        )
+
+    facts = manifest.get("facts") or {}
+    final_run_id = facts.get("run_id")
+    final_work_item_id = facts.get("work_item_id")
+    final_run_status = facts.get("run_status") or facts.get("status")
+
+    if _path_is_tracked_clean(identity, dest_rel):
+        commit = _run_git(identity, "log", "-1", "--format=%H", "--", dest_rel).strip()
+        return ArchiveReport(
+            outcome="no_op", attempt_id=attempt_id, run_id=final_run_id, work_item_id=final_work_item_id,
+            run_status=final_run_status, checkout_id=identity_facts.checkout_id,
+            repository=identity_facts.repository, state_root=state_root, ops_dir=ops_dir,
+            ops_candidate=ops_candidate, destination_relative=dest_rel, semantic_path=resolved_semantic,
+            files=0, commit=commit or None,
+        )
+
+    # Placed (audit.json written) but never committed: resume at the commit step.
+    committed = _commit_retention_archive(
+        identity=identity, base_head=base_head, attempt_id=attempt_id, dest_rel=dest_rel,
+        committed_paths=(f"{dest_rel}/{AUDIT_FILENAME}",),
+    )
+    return ArchiveReport(
+        outcome="archived", attempt_id=attempt_id, run_id=final_run_id, work_item_id=final_work_item_id,
+        run_status=final_run_status, checkout_id=identity_facts.checkout_id, repository=identity_facts.repository,
+        state_root=state_root, ops_dir=ops_dir, ops_candidate=ops_candidate, destination_relative=dest_rel,
+        semantic_path=resolved_semantic, files=0, commit=committed.commit,
+    )
+
+
 def _run_git(repository: Path, *args: str) -> str:
     completed = subprocess.run(
         ("git", "-C", str(repository), *args), check=False, text=True,
@@ -1006,6 +1319,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help='curated semantic annotation, stored verbatim; files under archive/<domain>/<workstream>/<attempt> when it carries both',
     )
     parser.add_argument("--dry-run", action="store_true", help="plan only: write nothing, commit nothing")
+    parser.add_argument(
+        "--raw-retention", choices=EVIDENCE_RAW_CHOICES, default=None,
+        help="project and commit audit.json per this retention mode (default: legacy BP5 behaviour, no audit.json)",
+    )
     return parser.parse_args(argv)
 
 
@@ -1015,9 +1332,12 @@ def main(argv: list[str] | None = None) -> int:
         report = archive_run(
             state_root=Path(args.state_root), evidence_repo=Path(args.evidence_repo),
             semantic_path=Path(args.semantic_json) if args.semantic_json else None,
-            dry_run=args.dry_run,
+            dry_run=args.dry_run, raw_retention=args.raw_retention,
         )
-    except (ArchiveError, GitPreflightError) as error:
+    except ProjectionError as error:
+        print(f"wfc archive: {error}", file=sys.stderr)
+        return 3
+    except (ArchiveError, GitPreflightError, AuditError) as error:
         print(f"wfc archive: {error}", file=sys.stderr)
         return 1
     print(render_report(report), end="")

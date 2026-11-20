@@ -11,7 +11,9 @@ the Commission's own immutable bytes, per C1.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
@@ -21,12 +23,55 @@ from ..model import ExecutionBinding, RunExecutionConfiguration, WorkflowRole
 
 _ADAPTERS = {"codex_cli", "claude_cli"}
 
+EVIDENCE_RAW_CHOICES = ("local", "commit", "discard")
+_DEFAULT_EVIDENCE_RAW = "local"
+
+# The managed block ``wfc init`` writes into a new Evidence repository's root
+# ``.gitignore``. Content-style globs (``**`` suffix, not a trailing-slash
+# directory match) so a per-Attempt ``commit``-mode archive can still
+# re-include its own raw files with a nested ``!`` negation -- a
+# directory-match pattern (``archive/**/run/``) would make Git refuse to
+# traverse into ``run/`` at all, and no later rule could ever re-include a
+# file beneath it.
+EVIDENCE_GITIGNORE_MARKER_BEGIN = "# >>> wfc managed evidence raw-retention block (do not edit by hand) >>>"
+EVIDENCE_GITIGNORE_MARKER_END = "# <<< wfc managed evidence raw-retention block <<<"
+EVIDENCE_GITIGNORE_PATTERNS = ("archive/**/manifest.json", "archive/**/run/**", "archive/**/ops/**")
+
+
+def evidence_gitignore_block() -> str:
+    """The exact managed block text ``wfc init`` writes into a fresh Evidence repository."""
+
+    lines = (EVIDENCE_GITIGNORE_MARKER_BEGIN, *EVIDENCE_GITIGNORE_PATTERNS, EVIDENCE_GITIGNORE_MARKER_END)
+    return "\n".join(lines) + "\n"
+
 
 @dataclass(frozen=True)
 class ExecutionBindingValue:
     adapter: str
     model: str
     reasoning: str
+
+
+@dataclass(frozen=True)
+class EvidenceConfigValue:
+    """The parsed, optional ``evidence`` block of a Consumer Config.
+
+    ``repository`` is ``None`` when the author omitted the key (the default
+    location applies); when present it is stored exactly as authored --
+    resolution against the payload repository root happens in
+    ``resolve_evidence``, never here.
+    """
+
+    repository: str | None
+    raw: str
+
+
+@dataclass(frozen=True)
+class EvidenceSettings:
+    """The resolved Evidence destination and raw-retention mode for one repository."""
+
+    path: Path
+    raw: str
 
 
 @dataclass(frozen=True)
@@ -38,6 +83,7 @@ class ConsumerConfig:
     max_autonomous_hops: int
     default_execution: Mapping[str, ExecutionBindingValue]
     raw_text: str
+    evidence: EvidenceConfigValue | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +100,22 @@ def _execution_value(value: Any, *, context: str) -> str:
     if text.splitlines() != [text]:
         raise CommissionError(f"{context} must be a single-line value")
     return text
+
+
+def _evidence_config_value(value: Any, *, context: str) -> EvidenceConfigValue:
+    data = _mapping(value, context=context, required=set(), optional={"repository", "raw"})
+    repository = None
+    if "repository" in data:
+        repository = _execution_value(data["repository"], context=f"{context}.repository")
+    raw = _DEFAULT_EVIDENCE_RAW
+    if "raw" in data:
+        raw_value = data["raw"]
+        if raw_value not in EVIDENCE_RAW_CHOICES:
+            raise CommissionError(
+                f"{context}.raw must be one of: {', '.join(EVIDENCE_RAW_CHOICES)}"
+            )
+        raw = raw_value
+    return EvidenceConfigValue(repository=repository, raw=raw)
 
 
 def _execution_binding_value(value: Any, *, context: str) -> ExecutionBindingValue:
@@ -79,6 +141,7 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
             "schema_version", "repository_name", "governance_dir", "work_item_scope_ceiling",
             "max_autonomous_hops", "default_execution",
         },
+        optional={"evidence"},
     )
     if data["schema_version"] != 1:
         raise CommissionError("Consumer Config.schema_version must be 1")
@@ -105,6 +168,9 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
         default_execution[role_name] = _execution_binding_value(
             binding_value, context=f"Consumer Config.default_execution.{role_name}"
         )
+    evidence = None
+    if "evidence" in data:
+        evidence = _evidence_config_value(data["evidence"], context="Consumer Config.evidence")
     return ConsumerConfig(
         schema_version=1,
         repository_name=_text(data["repository_name"], context="Consumer Config.repository_name"),
@@ -113,6 +179,7 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
         max_autonomous_hops=hops,
         default_execution=default_execution,
         raw_text=text,
+        evidence=evidence,
     )
 
 
@@ -181,3 +248,40 @@ def resolve_execution(
         },
     )
     return ExecutionEnvelope(configuration=configuration, text=text, digest=digest)
+
+
+def resolve_evidence(
+    config: ConsumerConfig,
+    repository_root: Path | str,
+    environ: Mapping[str, str] | None = None,
+) -> EvidenceSettings:
+    """Resolve the Evidence destination and raw-retention mode for ``config``.
+
+    Absent an ``evidence`` block, the default applies: raw retention
+    ``local`` and a repository at ``<data home>/wfc/evidence/<repository_name>``,
+    where data home is ``$XDG_DATA_HOME`` falling back to ``~/.local/share``.
+    An explicit ``repository`` is resolved against ``repository_root`` when
+    relative (including one that escapes it with ``..``, as self-development
+    does); an absolute ``repository`` is used as given.
+    """
+
+    env = os.environ if environ is None else environ
+    repository_root = Path(repository_root)
+    evidence = config.evidence
+    raw = evidence.raw if evidence is not None else _DEFAULT_EVIDENCE_RAW
+    repository_setting = evidence.repository if evidence is not None else None
+
+    if repository_setting is not None:
+        candidate = Path(repository_setting)
+        path = candidate if candidate.is_absolute() else Path(os.path.normpath(repository_root / candidate))
+    else:
+        data_home = env.get("XDG_DATA_HOME")
+        if data_home:
+            base = Path(data_home)
+        else:
+            home = env.get("HOME")
+            if not home:
+                raise CommissionError("cannot resolve the default Evidence location: HOME is not set")
+            base = Path(home) / ".local" / "share"
+        path = base / "wfc" / "evidence" / config.repository_name
+    return EvidenceSettings(path=path, raw=raw)

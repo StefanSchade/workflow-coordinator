@@ -1,0 +1,108 @@
+= BP6b evidence retention: Beta-1 limitations
+
+Standing:: Developer-facing limitations record for `frontdoor.config`
+(`resolve_evidence`), `frontdoor.init` (Evidence-repository creation) and
+`frontdoor.archive` (`raw_retention`, `wfc archive --raw-retention`). This is
+not operator guidance; the operator manual (BP7) owns user-facing recovery
+instructions. Nothing here overrides the BP6a/BP6b/BP6c package boundary
+recorded in link:../../backlog/beta1_productization.adoc#bp6[BP6] and
+link:../../backlog/_open.adoc[the open backlog]; it documents the
+consequences of that boundary as implemented.
+
+== Nothing is wired into `wfc run`/`wfc resume` yet
+
+BP6b adds no caller beyond `wfc init` and `wfc archive` themselves. `wfc
+run`/`wfc resume` do not create an Evidence repository, do not read the
+`evidence` configuration block, and do not invoke `wfc archive` or
+`frontdoor.audit`. Supplying lifecycle facts automatically, archiving a Run
+at the end of its lifecycle, and choosing a retention mode from
+configuration rather than an explicit flag are BP6c's work.
+
+== What each retention mode keeps, and where raw files live
+
+`local` (the default) places every raw file BP5 always placed -- `manifest.json`,
+`run/`, and `ops/` when present -- on disk beside `audit.json`, but commits
+only `audit.json`. The raw files are excluded from the Evidence repository's
+history by the managed `.gitignore` block `wfc init` writes; they are not
+backed up by Git in any way, and removing or losing the local Evidence
+checkout loses them. `commit` commits everything BP5 ever placed, plus
+`audit.json` and one small per-Attempt negation `.gitignore` leaf that lets
+Git re-include files a repository-wide pattern would otherwise exclude.
+`discard` never places a raw file at the Evidence destination at all -- not
+transiently, not then removed -- only `audit.json` is ever written there;
+the original Run/OPS sources are untouched and remain wherever the caller's
+own retention of `$HOME/wfc-state`/`$HOME/wfc-ops` leaves them, until the
+user removes them.
+
+== `discard` retention cannot use a placed `manifest.json` to verify a resume
+
+`local`/`commit` retention place `manifest.json` once and keep it forever;
+every later re-archive or crash-resume re-reads that one file, so its
+`archived_at` timestamp never has to be reproduced. `discard` retention
+never places `manifest.json` anywhere, so a later no-op check or crash
+resume must rebuild one from the current Run/OPS sources purely to
+reproject `audit.json` for comparison. That ephemeral rebuild uses a fixed,
+non-time-based `archived_at` placeholder (never a real timestamp, and never
+written anywhere durable) specifically so the rebuild -- and therefore the
+projected `audit.json` -- is reproducible call to call. A genuine content
+difference (the underlying Run/OPS facts actually changed) still produces a
+different `audit.json` and is still refused as "already exists with
+different content"; only the placeholder timestamp is held fixed.
+
+== The managed `.gitignore` is a repository-wide default, not a per-Attempt choice
+
+`wfc init` writes one `.gitignore` block when it creates a new Evidence
+repository; it is not rewritten per Attempt and does not vary by the retention
+mode a later `wfc archive --raw-retention` call happens to use. `local`
+retention refuses, before any write, when that block is missing or does not
+cover every raw path this Attempt would place -- but it cannot refuse on
+`wfc init`'s behalf for an Evidence repository that already existed before
+BP6b (reused untouched, per the task's own rule) or one hand-edited since.
+`commit` retention works regardless of the root block's coverage, because it
+adds its own per-Attempt negation; an Evidence repository that was never
+given the managed block in the first place (for example because `wfc init`
+only ever adopted an existing one) still supports `commit` retention, but
+`local` retention against it is refused rather than silently committing raw
+files or leaving them unprotected.
+
+== `raw_retention=None` remains the unmodified BP5 path, not a fourth mode
+
+Passing no `--raw-retention` (or `raw_retention=None` to `archive_run`) is
+byte-for-byte the archiver this package found: no `audit.json`, no retention
+decision, the same manifest and commit shape BP5's own tests pin. It is not
+guaranteed to succeed against an Evidence repository the BP6b-managed
+`.gitignore` block protects, because that block (correctly) excludes the same
+raw paths the legacy path tries to commit unconditionally; it remains usable
+against the many pre-BP6b Evidence repositories that never had the block. A
+production caller choosing a retention mode (BP6c) is expected to always
+supply one explicitly, never fall back to `None`.
+
+== Default data-home placement is a decision of this package, not the engine
+
+The default Evidence location (`<data home>/wfc/evidence/<repository_name>`,
+with `$XDG_DATA_HOME` falling back to `~/.local/share`) is resolved entirely
+in `frontdoor.config.resolve_evidence`; nothing in the Level-0 engine knows
+this path exists or has an opinion about it. A project that wants a
+different location states it once, in `.wfc/config.yaml`'s `evidence.repository`.
+
+== Archives written before BP6b still receive no `audit.json`
+
+This follows directly from BP6a: `write_audit`/`project_audit` only ever add
+a new file beside an existing `manifest.json`, never rewrite or migrate an
+older archive. BP6b's retention-aware placement does not change this; an
+attempt directory that already exists without a BP6b-aware commit (for
+example one placed by the legacy `raw_retention=None` path, or by a pre-BP6b
+archiver) is read, when `wfc archive --raw-retention` is pointed at the same
+destination again, as whatever its own placement promised -- `local`/`commit`
+resume logic expects `manifest.json` to be present; `discard` resume logic
+expects only `audit.json`. Pointing a retention-aware archive at a
+destination placed by a different retention mode (or by the legacy path) is
+refused as a structural mismatch, not silently reconciled.
+
+== No retention cap, no cross-Attempt accounting
+
+Per the recorded DG-2 decision, there is no size or age cap on raw retention
+and no mechanism in this package that counts or reports how much `local` or
+`commit` retention has accumulated across Attempts. A project that wants
+that accounting must build it outside this package, by reading the Evidence
+repository's own `archive/` tree or history directly.

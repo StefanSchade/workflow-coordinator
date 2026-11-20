@@ -15,20 +15,53 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-from .audit import AuditError, project_audit
+from .audit import AuditError, ProjectionError, project_audit
 
 REPORT_SCHEMA = "wfc.report/1"
 
 # Fixed table: the one line naming the next human choice, keyed by the
 # reported status. Anything not in this table (together with "completed",
 # which needs no further action) is reported as "unknown", never as success.
+#
+# BP6b (review observation): this table now covers every real
+# ``model.RunStatus`` value and every ``frontdoor.lifecycle.EXIT_CODES``
+# classification, not only the six a BP6a archived fixture can carry --
+# ``test_report_status_coverage.py`` pins that coverage against both
+# vocabularies directly (without importing ``lifecycle`` here, which would
+# pull its Git/subprocess dependencies into this deliberately pure module).
+# A status outside this table, including a genuinely unrecognized future
+# one, is still reported as "unknown", never silently as success.
 _NEXT_HUMAN_CHOICE = {
+    # model.RunStatus: non-terminal states an archived Attempt should not
+    # normally carry, but a mid-flight or malformed archive still can.
+    "ready": "the Run has not started; launch it, or inspect why it has not",
+    "running": "the Run is still in progress; wait, then re-check with `wfc report`",
+    "awaiting_supervisor": "a human must inspect the pending supervisor step and advance it",
+    "suspended": "a human must resolve the suspending prerequisite, then run `wfc resume`",
+    # model.RunStatus / frontdoor.lifecycle.EXIT_CODES: shared terminal/stop names.
     "awaiting_human": "a human must answer the open question, then run `wfc resume`",
     "awaiting_human_budget": "a human must authorize additional hop budget, then run `wfc resume`",
     "reconcile_required": "a human must reconcile the Run's conflicting state before resuming",
     "stopped": "a human must decide how to proceed; this Run will not resume on its own",
+    # frontdoor.lifecycle.EXIT_CODES: controller-level classifications.
     "interrupted": "a human must inspect the Run and decide whether to resume it",
+    "engine_active": "the engine is still running; wait for it to finish, then re-check",
+    "engine_exited_before_state": "a human must inspect the Run directly; the engine exited before writing a terminal state",
     "uncertain_launch": "a human must determine whether the engine actually launched before taking any further action",
+    "inconsistent": "a human must inspect the Run directly; its recorded state is internally inconsistent",
+    "launch_failed_no_engine": "a human must diagnose the launch failure before retrying",
+    "refused_unauthorized": "a human must review and re-authorize this lifecycle step",
+    "refused_drift": "a human must reconcile the repository, which drifted from what was authorized",
+    "refused_prelaunch": "a human must inspect the pre-launch refusal before retrying",
+    "refused_probe": "a human must fix the environment or the failing baseline check before retrying",
+    "refused_identity_changed": "a human must review the changed implementation identity before retrying",
+    "refused_launch_exhausted": "a human must inspect the Run directly; its launch retry budget is exhausted",
+    "refused_active_lifecycle": "a human must resolve the other already-active lifecycle first",
+    "refused_journal_root": "a human must inspect the Run directly; its lifecycle journal root is invalid",
+    "refused_no_lifecycle": "a human must start a lifecycle for this Run before it can proceed",
+    "not_launched": "the Run has not been launched yet; launch it, or inspect why it has not",
+    "lifecycle_active": "the lifecycle is still active; wait, then re-check with `wfc report`",
+    "no_lifecycle": "a human must inspect why no lifecycle journal exists for this Run",
 }
 _UNKNOWN_NEXT_ACTION = "status is unknown; a human must inspect this Run directly"
 _KNOWN_STATUSES = frozenset({"completed", *_NEXT_HUMAN_CHOICE})
@@ -179,6 +212,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         audit = _load_audit_source(Path(args.source))
         report = build_report(audit)
+    except ProjectionError as error:
+        print(f"wfc report: {error}", file=sys.stderr)
+        return 3
     except (ReportError, AuditError) as error:
         print(f"wfc report: {error}", file=sys.stderr)
         return 2
