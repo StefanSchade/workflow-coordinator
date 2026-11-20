@@ -1,0 +1,179 @@
+= BP6c lifecycle archive wiring: independent focused review
+
+This record holds every independent focused-review pass over the corrections
+to the BP6c product (WorkItem
+`WI-WFC-BETA1-BP6C-LIFECYCLE-ARCHIVE-WIRING-002`). The broad-review passes
+live in
+`docs/warm_storage/concepts/wfc_beta1_bp6c_lifecycle_archive_wiring_002_broad_review.adoc`.
+The current pass is *H004*.
+
+== Pass H004 (current)
+
+WorkItem:: `WI-WFC-BETA1-BP6C-LIFECYCLE-ARCHIVE-WIRING-002`
+Hop:: `H004` (`focused_review`, fresh independent reviewer, gate,
+blocking-only, `finding_authority: [resolve]`)
+Reviewed change:: the correction Hop `H003`
+(`213fb08beb067f17b347101d45b922aac8fbf181`, range
+`a0aec9e..213fb08`), in the context of the whole BP6c product
+(`72725d7`) and the pre-implementation baseline `b9564da` / commission
+`0c5d8da`.
+Governing acceptance:: the Commission task for this WorkItem (`Deliver`
+items 1-6, the acceptance matrix, the binding identity decision (a)-(d),
+the hard rules and the withheld authority) and the three open blocking
+Findings `F001`, `F002`, `F003` recorded by the H002 broad review.
+Disposition:: *Accept.* All three Findings are resolved; no new blocking
+Finding. Four non-blocking observations below.
+
+=== What H003 changed
+
+Five leaves: `src/workflow_coordinator/frontdoor/postrun.py` (the only
+product-code change), `tests/fixtures/bp4/fake_engine.py`,
+`tests/unit/test_postrun_archive.py`, `tests/unit/test_postrun_lifecycle.py`
+and the BP6c limitations record. `lifecycle.py`, `archive.py`, `audit.py`,
+`report.py`, `config.py`, `preservation.py`, `journal.py` and `git_facts.py`
+are untouched by H003, so the frozen BP4a/BP4b surfaces this Hop could have
+disturbed are unchanged by inspection of the commit itself (`git show --stat
+213fb08`); the only test files it touches are the BP6c ones it added in H001
+plus the shared BP4 fake engine, and no assertion in them is removed or
+loosened.
+
+=== F001 -- post-run failures outside the four caught exception types
+
+*Resolved.* Both escapes the broad review reproduced are now named
+refusals, re-reproduced here independently against the real installed
+lifecycle (the repository's own BP4 fake engine/provider fixtures, driven
+outside pytest):
+
+* non-writable Evidence repository directory (`PermissionError` creating
+  `.wfc-archive-staging`): `CLASSIFICATION: completed` is printed, the
+  journal keeps `classified: completed`, `ext.archive.refused
+  {"reason_code": "archive_io_error"}` is appended, `cmd_run` returns *32*
+  (`ARCHIVE_FAILED_EXIT_CODE`) -- previously an uncaught `PermissionError`
+  that surfaced as exit *22*.
+* default Evidence location with `$HOME` and `$XDG_DATA_HOME` both unset
+  (`CommissionError` from `config.resolve_evidence`): `completed` reported,
+  exit *32*, `ext.archive.refused {"reason_code":
+  "evidence_configuration_error"}`, loud
+  `ARCHIVE FAILED (evidence_configuration_error): ...` notice, no
+  `ext.archive.intent` recorded (resolution fails before any archive
+  effect), and `wfc resume` archives exactly once after the cause is
+  removed.
+
+Neither record carries an absolute path or provider prose: both are exactly
+`{"reason_code": <code>}`. The reason-code vocabulary in the limitations
+record matches `postrun._reason_code_for` exactly (`archive_refused`,
+`audit_structural_error`, `privacy_guard_refused`, `git_preflight_failed`,
+`evidence_configuration_error`, `archive_io_error`).
+
+Mutation sensitivity (own probe, each mutation applied to a pristine
+`git archive HEAD` copy, `tmp/review-bp6c-h004/mutate.py`):
+
+[cols="1,4,1"]
+|===
+|Mutant |Reverted behaviour |Outcome
+
+|A1 |`OSError` dropped from the `archive_run` except tuple (pre-H003 body)
+|killed
+|A2 |`resolve_evidence` no longer guarded by `CommissionError` (pre-H003
+body) |killed
+|A3 |`evidence_configuration_error` mis-mapped |killed
+|A4 |`archive_io_error` mis-mapped |killed
+|===
+
+=== F002 -- preservation fact in the audit for all three BP4b outcomes
+
+*Resolved.* Three new lifecycle-level tests drive the real pipeline to
+BP4b's own `not_needed`, `refused` and `result` facts and pin the exact
+`audit.lifecycle.preservation` shape each produces, including the refused
+`reason_code` and the result's `ref`/`commit`/`quiescence`. Five
+independent mutations of `postrun._preservation_fact` are now all killed:
+
+[cols="1,4,1"]
+|===
+|Mutant |Mutation |Outcome
+
+|B1 |`refused` fact dropped (the H002 mutant M1) |killed
+|B2 |`not_needed` fact dropped (the H002 mutant M2) |killed
+|B3 |refused `reason_code` blanked |killed
+|B4 |`not_needed` reported as `refused` |killed
+|B5 |result `ref`/`commit` dropped |killed
+|===
+
+=== F003 -- the OPS-dir narrowing is now pinned in both directions
+
+*Resolved.* `tests/fixtures/bp4/fake_engine.py` now records
+`execution_bindings_source` in `operator-plan.json` from the real
+`--execution-bindings` argv, matching the real engine, so the whole BP6c
+matrix runs against a state-root shape the engine actually produces; and
+`ResolveOpsDirProductShapeTests` exercises `archive.resolve_ops_dir`
+directly against both the product-lifecycle envelope-cache shape and the
+self-development `execution-bindings.yaml` shape.
+
+[cols="1,4,1"]
+|===
+|Mutant |Mutation |Outcome
+
+|C1 |`resolve_ops_dir` narrowing reverted to any file name |killed (4
+tests, incl. acceptance 1 and the Run-derived-identity test)
+|C1b |same mutation, new unit test file alone |killed
+|D1 |recorded OPS evidence never consulted |killed
+|D2 |recorded-but-missing OPS refusal removed |killed
+|===
+
+The self-development refusal the narrowing had to preserve
+(`execution-bindings.yaml` recorded, default OPS candidate missing) is
+therefore pinned, not merely asserted.
+
+=== Regression state at `213fb08`
+
+`tests/unit/test_postrun_lifecycle.py`,
+`tests/unit/test_postrun_archive.py`,
+`tests/unit/test_lifecycle_controller.py`,
+`tests/unit/test_lifecycle_crash_matrix.py`,
+`tests/unit/test_preservation_lifecycle.py` and the archive/audit/report/
+evidence-config suites pass, as does the package-boundary (import
+direction) architecture guard. The full `tests/unit` sweep fails only in
+`tests/unit/test_claude_adapter_conformance.py` (sandbox read-only
+filesystem for the adapter's own temp path) and `tests/unit/test_wfc_op.py`
+(`pip install` with no network); `tests/architecture/test_bp1_identity.py`
+and `tests/architecture/test_offline_distribution.py` fail on the same
+`python -m build` / pip-download restriction. These are the agent-local
+environmental limitations the H002 review already recorded, with the actual
+diagnostics; none of them touches a file this WorkItem changed. They are
+exploratory agent-side results, not Coordinator-trusted evidence.
+
+=== Non-blocking observations (no Finding)
+
+. `postrun._cached_config` (`postrun.py:82`, called at `postrun.py:194`)
+  reads the checkout's cached `commission/config.yaml` outside both new
+  guards, so a *removed or malformed cached config* would still raise past
+  the post-run step. This is STATE tampering rather than a plausible
+  operational input, and it matches the frozen BP4a design, which reads the
+  same cached files unguarded at `lifecycle.py:251-253` and
+  `lifecycle.py:506` -- a Run whose cached materials are gone already fails
+  earlier on the resume path. Correspondingly, the limitations record's
+  phrase "caught at every call site that can raise them" is a little
+  broader than the code: the guarded call sites are Evidence-settings
+  resolution and the archive effect, not the cached-config read.
+. Mutant *D3* (removing the pre-existing BP5 refusal "OPS directory is not
+  the one recorded in this Run's preparation", `archive.py:688`) survives
+  the whole archive plus post-run suite. The refusal and its gap both
+  predate this WorkItem; the narrowing only changed how `recorded` is
+  derived. Outside BP6c's acceptance list.
+. Mutant *C2* (the fake engine stops recording `execution_bindings_source`)
+  survives: the fixture change is fidelity, and the mutation-sensitive pin
+  for the narrowing is the new unit test. This is the intended division, not
+  a gap -- noted so the next reader does not mistake the fixture for the
+  pin.
+. The `CommissionError` branch returns the cached `ext.archive.result`
+  without a recomputed report when a Run was already archived before the
+  Evidence configuration broke. No second commit, no untruthful statement;
+  the consolidated report is simply not reprinted in that state.
+
+=== Verdict
+
+Accept. `F001`, `F002` and `F003` resolved; no new blocking Finding. The
+engine outcome still stands in every reproduced failure shape, the exit code
+override remains confined to a genuine refusal, the `ext.*` records stay
+free of absolute paths and provider prose, and the frozen BP4a/BP4b
+surfaces are untouched by this correction.
