@@ -1,0 +1,724 @@
+= BP7 self-development cutover plan
+:toc:
+:toclevels: 2
+
+Maturity:: draft
+Authority:: informative
+Updated:: 2026-11-20
+Owns:: A concrete, source-grounded implementation plan for
+link:beta1_productization.adoc#bp7[the epic's BP7] and
+link:beta1_execution_plan.adoc[the execution plan]'s BP7 Commission
+(`wfc-beta1-bp7-self-development-cutover-001`): gap analysis against the
+actual code, one deployment-configuration recommendation, an
+archive-equivalence definition, a decomposition into independently testable
+sub-Commissions, risk/bootstrap analysis and the remaining real maintainer
+decisions. This plan authorizes no implementation, Run, Runtime promotion,
+push or tag; every number and file/function citation below was checked
+against the source tree at commit `3d7c7ca` (this plan's own base HEAD), not
+assumed from the reviews that first proposed BP7.
+
+This plan does not reopen DG-4 (cutover before the `0.1.0b1` tag, old Harness
+kept until two real archived self-hosted Runs through the product Front Door)
+or DG-5 (preparation steps 4/5 move to recorded implementation identity plus a
+consumer-provided, WFC-probed environment); both are resolved, 2026-11-20, per
+link:beta1_execution_plan.adoc#decision-gates[the execution plan's decision
+table]. It does not set or prepare the `0.1.0b1` tag, and treats Beta-epic
+closure and the tag as distinct, per
+link:beta1_execution_plan.adoc#closure-versus-tag[closure versus tag].
+
+[[gap-analysis]]
+== 1. Gap analysis: product Front Door versus `scripts/wfc_op.py`
+
+Each row names the file/function on both sides and is verified against the
+current tree, not inferred from the reviews.
+
+[cols="2,3,3,2",options="header"]
+|===
+|Capability |Harness (`scripts/wfc_op.py` + modules it uses) |Product Front Door |Status
+
+|Commission authoring/compile
+|`cmd_commission_render`/`cmd_commission_check`
+(`scripts/wfc_op.py:137-175`) compile an open-ended, hand-authored
+`CommissionIntent` (`commissioning.py` v1 path) against
+`governance/self-development/components.yaml`
+(`commissioning.py:43 _COMPONENT_MANIFEST_PATH`, hard-coded as the only
+permitted `components_ref.path`).
+|`compile_commission` (`commissioning.py:666-780`) compiles a closed
+`ConsumerRequest`/`ConsumerConfig` (`frontdoor/request.py`,
+`frontdoor/config.py`) against exactly `simple@v1`/`robust@v1`
+(`commissioning.py:620-636 _consumer_program_template`); `direct@v1` is
+withheld from the consumer compiler.
+|*Narrowed by design, not a missing capability.* `robust@v1`'s fixed
+four-phase shape (`implement`/`broad_review`/`correct`/`focused_review`,
+`governance/workflow-programs/robust/v1.yaml`) already matches the shape
+self-development's own multi-phase profiles use today (e.g.
+`investigate`/`review`/`correct`/`rereview` in
+`standalone-development-profile.yaml`); the task body
+(`task.md`, carrying both worker and reviewer instructions in one file,
+confirmed by this very invocation's own task text) plays the same role a
+profile's per-phase custom `review.purpose` paragraph did historically.
+
+|Role/component texts
+|`governance/self-development/prompts/{worker,reviewer,simple-self-check}.txt`,
+referenced only via `components.yaml`.
+|`src/workflow_coordinator/resources/roles/{worker,reviewer,simple-self-check}.txt`,
+digest-pinned in `implementation_identity.RESOURCE_DIGESTS` and read by
+`commissioning.py:605-616 _package_resource_text`.
+|*Equivalent today, different source of truth.* Verified byte-identical
+(`diff` against the three `governance/self-development/prompts/*.txt` files,
+2026-11-20); BP1 already copies them in parallel. Cutover moves the
+authoritative copy to the package resource; the governance copies become
+frozen historical input, never deleted (epic: "no retroactive rewrite of
+historical Commissions").
+
+|Repository-policy/guidance binding
+|None. Every legacy self-development profile declares
+`repository_policy: []` on every phase (e.g.
+`standalone-development-profile.yaml:10,30,55,75`); self-development has
+never bound a guidance component.
+|*Required* on every phase of both closed programs: `compile_commission`
+(`commissioning.py:641-644`) always fills
+`phase["components"]["repository_policy"] = [_REPOSITORY_POLICY_COMPONENT_ID]`,
+and `ConsumerRequest.guidance` (`frontdoor/request.py:44-49,88-93`) is a
+required field naming an already-committed, already-tracked guidance file
+pinned at its own `source_commit`.
+|*Genuine new input, not a product gap.* Self-development needs a new,
+small, committed guidance document before any Commission can compile under
+either closed program; see <<sequence>> Commission C1. Authoring its content
+is listed as a real decision in <<open-decisions>>, item 2.
+
+|Execution/role bindings
+|`--role-binding ROLE=adapter:model:reasoning`, required explicitly on every
+`prepare` invocation (`write_execution_bindings`, `scripts/wfc_op.py:493-538`).
+|`ConsumerConfig.default_execution` (`frontdoor/config.py:84,121-130`) holds
+per-repository defaults; `resolve_execution` (`frontdoor/config.py:197-250`)
+merges field-by-field with a per-Run `--execution-override ROLE.FIELD=VALUE`
+(`frontdoor/lifecycle.py:923-936`, `frontdoor/plan.py:110-121`).
+|*Equivalent capability, different binding point.* Not a gap: the product
+lets a default live once in committed config instead of being retyped per
+invocation, while still allowing an ad hoc override.
+
+|Hop ceiling
+|`WorkItem.max_autonomous_hops`, checked against policy and the Coordinator
+hard ceiling (`operator.py:213-220,425`); `COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS
+= 20` (`model.py:25`).
+|Identical mechanism: `ConsumerRequest.max_autonomous_hops` checked against
+`ConsumerConfig.max_autonomous_hops` and the same hard ceiling
+(`commissioning.py:705,423`, `frontdoor/request.py:132-134`,
+`frontdoor/config.py:154-156`).
+|*Fully equivalent.* No gap.
+
+|Evidence command(s)
+|`write_execution_bindings`/preflight resolve whatever `evidence_commands`
+a hand-authored policy names (historically always `pytest`, e.g.
+`evidence-failure-disposition-hardening-policy.yaml`); multiple named
+commands are possible in the schema but self-development has only ever used
+one per Commission.
+|Exactly one evidence command, always named `task-check`
+(`commissioning.py:277,291,306` evidence profile literals;
+`EvidenceCommandRequest` `frontdoor/request.py:38-41,68-85`, hard max
+timeout `COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS = 900`, `model.py:26`).
+|*Equivalent in practice.* Self-development's own historical profiles already
+reuse one evidence list (`[pytest]`/`[]`) across every gate phase, the same
+shape `robust@v1` fixes structurally. No gap.
+
+|Durable review artifacts
+|Per-phase `authorized_scope` paths named directly in a hand-authored profile
+(e.g. `docs/backlog/FTR-WFC-EVIDENCE-FAILURE-DISPOSITION-HARDENING_implementation_review_001.adoc`).
+|`ConsumerRequest.durable_artifacts["broad_review"/"focused_review"]`
+(`frontdoor/request.py:135-155`), substituted into the `artifact_key: A` scope
+slot by `compile_commission` (`commissioning.py:702-705,642-644`).
+|*Fully equivalent.* No gap. (This very Commission's own `authorized_scope`
+already uses this exact shape.)
+
+|Pinned exports/venvs, Runtime/Development isolation ("preparation steps 4/5")
+|`export_runtime`/`prepare_runtime_environment`/`prepare_development_environment`/
+`build_venv`/`pip_install` (`scripts/wfc_op.py:386-460`): a fresh `git archive`
+export of the exact Runtime commit into a fresh venv, every Attempt, plus a
+separate dev/evidence venv from the live pinned Development checkout.
+|*None.* No function in `frontdoor/*.py` builds a venv, exports a commit, or
+installs anything. `wfc run`/`resume` locate the already-installed `wfc`
+console script next to the running interpreter or on `PATH`
+(`_default_engine_command`, `frontdoor/lifecycle.py:71-93`) and invoke it.
+|*Intentional removal, per DG-5, not a backfill-worthy gap* -- "the normative
+preparation sequence moves to ... a consumer-provided, WFC-probed
+environment; WFC provisions no project environments." But DG-5 removes the
+*fresh-export-per-Attempt step*, not the underlying Runtime-freeze
+*requirement* (ch05's "Accepted Runtime WFC N ... never mutates itself" is
+unchanged). This shifts a real precondition onto the maintainer's prepared
+environment; see <<risks>> for the bootstrap risk this creates and the
+precondition it implies.
+
+|Offline reviewed-input-bundle verification
+|A dedicated profile, `fetch`/`verify`/`exec` commands and staging, owned by
+the Developer Guide (ch03 `[[selfdev-offline-inputs]]`); exercised around
+both `prepare` and `launch`.
+|*None found* anywhere under `src/workflow_coordinator/frontdoor/`.
+|*Intentionally out of Front-Door scope under DG-5*, for the same reason as
+the row above: a consumer-provided, already-verified environment is assumed,
+not probed-and-fetched by WFC itself. Not a defect; name it so a reviewer
+does not expect a ported equivalent.
+
+|Per-Attempt scratch directory
+|`create_attempt_scratch`/`_check_scratch`/`_scratch_environment`
+(`scripts/wfc_op.py:209-262`): a fresh, private, mode-`0700` directory per
+Attempt, defaulting under `~/wfc-scratch`, frozen into `launch.sh`'s
+`TMPDIR`/`TMP`/`TEMP`.
+|*None.* No scratch allocator exists in `frontdoor/*.py`.
+|*Real, named, not silently absorbed, gap* -- exactly the kind
+`FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT.adoc` (observation 1)
+already flags as open and deferred. Under DG-5 this becomes the consumer
+environment's responsibility; ch05's existing "Temporary storage before
+test-heavy Runs" guidance remains necessary and must not be silently dropped
+at cutover. See <<risks>>.
+
+|State/OPS/scratch/evidence separation
+|Three explicit directories: OPS root, state root, scratch root
+(`ops_root`/`state_root`/`create_attempt_scratch`, `scripts/wfc_op.py:201-262`).
+|Structurally different but equally disjoint: `checkout_dir`
+(`journal.state_home()/checkouts/<checkout_id>`, `frontdoor/journal.py:53-56,
+110-112`) replaces OPS+bookkeeping; `engine-state` is a subdirectory of it
+(`frontdoor/lifecycle.py:309`); `require_disjoint_journal_root`
+(`frontdoor/journal.py:100-107`) refuses a journal root that is, contains, or
+is contained by the repository; Evidence is resolved separately
+(`resolve_evidence`, below).
+|*Equivalent invariant, different shape.* No gap in the separation itself.
+No scratch root exists at all (see row above); that absence is the actual
+gap, not the state/OPS shape.
+
+|Mechanical archive
+|`scripts/archive_run.py`/`scripts/wfc-archive-run` in the sibling Evidence
+repository, invoked via `_invoke_canonical_archive`/`cmd_archive`
+(`scripts/wfc_op.py:1138-1237`).
+|`frontdoor/archive.py` (1496 lines): a direct, parameterized port -- same
+allow-lists (`RUN_ROOT_ALLOW`/`CHECKOUT_ALLOW`/`OPS_ROOT_ALLOW`,
+`archive.py:86-120`), same `destination_for` shape
+(`archive/<domain>/<workstream>/<attempt_id>` or `archive/unclassified/<attempt_id>`,
+`archive.py:746-749`), manifest byte-compatible apart from `archived_at`
+(module docstring, `archive.py:1-49`; `_manifests_match_ignoring_archived_at`,
+`archive.py:856`). Wired automatically into `wfc run`/`resume` via
+`postrun.run_pending_postrun` (`frontdoor/postrun.py:167-230`); `wfc run`'s
+own lifecycle did not call it as of the manual's own
+`[[installed-archive]]` note, now superseded by the BP6c wiring that
+landed since.
+|*Equivalent, already improved.* See <<archive-equivalence>> for the exact
+facts and the one acceptable difference (attempt-identity derivation).
+
+|Sanitized audit/report
+|None as a separate artifact; the ledger entry is the closest analog
+(hand-curated).
+|`frontdoor/audit.py` (`project_audit`) and `frontdoor/report.py`
+(`build_report`), wired into the same automatic postrun step.
+|*New capability, not a gap to fill for Harness parity* -- already
+independently accepted (BP6a/BP6b).
+
+|Governing-input location
+|`governance/self-development/`, `governance/work-items/`,
+`governance/workflow-programs/`.
+|`ConsumerConfig.governance_dir` (`frontdoor/config.py:81`, default
+`.wfc/governance`, `frontdoor/init.py:31`): compiled Commissions land under
+a *new* directory, never under `governance/`.
+|*New, deliberately separate location*, not a gap. `compile_commission`
+refuses any `ConsumerRequest.scope` that overlaps `governance_dir` or the
+guidance path (`commissioning.py:644-646`), so the legacy `governance/` tree
+and the new `.wfc/governance/` tree cannot collide, and the hard-coded v1
+`_COMPONENT_MANIFEST_PATH` check (`commissioning.py:352`) never runs on the
+consumer path at all.
+|===
+
+No other capability gap was found in `wfc run`/`resume`/`status`/`audit`/
+`report`, `wfc init`, Consumer Config, or the request/Commission compiler
+that self-development's own historical practice actually depends on. In
+particular: Hop ceilings, durable-artifact wiring, execution-binding
+separation (C1), and the archive/audit/report chain are all already
+equivalent or already improved; the real open items are exactly the four
+marked "genuine new input" or "real ... gap" above (guidance binding,
+Runtime-freeze precondition, offline-input-bundle responsibility shift, and
+the missing scratch allocator).
+
+[[config-recommendation]]
+== 2. Deployment-configuration binding recommendation
+
+=== What `resolve_evidence` already supports (verified, not assumed)
+
+`frontdoor/config.py:253-287 resolve_evidence(config, repository_root,
+environ)`:
+
+* Absent an `evidence` block: `raw="local"`, destination
+  `<XDG_DATA_HOME or ~/.local/share>/wfc/evidence/<repository_name>` --
+  always under the consumer's data home, never a product-chosen absolute
+  path baked into committed config.
+* An explicit `evidence.repository` string is resolved *relative to
+  `repository_root`* when not already absolute, "including one that escapes
+  it with `..`, as self-development does" (the function's own docstring,
+  verified against its code: `Path(os.path.normpath(repository_root /
+  candidate))`). `repository_root` is always the actual payload repository
+  `wfc run`/`resume` was invoked against (`inputs.repository`, passed through
+  unchanged to `postrun.run_pending_postrun` at `frontdoor/lifecycle.py:902`
+  and into `resolve_evidence` at `frontdoor/postrun.py:197`) -- never a copy,
+  scratch clone, or the engine's own state root.
+* `raw` is one of `local`/`commit`/`discard` (`EVIDENCE_RAW_CHOICES`,
+  `config.py:26`), independent of destination.
+
+This means `evidence.repository: ../workflow-coordinator-run-evidence` with
+`raw: commit`, written into a *relative* path in committed config, already
+resolves correctly today with **no additive product change** -- provided
+`wfc run`/`resume` is always invoked against the real, canonical Development
+checkout that actually has that sibling directory one level up (see
+<<risks>> for why this is a real operational precondition, not a config
+limitation).
+
+`wfc init` (`frontdoor/init.py`) never commits the Consumer Config
+(`"wfc init never commits it"`, `init.py:212`) and, given an
+`--evidence-repository` pointing at the existing sibling, calls
+`ensure_evidence_repository` (`init.py:93-123`), which returns `"reused"`
+without writing anything when the path already exists, is a Git repository
+root, and has an `archive/` directory -- exactly the sibling's current shape.
+So nothing about adopting the existing Evidence repository requires any
+write to it; `wfc init --no-evidence-repository` can skip even that read-only
+check if the Commission authoring the config prefers to touch nothing
+outside the Development repository.
+
+=== Options evaluated
+
+[cols="2,4,3",options="header"]
+|===
+|Option |What it encodes / what breaks elsewhere |Verdict
+
+|(a) Versioned relative config committed in the repository
+(`.wfc/config.yaml`, `evidence.repository: ../workflow-coordinator-run-evidence`)
+|Encodes "the Evidence repository is always exactly one directory above
+wherever this Development checkout is cloned." No absolute `$HOME` path is
+ever written. It breaks the moment a machine keeps the Development checkout
+and its Evidence sibling in a different relative arrangement -- but that
+arrangement is already today's long-standing self-development convention
+(every manual chapter and `scripts/wfc_op.py` invocation already assumes a
+sibling clone), not a new assumption this plan introduces.
+|*Recommended.*
+
+|(b) Local/untracked override (a second, gitignored config file layered over
+or instead of the committed one)
+|Would encode an absolute, machine-specific Evidence path outside the
+committed history -- exactly what a genuinely multi-machine consumer might
+want, but self-development has exactly one real deployment (the
+maintainer's own machine, one canonical checkout). *No such layering
+mechanism exists today*: `--config` (`frontdoor/plan.py:279-293`,
+`frontdoor/lifecycle.py:953-961`) names exactly one file, read once; nothing
+in `config.py`/`lifecycle.py`/`plan.py` merges a second config source.
+Building it would be an additive product change this plan does not need to
+request.
+|*Not recommended for this need.* Leave as a possible future
+general-consumer feature, not a BP7 requirement.
+
+|(c) Combination (versioned base + untracked override)
+|Same additive-code objection as (b), plus two sources of truth for one
+small, single-deployment value -- directly against "no second archive path
+beside the product function."
+|*Not recommended.*
+|===
+
+=== Recommendation
+
+Commit `.wfc/config.yaml` at the Development repository root (schema and
+keys exactly as accepted in `frontdoor/config.py:consumer_config_from_yaml`):
+
+[source,yaml]
+----
+schema_version: 1
+repository_name: workflow-coordinator
+governance_dir: .wfc/governance
+work_item_scope_ceiling:
+  - src
+  - tests
+  - scripts
+  - docs
+max_autonomous_hops: 10
+default_execution: {}        # filled per <<open-decisions>> item 3
+evidence:
+  repository: ../workflow-coordinator-run-evidence
+  raw: commit
+----
+
+`work_item_scope_ceiling` reuses the existing, already-precedented
+`repository-standard@v1` constant literal (`commissioning.py:333`:
+`("src", "tests", "scripts", "docs")`), not an invented list; it bounds every
+future compiled Commission's `scope`, each of which can and normally should
+be much narrower. No currently-identified BP7 retirement work (removing
+`scripts/wfc_op.py`, the v1 compile path, and the literal `_repository_
+standard_record` check in `commissioning.py`) falls outside this ceiling;
+nothing currently in the tree requires touching `governance/` itself (no
+concrete "quarantined file" exists anywhere under `src/`, `tests/`,
+`scripts/`, or `governance/` as of this Hop -- verified by search -- so this
+plan does not invent one; the retirement Commission should re-check for one
+when it starts).
+
+No additive product change is needed for the Evidence binding itself. One
+additive *input* (not a code change) is required regardless of which config
+option is chosen: a new, committed `repository_policy` guidance document,
+because `compile_commission` always requires `ConsumerRequest.guidance`
+(see <<gap-analysis>>). Authoring its content is a real decision, not a
+bounded one; see <<open-decisions>>, item 2. Likewise, `default_execution`'s
+concrete adapter/model/reasoning values are the maintainer's choice, not
+this plan's; see <<open-decisions>>, item 3.
+
+[[archive-equivalence]]
+== 3. Archive equivalence
+
+"Archive-equivalence evidence" (execution plan BP7 acceptance) means: for a
+real self-hosted `wfc run`, the automatic BP6c postrun archive
+(`postrun.run_pending_postrun` -> `archive.archive_run`,
+`frontdoor/postrun.py:167-230`, `frontdoor/archive.py:981-1170`) produces a
+destination under `archive/<domain>/<workstream>/<attempt_id>` (or
+`archive/unclassified/<attempt_id>`) in the existing sibling Evidence
+repository that is verified, field by field, against what
+`scripts/archive_run.py`/`scripts/wfc-archive-run` would have produced for
+the same STATE/OPS facts.
+
+Facts that must match (verified already true of the port, not assumed):
+
+* *File set.* `RUN_ROOT_ALLOW`/`CHECKOUT_ALLOW`/`OPS_ROOT_ALLOW`
+  (`archive.py:86-120`) are the Harness allow-lists, copied verbatim.
+* *Manifest shape.* A freshly written `manifest.json` is byte-compatible
+  with the legacy one apart from `archived_at`
+  (`archive.py`'s own module docstring, cross-checked against
+  `_manifests_match_ignoring_archived_at`, `archive.py:856-875`, which
+  strips exactly that one field before comparing).
+* *Destination shape.* `destination_for` (`archive.py:746-749`) reproduces
+  the existing `archive/<domain>/<workstream>/<attempt_id>` /
+  `archive/unclassified/<attempt_id>` layout the sibling repository already
+  uses.
+* *Commit mechanics.* Both use the one Coordinator-owned bounded commit
+  primitive (`git_facts.bounded_path_commit`); the subject
+  (`evidence: archive <attempt>`) is unchanged.
+
+Acceptable, documented differences (name these in the acceptance record so a
+reviewer does not mistake either for a defect):
+
+* *Commit body.* The legacy wrapper wrote a rich identity/file-count
+  narrative into the commit body; the bounded primitive commits a bare
+  subject with no body, so the same narrative is printed to stdout as a
+  report instead (`archive.py` module docstring). Acceptable: the facts move,
+  they are not lost.
+* *Attempt-identity derivation.* The product derives the Attempt id
+  deterministically from `repository_name` + the engine's own `run_id`
+  (`postrun.py:86-100 _attempt_identity`), explicitly *never* from the engine
+  state root's directory name. The Harness instead uses whatever string the
+  operator chose at `prepare --attempt`
+  (`derive_attempt_id`/`validate_explicit_attempt_identity`,
+  `scripts/wfc_op.py:545-580`). The two proof Runs will therefore carry
+  differently *shaped* Attempt identifiers (e.g.
+  `workflow-coordinator-<run-id>` versus a hand-chosen
+  `wfc-<slug>-<date>-<n>`); this is an acceptable, already-decided difference
+  in identity derivation, not an equivalence failure.
+* *Sanitized audit/report.* `audit.json` (BP6a/BP6b) is a genuinely new
+  artifact beside the manifest, already independently accepted; its presence
+  is an addition, not a compatibility requirement the legacy archive needs to
+  match.
+
+How equivalence is demonstrated without a second archive path: the
+comparison is an offline, read-only check against a *copy* of the same
+STATE/OPS facts the real proof Run already produced -- reusing the same
+fact-extraction functions (`archive.py:454 extract_facts`,
+`archive.py:621 run_identity`) the port already exercises, the same pattern
+BP5 already used for its own equivalence test (execution plan, "Access
+verified versus inaccessible"). It never invokes
+`scripts/wfc_op.py archive` a second time against the real Evidence
+repository for the same proof Run; doing so would create a second archive
+path beside the product function, which the maintainer specification
+explicitly forbids. The committed comparison lives in the new sub-Commission
+C1b (see <<sequence>>), as a test fixture/tool, not as a second live archive.
+
+The curated `workflow-coordinator-run-evidence/project_memory/
+run_ledger.adoc` stays exactly as described in
+link:../operator_manual/ch04_evidence/02_archive.adoc#semantic-ledger[the
+manual's semantic-ledger section]: maintainer-owned, commonly LLM-assisted,
+performed separately against the already-archived mechanical facts, never
+automated by either path. BP7 adds two ordinary ledger entries, one per proof
+Run, following the existing convention; this plan does not change ledger
+curation.
+
+[[sequence]]
+== 4. Sequence and sub-Commissions
+
+Decomposition of the single BP7 Commission the execution plan already names
+(`wfc-beta1-bp7-self-development-cutover-001`) into independently testable
+steps. Every step before "C5 retirement" still executes through the
+*existing* self-development route (`scripts/wfc_op.py`), per the epic's own
+convention that "only BP7 switches self-development itself onto the new
+path" -- the retirement Commission is the one that finally performs that
+switch, as its own last act.
+
+[cols="1,2,3,3,2,2",options="header"]
+|===
+|# |Commission id |Scope / goal |Predecessor |Acceptance & tests |Effort
+
+|C1
+|`wfc-beta1-bp7-guidance-config-001`
+|Author and commit `.wfc/config.yaml` (per <<config-recommendation>>) and a
+new, small `repository_policy` guidance document (content per
+<<open-decisions>> item 2). Scope: `.wfc/config.yaml`, the new guidance
+document path, a short manual note recording its existence.
+|None technical (BP1-BP6 already independently accepted); gated only on
+<<open-decisions>> items 2 and 3 being settled by the maintainer before this
+Commission starts.
+|`consumer_config_from_yaml` parses the committed file without error;
+`resolve_evidence(config, repository_root)` resolves to
+`repository_root.parent / "workflow-coordinator-run-evidence"` with
+`raw == "commit"` in a pure-function unit test (no filesystem Evidence
+access needed, since `resolve_evidence` never touches the filesystem);
+guidance document exists, is non-empty, and is referenced by its exact path
+and commit for the next step.
+|S
+
+|C1b
+|`wfc-beta1-bp7-archive-equivalence-harness-001`
+|Build the offline, read-only comparison described in
+<<archive-equivalence>>: given a sample STATE/OPS fact set, assert the
+product's extracted facts and manifest shape match what
+`scripts/archive_run.py`'s own extraction would produce, modulo
+`archived_at` and the two named acceptable differences. Scope: a new test
+module under `tests/` plus the comparison tool it needs; no change to
+`archive.py` or `wfc_op.py` themselves.
+|None technical; may run in parallel with C1.
+|The comparison test passes against at least one real historical Attempt's
+already-archived manifest (read-only, from the existing Evidence repository,
+never written to) and against a synthetic fixture; it is reusable, unmodified,
+for both proof Runs below.
+|S/M
+
+|(external)
+|Maintainer Runtime promotion of the accepted BP1-BP6 implementation
+|Not a Commission; the maintainer's own act, reserved to the maintainer by
+every earlier batch (execution plan, Batch 4 "Stop").
+|C1 and C1b independently accepted.
+|--
+|--
+
+|Proof Run 1
+|(a real `wfc run`, not a planning Commission)
+|The maintainer commissions and runs one small, genuinely useful, real
+WFC-improvement task entirely through `wfc run --yes` against the real
+Development checkout, under the promoted Runtime. See <<open-decisions>>
+item 1 for task selection.
+|C1, C1b accepted; Runtime promoted; the bootstrap and scratch preconditions
+in <<risks>> satisfied.
+|Run completes (or reaches a classified terminal state) end to end on the
+product Front Door; the automatic BP6c archive commits into the sibling
+Evidence repository; C1b's comparison, re-run against this Run's own facts,
+reports equivalence; a ledger entry is added per existing convention.
+|Small (1 real Run; Hop count depends on the chosen task, not fixed by this
+plan)
+
+|Proof Run 2
+|(a second, independent real `wfc run`)
+|A second, different small real task, to demonstrate the path is regular, not
+a one-off.
+|Proof Run 1 completed and its archive-equivalence comparison accepted.
+|Same as Proof Run 1, independently.
+|Small
+
+|C5
+|`wfc-beta1-bp7-retirement-001` (== the execution plan's own BP7 Commission)
+|Remove or stub `scripts/wfc_op.py`; remove the v1 `CommissionIntent` compile
+path and `_repository_standard_record` literal check from
+`commissioning.py`; re-check for and remove any quarantined file actually
+present at that time (none exists as of this plan); update the manual
+sections named in the execution plan: `ch03_running/01_preparation.adoc`
+(the `[[harness-preparation]]` subsection and steps 4/5 of the canonical
+sequence, per DG-5's wording), `ch03_running/02_launch_status.adoc`,
+`ch04_evidence/02_archive.adoc` (retire the `wfc-op archive` delegation
+section, promote the already-documented "Installed `wfc archive`" section
+from "standalone capability" to the regular path),
+`ch05_self_development/01_topology_budget.adoc` and `02_promotion.adoc`
+(topology/preparation specialization now describes the product path),
+`ch06_recovery/01_outcomes.adoc` (add the carve-out described below), and
+the command index `ch08_examples/02_command_flow.adoc`.
+|Both proof Runs completed with recorded archive-equivalence evidence.
+|Full suite green without `scripts/wfc_op.py`, without the v1 compile path,
+and without any quarantined file; every amended manual chapter renders with
+Asciidoctor and its internal cross-references resolve; manual guidance
+agrees with implemented behavior (spot-checked against the actual CLI help
+output of `wfc run`/`status`/`audit`/`report`/`init`/`plan`/`archive`).
+|M
+|===
+
+The `ch06_recovery/01_outcomes.adoc` edit is a bounded reconciliation, not an
+open design question: that chapter's "Non-automation boundary" section
+currently states "WFC does not automatically ... create salvage commits,"
+written before BP4b's candidate preservation existed. BP4b's
+`preservation.py` already creates an automatic, non-authoritative candidate
+commit on a bounded set of stop classifications
+(`_TRIGGER_CLASSIFICATIONS`, `frontdoor/preservation.py:30-32`) and is
+explicit that this "does not replace the manual salvage/successor
+procedure" (module docstring, `preservation.py:1-10`). C5 adds one
+cross-referencing sentence naming BP4b's automatic preservation as a
+distinct, already-implemented, non-authoritative exception, leaving the
+manual salvage procedure (outcome 2) exactly as documented. No behavior
+changes; this is documentation catching up with already-accepted BP4a/BP4b
+code, not a new architecture decision.
+
+TECH-DEBT-WFC-LEGACY-COMMIT-MECHANICS's review of `claimed_commits`/
+`claim_mismatch`/`pinned_paths` vocabulary is explicitly the kind of thing
+that record itself calls "the natural point to retire," per the BP7
+Commission's own controlling-record note in the execution plan -- C5 may
+record that review's findings but, per that record's own text, does not
+authorize removing any field or mechanic now; any such removal is separate
+future work, not part of C5's acceptance.
+
+Stop conditions: C5 does not start before both proof Runs are independently
+recorded as equivalence-verified; retirement is never attempted on the
+strength of one Run, however successful. Maintainer-owned throughout and not
+performed by any Commission here: the actual Runtime promotion before Proof
+Run 1, authorizing and starting each proof Run, any push, and any
+`0.1.0b1` tag decision.
+
+[[risks]]
+== 5. Risks and bootstrap
+
+*Runtime N executing Development N+1.* Unchanged in principle by the
+cutover: `ch05_self_development/01_topology_budget.adoc`'s invariant
+("Accepted Runtime WFC N ... never mutates itself") still normatively
+applies. But DG-5 removes the Harness's *fresh-export-per-Attempt* step
+(`export_runtime`, `scripts/wfc_op.py:400-424`), which is exactly what
+guaranteed Runtime stayed frozen even while Development's own working tree
+was being edited by the same self-development Run. The product's
+`_default_engine_command` (`frontdoor/lifecycle.py:71-93`) simply finds
+`wfc` next to the running interpreter or on `PATH`. *If that resolves to an
+editable install of the very Development checkout under modification*, a
+Hop editing `src/workflow_coordinator/...` could change the behavior of a
+still-running or later Hop before any maintainer promotion -- a real
+bootstrap hazard DG-5 introduces by removing the export step, not by
+removing the underlying freeze requirement. Mitigation (a precondition, not
+a code change this plan performs): before Proof Run 1, the maintainer
+installs the accepted Runtime commit into a separate, non-editable
+environment (a wheel or `pip install` of a `git archive` export of that
+exact commit, prepared once per promotion rather than fresh per Attempt --
+the same shape `export_runtime` already used, just promotion-scoped instead
+of Attempt-scoped) and ensures *that* installation, not the live Development
+checkout's own environment, is what `_default_engine_command` actually finds
+first.
+
+*Rollback.* Forward-only by default, consistent with
+link:../operator_manual/ch06_recovery/01_outcomes.adoc[the existing recovery
+contract]'s central invariant ("the historical Run record itself is never
+rewritten"). If either proof Run fails to complete or archive cleanly, there
+is no BP7-specific rollback mechanism to build: the response is the existing
+four-outcome recovery procedure (same-Run reconcile, maintainer salvage plus
+a fresh successor, forensic preservation, or discard), and a fresh proof-Run
+attempt is separately authorized. The old Harness path remains intact and
+regular throughout -- nothing is removed until C5, which does not start
+until both proofs succeed.
+
+*Retained legacy path during the proof Runs.* Both paths coexist
+deliberately (the second-pass review's own migration "Bridges" table marks
+this temporary-until-cutover). Procedural rule for the proof Runs: each
+proof Run commits through *exactly one* archive path -- its own automatic
+BP6c postrun archive. It must never also be archived a second time through
+`wfc_op.py archive` for the same Attempt; doing so would create two
+different Attempt identities for the same work and violate "no second
+archive path beside the product function."
+
+*Scratch/inode hygiene.* As found in <<gap-analysis>>, the product has no
+scratch allocator at all. Under DG-5 this becomes the consumer-provided
+environment's responsibility; `ch05_self_development`'s existing "Temporary
+storage before test-heavy Runs" guidance (space/inode checks, keeping
+`TMPDIR` off the small `/tmp` tmpfs) remains necessary after cutover and must
+not be silently dropped -- C5's manual edit should cross-reference it as
+still-binding operator discipline, not retire it.
+
+*Preconditions before Proof Run 1 starts:*
+
+. BP1-BP6 Runtime-promoted by the maintainer.
+. C1 (config + guidance) and C1b (equivalence harness) independently
+  accepted.
+. A separate, non-editable Runtime-N environment installed and verified
+  first-found by `_default_engine_command` (the bootstrap mitigation above).
+. `TMPDIR`/scratch prepared per the existing ch05 guidance (unchanged by
+  this plan).
+. The real sibling Evidence repository confirmed reachable at
+  `../workflow-coordinator-run-evidence` relative to the actual Development
+  checkout being used -- not a scratch clone lacking that sibling.
+. DG-4/DG-5 already resolved.
+. The maintainer has selected Proof Run 1's actual task content (a separate
+  decision; see <<open-decisions>> item 1 -- this plan does not pick it).
+
+[[open-decisions]]
+== 6. Remaining real architecture decisions for the maintainer
+
+Only genuine, maintainer-owned semantic choices; bounded technical choices
+(the Runtime-freeze mitigation, the config option, the ceiling list, the
+`ch06` reconciliation wording) are already recommended above, not listed
+here.
+
+[cols="1,3,3,2",options="header"]
+|===
+|# |Decision |Options and recommendation |Latest decision point
+
+|1
+|Proof Run 1 and Proof Run 2 task content.
+|*(a)* Pick two small, already-scoped, low-risk existing backlog BUG/FTR
+items. *(b)* Commission a synthetic, throwaway task with no product value,
+purely to exercise the path. *Recommended: (a)* -- real backlog items get
+real work done and avoid spending authorized Hops on nothing; nothing in
+this plan is at risk if a chosen item turns out to need more than one Run
+(simply commission a successor normally).
+|Before authorizing Proof Run 1.
+
+|2
+|Content of the new self-development `repository_policy` guidance document
+(<<gap-analysis>>, <<sequence>> C1). Self-development has never had one;
+there is no existing text to port.
+|Genuinely open semantic content (coding standards, review expectations),
+not a bounded choice this plan should author. *Recommended approach:* adapt
+it from the informal conventions already documented across the Operator
+Manual and Developer Guide, rather than inventing new standards at cutover
+time.
+|Before C1 starts.
+
+|3
+|`default_execution` values (adapter/model/reasoning per role) to commit into
+`.wfc/config.yaml`.
+|A product/provider choice reserved to the maintainer per the epic's own
+2026-11-18 decision (execution bindings are "execution configuration, never
+part of the committed Commission," C1 in the execution plan's own
+terminology -- distinct from this plan's Commission C1). *Recommended
+default:* commit whatever the maintainer is already using for
+self-development today, so `wfc run` works with no flags, while per-Run
+`--execution-override` remains available for a one-off change.
+|Before C1's config is committed.
+|===
+
+Not open, and not reopened by this plan: DG-4 and DG-5 (resolved); whether
+historical `governance/self-development/*` files are deleted at retirement
+(the epic already settles this -- kept as frozen historical input, never
+deleted); whether the Evidence destination is the existing sibling repository
+(the maintainer specification already settles this); whether BP7 sets or
+prepares the `0.1.0b1` tag (no, per DG-4 and
+link:beta1_execution_plan.adoc#closure-versus-tag[closure versus tag]).
+
+[[bp9-closure-checklist]]
+== BP9 and Beta-closure preparation checklist
+
+Factual only; none of this is authorized or performed here.
+
+* BP7 is not a release gate for `0.1.0b1` (execution plan, "Real release
+  gates" list; Batch 4 is explicitly optional and may follow the tag). BP9's
+  own prerequisites -- BP6, supported program/adapter decisions, and the
+  selected release gates -- do not depend on BP7 having completed.
+* Maintainer-owned live qualification remaining for BP9: one installed-wheel
+  live Run per supported adapter on a non-WFC repository; reconciliation of
+  the conflicting Claude live-qualification records
+  (`BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`); resolution of
+  DG-1 (already resolved, fast-follow), DG-2 (already resolved, separate
+  Evidence repository first) and DG-6 (preservation gate status, open) before
+  the release decision.
+* Beta-epic closure (BP1-BP9 independently accepted plus the maintainer's
+  separate product-closure record) is explicitly *not* release authorization
+  for the `0.1.0b1` tag; see
+  link:beta1_execution_plan.adoc#closure-versus-tag[closure versus tag] for
+  the five-item post-Beta sequence (ADR on workflow genericity, a bounded
+  hardening campaign, documentation consolidation, release engineering, final
+  consumer qualification) that still precedes any tag decision, each as its
+  own separately planned and authorized work.
+* DG-4 stands regardless of epic-closure timing: the BP7 cutover happens
+  before the tag; this plan sets or prepares no tag.
