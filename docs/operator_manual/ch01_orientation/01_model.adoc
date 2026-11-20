@@ -4,8 +4,8 @@ ifndef::assembled[]
 
 Maturity::  stable
 Authority:: informative
-Updated::   2026-11-11
-Owns::      Purpose, operator vocabulary, repositories and trust boundaries, and Attempt/OPS/STATE identity.
+Updated::   2026-11-20
+Owns::      Purpose, operator vocabulary, repositories and trust boundaries, and checkout/engine-state identity.
 endif::[]
 
 [[purpose-and-audience]]
@@ -13,8 +13,8 @@ endif::[]
 
 The operator manual reading path is for a maintainer returning months
 later, with no memory of the surrounding concept papers or chat history,
-to operate a WFC self-development Run: prepare it, launch it, check on it,
-archive it, and correctly interpret a stop.
+to operate a WFC self-development Run: run it, check on it, inspect its
+automatic archive, and correctly interpret a stop.
 
 It is not another architecture concept (the
 link:{operator-docs}/cold_storage/backlog/pre-0.1.0b1/operator-harness-v0/wfc_operator_harness_v0_concept_2026-10-06.adoc[historical Harness v0 concept],
@@ -35,26 +35,24 @@ links there for rationale.
 ----
 COMMISSION / GOVERNING INPUTS
     = What may this Run do?
-      (WorkItem, Profile, RepositoryPolicy, Components, Task -- reviewed
-       and committed before any mechanics begin)
+      (a Consumer Request: task, scope, program, personas, evidence,
+       durable artifacts, guidance -- reviewed and committed before
+       `wfc run` ever authorizes it)
 
-EXECUTION BINDINGS
+EXECUTION ENVELOPE
     = Which adapter/model/reasoning configuration performs each role?
-      (--role-binding, written to execution-bindings.yaml)
+      (the Consumer Config's default_execution, optionally narrowed by
+       --execution-override; resolved separately from the Commission bytes)
 
-ATTEMPT
-    = The identity of one concrete prepared execution attempt.
-      (a name; deterministically maps to OPS and STATE paths)
+CHECKOUT
+    = The canonical identity of the Development repository `wfc run`
+      operates on (resolved Git top-level + common directory).
+      Owns the journal, ownership lock, cached Commission materials and
+      engine-state. Lives at $XDG_STATE_HOME/wfc/checkouts/<checkout-id>.
 
-OPS
-    = Harness-owned prepared execution envelope.
-      Pins identities/environment/bindings/launch mechanics.
-      Created by PREPARE. Lives at ~/wfc-ops/<attempt>.
-
-STATE
-    = WFC-owned persisted Run state.
-      Created only when LAUNCH actually starts a Run.
-      Lives at ~/wfc-state/<attempt>.
+ENGINE-STATE
+    = WFC-owned persisted Run state, inside the checkout directory above.
+      Created only when `wfc run`/`resume` actually launches the engine.
 
 EVIDENCE
     = Durable archived evidence derived from the Run after execution.
@@ -68,60 +66,75 @@ RUNTIME
 
 Two distinctions matter most operationally:
 
-* *OPS vs. STATE* -- OPS is Harness's own prepared envelope and exists the
-  moment `prepare` succeeds. STATE is WFC's own Run state and must *not*
-  exist yet at that point; it is created only when `launch` actually starts
-  a Run. Confusing "prepared" with "launched" is the most common misreading
-  of this system.
-* *Commission authority vs. execution choice* -- WorkItem/Profile/Policy/
-  Components/Task is *what may happen*; `--role-binding` is *which concrete
-  adapter/model/reasoning performs it*. A Commission may stay semantically
-  identical while its execution bindings differ, if separately authorized
-  (link:{operator-docs}/wfc_operator_manual.adoc#_4_inputs_and_ownershiplifetime[inputs and ownership/lifetime]).
+* *Authorized vs. launched* -- `wfc run` authorizes (digests confirmed,
+  ownership lock acquired, journal record written) before it ever launches
+  the engine; a dead or interrupted controller can leave a checkout
+  authorized but not yet launched, or launched but not yet classified.
+  `wfc status` reports exactly which; `wfc resume` continues from there --
+  it never starts a second lifecycle in the same checkout (see
+  link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-checkout-rotation[checkout rotation]).
+* *Commission authority vs. execution choice* -- the Consumer Request's
+  scope/program/personas/evidence/durable artifacts is *what may happen*;
+  the resolved execution envelope is *which concrete adapter/model/
+  reasoning performs it*. A Commission may stay semantically identical
+  while its execution bindings differ, if separately authorized.
 
 [[repositories-and-trust-boundaries]]
 == Repositories and trust boundaries
 
 [cols="1,3,2",options="header"]
 |===
-|Repository |Role |Mutability from Harness
+|Repository |Role |Mutability from the product Front Door
 
 |`workflow-coordinator` (Development)
-|Evolving candidate implementation and Commission inputs.
-|Harness only reads it (pins HEAD, requires clean); `launch` invokes the
-pinned *Runtime's* executable against it.
+|Evolving candidate implementation and Commission inputs; also the
+checkout `wfc run` operates on for self-development.
+|`wfc run`/`resume` read it (verify HEAD, require clean) and commit the
+compiled Commission bundle into it; the pinned *Runtime's* installed `wfc`
+executes against it.
 
 |`workflow-coordinator-runtime` (Runtime)
-|The accepted WFC implementation that executes Runs. Detached, clean,
+|The accepted WFC implementation that executes Runs. Per DG-5, a
+non-editable installed environment built once per promotion, not a
+per-Attempt export; its source clone stays detached, clean,
 `remote.origin.pushurl=DISABLED`.
-|Never mutated by Harness or a Run. Changed only by explicit maintainer
-promotion (link:{operator-docs}/wfc_operator_manual.adoc#_15_runtime_promotion[Runtime promotion]).
+|Never mutated by `wfc run`/`resume` or by a Run. Changed only by explicit
+maintainer promotion
+(link:{operator-docs}/operator_manual/ch05_self_development/02_promotion.adoc[Runtime promotion]).
 
 |`workflow-coordinator-run-evidence` (Evidence)
 |Durable mechanical archive plus the curated semantic run ledger.
-|Never mutated by `prepare`/`launch`/`status`. `archive` delegates to its
-own canonical wrapper, which commits into it.
+|Never mutated by `wfc plan`/`status`. `wfc run`/`resume`'s own postrun step
+(or direct `wfc archive`) commits into it.
 |===
 
-Harness v0 (`scripts/wfc_op.py`, living in Development, outside the
-`workflow_coordinator` package) is the deterministic mechanical layer that
-operates across all three. It owns none of their semantic content.
+The installed `wfc` console command (`wfc init`/`plan`/`run`/`resume`/
+`status`/`audit`/`report`/`archive`) is the deterministic mechanical layer
+that operates across all three. It owns none of their semantic content.
 
 [[attempt-ops-state]]
-== Attempt / OPS / STATE identity
+== Checkout and engine-state identity
 
 [source,text]
 ----
-attempt = <work-item-slug>-<date>-<counter>
-          # e.g. wfc-projected-result-contracts-p1-20261007-01
+checkout_id = sha256(resolved git toplevel + resolved git common dir)
 
-OPS   = ~/wfc-ops/<attempt>
-STATE = ~/wfc-state/<attempt>
+$XDG_STATE_HOME/wfc/checkouts/<checkout_id>/
+    journal                  # append-only lifecycle facts
+    lock                      # per-checkout ownership lock
+    commission/               # cached Commission/Config/envelope materials
+    engine-state/             # created only once the engine actually launches
 ----
 
-This mapping is deterministic and holds *before STATE actually exists*: the
-Attempt name alone determines where OPS will be created and where STATE will
-later materialize -- no registry or database. `wfc-op`'s own
-`ops_root()`/`state_root()` and the canonical `wfc-archive-run` wrapper's
-`attempt_id=${state_root##*/}` derivation are the same convention, reused,
-not duplicated.
+This identity is deterministic and derived purely from Git facts -- no
+registry, database, or maintainer-chosen name: a symlinked working tree and
+a linked worktree sharing one object store resolve to the *same*
+`checkout_id`, while two genuinely distinct checkouts never collide. There
+is no separate "prepared but not yet launched" directory distinct from the
+checkout itself: `wfc status` distinguishes an authorized-but-not-launched
+checkout from one whose `engine-state` already exists purely from journal
+facts (see
+link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#status[STATUS]).
+Per
+link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-checkout-rotation[checkout rotation],
+use one fresh checkout per Run today.

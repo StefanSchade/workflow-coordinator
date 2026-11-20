@@ -22,14 +22,16 @@ the package. A provider result is an untrusted candidate until it is parsed and
 correlated to its exact dispatch; Coordinator-run evidence commands and the
 Coordinator's own Git observation are separate, trusted facts.
 
-The Front-Door layer in `commissioning.py` deterministically renders a
-maintainer-authored Commission Intent into the ordinary WorkItem, Profile,
-Policy, and Task files consumed by `prepare` and `launch`. After review and
-commit, `commission check` verifies the rendering and asks the canonical,
-provider-free operator preflight to admit the bundle; it selects no provider
-and admits no Run. The maintainer then prepares, inspects, and authorizes launch.
-The current entry point is the repo-local `scripts/wfc_op.py`; a pip-installable,
-consumer-repository-neutral Front Door remains planned.
+The Front-Door layer (`commissioning.py`'s `compile_commission`, wired into
+`frontdoor/`) deterministically compiles a maintainer-authored, consumer-
+neutral Consumer Request/Config into the ordinary WorkItem, Profile, Policy,
+Components and Task files `wfc run`/`resume` admit and launch. `wfc plan`
+previews that same compilation, read-only, before anything is committed;
+`wfc run` re-verifies the committed bundle
+(`frontdoor.verify.verify_commission`, the canonical, provider-free
+preflight) before ever launching, then launches. The installed, pip-
+installable `wfc` console command is the regular entry point for every WFC-
+operated repository, including WFC self-development itself.
 
 The closed `simple@v1`, `direct@v1`, and `robust@v1` workflow programs are
 implemented. `simple@v1` has one bounded Worker invocation with an

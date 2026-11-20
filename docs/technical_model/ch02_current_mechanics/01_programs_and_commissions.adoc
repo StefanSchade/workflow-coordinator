@@ -11,48 +11,60 @@ Three closed program records live at
 hand-authored governance: `operator.py:_admit_a1` unconditionally forbids any
 WorkItem or profile `authorized_scope` from overlapping the repository policy's
 `governance_paths`, so no Run can ever write one. A correction is a new
-revision.
+revision. Only `simple@v1` and `robust@v1` are compiled by the consumer-neutral
+Front Door below; `direct@v1` is deliberately withheld from it (per BP7
+retirement, the historical self-development-only `direct@v1` compile path
+that once existed in `commissioning.py` is removed; a `direct@v1`-shaped
+WorkItem/Profile can still be hand-authored and admitted directly, like any
+other governing input).
 
-`commissioning.py` turns a maintainer-authored Commission Intent into ordinary
-governing inputs:
+`commissioning.py:compile_commission` turns a maintainer-authored, consumer-
+neutral Consumer Request/Config into ordinary governing inputs, with no
+execution binding anywhere in its input or output:
 
 [source,text]
 ----
-governance/commissions/<id>/intent.yaml
-   | commission_intent_from_yaml  (closed key sets, duplicate-key rejection)
+ConsumerRequest (task, scope, program, personas, evidence,
+                 durable_artifacts, guidance) + ConsumerConfig
+   | consumer_request_from_yaml / consumer_config_from_yaml
    v
-_load_sources: read program/policy/components at their pinned source commits,
-   then require the program to equal the in-source literal template exactly
-   (minus its `source` provenance block), and the policy basis to equal the
-   immutable repository-standard@v1 record
+_consumer_program_template: the closed simple@v1/robust@v1 literal, with
+   every phase's `repository_policy` slot filled by one shared
+   `repository_policy` component id (the consumer's own committed guidance)
    v
-render_commission: substitute declared slots only
-   scope slot S   -> the Intent's normalized scope
-   artifact slot A -> exactly durable_artifacts[artifact_key], never unioned
-   evidence slot E -> evidence_profiles[<selected profile>].evidence
+compile_commission: substitute declared slots only
+   scope slot S     -> the Request's normalized scope
+   artifact slot A  -> exactly durable_artifacts[artifact_key], never unioned
+   evidence slot E  -> the Request's own evidence.argv
+   role/modifier components -> package resources (`resources/roles/*.txt`),
+   digest-checked against `implementation_identity.RESOURCE_DIGESTS`
    v
-governance/commissions/<id>/{work-item,profile,policy}.yaml, task.md,
-render-manifest.json
+<governance_dir>/<commission_id>/{work-item,profile,policy,components}.yaml,
+task.md, commission-manifest.json
 ----
 
 Three facts follow from that code and matter for understanding:
 
-* Program identity is checked against an *in-source template*
-  (`_direct_template`, `_robust_template`, `_simple_template`), not only against
-  the file. `program_specs` admits exactly the three `(id, revision)` pairs and
-  rejects everything else, so editing a catalogue file alone cannot change an
-  admitted program.
+* Program identity comes from a Python literal (`_robust_template`,
+  `_simple_template`), never a Git-pinned catalogue file: role/modifier
+  component texts are package resources, not source-commit pins, so there is
+  no separate per-Commission source-commit to verify against a governance
+  catalogue, unlike the retired `direct@v1` compile path.
 * The rendered profile carries `schema_version: 2` and
   `profile_id: <commission_id>-<program>-<revision>`, so one profile *file*
   still exists per Commission -- but it is a deterministic projection of a closed
   program rather than a hand-copied process. The hand-authored schema-v2 profiles
-  under `governance/self-development/` predate this path.
-* An Intent has no write path to phases, routes or review descriptors. It
-  supplies scope, durable-artifact paths, personas, an evidence-profile
-  selection and a hop limit, each separately bounded by the policy basis.
+  under `governance/self-development/` predate this path and remain frozen
+  historical input, never compiled by it.
+* A Consumer Request has no write path to phases, routes or review
+  descriptors. It supplies scope, durable-artifact paths, personas, an
+  evidence command and a hop limit, each separately bounded by the Consumer
+  Config.
 
-`commission check` re-renders and compares, then asks the provider-free operator
-preflight to admit the bundle; it selects no provider and admits no Run. The
-maintainer then prepares, inspects and authorizes launch. Procedures for all of
-this are owned by
+`wfc plan` previews that compilation read-only, before anything is written;
+`frontdoor.verify.verify_commission` (called by `wfc run`/`resume`) re-compiles
+and compares the committed bundle, then asks the provider-free operator
+preflight to admit it; it selects no provider and admits no Run by itself.
+`wfc run` then authorizes and launches. Procedures for all of this are owned
+by
 link:{tech-docs}/operator_manual/ch02_commissioning/_chapter.adoc[the commissioning chapter].

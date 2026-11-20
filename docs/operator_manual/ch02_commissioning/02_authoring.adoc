@@ -4,8 +4,8 @@ ifndef::assembled[]
 
 Maturity::  stable
 Authority:: informative
-Updated::   2026-11-11
-Owns::      Commission workflow, Direct-v1 rendering/source pins and admission checking, and Hop-budget mechanics; defers to governing inputs/code and dedicated contracts.
+Updated::   2026-11-20
+Owns::      Commission workflow, the Consumer Request/Config compiler and admission checking, and Hop-budget mechanics; defers to governing inputs/code and dedicated contracts.
 endif::[]
 
 [[normal-workflow]]
@@ -14,16 +14,18 @@ endif::[]
 [source,text]
 ----
 author / accept concept or task intent
-    -> author Commission (WorkItem, Profile, Policy, Components, Task)
-    -> commit Commission
-    -> wfc-op prepare                  [deterministic Harness mechanics]
-    -> inspect PREPARED / NOT LAUNCHED [maintainer decision point]
-    -> wfc-op launch                   [mechanics; starts provider-capable Run]
-    -> wfc-op status                   [read-only, any time, any shell]
+    -> wfc init                        [once per repository; Consumer Config]
+    -> author Consumer Request (task, scope, program, personas, evidence,
+                                 durable artifacts, guidance)
+    -> wfc plan                        [read-only preview; no write, no provider]
+    -> commit Consumer Request
+    -> wfc run --request ... [--yes]   [authorize, then launch the lifecycle]
+    -> wfc resume                      [continue an interrupted controller only]
+    -> wfc status                      [read-only, any time, any shell]
     -> terminal Run state              [WFC-owned semantic/mechanical fact]
-    -> wfc-op archive                  [deterministic, delegating mechanics]
+    -> automatic archive (BP6c postrun step; `wfc archive` also directly invokable)
     -> semantic ledger curation        [maintainer/LLM-assisted judgment,
-                                         never automated by Harness v0]
+                                         never automated by the product]
     -> Runtime promotion, separately, if accepted
     -> push, separately, if authorized
 ----
@@ -33,92 +35,97 @@ author / accept concept or task intent
 |Step |Nature
 
 |Commission authoring/commit |Semantic -- maintainer-owned, reviewed
-|`prepare` |Deterministic mechanics (link:{operator-docs}/run-preparation.adoc[preparation contract]
-and link:{operator-docs}/wfc_operator_manual.adoc#_7_prepare[Harness reference]), plus one provider-free
-preflight *validation* seam that refuses rather than decides
-|PREPARED / NOT LAUNCHED |Maintainer decision point: go or don't go
-|`launch` |Mechanics up to starting the Run; Hops themselves are WFC-owned
-semantic execution, not Harness mechanics
-|`status` |Deterministic, read-only projection
-|Interpreting a terminal state |Semantic -- maintainer judgment (link:{operator-docs}/wfc_operator_manual.adoc#_13_terminal_states_and_awaiting_human[terminal states]
-and link:{operator-docs}/wfc_operator_manual.adoc#_14_successor_runs[successors])
-|`archive` |Deterministic, delegating mechanics
-|Ledger curation |Semantic -- maintainer/LLM-assisted, never Harness-automated
+|`wfc plan` |Deterministic, read-only preview
+(link:{operator-docs}/operator_manual/ch03_running/01_preparation.adoc[preparation contract]),
+plus one provider-free preflight-equivalent projection that refuses rather
+than decides
+|`wfc run` authorization digests |Maintainer decision point: go or don't go
+(`--yes`, or an interactive `y`/`N`)
+|`wfc run`/`resume` launch |Mechanics up to starting the Run; Hops themselves
+are WFC-owned semantic execution, not controller mechanics
+|`wfc status` |Deterministic, read-only projection
+|Interpreting a terminal state |Semantic -- maintainer judgment
+(link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#terminal-states[terminal states]
+and link:{operator-docs}/operator_manual/ch06_recovery/02_successors.adoc[successors])
+|`wfc archive` (automatic or direct) |Deterministic mechanics
+|Ledger curation |Semantic -- maintainer/LLM-assisted, never product-automated
 |Runtime promotion / push |Explicit maintainer action, never automatic
 |===
 
 Trusted publication, evidence and acceptance follow the ordering in
-link:{operator-docs}/wfc_operator_manual.adoc#_22_trusted_evidence_worker_completion_and_correction_routing[trusted evidence, worker completion and correction routing].
-The link:{operator-docs}/self-development.adoc[self-development contract]
+link:{operator-docs}/operator_manual/ch04_evidence/01_acceptance.adoc#trusted-hop-order[trusted evidence, worker completion and correction routing].
+The link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc[self-development contract]
 retains the specialization and Runtime-promotion procedure.
 
 [[direct-v1-quickstart]]
-=== Direct-v1 Commission quickstart
+=== Consumer Request quickstart
 
-The current closed-program compiler also supports `robust@v1` and
-`simple@v1`; the following commands illustrate Direct only. In the existing
-Simple program a sole Worker self-checks and the Coordinator runs the selected
-required `task-check`; there is no independent review/correction loop.
-`robust@v1` instead includes fresh independent review and, when warranted,
-correction and renewed broad review. Both use the same admitted authority,
-phase scope, Coordinator-owned commit and configured evidence boundaries.
-Choose the program and bindings under the Maintainer's existing authorization;
-a single instruction may authorize the sequence in advance.
+The product compiler supports `robust@v1` and `simple@v1`; `direct@v1` is
+deliberately withheld from it (self-development's historical Direct-v1 path
+is retired). In `simple@v1` a sole Worker self-checks and the Coordinator
+runs the selected required `task-check`; there is no independent
+review/correction loop. `robust@v1` instead includes fresh independent
+review and, when warranted, correction and renewed broad review. Both use
+the same admitted authority, phase scope, Coordinator-owned commit and
+configured evidence boundaries. Choose the program and bindings under the
+Maintainer's existing authorization; a single instruction may authorize the
+sequence in advance.
 
-`commission render` is a closed-program, *non-authoritative* projection:
-it turns a maintainer-authored Direct-v1 Intent into ordinary governing
-files, but neither admits a Run nor invokes a provider. From the Development
-repository root, render an Intent and inspect its provenance-labelled report:
-
-[source,shell]
-----
-COMMISSION=example-direct-v1-001
-INTENT="governance/commissions/$COMMISSION/intent.yaml"
-OUT_DIR="governance/commissions/$COMMISSION"
-
-python3 scripts/wfc_op.py commission render \
-  --intent "$INTENT" \
-  --out-dir "$OUT_DIR" \
-  --check
-----
-
-Here `--check` prints the provenance-labelled render report; it does not
-perform the separate admission check below.
-
-The render writes `work-item.yaml`, `profile.yaml`, `policy.yaml`,
-`task.md`, and `render-manifest.json` below `OUT_DIR`. The manifest records
-the Intent digest and the pinned program, policy-basis, component-manifest,
-and selected-component source commits and digests. Source commits are full
-lowercase 40-character SHAs; program and policy records are loaded from
-those Git objects, and selected components from the pinned component-manifest
-commit, rather than from mutable working-tree copies. Review both the Intent
-and those rendered governing artifacts, then commit them. A commit is
-required between rendering and checking because checking admits a clean,
-named Git tree:
+`wfc plan` is a closed-program, *non-authoritative* preview: it turns a
+task document plus CLI-supplied fields into the exact Consumer
+Request/Config shapes, then previews the Commission bytes and the
+separately resolved execution envelope -- it neither writes a Commission,
+admits a Run, nor invokes a provider. From the Development repository root:
 
 [source,shell]
 ----
-git add "$INTENT" "$OUT_DIR"
-git commit -m "chore: add $COMMISSION Commission"
-HEAD="$(git rev-parse HEAD)"
+COMMISSION=example-robust-v1-001
 
-python3 scripts/wfc_op.py commission check \
-  --intent "$INTENT" \
-  --repository "$PWD" \
-  --expected-head "$HEAD" \
-  --out-dir "$OUT_DIR"
+wfc plan governance/work-items/$COMMISSION-task.txt \
+  --commission-id    "$COMMISSION" \
+  --work-item-id      WI-EXAMPLE-ROBUST-V1-001 \
+  --authority-source  "Maintainer authorizes the stated bounded task." \
+  --program           robust@v1 \
+  --persona           worker="Bounded worker persona." \
+  --persona           independent_reviewer="Independent adversarial reviewer persona." \
+  --evidence-argv     python --evidence-argv -m --evidence-argv pytest --evidence-argv -q \
+  --durable-artifact  broad_review=docs/backlog/${COMMISSION}_broad_review.adoc \
+  --durable-artifact  focused_review=docs/backlog/${COMMISSION}_focused_review.adoc \
+  --guidance-path     .wfc/governance/repository-policy.md \
+  --scope src --scope tests
 ----
 
-`commission check` re-renders from the recorded source pins, requires each
-committed rendered byte to match, including the manifest. It also requires
-the reused component manifest and selected-component bytes at the checked
-HEAD to equal their pinned source objects, and then calls canonical,
-provider-free operator preflight. It is therefore an admission check, not
-an authorization to execute. After it succeeds, use the rendered paths with
-`prepare`; inspect `PREPARED / NOT LAUNCHED`; and launch only with maintainer
-authorization. That authorization may already cover the sequence or be given
-at that point (link:{operator-docs}/run-preparation.adoc[preparation contract]
-and link:{operator-docs}/wfc_operator_manual.adoc#_8_launch[LAUNCH]).
+There is no durable binding left behind by this preview: it prints the
+projected Commission digest and resolved execution envelope for inspection,
+not a written bundle. Once the preview looks right, author the equivalent
+Consumer Request YAML (`schema_version`, `commission_id`, `work_item_id`,
+`authority_source`, `program`, `task`, `scope`, `personas`, `evidence`,
+`max_autonomous_hops`, `durable_artifacts`, `guidance`) and commit it:
+
+[source,shell]
+----
+git add governance/work-items/$COMMISSION-request.yaml
+git commit -m "chore: author $COMMISSION Consumer Request"
+----
+
+Then authorize and launch:
+
+[source,shell]
+----
+wfc run --request governance/work-items/$COMMISSION-request.yaml --yes
+----
+
+`wfc run` compiles and digests the Commission and execution envelope,
+requires confirmation (`--yes`, or an interactive prompt), re-derives both
+digests immediately before authorizing to refuse a race against a later
+edit, commits the compiled Commission bundle under `.wfc/governance/
+$COMMISSION/` itself (there is no separate commit-then-check step), then
+calls `frontdoor.verify.verify_commission` -- the current equivalent of
+canonical provider-free preflight -- before ever launching the engine. It is
+therefore the single admission-and-authorization step, not merely an
+authorization to execute later
+(link:{operator-docs}/operator_manual/ch03_running/01_preparation.adoc[preparation contract]
+and link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#launch[LAUNCH]).
 
 [[hop-budget]]
 == max_autonomous_hops

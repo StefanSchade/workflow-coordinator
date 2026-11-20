@@ -18,16 +18,7 @@ import pytest
 REPOSITORY = Path(__file__).resolve().parent.parent
 PARTIAL_FLAG = "--wfc-partial"
 _STATE = pytest.StashKey()
-_REQUIRED_REAL = frozenset(
-    "tests/unit/test_wfc_op.py::" + name for name in (
-        "test_prepare_positive_produces_complete_envelope_and_leaves_state_absent",
-        "test_status_completed_run",
-        "test_prepare_final_revalidation_refuses_on_drift_during_preparation",
-        "test_canonical_preflight_refusal_propagates_and_proves_pinned_runtime_code",
-        "test_launch_uses_the_frozen_prepared_path_not_a_later_ambient_path",
-        "test_launch_sh_safely_quotes_shell_significant_paths",
-    )
-) | frozenset({
+_REQUIRED_REAL = frozenset({
     "tests/architecture/test_offline_distribution.py::test_clean_isolated_distribution_and_wheel_install",
     "tests/unit/test_neutral_consumer_evidence.py::test_shell_consumer_uses_real_evidence_runner",
 })

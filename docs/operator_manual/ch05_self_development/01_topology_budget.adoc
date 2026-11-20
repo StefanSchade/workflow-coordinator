@@ -4,7 +4,7 @@ ifndef::assembled[]
 
 Maturity::  stable
 Authority:: normative
-Updated::   2026-11-19
+Updated::   2026-11-20
 Owns::      Runtime-N/Development-N+1 topology, preparation specialization, provisional self-development Hop-budget guidance, ownership and enforcement-layer Commission authoring.
 endif::[]
 
@@ -16,17 +16,20 @@ link:{operator-docs}/operator_manual/ch03_running/01_preparation.adoc[generic Ru
 Here the WFC Operator and WFC Developer roles coincide in one maintainer;
 this is a special case, not the generic consumer path.
 
-Accepted Runtime WFC N operates on the separate Development WFC N+1 clone and
-never mutates itself. Harness and Runs never mutate that Runtime checkout;
-only explicit maintainer promotion changes it. The clones have separate Git
-directories and object stores. Export the exact accepted runtime commit into temporary storage outside
-both clones, then install that export non-editably into an external runtime
-virtual environment. Create a second external development/evidence virtual
-environment with ordinary `python3 -m venv` and install the current development
-repository's `dev` extra from the live pinned Development checkout, not
-from an archived target export (the evidence substrate must retain Git
-context). Keep exports, build/install scratch, caches, package metadata,
-virtual environments, and each new Run state root outside both clones.
+Accepted Runtime WFC N operates on the separate Development WFC N+1 checkout
+and never mutates itself. Runs never mutate the Runtime identity; only
+explicit maintainer promotion changes it. Per DG-5
+(link:{operator-docs}/backlog/beta1_bp7_cutover_plan.adoc[BP7 retirement
+cutover plan]), WFC itself no longer exports or builds a fresh per-Attempt
+Runtime environment: the maintainer installs the accepted Runtime commit
+once per promotion into a separate, non-editable environment (a wheel or
+`pip install` of a `git archive` export of that exact commit), and ensures
+that installation, not any live Development checkout's own environment, is
+what the Run actually invokes. The Development checkout the Run operates on
+keeps its full Git context -- it is the evidence substrate `wfc run` commits
+against, never replaced by a stripped export. Keep build/install scratch,
+caches, package metadata, virtual environments, and each new Run's
+engine-state outside the Development checkout itself.
 
 The sibling `workflow-coordinator-run-evidence` repository holds the durable
 archive and curated semantic run ledger
@@ -35,51 +38,73 @@ archive and curated semantic run ledger
 The self-development Consumer Config (`.wfc/config.yaml`) and its guidance
 document (`.wfc/governance/repository-policy.md`) are committed at the
 Development repository root. The config's `evidence` block names that same
-sibling Evidence repository (`raw: commit`); it changes no behavior on its
-own. Until BP7 retirement, self-development still runs through
-`scripts/wfc_op.py`, the existing Harness path described in this chapter, not
-through this config.
+sibling Evidence repository (`raw: commit`). Self-development runs through
+the product Front Door (`wfc init`/`plan`/`run`/`resume`/`status`/`audit`/
+`report`/`archive`) against this config, per the BP7 retirement cutover; the
+old Harness (`scripts/wfc_op.py`) is retired.
 
-The single launch environment is:
+Per <<self-development-checkout-rotation>> below, each Run uses a fresh
+checkout (clone or worktree) at the same relative Evidence location, until
+link:{operator-docs}/backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc[controlled checkout reuse] is decided.
 
-[source,text]
-----
-PATH=<development/evidence-env>/bin:<runtime-env>/bin:<remaining trusted base PATH>
-----
+Select the accepted Runtime N implementation independently of ambient
+`PATH` drift by invoking its absolute installed `wfc` (next to the
+interpreter that implementation was installed into), never a bare `wfc`
+that could resolve to an unrelated or editable install; see
+link:{operator-docs}/backlog/beta1_bp7_cutover_plan.adoc#risks[the BP7 cutover plan's bootstrap mitigation]
+for why this matters once preparation no longer exports a fresh,
+non-editable Runtime copy per Attempt. Verify that absolute executable with
+`--version`/`--help` before relying on it. Supply the Development clone to
+`--repository` (default the current directory); `wfc run`/`resume` derive
+and verify the repository's own expected HEAD and cleanliness from Git
+facts, so there is no separate `--expected-head`/`--state-root` to pass by
+hand. The compiled WorkItem's per-phase `authorized_scope` is authoritative,
+exactly as the Consumer Request's `durable_artifacts` mapping declares it;
+there is no legacy `--durable-artifact` override on the product path.
 
-Select Runtime N independently of `PATH` by invoking the absolute
-`<runtime-env>/bin/wfc`; never use bare `wfc`. Verify that absolute executable
-with `--help`, and verify through production `snapshot_environment()` and
-`prepare_evidence_commands()` that the ordered `PATH` is captured and the
-policy command `python -m pytest -q` resolves to the development/evidence
-interpreter. Supply the development clone to `--repository`, its exact full
-HEAD to `--expected-head`, and a new external path to `--state-root`. The
-WorkItem's per-phase artifact mapping is authoritative; do not pass the legacy
-`--durable-artifact` option. Harness freezes this controlled `PATH` as a
-literal value in `launch.sh`, so later ambient shell changes do not replace
-the environment admitted by preflight.
+[[self-development-checkout-rotation]]
+=== One fresh checkout per Run
+
+`wfc run` authorizes at most one lifecycle per canonical checkout, for as
+long as any record of it remains in that checkout's journal -- including
+long after a terminal, archived and Evidence-verified Run
+(`frontdoor/lifecycle.py`'s `_advance`, classification
+`refused_active_lifecycle`). Until
+link:{operator-docs}/backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc[FTR-WFC-LIFECYCLE-ROTATION]
+is decided, this is not a bug to work around locally: prepare one fresh
+checkout (a `git clone` or `git worktree`, sharing the same Git object
+store either way) per self-development Run, with the Evidence repository at
+the same relative sibling location the committed `.wfc/config.yaml` names.
+Do not attempt to relaunch a second Run inside a checkout that already
+authorized one, even if that Run completed cleanly.
 
 [[self-development-preparation]]
 == Run preparation
 
-Ordinary Run preparation -- pinning commits, materializing the OPS/state
-roots, exporting Runtime and preparing the target evidence environment, writing
-`execution-bindings.yaml`, assembling `PATH`, running provider-free preflight,
-and writing `launch.sh` -- follows the generic deterministic contract in
+Ordinary Run preparation -- pinning commits, confirming the Runtime identity
+and the consumer-provided environment, writing execution bindings, running
+provider-free preflight, and launching -- follows the generic deterministic
+contract in
 link:{operator-docs}/operator_manual/ch03_running/01_preparation.adoc[Run preparation]. That section defines the three
-boundaries (commission commit, `launch.sh` execution, first real provider
-invocation), the canonical preparation sequence, the OPS-root/state-root
-distinction, and the illustrative shell shape; none of it is restated here.
-In particular, ordinary preparation is deterministic operator mechanics, not
-another semantic LLM/agent Hop.
+boundaries (commission commit, launch, first real provider invocation), the
+canonical preparation sequence (amended at steps 4/5 per DG-5), and the
+product-Front-Door commands (`wfc init`/`plan`/`run`/`resume`); none of it is
+restated here. In particular, ordinary preparation is deterministic operator
+mechanics, not another semantic LLM/agent Hop.
 
 Self-development specializes that generic contract:
 
-* `TARGET` is the Development N+1 clone; `RUNTIME` is the separately promoted
-  Runtime N clone (see Topology and preparation above).
-* The Runtime checkout must additionally stay clean, detached and
+* The Development checkout is both the repository `wfc run` operates on and
+  the WFC source tree whose own behavior a self-development Commission may
+  change (see Topology and preparation above); per
+  link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-checkout-rotation[checkout rotation],
+  use one fresh checkout per Run.
+* The separately promoted Runtime N clone must stay clean, detached and
   push-disabled (see
-  link:{operator-docs}/operator_manual/ch05_self_development/02_promotion.adoc#promotion-preconditions[promotion preconditions]).
+  link:{operator-docs}/operator_manual/ch05_self_development/02_promotion.adoc#promotion-preconditions[promotion preconditions]);
+  the non-editable Runtime environment a Run actually invokes is exported
+  from that clone once per promotion, never rebuilt per Attempt and never
+  the live Development checkout's own editable install.
 * Promotion of a Runtime commit remains maintainer-owned and never automatic
   (see Ownership and promotion below and the
   link:{operator-docs}/operator_manual/ch05_self_development/02_promotion.adoc#runtime-promotion[Runtime promotion runbook]).
@@ -87,32 +112,33 @@ Self-development specializes that generic contract:
 [[self-development-temporary-storage]]
 === Temporary storage before test-heavy Runs
 
-*Before launching a self-development Run*, ensure the prepared pytest scratch
-resolves outside the `/tmp` tree. This is a requirement of the WFC
-consumer repository, not a general Runtime restriction on every payload.
-The Harness default `~/wfc-scratch` normally satisfies it; an explicit
-`--scratch-root` overrides that default but does not by itself satisfy the
-repository's additional requirements. A `/tmp/...` selection remains
-unsuitable even if the Harness prepared it successfully. Check the effective
-prepared environment, resolved filesystem, available space and inodes before
-launch.
+*Before running a self-development Run*, ensure the scratch directory the
+pytest evidence command will actually use resolves outside the `/tmp` tree.
+This is a requirement of the WFC consumer repository, not a general Runtime
+restriction on every payload. Per DG-5, WFC provisions no scratch directory
+of its own (<<self-development-preparation>> above); choose and prepare one
+yourself -- for example, a `TMPDIR` under a dedicated directory outside
+`/tmp` -- before invoking `wfc run`/`resume`, and export it into that same
+process's environment. A `/tmp/...` selection remains unsuitable no matter
+how it was prepared. Check the resolved filesystem, available space and
+inodes before launching.
 
 Before a large self-development Run, check both space and inodes on `/tmp`
-and on the filesystem containing the recorded Attempt scratch path:
+and on the filesystem containing the chosen scratch path:
 
 [source,shell]
 ----
-df -h /tmp "$ATTEMPT_SCRATCH"
-df -i /tmp "$ATTEMPT_SCRATCH"
+df -h /tmp "$SCRATCH"
+df -i /tmp "$SCRATCH"
 printf 'TMPDIR=%s\n' "${TMPDIR:-<unset>}"
 ----
 
-Set `ATTEMPT_SCRATCH` to `scratch_path` in the preparation record. Use the
-existing external Attempt scratch directory on a filesystem with sufficient
-space and inodes; choose `--scratch-root` accordingly. Verify the actual
-`TMPDIR`, `TMP` and `TEMP` in the relevant execution context: the Harness
-launch exports the recorded path, but independently launched processes need
-not inherit it. Coordinator-owned evidence snapshots the Coordinator's
+Use an external scratch directory on a filesystem with sufficient space and
+inodes; set `TMPDIR` (or `TMP`/`TEMP`) to it in the shell that invokes
+`wfc run`/`resume`. Verify the actual `TMPDIR`, `TMP` and `TEMP` in the
+relevant execution context: the value you export reaches the engine process
+only because it is inherited, not because anything freezes or re-exports it
+on your behalf. Coordinator-owned evidence snapshots the Coordinator's
 environment. The Codex adapter passes its inherited environment to the Codex
 subprocess; later agent commands may change it. The Claude adapter instead
 uses a short `/tmp` symlink to invocation-specific backing storage under the
@@ -145,22 +171,28 @@ link:{operator-docs}/backlog/BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc[the py
 
 This specializes the generic
 link:{operator-docs}/operator_manual/ch04_evidence/02_archive.adoc#release-resources-after-archive[release of held resources after archive]
-for the Harness. After every self-development Run, the Operator removes that Attempt's scratch
-directory (`scratch_path` in `preparation-pins.txt` and `harness-prepared.json`)
-once both conditions hold:
+for self-development. The product Front Door has no scratch allocator of
+its own (<<self-development-temporary-storage>> above); the scratch
+directory a Run used (for example, a `TMPDIR` the operator pointed at a
+per-checkout path before invoking `wfc run`) is entirely the
+consumer-provided environment's own responsibility to create *and* to
+remove. After every self-development Run, the Operator removes that Run's
+own scratch directory once both conditions hold:
 
-. The real mechanical archive (`wfc-op archive "$ATTEMPT"`, not `--dry-run`)
-  succeeded.
+. The automatic BP6c postrun archive succeeded: `wfc status` prints
+  `ARCHIVE: result` with `outcome: archived` (or `resumed_commit`/`no_op`
+  for an already-archived retry), not `ARCHIVE: skipped` or
+  `ARCHIVE: refused`.
 . The persistent Evidence demonstrably exists: the archive commit is in the
-  Evidence repository and `archive/<classification>/$ATTEMPT/manifest.json`
-  is present there with the Attempt's recorded Run and Attempt identity.
+  Evidence repository and `archive/<classification>/<attempt>/manifest.json`
+  is present there with the Run's recorded identity.
 
 [source,shell]
 ----
-SCRATCH="$(sed -n 's/^scratch_path=//p' "$HOME/wfc-ops/$ATTEMPT/preparation-pins.txt")"
-MANIFEST="$(ls "$EVIDENCE"/archive/*/"$ATTEMPT"/manifest.json)"   # Evidence present
+wfc status   # confirm ARCHIVE: result / outcome: archived, and note the destination
+MANIFEST="$(ls "$EVIDENCE"/archive/*/<attempt>/manifest.json)"   # Evidence present
 git -C "$EVIDENCE" log -1 --format=%h -- "${MANIFEST#"$EVIDENCE"/}"  # committed
-rm -rf -- "$SCRATCH"
+rm -rf -- "$SCRATCH"   # the operator's own chosen scratch directory for this Run
 ----
 
 A Run stopped with open recovery need (`awaiting_human`, `reconcile_required`
@@ -169,11 +201,11 @@ link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc#recovery-out
 keeps its scratch. After the disposition is documented and the stopped Run is
 archived successfully, the same cleanup applies.
 
-Scope: only that Attempt's own scratch directory. Never the `--scratch-root`
-itself, another Attempt's scratch, OPS, STATE, the Evidence repository or a
-directory whose Attempt cannot be established; never while its launch process
-or a provider process is alive. Scratch is ephemeral, untrusted execution
-material, not Run evidence (see
+Scope: only that Run's own scratch directory. Never a shared scratch parent,
+another Run's scratch, the checkout's own engine-state, the Evidence
+repository or a directory whose Run cannot be established; never while its
+launch process or a provider process is alive. Scratch is ephemeral,
+untrusted execution material, not Run evidence (see
 link:{operator-docs}/operator_manual/ch07_diagnostics/02_failure_modes.adoc#scratch-diagnosis[scratch diagnosis]);
 diagnosis that needs it precedes cleanup.
 

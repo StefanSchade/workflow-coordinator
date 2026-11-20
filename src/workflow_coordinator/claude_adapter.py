@@ -53,8 +53,8 @@ _SHORT_TMP_ROOT = Path("/tmp")
 # _SHORT_TMP_ROOT itself -- e.g. the stock Ubuntu/WSL default with none of
 # those set, or an operator explicitly setting TMPDIR=/tmp -- which would
 # otherwise make the short symlink and its own real target the same path.
-# Mirrors create_attempt_scratch()'s own unprivileged `~/wfc-scratch` default
-# (`scripts/wfc_op.py`).
+# Historically mirrored create_attempt_scratch()'s own unprivileged
+# `~/wfc-scratch` default (the now-retired `scripts/wfc_op.py` Harness).
 _WFC_FALLBACK_SCRATCH_ROOT = Path.home() / ".wfc-claude-scratch"
 
 

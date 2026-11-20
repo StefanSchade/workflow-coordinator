@@ -4,8 +4,8 @@ ifndef::assembled[]
 
 Maturity::  stable
 Authority:: informative
-Updated::   2026-11-11
-Owns::      Current Harness launch/status mechanics and interpretation of terminal states; governing inputs, code and the normative preparation contract retain authority.
+Updated::   2026-11-20
+Owns::      Current product Front Door launch/status mechanics (`wfc run`/`resume`/`status`) and interpretation of terminal states; governing inputs, code and the normative preparation contract retain authority.
 endif::[]
 
 [[launch]]
@@ -13,100 +13,93 @@ endif::[]
 
 [source,shell]
 ----
-python3 scripts/wfc_op.py launch "$ATTEMPT"
+wfc run --request path/to/request.yaml --yes
+wfc resume
 ----
 
-`launch` does *not* reconstruct operator CLI inputs from scratch. It locates
-OPS/STATE from the Attempt name; refuses if preparation never completed or
-STATE already exists (fail closed, never silently reused); re-digests
-`launch.sh`/`execution-bindings.yaml` against what `prepare` recorded,
-refusing on drift; re-revalidates Development/Runtime/Evidence HEAD and
-cleanliness; only then executes the already-materialized `launch.sh`
-unmodified, preserving stdout/stderr/return code verbatim.
+`wfc run` authorizes and launches a lifecycle against the canonical checkout
+derived from `--repository` (default the current directory): it compiles and
+digests the Commission and execution envelope once, requires explicit
+confirmation (interactive `y`, or `--yes` for a non-interactive caller),
+re-derives both digests immediately before authorizing to refuse a race
+between approval and a later edit, acquires the checkout's ownership lock,
+and only then runs the pre-launch checks, baseline probe, Commission commit,
+`frontdoor.verify.verify_commission`, and engine launch, each step journaled
+write-ahead. `wfc resume` continues an already-authorized checkout purely
+from journal and filesystem facts -- it never re-prompts, never recommits,
+and never resumes the engine's own Run/Hop/session; use it after an
+interrupted controller, not to start a new lifecycle.
 
 For WFC self-development tests using the offline profile, select the verified
 bundle explicitly in this launch process as well as in preparation; see the
 link:{operator-docs}/operator_manual/ch03_running/01_preparation.adoc#selfdev-offline-inputs[offline-input guidance].
 
-Executing the prepared launcher enters the provider-capable execution
-path. It does not itself cross the provider boundary: the first real
-provider dispatch does. Preflight, Run/state materialization or checkout
-registration can fail before any provider invocation; this distinction also
-applies to shorthand comments in older command examples. See the normative
+Launching enters the provider-capable execution path. It does not itself
+cross the provider boundary: the first real provider dispatch does.
+Preflight, Run/state materialization or checkout registration can fail
+before any provider invocation. See the normative
 link:{operator-docs}/operator_manual/ch03_running/01_preparation.adoc#three-boundaries[three-boundary contract].
 
-STATE is materialized at `~/wfc-state/<attempt>` only once the pinned
-Runtime's own process actually starts the Run; Hops then execute until a
-terminal state. `launch` may run for a long time before returning, and
-prints `LAUNCH RETURN CODE: <n>` to stderr. *A non-zero return code does not
-by itself mean provider or Harness failure* -- `awaiting_human` and other
-legitimate terminal states can produce one too (see terminal states below). Always inspect
-persisted facts via `status`, never the return code alone.
+Engine state is materialized under the checkout's own `engine-state`
+directory only once the pinned engine's own process actually starts the Run;
+Hops then execute until a terminal state. `wfc run`/`resume` may run for a
+long time before returning, and print `CLASSIFICATION: <name>` followed by
+`MESSAGE: ...` and, when applicable, `RUN ID:`, `RUN STATUS:`, `END HEAD:`,
+`STATE ROOT:` and `CHECKOUT STATE ROOT:`. The process exit code encodes the
+classification (`0` for `completed`, `10` for `awaiting_human`, and so on,
+through `refused_*`/`inconsistent`/`uncertain_launch` codes for mechanical
+refusals). *A non-zero exit code does not by itself mean provider or engine
+failure* -- `awaiting_human` and other legitimate terminal states produce one
+too (see terminal states below). Always inspect the printed classification
+and `wfc status`, never the exit code alone.
 
 [[status]]
 == STATUS
 
 [source,shell]
 ----
-python3 scripts/wfc_op.py status "$ATTEMPT"
-python3 scripts/wfc_op.py status "$ATTEMPT" --json
+wfc status
 ----
 
 Strictly read-only; never creates, mutates, retries, reconciles, or launches
 anything. Safe and useful from a second shell while a Run executes in the
-first. For a syntactically valid Attempt, the projection exits `0`: an unknown
-Attempt, incomplete preparation or a reported mechanical inconsistency is
-a fact, not a command failure. An invalid Attempt identifier is still a
-Harness refusal.
+first. It always exits `0` unless there is no lifecycle at all to report
+(`no_lifecycle`, exit `1`): an absent or not-yet-authorized lifecycle is a
+fact, not a command failure.
 
-It reads whatever persisted files exist: `preparation-pins.txt` and
-`harness-prepared.json` (what was prepared), `operator-plan.json` (what was
-admitted), `operator-summary.json` and per-checkout `run.json` (what happened),
-and `checkout-association.json` (checkout identity). Disagreeing non-empty
-`run_id`, `work_item_id` or `checkout_id` values produce `inconsistencies`
-instead of a chosen identity -- the identity-agreement discipline also used
-by `wfc-archive-run`'s `agree()` helper.
+`wfc status` classifies the canonical checkout's journal and filesystem facts
+purely from persisted records -- it never invokes the engine's own `wfc
+status` (which would be engine-version-coupled). It prints the same
+`CLASSIFICATION`/`MESSAGE`/`RUN ID`/`RUN STATUS`/`END HEAD`/`STATE ROOT`/
+`CHECKOUT STATE ROOT` fields `wfc run`/`resume` print, plus, when present, a
+`PRESERVATION:` block (BP4b candidate-preservation status) and an `ARCHIVE:`
+block (BP6c postrun archive status, with `outcome`, `commit`,
+`destination_relative`, `retention`, and on failure `reason_code`/`reason`).
 
-Other fields use explicit source precedence, not a general disagreement
-check: `run_status` comes from the summary's `run_status`, falling back to
-`run.json`'s `status`; `current_phase` comes from `run.json`'s `phase`.
-Hop counts, stop reason, human question and anomalies prefer the summary,
-then `run.json`; final HEAD and worktree cleanliness come from the summary.
-A persisted `null` is retained rather than treated as a missing value.
-Corrupt JSON is reported in `corrupt_sources`. Missing facts stay absent;
-`status` does not infer completion. It never invokes the pinned Runtime's
-own `wfc status` (which would be Runtime-version-coupled); persisted JSON
-keeps the projection usable across Runtime-N/Development-N+1 drift.
+Classifications distinguish `no_lifecycle` (nothing recorded yet),
+`authorized`/`lifecycle_active` (authorized but not yet launched or still
+running), `engine_active` (the engine, or its launcher, still holds the
+ownership lock), `engine_exited_before_state` (no provider dispatch
+recorded), `uncertain_launch` (an unresolved launch intent -- per DG-3
+Variant B this is never treated as safe to relaunch), `inconsistent`
+(contradictory engine/journal facts), and the terminal engine outcomes
+(`completed`, `awaiting_human`, `awaiting_human_budget`,
+`reconcile_required`, `stopped`, `interrupted`) plus the `refused_*`
+mechanical-refusal classifications. `RUN_RECORDED`-equivalent terminal
+classifications do not themselves mean success -- inspect `RUN STATUS` and
+the terminal-states guidance below.
 
-Fields to read: `lifecycle`, `run_id`, `work_item_id`, `checkout_id`,
-`run_status`, `current_phase`, `hop_used`/`hop_limit`, `stop_reason`,
-`human_question`, `final_head`, `worktree_clean`, `anomalies`/
-`inconsistencies`/`corrupt_sources`.
-
-Additional fields include `attempt`, `ops`, `state`, `scratch_path`,
-`preparation_present`, `prepared_development_head`, `prepared_runtime_head`,
-`prepared_evidence_head`, `state_present`, `operator_status` and
-`operator_error`, when persisted/applicable. Lifecycle distinguishes
-`UNKNOWN_ATTEMPT`, `PREPARATION_INCOMPLETE_OR_UNREADABLE`,
-`PREPARED_NOT_LAUNCHED`, `STATE_PRESENT_NO_RECOGNIZABLE_WFC_STATE` and
-`RUN_RECORDED`; the last does not itself mean success.
-
-Real persisted example (historical illustration, not a current Run; see the
-link:{operator-docs}/wfc_operator_manual.adoc#_19_worked_example[worked example]):
+Illustrative projection shape (not a literal transcript):
 
 [source,text]
 ----
-attempt: wfc-projected-result-contracts-p1-20261007-01
-lifecycle: RUN_RECORDED
-run_id: RUN-157080a2fa7b44de8429aa9b8fba53ab
-run_status: awaiting_human
-current_phase: rereview
-hop_used: 4
-hop_limit: 8
-stop_reason: completion_blocked_by_open_blocking_findings
-final_head: 84fba1653738214bc49d0eabfeefeb4deb03023f
-worktree_clean: True
-anomalies: []
+CLASSIFICATION: awaiting_human
+MESSAGE: classified: awaiting_human
+RUN ID: RUN-157080a2fa7b44de8429aa9b8fba53ab
+RUN STATUS: awaiting_human
+END HEAD: 84fba1653738214bc49d0eabfeefeb4deb03023f
+STATE ROOT: /home/<user>/.local/state/wfc/checkouts/<checkout-id>/engine-state
+CHECKOUT STATE ROOT: /home/<user>/.local/state/wfc/checkouts/<checkout-id>/engine-state/checkouts/<run-checkout-id>
 ----
 
 [[terminal-states]]
@@ -117,9 +110,14 @@ failure, or failed review. It means the current Run's authority/mechanics
 cannot legally continue -- the trusted reducer correctly refused rather than
 fabricate or assume authority it does not have.
 
-When a Run stops `awaiting_human`, inspect in order: `stop_reason`; any
-`human_question`; open Findings and which phase, if any, holds
-`finding_authority` over them; the last recorded phase/result; `anomalies`;
+`wfc status` reports only the lifecycle classification and run status shown
+above; `stop_reason`, `human_question_present`, `hops_used`/`hop_limit`,
+`anomaly_count` and the rest of the sanitized Run facts are projected
+separately, after archive, via `wfc audit <attempt-dir>` (or automatically by
+the BP6c postrun step) and rendered by `wfc report <source>`. When a Run
+stops `awaiting_human`, inspect in order: the reported `stop_reason`; whether
+`human_question_present`; open Findings and which phase, if any, holds
+`finding_authority` over them; the last recorded phase/result; any anomalies;
 durable review artifacts the Run references. This is correct fail-closed
 behavior, not a malfunction.
 

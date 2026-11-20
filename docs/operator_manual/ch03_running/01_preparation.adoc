@@ -4,8 +4,8 @@ ifndef::assembled[]
 
 Maturity::  stable
 Authority:: normative
-Updated::   2026-11-11
-Owns::      The unchanged generic deterministic Run-preparation contract across WFC-operated repositories; the Harness subsection describes its current self-development implementation.
+Updated::   2026-11-20
+Owns::      The unchanged generic deterministic Run-preparation contract across WFC-operated repositories; the product-Front-Door subsection describes its current self-development implementation.
 endif::[]
 
 [[run-preparation]]
@@ -35,7 +35,7 @@ rediscovered or accidentally changed.
 
 Preparation follows the reviewed, committed Commission (WorkItem, Profile,
 RepositoryPolicy, Components and Task). The boundaries and sequence below
-own the generic procedure; the Harness subsection supplies the concrete
+own the generic procedure; the product-Front-Door subsection supplies the concrete
 command and its self-development substrate distinction.
 
 [[three-boundaries]]
@@ -105,9 +105,16 @@ agent Hop and does not require an LLM to decide or author the next steps.
 . Require clean target and Runtime checkouts.
 . Select a fresh, initially absent OPS root and a fresh state root; the state
   root must remain absent throughout preparation.
-. Export the exact Runtime commit and install it into a fresh environment.
-. Export the exact target baseline and build the separate evidence
-  environment.
+. Confirm the Runtime's documented implementation identity (its recorded
+  version/digest, verifiable with `wfc --version`/`--json`) matches the
+  accepted record; per DG-5, WFC does not export, build, or otherwise
+  provision a fresh per-Attempt Runtime environment -- that identity must
+  already be installed into a consumer-provided environment.
+. Confirm the consumer-provided environment the Run will actually execute in
+  has been independently prepared and is WFC-probed (the pinned target
+  baseline's dependencies installed, the evidence command's interpreter
+  resolvable); per DG-5, WFC does not provision project-specific
+  environments in general.
 . Write `execution-bindings.yaml` from maintainer-selected role bindings.
 . Construct and inspect the controlled `PATH`.
 . Run provider-free readiness/preflight checks.
@@ -144,114 +151,105 @@ values.
 
 [source,shell]
 ----
-TARGET=...           # repository this Run operates on -- e.g. a
-                      # self-development Development N+1 clone, or a
-                      # consumer repository such as Core or Latin
-RUNTIME=...            # WFC engine checkout at the accepted Runtime commit
+TARGET=...           # repository this Run operates on -- e.g. a fresh
+                      # self-development checkout, or a consumer
+                      # repository such as Core or Latin
+RUNTIME=...            # the accepted Runtime identity's installed `wfc`
 TARGET_HEAD=...        # exact pinned target commit
-RUNTIME_HEAD=...       # exact accepted Runtime commit
-OPS=...                # fresh, initially absent
-STATE_ROOT=...         # fresh; must remain absent throughout preparation
 
-test ! -e "$OPS"
-test ! -e "$STATE_ROOT"
+# exact HEAD / cleanliness checks against $TARGET_HEAD
 
-# exact HEAD / cleanliness checks against $TARGET_HEAD and $RUNTIME_HEAD
+"$RUNTIME" --version --json   # confirm the installed implementation identity
+                               # matches the accepted record (step 4); WFC
+                               # provisions nothing here
 
-mkdir -p "$OPS"
+# confirm the consumer-provided environment is already prepared and
+# WFC-probed: dependencies installed, the evidence command's interpreter
+# resolvable (step 5); WFC provisions no project-specific environment
 
-mkdir -p "$OPS/runtime-src"
-git -C "$RUNTIME" archive "$RUNTIME_HEAD" | tar -x -C "$OPS/runtime-src"
-python3 -m venv "$OPS/runtime-env"
-"$OPS/runtime-env/bin/pip" install "$OPS/runtime-src"
+# write execution bindings from maintainer-selected role bindings
 
-mkdir -p "$OPS/target-src"
-git -C "$TARGET" archive "$TARGET_HEAD" | tar -x -C "$OPS/target-src"
-python3 -m venv "$OPS/target-env"
-"$OPS/target-env/bin/pip" install "$OPS/target-src[dev]"
+# assemble and verify the controlled PATH/executable resolution the Run will use
 
-# write "$OPS/execution-bindings.yaml" from maintainer-selected role bindings
+# provider-free readiness/preflight against the committed Commission
 
-# PATH="$OPS/target-env/bin:$OPS/runtime-env/bin:<remaining trusted base PATH>"
-# command -v checks against the controlled PATH
-
-# provider-free readiness/preflight: "$OPS/runtime-env/bin/wfc" --help, and
-# snapshot_environment() / prepare_evidence_commands()
-
-# materialize "$OPS/launch.sh", which invokes the absolute runtime wfc with
-# --repository, --expected-head, --state-root, --execution-bindings, etc.
-
-# stop here -- the maintainer executes launch.sh explicitly and separately
+# materialize the deterministic launch record and stop; only the
+# maintainer's explicit, separate confirmation enters the provider-capable
+# execution path
 ----
 
-The concrete flags and checks are those of the `wfc` operator CLI
-(`--repository`, `--expected-head`, `--state-root`, `--execution-bindings`,
-and related arguments); this skeleton does not restate or replace them.
+On the current product Front Door, this generic shape is what `wfc init`
+(Consumer Config), `wfc plan` (a read-only preview: project the Commission
+and resolve the execution envelope without writing or launching) and
+`wfc run --request ... --yes` (authorize, then launch, with its own
+pre-launch checks and probe) perform together; see
+link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-topology[self-development's current specialization]
+for the concrete commands.
 
 [[harness-preparation]]
-== Today's mechanism: Harness v0
+== Today's mechanism: the product Front Door
 
 Authority:: informative
 
-The generic sequence and preferred export shape above remain the contract.
-The following describes `scripts/wfc_op.py prepare` (`DEC-WFC-016`), the
-current repo-local mechanism for WFC self-development. Run it from the
-Development repository root as `python3 scripts/wfc_op.py ...`.
-`pyproject.toml` packages only `workflow_coordinator*` from `src/`; there is
-no installed `wfc-op` console command. A pip-installable, consumer-neutral
-Operator Harness and Front Door usable against an unrelated consumer
-repository without a WFC source checkout remains a product target, not an
-available path; see the
-link:{operator-docs}/backlog/beta1_productization.adoc[the current productization plan].
+The generic sequence above remains the contract. Per DG-4/DG-5
+(link:{operator-docs}/backlog/beta1_bp7_cutover_plan.adoc[BP7 retirement
+cutover plan]), the former `scripts/wfc_op.py` Harness is retired: both proof
+Runs are independently accepted with archive-equivalence recorded, and the
+installed `wfc` console command (`wfc init`/`plan`/`run`/`resume`/`status`/
+`audit`/`report`/`archive`) is now the regular, and only, self-development
+path. There is no separate `prepare`/`launch` split and no per-Attempt
+OPS/STATE export step: `wfc run` performs authorization, pre-launch checks,
+a baseline probe, the Commission commit, re-verification, and engine launch
+together, each step journaled write-ahead under the canonical checkout's own
+state directory (`journal.state_home()/checkouts/<checkout-id>`).
 
 === Self-development specialization, in one line
 
-For self-development, `TARGET` is the Development N+1 clone (this checkout)
-and `RUNTIME` is the separately promoted Runtime N clone, with its detached /
-push-disabled invariant. Read the normative
+Read the normative
 link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc[topology and Hop-budget guidance]
 and link:{operator-docs}/operator_manual/ch05_self_development/02_promotion.adoc[promotion runbook]
-before preparing a first Run.
+before running a first Run, including the one-fresh-checkout-per-Run
+discipline at
+link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-checkout-rotation[checkout rotation].
 
-*Distinguish source identity from evidence substrate.* `export_runtime`
-exports the exact Runtime commit using `git archive` and installs that
-export non-editably into a fresh `runtime-env`. In contrast,
-`prepare_development_environment` builds the separate `dev-env` from the
-*live pinned Development checkout*, installing `<Development>[dev]`.
-It does not make the `target-src` export shown in the generic illustration:
-that export would strip `.git` from the self-development evidence substrate.
-The generic preferred target-export practice is preserved above; it is not
-a claim about how the current Harness installs Development, nor is the
-Harness behavior a replacement for that generic preference.
+*Distinguish source identity from evidence substrate.* The accepted Runtime
+identity is whatever `wfc` the maintainer has installed into a
+non-editable environment per the bootstrap mitigation in the cutover plan's
+risk section -- WFC itself no longer exports or builds that environment per
+Attempt (DG-5). The Development checkout the Run actually operates on keeps
+its full Git context (it is the evidence substrate `wfc run` commits
+against and `wfc archive` later reads facts from); it is never replaced by a
+stripped `git archive` export.
 
-Harness pins the exact Development/Runtime/Evidence HEADs from their live
-checkouts rather than asking the maintainer to re-type them. It requires
-clean Development/Evidence worktrees and a clean, detached Runtime with
-`remote.origin.pushurl=DISABLED`. It refuses if either OPS or STATE already
-exists. It creates OPS, derives the STATE path without creating it, writes
-`execution-bindings.yaml` from explicit role bindings with no automatic
-model/provider choice, and assembles and checks
-`PATH=<dev-env>/bin:<runtime-env>/bin:<trusted base PATH>` so that `python3`
-resolves to the development/evidence interpreter.
+`wfc run` derives the exact repository HEAD and cleanliness requirement from
+the live checkout itself (`--repository`, default the current directory) --
+there is no separate `--expected-head` to pin by hand. It refuses outright if
+a lifecycle is already authorized for this checkout (`refused_active_lifecycle`)
+or if the engine state root already exists; see
+link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-checkout-rotation[checkout rotation]
+for why that means one fresh checkout per Run today. Execution bindings come
+from the Consumer Config's `default_execution` plus any
+`--execution-override ROLE.FIELD=VALUE`, with no automatic model/provider
+choice.
 
-Provider-free preflight is one narrow isolated seam: the pinned Runtime's
-own `operator._preflight()` runs under its own interpreter. Harness does
-not reimplement admission semantics. The seam reads governing inputs and
-resolves evidence executables without executing evidence commands; it
-allocates no Run, creates no STATE, registers no checkout, constructs no
-adapter and invokes no provider. Preparation persists
-`preparation-pins.txt` and `harness-prepared.json` (pins, paths and launch-
-artifact digests), materializes `launch.sh`, revalidates every repository
-pin, checks STATE is still absent, then stops. Drift is a named refusal,
-never a guess. It never launches.
+Provider-free preflight is `frontdoor.verify.verify_commission`, run as part
+of `wfc run`/`resume` before the engine ever launches: it re-compiles the
+Commission from the just-committed materials and re-verifies them against
+the repository at the authorized HEAD before invoking the same admission
+semantics the engine's own preflight uses. It allocates no Run, invokes no
+provider. Journal records (`authorized`, `prelaunch`, `probe`, `commit`,
+`verify`, `launched`, `classified`) are the current equivalent of the old
+`preparation-pins.txt`/`harness-prepared.json` facts; `wfc status` projects
+them. Drift is a named refusal, never a guess.
 
-The current Harness also creates a fresh private per-Attempt scratch
-directory (default `~/wfc-scratch/$ATTEMPT`, mode `0700`), separate from
-repositories, OPS and STATE. Optional `--scratch-root` selects an existing
-absolute directory; its Attempt child must be fresh. The scratch path is
-recorded in both preparation records. Preflight receives that path in
-`TMPDIR`, `TMP` and `TEMP`; `launch.sh` freezes those values and the controlled
-`PATH` as literals, so a later shell's environment does not replace them.
+The product Front Door has no scratch allocator of its own (per the
+link:{operator-docs}/backlog/beta1_bp7_cutover_plan.adoc#gap-analysis[cutover
+plan's gap analysis], there was never a ported equivalent). The existing ch05
+link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-temporary-storage[temporary-storage/inode guidance]
+remains necessary, unchanged by this cutover, and is now entirely the
+consumer-provided environment's own responsibility: prepare and verify
+`TMPDIR`/scratch space and inodes yourself before a test-heavy Run, the same
+way as before, just without a Harness step that did it for you.
 
 [[selfdev-offline-inputs]]
 === Offline inputs for WFC self-development
@@ -263,11 +261,11 @@ owns the profile, `fetch`/`verify`/`exec` commands, staging, diagnostics and
 qualification limits. This is WFC's own development tooling, not a requirement
 on a consumer repository or a change to generic preparation authority.
 
-Supply verified inputs to *both* `prepare` and `launch` in their respective
-process environments; the launcher freezes PATH and temporary-directory values,
-not arbitrary pip settings. For a separate Coordinator `task-check`, the
-launch environment must also carry the selected `WFC_TEST_INPUTS` and
-`WFC_TEST_PROFILE`. The Guide shows using the verifier's `exec` around each
+Supply verified inputs to the `wfc run`/`resume` process environment; the
+engine inherits it from the launching process, not from any frozen
+Harness-written `launch.sh`. For a separate Coordinator `task-check`, that
+same environment must carry the selected `WFC_TEST_INPUTS` and
+`WFC_TEST_PROFILE`. The Guide shows using the verifier's `exec` around the
 command; it verifies before and after and supplies the controlled pip settings.
 The provider's own shell may have different read access and environment
 filtering, so do not infer its access from a host check. A no-index setting
@@ -277,81 +275,91 @@ sandbox rules; the tool grants no new access.
 === The command
 
 The paths and role/model values below are illustrative maintainer inputs,
-not authorization to execute:
+not authorization to execute. `wfc plan` previews a Consumer Request read-only
+before authorizing it with `wfc run`:
 
 [source,shell]
 ----
-ATTEMPT=wfc-<work-item-slug>-<date>-<counter>
+wfc plan governance/work-items/<work-item-slug>-task.txt \
+  --commission-id     <work-item-slug>-001 \
+  --work-item-id      WI-<WORK-ITEM-SLUG>-001 \
+  --authority-source  "Maintainer authorizes the stated bounded task." \
+  --program           robust@v1 \
+  --persona           worker="Bounded worker persona." \
+  --persona           independent_reviewer="Independent adversarial reviewer persona." \
+  --evidence-argv     python --evidence-argv -m --evidence-argv pytest --evidence-argv -q \
+  --durable-artifact  broad_review=docs/backlog/<work-item-slug>_broad_review.adoc \
+  --durable-artifact  focused_review=docs/backlog/<work-item-slug>_focused_review.adoc \
+  --guidance-path     .wfc/governance/repository-policy.md \
+  --scope src --scope tests --scope docs/backlog/<work-item-slug>.adoc
 
-python3 scripts/wfc_op.py prepare \
-  --attempt         "$ATTEMPT" \
-  --development     /home/stefan/repos/spreadsheet-handling/workflow-coordinator \
-  --runtime         /home/stefan/repos/spreadsheet-handling/workflow-coordinator-runtime \
-  --evidence        /home/stefan/repos/spreadsheet-handling/workflow-coordinator-run-evidence \
-  --work-item       governance/work-items/<work-item-slug>.yaml \
-  --profile         governance/self-development/<work-item-slug>-profile.yaml \
-  --policy          governance/self-development/<work-item-slug>-policy.yaml \
-  --components      governance/self-development/components.yaml \
-  --task            governance/work-items/<work-item-slug>-task.txt \
-  --executable      <absolute path to the provider CLI> \
-  --timeout-seconds 3600 \
-  --role-binding    worker=<adapter>:<model>:<reasoning> \
-  --role-binding    independent_reviewer=<adapter>:<model>:<reasoning>
+wfc run \
+  --request governance/work-items/<work-item-slug>-request.yaml \
+  --execution-override worker.adapter=<adapter> --execution-override worker.model=<model> \
+  --yes
 ----
 
-`--work-item`/`--profile`/`--policy`/`--components`/`--task` are
-Development-relative paths. The example follows the existing
-`governance/work-items/` and `governance/self-development/` naming convention:
-`<work-item-slug>-profile.yaml`, `<work-item-slug>-policy.yaml`, a shared
-`components.yaml`, and a repository-wide `repository-policy.yaml` baseline.
-A rendered Commission may instead supply its committed bundle paths; see
-link:{operator-docs}/operator_manual/ch02_commissioning/02_authoring.adoc#direct-v1-quickstart[Commission authoring].
-Harness checks path shape and existence, not semantic content; that is the
-canonical preflight seam's job, and ultimately the reducer's.
+`--guidance-path` and `--scope` (on `plan`) and `--request` (on `run`, an
+already-authored Consumer Request YAML, not a free-form task file) are
+repository-relative to `--repository` (default the current directory).
+`wfc plan` is entirely read-only: it never writes a Commission, invokes a
+provider, or touches Git; author the Consumer Request YAML it would compile
+once its preview looks right, then pass that file to `--request`. `wfc run`
+prints the Commission digest and execution-envelope digest before
+authorizing (`--yes` accepts non-interactively; an interactive terminal
+without `--yes` prompts `y`/`N`). The canonical preflight (now
+`frontdoor.verify.verify_commission`) requires personas to match the
+program's roles exactly; `--execution-override` fields are `adapter`/
+`model`/`reasoning`, never a project/path value.
 
-For `--executable`, verify the absolute path on this host with `which codex`
-or `which claude`; do not assume `/usr/local/bin/codex` or another fixed
-location. `<adapter>` is `codex_cli` or `claude_cli`; use one binding per
-profile role, with the maintainer-selected model and reasoning. For example,
-the older concrete illustration used
-`worker=codex_cli:gpt-5.6-terra:medium` and
-`independent_reviewer=codex_cli:gpt-5.6-terra:high`; these are illustrative
-values, not a current model recommendation. The canonical preflight
-requires bindings to match the profile roles exactly and to use one adapter
-for the single scalar executable. `--timeout-seconds` must be positive.
+For an adapter executable, verify the absolute path on this host with
+`which codex` or `which claude`; do not assume a fixed location. The
+Consumer Config's `default_execution` (`.wfc/config.yaml`) supplies a
+default per role; `--execution-override` narrows or replaces one field of
+it for a single `plan`/`run` invocation only, never the committed default.
 
 === Expected result
 
 [source,text]
 ----
-PREPARED / NOT LAUNCHED
+CLASSIFICATION: completed
+MESSAGE: classified: completed
+RUN ID: RUN-<...>
+RUN STATUS: completed
+END HEAD: <commit sha>
 ----
 
-`~/wfc-ops/$ATTEMPT` now exists. STATE does *not* exist yet: that absence is
-required, not a defect. If `prepare` refuses, read the named mismatch and
+If `wfc run` refuses, read the printed classification and message and
 consult link:{operator-docs}/operator_manual/ch07_diagnostics/01_troubleshooting.adoc#troubleshooting[troubleshooting].
-Never hand-edit OPS or preparation records; correct the input and re-run
-`prepare` with a fresh Attempt where the earlier preparation left OPS or
-scratch behind. Continue to
+Never hand-edit the checkout's journal or engine-state directory; a
+refused or interrupted authorization attempt is resolved by `wfc resume`
+(continuing) or by preparing a fresh checkout per
+link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-checkout-rotation[checkout rotation],
+never by editing persisted facts. Continue to
 link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#launch[launch and monitoring];
-archiving remains at
+archiving happens automatically, per
 link:{operator-docs}/operator_manual/ch04_evidence/02_archive.adoc#archive[ARCHIVE].
 
 [[recovery-relation]]
 == Relation to Run recovery and salvage
 
-This document owns deterministic preparation before launch, up to and
-including `launch.sh`. It does not cover what happens when a Run or Hop
-later fails to cleanly complete; that maintainer procedure -- same-Run
-reconcile/resume, maintainer salvage plus a fresh successor Run, forensic
-preservation, or discard -- is owned separately by
+This document owns deterministic preparation and launch through `wfc run`/
+`resume`. It does not cover what happens when a Run or Hop later fails to
+cleanly complete; that maintainer procedure -- same-Run reconcile/resume,
+maintainer salvage plus a fresh successor Run, forensic preservation, or
+discard -- is owned separately by
 link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc[Run recovery and maintainer salvage].
 
 [[future-ux]]
 == Relation to future UX
 
-Today's documented Bash/operator procedure is the current implementation of
-this deterministic preparation contract. A future wrapper or CLI may collapse
-the mechanics into one command, but should preserve the same pinning,
-freshness, Runtime freeze, evidence-environment, preflight, and explicit
-provider-boundary semantics.
+The product Front Door (`wfc init`/`plan`/`run`/`resume`) is the current
+implementation of this deterministic preparation contract, already
+collapsed into a small set of commands rather than a maintainer-assembled
+shell procedure. Remaining UX gaps -- a scratch allocator, controlled
+checkout reuse after a terminal lifecycle
+(link:{operator-docs}/backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc[FTR-WFC-LIFECYCLE-ROTATION]),
+and the bootstrap mitigation for a non-editable Runtime install -- are named
+gaps, not silently absorbed ones; any future change here should preserve the
+same pinning, freshness, Runtime freeze, evidence-environment, preflight,
+and explicit provider-boundary semantics.

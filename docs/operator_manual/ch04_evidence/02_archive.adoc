@@ -4,31 +4,24 @@ ifndef::assembled[]
 
 Maturity::  stable
 Authority:: informative
-Updated::   2026-11-11
-Owns::      Current Harness archive delegation, STATE/archive/ledger distinctions and evidence persistence limits; the canonical Evidence wrapper owns archive mechanics and maintainers own ledger judgment.
+Updated::   2026-11-20
+Owns::      Current `wfc archive` mechanics (automatic via `wfc run`/`resume`'s postrun step, and directly invokable), STATE/archive/ledger distinctions and evidence persistence limits; maintainers own ledger judgment.
 endif::[]
 
 [[archive]]
 == ARCHIVE
 
-[source,shell]
-----
-python3 scripts/wfc_op.py archive "$ATTEMPT" --dry-run
-python3 scripts/wfc_op.py archive "$ATTEMPT"
-----
-
-Run these commands from the WFC Development source checkout after the Run
-reaches a terminal state; `ATTEMPT` identifies its prepared envelope.
-`archive` is a deterministic, delegating wrapper around the canonical
-`workflow-coordinator-run-evidence/scripts/wfc-archive-run`. Harness derives
-the wrapper's two positional arguments -- STATE root and Evidence repository
--- from the Attempt's own preparation facts, refusing if the two preparation
-records disagree on the Evidence path. Default behavior is always
-*canonical dry-run, then canonical real archive*; passing `--dry-run` to
-`wfc-op archive` stops after the plan. `--semantic-json /absolute/path/to/semantic.json`, if given, is
-forwarded to the canonical wrapper on both calls without interpreting the
-JSON; Harness resolves the supplied path to an absolute path. Harness implements none of the copying, hashing,
-manifest, or fact-extraction logic itself.
+`wfc run`/`wfc resume` archive automatically, once per checkout, immediately
+after the engine reaches a `classified` terminal record (BP6c postrun):
+`frontdoor.postrun.run_pending_postrun` derives the Evidence destination from
+the checkout's own cached Consumer Config
+(`frontdoor.config.resolve_evidence`), runs `frontdoor.archive.archive_run`
+against it, then projects a sanitized `wfc.audit/1` record and a rendered
+report. This never changes the engine's own classification or exit code --
+only the exit code's *postrun* override (`ARCHIVE_FAILED_EXIT_CODE`, printed
+as an `ARCHIVE SKIPPED`/`ARCHIVE FAILED` notice) can additionally fire.
+`wfc status` reports the latest postrun outcome in its own `ARCHIVE:` block;
+see link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#status[STATUS].
 
 [[release-resources-after-archive]]
 After a successful real archive whose Evidence demonstrably exists, the Operator
@@ -36,7 +29,8 @@ may release execution resources the Run still holds (temporary working
 directories, scratch space). Resources a stopped Run with open recovery need
 may still require are kept until its disposition is documented; the
 archive is then the moment to release them. Which resources exist, and how
-they are released, depends on the deployment; the Harness specialization is
+they are released, depends on the deployment; the self-development
+specialization is
 link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-scratch-cleanup[scratch cleanup after archival].
 
 The following layers have different owners and purposes:
@@ -52,29 +46,29 @@ external research  non-Run experiments, with their own evidence boundaries
 project history    narrative Cold-Storage context, not current authority
 ----
 
-The Harness delegates mechanical archiving; it does not regenerate the derived
-index or curate the ledger. Index regeneration and semantic curation are
-separate operator tasks, and neither replaces the mechanical archive.
+`wfc archive` performs only mechanical archiving; it does not regenerate the
+derived index or curate the ledger. Index regeneration and semantic curation
+are separate operator tasks, and neither replaces the mechanical archive.
 
 [[installed-archive]]
-=== Installed `wfc archive` (ported capability)
+=== Direct invocation: `wfc archive`
 
 [source,shell]
 ----
-wfc archive <state-root> <evidence-repo> [--semantic-json PATH] [--dry-run]
+wfc archive <state-root> <evidence-repo> [--semantic-json PATH] [--dry-run] [--raw-retention {local,commit,discard}]
 ----
 
-`frontdoor/archive.py` ports `scripts/archive_run.py`/`scripts/wfc-archive-run`
-into the package itself: the allow-list, source isolation, digest-verified
-copy and mechanical fact extraction are unchanged, and a freshly written
-`manifest.json` is byte-compatible with the one the ported scripts would
-have produced, apart from `archived_at`. Two things are new: the copy lands
-in a staging directory and is renamed into place only after verification (a
-partial copy is never visible at the destination), and the command is
-retry-safe -- a destination already placed but not yet committed resumes to
-the commit only after reverifying the placed attempt id, recorded sources
-and every copied file's own digest and size against the manifest, *and*
-reverifying the placed manifest itself (identity, per-file provenance,
+`frontdoor/archive.py` is a direct, parameterized port of the historical
+`scripts/archive_run.py`/`scripts/wfc-archive-run` wrapper: the allow-list,
+source isolation, digest-verified copy and mechanical fact extraction are
+the same shape, and a freshly written `manifest.json` is byte-compatible
+with the one those scripts would have produced, apart from `archived_at`.
+The copy lands in a staging directory and is renamed into place only after
+verification (a partial copy is never visible at the destination), and the
+command is retry-safe -- a destination already placed but not yet committed
+resumes to the commit only after reverifying the placed attempt id, recorded
+sources and every copied file's own digest and size against the manifest,
+*and* reverifying the placed manifest itself (identity, per-file provenance,
 facts and semantic payload, `archived_at` aside) against a manifest
 freshly derived from the current authoritative Run/OPS sources; a file
 tampered together with a matching altered digest in its own manifest, or a
@@ -89,11 +83,11 @@ through a symlink (for example a tracked `archive/` symlink pointing
 outside it), or if a symlink inside the repository (for example a tracked
 `.wfc-archive-staging` symlink pointing into `archive/`) makes the two
 resolve to the same or a nested path -- the retry's staging cleanup must
-never alias, and so destroy, the placed destination. This is currently a
-standalone, directly invoked capability;
-self-development itself continues to archive through `wfc-op archive` above
-until a later Commission switches it over, and `wfc run`'s own lifecycle
-does not yet call it.
+never alias, and so destroy, the placed destination. Direct invocation
+remains available for an archive outside the automatic postrun step (for
+example, archiving a Run that predates this wiring); it must never be run a
+second time against a Run the automatic postrun step already archived --
+that would create two different Attempt identities for the same work.
 
 [[semantic-ledger]]
 == Semantic ledger curation
@@ -104,7 +98,8 @@ run_ledger.adoc`: Runtime version, domain exercised, what happened across
 Hops, model/role bindings, related commits/BUGs, predecessor/successor
 links, lessons, evidence location. This is maintainer-owned, commonly
 LLM-assisted, and performed separately against the already-archived
-mechanical facts -- not automated by `wfc-op archive` or designed here.
+mechanical facts -- not automated by `wfc archive` (automatic or direct) or
+designed here.
 
 The ledger explicitly covers *selected* Runs and external experiments, not the
 full population of all Runs. In the sibling Evidence repository,
@@ -132,8 +127,8 @@ archive evidence lives in the sibling `workflow-coordinator-run-evidence`
 repository under `archive/<classification>/<attempt>/`, each with a
 `manifest.json` of copied files and SHA-256 digests. The curated semantic
 ledger lives in the same repository at `project_memory/run_ledger.adoc`.
-`wfc-op archive` delegates to its `scripts/wfc-archive-run`; Harness owns
-none of its copy/manifest/commit logic.
+`wfc run`/`resume` archive automatically via the BP6c postrun step above;
+`wfc archive` remains separately invokable for the cases described there.
 
 One practical limitation of the current archive, confirmed by the
 link:{operator-docs}/cold_storage/backlog/pre-0.1.0b1/projected-result-contracts/wfc_p2_stagnation_audit_2026-10-09.adoc[historical P2 stagnation audit]: a trusted evidence
@@ -151,10 +146,11 @@ body-omission fields above. Beyond this bounded tail, the full output body
 still is not persisted; a correction Hop may still need to re-run the
 command itself for anything the tail does not cover.
 
-*Future direction (design intent only -- not implemented).* The installed
-archive command described above does not itself integrate archival into the
-consumer lifecycle. Additional destination and retention choices remain future
-work: the Beta-1 direction is an external Evidence repository, while a
-repository-local option is deferred. See the
+*Future direction (design intent only -- not implemented).* Additional
+destination and retention choices remain future work beyond what
+`resolve_evidence` already supports (`local`/`commit`/`discard` raw
+retention against a configured destination): the Beta-1 direction is an
+external Evidence repository, while a repository-local option is deferred.
+See the
 link:{operator-docs}/backlog/beta1_productization.adoc[Beta-1 epic] for the
 current status and the documented limits of BP5 acceptance.
