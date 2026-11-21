@@ -480,6 +480,32 @@ def test_one_invocation_identity_is_projected_dispatched_and_validated(repositor
         assert f"{name}={value}" in adapter.request.prompt
 
 
+def test_dispatch_carries_the_admitted_phase_finding_authority(repository):
+    """AD-4/H1: the Finding authority the prompt header states and the reducer
+    enforces is also the one the dispatched result contract is narrowed by."""
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+
+    def dispatched(workflow, payload):
+        run = replace(run_for(workflow, budget=1), current_head=head, baseline_head=head)
+        adapter = CapturingAdapter(payload)
+        run_one_hop(run, workflow, repository, adapter, components(("worker", 1), ("independent_reviewer", 1), ("testing", 1)), agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="tiny", invocation_id="INV-1")
+        assert adapter.request is not None
+        return adapter.request.finding_authority
+
+    verdict = json.loads(envelope(requested_route="accept"))
+    verdict["result"].pop("status")
+    verdict["result"]["verdict"] = "accept"
+
+    assert dispatched(
+        profile({"work": replace(phase({"done": route("complete")}), evidence=())}),
+        envelope(),
+    ) == ()
+    assert dispatched(
+        profile({"review": replace(phase({"accept": route("complete")}, role="independent_reviewer", review="gate", finding_authority=("resolve",)), evidence=())}),
+        json.dumps(verdict),
+    ) == ("resolve",)
+
+
 def test_closed_terminal_worker_runs_one_provider_call_and_separate_task_check(repository):
     workflow = closed_terminal_worker_workflow()
     head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()

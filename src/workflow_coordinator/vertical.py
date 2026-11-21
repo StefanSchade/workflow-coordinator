@@ -321,12 +321,17 @@ def run_one_hop(
     # Reuses the one canonical projection of "routes this Hop may request"
     # (also the source of ``next_permitted_route_keys``), so the dispatched
     # provider schema can never diverge from what the reducer would honor.
+    # ``finding_authority`` is the same admitted phase fact the prompt header
+    # projects and the reducer re-derives for its own enforcement, so the
+    # dispatched Finding surface follows the phase's declared authority
+    # without any phase name taking part.
     outcome = adapter.execute(AgentExecutionRequest(
         invocation, prompt.text, repository,
         ROUTING_RESULT_ENVELOPE_CONTRACT, execution_timeout_seconds,
         contract_version=selected_result_contract_version,
         result_contract_kind=selected_result_contract,
         permitted_routes=permitted_route_keys(run, profile),
+        finding_authority=() if phase.review is None else phase.review.finding_authority,
     ))
     if outcome.returncode not in (None, 0) or outcome.timed_out:
         raise ExecutionResultValidationError(

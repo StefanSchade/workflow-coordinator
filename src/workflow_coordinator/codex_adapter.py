@@ -304,12 +304,13 @@ def projected_result_openai_schema(
 def structured_result_envelope_openai_schema(
     invocation: Invocation, contract_version: int = 1,
     result_contract_kind: ResultContractKind = ResultContractKind.GENERIC_ROUTING_RESULT,
-    *, permitted_routes: tuple[str, ...],
+    *, permitted_routes: tuple[str, ...], finding_authority: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Return the shared closed WFC schema in Codex's strict dialect."""
     try:
         return structured_result_envelope_schema(
-            invocation, contract_version, result_contract_kind, permitted_routes=permitted_routes
+            invocation, contract_version, result_contract_kind,
+            permitted_routes=permitted_routes, finding_authority=finding_authority,
         )
     except StructuredResultSchemaError as error:
         raise OpenAIStrictSchemaError(str(error)) from error
@@ -366,6 +367,7 @@ class CodexCliAdapter:
                 structured_result_envelope_openai_schema(
                     request.invocation, request.contract_version, request.result_contract_kind,
                     permitted_routes=request.permitted_routes,
+                    finding_authority=request.finding_authority,
                 ),
             )
             atomic_write_text(result, "")

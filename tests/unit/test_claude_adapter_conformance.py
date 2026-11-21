@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,13 +18,14 @@ from workflow_coordinator.adapter import (
     ResultValidationError, validated_result,
 )
 from workflow_coordinator.claude_adapter import ClaudeCliAdapter, ClaudeCliError
+from workflow_coordinator.model import ResultContractKind
 
 
 ROUTES = ("broad_review",)
 
 
-def request(repository: Path, invocation: Invocation | None = None, timeout: float = 2) -> AgentExecutionRequest:
-    return AgentExecutionRequest(invocation or Invocation("RUN-C", "H001", "INV-C"), "make the bounded change", repository, ROUTING_RESULT_ENVELOPE_CONTRACT, timeout, permitted_routes=ROUTES)
+def request(repository: Path, invocation: Invocation | None = None, timeout: float = 2, *, finding_authority: tuple[str, ...] | None = None) -> AgentExecutionRequest:
+    return AgentExecutionRequest(invocation or Invocation("RUN-C", "H001", "INV-C"), "make the bounded change", repository, ROUTING_RESULT_ENVELOPE_CONTRACT, timeout, permitted_routes=ROUTES, finding_authority=finding_authority)
 
 
 def envelope(invocation: Invocation, *, run_id: str | None = None) -> dict:
@@ -165,6 +167,38 @@ def test_successful_wrapper_candidate_is_still_validated_by_wfc(tmp_path: Path):
     ''')
     outcome = adapter(tmp_path, executable).execute(request(tmp_path, invocation))
     assert validated_result(outcome.candidate_result or "", invocation).summary == "done"
+
+
+def test_dispatched_findings_surface_follows_the_admitted_finding_authority(tmp_path: Path):
+    """AD-4/H1 on the Claude path: the schema this adapter actually dispatches
+    admits exactly the Finding operations the admitted phase carries, so an
+    unauthorized disposition is unexpressible rather than only refused later."""
+    invocation = Invocation("RUN-C", "H001", "INV-C")
+    executable = fake(tmp_path, f'''\
+        import json
+        print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "structured_output": {envelope(invocation)!r}}}))
+    ''')
+
+    def dispatched_shapes(finding_authority, contract_version=1, kind=ResultContractKind.GENERIC_ROUTING_RESULT):
+        dispatched = replace(
+            request(tmp_path, invocation, finding_authority=finding_authority),
+            contract_version=contract_version, result_contract_kind=kind,
+        )
+        assert adapter(tmp_path, executable).execute(dispatched).candidate_result is not None
+        schema = json.loads((tmp_path / "structured-result.schema.json").read_text(encoding="utf-8"))
+        return schema["properties"]["result"]["properties"]["findings"]["items"]["anyOf"]
+
+    # An empty authority leaves only ``open``, the one state that needs no
+    # disposition authority; v3's authoritative transition shape is absent.
+    for shape in dispatched_shapes(()):
+        assert shape["properties"]["proposed_state"]["enum"] == ["open"]
+    assert len(dispatched_shapes((), 3, ResultContractKind.WORK_RESULT)) == 2
+
+    # ``resolve`` admits exactly the resolution shape, and nothing else.
+    for shape in dispatched_shapes(("resolve",)):
+        assert shape["properties"]["proposed_state"]["enum"] == ["open", "resolved"]
+    transition = dispatched_shapes(("resolve",), 3, ResultContractKind.WORK_RESULT)[2]
+    assert [branch["properties"]["state"]["enum"] for branch in transition["properties"]["target"]["anyOf"]] == [["resolved"]]
 
 
 @pytest.mark.parametrize("wrapper", ["not-json", json.dumps({"type": "result", "subtype": "error", "is_error": True}), json.dumps({"type": "result", "subtype": "success", "is_error": False}), json.dumps({"type": "result", "subtype": "success", "is_error": False, "structured_output": "not-an-object"})])

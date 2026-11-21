@@ -24,9 +24,13 @@ class StructuredResultSchemaError(ValueError):
 
 
 def routing_result_schema(
-    contract_version: int = 1, *, permitted_routes: tuple[str, ...]
+    contract_version: int = 1, *, permitted_routes: tuple[str, ...],
+    finding_authority: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    return _result_schema(contract_version, permit_v3=False, permitted_routes=permitted_routes)
+    return _result_schema(
+        contract_version, permit_v3=False, permitted_routes=permitted_routes,
+        finding_authority=finding_authority,
+    )
 
 
 def _strict_object(properties: dict[str, Any]) -> dict[str, Any]:
@@ -36,8 +40,68 @@ def _strict_object(properties: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Every Finding shape that would change state denotes exactly one reducer
+# operation, so the admitted phase's own ``finding_authority`` decides whether
+# the shape is projected at all.  This mapping and the one in
+# ``_transition_targets`` mirror the reducer's creation and transition tables
+# (``_finding_operation`` and the ``_apply_v3_finding_deltas`` targets) from the
+# projection side; the reducer stays the authority, no phase name takes part,
+# and a state added without its operation fails here rather than widening the
+# projected surface.
+_DISPOSED_STATE_OPERATIONS: dict[FindingState, str] = {
+    FindingState.RESOLVED: "resolve",
+    FindingState.RESIDUAL: "residual",
+    FindingState.SUPERSEDED: "supersede",
+}
+
+
+def _state_enum(state: FindingState) -> dict[str, Any]:
+    return {"type": "string", "enum": [state.value]}
+
+
+def _proposed_states(finding_authority: tuple[str, ...] | None) -> list[str]:
+    """Project the Finding states the admitted phase can propose.
+
+    ``open`` always stays: creating an open Finding needs no disposition
+    authority, and the evidence-only same-state citation of an open Finding is
+    the one existing-Finding delta any phase may author.  A disposed state
+    stays only when the authority carries its operation.  What a v1/v2
+    existing-Finding delta means still depends on the cited Finding's current
+    state, which the projection does not know, so the reducer remains the
+    authority there.
+    """
+
+    if finding_authority is None:
+        return [item.value for item in FindingState]
+    return [
+        item.value for item in FindingState
+        if item is FindingState.OPEN or _DISPOSED_STATE_OPERATIONS[item] in finding_authority
+    ]
+
+
+def _transition_targets(finding_authority: tuple[str, ...] | None) -> list[dict[str, Any]]:
+    """Project one v3 transition target per admitted authoritative operation."""
+
+    branches = {
+        "resolve": {"state": _state_enum(FindingState.RESOLVED)},
+        "residual": {"state": _state_enum(FindingState.RESIDUAL)},
+        "supersede": {
+            "state": _state_enum(FindingState.SUPERSEDED), "successor_ref": {"type": "string"},
+        },
+        "reopen": {
+            "state": _state_enum(FindingState.OPEN),
+            "new_material_evidence": {"type": "boolean"},
+        },
+    }
+    return [
+        _strict_object(properties) for operation, properties in branches.items()
+        if finding_authority is None or operation in finding_authority
+    ]
+
+
 def _result_schema(
-    contract_version: int, *, permit_v3: bool, permitted_routes: tuple[str, ...]
+    contract_version: int, *, permit_v3: bool, permitted_routes: tuple[str, ...],
+    finding_authority: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     if contract_version not in ({1, 2, 3} if permit_v3 else {1, 2}):
         raise StructuredResultSchemaError("unsupported RoutingResult contract version")
@@ -46,7 +110,7 @@ def _result_schema(
             "requested_route enum requires at least one current-phase permitted route"
         )
     string_array = {"type": "array", "items": {"type": "string"}}
-    state = {"type": "string", "enum": [item.value for item in FindingState]}
+    state = {"type": "string", "enum": _proposed_states(finding_authority)}
     new_properties: dict[str, Any] = {
         "finding_id": {"type": "null"}, "invariant": {"type": "string"},
         "blocking": {"type": "boolean"}, "proposed_state": state,
@@ -68,17 +132,19 @@ def _result_schema(
     if contract_version == 3:
         citation = _strict_object({"finding_id": {"type": "string"}, "evidence_refs": string_array})
         citation["required"] = list(FINDING_CITATION_KEYS)
-        transition = _strict_object({
-            "finding_id": {"type": "string"}, "evidence_refs": string_array,
-            "target": {"anyOf": [
-                _strict_object({"state": {"type": "string", "enum": [FindingState.RESOLVED.value]}}),
-                _strict_object({"state": {"type": "string", "enum": [FindingState.RESIDUAL.value]}}),
-                _strict_object({"state": {"type": "string", "enum": [FindingState.SUPERSEDED.value]}, "successor_ref": {"type": "string"}}),
-                _strict_object({"state": {"type": "string", "enum": [FindingState.OPEN.value]}, "new_material_evidence": {"type": "boolean"}}),
-            ]},
-        })
-        transition["required"] = list(FINDING_TRANSITION_KEYS)
-        finding = {"anyOf": [new_finding, citation, transition]}
+        targets = _transition_targets(finding_authority)
+        shapes = [new_finding, citation]
+        # v3 separates the evidence-only citation from the authoritative
+        # transition, so a phase with no admitted operation is projected
+        # without the transition shape at all rather than with an empty union.
+        if targets:
+            transition = _strict_object({
+                "finding_id": {"type": "string"}, "evidence_refs": string_array,
+                "target": {"anyOf": targets},
+            })
+            transition["required"] = list(FINDING_TRANSITION_KEYS)
+            shapes.append(transition)
+        finding = {"anyOf": shapes}
     else:
         finding = {"anyOf": [new_finding, existing_finding]}
     escalation = _strict_object({
@@ -141,15 +207,22 @@ def _result_schema(
 
 
 def projected_result_schema(
-    kind: ResultContractKind, contract_version: int, *, permitted_routes: tuple[str, ...]
+    kind: ResultContractKind, contract_version: int, *, permitted_routes: tuple[str, ...],
+    finding_authority: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     if kind is ResultContractKind.GENERIC_ROUTING_RESULT:
-        return routing_result_schema(contract_version, permitted_routes=permitted_routes)
+        return routing_result_schema(
+            contract_version, permitted_routes=permitted_routes,
+            finding_authority=finding_authority,
+        )
     if kind not in {ResultContractKind.WORK_RESULT, ResultContractKind.REVIEW_VERDICT}:
         raise StructuredResultSchemaError(f"unsupported result contract kind: {kind}")
     if not admits_result_contract_version(kind, contract_version):
         raise StructuredResultSchemaError("unsupported result contract version")
-    schema = copy.deepcopy(_result_schema(contract_version, permit_v3=True, permitted_routes=permitted_routes))
+    schema = copy.deepcopy(_result_schema(
+        contract_version, permit_v3=True, permitted_routes=permitted_routes,
+        finding_authority=finding_authority,
+    ))
     result, required = schema["properties"], schema["required"]
     result.pop("outcome")
     required.remove("outcome")
@@ -168,9 +241,14 @@ def projected_result_schema(
 def structured_result_envelope_schema(
     invocation: Invocation, contract_version: int = 1,
     result_contract_kind: ResultContractKind = ResultContractKind.GENERIC_ROUTING_RESULT,
-    *, permitted_routes: tuple[str, ...],
+    *, permitted_routes: tuple[str, ...], finding_authority: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """Build a closed envelope; semantic and correlation acceptance stays downstream."""
+    """Build a closed envelope; semantic and correlation acceptance stays downstream.
+
+    ``finding_authority`` is the admitted phase's own permitted Finding
+    operations; ``None`` means a caller that states no authority, which keeps
+    the unnarrowed Finding surface that every dispatched contract had before.
+    """
     def dispatched(value: str) -> dict[str, Any]:
         return {"type": "string", "enum": [value]}
     return {
@@ -180,6 +258,9 @@ def structured_result_envelope_schema(
             "schema_version": {"type": "integer", "enum": [contract_version]},
             "run_id": dispatched(invocation.run_id), "hop_id": dispatched(invocation.hop_id),
             "invocation_id": dispatched(invocation.invocation_id),
-            "result": projected_result_schema(result_contract_kind, contract_version, permitted_routes=permitted_routes),
+            "result": projected_result_schema(
+                result_contract_kind, contract_version, permitted_routes=permitted_routes,
+                finding_authority=finding_authority,
+            ),
         },
     }

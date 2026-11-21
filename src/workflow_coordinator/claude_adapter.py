@@ -236,6 +236,7 @@ class ClaudeCliAdapter:
                 schema_object = structured_result_envelope_schema(
                     request.invocation, request.contract_version, request.result_contract_kind,
                     permitted_routes=request.permitted_routes,
+                    finding_authority=request.finding_authority,
                 )
                 atomic_write_json(schema, schema_object)
                 atomic_write_json(settings, self._settings(request, real_dir))

@@ -23,6 +23,8 @@ from workflow_coordinator.codex_adapter import (
 from workflow_coordinator.model import ResultContractKind
 from workflow_coordinator.serialization import (
     EXISTING_FINDING_DELTA_KEYS,
+    FINDING_CITATION_KEYS,
+    FINDING_TRANSITION_KEYS,
     NEW_FINDING_DELTA_KEYS,
     NEW_FINDING_DELTA_V2_KEYS,
     ROUTING_RESULT_REQUIRED_KEYS,
@@ -424,6 +426,61 @@ def test_requested_route_is_projected_as_the_exact_permitted_route_enum():
     requested_route_schema = schema["properties"]["result"]["properties"]["requested_route"]
     assert requested_route_schema == {"type": "string", "enum": ["accept", "correction"]}
     assert "" not in requested_route_schema["enum"]
+
+
+def test_findings_surface_is_projected_from_the_admitted_finding_authority():
+    """AD-4/H1: the ``findings`` surface follows the admitted phase's own
+    ``finding_authority``, so a disposition that phase cannot perform is
+    unexpressible instead of merely refused later by the reducer."""
+    def finding_shapes(finding_authority, contract_version=1):
+        schema = structured_result_envelope_openai_schema(
+            _invocation(), contract_version, ResultContractKind.WORK_RESULT,
+            permitted_routes=_PERMITTED_ROUTES, finding_authority=finding_authority,
+        )
+        assert_openai_strict_schema(schema)
+        return schema["properties"]["result"]["properties"]["findings"]["items"]["anyOf"]
+
+    # An empty authority admits no authoritative state transition: the only
+    # state left is ``open``, which needs none, and v3's transition shape is
+    # not projected at all.
+    for shape in finding_shapes(()):
+        assert shape["properties"]["proposed_state"]["enum"] == ["open"]
+    new_finding, citation = finding_shapes((), 3)
+    assert set(citation["required"]) == set(FINDING_CITATION_KEYS)
+    assert new_finding["properties"]["proposed_state"]["enum"] == ["open"]
+
+    # ``resolve`` admits exactly the resolution shape, and nothing else.
+    for shape in finding_shapes(("resolve",)):
+        assert shape["properties"]["proposed_state"]["enum"] == ["open", "resolved"]
+    transition = finding_shapes(("resolve",), 3)[2]
+    assert set(transition["required"]) == set(FINDING_TRANSITION_KEYS)
+    assert transition["properties"]["target"]["anyOf"] == [
+        {"type": "object", "additionalProperties": False, "required": ["state"],
+         "properties": {"state": {"type": "string", "enum": ["resolved"]}}},
+    ]
+
+
+def test_dispatched_schema_carries_the_requests_finding_authority(tmp_path: Path):
+    """The narrowing is only worth anything if the admitted authority actually
+    reaches the dispatched provider schema, so assert the written artifact."""
+    executable = tmp_path / "fake-codex"
+    executable.write_text("#!/usr/bin/env python3\npass\n")
+    executable.chmod(0o755)
+    adapter = CodexCliAdapter(
+        tmp_path, model="explicit-model", reasoning_effort="high", executable=str(executable)
+    )
+    adapter.execute(AgentExecutionRequest(
+        _invocation(), "prompt", tmp_path, ROUTING_RESULT_ENVELOPE_CONTRACT, 5,
+        permitted_routes=_PERMITTED_ROUTES, finding_authority=("resolve",),
+    ))
+
+    emitted = json.loads((tmp_path / "structured-result.schema.json").read_text(encoding="utf-8"))
+
+    assert emitted == structured_result_envelope_openai_schema(
+        _invocation(), permitted_routes=_PERMITTED_ROUTES, finding_authority=("resolve",)
+    )
+    for shape in emitted["properties"]["result"]["properties"]["findings"]["items"]["anyOf"]:
+        assert shape["properties"]["proposed_state"]["enum"] == ["open", "resolved"]
 
 
 @pytest.mark.parametrize(

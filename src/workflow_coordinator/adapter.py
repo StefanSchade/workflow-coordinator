@@ -55,6 +55,12 @@ class AgentExecutionRequest:
     # project such a schema (a strict-schema adapter must fail closed on empty,
     # never treat it as unconstrained).
     permitted_routes: tuple[str, ...] = ()
+    # The admitted phase's own permitted Finding operations, which a
+    # strict-schema adapter projects into the ``findings`` surface.  ``None``
+    # states no authority at all, and keeps the unnarrowed surface; ``()`` is
+    # the truthful value for a phase that may author no authoritative
+    # disposition.  The reducer re-derives and enforces the same authority.
+    finding_authority: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
