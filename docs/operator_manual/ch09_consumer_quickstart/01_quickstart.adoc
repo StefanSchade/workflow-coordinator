@@ -82,10 +82,30 @@ a sibling directory.
 [[quickstart-request]]
 === Writing a request
 
-Write a short task document:
+`wfc plan` and `wfc run` read your guidance file from Git history at a
+pinned commit, never from the working tree, so it must already exist and be
+committed before you plan. From your repository root:
 
-[source,text]
+[source,shell]
 ----
+mkdir -p .wfc/governance
+cat > .wfc/governance/repository-policy.md <<'EOF'
+Keep changes small, scoped, and reviewed before they land.
+EOF
+git add .wfc/governance/repository-policy.md
+git commit -m "chore: add repository-policy guidance"
+----
+
+Write the task document itself *outside* the repository -- for example in a
+sibling scratch directory -- so the repository tree stays completely clean
+through the `wfc run` step below. `wfc run` refuses to launch against a
+dirty tree, and an untracked file anywhere inside the repository counts as
+dirty:
+
+[source,shell]
+----
+mkdir -p ../wfc-scratch
+cat > ../wfc-scratch/task.md <<'EOF'
 # Add JSON output to the list command
 
 Add a --json flag that prints the same rows as JSON.
@@ -98,6 +118,7 @@ none beyond scope
 
 ## Default escalation
 stop on ambiguity
+EOF
 ----
 
 [[quickstart-plan]]
@@ -105,30 +126,37 @@ stop on ambiguity
 
 [source,shell]
 ----
-wfc plan task.md --repository . --scope src \
+wfc plan ../wfc-scratch/task.md --repository . --scope src \
   --commission-id add-json-output-001 --work-item-id WI-ADD-JSON-OUTPUT-001 \
   --authority-source "Repository owner authorizes this bounded task." \
   --program simple@v1 \
   --persona worker="Bounded worker persona; implement the requested change within scope." \
   --evidence-argv sh --evidence-argv checks/check.sh \
-  --guidance-path GUIDANCE.md \
+  --guidance-path .wfc/governance/repository-policy.md \
   --execution-override worker.adapter=codex_cli --execution-override worker.model=<model>
 ----
 
 `wfc plan` is entirely read-only: it writes nothing, runs no project command,
 and never touches Git. It prints the Commission bytes and execution envelope
-it *would* compile. Once the preview looks right, hand-author the equivalent
+it *would* compile. `--guidance-path` defaults to resolving at the
+repository's current HEAD, which the `repository-policy.md` commit above
+already satisfies. Once the preview looks right, hand-author the equivalent
 Consumer Request YAML (the same fields, under `task:`, `scope:`, `personas:`,
-`evidence:` and `guidance:`, plus `schema_version: 1`, `max_autonomous_hops`
-and an explicit, normally empty, `durable_artifacts: {}`) -- `wfc plan` does
-not write that file for you; `wfc run` below reads it from `--request`.
+`evidence:` and `guidance:` -- with `guidance.path` and
+`guidance.source_commit` matching what you just committed --, plus
+`schema_version: 1`, `max_autonomous_hops` and an explicit, normally empty,
+`durable_artifacts: {}`) into the same scratch directory, for example
+`../wfc-scratch/request.yaml`. `wfc plan` does not write that file for you;
+`wfc run` below reads it from `--request` by plain filesystem path, so it
+need not live inside the repository either -- keeping it in the scratch
+directory keeps the tree clean.
 
 [[quickstart-run]]
 === Unattended `wfc run --yes`
 
 [source,shell]
 ----
-wfc run --repository . --request request.yaml \
+wfc run --repository . --request ../wfc-scratch/request.yaml \
   --execution-override worker.adapter=codex_cli --execution-override worker.model=<model> \
   --yes
 ----
