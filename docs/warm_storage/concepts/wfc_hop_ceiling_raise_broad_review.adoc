@@ -1,0 +1,168 @@
+= Autonomous Hop ceiling raise (20 -> 64): independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the raise of the
+Coordinator hard maximum of autonomous Hops for WorkItem
+`WI-WFC-HOP-CEILING-RAISE-002`. The current pass is *H002*; later passes are
+added above earlier ones and earlier passes are kept unedited.
+
+== Pass H002 (current)
+
+WorkItem:: `WI-WFC-HOP-CEILING-RAISE-002`
+Hop:: `H002` (`broad_review`, fresh independent adversarial reviewer, gate,
+blocking-only, `finding_authority: [resolve]`)
+Reviewed product:: the whole candidate at review base HEAD
+`9869e08f874307fc92d27355ca125d9b57db1f08`, i.e. the full Run range
+`fd3a420..9869e08` (one commit, 8 files, +101/-12): the constant in
+`src/workflow_coordinator/model.py`; the scoped test changes in
+`tests/unit/test_operator.py`, `tests/unit/test_serialization.py`,
+`tests/unit/test_slice5b.py` and `tests/unit/test_consumer_compiler.py`; and
+the documentation statements in
+`docs/technical_model/ch02_current_mechanics/02_admission_and_projection.adoc`,
+`docs/semantic_model/ch01_current_semantics/02_states.adoc` and
+`docs/operator_manual/ch05_self_development/01_topology_budget.adoc`.
+Governing acceptance:: the Commission task for this WorkItem (deliverables
+1-5, the acceptance paragraph, the withheld authority and the
+maintainer-extended scope of the successor Run). The predecessor Run
+`RUN-2d9c429bfd85450889477ec2aac6435b` and its preserved non-authoritative
+candidate carry no acceptance and were not treated as a baseline.
+Verdict:: *accept*. No blocking Finding. No Finding was opened, and the Run
+carries no authoritative Finding to dispose.
+
+=== What the candidate does
+
+One production line changes: `COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS` becomes
+`64` (`model.py:25`). `git show --stat` confirms `src/` is otherwise
+untouched, and all five enforcement sites already read the constant
+(`operator.py:213`, `:425`, `:816`; `serialization.py:531`, `:702`), so no
+enforcement site needed editing and none was edited. The surrounding
+`model.py` comment block concerns the action tokens only and states nothing
+stale about the ceiling.
+
+=== Independent search for other dependencies on the old value
+
+Searched `src/`, `scripts/`, packaged resources, `governance/`, `.wfc/`,
+`tests/` and the four current documentation trees:
+
+* Hop identifiers are `f"H{run.hop_used + 1:03d}"` (`vertical.py:309`,
+  `slice4.py:308`) -- three digits, unaffected up to 999.
+* `Run.hop_limit` (`serialization.py:2313`) and both Consumer-side parsers
+  (`frontdoor/config.py:154`, `frontdoor/request.py:132`) validate positivity
+  only; `--max-autonomous-hops` is a plain `type=int` argument in
+  `frontdoor/plan.py:251` and `frontdoor/init.py:145` with no range or
+  `choices`.
+* The convergence bound `not 2 <= limit <= COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS`
+  (`serialization.py:702`) derives from the constant and therefore moves with
+  it; the raise only widens it.
+* No structured-result, archive, audit or report schema carries a numeric Hop
+  cap. The only remaining literal `20`/`21` in `src/` are the unrelated
+  lifecycle exit codes `refused_unauthorized: 20` and `refused_drift: 21`
+  (`frontdoor/lifecycle.py:119`, `:120`) and the `1 << 20` archive chunk size.
+* No test outside the maintainer-owned pin depends on the old value; see the
+  next section.
+* `tests/fixtures/offline-test-inputs/py313-linux-x86_64-collected-nodes.txt`
+  still lists the pre-change parametrized node IDs
+  (`...rejects_invalid_hop_ceiling[21]`, `...convergence_limit[21]`). Nothing
+  under `src/`, `scripts/` or `tests/` reads a `collected-nodes` file -- it is
+  a frozen informational snapshot, as an earlier review already recorded --
+  so this is stale provenance, not a failing assertion. Non-blocking.
+
+Nothing required escalation. Two *configured* ceilings remain below 64 by
+maintainer ownership, not by defect; they are reported under operational
+consequences below.
+
+=== Test re-derivation and mutation sensitivity
+
+The three test nodes the raise would have invalidated are re-derived from the
+constant, not deleted, and still reject exactly one above the maximum:
+`test_serialization.py:390` and `:489` (`COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS + 1`),
+`test_serialization.py:495` (the maximum itself),
+`test_slice5b.py:1445`/`:1468` (limit `+ 1`, `match=f"above {...}"`) and
+`test_operator.py:1664`/`:1673` (CLI refusal and the unchanged
+`at most {...} autonomous Hops` text). Every assertion's intent, the
+fail-closed direction and the `adapter.calls == 0` /
+no-`dispatch.json` / `not counter.exists()` before-dispatch checks are
+preserved; no test was weakened or removed. The only hard-coded numbers that
+remain are `64` inside the two deliberate pinning nodes and `32`/`33` in the
+consumer-compiler nodes -- the decided values, not stand-ins for the old
+ceiling. `test_self_development_consumer_config.py:45` (maintainer-owned) was
+correctly left alone.
+
+Because a fully derived boundary test cannot fail when the constant
+regresses, acceptance requires nodes that state the decided value. Two exist,
+at two independent enforcement layers, plus the consumer-compiler node:
+
+* `test_operator.py::test_admit_a1_hop_ceiling_boundary_is_the_decided_sixty_four`
+  (A1 admission: 64 admitted, 65 refused with `at most 64 autonomous Hops`),
+* `test_serialization.py::test_repository_policy_v3_hop_ceiling_boundary_is_the_decided_sixty_four`
+  (`RepositoryPolicy` parsing: 64 parsed, 65 refused with
+  `exceeds Coordinator hard maximum: 64`),
+* `test_consumer_compiler.py::test_consumer_compile_admits_a_thirty_two_hop_ceiling_and_request`
+  (ceiling 32 with request 32 compiles, which the internal compiled-schema
+  re-parse rejects while the constant is below 32), with
+  `..._refuses_thirty_three_hops_under_that_ceiling` holding the existing
+  `exceeds the Consumer Config ceiling` refusal.
+
+Agent-local exploratory verification (not Coordinator-trusted evidence):
+`pytest` is not importable in this sandbox and there is no network, so the
+required-mode suite was not run here. Instead the reviewer executed the
+relevant test bodies directly through a throwaway in-memory `pytest`
+stand-in, against two trees: the candidate as committed, and a disposable
+temporary copy with the constant forced back to `20`. Against the candidate
+all 26 executed cases passed (the five ceiling node groups above plus every
+pre-existing parametrized ceiling node and the CLI refusal node). Against
+the reverse-mutated copy exactly the three nodes listed
+above failed -- `AssertionError` on the two pins, and
+`CommissionError: internal compiled schema refusal: policy.max_autonomous_hops
+exceeds Coordinator hard maximum: 20` on the compiler node -- while every
+derived node still passed, which is the intended division of labour. Nothing
+was written into the repository worktree; the harness lived outside it.
+Coordinator-owned `task-check` remains the trusted evidence for the
+required-mode suite.
+
+=== Documentation
+
+All current statements of the maximum are updated and consistent with the
+code: `technical_model/.../02_admission_and_projection.adoc:34`,
+`semantic_model/.../02_states.adoc:78`, and in
+`operator_manual/ch05_self_development/01_topology_budget.adoc` both line 243
+("the current hard Coordinator ceiling is 64") and the illustrative list
+on line 225, where the stale `6, 10, or 20` became `6, 20, or 64` -- an
+illustration that still reads correctly and now spans the real range. A
+search of `docs/operator_manual`, `docs/developer_guide`,
+`docs/technical_model` and `docs/semantic_model` finds no further numeric
+statement of the maximum; `ch02_commissioning/02_authoring.adoc:137` speaks of
+"a hard Coordinator maximum" without a number and needed no edit.
+`docs/self-development.adoc` and `docs/wfc_operator_manual.adoc` are
+compatibility navigation stubs with no number. Historical material
+(`docs/warm_storage/concepts/*`, `docs/cold_storage/`, the Beta and post-Beta
+plans under `docs/backlog/`) was correctly left unedited; the `_open.adoc`
+note at line 304 that records the pre-raise state is a planning record
+outside the task's documentation set.
+
+=== Operational consequences (recorded, not performed)
+
+* `src/` changed, so the implementation identity changed: after acceptance the
+  *Operator* promotes the Runtime and rebuilds the installed environment.
+  This review promotes nothing, pushes nothing and makes no Git writes.
+* The kernel maximum is now 64, but two maintainer-owned *configured*
+  ceilings still sit below it and are outside this WorkItem's authority:
+  `.wfc/config.yaml` has `max_autonomous_hops: 20` (clamped in `14f4e70`
+  "until the kernel maximum is raised" and pinned by
+  `tests/unit/test_self_development_consumer_config.py:45`), and
+  `governance/policy-bases/repository-standard-v1.yaml` and `-v2.yaml` have
+  `10`. Self-development Runs stay bounded by those until the Operator raises
+  them together with their pin. This is correct handling of withheld
+  authority, not a defect of the candidate.
+
+=== Non-blocking observations
+
+. The frozen `collected-nodes` fixture now lists two stale parametrized node
+  IDs (`[21]`). Harmless; refresh it the next time that fixture is
+  regenerated for another reason.
+. The two pinning nodes duplicate the literal `64` in an assertion and in a
+  `match=` string. That duplication is deliberate and required for mutation
+  sensitivity, but a future change of the decided value must edit both nodes
+  plus the three documentation statements; the docstrings say so, which is
+  the right place for it.
