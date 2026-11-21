@@ -496,10 +496,23 @@ def _changed_worktree_paths(
 
 
 def _staged_paths(repository: Path, *, git_command: GitCommand = _git) -> tuple[str, ...]:
+    """Return every staged leaf path, rename-blind like the other observations.
+
+    ``--no-renames`` is not cosmetic here: with rename detection enabled a
+    same-content delete plus add is reported as the destination only, so an
+    exact-leaf comparison against a CommitIntent naming both leaves refused a
+    legitimate rename (BUG-WFC-TRUSTED-COMMIT-RENAME-RECONCILIATION). Every
+    other path projection in this module already passes the flag; staying
+    rename-blind admits nothing, because the source leaf's authorization and
+    its dirty state are checked on their own.
+    """
+
     return tuple(
         filter(
             None,
-            git_command(repository, "diff", "--no-ext-diff", "--cached", "--name-only").splitlines(),
+            git_command(
+                repository, "diff", "--no-renames", "--no-ext-diff", "--cached", "--name-only"
+            ).splitlines(),
         )
     )
 

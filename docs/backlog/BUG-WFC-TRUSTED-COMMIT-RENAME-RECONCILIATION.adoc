@@ -56,3 +56,48 @@ This record does not authorize implementation, alter historical Evidence,
 change SEC-03 acceptance, or imply Runtime promotion. Directory-shaped
 CommitIntents remain a distinct issue:
 link:BUG-WFC-COMMIT-INTENT-DIRECTORY-PATH-RECONCILIATION.adoc[directory reconciliation].
+
+== Fix applied in hardening H3 (21 November 2026)
+
+Maintainer-authorized hardening H3,
+`WI-WFC-POSTBETA-HARDENING-RENAME-RECONCILIATION-001`, applied the simple
+module-consistent fix: `git_facts._staged_paths()` now passes `--no-renames`,
+like every other path projection in that module, so a same-content delete plus
+add is projected as both leaves and an intent naming both is admitted. No
+explicit rename-pair comparison was introduced and no check was weakened: the
+projection is one of several, and the source leaf's scope authorization,
+dirty-path equality, pre-existing-index refusal, hook/filter refusal, HEAD
+checks and post-commit observation are unchanged. The refusal remains
+fail-closed; only the false refusal is gone. `bounded_path_commit()` shares
+the projection but can never see this shape, because a rename source exists at
+base HEAD and is refused there first; it does become strictly more sensitive to
+a rename-hidden staged deletion in its pre-existing-index check.
+
+Regression coverage replaces the former reproducing case
+`test_rename_intent_still_refuses_under_rename_detection`, whose both-leaves
+expectation encoded the defect, with three cases in
+`tests/unit/test_slice4b_git_authority.py`:
+`test_rename_naming_both_authorized_leaves_is_committed_under_rename_detection`
+(`diff.renames` `true` and `copies`; fails with `staged paths differ from
+commit intent` without the product change),
+`test_rename_intent_naming_only_the_destination_is_still_refused` and
+`test_rename_out_of_an_unauthorized_scope_is_still_refused`. The further
+shapes this record speculatively listed -- the omitted source leaf,
+delete-plus-similar-add, `diff.renames=false`, an out-of-scope destination,
+an unrelated dirty path, pre-existing staged state and the staged residue of
+each refusal -- behaved as expected when exercised against the change, but
+each is decided by a check this change does not touch and is already covered
+by an existing case, so no further test was added. The Operator Manual's
+commit-intent admission section was corrected, since it documented the
+refusal.
+
+The audit requested above found one remaining rename-detecting staged
+projection outside this fix, `frontdoor.lifecycle`'s
+`_reconcile_stray_staged_state()`; it was out of this WorkItem's scope and is
+reported unchanged for the maintainer. Its consequence is fail-closed: a
+rename-hidden staged deletion would survive its per-path `git reset` and then
+stop the following `bounded_path_commit()` with `pre-existing staged state`.
+
+The distinct directory-shaped question above stays untouched by this fix.
+Independent acceptance, this record's Status and any Runtime promotion remain
+the maintainer's.

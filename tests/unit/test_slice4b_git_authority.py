@@ -396,16 +396,45 @@ def test_failed_result_with_intent_never_synthesizes_a_commit(repository: Path):
     assert git(repository, "rev-parse", "HEAD") == base
     assert "commit intent is not permitted" in (stopped.reduction.run.stop_reason or "")
 
-@pytest.mark.parametrize("both", [True, False])
-def test_rename_intent_still_refuses_under_rename_detection(repository: Path, both: bool):
+@pytest.mark.parametrize("renames", ["true", "copies"])
+def test_rename_naming_both_authorized_leaves_is_committed_under_rename_detection(
+    repository: Path, renames: str
+):
+    # Before BUG-WFC-TRUSTED-COMMIT-RENAME-RECONCILIATION's fix, rename
+    # detection reported the destination alone and this exact-scope rename was
+    # refused with "staged paths differ from commit intent".
+    git(repository, "config", "diff.renames", renames)
+    base = git(repository, "rev-parse", "HEAD")
+    (repository / "src/a.py").rename(repository / "src/new.py")
+    committed = trusted_commit(repository, expected_repository=repository, base_head=base, allowed_paths=("src",),
+                               intent=CommitIntent(("src/a.py", "src/new.py"), "fix: WI-1 H001 rename"),
+                               work_item_id="WI-1", hop_id="H001")
+    assert committed.commit == git(repository, "rev-parse", "HEAD") != base
+    assert set(committed.delta.changed_paths) == {"src/a.py", "src/new.py"}
+    assert git(repository, "status", "--porcelain") == ""
+    assert not (repository / "src/a.py").exists()
+
+
+def test_rename_intent_naming_only_the_destination_is_still_refused(repository: Path):
     git(repository, "config", "diff.renames", "true")
     base = git(repository, "rev-parse", "HEAD")
     (repository / "src/a.py").rename(repository / "src/new.py")
-    paths = ("src/a.py", "src/new.py") if both else ("src/new.py",)
-    expected = "staged paths differ" if both else "unexpected dirty path"
-    with pytest.raises(TrustedCommitError, match=expected):
+    with pytest.raises(TrustedCommitError, match="unexpected dirty path"):
         trusted_commit(repository, expected_repository=repository, base_head=base, allowed_paths=("src",),
-                       intent=CommitIntent(paths, "fix: WI-1 H001 rename"), work_item_id="WI-1", hop_id="H001")
+                       intent=CommitIntent(("src/new.py",), "fix: WI-1 H001 rename"), work_item_id="WI-1", hop_id="H001")
+    assert git(repository, "rev-parse", "HEAD") == base
+
+
+def test_rename_out_of_an_unauthorized_scope_is_still_refused(repository: Path):
+    git(repository, "config", "diff.renames", "true")
+    base = git(repository, "rev-parse", "HEAD")
+    (repository / "docs/unrelated.adoc").rename(repository / "src/moved.adoc")
+    with pytest.raises(TrustedCommitError, match="outside authorized scope: docs/unrelated.adoc"):
+        trusted_commit(repository, expected_repository=repository, base_head=base, allowed_paths=("src",),
+                       intent=CommitIntent(("docs/unrelated.adoc", "src/moved.adoc"), "fix: WI-1 H001 rename"),
+                       work_item_id="WI-1", hop_id="H001")
+    assert git(repository, "rev-parse", "HEAD") == base
+    assert git(repository, "diff", "--cached", "--name-only") == ""
 
 
 @pytest.mark.parametrize("scope", [("src",), ()])
