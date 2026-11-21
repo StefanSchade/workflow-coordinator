@@ -1,0 +1,271 @@
+= WFC-Zustand und Governance-Komplexität: technischer Kriegsrat, Entscheidungsvorlage
+:toc:
+:toclevels: 3
+:sectnums:
+:revdate: 2026-11-21
+
+[cols="1,4"]
+|===
+|Status |Datierte Entscheidungsvorlage und Analyse; *nicht autorisierend*. Sie ändert keinen Record, keinen Prompt, keinen Code und keine Konfiguration und startet keine Commission. Jede daraus folgende Änderung braucht eine eigene Entscheidung des Maintainers.
+|Auftrag |Maintainer, 2026-11-21 (technischer Kriegsrat vor den P1-Entscheidungen und vor P2), zunächst ausschließlich lesende Analyse.
+|Autor |Claude (Sonnet 5.5), der Level-1-Operator, dessen Arbeit hier mit untersucht wird. Das ist ein Interessenkonflikt: Wertungen sind als Interpretation markiert und sollten gegengelesen werden.
+|Stand der Daten |Evidence bis zum Archiv `ee861d5` (2026-11-21 15:06), Development `main` bei `cf0af65`. 38 archivierte Runs ohne den nachgetragenen C3-Run, Zeitraum 18.11. bis 21.11. 15:06.
+|===
+
+== Lesehilfe
+
+[cols="1,5"]
+|===
+|[B] |*Belegt:* direkt in einer Primärquelle (archivierte `run.json`/`execution-evidence.json`, Review-Artefakte, Git, Quelltext).
+|[R] |*Rekonstruiert:* aus mehreren Quellen oder meiner Sitzung abgeleitet.
+|[I] |*Interpretation:* meine Deutung.
+|[H] |*Hypothese:* ausdrücklich nicht belegt.
+|[L] |*Datenlücke.*
+|===
+
+Die Quellen für Politik, beobachtetes Verhalten und Hypothesen sind getrennt gehalten: *Dokumentierte Policy* heißt, es steht in einem Prompt, Programm oder Record; *beobachtetes Verhalten* heißt, es ist in archivierten Runs sichtbar.
+
+== Entscheidungsvorlage in Kürze
+
+. *Gesundheit.* WFC ist als Plattform benutzbar und beherrschbar. Von 38 Runs endeten 22 `completed`; alle 16 Stopps waren fail-closed, jeder mit erhaltener Evidence, ohne Datenverlust und ohne Push. [B] Die Reibung sitzt überwiegend nicht im Kern, sondern auf der Steuerungsebene (Level 1), in der Test- und Betriebsumgebung der Selbstentwicklung und im Umfang der Planungsdokumente. [I]
+. *Releasekritisch* ist nach meiner Einschätzung nichts davon; *beobachtenswert* sind drei Dinge: der Test `test_repeat_capture_is_idempotent_no_second_ref` (zweimal rot, nicht reproduzierbar), die Einmal-Lifecycle-Regel für Wiederholungsnutzer und die Wortwahl von Akzeptanzkriterien. [I]
+. *Review-Asymmetrie.* Die Daten stützen die Hypothese, verorten den Mechanismus aber anders als vermutet. Von 54 blockierenden Findings betrifft *keines* Einfachheit oder Wartbarkeit [B]; 40 von 54 zitieren ausdrücklich einen Akzeptanzfall, ein Deliverable oder den Task [B]. Die Treiber sind (a) Akzeptanzkriterien mit Allquantoren, (b) die Prompt-Regel, bei einem reproduzierten Kriterienverstoß nicht wegen Kosten oder geringem Risiko herabzustufen, (c) die Weitergabe der Norm "mutationssensitiver Test" über Commission-Vorlagen (16 von 27 Task-Texten) und (d) das Fehlen jeder Gegenkraft, die Kosten eines Kriteriums bewertet. Nicht belegt ist, dass Reviewer eigenmächtig Anforderungen erfinden. [B]/[I]
+. *Reviewer-Prompt-Ergänzung.* Sinnvoll, aber an einer anderen Stelle als geplant: `governance/self-development/prompts/reviewer.txt` ist seit BP7 nicht mehr live (eingefrorene Kopie, byte-gleich); live ist die Paketressource `src/workflow_coordinator/resources/roles/reviewer.txt`, digest-gepinnt (`RESOURCE_DIGESTS`). Eine Änderung dort ändert die Implementation-Identität und braucht Commission und Runtime-Promotion. Eine gleichwertige, deutlich billigere Stufe 1 gibt es ohne Codeänderung (Abschnitt 6). [B]
+. *Pläne.* P1/P2 unverändert fortsetzen, *selektiv* priorisieren und vorher zwei Dinge klären: die Akzeptanz-Formulierungsdisziplin (meine Seite, ohne Kosten) und die Größe der Planungsdokumente. Anhalten ist nicht nötig. [I]
+
+== A. Betriebliche Reibung
+
+=== Gesamtbild [B]
+
+[cols="3,1"]
+|===
+|Runs seit 18.11. (ohne nachgetragenen C3-Run) |38
+|`completed` / gestoppt |22 / 16
+|Stopp-Art |11 `awaiting_human`, 3 `reconcile_required`, 2 `awaiting_human_budget`
+|Hops gesamt |156 (91 in abgeschlossenen, 65 in gestoppten Runs = 42 %)
+|Reviews / mit `changes_required` |81 / 34 (42 %)
+|Coordinator-`task-check`-Beobachtungen |82: 71 bestanden, 10 `fail`, 1 Timeout
+|Blockierende Findings insgesamt |54
+|Datenverlust, Push |keiner
+|===
+
+Die 65 Hops in gestoppten Runs sind nicht alle verloren: BP4b wurde per Maintainer-Entscheidung akzeptiert, der P1-Plan stammt aus einem budgetgestoppten Run, und alle bewahrten Kandidaten waren Eingabe für Nachfolger. Der Anteil "vergeblicher" Hops ist daher kleiner als 42 %, aber aus den Daten nicht sauber trennbar. [I]/[L]
+
+=== Ursachen der 16 Stopps [B]/[I]
+
+[cols="3,1,4"]
+|===
+|Ursachenklasse |Anzahl |Runs und Anmerkung
+|Finding-Autorität (Worker meldete eine Finding-Operation, die nur der Reviewer führen darf) |4 |BP3-Remediation, BP5 Retry-Integrity, BP6b, BP7-Planung-001. WFC-Reducer stoppte korrekt; Folgekosten: Nachfolge-Run.
+|Worker-Rückfrage oder Blocker mit uncommitteter Arbeit ("dirty tracked state") |6 |BP5 Archive-Port (untrackte Fixture-Blätter), BP5 Completion (rename-förmiger Kandidat, bekannter BUG), BP6c-001 (*echter Entwurfsfehler*, notwendig), C1b-001 (Level-1-Staging fehlte), HC-001 (Level-1-Scope zu eng), FA-001 (roter Task-Check, siehe unten).
+|Hop-Budget erschöpft |2 |BP4b (fünf Review-Zyklen zu Randfällen), P1 (drei Korrekturzyklen zu Zitaten).
+|Provider, Operator oder ungeklärt (`reconcile_required`) |3 |Execution-Planning-001 (HTTP 429), BP2-Config-Compiler-001 (Ursache hier nicht rekonstruiert [L]), BP5-Recovery (Operator beendete einen Hop).
+|Level-1-Fehler (kein Offline-Wrapper) |1 |BP7-Planung-002 (`task-check` Exit 4).
+|===
+
+*Zuordnung nach Vermeidbarkeit* [I]: Vier Stopps gehen auf Operator- oder Level-1-Vorbereitung zurück (C1b-001, HC-001, Planung-002, BP5-Recovery). Vier sind die erwartete Wirkung der Finding-Autorität. Zwei sind bekannte Commit-Mechanik-Grenzen (BP5 Archive-Port, BP5 Completion). Zwei sind Budget-Stopps als Folge offener Kriterien (BP4b, P1). Zwei sind Provider- oder nicht rekonstruierte Ursachen (Execution-Planning-001, BP2-Config-Compiler-001). Einer ist ein notwendiger Entwurfsstopp (BP6c-001), einer ungeklärt (FA-001).
+
+=== Einzelne Reibungspunkte der letzten Runs
+
+[cols="2,3,2,2"]
+|===
+|Vorfall |Befund |Klasse |Stand
+|P1-Planung: 10 von 10 Hops, drei Korrekturzyklen |Alle drei Zyklen betrafen falsch zugeordnete oder nicht prüfbare *Zitate und Zählungen* in einem Plan von zuletzt 2.344 Zeilen. [B] |vermeidbare Komplexität (Dokumentgröße, Allquantor "jede Zahl verifiziert") |Offen als Praxisregel.
+|Final Assurance 001: Stopp bei Hop 3 |Task-Check rot, Worker konnte nichts prüfen (`pytest` im Sandbox nicht importierbar) und stellte die Rückfrage. [B] |Test-/Umgebungsproblem, Stopp notwendig |Nachfolger 002 fertig; Ursache *ungeklärt*.
+|BP9 Teil 2: drei Korrekturzyklen, ein roter Task-Check bei H006 |Die Findings betrafen überwiegend, dass dokumentierte Befehle beim Befolgen *nicht funktionieren* (drei von vier). [B] Das war ein echter Nutzen für Consumer. |notwendig; ein Check ungeklärt |abgeschlossen
+|Hop-Ceiling-001: Scope-Stopp bei Hop 1 |Die Anhebung der Konstante invalidierte drei Tests in zwei Dateien außerhalb des Scopes. Meine Testsuche war zu eng. [B] |Level-1-Fehler (Zuschnitt), Gate arbeitete korrekt |behoben (Nachfolger 002, Scope erweitert)
+|Konfig auf 32 bei Kern 20 |Policy-Compile lehnte jede neue Commission ab; im Preview aufgefallen, sofort zurückgenommen. [B] |Level-1-Fehler |behoben (`14f4e70`)
+|Monitor-`pgrep` (zweimal) |Selbstmatch der eigenen Kommandozeile bei Proof Run 1 (Meldeverzug rund 47 Minuten) und bei der Flake-Jagd. [B] |Level-1-Fehler |Regel: Statusklassifikation statt `pgrep`
+|Abgeschnittene Maintainer-Nachrichten (Laptop-VM-Verbindung) |Führte zu einem verfrühten P1-Start auf unvollständiger Nachricht; vor dem Start abgebrochen. [B] |Umgebung plus Level-1-Reaktion |Memory-Regel: nicht auf Verdacht handeln
+|Staging/Provenance |Provenance beschrieb nicht gestagte Dateien; Worker meldete es. [B] |Level-1-Fehler |behoben
+|Inodes, Scratch (46 GB), frühere Online-Abhängigkeit, Timeouts |Alle bekannt und mit Regeln oder Offline-Wrapper behandelt; Scratch wächst weiter. [B] |Test-/Umgebungsproblem (Selbstentwicklung) |Regeln dokumentiert; Bereinigung offen
+|===
+
+=== Der unerklärte rote Task-Check: neuer Befund
+
+Der Coordinator hat bei fehlgeschlagenen Checks einen begrenzten, untrusted Diagnoseausschnitt archiviert (`BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS`, `df51c9f`). Die Ausschnitte der beiden unerklärten Fehlschläge (BP9 Teil 2 H006, FA-001 H002) nennen *denselben Test*: `tests/unit/test_candidate_preservation.py::test_repeat_capture_is_idempotent_no_second_ref` (BP4b). Beide Male lieferte einer der zwei aufeinanderfolgenden `preserve_candidate`-Aufrufe `status='not_needed'` statt eines Refs; beim ersten Fehlschlag der erste, beim zweiten der zweite Aufruf. [B]
+
+*Reproduktionsversuche, alle ohne Fehlschlag* [B]: 80 isolierte Läufe des Tests; 160 Läufe in vier parallelen Strömen unter CPU-Last; ein Experiment zur "racy git"-Hypothese (gleich große Änderung unmittelbar nach dem Commit, mit und ohne kopierten Index, 400 Iterationen: 0 übersehene Änderungen); die zuvor 24 Läufe der E2E- und Lifecycle-Tests deckten diesen Test nicht ab. Der Mechanismus ist damit *unbekannt*. [H] Eine Zeitstempel-/Racy-Git-Ursache ist die naheliegende Vermutung, aber nicht belegt.
+
+*Einordnung* [I]: 2 von 82 Task-Check-Beobachtungen (2,4 %) und ein Test. Von den 10 Fehlschlägen waren 3 echte Defekterkennung (BP5-Fixture-Kollision), 4 Level-1-Umgebungsfehler (fehlender Wrapper) und 2 dieser Fall; einer ist nicht zugeordnet [L] (BP2-Config-Compiler-001). Der Check sagt überwiegend die Wahrheit. *Für einen Consumer ist das irrelevant*: dessen Evidence-Command ist nicht die WFC-Suite. Für die Selbstentwicklung ist es ein Vertrauensrisiko von geringem Ausmaß, und der Diagnosepfad hat sich hier bezahlt gemacht.
+
+=== Wie gravierend für einen normalen Consumer? [I]
+
+[cols="3,1,3"]
+|===
+|Reibungspunkt |Gewicht |Begründung
+|Ein Lifecycle pro Checkout (jeder weitere Run braucht einen frischen Checkout) |*hoch* bei Wiederholungsnutzung |Dokumentierte Limitation; seit Proof Run 2 entstanden 10 zusätzliche Worktrees für 9 Runs (einer für einen vor dem Start abgebrochenen Lauf). Bei Einmaltest harmlos.
+|Baseline-Probe führt den vollen Evidence-Command vor dem Start aus |mittel |Verlängert jeden Start; verweigert bei rotem Befehl, wie dokumentiert.
+|Manuelle Recovery gestoppter Runs, kein `wfc continue` |mittel bis hoch |Dokumentierte Limitation; Preservation verringert den Aufwand.
+|Hop-Budget-Erschöpfung durch offene Akzeptanzkriterien |mittel |Mit Kappen 64/32 und Budgetklassen entschärft, aber Kriterien-Wortwahl bleibt.
+|Test-/Offline-/Inode-/Scratch-Probleme |niedrig |Betreffen die Selbstentwicklung, nicht den Consumer.
+|Level-1-Fehler |niedrig (Consumer) |Betreffen den agentischen Orchestrator; ein Consumer mit Agenten-Orchestrator hätte ähnliche.
+|===
+
+== B. Review-Politik
+
+=== Dokumentierte Policy [B]
+
+* *Reviewer-Rolle* (`src/workflow_coordinator/resources/roles/reviewer.txt`, 21 Zeilen, byte-gleich mit der eingefrorenen Kopie `governance/self-development/prompts/reviewer.txt`): "Independently test the committed candidate against the task and governing scope." Wichtigster Satz: "A reproduced violation of an explicit acceptance criterion is a blocking Finding. *Do not downgrade it because the presumed risk is low, the behavior already exists, or correction would be costly.*" Konflikte zwischen Task, Scope und machbaren Lösungen sind an den Maintainer zu eskalieren. Kein Wort zu Einfachheit, Wartbarkeit, Verhältnismäßigkeit oder Redundanz.
+* *`robust@v1`* (`governance/workflow-programs/robust/v1.yaml`): die Review-Phasen heißen "independent adversarial full-scope review" und "independent focused verification", beide `blocking_policy: blocking_only`.
+* *Repository-Guidance* (`.wfc/governance/repository-policy.md`, an *jede* Phase gebunden, auch die des Reviewers): "Keep the change proportionate and locally understandable" und Tests, die eine Regression erkennen. Das ist an den Autor gerichtet, nicht an den Reviewer.
+* *Persona* je Request (vom Operator formuliert): zuletzt "Fresh adversarial reviewer ... report material defects only".
+
+=== Beobachtetes Verhalten [B]
+
+Aus den archivierten `run.json` aller 38 Runs (Finding-Ledger mit der jeweils verletzten Invariante):
+
+[cols="3,1,3"]
+|===
+|Klasse (meine Zuordnung [I]) |Anzahl |Beispiel
+|A Echter Verhaltens- oder Integritätsdefekt |15 |BP4a: Crash vor Commission-Commit (F001, F003); BP6b: nie committeter Attempt als archiviert gemeldet; Proof 1: `OSError` ersetzt typisierten Refusal; BP9 Teil 2: dokumentierter `wfc plan`/`wfc run`-Aufruf scheitert.
+|B Defensive Randfall-Härtung unter Allquantor |4 |BP4b F002–F005: jeder Capture-Fehlschluss muss benannter Refusal werden.
+|C Testvollständigkeit ("mutationssensitiv") |7 |BP6a, BP6b-FA, BP6c F003–F005, BP9a.
+|D Plan- oder Spezifikationskorrektheit |17 |Falsch zugeordnete Funktionen, unerfüllbare Akzeptanz, Zitate und Zählungen (P1, Final Assurance).
+|E Dokumentationskonsistenz |8 |C5: Manual verlangt gelöschten Harness; Proof 2: toter Querverweis.
+|F Architektur- und Vertragskonformität |3 |BP2: Kernel-Importrichtung.
+|*Einfachheit, Wartbarkeit, Verhältnismäßigkeit* |*0* |
+|===
+
+Weitere Messwerte [B]:
+
+* In 40 von 54 Findings nennt die verletzte Invariante einen Akzeptanzfall, ein Deliverable, den Task oder die Commission; 14 enthalten einen Allquantor ("every", "all", "each"). Alle 54 sind blockierend, was die Policy `blocking_only` erzwingt.
+* Reviewer halten nicht blockierende Beobachtungen getrennt fest: 34 solche Abschnitte in 22 Broad-Review-Dateien. Eine Suche nach "simpl", "over-engineer", "YAGNI", "disproportion", "maintainab" findet in allen Beta-Reviews praktisch nichts (1 "unnecessary" bei der Ablehnung einer vorgeschlagenen Funktion).
+* "mutation-sensitive" steht in 16 von 27 Task-Texten seit BP4a, in 7 von 54 Findings ausdrücklich: eine Norm, die über Vorlagen weitergereicht wurde.
+
+=== Beantwortung der drei Fragen
+
+*Kann ein Reviewer eine unnötig komplizierte Lösung als blockierendes Finding ablehnen?* Formal ja, denn ein Finding trägt eine frei formulierte Invariante. Praktisch kaum, denn der Prompt verlangt einen *expliziten Akzeptanzfall*, und keiner verlangt Einfachheit. [I]
+
+*Tut er es?* Nein: 0 von 54. [B]
+
+*Werden Anforderungen faktisch verbindlich, ohne dass sie autorisiert wurden?* Teilweise, aber nicht so, wie die Hypothese es beschreibt. [I] Die meisten Findings zitieren Kriterien, die im Commission-Text stehen, also autorisiert sind; die Autorisierung geschieht aber seit dem 19.11. durch meine delegierte Texte, und *niemand bewertet die Kosten eines Kriteriums*. Der Reviewer darf es ausdrücklich nicht aus Kostengründen herabstufen. Dazu kommt die Ratsche aus Finding, Korrektur und Test: Jede Absicherung wird Teil der Suite (1.035 Tests, rund 27.800 Testzeilen gegenüber 13.100 Quellzeilen) und damit Vertrag für Folgearbeit. [B]/[I]
+
+=== Mechanismus der Eskalationsspirale [I]/[H]
+
+. Ein Kriterium wird mit Allquantor formuliert ("jeder", "alle") oder als Norm aus der Vorlage kopiert.
+. Der Reviewer darf einen reproduzierten Verstoß nicht herabstufen und findet bei jedem Durchlauf einen neuen Fall (BP4b: vier Randfälle, fünf Review-Zyklen, Hop-Budget erschöpft).
+. Jede Korrektur wird Code und Test; Folgereviews verlangen deren Erhaltung.
+. Es gibt keine Gegenkraft, die fragt, ob das Kriterium selbst verhältnismäßig war.
+
+Die Kette erklärt BP4b gut [B]. Ob sie die Gesamtkomplexität des Kerns getrieben hat, ist *Hypothese*: Der Kern ist mit 13.100 Zeilen nicht groß, der Mehraufwand steckt überwiegend in Tests (2,1 zu 1) und in Dokumenten. [H]
+
+=== Bewertung der geplanten Prompt-Ergänzung
+
+Die vorgeschlagene Ergänzung schließt eine reale Lücke (0 von 54), aber:
+
+* *Ort.* `governance/self-development/prompts/reviewer.txt` wird vom Front Door nicht mehr gelesen. Live ist die Paketressource, deren Digest in `RESOURCE_DIGESTS` gepinnt ist. Eine Änderung dort bedeutet eine Commission, aktualisierten Digest und Test, geänderte Implementation-Identität und Runtime-Promotion. Die Ergänzung nur in die eingefrorene Kopie zu schreiben, würde nichts bewirken. [B]
+* *Gegenspieler im selben Text.* Die Regel "nicht herabstufen wegen Kosten" widerspricht der Idee, Kosten abzuwägen. Die Ergänzung muss sagen, dass die Verhältnismäßigkeitsprüfung für Anforderungen *jenseits* eines expliziten Kriteriums gilt und dass eine Kritik an einem Kriterium selbst an den Maintainer eskaliert wird (der Prompt kennt diese Eskalationsform bereits). [I]
+* *Risiko.* Subjektive Wartbarkeits-Findings könnten neue Korrekturschleifen auslösen. Die vorgesehene Bedingung (konkrete Kosten und realistische einfachere Alternative nennen, Stilpräferenz nur nicht blockierend) mildert das und ist richtig. [I]
+
+== C. Governance und Gesamtkomplexität
+
+Bewertet wird die Gesamtwirkung, nicht die Zahl der Guards. Maßstab: Verschwindet Komplexität, oder zieht sie nur um? [I]
+
+[cols="2,3,3,2"]
+|===
+|Mechanismus |Was er vereinfacht |Wohin die Komplexität geht |Gesamtwirkung
+|Ein Lifecycle pro Checkout |Kernel: Journal je Checkout, keine Zustandswiederverwendung, einfache Lock-Logik (BP4a) |*Level 1 und Betrieb*: ein Worktree je Run, Staging je Worktree, absolute Wrapper-Pfade, Bereinigungsregel, wachsende Zahl von Branches |Kernel einfacher, Gesamtsystem teurer bei Wiederholungsnutzung; Abwägung offen (Maintainer sieht dies ebenso). Kandidat für Stufe 2 (`FTR-WFC-LIFECYCLE-ROTATION`).
+|Preservation (nicht autoritative Refs bei Stopps) |Ersetzt manuelles Stash- und Salvage-Verfahren; Recovery wird einheitlich (132 Zeilen in `preservation.py`) |kaum; eine zusätzliche Doktrin ("nicht autoritativ") |*Netto vereinfachend*. Wurde bei FA-001 und HC-001 automatisch genutzt.
+|Evidence und Archiv (rund 1.500 Zeilen `archive.py`, Retention-Modi, Äquivalenztests) |Nutzer pflegen kein Ledger; Archiv ist automatisch, byte-genau, idempotent |Tests und Wartung des Archivmoduls; teuerster Bereich der Beta (BP5 vier gestoppte von fünf Runs) |Hoher Aufwand einmalig, Nutzen sichtbar (kein Datenverlust). Wartungsrisiko moderat.
+|Scope-Gates (Ceiling, Pins, Eskalation) |Vorhersehbare Autorität; fing den C1-Fehler sofort |Jede Scope-Lücke kostet einen Restart (HC-001: etwa eine Stunde); Auto-Fortsetzung mit Scope-Erweiterung ist eine bekannte offene Idee (`FTR-WFC-SCOPE-ESCALATION-CONTINUATION`) |Gate richtig; Restart-Kosten sind der Preis der Strenge. Beobachten.
+|Finding-Autorität (nur Reviewer schließt Findings) |Trennt Prüfen und Reparieren sauber |Vier Stopps durch Worker-Compliance; Gegenmittel sind Prompt-Hinweise und die geplante phasenspezifische Schemaableitung |Invariante richtig, Prompt-Pflaster teuer; strukturelle Lösung (H1 im P1-Plan) hat ein klares Nutzen-Kosten-Verhältnis (vier Stopps gegen eine Schema-Änderung).
+|Hop-Budget und harte Grenze |Begrenzt autonomen Verbrauch, da Tokens nicht gemeldet werden |Zwei Budget-Stopps, nun mit 64/32 entschärft |Richtig als einzige Bremse; Budgetklassen statt Einheitswert.
+|Coordinator-`task-check` nach jedem Hop (rund vier Minuten volle Suite) |Vertrauenswürdige Evidenz unabhängig vom Agenten |Zeit, und jede Flake wird zum Stopp |Wertvoll; ein Flake-Verdacht, kein Strukturproblem.
+|Review-Muster `robust@v1` (breit, Korrektur, fokussiert, breit) |Starke unabhängige Prüfung |Mehrfachprüfung mit Allquantor-Kriterien kann kleine Änderungen aufblähen (Proof 1: 8 Hops, Proof 2: 5 Hops für vier Absätze) |Für Hochrisiko-Arbeit gut, für Kleinstaufgaben überdimensioniert: `simple@v1` existiert.
+|===
+
+*Kern der Gesamtwirkung* [I]: Die starken, einfachen Invarianten (Immutability des Lifecycles, nicht autoritative Preservation, Finding-Autorität, Scope-Gates) haben die Beta tatsächlich robust gemacht; keine davon erzeugte Datenverlust, jede hat mindestens einen echten Fehler abgefangen. Zwei davon (Lifecycle-Einmalregel, Finding-Autorität) verschieben spürbar Aufwand auf Level 1 und in den Betrieb. Die Komplexität, die ich als *nicht durch Governance gerechtfertigt* ansehe, liegt woanders: in Kriterien-Wortwahl, in der Größe der Planungsdokumente und in der Menge eigens gebauter Prüfwerkzeuge (Offline-Wrapper, Äquivalenzharness), die ihren Zweck zum Teil nur kurz erfüllten.
+
+== Empfehlung
+
+=== Stufe 1: auf dem Weg zum Release
+
+. *Fortsetzen.* Weder P1 noch P2 anhalten. WFC ist für die Release-Planung ausreichend benutzbar. [I]
+. *Akzeptanz-Wortlaut-Disziplin* (meine Seite, ohne Code, Kosten null): Kriterien benennen die geprüften Fälle statt "jeder/alle"; weitere Randfälle sind nicht blockierende Beobachtungen; Planungsdokumente verlangen die Prüfung der *entscheidungsrelevanten* Zitate, nicht jeder Zahl; "mutationssensitiv" nur dort, wo ein Verhalten gesichert wird. Nutzen: adressiert BP4b-artige Spiralen und Zitat-Zyklen (29 der 54 Findings liegen in B, D und E). Risiko: etwas weniger Fänge bei Randfällen; BP4b F001, der echte Fehler, war in Zyklus 1 und bleibt gedeckt.
+. *Verhältnismäßigkeits-Satz über die Repository-Guidance* (`.wfc/governance/repository-policy.md`, Maintainer-Eingabe, bereits an alle Phasen gebunden, keine Codeänderung, keine Promotion). Vorschlag zur Entscheidung, noch nicht angewandt: "Prüfe einmal, ob dieselben Ziele mit einer wesentlich einfacheren, besser wartbaren Lösung erreichbar sind. Ein blockierendes Wartbarkeits-Finding nennt konkrete Kosten und eine realistische einfachere Alternative; bloße Stilpräferenz ist nur eine nicht blockierende Beobachtung. Kritik an einem Akzeptanzkriterium selbst geht als Eskalation an den Maintainer." Nutzen: Gegenkraft, beobachtbar bei P2 und folgenden Commissions. Kosten: ein Commit. Risiko: subjektive Findings (siehe oben).
+. *Ressourcenänderung `reviewer.txt` (live) zurückstellen* auf Stufe 2, bis die Wirkung der Guidance-Variante beobachtet ist. Gleiche Wirkung, höhere Kosten (Commission, Digest, Promotion). [I]
+. *Den roten Test nicht jagen:* keine eigene Commission. Er ist nicht reproduzierbar (0 von 640 Versuchen), trat bei 2 von 82 Task-Check-Beobachtungen auf (nur eine führte zum Stopp), und der Diagnosepfad identifiziert ihn beim nächsten Auftreten sofort. Wenn er wieder auftritt, genügt eine kleine, gezielte Korrektur des Tests. Nutzen einer Vorab-Suche gering, Kosten unbestimmt.
+. *Plangrößen begrenzen:* P2 und die ADR-Commission mit einem Umfangsrahmen (etwa die Hälfte von P1) und Budget 15 bis 20 statt 10 (möglich, sobald der Kern promotet und die Konfiguration auf 32 angehoben ist).
+
+=== Stufe 2: nach dem Release, mit hoher Priorität
+
+Untersuchen, *welche Garantien tatsächlich gebraucht werden* und ob sie einfacher zu erreichen sind, ausdrücklich ohne `ProjectGoals`, neues Framework oder neue Review-Phase. Datenbasis liegt vor: Findings-Ledger, Stopp-Ursachen, Task-Check-Beobachtungen. Konkrete Fragen: Lifecycle-Rotation gegen Worktree-Kosten; Scope-Auto-Fortsetzung gegen Restart-Kosten; phasenspezifische Ergebnis-Schemas gegen Finding-Autoritätsstopps; Verhältnis von `simple@v1` und `robust@v1` nach Aufgabengröße; Kriterienvorlagen mit Kostenlimit.
+
+=== Nicht empfohlen
+
+* Neue Guards oder Hardening-Commissions als Reaktion auf diese Analyse: Der Nutzen ist ungeklärt, und die Analyse zeigt gerade, dass Absicherung eine Ratsche ist.
+* Ein pauschales Aufkündigen bestehender Garantien: keine der heutigen Invarianten hat im Datensatz mehr gekostet als gebracht, abgesehen von der Verlagerung auf Level 1.
+
+== Grenzen dieser Vorlage
+
+* [L] Token und Kosten der Runs sind nicht gemeldet; Aussagen zu "teuer" sind Zeit- und Hop-basiert.
+* [L] Ursache von BP2-Config-Compiler-001 (`reconcile_required`) und genaue Aufteilung der Hops in gestoppten Runs.
+* [I] Die Klassifikation der 54 Findings ist meine Zuordnung (Anhang); Randfälle sind zwischen A und B sowie D und E strittig.
+* [I] Level-1-Aussagen sind Selbstauskunft.
+* Die Reproduktion des roten Tests blieb ohne Treffer; ein Mechanismus ist nicht behauptet.
+* Es wurde nichts verändert, nichts gepusht, keine Commission gestartet.
+
+[appendix]
+== Anhang: Finding-Census (54 blockierende Findings)
+
+Quelle: `run/checkouts/*/run.json`, Feld `findings`, aller 38 Runs; Klasse nach Abschnitt B. Die Invariante ist auf 150 Zeichen gekürzt.
+
+[cols="3,1,1,8",options="header"]
+|===
+|Run|Finding|Klasse|Verletzte Invariante (gekürzt)
+|execution-planning-20261118-01|F001 (resolved)|D|BP8's deliverable must name the five universal invariants the governing sources actually identify. The plan's BP8 lists four commissioning-path invari
+|execution-planning-20261118-01|F002 (resolved)|D|BP5's prerequisites must not contradict the readiness authority or BP5's own acceptance. The plan states BP5 needs only BP1 and runs in parallel with
+|execution-planning-20261118-01|F003 (resolved)|D|Dispositions the epic explicitly requires must appear in the plan. The epic's BP9 entry requires that 'BP7 timing, Q8 usage and public-internet invest
+|execution-planning-20261118-01|F004 (resolved)|D|The plan's release gates must reflect the readiness authority's classification or state the divergence. The plan presents automatic candidate preserva
+|execution-planning-20261118-01|F005 (resolved)|D|BP9's live Claude qualification must state the precondition the controlling BUG actually imposes, and no Commission may depend on a prerequisite the p
+|execution-planning-20261118-01|F006 (resolved)|D|BP7's modules/paths must name the manual chapters the cutover actually has to change, since that field becomes the Commission's authorized scope. BP7
+|execution-planning-20261118-01|F007 (open)|D|The plan must render the 2026-11-18 Evidence decision as the epic states it and dispose of every part of it. The epic decides: "Prefer a separate Git-
+|bp2-config-compiler-001-20261118-01|F001 (open)|F|No module in src/workflow_coordinator outside frontdoor/ may import workflow_coordinator.frontdoor (kernel import direction), as enforced by the pre-e
+|bp5-archive-port-recovery-001-20261119-01|F001 (resolved)|F|BP5 acceptance requires the installed `wfc archive` to port the "existing applicable conformance tests", preserving all applicable checks and document
+|bp5-final-assurance-001-20261119-01|F001 (resolved)|A|BP5 item A acceptance: the test-fixture collision fix must leave tests/unit/test_wfc_op.py and the full Coordinator suite passing. Reproduced failure:
+|bp5-final-assurance-001-20261119-01|F002 (resolved)|F|Original BP5 conformance-port criterion: preserve all applicable legacy checks and document any unavoidable non-applicable legacy-proof case; retain f
+|bp5-retry-integrity-001-20261119-01|F001 (open)|A|An uncommitted placed archive is committed only if its safely validated files, provenance, identity, facts and semantic payload match a newly derived
+|bp5-retry-integrity-001-20261119-01|F002 (open)|A|On mismatch or inability to validate, the retry must fail closed before commit without overwriting, deleting or repairing the placed archive; refusal
+|bp4-lifecycle-controller-001-20261119-01|F001 (resolved)|A|Acceptance case (6): a crash before the Commission commit must leave `resume` able to commit exactly once. Reproduced violation: `lifecycle._do_commit
+|bp4-lifecycle-controller-001-20261119-01|F002 (resolved)|A|Acceptance case (19): legacy `wfc status --state-root` must behave as before and the new status must be dispatched only without `--state-root`. Reprod
+|bp4-lifecycle-controller-001-20261119-01|F003 (resolved)|A|Acceptance case (6): a crash before the Commission commit must leave `resume` able to commit exactly once. Reproduced violation at one instruction dee
+|bp4b-candidate-preservation-001-20261119-0|F001 (resolved)|A|Capture predicate (Deliver item 3) and acceptance case (1): every changed or untracked path that lies inside the Run's authorized scope must be captur
+|bp4b-candidate-preservation-001-20261119-0|F002 (resolved)|B|BP4b must change no BP4a classification or exit code and must convert every capture-predicate failure into a named, journaled ext.preservation.refused
+|bp4b-candidate-preservation-001-20261119-0|F003 (resolved)|B|BP4b changes no BP4a classification or exit code and converts every capture-predicate failure into a named, journaled ext.preservation.refused (frozen
+|bp4b-candidate-preservation-001-20261119-0|F004 (resolved)|B|`wfc status` stays strictly read-only and *reports* the latest preservation facts from the ext.* records (Deliver item 2; acceptance 16), and every re
+|bp4b-candidate-preservation-001-20261119-0|F005 (resolved)|B|A configured clean/process filter must be refused (Deliver item 3; acceptance case 11), and a refs/wfc/preserved/<run_id>/<n> ref together with its ex
+|bp6a-audit-projection-001-20261120-01|F001 (resolved)|C|Acceptance preamble and case (1): each acceptance case is covered by a test with a mutation-sensitive assertion, and a completed Run projects every fi
+|bp6b-evidence-retention-001-20261120-01|F001 (resolved)|A|Acceptance (7)/(8) and the second-pass review's 'Commit ownership, idempotency and integrity': one commit per Attempt containing audit.json, and a re-
+|bp6b-evidence-retention-001-20261120-01|F002 (resolved)|A|Deliver item 3 and acceptance (10): the privacy guard of audit.py applies with known private strings derived from the environment (home directory, use
+|bp6b-evidence-retention-001-20261120-01|F003 (open)|E|Deliverable 6 and acceptance case 15: the developer-facing BP6b limitations record must state six facts, one of which is that nothing is pushed. Repro
+|bp6b-final-assurance-001-20261120-01|F001 (resolved)|C|BP6b acceptance case 9 requires a mutation-sensitive test for crash-resume between placement and commit in EVERY retention mode ("resumes per mode"),
+|bp6b-final-assurance-001-20261120-01|F002 (resolved)|C|BP6b acceptance case 9 requires mutation-sensitive tests for the crash-resume and tamper-refusal behaviour of `local`/`commit` retention ("crash betwe
+|bp6c-lifecycle-archive-wiring-002-20261120|F001 (resolved)|A|Deliver item 3 and acceptance case (5): a refusal or failure of the archive/audit step is recorded as ext.archive.refused{reason_code}, reported throu
+|bp6c-lifecycle-archive-wiring-002-20261120|F002 (resolved)|A|Acceptance case (7) with a mutation-sensitive test: the audit carries the BP4a classification and the BP4b preservation fact for all three outcomes (r
+|bp6c-lifecycle-archive-wiring-002-20261120|F003 (resolved)|C|Acceptance case (1) with a mutation-sensitive test: a completed Run is archived once through the installed lifecycle. Reproduced violation of the sens
+|bp6c-lifecycle-archive-wiring-002-20261120|F004 (resolved)|C|Acceptance case (1) requires a mutation-sensitive test that a completed Run's consolidated report is PRINTED, and acceptance case (4) requires a mutat
+|bp6c-lifecycle-archive-wiring-002-20261120|F005 (resolved)|C|Acceptance case (5) names two triggers -- "archive/audit failure OR privacy-guard refusal" -- and requires a mutation-sensitive test for the resulting
+|bp7-cutover-planning-001-20261120-01|F001 (open)|D|Deliverable 1 requires each capability to be named with the file/function where it lives today, verified not assumed; the plan's own preamble claims e
+|bp7-cutover-planning-001-20261120-01|F002 (open)|D|Deliverable 4 requires independently testable sub-Commissions with feasible acceptance, and the acceptance criterion requires a gap analysis verified
+|bp7-cutover-planning-002-20261120-01|F001 (resolved)|D|Every sub-Commission's stated acceptance must be fulfillable within its own stated scope. C5 (wfc-beta1-bp7-retirement-001) deletes tests/unit/test_wf
+|bp7-cutover-planning-002-20261120-01|F002 (resolved)|D|The task's deliverable 4 and the Acceptance require, for each sub-Commission, an estimated effort in Hops and a rough token/effort class (small/medium
+|bp7-cutover-planning-002-20261120-01|F003 (resolved)|D|Every sub-Commission's stated acceptance must be fulfillable within its own stated scope. C5 (wfc-beta1-bp7-retirement-001) deletes scripts/wfc_op.py
+|RUN-25295d0d0d3b40d9b8069e0f143ba3a3|F001 (resolved)|E|docs/backlog/README.adoc implementation-milestone upkeep: the controlling BUG/FTR record must record what actually changed. The committed note at docs
+|RUN-25295d0d0d3b40d9b8069e0f143ba3a3|F002 (resolved)|A|The diagnostics probe must not change the exception class of the unresolved-executable refusal (task: "stays fail-closed with the same exception type"
+|RUN-3e19e853f30246199b938856e3f145c7|F001 (resolved)|E|Every hash, Run id, path and intra-record cross-reference cited by a reconciled Lifecycle paragraph must exist and must support the claim it is cited
+|RUN-3d46d38115a843fb8699bb713d01da30|F001 (resolved)|E|A manual page named in the task must no longer instruct running the removed Harness. docs/operator_manual/ch06_recovery/02_successors.adoc still does:
+|RUN-3d46d38115a843fb8699bb713d01da30|F002 (resolved)|E|The normative generic Run-preparation contract must agree with implemented behavior after DG-5. docs/operator_manual/ch03_running/01_preparation.adoc
+|RUN-3d46d38115a843fb8699bb713d01da30|F003 (resolved)|E|A manual section both rewritten scratch pages link into must not present the removed Harness scratch allocator and its removed CLI flag as current. do
+|RUN-3d46d38115a843fb8699bb713d01da30|F004 (resolved)|E|The Developer Guide page that owns the required-mode gate must agree with the conftest change made in the same Commission. docs/developer_guide/ch01_d
+|RUN-37e3c0c80a7f4dd097d33ce7d2b6523d|F001 (resolved)|C|Scenario (a) must cover every command the task's happy path enumerates, and the test name and module docstring must state honestly what is exercised:
+|RUN-88998e7a2992467ab411123407941935|F001 (resolved)|A|The documented `wfc plan` invocation in the consumer quickstart must succeed when followed as written. 01_quickstart.adoc:103-116 passes the required
+|RUN-88998e7a2992467ab411123407941935|F002 (resolved)|A|The documented unattended `wfc run --yes` invocation must succeed when followed as written. 01_quickstart.adoc:82-134 has the reader author the task d
+|RUN-88998e7a2992467ab411123407941935|F003 (resolved)|E|Documentation that describes the Operator Manual must stay true after a chapter is added. Adding ch09 left operator_manual.adoc:9 and :11, docs/README
+|RUN-88998e7a2992467ab411123407941935|F004 (resolved)|A|The documented unattended `wfc run --yes` invocation must succeed when the consumer quickstart is followed as written on an unrelated repository. 01_q
+|RUN-b49d10084a5e4a999461a3bcacdd91df|F001 (resolved)|D|Every path, symbol, count and commit the plan cites is verified against the repository (task acceptance criterion; the task names misattribution as th
+|RUN-b49d10084a5e4a999461a3bcacdd91df|F002 (resolved)|D|Every path, symbol, count and commit the plan cites is verified against the repository, and every dependency is verified against the real file or reco
+|RUN-b49d10084a5e4a999461a3bcacdd91df|F003 (resolved)|D|Every path, symbol, count and commit the plan cites is verified against the repository, and every dependency is verified against the real file or reco
+|RUN-7a05fb39154345b0895e4a4151490edd|F001 (open)|D|Every count and path citation in the plan matches the repository, and the plan does not contradict itself: AD-2's evidence row and AD-2 record state "
+|RUN-7a05fb39154345b0895e4a4151490edd|F002 (open)|D|A cited document says what the plan says it says, and the verification record states its results honestly: the plan's section 0 ("the spreadsheet-hand
+|===
