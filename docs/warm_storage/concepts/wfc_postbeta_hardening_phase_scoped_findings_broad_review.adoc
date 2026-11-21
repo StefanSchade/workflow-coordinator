@@ -1,0 +1,322 @@
+= Hardening H1, phase-authority-scoped findings surface: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the hardening H1
+candidate for WorkItem `WI-WFC-POSTBETA-HARDENING-PHASE-SCOPED-FINDINGS-001`.
+The current pass is *H002*; later passes are added above earlier ones and
+earlier passes are kept unedited.
+
+== Pass H002 (current)
+
+WorkItem:: `WI-WFC-POSTBETA-HARDENING-PHASE-SCOPED-FINDINGS-001`
+Hop:: `H002` (`broad_review`, fresh independent adversarial reviewer, gate,
+blocking-only, `finding_authority: [resolve]`)
+Reviewed product:: the whole candidate at review base HEAD
+`df544338cecba29721f77e52bdb49da7a2d3cd28`, i.e. the full implementation range
+`1e2c9b3..df54433`: `src/workflow_coordinator/structured_result_schema.py`,
+`adapter.py`, `vertical.py`, `codex_adapter.py`, `claude_adapter.py`,
+`tests/unit/test_codex_adapter_conformance.py`,
+`tests/unit/test_claude_adapter_conformance.py`,
+`tests/unit/test_slice3_vertical.py` and
+`docs/backlog/FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA.adoc`.
+Governing acceptance:: the Commission task for this Hop, ADR decision AD-4 = B
+with its conditions
+(`docs/technical_model/ch04_target_and_alternatives/03_adr_closed_versioned_workflow_programs.adoc`),
+`docs/backlog/FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA.adoc`, the task's PROPORTION
+principle and its withheld authority. `docs/cold_storage/` is provenance only.
+Disposition:: *Accept.* No blocking Finding, and this Run carries no
+authoritative Finding to disposition, so this pass submits no Finding delta.
+The stated problem reproduces at the base HEAD; the change removes exactly the
+four measured stop shapes on the contract version every real Run actually
+dispatches; the unnarrowed surface is reproduced byte-for-byte, so no
+historical or replay surface moves; scope and withheld authority are honoured.
+Six non-blocking observations are recorded below, two of them flagged for the
+maintainer rather than owed as a correction.
+
+=== Finding state
+
+The projected authoritative Finding state for this Run is empty. The historical
+labels this pass cites (`FD-08`, the four Beta stop Runs) are provenance from
+the P1 plan, not current-Run Finding IDs, so nothing is resolved, reopened or
+superseded here. Everything below is review evidence.
+
+=== 1. The stated problem reproduces at the base HEAD
+
+At `1e2c9b3` the `findings` item schema was built from
+`[item.value for item in FindingState]` for every phase and both delta shapes,
+and v3's authoritative `transition` shape, with all four targets, was projected
+unconditionally (base-HEAD `structured_result_schema.py:49`, `:62-63` and
+`:70-80`).
+`reducer.py:1693-1703` meanwhile gives `permitted_operations = ()` to every
+phase that is not a gate review, so the projected contract was strictly wider
+than the admitted authority for every Worker Hop.
+
+The cost is measured, not presumed. The P1 plan's Run facts
+(`docs/backlog/postbeta_plan_p1_adr_and_hardening.adoc:154-183`) name the four
+archived stops and their exact reducer messages:
+
+* `RUN-69816e71`, `broad_review`: `gate cannot create Finding F001 as residual`
+  -- a *creation* delta from a gate that holds `resolve` only.
+* `RUN-fd571798` and `RUN-18a6ae05`, `correct`:
+  `agent cannot perform Finding operation resolve`
+* `RUN-7ec65677`, `correct`: `agent cannot perform Finding operation residual`
+
+The three `cannot perform ... operation` messages come from the
+*existing*-Finding branch (`reducer.py:645-651`), the first from the creation
+branch (`reducer.py:590-595`). So one of the four is a creation shape and three
+are existing-delta shapes; a narrowing that touched only creation states, or
+only v3's explicit transition shape, would not have prevented three of them.
+
+=== 2. Which contract version the narrowing has to reach
+
+`select_result_contract` returns a kind; `model.result_contract_version`
+(`model.py:711-729`) turns it into the wire version, and for
+`profile.schema_version == 2` that is **1** for all three kinds. Every rendered
+consumer profile is `schema_version: 2` -- `commissioning.py:352`, and a scan of
+`governance/commissions/*/profile.yaml` gives 104 of 104 at version 2. Contract
+**v1** is therefore the version every real Run dispatches, including the four
+that stopped, and v1 uses the *combined* existing-Finding shape rather than
+v3's separate citation/transition split.
+
+I checked this because the task's "current versions only" rule reads at first
+like a reason to leave v1 alone. It is the opposite: v1 is the current
+production wire version, v2 is reachable for a convergence-role phase under a
+`schema_version: 3` profile, and v3 is reachable for `work-result` /
+`review-verdict` under such a profile. All three are produced by the one shared
+builder, and `admits_result_contract_version` defines no fourth. Nothing
+historical was touched (<<h002-identity>>).
+
+=== 3. The four measured stop shapes are gone on the production wire
+
+Probing `projected_result_schema` at HEAD with the authorities the shipped
+programs actually declare:
+
+[cols="3,2,4",options="header"]
+|===
+|Phase shape |`finding_authority` |v1 `proposed_state` enum at HEAD
+
+|`correct` (Worker, no review); any non-review phase
+|`()`
+|`['open']`
+
+|`broad_review` / `focused_review` of `robust@v1` (`commissioning.py:139,141`)
+|`('resolve',)`
+|`['open', 'resolved']`
+|===
+
+`residual` and `superseded` are gone from both the creation and the
+existing-delta shape for both, and `resolved` is gone for the `correct` shape.
+That is stop 1 (`create ... as residual` under `resolve`-only authority) and
+stops 2-4 (`perform ... resolve` / `residual` under empty authority), all four,
+unexpressible rather than refused after the fact. Under v3 the authoritative
+`transition` shape is not projected at all for an empty authority, and for
+`('resolve',)` its `target` is exactly the single `resolved` branch.
+
+=== 4. The narrowing matches the reducer, and is derived from one fact
+
+`vertical.py:334` sets the request field from
+`() if phase.review is None else phase.review.finding_authority` -- character
+for character the expression `prompt.py:140` already uses for the prompt header.
+That value equals the reducer's own `permitted_operations` for every admitted
+profile: `reducer.py:1693-1703` uses `()` for a non-review phase, `()` for an
+advisory review, and `phase.review.finding_authority` for a gate review, and
+`serialization.py:578-581` refuses at admission any advisory review that
+carries disposition authority, so the advisory case cannot diverge. Prompt
+header, dispatched schema and reducer enforcement therefore cannot drift apart:
+there is one derivation, not three.
+
+The projection side is declarative, with no phase name taking part.
+`_DISPOSED_STATE_OPERATIONS` (`structured_result_schema.py:51-55`) mirrors the
+reducer's creation table (`reducer.py:469-474`) and `_transition_targets`
+(`:82-99`) mirrors the v3 target branches, each keyed by the reducer operation
+name; a shape is projected only when the authority carries the operation it
+denotes. `git show -U0` over the added `src/` lines matched for
+`implement|correct|broad_review|focused_review|verification|rereview|supervisor`
+and the convergence phase words returns nothing.
+
+[[h002-identity]]
+=== 5. Nothing historical, archived or replayed moves
+
+For each currently reachable (kind, version) pair I compared the HEAD
+projection against the base-HEAD projection of the same pair:
+
+[cols="4,2",options="header"]
+|===
+|Projection |HEAD vs. base HEAD
+
+|`work-result` v1, v3 and `routing-result` v1, v2 with `finding_authority=None`
+|identical
+|`work-result` v1, v3 and `routing-result` v1, v2 with the full authority
+`('resolve','residual','supersede','reopen')`
+|identical
+|===
+
+So an unchanged caller and a fully authorized phase both still see the exact
+pre-change surface, including the order of the four v3 target branches.
+`tests/architecture/test_replays.py` and `tests/unit/test_reducer.py` are
+untouched by the commit (`git show --stat`) and pass as they stand, including
+the three named negatives
+(`test_finding_lifecycle_requires_gate_or_human_authority`,
+`test_new_finding_creation_uses_explicit_authority_operation`,
+`test_supervisor_has_no_finding_disposition_surface`). The reducer remains the
+authority: a forged out-of-schema delta is refused there exactly as before, and
+the candidate adds no weaker forgery variant. No `FindingState`, Finding
+operation or authority kind was added; `reducer.py`, `model.py`, `prompt.py`,
+the program definitions, route projection, the contract-kind split and
+`governance/` are all unchanged.
+
+=== 6. The new tests fail without the product change
+
+I exported the base-HEAD tree (`git archive 1e2c9b3`), overlaid only the three
+changed test files from `df54433`, and ran them against the base-HEAD product
+code. The three new executable tests fail there and every other test in those
+files passes:
+
+* `test_findings_surface_is_projected_from_the_admitted_finding_authority` --
+  `TypeError: structured_result_envelope_openai_schema() got an unexpected
+  keyword argument 'finding_authority'`
+* `test_dispatched_schema_carries_the_requests_finding_authority` --
+  `TypeError: AgentExecutionRequest.__init__() got an unexpected keyword
+  argument 'finding_authority'`
+* `test_dispatch_carries_the_admitted_phase_finding_authority` --
+  `AttributeError: 'AgentExecutionRequest' object has no attribute
+  'finding_authority'`
+
+The tests assert the narrowed enums and target branches, not just the plumbing,
+so they would also fail on a wrong narrowing table.
+`test_dispatched_findings_surface_follows_the_admitted_finding_authority`, the
+fourth new test, is in the Claude suite and cannot execute in this reviewer's
+sandbox at all (<<h002-env>>); it fails at the base HEAD for the same missing
+field, and its one unverified link -- that `claude_adapter.py:239` hands
+`request.finding_authority` to the envelope builder whose output is written to
+the dispatched schema file -- is a single line I read instead of ran. The Codex
+suite's equivalent dispatched-artifact assertion does execute and passes.
+
+[[h002-env]]
+=== 7. Checks this reviewer could and could not run
+
+Executed, exploratory only; Coordinator-owned task-check remains the acceptance
+basis:
+
+* `tests/unit` + `tests/architecture` except the Claude suite, partial mode:
+  1361 tests collected, 2 failures, both environmental --
+  `test_offline_distribution.py` and `test_bp1_identity.py` fail on
+  `ERROR: No matching distribution found for setuptools>=68`, i.e. a
+  build-isolation dependency that cannot be downloaded in this sandbox. Neither
+  touches a changed file.
+* `ruff check` on all eight changed files: clean. `ruff check .` reports 17
+  pre-existing errors, all in files this commit does not touch.
+* `tests/unit/test_claude_adapter_conformance.py`: 23 of 32 tests fail, 22 of
+  them pre-existing, all with
+  `OSError: [Errno 30] Read-only file system: ... -> '/tmp/wfc-claude-...'` at
+  `claude_adapter.py:233`. The adapter deliberately symlinks a short path under
+  `/tmp`, which this sandbox mounts read-only; there is no workaround that does
+  not change the sandbox. An agent-local limitation, not a product defect.
+
+=== 8. Non-blocking observations
+
+[[h002-o1]]
+*O1 (for the maintainer). The acceptance criterion's literal reading cannot be
+met on the v1/v2 shape, and is met in substance.* The criterion asks that for an
+empty authority "the generated findings item schema admits no authoritative
+state transition". Under v3 that is literally true: the transition shape is
+absent. Under v1/v2 one shape carries both meanings -- an existing-Finding delta
+with `proposed_state: open` is an evidence-only same-state citation when the
+cited Finding is open and the `reopen` operation when it is resolved
+(`reducer.py:478-483`) -- and the projection cannot know the cited Finding's
+state. I reproduced it: that payload is still schema-valid under an empty
+authority, and the reducer still refuses it. Removing the ambiguity would mean
+dropping the existing-Finding shape whenever the authority is empty, which would
+also remove the same-state citation of an *open* Finding that the Agent
+Operating Contract explicitly sanctions. Constraining `new_material_evidence` to
+`false` instead would not remove the reopen attempt either, only its justified
+form, and would convert an authority stop into a
+`reopening requires new material evidence` stop. So the candidate's reading --
+no *disposition* state is admitted, and `open` always stays -- is the achievable
+one, `reopen` was not among the four measured stops, and the expressible
+unauthorized surface is strictly smaller than before rather than unchanged. I
+record this as the limit of the criterion rather than as a waiver; the
+maintainer may want to restate the criterion in those terms.
+
+*O2. One live capability is lost as the forced flip side of O1.* Because the
+v1/v2 `proposed_state` enum governs both the creation state and the
+existing-delta target, a phase can no longer cite a Finding that is *already* in
+a state its authority does not cover. Concretely, in `robust@v1` a `correct`
+phase can no longer attach evidence to an already-resolved Finding, and
+`broad_review` / `focused_review` can no longer attach evidence to a residual or
+superseded one. Admitting those back would re-admit three of the four measured
+stops, so it is not a simpler alternative but a worse one; the AOC sanctions
+only the citation of an *open* Finding and tells a correction phase to report
+correction evidence in the normal result fields instead; and a residual or
+superseded Finding can arise in `robust@v1` only by human disposition, which a
+human can repeat. The candidate states this limit in
+`structured_result_schema.py:62-72` and in the FTR. Nothing is owed.
+
+*O3. The `finding_authority=None` tri-state defaults in the widening
+direction.* `None` means "caller states no authority" and yields the *widest*
+surface, on exactly the surface being hardened, so a future second dispatch path
+that forgets the argument fails open rather than closed. I checked the cost of
+removing the sentinel: `finding_authority` would have to become a required
+keyword like `permitted_routes`, which touches about 24 call sites, nearly all
+of them in `tests/unit/test_slice4.py` and the Codex conformance suite, and
+`()` as the dataclass default would narrow those existing expectations instead.
+Given one production dispatch path, covered by
+`test_dispatch_carries_the_admitted_phase_finding_authority` plus both
+dispatched-artifact tests, the sentinel is the proportionate choice and the two
+docstrings state it. Recorded, not owed.
+
+*O4. `codex_adapter.routing_result_openai_schema` and
+`projected_result_openai_schema` are unreachable and were left un-narrowed.* No
+caller in `src/` or `tests/` reaches either (only the former calls the latter).
+The candidate flagged this and left them alone as the smaller change, which is
+right for this WorkItem; the divergence would end by deleting dead code, which
+is a separate concern.
+
+*O5. A future `FindingState` without an operation raises `KeyError`, not
+`StructuredResultSchemaError`.* `_proposed_states` indexes
+`_DISPOSED_STATE_OPERATIONS` directly (`structured_result_schema.py:78`). The
+comment at `:43-50` says the failure is deliberate, and failing loudly is the
+right direction, but it surfaces as an unhandled exception rather than the
+module's own error type, which the Codex adapter would otherwise translate. One
+line if the maintainer ever wants it; not worth a guard today.
+
+*O6. The Codex test's justification comment overstates O1, and the FTR header is
+now stale.* `test_codex_adapter_conformance.py` says of the empty-authority case
+that "the only state left is `open`, which needs none" -- true for a creation
+delta, not for an existing delta against a disposed Finding. The assertions are
+correct; only the comment is loose, and both the product comment and the FTR
+state the limit accurately. Separately, and for the maintainer: the FTR's
+`Status::` line is unchanged as the task requires, but the adjacent
+`Next action::` and `Not authorized here:: Result-schema implementation or a
+Run` lines in the same maintainer-owned header now read as stale against the
+dated implementation section below them.
+
+*On `ruff format --check`:* it fails on seven of the eight changed files, and it
+fails identically at the base HEAD -- the repository's `format-check` target
+(`Makefile:22-26`) deliberately covers five unrelated files, so these files have
+never been `ruff format` clean. Satisfying the criterion literally would mean
+reformatting whole files well outside this scope. `ruff check`, which is the
+repository's actual lint gate (`Makefile:19-20`), passes on every changed file.
+Not a correction owed; noted so the maintainer can narrow the criterion's
+wording.
+
+=== 9. Simplicity assessment of the change itself
+
+123 changed lines in `structured_result_schema.py`, of which the substance is
+three small functions and two call-site guards; 18 changed lines of plumbing
+across `adapter.py`, `vertical.py` and the two adapters, roughly half of them
+comment; no new state, no new
+abstraction layer, no parameter threaded through a module that did not already
+carry the request. I looked for a smaller reaching change and agree with the
+candidate's conclusion that there is none inside the authorized scope:
+`select_result_contract` has `finding_authority` in its selection key but
+returns only a kind, so using that seam would require `model.py`, which is
+withheld. I also checked whether the v1/v2 part could be dropped as
+forward-looking -- it cannot; it is where all four measured stops live
+(sections 2 and 3). Conversely the v3 part currently applies to
+no live profile (104 of 104 at `schema_version: 2`), but it is eight lines in
+the same shared builder, it is where the acceptance criterion is literally
+demonstrable, and leaving it out would make the builder narrow one contract and
+not another for no stated reason. No duplicated responsibility, no redundant
+safeguard and no recurring operational cost found.
