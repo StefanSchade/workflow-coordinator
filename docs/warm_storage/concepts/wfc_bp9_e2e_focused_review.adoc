@@ -1,0 +1,185 @@
+= BP9 fake-provider end-to-end acceptance test: independent focused review
+:toc:
+:toclevels: 2
+
+This record holds every independent focused-review pass over the corrections
+to the BP9 permanent fake-provider end-to-end acceptance test for WorkItem
+`WI-WFC-BETA1-BP9-FAKE-PROVIDER-E2E-001`. The broad-review passes live in
+`docs/warm_storage/concepts/wfc_bp9_e2e_broad_review.adoc` and are not
+edited here. The current pass is *H004*; later passes are added above
+earlier ones and earlier passes are kept unedited.
+
+== Pass H004 (current)
+
+WorkItem:: `WI-WFC-BETA1-BP9-FAKE-PROVIDER-E2E-001`
+Hop:: `H004` (`focused_review`, fresh independent adversarial reviewer,
+gate, blocking-only, `finding_authority: [resolve]`)
+Reviewed change:: the correction Hop `H003`
+(`1c161ef23c55f73fcbb5c2a9cdb0ca5de34dadc0`, range `043dc45..1c161ef`,
+one leaf, +41/-8) in the context of the whole candidate against the
+pre-implementation baseline `83c2044`.
+Governing acceptance:: the Commission task for this WorkItem (scenario
+groups (a)-(e), mutation sensitivity, hermeticity, docstring honesty,
+withheld authority), `docs/backlog/beta1_execution_plan.adoc` section
+"BP9 -- `wfc-beta1-bp9-beta-gate-001`" and
+`docs/backlog/beta1_productization.adoc` section BP9, together with the
+open blocking Finding `F001` recorded by the H002 broad review.
+Disposition:: *Accept.* `F001` is resolved. Scenario (a) now really invokes
+`wfc audit` as a CLI subprocess, twice, and both invocations are
+independently reproduced here: a bare call that is fail-closed-refused with
+exit `2`, and a `--lifecycle-json` call that exits `0` and reproduces the
+archived `audit.json` byte for byte. Both new assertions are empirically
+mutation-sensitive (two single-point product mutations applied to a
+throwaway copy, both killed). The test function name, its mutation comment
+and the module docstring now describe exactly what runs. No new blocking
+Finding. Two new non-blocking observations; H002's six non-blocking
+observations are untouched and remain recorded there.
+
+The only repository change proposed by this Hop is this artifact. No
+implementation, test, fixture, the broad-review artifact, backlog record,
+governance file, Run state or Evidence content was modified, and the
+reviewer made no Git write.
+
+=== What H003 changed
+
+`git show --stat 1c161ef` lists exactly one leaf,
+`tests/integration/test_beta_e2e_fake_provider.py`, and the diff is
+confined to two places:
+
+* the module docstring's scenario-(a) paragraph (lines 21-33), which now
+  says `audit` is "called twice -- a bare call that is refused fail-closed,
+  then a ``--lifecycle-json`` call that reproduces the already-archived
+  ``audit.json`` byte for byte";
+* the happy-path test's mutation comment (lines 225-230) and a new block of
+  assertions between the archive check and `wfc report` (lines 302-328).
+
+No assertion was weakened or removed, no test was renamed or deleted, no
+scenario other than (a) was touched, and no import was added (`json`,
+`subprocess`, `sys` were already imported and are all still used). The whole
+Run range `83c2044..1c161ef` adds four leaves and modifies none: the H002
+broad-review artifact, `tests/fixtures/bp9/wfc_entry.py`,
+`tests/fixtures/bp9/scripted_provider.py` and the test module. Nothing under
+`src/`, nothing under `tests/fixtures/bp4`, no existing test, no
+`governance/`, no `docs/backlog/`, no `.wfc`. The withheld authority holds:
+no product mechanism, no live provider, no network, no promotion or tag.
+`python -m py_compile` on the changed module succeeds, and the repository's
+`ruff` configuration (`line-length = 100`, `lint.select = ["F"]`) flags
+nothing in the added lines, which contain no unused name.
+
+=== `F001` resolved: `wfc audit` is now genuinely driven, and the prose matches
+
+H002's Finding was that the happy path never invoked `wfc audit` although
+the task's scenario (a) enumerates it, and that the test name, the mutation
+comment and the docstring all claimed otherwise. Both halves are closed.
+
+*The invocations are real and they hold as committed.* Because `pytest` is
+not installed in this sandbox (see the limitation note below), scenario (a)
+was replicated line for line as a standalone harness -- same env isolation
+(`HOME`, `XDG_STATE_HOME`, deleted `XDG_DATA_HOME`, the `wfc` `PATH`
+wrapper), same non-Python consumer repository, same scripted provider, same
+command sequence -- and executed against the reviewed checkout. Every
+assertion of the scenario held, including the two new ones. Observed:
+
+* bare `wfc audit <attempt-dir>`: exit `2`, stderr
+  `wfc audit: refusing to overwrite existing audit.json with different
+  content: <attempt-dir>/audit.json`, stdout empty, `audit.json` bytes
+  unchanged;
+* `wfc audit <attempt-dir> --lifecycle-json <facts>` with
+  `{"classification": "completed", "preservation": null}` read back from the
+  archived document: exit `0`, stdout exactly
+  `AUDIT: <attempt-dir>/audit.json`, bytes still identical;
+* the Evidence repository `git status --porcelain=v1` is empty afterwards,
+  and the archive holds exactly one attempt directory, the one the test
+  computes through the product's own `postrun._attempt_identity`.
+
+The exit-`0` assertion is what makes "byte for byte" real rather than
+decorative: `audit._create_only_write` (`audit.py:508-513`) returns early
+only when the recomputed text equals the existing file and otherwise raises,
+which `audit.main` maps to exit `2`. A drifted projection therefore cannot
+pass this assertion quietly.
+
+*The two new assertions are mutation-sensitive.* Both mutations were applied
+to a throwaway copy of `src/` and `tests/` outside the reviewed checkout,
+never to the checkout itself:
+
+. *create-only guard removed* -- `_create_only_write`'s `raise AuditError`
+  dropped so a differing `audit.json` is silently overwritten: *killed*.
+  Observed `bare audit rc 0` and
+  `AssertionError` at `assert bare_audit.returncode == 2`. This is exactly
+  the mutation the corrected comment names.
+. *`wfc audit` ignores caller-supplied lifecycle facts* -- `audit.main`
+  forced to `lifecycle = None` after parsing `--lifecycle-json`: *killed*.
+  Observed `audit rc 2` with the refusal message and `AssertionError` at
+  `assert audit.returncode == 0`. So the second assertion pins the agreement
+  between the manual CLI projection and the automatic postrun projection,
+  which is the recovery contract an operator meets, and not merely the
+  presence of a file.
+
+*The prose is now accurate.* Each clause was checked against observed
+behavior: `audit` really is called twice; the first call really is refused
+fail-closed; the second really does reproduce the archived document; the
+`init`/`plan`/`run --yes`/`status`/`audit`/`report` chain in the test name
+and in the docstring is now the chain actually executed as subprocesses. The
+docstring's remaining scenario-(a) claim -- that the dispatcher is entered
+twice over, once as the outer CLI and again as `frontdoor.lifecycle`'s inner
+bare-flag engine re-entry -- is confirmed by the replay: the inner engine
+printed its own `STATE ROOT:` line under the per-run throwaway
+`XDG_STATE_HOME` and consumed the scripted provider step, which only happens
+if the re-entry resolved through the `PATH` wrapper.
+
+*Hermeticity of the added lines.* The lifecycle-facts file is written under
+`tmp_path`; the two new subprocesses inherit the already-patched
+`HOME`/`XDG_STATE_HOME`/`PATH` (`monkeypatch.setenv` mutates `os.environ`,
+so the inherited environment is the isolated one) and need no
+`WFC_BP9_SCRIPT` because no provider is launched; nothing is written outside
+`tmp_path`; no network is reached.
+
+=== Non-blocking observations (H004; recorded only, no Finding proposed)
+
+. *The reproduction's expected input is read back out of its own output.*
+  The lifecycle facts handed to `--lifecycle-json` come from
+  `audit.json`'s own `lifecycle` block, so the assertion proves
+  "the CLI reproduces the postrun projection *given the facts the postrun
+  step used*" rather than "the facts are the right ones". Mutation 2 above
+  shows the property still has teeth; a literal
+  `{"classification": "completed", "preservation": None}` would also pin the
+  facts themselves and would read more plainly.
+. *The new mutation comment is correct but hard to parse.* "the bare-call
+  assertion below would stop failing to reproduce bytes" (line 230) is a
+  true statement about the mutant -- the bare call would stop being refused
+  -- but takes two readings. "a mutation that makes `wfc audit` overwrite a
+  differing `audit.json` instead of refusing (the bare call would exit 0)"
+  says the same thing once.
+
+H002's six non-blocking observations (the happy path's weak `commits`
+assertion, the doubled product Hop-ceiling guard, `_attempt_dir`'s unused
+`repo` argument, the slightly broad (b)-(e) docstring sentence, direct
+`os.environ` mutation, and the stop scenarios not asserting on rendered
+operator text) are unaffected by H003 and stand as recorded in the
+broad-review artifact. None of them is blocking under this Hop's
+blocking-only policy.
+
+=== Evidence and agent-local limitation (H004)
+
+Verification used read-only Git inspection (`git show`, `git diff --stat`,
+`git status`), source reading of `frontdoor/audit.py` and
+`frontdoor/cli.py`, `python -m py_compile` on the changed module, one full
+standalone replay of scenario (a) against the reviewed checkout, and two
+single-point product mutations replayed against a throwaway copy of the tree
+under the session's temporary directory. The reviewed worktree is unchanged
+apart from pre-existing untracked dotfiles; the replay harness was written
+into the repository's gitignored `/tmp/` scratch space and removed again.
+
+`pytest` is not installed for any interpreter reachable from this sandbox
+(`python3 -m pytest` and `pytest` both fail; the virtual environment on
+`PATH` from an earlier Hop is outside the readable filesystem), so neither
+the required-mode suite (`python -m pytest -q`) nor a targeted run of the
+eight tests in this module could be executed in this Hop. That is an
+agent-local environmental limitation, not a product defect and not a
+dependency to be downloaded. It was worked around rather than asserted
+over: the scenario under review was replicated verbatim outside pytest, with
+the same environment isolation, so the behavior the committed assertions
+depend on was observed rather than trusted. Scenarios (b)-(e) were not
+re-executed in this Hop; `git diff 043dc45..1c161ef` shows H003 changed
+nothing in them, and H002 executed them. The authoritative answer on
+required mode remains the Coordinator's own `task-check` for this Hop.
