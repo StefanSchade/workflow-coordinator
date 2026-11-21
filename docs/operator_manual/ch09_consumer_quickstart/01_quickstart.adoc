@@ -25,6 +25,10 @@ Run. For anything beyond that, follow the links below into the full manual.
 * An already-installed, already-authenticated provider CLI for the adapter
   you intend to use: `codex` for `codex_cli`, or `claude` for `claude_cli`.
   Confirm it resolves with `which codex` or `which claude`.
+* A single check command of your own, already committed, that exits `0` on
+  today's clean tree without changing anything -- `wfc run` executes it
+  verbatim as a mandatory pre-launch baseline probe (see
+  <<quickstart-request>>).
 
 [[quickstart-install]]
 === Install
@@ -121,6 +125,32 @@ stop on ambiguity
 EOF
 ----
 
+`wfc run` below executes a single check command of your own, verbatim, as a
+mandatory pre-launch baseline probe before it ever starts a provider: it
+must already exist, already be committed, exit `0` when run from the
+repository root on today's clean tree, and leave the tree and `HEAD`
+unchanged. A non-zero exit, an unresolvable executable, a timeout, or any
+tree mutation refuses the whole Run before launch (classification
+`refused_probe`, exit code 23) and still consumes this checkout's one
+lifecycle -- prepare a fresh checkout to retry. The same command is also the
+Commission's declared `task-check` evidence (see Limitations below). For
+this walkthrough, create and commit a trivial placeholder; replace it with
+your project's real check before relying on this for anything but the
+walkthrough:
+
+[source,shell]
+----
+mkdir -p checks
+cat > checks/check.sh <<'EOF'
+#!/bin/sh
+# Replace with your project's real check command.
+exit 0
+EOF
+chmod +x checks/check.sh
+git add checks/check.sh
+git commit -m "chore: add task-check probe script"
+----
+
 [[quickstart-plan]]
 === `wfc plan` preview
 
@@ -137,8 +167,11 @@ wfc plan ../wfc-scratch/task.md --repository . --scope src \
 ----
 
 `wfc plan` is entirely read-only: it writes nothing, runs no project command,
-and never touches Git. It prints the Commission bytes and execution envelope
-it *would* compile. `--guidance-path` defaults to resolving at the
+and never touches Git; `--evidence-argv sh --evidence-argv checks/check.sh`
+is not executed here -- it only names the check script you committed above,
+which `wfc run` below will actually run. It prints the Commission bytes and
+execution envelope it *would* compile. `--guidance-path` defaults to
+resolving at the
 repository's current HEAD, which the `repository-policy.md` commit above
 already satisfies. Once the preview looks right, hand-author the equivalent
 Consumer Request YAML (the same fields, under `task:`, `scope:`, `personas:`,
@@ -165,11 +198,16 @@ wfc run --repository . --request ../wfc-scratch/request.yaml \
 caller uses. Pass `--executable claude` for a `claude_cli` configuration; the
 executable must match the configured adapter, and a Run uses exactly one
 adapter throughout. `wfc run` re-derives and prints the Commission and
-execution-envelope digests, requires the clean tree, commits the Commission,
-re-verifies it, launches the engine, waits, and prints `CLASSIFICATION:`/
-`MESSAGE:`/`RUN ID:`/`RUN STATUS:`/`END HEAD:`. *A non-zero exit code does not
-by itself mean failure* -- `awaiting_human` and other legitimate stops exit
-non-zero too; always read the printed classification. See
+execution-envelope digests, requires the clean tree, runs your check command
+as the baseline probe described in <<quickstart-request>> (refusing before
+any provider starts if that fails), commits the Commission, re-verifies it,
+launches the engine, waits, and prints `CLASSIFICATION:`/`MESSAGE:`/
+`RUN ID:`/`RUN STATUS:`/`END HEAD:`. *A non-zero exit code does not by itself
+mean failure* once the Run has actually launched -- `awaiting_human` and
+other legitimate stops exit non-zero too; always read the printed
+classification. A probe refusal is different: it happens before launch, is
+classified `refused_probe` (exit code 23), and still consumes this
+checkout's one lifecycle. See
 link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#launch[LAUNCH]
 for the full mechanics.
 
@@ -225,7 +263,11 @@ link:{operator-docs}/operator_manual/operator_manual.adoc[Operator Manual].
   same provider executable; mixing adapters within one Run is not supported.
 * *One evidence command.* A Commission declares exactly one trusted
   `task-check` command, with a timeout of at most 900 seconds; there is no
-  separate per-phase or per-Hop evidence command.
+  separate per-phase or per-Hop evidence command. The identical command also
+  runs, before `task-check` is ever reached, as a mandatory pre-launch
+  baseline probe (see <<quickstart-request>>); a non-zero exit, an
+  unresolvable executable, a timeout, or any tree mutation there refuses the
+  whole Run before any provider starts.
 * *Clean-tree and scope-ceiling rules.* The working tree must be completely
   clean at launch, and every scope path must equal, or sit strictly beneath,
   a path already named in `.wfc/config.yaml`'s `--scope-ceiling`; a
