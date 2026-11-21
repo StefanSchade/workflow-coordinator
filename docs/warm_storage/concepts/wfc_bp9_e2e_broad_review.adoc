@@ -1,0 +1,345 @@
+= BP9 fake-provider end-to-end acceptance test: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the BP9
+permanent fake-provider end-to-end acceptance test for WorkItem
+`WI-WFC-BETA1-BP9-FAKE-PROVIDER-E2E-001`. The current pass is *H002*; later
+passes are added above earlier ones and earlier passes are kept unedited.
+
+== Pass H002 (current)
+
+WorkItem:: `WI-WFC-BETA1-BP9-FAKE-PROVIDER-E2E-001`
+Hop:: `H002` (`broad_review`, fresh independent adversarial reviewer, gate,
+blocking-only, `finding_authority: [resolve]`)
+Reviewed product:: the whole candidate at review base HEAD
+`867bd56459f876f29416bff3fe5adfa49fa9f4bc`, i.e. the full Run range
+`83c2044..867bd56` (3 added leaves, +774/-0):
+`tests/integration/test_beta_e2e_fake_provider.py` (8 collected tests
+across the five required scenario groups), `tests/fixtures/bp9/wfc_entry.py`
+(the `wfc` console-script body, runnable without a pip install) and
+`tests/fixtures/bp9/scripted_provider.py` (a per-Hop scriptable
+codex-CLI-protocol fake provider).
+Governing acceptance:: the Commission task for this WorkItem (scenario
+groups (a)-(e), the mutation-sensitivity and hermeticity requirements, the
+docstring-honesty requirement, the withheld authority) together with
+`docs/backlog/beta1_execution_plan.adoc` section
+"BP9 -- `wfc-beta1-bp9-beta-gate-001`" (Goal, Modules/paths, Acceptance,
+Tests/evidence) and `docs/backlog/beta1_productization.adoc` section BP9
+(Acceptance direction).
+Disposition:: *Changes required.* One blocking Finding, in scenario group
+(a) only. Everything else holds and holds well: the five scenario groups are
+real, they drive the real reducer, engine, trusted-commit and archive code
+on a genuinely non-Python consumer repository, each one is empirically
+mutation-sensitive (I reproduced eight separate product mutations, below,
+rather than trusting the Worker's account), the suite is hermetic and fast
+(~11 s, 8 tests), and no product source file, existing fixture or existing
+test was touched. What is wrong is bounded and factual: the happy-path
+scenario never invokes `wfc audit`, although the task's scenario (a)
+enumerates it, and the test function name and the module docstring both
+state that it does.
+Finding state:: the Run carries no authoritative Finding at the start of
+this pass; this Hop proposes one new blocking Finding and disposes nothing.
+
+The only repository change proposed by this Hop is this artifact. No
+implementation, test, fixture, backlog record, governance file, Run state or
+Evidence content was modified, and the reviewer made no Git write.
+
+=== Method (H002)
+
+Six passes, deliberately not organised around the Worker's own account.
+
+. *Acceptance pass.* The two backlog sections were read first and the task's
+  scenario list was turned into an explicit checklist, then each item was
+  traced to the line of the candidate that satisfies it. This pass produced
+  the one blocking Finding.
+. *Scope pass.* `git show --stat 867bd56` and `git status` confirm exactly
+  three new leaves, all inside the authorized scope: nothing under `src/`,
+  `tests/fixtures/bp4`, any other existing fixture, any existing test,
+  `governance/`, `docs/backlog/` or `.wfc`. The withheld authority is
+  respected (no product mechanism, no live provider, no network, no
+  promotion or tag).
+. *Execution pass.* The candidate file was run as committed: 8 passed. A
+  whole-suite collection (`pytest -q --collect-only`, which conftest treats
+  as inert) reports `tests/integration/test_beta_e2e_fake_provider.py: 8`,
+  so the new tests are selected by the required-mode command and carry no
+  skip marker, no `historical_governance` marker and no partial-mode
+  dependency. `ruff check` on all three new leaves passes.
+. *Mutation pass.* Eight product mutations were applied to a throwaway copy
+  of the tree (never to the reviewed checkout) and the whole candidate file
+  re-run against each. Results in the next section.
+. *Honesty pass.* Every claim in the module docstring and in each per-test
+  mutation comment was checked against what the code actually does: which
+  layer runs as a subprocess, which runs in process, which seams are
+  private, what the fake provider really is, and whether the file ever
+  implies a live result. One claim is false (the blocking Finding); the rest
+  are accurate.
+. *Hermeticity pass.* `HOME`, `XDG_STATE_HOME` and the absent
+  `XDG_DATA_HOME` were traced into the engine's own state-root resolution
+  (observed `STATE ROOT:` lines land under the per-test `tmp_path`), the
+  consumer and Evidence repositories are both created under `tmp_path`, the
+  provider script and its cursor file live under `tmp_path`, and the
+  reviewed checkout is unchanged after repeated runs. No test reaches the
+  network; no real provider is launched anywhere.
+
+=== Mutation sensitivity, reproduced independently (H002)
+
+Each row is a single-point mutation of product source in a throwaway copy,
+followed by a full run of the candidate file. "kills" means at least one
+test failed; the parenthesis names which.
+
+. *`reducer._finding_operation`* `(OPEN, RESOLVED) -> "residual"` -- kills
+  (b) `test_robust_v1_correction_and_review_cycle...`. Confirms the Worker's
+  own claim for the correction/review cycle.
+. *Both Hop-ceiling guards* (`reducer.py` `invocation_needed and hop_used >=
+  hop_limit` and the `RouteEffect.GOTO` guard) raised by 5 -- kills (c)
+  `test_hop_ceiling_stop...`. Mutating *either* guard alone is survived,
+  because the product carries two independent ceiling checks for the route
+  this scenario takes; that is product redundancy, not test weakness, and is
+  recorded as a non-blocking observation.
+. *`reducer`'s `requires_human`/`escalation` stop* (both call sites
+  disabled) -- kills (c) `test_human_required_stop...`.
+. *`postrun.run_pending_postrun`* forced to `absent` (the automatic archive
+  never runs) -- kills (a), (b) and (d).
+. *`archive._resume_or_noop_kept_raw`'s* `_path_is_tracked_clean`
+  already-committed no-op branch disabled -- kills (d)
+  `test_archive_retry_after_interrupted_archive...`. (The same mutation in
+  the non-retention-aware branch is survived, because `local` retention --
+  the default this scenario runs under -- never reaches that branch.)
+. *`reducer.require_reconcile`'s* `RunStatus.RECONCILE_REQUIRED -> COMPLETED`, i.e.
+  an uncertain Hop reported as success -- kills both (e)
+  `test_malformed_provider_output_is_never_accepted` cases.
+. *`lifecycle`'s baseline-probe refusal* on a non-zero exit disabled --
+  kills (e) `test_failing_evidence_command_refuses_before_any_provider...`.
+. *`vertical`'s trusted-commit boundary* skipped entirely (CommitIntent
+  silently ignored) -- kills (b), (c) ceiling and (d). This is the one check
+  the happy path (a) does *not* catch; see non-blocking observation 1.
+
+=== What was verified and holds (H002)
+
+*The consumer repository is genuinely non-Python and genuinely fresh.*
+`_seed_repository` does a real `git init` in `tmp_path`, commits
+`GUIDANCE.md`, `src/app.txt`, `docs/reviews/` and a shell evidence command
+`checks/check.sh`, and asserts both `not list(repo.rglob("*.py"))` and the
+absence of `pyproject.toml`. The Consumer Config is produced by the real
+`wfc init` and committed before any Run, as the product requires. Evidence
+is always `sh checks/check.sh`, never a Python command.
+
+*The fake provider really speaks the adapter protocol.* `scripted_provider.py`
+consumes the same invocation shape and writes the same single-envelope
+`--output-last-message` payload as the untouched
+`tests/fixtures/bp4/fake_provider.py`, and adds only test-side scripting:
+an ordered JSON step list with an on-disk cursor, a `phase=` assertion per
+step, optional file writes, the two malformed modes, a `__OPEN__`
+placeholder resolved from the prompt's own `[context]` Finding line, and a
+Conventional-Commit subject assembled from the Hop's real
+`work_item_id`/`hop_id`. It renames one family-neutral `disposition` key to
+`status`/`verdict`/`outcome` according to the real `output_contract` header,
+so the script cannot silently diverge from the contract the engine selected.
+Nothing in it emulates reducer, engine, commit or archive behavior.
+
+*Scenario (a) is a real black-box `--yes` path.* `wfc init`, `wfc plan`,
+`wfc run --yes`, `wfc status` and `wfc report` each run as separate real
+subprocesses through the console-script body; the inner engine re-entry
+resolves `wfc` through a `PATH` wrapper, which is the only way to make
+`shutil.which("wfc")` succeed inside a genuinely separate subprocess without
+a pip install, and the helper says so. The preview assertion is strong:
+`plan` prints "nothing was run or written by this preview" *and*
+`.wfc/commissions` does not exist afterwards. The archive assertions check
+the real Evidence repository: `audit.json` exists at the attempt identity
+computed by the product's own `_attempt_identity`, `wfc status` reports
+`ARCHIVE: result`, and the Evidence repository is clean after the archive
+commit.
+
+*Scenario (b) is a real five-Hop robust@v1 cycle.* implement ->
+`broad_review` opening a blocking Finding -> `correct` -> `focused_review`
+resolving it and requesting `renew_broad_review` -> a renewed `broad_review`
+that completes. The assertions are on authoritative state, not on provider
+text: `hop_used == 5`, `anomalies == []`, exactly one Finding, `resolved`,
+`introduced_by_hop == "H002"`, `changed_by_hop == "H004"` (so the resolve
+really happened at the focused review, not at the renewed broad review), and
+the archived `audit.json` Finding projection matches field for field. The
+renewed-broad-review constraint the program documents is exercised, not
+worked around.
+
+*Scenario (c) never reports a stop as success.* Both tests assert the
+classification, the product's own exit code (`11` budget, `10` human) and
+explicitly `!= "completed"`; the human-required test additionally checks
+`run.json`'s `semantic_stop.kind == "scope"`, so the stop is the escalation
+the provider raised and not an unrelated stop.
+
+*Scenario (d) is the proven interruption shape.* The test reaches the exact
+state a crash between the archive commit and the `ext.archive.result`
+journal record leaves -- it commits the archive through `archive.archive_run`
+directly and asserts no archive fact of any kind is journaled -- then lets
+`wfc resume`'s real postrun step retry. It then checks all three properties
+the task asks for: byte-identical `audit.json` *and* `manifest.json`,
+`git rev-list --count HEAD` unchanged, and exactly one `ext.archive.result`
+fact whose outcome is `no_op`.
+
+*Scenario (e) refuses and stops fail-closed.* The failing-evidence test
+asserts the `refused_probe` classification, that the consumer `HEAD` did not
+move (no Commission commit), that no attempt directory exists (no provider
+ran) and that the Evidence repository still has only `wfc init`'s own
+commit. The malformed-provider test is parametrized over a non-JSON payload
+and a schema-violating envelope, and asserts `reconcile_required`, exit
+`12`, `hops[0].outcome == "uncertain"` and `hops[0].actual_commits == []`.
+
+*The docstring is honest about the one thing that matters most.* It states
+in its first paragraph that this is not live Beta qualification, that every
+provider call is answered by a scripted fixture, that no conclusion about a
+real adapter may be drawn, and that the live per-adapter qualification and
+the Claude record reconciliation are maintainer-owned and not attempted
+here. That is exactly the "do not infer a live result from a fake provider"
+requirement of both backlog sections.
+
+*Proportion and separation.* Five groups, eight independent test functions,
+one regression cannot hide another, ~11 s wall clock for the file, no sleep,
+no retry loop, no network. The in-process seam is the same
+`L._ENGINE_COMMAND` override `tests/unit/test_postrun_lifecycle.py` already
+uses, and it is used here against the *real* engine rather than that test's
+fake engine, so the candidate is strictly stronger than the pattern it
+reuses.
+
+=== Blocking Finding 1 -- scenario (a) never runs `wfc audit`, but its name and the module docstring say it does
+
+The task's scenario (a) enumerates the commands the happy path must cover:
+"`wfc init`-style config, plan preview, `run` with `--yes` (the unattended,
+scripted path), `status`, `audit`, `report` and the automatic archive into a
+separate disposable Evidence repository". `audit` is a real Front Door
+command with its own argument parsing, its own refusal paths and its own
+exit codes (`frontdoor/cli.py:27-29` dispatching `frontdoor/audit.py:565`,
+which prints `AUDIT: <path>` and returns `0`, `2` or `3`).
+
+The candidate never invokes it. Every `audit` occurrence in
+`tests/integration/test_beta_e2e_fake_provider.py` is either the word in a
+name or comment, or a read of the `audit.json` file the *archive* path
+already wrote (lines 24, 215, 219, 224, 294-306, 387, 512, 523). The
+subprocess chain actually executed is `init`, `plan`, `run --yes`, `status`,
+`report`.
+
+Two statements in the candidate assert otherwise:
+
+* the test function name
+  `test_happy_path_cli_init_plan_run_yes_status_audit_report_archives_automatically`
+  (line 219) and its mutation comment "anywhere along the
+  init/plan/run/status/audit/report chain" (line 224);
+* the module docstring's scenario-(a) paragraph, "once as the outer CLI
+  (``init``/``plan``/``run --yes``/``status``/``audit``/``report``)"
+  (lines 22-24), under a heading that promises to say exactly which parts
+  are real.
+
+So this is both an uncovered item of an explicit acceptance criterion and a
+false statement in a *permanent* acceptance test's own name and docstring --
+the artifact a maintainer will read as the record of what BP9's automated
+part proves. The task names docstring honesty as an acceptance criterion in
+its own right, and `audit` is not a formality here: it is the command the
+Operator Manual's recovery path uses to project an Attempt by hand.
+
+I checked that this is a real omission and not a missing product mechanism,
+because the task requires reporting a gap rather than inventing a mechanism:
+
+* `wfc audit <attempt-dir>` on the already-archived attempt exits `2` with
+  "refusing to overwrite existing audit.json with different content". That
+  is correct, fail-closed product behavior: the postrun projection is
+  written *with* lifecycle facts (`postrun.py:221`,
+  `{"classification": ..., "preservation": ...}`) and a bare CLI call
+  supplies none, so the projections legitimately differ.
+* `wfc audit <attempt-dir> --lifecycle-json <facts>` with those same facts
+  exits `0`, prints `AUDIT: <path>`, reproduces the archived `audit.json`
+  byte for byte and leaves the Evidence repository clean. I reproduced this
+  in a throwaway copy of the candidate as a four-line addition to scenario
+  (a); it passed, and the rest of the file still passed.
+
+*Correction shape (bounded, any one of these):*
+
+. Add the real invocation to scenario (a): write the lifecycle facts to a
+  file under `tmp_path`, run `wfc audit <attempt-dir> --lifecycle-json ...`
+  as a subprocess, and assert exit `0`, the printed `AUDIT:` line, the
+  byte-identical `audit.json` and a still-clean Evidence repository. This
+  also kills a new mutation (a lifecycle-aware projection that is not
+  reproducible from the placed manifest), so it strengthens the group.
+. Or cover both faces: the bare call's honest `2` refusal *and* one
+  successful `--lifecycle-json` projection, which additionally documents the
+  manual-projection contract an operator meets in recovery.
+. Or, if the maintainer prefers the scenario to stay a pure black-box
+  success path, drop `audit` from the test name, the mutation comment and
+  the docstring chain, and state plainly in the docstring that `wfc audit`
+  is deliberately not part of this scenario and why -- but note that this
+  leaves an enumerated acceptance item uncovered and is therefore a
+  maintainer decision, not a Worker one.
+
+The first shape is the one I verified end to end.
+
+=== Non-blocking observations (H002; recorded only, no Finding proposed)
+
+. *The happy path's "commits" assertion is weaker than it looks.* Lines
+  304-306 assert only that the `commits` line of `wfc report` does not
+  contain "none". With the trusted-commit boundary disabled entirely
+  (mutation 8 above) scenario (a) still passes, because the line then shows
+  the Commission commit. The property is covered by (b), (c) and (d), so
+  nothing is lost; a direct assertion that the provider's `src/app.txt`
+  change is present in the consumer `HEAD` tree, or that
+  `hops[0].actual_commits` has exactly one entry with the expected subject,
+  would make (a) carry its own weight and would simplify the expression.
+. *The Hop-ceiling scenario is protected by two product guards.* Only
+  mutating both `reducer.py` ceiling checks together makes
+  `test_hop_ceiling_stop...` fail. The test is sensitive to the mechanism;
+  the redundancy is in the product. Worth knowing before anyone reads a
+  surviving single-guard mutation as a test defect.
+. *`_attempt_dir(evidence_path, repo, run_id)` ignores its `repo`
+  argument* (line 208) and relies on the `repository_name="consumer-repo"`
+  default, which happens to match `_seed_repository`'s default. A second
+  consumer repository name would silently compute the wrong attempt path.
+  Either use `repo.name` or drop the unused parameter.
+. *The docstring's (b)-(e) sentence is slightly broader than the code.*
+  Scenario (d) drives `L._prepare_checkout`/`L._authorize`/`L._advance`
+  before `resume_lifecycle`, and scenario (e)'s first case expects
+  `LifecycleError` out of `run_lifecycle`; the docstring names only
+  `run_lifecycle`/`resume_lifecycle`. One clause naming the private
+  prepare/advance seam, which is what makes the interruption simulation
+  possible, would complete an otherwise exemplary "what is real" section.
+. *`os.environ` is mutated directly* for `WFC_BP9_SCRIPT` in the in-process
+  tests (always under `try`/`finally`) rather than through `monkeypatch`.
+  This matches `tests/unit/test_postrun_lifecycle.py`'s existing style, so
+  it is consistent; `monkeypatch.setenv` would be leak-proof even on a hard
+  interruption.
+. *Scenario (c) checks classifications and exit codes but not the operator
+  text.* Neither stop test looks at what `wfc status`/`wfc report` *print*.
+  The reporting layer has its own honesty rules (`report.py:147-148`,
+  "status is unknown -- not reported as success"), and a one-line assertion
+  that the stop classification appears in a rendered report would close the
+  "reported honestly" half of the requirement at the layer a user sees.
+. *The quickstart document and the live/installed-wheel qualification named
+  by BP9 are untouched, correctly.* The Commission scopes only the
+  automated fake-provider part; the backlog's Goal/Acceptance items for the
+  two-page quickstart, the per-adapter live qualification and the Claude
+  record reconciliation remain open and maintainer-owned. BP9 is not closed
+  by this candidate and the candidate does not claim otherwise.
+
+=== Evidence and agent-local limitation (H002)
+
+Agent-side verification used read-only Git inspection, source reading,
+`ruff check`, whole-suite `--collect-only`, repeated execution of the
+candidate file in explicit partial mode, and eight single-point product
+mutations applied to a throwaway copy of the tree outside the reviewed
+checkout. The reviewed worktree was never modified; `git status` is
+unchanged apart from pre-existing untracked dotfiles.
+
+The required-mode suite (`python -m pytest -q` with
+`WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`) could *not* be executed here: the
+verified offline wheel bundle is not reachable from this sandbox, and
+`conftest.py` correctly fails configuration rather than skipping or
+reaching for an index. The structural precondition was therefore proved
+instead -- an inert whole-suite collection selects all 8 new tests, with no
+marker and no partial-mode dependency -- and the authoritative answer
+remains the Coordinator's own `task-check` for this Hop. Separately,
+`tests/unit/test_claude_adapter_conformance.py` fails 12 tests in this
+sandbox with `OSError: [Errno 30] Read-only file system` while creating the
+adapter's short `/tmp` scratch symlink; that is this sandbox's filesystem
+policy, is unrelated to the candidate (which touches no adapter code) and is
+not reported as a defect. `pytest` is not importable by the system
+interpreter; a pre-existing virtual environment reachable from this sandbox
+was used, and no dependency was downloaded. None of these limitations
+affects the blocking Finding, which is reproducible by reading the candidate
+and was additionally confirmed by executing the corrected shape.
