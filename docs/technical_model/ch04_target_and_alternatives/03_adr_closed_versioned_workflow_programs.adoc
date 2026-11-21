@@ -1,0 +1,472 @@
+ifndef::assembled[]
+= WFC Technical Model
+:toc:
+:tech-docs: ../..
+endif::[]
+
+[[adr-closed-versioned-programs]]
+== ADR: closed, versioned workflow programs on a generic kernel
+
+[IMPORTANT]
+====
+The two preceding sections record target hypotheses and open archaeology
+questions. This section differs in standing: it records *accepted maintainer
+decisions*, taken 2026-11-21, on workflow generality and on the result,
+lifecycle and phase-entry questions that waited on it. It decides architecture
+only. It authorizes no implementation beyond the one Commission named in
+<<adr-ad4>>, flips no record's `Status::` line, and is not a release
+commitment.
+====
+
+Decided:: 2026-11-21, by the maintainer, as AD-1 to AD-6 below.
+Inputs:: link:{tech-docs}/backlog/ROADMAP-POST-BETA-TO-RELEASE-BRIEF.adoc[The post-Beta brief]
+sections 3.1-3.4 and
+link:{tech-docs}/backlog/postbeta_plan_p1_adr_and_hardening.adoc[the P1 plan]
+sections 3, 6 and 7. Both are dated planning inputs and carry no authority.
+Where a decision below departs from the plan's recommendation -- AD-3 and AD-6
+do -- the decision governs and says so.
+Verified against:: every repository statement in this section was read at base
+HEAD `7e08970`. Line numbers belong to that HEAD; where they drift, the named
+symbol governs.
+
+[cols="1,3,2",options="header"]
+|===
+|# |Decision |Named rejected alternative
+
+|<<adr-ad1,AD-1>>
+|Closed, product-owned, versioned programs on a generic kernel (the brief's
+alternative C). A consumer cannot define workflow topology outside a WFC
+release.
+|A, a consumer-configurable workflow engine; also B, entirely hard-coded
+programs.
+
+|<<adr-ad2,AD-2>>
+|`direct@v1` is unsupported and retained as historical material.
+|Removal; also supporting it after repairing its `verification` phase.
+
+|<<adr-ad3,AD-3>>
+|The Python literal in the compiler is the authoritative source now; a single
+packaged declarative program resource is the target, without an immediate
+migration.
+|Making the catalogue YAML authoritative now; also keeping both copies with an
+equivalence test (the plan's recommendation).
+
+|<<adr-ad4,AD-4>>
+|Phase-authority-scoped result contracts for the current contract versions: the
+`findings` surface is narrowed from the admitted phase's own `finding_authority`,
+derived declaratively. Hardening Commission H1 is authorized on the conditions
+stated below.
+|Narrowing every contract version including the replayed historical ones; also
+relying on prompt projection plus the reducer alone.
+
+|<<adr-ad5,AD-5>>
+|One Run per checkout stays for now; it is the Beta contract. Controlled
+rotation belongs to a later lifecycle revision.
+|Adding controlled rotation now; also declaring one Run per checkout permanent.
+
+|<<adr-ad6,AD-6>>
+|A validated non-default start phase is a *desired* capability; implementation
+is deferred and hardening Commission H4 is *not* authorized.
+|Entry derived from the request's shape; also closing the question with
+`implement`-only as the permanent contract.
+|===
+
+[[adr-ad1]]
+=== AD-1 The workflow-generality contract
+
+Decision:: WFC's public product contract is *closed, product-owned, versioned
+workflow programs on a generic execution kernel*. A consumer selects a program
+revision the product offers and supplies task inputs, scope, personas, a hop
+limit, one evidence command and its own pinned repository-policy guidance; it
+does not define phases, routes, Finding authorities or result schemas. New
+program families ship in a WFC release with their own code, tests, evidence and
+independent review.
+
+Reason:: This is what the product already is on the consumer path
+(`commissioning._consumer_program_template`, `commissioning.py:215-235`), and
+the kernel is already generic underneath it: `workflow_profile_from_yaml`
+(`serialization.py:670-719`) iterates the declared `phases` mapping without
+inspecting any key, and the reducer derives Finding authority from the phase's
+own `review` block rather than from its name (`reducer.py:1693-1703`). The
+openness that alternative A would add is unexercised -- across the 126 archived
+Beta Hops only four phase kinds ever ran -- while the cost of a contract broader
+than the admitted authority is measured: four of the 32 archived Runs stopped
+with `invalid_finding_delta`, and those four Runs consumed 13 of the 126 Hops
+(link:{tech-docs}/backlog/postbeta_plan_p1_adr_and_hardening.adoc#run-facts[P1
+plan, Run facts]).
+
+Rejected:: *A, a consumer-configurable workflow engine*: it would make every
+fail-closed check defend an open-ended input space, and would make the AD-4
+narrowing unbounded, for a benefit no Run has needed. *B, entirely hard-coded
+programs*: it would duplicate the reducer, evidence, recovery and archive
+machinery that 18 completed Runs exercise once, and would discard a kernel that
+is already data-driven.
+
+Architecture goal:: New workflow programs should arrive as *additional
+declarative program definitions inside a WFC release*, with no kernel change,
+as long as they use the semantic mechanisms the kernel already has. Total
+ignorance of concrete phase names in the kernel is not an end in itself, and the
+kernel is in any case already there: no phase name appears in it, the only such
+literals in `src/` being two artifact keys in the Front Door request parser. What
+matters is practical extensibility, and the practical obstacle is the compiler
+and Front Door tables in <<adr-ad1-boundary>>, not the kernel.
+
+Task domain:: Closing the topology does not close the task domain. Neither
+shipped program record names a language, test framework or software artifact; the
+kernel's
+domain assumptions are a Git repository, repository-relative scopes and evidence
+commands given as `argv` (`commissioning.py:360-362`). WFC therefore stays
+generic at the task level and remains suitable for non-software work.
+
+Complexity and maintainability:: This decision adds no mechanism; it declines
+one -- a public program DSL with its validation, migration and security surface.
+It accepts a release-cadence cost instead: a new program family is release work,
+not consumer configuration. Maintainability improves where it matters, because
+the surface a foreign consumer can reach stays enumerable: 2 offered programs, 5
+phase definitions, 7 route edges over 5 distinct route names, and
+`finding_authority` drawn only from `()` and `('resolve',)`
+(`commissioning.py:138-153`). The burden it leaves open is that per-program
+knowledge lives in two independent places, which is the next thing to simplify,
+not a reason to reopen the contract.
+
+[[adr-ad1-boundary]]
+==== The extension boundary as the code actually draws it
+
+[cols="1,3",options="header"]
+|===
+|Layer |What it holds today
+
+|Declarative, kernel reads it generically
+|A program revision is one data record: arbitrary phase keys, role, components,
+`durable_artifact`, `authorized_actions`, `human_gates`, evidence references, the
+route graph with its effects, and the whole `review` block including `authority`,
+`breadth`, `context`, `blocking_policy`, `finding_authority` and
+`failed_evidence_route` (`serialization.py:670-719`, with the shipped records at
+`commissioning.py:130-155`). Mechanisms the kernel already admits declaratively
+and *neither shipped program uses* include convergence roles and the profile v3
+`convergence` block (`model.py:58-66`, `serialization.py:691-714`), advisory
+review (`model.py:39-41`), the `await_human`, `suspend_for_prerequisite` and
+`stop` route effects (`model.py:118-123`) and optional durable artifacts
+(`model.py:33-36`). The only phase-name literals anywhere in `src/` are the two
+`robust@v1` artifact keys at `frontdoor/request.py:27`.
+
+|Compiler and Front Door code, not declarative
+|The two program records are Python literals (`_robust_template`,
+`_simple_template`, `commissioning.py:130-155`) selected by an explicit
+`(program_id, revision)` branch (`:224-231`). A second per-program table sits in
+the request parser -- `_SUPPORTED_PROGRAMS`, `_REQUIRED_PERSONAS` and
+`_REQUIRED_ARTIFACTS` (`frontdoor/request.py:20-28`), enforced at `:99-100`,
+`:129` and `:146-152` -- so the per-program durable-artifact keys are hard-coded
+there, while `compile_commission` derives the same set declaratively from the
+template (`commissioning.py:287-296`); the two must be kept in step by hand. Role
+and modifier components resolve through the fixed map `_CONSUMER_ROLE_RESOURCES`
+(`:191-195`) to packaged files that are digest-checked on every read
+(`:199-212`). Evidence is literal: exactly one evidence profile is required
+(`:284-285`) and the rendered policy defines exactly one command, `task-check`
+(`:360-362`), while admission refuses any phase-referenced evidence name the
+policy does not define (`operator.py:231-234`). Each phase's scope is resolved by
+a literal `"S"` branch with everything else taking the artifact scope
+(`:341-350`), and the program record's own `scope_slot`/`artifact_scope_slot`
+keys (`:135`, `:150`) are read nowhere in `src/` or `tests/`. The rendered
+profile is `schema_version: 2` (`:352`), so the compiler cannot emit the v3
+`convergence` block the kernel parses. The entry phase is the literal
+`"initial_phase": "implement"` (`:367`) and the policy action ceiling the literal
+`[edit, commit, review]` (`:359`).
+
+|What a new program would still require
+|A template function plus a branch in `_consumer_program_template`, and three
+entries in `frontdoor/request.py`. Phases, routes, review authority and Finding
+authority require nothing further. Beyond that, a program needing more than one
+evidence command, another scope slot, a convergence protocol or a non-default
+entry phase needs compiler changes in exactly the places named above -- which is
+why a later implementation must *explicitly check* whether its new workflow can
+be delivered without additional hard-coded compiler logic, and report the answer
+rather than assume it.
+|===
+
+[[adr-ad2]]
+=== AD-2 The status of `direct@v1`
+
+Decision:: `direct@v1` is *unsupported*, and is *retained* as historical
+material. It is not offered on any consumer path and nothing under `governance/`
+is touched.
+
+Reason:: Its `verification` phase is a gate that can open a blocking Finding and
+can never disposition one: `role: worker`, `authorized_actions: [review]`,
+`review.authority: gate`, `finding_authority: []`, routes `accept` and
+`correction` (`governance/workflow-programs/direct/v1.yaml`). That shape stopped
+a real Run with `completion_blocked_by_open_blocking_findings`
+(`reducer.py:1168`), recorded in
+link:{tech-docs}/backlog/BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc[the
+gate-authority BUG]. It is already withheld from the consumer compiler
+(`commissioning.py:218`, `:224-231`) and from the request parser
+(`frontdoor/request.py:20`), and no archived Beta Run used it. Retaining it keeps
+the two rendered bundles that pin it readable --
+`governance/commissions/fd0-direct-v1-quickstart-001/` and
+`governance/commissions/wfc-fd08-scratch-investigation-001/`, both carrying
+`program_id=direct`/`program_revision=v1` and both naming
+`governance/workflow-programs/direct/v1.yaml` in their `render-manifest.json`.
+
+Rejected:: *Removal*: it would leave those two rendered bundles pinning a
+missing program, discard the FD-08 evidence, and edit `governance/`, which is
+maintainer-only. *Supporting it after repairing the `verification` phase*: it
+would add a third supported program, and a real fix, in front of every release
+claim, for a program nothing uses.
+
+Complexity and maintainability:: The cheapest of the three: no code, one status
+statement. The residual cost is that an unsupported, known-defective program
+record stays in the tree and could be mistaken for an offer; that risk is bounded
+because both independent program tables already refuse it, and because this
+section is now the place that says so.
+
+[[adr-ad3]]
+=== AD-3 The source of truth for a closed program revision
+
+Decision:: The *Python literal in the compiler* (`_robust_template`,
+`_simple_template`, `commissioning.py:130-155`) is the authoritative definition
+of `robust@v1` and `simple@v1` today. A *single packaged declarative program
+resource* -- the plan's option (b) -- is the target architecture, with *no
+immediate migration*. No equivalence test between the catalogue YAML and the code
+is required.
+
+Reason:: The product does not read `governance/workflow-programs` at all. At base
+HEAD `7e08970`, searching `src/` and `tests/` for `workflow-programs` returns
+nothing; the string occurs only inside `governance/` itself and in `docs/`. The
+word `governance` appears in `src/` only as a consumer-configured
+`governance_dir` (default `.wfc/governance`, `frontdoor/init.py:31`) and as the
+policy's `governance_paths`; no source path names
+`governance/workflow-programs`, `governance/self-development` or
+`governance/commissions`. The packaged resource set contains no program
+definition either -- it is `resources/agent_operating_contract_v6.txt` and
+`resources/roles/{worker,reviewer,simple-self-check}.txt`. The catalogue YAML is
+therefore historical material, and an equivalence test would pin a copy nothing
+loads. Option (b) remains the honest target because an installed wheel has no
+`governance/` tree, and the mechanism already exists: packaged resources are
+digest-checked on every read against `implementation_identity.RESOURCE_DIGESTS`
+(`commissioning.py:199-212`).
+
+Rejected:: *Making the catalogue YAML authoritative now*: it changes the packaged
+resource set and therefore the implementation identity, for no current benefit.
+*Keeping both copies with an equivalence test* -- the plan's recommendation, and
+the point where this decision departs from it: the test would defend a
+consistency the product does not depend on. Both records currently do agree field
+for field apart from the YAML's `source` provenance key, but nothing enforces
+that and, under this decision, nothing needs to.
+
+Complexity and maintainability:: Deciding this way removes work rather than
+adding it: no new test, no new resource, no identity change now. Two maintenance
+facts remain open and are stated rather than fixed. First, a third copy of each
+program lives in the test suite:
+`test_consumer_compile_robust_matches_v1_apart_from_guidance_and_component_paths`
+(`tests/unit/test_consumer_compiler.py:215`) asserts against its own in-test
+literal (`:225-230`, and `:198-210` for `simple@v1`), not against the `v1.yaml`
+its name implies -- a misleading name to correct at the next authorized touch of
+that file. Second, when the migration to a packaged resource happens, it should
+also collapse the two per-program tables of <<adr-ad1-boundary>> into one, which
+is the simplification AD-1 leaves open.
+
+[[adr-ad4]]
+=== AD-4 Phase-authority-scoped result contracts
+
+Decision:: The projected result contract *narrows the `findings` surface from the
+admitted phase's own `finding_authority`* for the *current* contract versions.
+The narrowing is derived declaratively from admitted configuration, with no
+hard-coded phase name and no new state mechanism. Historical replay contracts
+stay intact. On this basis the maintainer authorizes hardening Commission *H1*
+(link:{tech-docs}/backlog/postbeta_plan_p1_adr_and_hardening.adoc#h1[P1 plan,
+H1]), with the condition stated below.
+
+Reason:: The projection narrows the route surface already but not the Finding
+surface: `requested_route` is the exact enum of the current phase's permitted
+routes (`structured_result_schema.py:94`), while the `findings` item is an
+unconditional `anyOf` over every delta shape (`:81`, `:83`) whose
+`proposed_state` offers the complete `FindingState` enum (`:49`) and whose v3
+transition offers all four targets (`:74-77`); `projected_result_schema`
+(`:143-145`) receives the contract kind, the version and the permitted routes,
+but never the authority. The authority is projected to the model as prose
+(`prompt.py:140`, `:154`) and enforced by the reducer (`reducer.py:1693-1725`),
+which is defence in depth and stays that way -- but a *foreign consumer must not
+have to depend on the discipline of an Operator's task wording* for a structurally
+unauthorized operation to be unexpressible. The apparent disappearance of
+Finding-authority stops after task wording improved is not evidence that prose
+suffices: it is confounded by model choice and by changed tasks in the same
+period. A natural seam exists: `model.select_result_contract`
+(`model.py:679-708`) already assembles `phase.review.finding_authority` into its
+documented selection key (`:692-699`, authority at `:695`), although the current
+mapping branches only on role, review presence and convergence role
+(`:700-708`); its two callers are `vertical.py:301` and `reducer.py:1558`, and
+both adapters build the envelope through one function
+(`codex_adapter.py:311`, `claude_adapter.py:236`).
+
+Rejected:: *Narrowing every contract version*, including the replayed historical
+ones: Finding-delta enforcement is already duplicated per version --
+`_apply_finding_deltas` (`reducer.py:525`) dispatches on `result_schema_version`
+to `_apply_legacy_finding_deltas` (`:566`), `_apply_v2_finding_deltas` (`:674`)
+and `_apply_v3_finding_deltas` (`:902`) -- so each added degree of freedom costs
+three enforcement sites, and narrowing the archived versions risks the
+historical reconstructability that `tests/architecture/test_replays.py` exists to
+protect. *Relying on prompt projection plus the reducer alone*: it leaves the
+maintainer's own 2026-11-19 activation of this design unimplemented and leaves the
+stop class in place.
+
+Condition on H1:: H1 narrows a projection. It does not change reducer behavior,
+add a `FindingState`, a Finding operation or an authority kind, touch any program
+definition, or put a phase name in product code. If the narrowing turns out
+*materially more complex than planned*, the work escalates with a traceable
+assessment of alternatives, rather than adding a mechanism to make the plan fit.
+
+Complexity and maintainability:: Net simplification of the contract and a small
+net addition of code. One derived value reaches an existing projection seam, and
+the three layers stay distinct: the prompt advises, the schema prevents what it
+can, the reducer decides. The honest cost is that the projection becomes
+authority-dependent, so the adapter conformance tests must assert both the
+narrowed and the unnarrowed case, and that the current-versions-only boundary is
+one more version distinction to remember in a module that already has three.
+
+[[adr-ad5]]
+=== AD-5 The lifecycle model: one Run per checkout
+
+Decision:: *One Run per canonical checkout* stays for now and is stated as the
+Beta contract. Controlled rotation after a terminal, archived, Evidence-verified
+lifecycle belongs to a later lifecycle revision, and the five design constraints
+of
+link:{tech-docs}/backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc[FTR-WFC-LIFECYCLE-ROTATION]
+are the entry conditions for it.
+
+Reason:: The invariant is strong and simple, and that is its benefit: one
+checkout hosts one Run, so archive lookup per checkout is unambiguous and a
+second Run cannot be masked by the first -- a property the BP6c review relies on.
+Mechanically, any `authorized` journal record makes a later `wfc run` fail
+`refused_active_lifecycle` with exit 26 (`frontdoor/lifecycle.py:741-752`,
+`:125`), whatever terminal classification and verified archive follow it. The
+operational friction is real but it has recurred once, and the workaround is
+documented: one fresh clone or worktree per Run at the same relative Evidence
+location
+(link:{tech-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-checkout-rotation[Operator
+Manual, one fresh checkout per Run]). The preferred way to reduce that friction
+later is *automated worktree or branch creation and controlled cleanup at the
+Front Door*, not a looser kernel invariant.
+
+Rejected:: *Adding controlled rotation now*: it requires archive lookup to become
+Run-scoped, which the current reliance is the opposite of, so it is a design
+task, not a flag. *Declaring one Run per checkout permanent*: the friction is
+genuine and the capability is wanted; closing the question would be a decision
+the evidence does not support.
+
+Complexity and maintainability:: Deferring keeps the kernel's simplest lifecycle
+invariant and adds nothing. The cost is carried outside the kernel, as operator
+work per Run and as checkouts to clean up, which is the right place for it while
+the invariant is load-bearing. Any later revision must re-establish per-Run
+archive unambiguity before it relaxes anything -- that is why the five constraints
+are entry conditions and not wishes.
+
+[[adr-ad6]]
+=== AD-6 Program entry at a phase other than the default
+
+Decision:: A *validated start phase* is a *desired capability*, and its
+implementation is *deferred*. Hardening Commission *H4 is not authorized*. The
+capability is revisited after a renewed cost-benefit assessment.
+
+Desired shape:: An explicit request field selecting the entry phase, limited to
+phases the selected program itself declares *and* that can reach a terminal
+route, with the two negative constraints mandatory: an undeclared phase is
+refused, and a phase unreachable under the program's own routes is refused, so
+the field cannot create a Run that can never complete.
+
+Reason:: The gap is only in the renderer. The kernel already admits any declared
+phase as the entry -- `new_run()`'s only check is
+`work_item.initial_phase in profile.phases` (`model.py:908-909`), re-checked at
+`operator.py:429-430` -- while the compiler writes the literal
+`"initial_phase": "implement"` (`commissioning.py:367`). What defers it is that
+the current alternative works in practice: a fresh Commission entering at
+`implement` whose task *is* verification, followed by the program's own fresh
+independent review. Three final-assurance Commissions did exactly that, each a
+Worker verification Hop at `H001` (`implement`) plus an independent review --
+link:{tech-docs}/warm_storage/concepts/wfc_beta1_bp5_final_assurance_001_worker_verification.adoc[BP5],
+link:{tech-docs}/warm_storage/concepts/wfc_beta1_bp6b_final_assurance_001_worker_verification.adoc[BP6b]
+and
+link:{tech-docs}/warm_storage/concepts/wfc_postbeta_plan_p1_final_assurance_verification.adoc[the
+post-Beta P1 plan's own verification, performed twice]. A capability with a
+working substitute does not earn an 8-Hop Commission now. This is the second
+point where the decision departs from the plan, which recommended implementing
+the shape as H4.
+
+Rejected:: *Entry derived from the request's shape*: it makes the entry phase an
+inference rather than an authorization, and
+link:{tech-docs}/backlog/_open.adoc[the active-work manifest] (`:613-618`)
+adopts neither it nor a free initial-phase field, requiring the entry decision
+and successor tests first -- this is that entry decision, and it defers.
+*Closing the question with `implement`-only as the permanent contract*: the
+capability is genuinely wanted for independent re-review of an existing candidate,
+which is why it is recorded as desired rather than rejected.
+
+Complexity and maintainability:: Deferring costs the friction described in
+link:{tech-docs}/backlog/FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION.adoc[FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION]:
+a continuation of this shape must either be hand-authored outside the Front Door
+or re-expressed as an `implement`-entry verification Commission. Implementing it
+is bounded but not free -- one request field, the two negative tests, and the
+per-program reachability check, in the same compiler and Front Door code that
+AD-1 already names as the thing to simplify. Doing the simplification first is
+likely to make the field cheaper, which is one input to the renewed assessment.
+
+[[adr-statements]]
+=== Statements this decision owes
+
+Public configuration boundary:: A consumer supplies task text, repository-relative
+scope, durable-artifact paths, personas, a hop limit, one evidence command, a
+repository-policy guidance document pinned at its own source commit, and a choice
+from the product-owned program set. It does not supply phases, routes,
+Finding authorities, result schemas or an entry phase. The grammar enforces this
+by closure rather than by deny-listing names: the Consumer Request admits exactly
+twelve named fields and no optional ones, so any other key is refused outright
+(`frontdoor/request.py:108-115` with `commissioning._mapping`, `:76-88`), and the
+same holds for the per-repository Consumer Config
+(`frontdoor/config.py:137-145`). Execution bindings are not part of the
+Commission at all: they come from the config's `default_execution` and are
+resolved into a separate envelope with its own digest
+(`frontdoor/config.py:78-86`, `resolve_execution`), so changing a provider or
+model cannot change the Commission bytes.
+
+Generic kernel's retained purpose:: The kernel stays data-driven because that is
+what makes one reviewed enforcement path serve every program: admission,
+dispatch, the reducer, Finding identity, evidence and archive are written against
+the declared record, not against known phase names (`serialization.py:670-719`,
+`reducer.py:1693-1703`). Declarative internal implementation does not imply an
+open public DSL, and the reducer remains the authoritative fail-closed boundary
+against malformed or forged output, whatever the prompt or the schema did.
+
+Compatibility policy for historical material:: The 104 rendered Commission
+bundles under `governance/commissions/` and the 107 YAML files under
+`governance/self-development/` are *retained as history and are not offered as a
+surface*. Nothing in `src/` resolves either location by name, for the reason
+<<adr-ad3>> evidences. They were reachable only as explicit `--work-item`,
+`--profile` and `--policy` path arguments (`operator.py:287-289`), the route the
+retired self-development Harness used; the product Front Door compiles from
+package-owned resources instead. What is promised is retention and
+recoverability, not schema compatibility: the self-development
+archive is held to a YAML-syntax smoke check that skips when the directory is
+absent (`tests/architecture/test_historical_governance_parse.py`), the rendered
+bundles are re-parsed by no test at all, and
+`governance/workflow-programs/` by none either. Separately and bindingly, the
+*persisted Run and result contracts* stay replayable: a pinned Commission and an
+archived Run never silently change meaning, which is the limit AD-4 respects by
+leaving historical contract versions alone.
+
+Implication for the phase-scoped result-schema FTR:: AD-4 settles the design
+question that
+link:{tech-docs}/backlog/FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA.adoc[FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA]
+holds open, in the direction that record already describes -- derive the Finding
+surface from admitted configuration, keep the three layers distinct, change
+nothing in the reducer -- and authorizes H1 to implement it for the current
+contract versions only. The FTR's non-goals stand unchanged. Its `Status::` line
+is the maintainer's.
+
+Revisit triggers:: Three, each naming what would reopen which decision. *Opening
+topology to consumers* (AD-1): a consumer requirement that an offered program
+revision cannot express, where the gap is topology rather than task text or
+scope -- not a wish for configurability. *Lifecycle revision* (AD-5): recurring
+checkout friction that Front Door automation does not absorb, taken up only
+against the FTR's five design constraints. *Phase entry* (AD-6): a renewed
+cost-benefit assessment, which the `implement`-entry verification substitute
+ceasing to work would prompt. Nothing here is a schedule, and none of these
+triggers authorizes a Commission by itself.
