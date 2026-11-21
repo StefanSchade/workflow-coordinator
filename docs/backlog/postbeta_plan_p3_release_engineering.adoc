@@ -41,7 +41,7 @@ One disposition per element: *adopt* as is, *adapt* (justified deviation),
 the version from the tag is why the reference needs `fetch-depth: 0` and why its
 sdist finder sweeps the tracked tree. Preflight asserts tag-equals-version
 (<<c1>>).
-|`pyproject.toml:1-3`, `:7`; reference `pyproject.toml:44-46`, `:57-62`
+|`pyproject.toml:1-3`, `:7`; reference `pyproject.toml:44-46`, `:57-61`
 
 |Tag form, branch and topology preflight
 |adopt
@@ -60,13 +60,15 @@ action at `release/v1`. WFC has no workflow directory.
 
 |What the test gate runs on the runner
 |adapt
-|*The largest deviation.* The reference runs its whole suite on the runner.
-WFC's required suite refuses to configure without a verified wheel bundle, and
-the only reviewed profile pins `python 3.13`, `x86_64`, `linux`, glibc ≥ 2.28
-*and* `ensurepip.version() == "25.1.1"` exactly, which a hosted runner will not
+|*The largest deviation.* The reference runs `make test` on the runner (legacy
+skipped by `addopts`, its WFC-consumer test suppressed). WFC's required suite
+refuses to configure without a verified wheel bundle, and the only reviewed
+profile pins `python 3.13`, `x86_64`, `linux`, glibc ≥ 2.28 *and*
+`ensurepip.version() == "25.1.1"` exactly, which a hosted runner will not
 match. The runner gets all other checks (<<c6>>, <<g2>>).
 |`tests/conftest.py:102`; `scripts/wfc_test_inputs.py:162-176`;
-`tests/fixtures/offline-test-inputs/cp313-linux-x86_64.json` (`host`)
+`tests/fixtures/offline-test-inputs/cp313-linux-x86_64.json` (`host`); reference
+`release.yml:59-64`
 
 |The reference's WFC-tooling coupling in CI
 |n/a
@@ -107,16 +109,16 @@ anchor — inside `release-check`, not a separate tool and procedure.
 |`README.md:11`, `:23`, `:33`, `:36`; `02_release_runbook.adoc:245-364`
 
 |Release notes
-|adopt + improve
-|Adopt the single `docs/release_notes/release_notes.adoc`: one active
-`-- planned` section, one frozen `(released)` section per tag, and only that
-home — the reference also keeps a `04_release_history.adoc` whose first section
-still reads `Releasenotes 0.1.0b5 -- draft`. Improve the freeze, a manual sweep
-step there whose drift its
-own review caught (`v0.2.2` tagged, section still `-- planned`): WFC's preflight
-fails on a missing or still-planned section (<<c4>>). Follow-up: the same
-assertion in its `release_check.sh`.
-|`02_release_runbook.adoc:761-799`; `04_release_history.adoc:1-3`;
+|improve
+|Its shape is adopted unchanged — one `docs/release_notes/release_notes.adoc`,
+a single active `-- planned` section, one frozen `(released)` section per tag —
+and, unlike the reference, which also keeps a `04_release_history.adoc` whose
+first section still reads `Releasenotes 0.1.0b5 -- draft`, that file is the
+*only* home. The improvement is the freeze — there a manual sweep step whose
+drift its own review caught (`v0.2.2` tagged, section still `-- planned`):
+WFC's preflight fails on a missing or still-planned section (<<c4>>).
+Follow-up: the same assertion in its `release_check.sh`.
+|`02_release_runbook.adoc:760-779`, `:781-799`; `04_release_history.adoc:1-3`;
 `architecture_dmc_resumption_review_2026-11-15.adoc:61-62`
 
 |Release runbook
@@ -142,69 +144,57 @@ Three further elements need no machinery of their own. *n/a:* the reference's
 cross-repo and environment helpers (`tools/release_status.sh`,
 `pages_publish_check.sh`, `ensure_pip.sh`) — WFC has one repository, no published
 tree and `python3 -m venv .venv` (`ch01_development.adoc:20-25`). *adapt:* its
-blocking/non-blocking CI taxonomy and Dependabot discussion
-(`01_ci_cd_and_publishing.adoc:557-606`) answer an accumulation of non-release
-workflows, so WFC's runbook says it in one sentence — no `dependabot.yml`, no
-gate depends on one, every gate in <<gates>> is blocking. *adapt:* index-page
-metadata — add `classifiers` and an SPDX license expression with `license-files`,
-neither of which `pyproject.toml:5-23` has (reference `pyproject.toml:8-11`,
-`:48-49`; `LICENSE:1`).
+Dependabot section and the blocking/non-blocking triage taxonomy its `:588`
+points at in the runbook (`01_ci_cd_and_publishing.adoc:557-606`) answer an
+accumulation of non-release workflows, so WFC's runbook says it in one sentence:
+no `dependabot.yml`, no gate depends on one, every gate in <<gates>> is blocking.
+*adapt:* index-page metadata — add `classifiers` and an SPDX license expression
+with `license-files`, neither of which `pyproject.toml:5-23` has (reference
+`pyproject.toml:8-11`, `:48-49`; `LICENSE:1`).
 
 == 3. Release-contract decisions
 
-[[c1]]
-*C1 — Versioning scheme and the tag.* Static `version`, tag `v<version>`,
+[[c1]]C1 — Versioning scheme and the tag:: Static `version`, tag `v<version>`,
 preflight asserting `tag == "v" + version`. *Recommendation: publish `0.1.0b2`,
 not `0.1.0b1`* — the latter is the identity the built artifacts and
 `test_bp1_identity.py:41` already assert, and the brief reserves `v0.1.0b1` for
 the separate Beta-closure decision. The bump costs one line and one test
 literal.
-
-[[c2]]
-*C2 — What an artifact contains, and must not.* Wheel: the
+[[c2]]C2 — What an artifact contains, and must not:: Wheel: the
 `workflow_coordinator` package (`.py` files plus exactly the four reviewed
-resource texts) and `*.dist-info`. Sdist: `pyproject.toml`, `setup.cfg`,
-`PKG-INFO`, `README.md`, `LICENSE`, `src/**`. Forbidden by name in both:
-`docs/`, `tests/`, `governance/`, `project_memory/`, `.wfc/`, `scripts/`,
-`requirements/`, `tmp/`, `build/`, any `*.ods`, any Evidence or Run artifact.
-*Recommendation:* fail on anything *unlisted*, not only on the forbidden list,
-so a new top-level directory cannot leak in silently.
-
-[[c3]]
-*C3 — The install check from a clean environment.* *Recommendation:* install the
-*built artifact* into a fresh venv and run `wfc --help` and
+resource texts) and `*.dist-info`. Sdist: `pyproject.toml`, `setup.cfg`
+(setuptools writes it into the archive; no such file is tracked, so the entry is
+not a mistake), `PKG-INFO`, `README.md`, `LICENSE`, `src/**`. Forbidden by name
+in both: `docs/`, `tests/`, `governance/`, `project_memory/`, `.wfc/`,
+`scripts/`, `requirements/`, `tmp/`, `build/`, any `*.ods`, any Evidence or Run
+artifact. *Recommendation:* fail on anything *unlisted*, not only on the
+forbidden list, so a new top-level directory cannot leak in silently.
+[[c3]]C3 — The install check from a clean environment:: *Recommendation:* install
+the *built artifact* into a fresh venv and run `wfc --help` and
 `wfc --version --json` from a directory *outside* the checkout, asserting the
 reported version equals the tag and `source_commit` is `null`. The suite already
 proves the mechanism, so the release adds only the outside working directory and
 that assertion.
-
-[[c4]]
-*C4 — Release notes.* *Recommendation:* preflight fails when the tag has no
+[[c4]]C4 — Release notes:: *Recommendation:* preflight fails when the tag has no
 matching section or its heading still says `planned`. Content for the first
 release: what changed since Beta, the limitations the consumer quickstart already
 enumerates, and the one qualified platform profile.
-
-[[c5]]
-*C5 — Version-pinned documentation.* *Recommendation: publish no HTML for the
-first release.* Link documentation from `README.md` by absolute, tag-pinned
+[[c5]]C5 — Version-pinned documentation:: *Recommendation: publish no HTML for
+the first release.* Link documentation from `README.md` by absolute, tag-pinned
 repository URL, keep the strict render as a gate, revisit Pages when a second
 consumer exists. Depends on <<md3,MD-3>>: tag-pinned URLs are useless while the
 repository is private, which is the one case where a Pages repository or a docs
 subset in the sdist becomes necessary — reopening <<c2>>.
-
-[[c6]]
-*C6 — What runs on a hosted runner.* *Recommendation:* everything in E3's
+[[c6]]C6 — What runs on a hosted runner:: *Recommendation:* everything in E3's
 `check` job — but *not* the required suite, which would need a verified bundle
 for that host and a reviewed profile with its own dependency-closure review, for
 a gate the qualified host already gives. The release record names the host and
 the suite result, so a green runner is never mistaken for acceptance.
-
-[[c7]]
-*C7 — Distribution destination.* *Recommendation:* TestPyPI once as a rehearsal,
-then PyPI, both through a Trusted Publisher with no stored token, plus a GitHub
-Release carrying the same two artifacts. Publication is irreversible — PyPI
-refuses to re-upload a version — so the rehearsal makes the first real upload
-safe.
+[[c7]]C7 — Distribution destination:: *Recommendation:* TestPyPI once as a
+rehearsal, then PyPI, both through a Trusted Publisher with no stored token, plus
+a GitHub Release carrying the same two artifacts. Publication is irreversible —
+PyPI refuses to re-upload a version — so the rehearsal makes the first real
+upload safe.
 
 [[human]]
 == 4. Actions that need human access
@@ -214,7 +204,8 @@ be completed and accepted while its matching human action is still open.
 
 H1 — repository visibility (before <<c5>>, E1):: Decide and set the visibility of
 `StefanSchade/workflow-coordinator`, read today through a read-only *deploy key*
-from the reference's CI — which is how a private repository is read.
+from the reference's CI; such a key fits either visibility, so <<md3,MD-3>>
+settles it, not this observation.
 H2 — index project and publisher (before E3, first publish):: Create the PyPI and
 TestPyPI project and its Trusted Publisher entry (publisher GitHub Actions,
 owner, repository, workflow filename, environment); confirm the name
@@ -259,8 +250,9 @@ new `docs/release_notes/` makes P2 D4's "top-level areas number ten" eleven —
 this plan's named addition, not drift.
 Acceptance:: P2's V1 render command, extended by the two new leaves, exits 0 with
 no output; `python3 scripts/wfc_doc_catalog.py check` adds no unresolved link and
-no Project Memory miss to the baseline measured here with this plan in place —
-474 records, 85 unresolved links, 4 misses; the chapter states C1–C7 as decided,
+no Project Memory miss against the count taken immediately before the package
+starts (on 2026-11-21, with this plan in place: 474 records, 85 unresolved links,
+4 misses — P2's D1, D3 and D4 move it); the chapter states C1–C7 as decided,
 with <<c2>>'s allow-list written as the list the audit consumes;
 `release_notes.adoc` holds exactly one `-- planned` section;
 `python -m pytest -q` green.
@@ -274,9 +266,11 @@ Scope:: `scripts/wfc_release_check.py` (new), `scripts/wfc_dist_audit.py` (new),
 `tests/architecture/test_offline_distribution.py`,
 `tests/unit/test_release_tooling.py` (new), `Makefile`,
 `docs/developer_guide/ch04_release_management.adoc`, `README.md`.
-Hop budget:: 8 — two standard-library tools, one existing test extended with the
-audit call, one new unit test for both tools' refusals, and the four README link
-repairs; the judgement-heaviest package and the likeliest to need a correction.
+Hop budget:: 8 — two standard-library tools (one script with two subcommands is
+an equally acceptable shape; E2's author decides), one existing test extended
+with the audit call, one new unit test for both tools' refusals, and the four
+README link repairs; the judgement-heaviest package, likeliest to need a
+correction.
 Dependencies:: E1 accepted — its chapter is the specification both tools
 implement.
 Acceptance:: `wfc_release_check.py` is read-only, performs no writing Git
@@ -352,19 +346,18 @@ alone, or a change contrived to produce a green Run.
 [[q0]]
 === Option Q0 — the DMC resumption plan as a planning WorkItem first
 
-*The input.* The staged review ends already partitioned: treat its
+The input:: The staged review ends already partitioned: treat its
 ingress-fidelity defect (its R1) as a bug-level change with its own tests, write
 the documentation slice separately, retire the family-cycle program as a
 schedule. It names what WFC could support — "bounded execution and evidence
 capture for R1" — and what must stay independent of WFC: the whole-suite gate,
 per-push CI, the in-repository acceptance record and the ingress-rule decision.
-
-*For.* Genuine work the consumer's own review recommends, so not a contrived
-demo; one document keeps blast radius near zero while still exercising
+For and against:: Genuine work the consumer's own review recommends, so not a
+contrived demo; one document keeps blast radius near zero while still exercising
 installation, the Front Door, authority checks, review and archive against a
 foreign repository; and it surfaces H7's environment problems — filter config,
 check-command runtime against the 900-second cap, scope ceiling — before a code
-change depends on them. *Against.* It yields no test evidence and no regression
+change depends on them. *Against:* it yields no test evidence and no regression
 assertion, precisely what the qualification must demonstrate; as the gate it
 proves less than it appears to.
 
@@ -448,32 +441,26 @@ design; automating the irreversible step removes the human stop that matters.
 [[decisions]]
 == 8. Decisions only the maintainer can take
 
-*MD-1 — Distribution destination* (<<c7>>). *Recommendation: TestPyPI rehearsal,
+MD-1 — Distribution destination (<<c7>>):: *Recommendation: TestPyPI rehearsal,
 then PyPI, plus a GitHub Release with the same artifacts*, through a Trusted
 Publisher with no stored token. GitHub Releases alone avoids H2 but leaves
 `pip install workflow-coordinator` unavailable — the quickstart's implied path.
-
-*MD-2 — The first published version* (<<c1>>). *Recommendation: `0.1.0b2`*,
+MD-2 — The first published version (<<c1>>):: *Recommendation: `0.1.0b2`*,
 leaving `v0.1.0b1` for the Beta-closure decision the brief keeps separate;
 publishing `0.1.0b1` is coherent and cheaper, but spends a tag whose meaning the
 maintainer reserved.
-
-[[md3]]
-*MD-3 — Repository visibility.* *Recommendation: public at the tag* — the only
-option under which <<c5>>'s tag-pinned links work for a consumer, and it removes
-the reference's need for a read-only deploy key to install WFC. Staying private
-is coherent, but then a Pages repository (H4) or a documentation subset in the
-sdist becomes necessary and <<c2>> must be reopened.
-
-*MD-4 — Version-pinned documentation publishing* (<<c5>>). *Recommendation: not
+[[md3]]MD-3 — Repository visibility:: *Recommendation: public at the tag* — the
+only option under which <<c5>>'s tag-pinned links work for a consumer, and it
+removes the reference's need for a read-only deploy key to install WFC. Staying
+private is coherent, but then a Pages repository (H4) or a documentation subset
+in the sdist becomes necessary and <<c2>> must be reopened.
+MD-4 — Version-pinned documentation publishing (<<c5>>):: *Recommendation: not
 for this release.* The reference's Pages machinery is earned by three
 repositories; WFC has one and no slide decks.
-
-*MD-5 — Must the required suite run on a hosted runner?* (<<c6>>)
+MD-5 — Must the required suite run on a hosted runner? (<<c6>>)::
 *Recommendation: no* — the deviation most likely to be questioned later, so the
 chapter records it as a decision with its reason, not as an omission.
-
-*MD-6 — The qualification subject, and whether Q0 runs first* (<<q0>>).
+MD-6 — The qualification subject, and whether Q0 runs first (<<q0>>)::
 *Recommendation: Q0 as a rehearsal, then the review's ingress-fidelity defect as
 Q1's subject* — a real regression assertion, a known reproduction, low blast
 radius. Confirm the choice close to execution time; a consumer need that has
