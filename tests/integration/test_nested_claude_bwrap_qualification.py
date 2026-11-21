@@ -54,7 +54,7 @@ def test_outer_boundary_permits_short_unix_socket_bind_in_external_scratch(tmp_p
     This asserted the opposite (an EPERM denial) until 2026-11-10. That
     expectation came from an unaccepted, never-independently-reviewed
     qualification Hop (preserved only as explicitly non-authoritative salvage,
-    `workflow-coordinator@4b13dc22`; see `docs/run-recovery-and-salvage.adoc`'s
+    `workflow-coordinator@4b13dc22`; see `docs/operator_manual/ch06_recovery/01_outcomes.adoc`'s
     authority statement -- salvage is not trusted evidence) whose own "outside
     any WFC Run" reproduction still ran inside that Hop's own agent-provider
     Bash-tool sandbox, not a bare host. Reproduced directly on the bare host
