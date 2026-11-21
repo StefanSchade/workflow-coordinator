@@ -21,13 +21,16 @@ What is real and what is a seam, by scenario group:
   (a) happy path -- the real ``wfc`` dispatcher
       (``workflow_coordinator.frontdoor.cli:main``) is driven as an actual
       *subprocess*, twice over: once as the outer CLI (``init``/``plan``/
-      ``run --yes``/``status``/``audit``/``report``) and, transparently,
-      again as ``frontdoor.lifecycle``'s own inner bare-flag engine
-      re-entry -- both via the in-repository entry-point shim
-      ``tests/fixtures/bp9/wfc_entry.py`` (the same ``cli:main`` body
-      ``pyproject.toml``'s installed console script points at, runnable
-      without a pip install). This is the one scenario that exercises the
-      real, unattended ``--yes`` path end-to-end as a black box.
+      ``run --yes``/``status``/``audit`` (called twice -- a bare call that
+      is refused fail-closed, then a ``--lifecycle-json`` call that
+      reproduces the already-archived ``audit.json`` byte for byte) /
+      ``report``) and, transparently, again as ``frontdoor.lifecycle``'s
+      own inner bare-flag engine re-entry -- both via the in-repository
+      entry-point shim ``tests/fixtures/bp9/wfc_entry.py`` (the same
+      ``cli:main`` body ``pyproject.toml``'s installed console script
+      points at, runnable without a pip install). This is the one scenario
+      that exercises the real, unattended ``--yes`` path end-to-end as a
+      black box.
   (b)-(e) correction/review, stops, archive retry, deliberate failures --
       driven in-process through ``frontdoor.lifecycle.run_lifecycle``/
       ``resume_lifecycle`` (as ``tests/unit/test_postrun_lifecycle.py``
@@ -221,7 +224,10 @@ def test_happy_path_cli_init_plan_run_yes_status_audit_report_archives_automatic
 ):
     # Kills a mutation that skips the automatic postrun archive on a
     # completed Run, or that reports any non-"completed" status as success
-    # anywhere along the init/plan/run/status/audit/report chain.
+    # anywhere along the init/plan/run/status/audit/report chain, and also
+    # a mutation that makes `wfc audit`'s create-only write silently
+    # overwrite a differing existing audit.json instead of refusing (the
+    # bare-call assertion below would stop failing to reproduce bytes).
     _wfc_on_path(tmp_path, monkeypatch)
     repo = _seed_repository(tmp_path)
     evidence_path = tmp_path / "evidence-repo"
@@ -293,6 +299,33 @@ def test_happy_path_cli_init_plan_run_yes_status_audit_report_archives_automatic
     attempt_dir = _attempt_dir(evidence_path, repo, run_id)
     audit_path = attempt_dir / "audit.json"
     assert audit_path.is_file()  # `wfc run`'s automatic postrun step already projected and wrote it.
+    archived_audit_bytes = audit_path.read_bytes()
+
+    # A bare `wfc audit` on the already-archived attempt is fail-closed: it
+    # recomputes without the lifecycle facts `wfc run` had and so refuses to
+    # overwrite the differing audit.json already there, rather than silently
+    # replacing it.
+    bare_audit = subprocess.run(
+        [sys.executable, str(WFC_ENTRY), "audit", str(attempt_dir)], text=True, capture_output=True,
+    )
+    assert bare_audit.returncode == 2
+    assert "refusing to overwrite existing audit.json with different content" in bare_audit.stderr
+    assert audit_path.read_bytes() == archived_audit_bytes  # the refusal touched nothing.
+
+    # Fed the same lifecycle facts `wfc run` used (read back from the
+    # archived audit.json itself), `wfc audit` reproduces that document byte
+    # for byte: the real `audit` command, not just the automatic projection.
+    lifecycle_json_path = tmp_path / "lifecycle.json"
+    lifecycle_json_path.write_text(
+        json.dumps(json.loads(archived_audit_bytes)["lifecycle"]), encoding="utf-8",
+    )
+    audit = subprocess.run(
+        [sys.executable, str(WFC_ENTRY), "audit", str(attempt_dir), "--lifecycle-json", str(lifecycle_json_path)],
+        text=True, capture_output=True,
+    )
+    assert audit.returncode == 0, audit.stderr
+    assert audit.stdout.strip() == f"AUDIT: {audit_path}"
+    assert audit_path.read_bytes() == archived_audit_bytes  # byte-identical reproduction.
 
     # `wfc report` inspects that already-archived audit.json directly (the
     # realistic "inspect" path: nothing here recomputes or rewrites it).
