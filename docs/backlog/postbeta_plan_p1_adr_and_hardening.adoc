@@ -1,0 +1,1921 @@
+= Post-Beta planning P1: brief reconciliation, ADR plan and hardening matrix
+:toc:
+:toclevels: 3
+
+Maturity:: planning candidate, published by `WI-WFC-POSTBETA-PLAN-P1-001` H001;
+not independently accepted and not a maintainer decision at publication time
+Authority:: informative. This plan authorizes no implementation, Commission,
+Run, Runtime promotion, tag, release, push or merge, and takes no decision on
+the maintainer's behalf.
+Updated:: 2026-11-21
+Owns:: The first post-Beta planning output: reconciliation of
+link:ROADMAP-POST-BETA-TO-RELEASE-BRIEF.adoc[the maintainer's post-Beta brief]
+sections 3 and 4 and planning outputs 8.1-8.3 against the repository; the ADR
+plan on workflow generality; a hardening traceability matrix over every open
+`BUG`/`FTR`/`TECH-DEBT` record in `docs/backlog`; a dependency table over every
+proposed Commission and gate; and the remaining architecture decisions as
+individual decision records.
+Does not own:: The brief's sections 5 (documentation consolidation), 6 (release
+engineering), 7 (consumer qualification) and planning outputs 8.4-8.8. Those
+belong to later planning Commissions, referred to below as *P2* (documentation)
+and *P3* (release engineering and consumer qualification); they are named here
+only where a dependency crosses into this plan's scope.
+Verification basis:: Every path, symbol, count and commit cited below was read
+at this plan's base HEAD `f9b9a7a`. Run facts come from the Operator-staged,
+read-only `build/wfc/postbeta-inputs/beta_runs_facts.json`, whose SHA-256
+matches its `MANIFEST.sha256` entry
+(`e8f229cd4eb5378b6a32a61993c8db23c0f4f11fbdc23be46e2bf76b6275806a`). Where a
+count or line number differs from an existing record, this plan reports the
+current value and labels the record's text; it edits no existing record.
+
+[[limits-up-front]]
+== 0. What this plan is, and three limits stated up front
+
+. *The brief is a dated input, not a baseline.* Statements in it are reconciled
+  in <<reconciliation>> and labelled `current`, `narrowed`, `contradicted` or
+  `obsolete`. No brief statement is rewritten, and the brief file is untouched.
+. *Four facts are taken as given* per the commissioning task and are not
+  re-derived: Beta-1 packages BP1-BP9 are independently accepted at Run level;
+  the legacy Harness is retired; the Runtime is promoted to `4af5927`; DG-4
+  stands (cutover before the tag). The `0.1.0b1` tag is not set by this plan
+  and no Operator or Commission may set it
+  (link:beta1_execution_plan.adoc#closure-versus-tag[closure versus tag]).
+. *This plan could not execute the test suite.* `python3 -m pytest` is not
+  importable in the planning agent's sandbox (`No module named pytest`), so
+  every acceptance criterion below is expressed as a command plus its expected
+  result for a later Coordinator-trusted run, never as an agent-observed pass.
+  `asciidoctor` is available and was used to check this document's own
+  rendering. The staged input digest was verified with `sha256sum`.
+
+Two further staging facts, recorded for the Operator: the staged input
+directory contains only `beta_runs_facts.json`, `MANIFEST.sha256` and
+`PROVENANCE.txt`; the `spreadsheet-handling-4acca3da/` subtree that
+`PROVENANCE.txt` describes is *not present*. No conclusion in this plan depends
+on it, because `spreadsheet-handling` comparison is P3 work (brief section 6),
+but P3 cannot start from this staging set.
+
+[[run-facts]]
+=== 0.1 The archived Beta Run facts this plan relies on
+
+`beta_runs_facts.json` holds 32 entries (31 Runs archived 2026-11-18..21 plus
+the recovered C3 Run), 126 Hops in total.
+
+[cols="3,1,4",options="header"]
+|===
+|Outcome |Runs |Stop reason recorded in the archive
+
+|`completed`
+|18
+|none
+
+|`awaiting_human`
+|10
+|4 `invalid_finding_delta`; 3 `trusted_commit`/dirty-state; 1 evidence
+`timeout after 900s`; 1 `human_authority:prerequisite`; 1 `trusted_commit`
+after a Worker `blocked`
+
+|`reconcile_required`
+|3
+|`reconcile_requires_explicit_resume`
+
+|`awaiting_human_budget`
+|1
+|`autonomous_hop_budget_exhausted` (10/10)
+|===
+
+Only four phase kinds occur in all 126 Hops: `implement` 30, `broad_review` 41,
+`correct` 31, `focused_review` 24. No convergence-escape, evaluator,
+diagnosis, revision or `verification` phase ever executed. Two Runs
+(`WI-WFC-BETA1-BP2-ADMISSION-AUDIT-001`,
+`WI-WFC-BETA1-BP3-REMEDIATION-REVIEW-001`) started at `broad_review` and
+completed in one Hop; both ran through the now-retired Harness.
+
+Hop distribution of the 18 completed Runs: `1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 5,
+5, 5, 7, 8, 8, 8, 9` -- median 2, mean 4.1, maximum 9. Ten Runs were accepted
+at their first review (2 Hops); eight needed one to four correction cycles,
+each cycle costing two Hops. This distribution is the empirical basis for every
+Hop budget proposed below.
+
+The four `invalid_finding_delta` stops consumed 13 Hops:
+
+[cols="3,1,2,4",options="header"]
+|===
+|Run |Hops |Stopping phase |Archived stop reason
+
+|`RUN-69816e71` (BP3 remediation)
+|2
+|`broad_review`
+|`gate cannot create Finding F001 as residual`
+
+|`RUN-fd571798` (BP5 retry integrity)
+|3
+|`correct`
+|`agent cannot perform Finding operation resolve`
+
+|`RUN-18a6ae05` (BP6b evidence retention)
+|5
+|`correct`
+|`agent cannot perform Finding operation resolve`
+
+|`RUN-7ec65677` (BP7 cutover planning)
+|3
+|`correct`
+|`agent cannot perform Finding operation residual`
+|===
+
+Three of the four are a Worker in a `correct` phase proposing a disposition it
+has no authority for. The fourth is a gate that holds `resolve` only and
+attempted `residual`.
+
+[[reconciliation]]
+== 1. (A) Reconciliation of brief sections 3, 4 and 8.1-8.3 against HEAD
+
+Labels: *current* -- the statement holds at `f9b9a7a`; *narrowed* -- holds but
+with a boundary the brief does not state; *contradicted* -- a later accepted
+change makes the statement false as written; *obsolete* -- the statement's
+subject no longer exists.
+
+[cols="1,3,1,4",options="header"]
+|===
+|Brief |Statement |Label |Evidence at HEAD `f9b9a7a`
+
+|3.1
+|An ADR is needed and must make a real choice, not treat the brief as already
+accepted.
+|current
+|No ADR on this subject exists. `docs/backlog` holds 22 `BUG`, 24 `FTR` and 1
+`TECH-DEBT` leaf; none is an accepted ADR on workflow generality.
+link:beta1_execution_plan.adoc#closure-versus-tag[The execution plan] lists
+"ADR on workflow genericity" as the first post-closure item.
+
+|3.2
+|Alternative C (closed, versioned programmes on a generic kernel) is the
+preferred direction; its cost is "two internal abstractions".
+|narrowed
+|C is already the *implemented* shape of the consumer path, not only a
+preference: `src/workflow_coordinator/commissioning.py:215-235` admits only
+`simple@v1`/`robust@v1` and raises `only the closed simple@v1 and robust@v1
+programs are supported by the consumer compiler` otherwise. The cost is
+concretely *three* copies of each closed program, not two abstractions -- see
+<<ad3>>.
+
+|3.3
+|"the currently supported subset of `simple@v1` and `robust@v1`"
+|current
+|Exactly those two, enforced at
+`src/workflow_coordinator/commissioning.py:224-231`.
+
+|3.3
+|"`direct@v1` has had an explicit unresolved support question"
+|current
+|`governance/workflow-programs/direct/v1.yaml` still exists and its
+`verification` phase is `review.authority: gate` with `finding_authority: []`
+-- the defect shape recorded in
+link:BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc[the gate-authority
+BUG] section "FD-08". `commissioning.py:218` states it is "deliberately
+withheld from the consumer compiler". No archived Beta Run used it.
+
+|3.3
+|"Results may be programme-specific and role-specific, with phase authority
+narrowing the currently available shape."
+|contradicted *as a description of current behavior*
+|Partly delivered only. `requested_route` is narrowed to the phase's permitted
+routes (`src/workflow_coordinator/structured_result_schema.py:94`) and the
+contract *kind* is selected per phase (`:143-165`,
+`src/workflow_coordinator/vertical.py:301-303`). The `findings` surface is
+*not* narrowed: `:82-83` always offers both the new-Finding and
+existing-Finding delta shapes, whatever the phase's `finding_authority`. The
+prompt projects the authority as prose only
+(`src/workflow_coordinator/prompt.py:138,154`).
+
+|3.3
+|"the reducer remains the authoritative fail-closed boundary"
+|current
+|`src/workflow_coordinator/reducer.py:1693-1725`: non-review phases get
+`FindingAuthority.AGENT` with empty `permitted_operations`; any delta then
+raises and the Run stops `mechanical_preemption:invalid_finding_delta`.
+Negative coverage: `tests/unit/test_reducer.py:141,309,338`.
+
+|3.3
+|"Inventory older, unused profiles and templates."
+|current, and larger than the brief implies
+|`governance/self-development/` holds 107 YAML files (52 `*-profile.yaml`, 52
+`*-policy.yaml`, `components.yaml`, one `-002` pair) plus 3 prompt texts;
+`governance/commissions/` holds 104 rendered Commission bundles;
+`governance/workflow-programs/` holds 3 programs. Since BP7 C5 (`41f0d52`)
+deleted `tests/architecture/test_self_development_governance.py` (8003 lines),
+that tree is covered only by a YAML syntax smoke check
+(`tests/architecture/test_historical_governance_parse.py`, whose own docstring
+now calls it "the optional historical governance archive") plus exactly one
+profile admitted semantically (`tests/unit/test_a1_admission.py:112-118`,
+marked `historical_governance`).
+
+|3.4
+|An accepted ADR must state the rejected alternative, the public configuration
+boundary, the kernel's retained purpose, compatibility policy, implications for
+`FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA`, and the revisit trigger.
+|current
+|Adopted verbatim as the ADR Commission's acceptance criteria in
+<<adr-commission>>, with two additions the brief does not name: the catalogue
+support status of `direct@v1` (<<ad2>>) and the lifecycle model that
+link:FTR-WFC-LIFECYCLE-ROTATION.adoc[the rotation FTR] line 6 explicitly
+defers to this ADR (<<ad5>>).
+
+|3.4
+|"*Gate:* No large-scale result-schema refactoring before this decision is
+accepted."
+|current
+|Carried as the binding gate `G1` in <<dependencies>>. Hardening Commission
+H1 is blocked by it.
+
+|4.1
+|Start with one assessment Commission over `_open.adoc`,
+`beta1_productization.adoc`, BUG/FTRs, review artifacts and terminal Run
+evidence.
+|obsolete *as a future step*
+|This is that assessment. It is being performed by
+`WI-WFC-POSTBETA-PLAN-P1-001` over the same sources. The brief's assessment
+Commission should not be commissioned a second time.
+
+|4.2 (1)
+|Phase-/programme-scoped structured result schemas; "retain negative reducer
+tests".
+|current, highest-value
+|The gap is exactly `structured_result_schema.py:82-83`. Recurrence: 4 of 32
+Runs, 13 of 126 Hops (<<run-facts>>). The negative reducer tests to retain are
+`tests/unit/test_reducer.py:141,309,338`.
+
+|4.2 (2)
+|"Address the observed BP6b worker attempt to resolve a Finding without
+creating a new hidden permission"; remove conflicting or redundant agent-
+contract instructions.
+|partly obsolete
+|BP6b is `RUN-18a6ae05`, H005 `correct`, `agent cannot perform Finding
+operation resolve`. The *prose* remediation already landed before the brief:
+`14ee89c` added the "do not end the current invocation merely because the task
+is unfinished / reserve `blocked` for a concrete obstacle" paragraph to
+`governance/self-development/prompts/worker.txt:5-11`, the byte-identical
+product resource `src/workflow_coordinator/resources/roles/worker.txt`, and the
+test `tests/unit/test_a3_operating_contract.py:396`
+(`test_current_worker_completion_guidance_reaches_assembled_prompt`). The three
+later `correct`-phase stops happened *with* that prose and with
+`finding_authority=` projected empty, which is the evidence that prose alone is
+insufficient. The remaining work is schema narrowing (H1), not more prose.
+
+|4.2 (3)
+|Review-cycle and correction ergonomics; distinguish independent discoveries
+from true non-convergence.
+|narrowed
+|One Beta Run shows the pattern: `RUN-4b9a2863` (BP4b) used 10/10 Hops over
+four correction cycles and stopped `autonomous_hop_budget_exhausted`
+*immediately after* its H010 focused review returned accept. The accepted
+convergence-escape machinery (`src/workflow_coordinator/slice4.py`, 411 lines)
+was never exercised: no escape, evaluator, diagnosis or revision phase appears
+in any of the 126 Hops, and neither `robust@v1` nor `simple@v1` declares a
+convergence role. `robust@v1` cannot trigger it.
+
+|4.2 (4)
+|Legacy profile/template and adapter debt; "remove only after proving no
+accepted programme, fixture, history tooling or legitimate consumer depends on
+them".
+|current, with a changed consumer landscape
+|See the 3.3 inventory row. Additionally, `governance/` is maintainer-owned
+Consumer-Config territory: a Commission scope may not overlap it
+(`tests/unit/test_consumer_compiler.py:233-238`,
+`test_consumer_compile_rejects_scope_overlapping_governance_dir`; and the BP7
+C1 note in link:_open.adoc[the overview] that `.wfc/governance/` was committed
+outside the Run for that reason). Any removal under `governance/` is therefore
+a maintainer action, not a Commission deliverable.
+
+|4.2 (5)
+|"BP6b's documented short OS-user-name substring collision (`ci`, `ops`) is a
+relevant input for assessment; confirm whether it was already resolved by the
+eventual Beta baseline."
+|obsolete -- *confirmed resolved*
+|Resolved by BP6c. `src/workflow_coordinator/frontdoor/audit.py:382`
+implements `_whole_component_or_token_match`, used at `:407`; 11 tests in 4
+classes cover it in `tests/unit/test_audit_user_name_match.py`, including the
+exact `run.hops_used` / `checkout-association.json` false positives the brief
+alludes to. This candidate should be struck from the hardening shortlist.
+
+|4.3
+|"initial hypothesis: 2-3 substantive topics, not an open-ended rewrite"
+|narrowed
+|This plan shortlists four and recommends a minimum set of two
+(<<shortlist>>). The fourth, H4, is an *enabler*: without it no review-only
+Commission can be launched at all (see the 4.2(2)/8.2 rows and <<h4>>).
+
+|4.3
+|"*Gate:* The selected changes have passing authoritative checks and
+independent review; recurring historical failure cases are reproduced as either
+prevented or safely refused."
+|current
+|Carried as gate `G3` in <<dependencies>>, with the reproduction cases named
+per Commission in <<shortlist>>.
+
+|8.1
+|Reconcile the brief with HEAD, source, `_open.adoc`, the Beta map, existing
+decisions and accepted Run evidence; label rather than rewrite.
+|current
+|This section. Sources read: `_open.adoc`, `beta1_productization.adoc`,
+`beta1_execution_plan.adoc`, `beta1_bp7_cutover_plan.adoc`, all 47 backlog
+leaves, `project_memory/canonical/decisions.json` (23 active decisions,
+including `DEC-WFC-018` and `DEC-WFC-023`), and the source tree.
+
+|8.2
+|Propose the ADR work and an independent review / maintainer-decision point
+before hardening changes.
+|current
+|<<adr-plan>>, gates `G1`/`G2`.
+
+|8.3
+|Produce a backlog/evidence traceability matrix with finding, severity/
+recurrence, candidate solution, dependencies, testable acceptance, scope and
+non-goals.
+|current
+|<<matrix>>, covering all 42 records classified `partly` or `open`.
+
+|11
+|"Sibling `workflow-coordinator-run-evidence` Git repository -- archived Run
+artifacts"
+|current, and the only usable channel
+|Confirmed operationally: a Worker sandbox cannot read the sibling repository
+(`RUN-e6d478e4` stopped for exactly that reason), so Run evidence must be
+staged under `build/wfc/` before launch. Every Commission below that needs Run
+evidence states that staging requirement.
+|===
+
+[[cross-cutting]]
+=== 1.1 Two repository statements contradicted by BP7 C5, outside this plan's edit scope
+
+Reported here for the maintainer because the owning records are outside this
+WorkItem's scope and this plan must not edit them:
+
+. `beta1_execution_plan.adoc:834-836` requires each accepted Run to be archived
+  "via the existing `scripts/wfc_op.py cmd_archive` path". `scripts/wfc_op.py`
+  was deleted by `41f0d52`; the tracked `scripts/` tree is now
+  `collect_git_shows`, `memory_workbook.py`, `wfc_doc_catalog.py`,
+  `wfc_snapshot.py`, `wfc_test_inputs.py`. The product BP6c lifecycle archive
+  has superseded it in practice for every Front Door Run since Proof Run 1.
+. `project_memory/canonical/decisions.json`, `DEC-WFC-023` (status `active`;
+  all 23 decisions in that file are `active`), describes "its existing
+  mechanical archiver (`archive_run.py`, delegated to by `scripts/wfc_op.py
+  archive`)" as a supported alternative. The delegating command no longer
+  exists; the frozen legacy archiver survives only as the equivalence fixture
+  `tests/fixtures/bp5/legacy/archive_run.py`.
+. Five warm-storage links now point at files `41f0d52` deleted, as reported by
+  `python3 scripts/wfc_doc_catalog.py check`:
+  `docs/warm_storage/concepts/wfc_offline_test_infrastructure_implementation_plan_001.adoc`
+  -> `scripts/wfc_op.py` and `tests/unit/test_wfc_op.py`; and
+  `docs/warm_storage/concepts/wfc_review_finding_dispositions_pilot.adoc` ->
+  `scripts/wfc_op.py`, `tests/unit/test_wfc_op.py` and
+  `tests/unit/test_commissioning.py`.
+
+None of the three affects any proposal below. All are bounded reconciliations
+for the maintainer, for P2, or for whichever Commission next touches those
+files.
+
+Calibration for any later link check, measured at `f9b9a7a`:
+`python3 scripts/wfc_doc_catalog.py generate && python3 scripts/wfc_doc_catalog.py check`
+reports *84* unresolved links and 4 Project Memory `source_path` misses, prints
+`catalog current` and exits 0. "Zero unresolved links" is therefore not a usable
+acceptance criterion in this repository; "no new unresolved link naming the
+changed file, and still exits 0" is, and that is how the criteria below are
+phrased.
+
+[[classification]]
+== 2. Already-done, partly done, open or obsolete: all 47 backlog leaves
+
+Counts at `f9b9a7a`: 22 `BUG`, 24 `FTR`, 1 `TECH-DEBT` = 47 leaves. The
+2026-11-14 census in `_open.adoc` states "48 retained BUG/FTR leaves ... 20
+BUGs ... 28 FTR leaves"; that paragraph labels itself "the
+backlog-consolidation snapshot, not a live record count", so it is dated
+provenance rather than a contradiction. The current figures are used throughout
+this plan.
+
+Classification: 3 *done*, 2 *obsolete*, 17 *partly done*, 25 *open*.
+
+=== 2.1 Done -- do not re-plan
+
+[cols="2,3",options="header"]
+|===
+|Record |Evidence
+
+|`BUG-WFC-CLAUDE-ADAPTER-SHORT-TMPDIR-RESOURCE-EXHAUSTION`
+|Record `Status::` line: resolved by separate explicit maintainer acceptance,
+2026-11-10; Runtime promoted to `6c88e476`.
+
+|`FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE_design_revision_001`
+|Record `Status::` line: accepted (independent review ACCEPT).
+
+|`FTR-WFC-KNOWLEDGE-CATALOG-PILOT`
+|Record `Status::` line: K1 implemented, independently reviewed,
+Coordinator-verified and Maintainer-accepted 2026-11-17.
+|===
+
+[[obsolete-records]]
+=== 2.2 Obsolete -- subject retired by BP7 C5, product path already satisfies the requirement
+
+Both records remain `Status:: open`. Their *subject* is gone and the product
+path independently provides what they asked for. Recommended maintainer action
+is a disposition on the record (<<decisions>>, M7), not a correction Commission.
+
+[cols="2,5",options="header"]
+|===
+|Record |Why obsolete at `f9b9a7a`
+
+|`BUG-WFC-COMMISSION-RENDER-CHECK-WRITES-BUNDLE`
+|The defect was `scripts/wfc_op.py::cmd_commission_render` writing the bundle
+before checking `--check`. That file is deleted (`41f0d52`). The product path
+already implements the differentiated semantics the record's `Next action::`
+asks for: `wfc plan` is a pure preview that writes nothing
+(`src/workflow_coordinator/frontdoor/plan.py:1,177,218-220`; `main` at `:265`
+never calls `write_to`), and the only writing path,
+`CompiledCommission.write_to`
+(`src/workflow_coordinator/commissioning.py:249`), defaults to
+`overwrite=False` and refuses to overwrite.
+
+|`BUG-WFC-OPERATOR-PREPARE-EXECUTABLE-VALIDATION`
+|The defect was `wfc-op prepare` reaching PREPARED without validating a
+supplied executable. The product Front Door validates earlier and more
+strictly than the record requests: `frontdoor/lifecycle.py:321-326` resolves
+the executable (refusing `provider executable is not resolvable on PATH`),
+`:333-338` checks `isfile` and `os.access(..., X_OK)` and `:339` pins its
+SHA-256, and `:368-377` refuses `refused_identity_changed` if the binary
+changed after authorization. Exit codes 22 and 24
+(`lifecycle.py:118-131`); coverage at
+`tests/unit/test_lifecycle_controller.py:195,218,233,245,339`.
+|===
+
+=== 2.3 Partly done -- independent acceptance exists; the remainder is named
+
+17 records. For the eight marked *maintainer-owned* the remainder is explicitly
+outside every Commission per the commissioning task, and no Commission below
+touches them.
+
+[cols="3,1,4",options="header"]
+|===
+|Record |Remainder |Evidence for what is done
+
+|`BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS`
+|maintainer-owned
+|`df51c9f`, committed acceptance `4933b9f`; record: implemented and
+independently reviewer-accepted.
+
+|`BUG-WFC-FINDING-DELTA-COMPATIBILITY-SHIM`
+|maintainer-owned
+|`fc55bc1`, acceptance `3f39e69`, completed Run.
+
+|`BUG-WFC-IMMUTABLE-FINDING-ECHO`
+|maintainer-owned
+|`ddd93a2`, correction `6745daa`, recorded H004 acceptance.
+
+|`BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION`
+|maintainer-owned
+|`3bdae01`, tests `c7e8e7c`, recorded H004 acceptance.
+
+|`BUG-WFC-SEC-03-GIT-SCOPE-COMMIT-AUTHORITY`
+|maintainer-owned
+|Bounded correction implemented, broad review accepted and Coordinator
+`task-check` passed in completed `RUN-deb3ca7e`. Unblocks
+`TECH-DEBT-WFC-LEGACY-COMMIT-MECHANICS`, whose first sentence makes SEC-03 its
+precondition.
+
+|`BUG-WFC-EVIDENCE-COMMAND-RESOLUTION-DIAGNOSTICS`
+|maintainer-owned
+|Implemented and independently accepted as BP7 Proof Run 1
+(`RUN-25295d0d`, candidate `dabb215`, accepting broad review `2b02ce6`, 8/10
+Hops, 5 `task-check` passes). Diagnostics live in
+`tests/unit/test_evidence_resolution_diagnostics.py`.
+
+|`BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH`
+|maintainer-owned (live qualification + record reconciliation)
+|`498c331` + `4eb69d9`, acceptance `fe4e6e0`/`698e334`. Explicitly outside
+every Commission.
+
+|`FTR-WFC-AGENT-PUBLIC-INTERNET-CAPABILITY`
+|maintainer-owned (broader qualification)
+|Codex P1 `00b3cb2` and Claude curl `f6de099` accepted and Runtime-promoted;
+P3/P3-002 bounded HTTPS observations accepted. Record itself states broader
+qualification remains open.
+
+|`FTR-WFC-DOCUMENTATION-CURATION`
+|*P2 planning*
+|C1-C4 complete with independent reviews and `task-check` exit 0. C4 handoff
+retains 25 source-path bridges and 5 root shims; all five root shims are
+present and tracked (`docs/wfc_operator_manual.adoc`,
+`docs/run-preparation.adoc`, `docs/self-development.adoc`,
+`docs/run-recovery-and-salvage.adoc`,
+`docs/successor_continuation_runbook_2026-10-10.adoc`). Two of the consumers
+the C4 handoff names, `scripts/wfc_op.py` and
+`tests/architecture/test_self_development_governance.py`, were deleted by
+`41f0d52`, so P2's consumer inventory must be redone, not reused.
+
+|`FTR-WFC-REFERENCE-MODELS-MODULARIZATION`
+|*P2 planning*
+|M1 and M2 completed with independent review and `task-check` passes;
+maintainer acceptance separate.
+
+|`FTR-WFC-OPERATIONAL-PROVENANCE-PILOT`
+|maintainer-owned (acceptance / go-no-go)
+|P1 completed in two Hops with independent review and `task-check` pass.
+
+|`FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE`
+|open: Slices 5 and 6
+|Slices 1-4 implemented and independently accepted (`e86a447`). Slice 5 (R1A
+dogfood) and 6 (foreign-domain falsification) have not run. Never exercised in
+any of the 126 archived Beta Hops. Matrix row below.
+
+|`FTR-WFC-SCOPE-ESCALATION-CONTINUATION`
+|open: R1A
+|Implemented in commissioned attempts; last candidate `a2542de`; R1A
+post-publication false-failure invariant open per `dfc0416`. Matrix row below.
+
+|`BUG-WFC-EVIDENCE-COMMAND-CONSUMER-NEUTRALITY`
+|open: self-development policy-basis path
+|Consumer compiler slice implemented and independently accepted (BP2b
+`edd4ae8`/`9a8b55a`, review `6e19dc6`); the shell-consumer evidence case is one
+of only two remaining `_REQUIRED_REAL` ids
+(`tests/conftest.py:21-23`). Matrix row below.
+
+|`BUG-WFC-WORKER-PREMATURE-BLOCKED-CONTRACT-AMBIGUITY`
+|open: the A/B experiment
+|Prose remediation landed in `14ee89c` with the test at
+`tests/unit/test_a3_operating_contract.py:396`. The record's `Not authorized
+here::` line still lists `governance/self-development/prompts/worker.txt` as
+unchanged; that line is stale. Matrix row below.
+
+|`BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION`
+|open: fresh-checkout transition proof
+|P1-P3 implemented, independently reviewed and archived; offline inputs exist
+(`tests/fixtures/offline-test-inputs/`, `scripts/wfc_test_inputs.py`, with
+`tests/unit/test_wfc_test_inputs.py`). Matrix row below; directly relevant,
+because `RUN-f737ec61` stopped `human_authority:prerequisite` precisely
+because the Operator launched without the offline-input wrapper.
+
+|`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION`
+|open: independent review of the existing correction
+|The correction and `tests/unit/test_pytest_temp_storage.py` exist; the
+record's `Next action::` is "Independently review and accept the repository
+pytest storage correction and its evidence" -- a *review-first* Run, which the
+product path cannot currently launch (see <<h4>>). Matrix row below.
+|===
+
+=== 2.4 Open -- no accepted correction
+
+25 records, all carried into <<matrix>>: 8 `BUG`
+(`COMMISSION-TASK-RENDER-TRAILING-NEWLINE`,
+`COMMIT-INTENT-DIRECTORY-PATH-RECONCILIATION`,
+`CORRECTION-BLOCKING-SET-CARRYOVER`, `EVIDENCE-TIMEOUT-DIAGNOSTICS`,
+`PHASE-COMPLETION-CONTRACT-OPAQUENESS`, `SCOPE-ESCALATION-CONTINUATION-GAP`,
+`SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY`,
+`TRUSTED-COMMIT-RENAME-RECONCILIATION`), 16 `FTR` and the single `TECH-DEBT`.
+
+[[adr-plan]]
+== 3. (B) The ADR plan: workflow generality versus closed, versioned programs
+
+=== 3.1 Subject and the six decision questions
+
+Working title, taken from the brief 3.1 and recommended unchanged: *ADR:
+Closed, Versioned Workflow Programs on a Generic Execution Kernel*.
+
+The ADR must answer six questions. Each is written as an individual decision
+record in <<ad-records>> so the maintainer can decide them one at a time, and
+each names the package it blocks.
+
+[cols="1,4,2",options="header"]
+|===
+|# |Decision question |Blocks
+
+|<<ad1,AD-1>>
+|Does the product contract commit to closed, product-owned, versioned programs
+on a generic kernel (C), consumer-definable topology (A), or hard-coded
+programs (B)?
+|the whole ADR; G1
+
+|<<ad2,AD-2>>
+|Is `direct@v1` supported, internal/historical material, or removable debt?
+|H2; the quickstart's program catalogue
+
+|<<ad3,AD-3>>
+|Where is the single source of truth for a closed program revision?
+|H2
+
+|<<ad4,AD-4>>
+|Does the projected result contract narrow the `findings` surface by the
+admitted phase's `finding_authority`, and for which contract versions and
+adapters?
+|H1
+
+|<<ad5,AD-5>>
+|Is one Run per checkout, forever, part of the product contract, or does
+controlled rotation belong to a later lifecycle revision?
+|`FTR-WFC-LIFECYCLE-ROTATION`
+
+|<<ad6,AD-6>>
+|May a Commission enter a program at a phase other than `implement`?
+|H4; any review-only Commission
+|===
+
+=== 3.2 Alternatives and evaluation criteria
+
+Alternatives are the brief's A, B and C, unchanged. The ADR must evaluate them
+against criteria that this repository can actually evidence:
+
+[cols="1,4",options="header"]
+|===
+|Criterion |What counts as evidence
+
+|Contract surface size
+|Number of distinct phase shapes, routes and Finding operations a consumer can
+express. Measurable today: the consumer compiler admits 2 programs, 5 distinct
+phases, 6 routes, and `finding_authority` values drawn only from `()` and
+`('resolve',)`.
+
+|Demonstrated exercise
+|Which of those shapes real Runs used. Measurable today: 4 phase kinds across
+126 Hops; 0 uses of `direct@v1`, convergence escape, or a non-`implement`
+entry through the product path.
+
+|Enforcement cost
+|Lines and seams that must stay fail-closed per added degree of freedom.
+Measurable today: `reducer.py` 2006 lines, `serialization.py` 2392,
+`model.py` 958. The `findings` authority check is *already duplicated per
+contract version*: `_apply_finding_deltas` (`reducer.py:525`) dispatches on
+`result_schema_version` to `_apply_legacy_finding_deltas` (`:566`, v1),
+`_apply_v2_finding_deltas` (`:674`) and `_apply_v3_finding_deltas` (`:902`),
+each raising its own authority refusals (`:595,653` / `:727,761` /
+`:951,1002`). Any added degree of freedom costs three enforcement sites, not
+one -- which is also why AD-4 must name the contract versions it applies to.
+
+|Agent error cost
+|Hops lost to structurally expressible but unauthorized output. Measurable
+today: 13 of 126 Hops (<<run-facts>>).
+
+|Compatibility commitment
+|Number of persisted artifacts that would have to keep parsing. Measurable
+today: 104 rendered Commission bundles, 107 self-development governance YAML
+files, and the archived Run artifacts in the sibling Evidence repository.
+
+|Release manageability
+|Whether a new program family can ship as a versioned release rather than a
+consumer configuration change.
+|===
+
+=== 3.3 Repository evidence bearing on each question
+
+All verified at `f9b9a7a`.
+
+[cols="1,5",options="header"]
+|===
+|Question |Evidence
+
+|AD-1
+|*Closed programs already implemented:* `commissioning.py:215-235`. *Kernel is
+generic and data-driven:* profiles are parsed from YAML by
+`serialization.workflow_profile_from_yaml` and consumed by the reducer with no
+phase-name special-casing; `reducer.py:1693-1703` derives authority from
+`phase.review`, not from a phase name. *Benefit of openness is unexercised:*
+4 phase kinds in 126 Hops. *Cost of openness is measured:* 13 Hops lost to
+`invalid_finding_delta`.
+
+|AD-2
+|`direct@v1` `verification` phase: `role: worker`, `authorized_actions:
+['review']`, `review.authority: gate`, `finding_authority: []`, routes
+`accept`/`correction`. That is a phase that can open a blocking Finding and
+can never disposition one -- the FD-08 case in
+link:BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY.adoc[the gate-authority
+BUG] (`RUN-82bf462135524ead8afa5c9c5ecd29e2`, stop
+`completion_blocked_by_open_blocking_findings`). Withheld from the consumer
+compiler at `commissioning.py:218`. One rendered bundle survives
+(`governance/commissions/fd0-direct-v1-quickstart-001/`).
+link:beta1_execution_plan.adoc#decision-gates[The execution plan] line 808
+already records "whether `direct@v1` ships in Beta 1 (no)" as *not open*; the
+ADR question is its status *after* Beta.
+
+|AD-3
+|Three copies of each closed program exist. (a)
+`governance/workflow-programs/robust/v1.yaml`; (b) the Python literal
+`commissioning._robust_template()` (`:130-143`); (c) a third literal inside
+`tests/unit/test_consumer_compiler.py:225-230`. (a) and (b) were compared
+field by field for both `robust` and `simple` and are *identical except the
+YAML's `source` provenance key*, which the docstring at `:131` says is
+excluded. No test ties (b) to (a):
+`tests/unit/test_consumer_compiler.py:215`
+(`test_consumer_compile_robust_matches_v1_apart_from_guidance_and_component_paths`)
+asserts against its own literal (c), not against the file, despite the name.
+
+|AD-4
+|`structured_result_schema.py:94` narrows `requested_route` to
+`permitted_routes`; `:82-83` does *not* narrow `findings`; `:143-165` selects
+`work_result` / `review_verdict` / generic routing. `vertical.py:301-303,317,328`
+is the single selection site. `prompt.py:138,154` projects
+`finding_authority` as text. `reducer.py:1693-1725` enforces. Precedent for
+the narrowing test shape already exists:
+`tests/unit/test_codex_adapter_conformance.py:418`,
+`test_requested_route_is_projected_as_the_exact_permitted_route_enum`.
+`FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA` lines 15-39 is the maintainer's
+2026-11-19 activation of exactly this design, and lines 148-159 its non-goals.
+
+|AD-5
+|`frontdoor/lifecycle.py:741-752`: any `authorized` journal record makes a
+later `wfc run` fail `refused_active_lifecycle`, exit 26
+(`lifecycle.py:125`), regardless of a terminal classification and a verified
+archive. `FTR-WFC-LIFECYCLE-ROTATION` line 6 states: "Decide the lifecycle
+model in the workflow-genericity ADR before any implementation". Its
+recurrence is evidenced: BP7 Proof Run 2 needed a fresh sibling worktree, and
+the BP6c review relies on one-Run-per-checkout for unambiguous archive lookup.
+
+|AD-6
+|`commissioning.py:367` hard-codes `"initial_phase": "implement"` in the
+consumer compiler's work-item projection. The engine permits other entries and
+it was used twice (`WI-WFC-BETA1-BP2-ADMISSION-AUDIT-001` and
+`WI-WFC-BETA1-BP3-REMEDIATION-REVIEW-001`, both 1 Hop, both starting at
+`broad_review`) -- but both through the Harness deleted by `41f0d52`.
+`FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION` records the gap and explicitly
+rejects both a free initial-phase field and a derived broad-review entry,
+requiring an entry/assurance decision first.
+|===
+
+[[adr-commission]]
+=== 3.4 The ADR Commission
+
+[cols="1,4"]
+|===
+|Proposed id
+|`wfc-postbeta-adr-workflow-generality-001`
+
+|Deliverable
+|One new accepted-architecture record,
+`ADR-WFC-CLOSED-VERSIONED-WORKFLOW-PROGRAMS.adoc`, at the leaf path decision
+*M3* selects -- `docs/backlog/` (recommended) or a new
+`docs/architecture/adr/`. The path must be fixed by M3 *before* the Commission
+is rendered, because a Commission's authorized scope names exact leaves. Plus
+the matching record updates listed below.
+
+|Scope paths
+|`<ADR>` as fixed by M3,
+`docs/backlog/FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA.adoc`,
+`docs/backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc`,
+`docs/backlog/FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION.adoc`,
+`docs/backlog/FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc`,
+`docs/backlog/postbeta_plan_p1_adr_and_hardening.adoc`, and the review
+artifacts `docs/warm_storage/concepts/wfc_postbeta_adr_workflow_generality_broad_review.adoc`
+and `..._focused_review.adoc`. Named as individual leaves, never as
+directories.
+
+|Not in scope
+|`src/`, `tests/`, `governance/`, `project_memory/`,
+`docs/backlog/_open.adoc`, `docs/backlog/ROADMAP-POST-BETA-TO-RELEASE-BRIEF.adoc`,
+`docs/backlog/beta1_*.adoc`, every other backlog leaf.
+
+|Hop budget
+|*6.* Reasoning: this is a documentation-only Run of the same shape as BP7
+cutover planning and BP7 C5, which took 7 (stopped) and 5 Hops. Ten of the 18
+completed Beta Runs finished in 2 Hops, but every Run that had to reconcile
+contested statements across several records needed at least one correction
+cycle (`RUN-3e19e853`, docs-only, 5 Hops; `RUN-3d46d381`, 5 Hops). 6 allows two
+correction cycles. It must not be 10: a decision record that needs four
+correction cycles signals an unresolved maintainer decision, not an
+implementation problem, and should stop rather than consume budget.
+
+|Dependencies
+|None technical. Requires the maintainer's answers to M1-M3 as *inputs*
+(the ADR records the decision; it does not take it).
+
+|Testable acceptance
+|Below, `<ADR>` is the leaf M3 selects. (a) `asciidoctor -o /dev/null <ADR>`
+exits 0 with no output on stderr. (b) The ADR contains a section for each of
+AD-1..AD-6 and, for each, a named rejected alternative. (c) The ADR states, as
+separate labelled statements: the public configuration boundary; the generic
+kernel's retained purpose; the compatibility policy for the 104 rendered
+Commission bundles and the 107 self-development governance YAML files; the
+implication for `FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA`; and the revisit trigger
+for opening topology to consumers. (d)
+`python3 scripts/wfc_doc_catalog.py generate && python3 scripts/wfc_doc_catalog.py check`
+exits 0 and reports no unresolved link naming `<ADR>` or any other file this
+Commission changed, against the 84-link baseline in <<cross-cutting>>. (e) The four FTR
+records in scope each carry a dated paragraph naming the ADR and what it
+decided for them, with their `Status::` lines left to the maintainer. (f) No
+file under `src/`, `tests/` or `governance/` differs from `git HEAD`:
+`git diff --name-only HEAD -- src tests governance` prints nothing.
+
+|Non-goals
+|No implementation; no result-schema change; no program-definition change; no
+new program; no deletion under `governance/`; no `Status::` flip on any
+record; no tag, release, push or Runtime promotion; no decision taken on the
+maintainer's behalf -- unanswered AD questions are recorded as open with the
+recommendation, not resolved.
+
+|Authorization boundary
+|`edit`,`commit` inside the scope leaves only. Coordinator-owned Git. The
+Worker reports a `CommitIntent` naming every changed leaf individually. No
+Finding operation by the Worker. The reviewer is the only actor that opens or
+resolves Findings.
+
+|Independent review
+|`robust@v1`: `implement` -> `broad_review` (gate, `finding_authority:
+['resolve']`) -> `correct` -> `focused_review`, as every accepted Beta Run
+used. The broad review must be adversarial on *one* thing above all: that the
+ADR made a real choice with a named rejected alternative, rather than
+restating the brief. A second, independent requirement: the reviewer
+re-verifies at least the AD-3 equivalence claim and the AD-4 schema claim
+against the source, because the BP7 planning reviews found misattributed
+functions in exactly this kind of plan.
+|===
+
+[[gates]]
+=== 3.5 The gate before any hardening change
+
+*G1 (brief 3.4, binding):* no result-schema refactoring is commissioned before
+the ADR is accepted. *G2:* after independent acceptance, the maintainer
+separately decides AD-1..AD-6 and records which hardening Commissions are
+authorized. G2 is a human-only action; no Operator or Commission may infer it
+from G1.
+
+[[matrix]]
+== 4. (C) Hardening traceability matrix
+
+All 42 records classified `partly` or `open` in <<classification>>. Severity
+scale: *S1* blocks a Run or loses Hops with reproduced recurrence; *S2* real
+friction or a real defect, single occurrence or no reproduction; *S3*
+hygiene, idea-stage, or no concrete need. "ADR effect" is what an AD outcome
+would change for the row.
+
+[cols="2,1,3,3,3",options="header"]
+|===
+|Record |Sev |Pain point, recurrence and evidence |Candidate solution,
+dependencies, ADR effect |Testable acceptance and scope
+
+|`FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA`
+|S1
+|Schema-valid, phase-authority-invalid `findings` deltas. 4 of 32 Runs, 13 of
+126 Hops (<<run-facts>>); maintainer-activated 2026-11-19 (record lines
+15-39). Root cause verified at `structured_result_schema.py:82-83`.
+|Narrow the `findings` item schema from the admitted phase's
+`finding_authority`, derived declaratively, reducer untouched. *Depends on*
+AD-4 + G1/G2. *ADR effect:* AD-4 decides whether this ships at all and for
+which contract versions and adapters.
+|*Shortlist <<h1,H1>>.*
+
+|`BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS`
+|S1
+|The agent-facing completion contract is spread over prompt header, contract
+text, role component and JSON schema; a competent agent still emits a globally
+inadmissible result. Same 4 Runs as above; BP3 H002 and BP5 H003 named in the
+record.
+|Largely addressed as a side effect of H1: the opaque surface is precisely the
+one H1 narrows. *Depends on* H1. *ADR effect:* none directly.
+|Covered by H1's acceptance; no separate Commission recommended. Scope: none.
+
+|`BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY` (P3.5)
+|S1
+|A gate whose purpose is to disposition Findings is commissioned without the
+operation. Two independent manifestations (S3-002 hand-authored; FD-08
+compiler-rendered). Current surface, measured by parsing all 585 YAML files
+under `governance/`: 160 are profile-shaped (104 under `commissions/`, 53 under
+`self-development/`, 3 under `workflow-programs/`) and declare 286 `authority:
+gate` review phases, of which 46 declare `finding_authority: []` and 240
+declare `['resolve']`. *No phase anywhere declares `residual`, `supersede` or
+`reopen`* -- which is exactly why `RUN-69816e71` stopped on `gate cannot create
+Finding F001 as residual`.
+|P3.5 existential authority/state-aware reachability predicate per
+`DEC-WFC-018`. *Depends on* AD-1 and AD-2; the record's own `Next action::`
+says "after this consolidation". *ADR effect:* AD-1 decides whether the
+predicate guards a closed program set (small) or arbitrary topology (large).
+The record's proposed home for the admission test,
+`tests/architecture/test_self_development_governance.py`, was deleted by
+`41f0d52`; a new home must be chosen.
+|*Deferred* (<<deferred>>). Would need a design Commission first; the 46
+empty-authority phases are historical archive material, not live product.
+
+|`BUG-WFC-TRUSTED-COMMIT-RENAME-RECONCILIATION`
+|S1
+|Rename detection hides a deleted source from exact-leaf reconciliation.
+Verified asymmetry: `git_facts._staged_paths` (`:498-502`) omits `--no-renames`
+while `:153`, `:162`, `:181` and `:689` all pass it. Recurrence: documented
+limitation, then reproduced in BP5 completion `RUN-49357f88`
+(`trusted_commit:staged paths differ from commit intent`, 1 Hop, manual
+salvage). BP4b mitigated only the *leftover* (`tests/unit/test_candidate_preservation.py:284-305`),
+not the detection.
+|Pass `--no-renames` in `_staged_paths`, or compare rename pairs explicitly,
+without weakening scope or Git checks. *Depends on* nothing. *ADR effect:*
+none.
+|*Shortlist <<h3,H3>>.*
+
+|`BUG-WFC-COMMIT-INTENT-DIRECTORY-PATH-RECONCILIATION`
+|S2
+|Directory-shaped `CommitIntent` paths cannot reconcile. One occurrence
+(`RUN-b7a53a56`, pre-Beta). Already a *tested, deliberate* refusal:
+`tests/unit/test_bounded_path_commit.py:87`,
+`test_refuses_directory_shaped_intent_path_without_expanding_it`. The record
+itself states no decision between its two options is recorded.
+|Either keep leaf-only and state it in the contract, or add secure expansion.
+*Depends on* a maintainer decision (M8). *ADR effect:* none.
+|Folded into <<h3,H3>> *only if* M8 picks the documentation option, which costs
+one paragraph. The expansion option is <<deferred,deferred>>.
+
+|`FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION`
+|S1 (newly promoted)
+|`commissioning.py:367` forces `initial_phase: implement`. Before BP7 C5 a
+review-only Run was launchable through the Harness and was used twice. After
+`41f0d52` there is no such path, so the `Next action::` of
+`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION` ("independently review and accept
+the ... correction") and any future independent re-review of an existing
+candidate cannot be commissioned at all.
+|Add a bounded, admitted initial-phase selection. *Depends on* AD-6; the FTR
+rejects both a free field and a derived entry, so the shape is an ADR
+decision. *ADR effect:* AD-6 decides the shape or defers it.
+|*Shortlist <<h4,H4>>.*
+
+|`FTR-WFC-LIFECYCLE-ROTATION`
+|S2
+|One `wfc run` per checkout forever (`lifecycle.py:741-752`, exit 26).
+Recurrence evidenced once (BP7 Proof Run 2 needed a fresh worktree); the
+documented interim workaround (one fresh checkout per Run) works and is in
+use.
+|Controlled rotation from a terminal, archived, Evidence-verified lifecycle.
+*Depends on* AD-5, which the record itself requires. *ADR effect:* AD-5 is the
+decision.
+|*Deferred* pending AD-5; the workaround is adequate and the BP6c archive-
+lookup constraint makes this a real design task, not a patch.
+
+|`BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS`
+|S2
+|A timed-out evidence command leaves no recoverable output. Two occurrences:
+FTR05 and C3 (`RUN-3c6db523`, `mechanical_preemption:timeout after 900s`, 2
+Hops, candidate `9930622` already accepted by review `ed212d2`). Causes
+unproven; the record says a bounded untrusted tail is a recommendation, not a
+selected fix.
+|Investigate observability within the A2 contract. *Depends on* nothing.
+*ADR effect:* none.
+|*Deferred*: an investigation Commission with an unproven cause has no
+checkable acceptance beyond "a report exists", which this plan declines to
+propose as a hardening Commission. Candidate for P3's diagnostics work.
+
+|`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION`
+|S2
+|Retained `pytest` temporary material exhausted `/tmp` and interrupted a Run.
+Correction and `tests/unit/test_pytest_temp_storage.py` exist; independent
+review is the only remaining step.
+|Review-first Run. *Depends on* <<h4,H4>> (no review-first entry exists).
+*ADR effect:* via AD-6.
+|Acceptance is a review verdict: an independent broad review accepting the
+existing correction with no blocking Findings, plus `task-check` exit 0. Scope:
+`docs/backlog/BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION.adoc` and the review
+artifact. Blocked until H4.
+
+|`BUG-WFC-EVIDENCE-COMMAND-CONSUMER-NEUTRALITY`
+|S2
+|The self-development policy basis still admits only WFC's Python policy; the
+consumer compiler slice is accepted.
+|Reconcile the remaining self-development path. *Depends on* nothing
+technical. *ADR effect:* AD-1 settles whether self-development policy is a
+product surface at all.
+|*Deferred* to P3: the remaining path is a self-development configuration
+question, and its consumer-facing half already ships with a `_REQUIRED_REAL`
+test (`tests/conftest.py:23`).
+
+|`BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER`
+|S2
+|Correction Hops fixing the latest counterexample while a named blocker
+survives. Cause unestablished. The accepted escape Slices 1-4 do not prove the
+mechanism on R1A.
+|Evidence first (Slice 5). *Depends on* `FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE`
+Slice 5. *ADR effect:* AD-1 decides whether convergence roles stay a product
+capability at all.
+|*Deferred*: see the convergence row.
+
+|`FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE`
+|S3 as carried cost
+|Slices 1-4 accepted (`slice4.py`, 411 lines; convergence machinery also
+present in `reducer.py` and `model.py`). *Never exercised:* 0 of 126 Beta Hops
+used an escape, evaluator, diagnosis or revision phase, and neither closed
+consumer program declares a convergence role, so `robust@v1` cannot reach it.
+|Either run Slice 5/6 to earn the capability, or record it as internal,
+unexposed machinery. *Depends on* a maintainer Commission (the record requires
+one). *ADR effect:* AD-1 -- under C this is unexposed internal machinery, which
+is a legitimate, cheap answer.
+|*Deferred.* Recommended answer in the ADR rather than a Commission: record it
+as internal and unexposed, which costs nothing and closes the question.
+
+|`BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION`
+|S2
+|Fresh-checkout bootstrap-to-Prepare/Launch transition unproven. Operationally
+live: `RUN-f737ec61` stopped `human_authority:prerequisite` because the
+Operator launched without the offline-input wrapper.
+|Verify the transition. *Depends on* an Operator procedure, not product code.
+*ADR effect:* none.
+|*Deferred* to P3 release engineering, where fresh-environment install is
+already a gate (brief 6.3). Its acceptance there is stronger than a standalone
+Commission's.
+
+|`FTR-WFC-SCOPE-ESCALATION-CONTINUATION` + `BUG-WFC-SCOPE-ESCALATION-CONTINUATION-GAP`
+|S2
+|Four attempts without implementation acceptance; R1A (deferred stdout flush
+can report failure after publishing a consumable export) still open on
+candidate `a2542de`.
+|Bounded correction plus fresh acceptance before reuse. *Depends on* nothing.
+*ADR effect:* none.
+|*Deferred*: `beta1_execution_plan.adoc:875-877` already places continuation
+outside `0.1.0b1`, and four failed attempts are evidence to re-scope, not to
+retry inside a hardening offensive.
+
+|`TECH-DEBT-WFC-LEGACY-COMMIT-MECHANICS`
+|S3
+|Historical agent-commit vocabulary retained after SEC-03 made agent commits
+anomalies. Counted across the tracked `src/**/*.py`: `claimed_commits` 27
+occurrences in 6 modules (`serialization.py` 11, `git_facts.py` 8, `model.py`
+4, `vertical.py` 2, `codex_adapter.py` 1, `structured_result_schema.py` 1),
+`claim_mismatch` 2 and `pinned_paths` 5, both confined to `git_facts.py`.
+Precondition (SEC-03) is now met.
+|Assess, then possibly remove. *Depends on* AD-4 -- `claimed_commits` is a
+result-schema field (`structured_result_schema.py:97`), so removing it is a
+contract change. *ADR effect:* AD-4 sets the compatibility policy that decides
+whether removal is possible for `0.1.0b1` at all.
+|*Deferred.* Recommended: the ADR's compatibility statement answers this
+without a Commission.
+
+|`BUG-WFC-WORKER-PREMATURE-BLOCKED-CONTRACT-AMBIGUITY`
+|S3
+|Hypothesis unproven. Replays (Terra 3/3 blocked, Sol 2/2 and Sonnet 1/1
+completed) are confounded. Prose remediation already shipped (`14ee89c`, test
+at `test_a3_operating_contract.py:396`); no Beta Run stopped on a premature
+`blocked` result -- the one Worker `blocked` in the set, `RUN-e6d478e4`, was a
+*correct* `blocked`: its sandbox genuinely could not read the sibling Evidence
+repository.
+|No change. *ADR effect:* none.
+|*Rejected* (<<rejected>>): the hypothesis's main consequence is absent from
+32 Runs and the cheap measure already landed.
+
+|`BUG-WFC-COMMISSION-TASK-RENDER-TRAILING-NEWLINE`
+|S3
+|Renderer whitespace hygiene; the record itself says "revisit at an ordinary
+renderer touch, not an independent Beta-1 gate".
+|Fix opportunistically. *ADR effect:* none.
+|*Rejected* as a Commission. Legitimate rider on H1 or H2 if either touches the
+renderer, with acceptance "the rendered task text ends with exactly one
+newline" asserted by a new test.
+
+|`FTR-WFC-EXECUTION-TRUST-BOUNDARIES`
+|S2
+|Preventive isolation primitives implemented (`execution_boundary.py`, 187
+lines; integration tests `tests/integration/test_execution_boundary_bwrap.py`,
+`test_nested_claude_bwrap_qualification.py`) but not integrated into provider
+dispatch.
+|Integration and qualification. *ADR effect:* none.
+|*Rejected for this offensive:* `beta1_execution_plan.adoc:876-877` explicitly
+places it outside `0.1.0b1`.
+
+|`FTR-WFC-ATOMIC-HOP-RECOVERY`
+|S3
+|Reducer modelled and unit-tested; no production entry; no concrete
+interruption need recorded.
+|None now.
+|*Rejected:* explicitly outside `0.1.0b1`
+(`beta1_execution_plan.adoc:875-876`).
+
+|`FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION`
+|S2
+|Robust worker-side write separation is instructional only; a future
+program-version design.
+|Program-version design. *Depends on* AD-1. *ADR effect:* AD-1 decides whether
+a new program revision is the vehicle; the record forbids a silent
+`robust@v1` change.
+|*Deferred.* The ADR should name it as the first candidate for a future
+`robust@v2`, which is a sentence, not a Commission.
+
+|`FTR-WFC-ARCHITECTURAL-CORE-AND-CONSOLIDATION-BOUNDARIES`
+|S3
+|Structural WATCH; record forbids opening a cleanup program.
+|Preserve during real feature work.
+|*Rejected* as a Commission, by the record's own instruction. H1 and H3 must
+respect the core/shell boundary; that is stated in their non-goals.
+
+|`FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW`
+|S3
+|Future capability; design before a concrete privileged exception.
+|None now.
+|*Rejected:* no concrete privileged exception is pending.
+
+|`FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT`
+|S3
+|Old observations need reconciling against later fixes before any
+investigation; disposition `LATER`.
+|Reconcile first.
+|*Rejected* as a hardening Commission; a P2 documentation-reconciliation
+candidate.
+
+|`FTR-WFC-CONTRACT-HISTORICAL-RECONSTRUCTABILITY`
+|S3
+|Deferred general record; its narrow identification question is activated by
+BP1/BP2/BP6, which are delivered.
+|None now. *ADR effect:* AD-4's compatibility policy partly answers it.
+|*Rejected* as a Commission; covered by the ADR's compatibility statement.
+
+|`FTR-WFC-COMMIT-INTENT-BODY`
+|S3
+|Deferred enhancement; revisit on recurring consumer need. No Beta Run needed
+a commit body.
+|None now.
+|*Rejected.*
+
+|`FTR-WFC-DECISION-ANALYSIS-WORKFLOW`
+|S3
+|Idea-stage; the brief 3.3 itself calls it "an example of release-managed
+extensibility, not a mandate to implement it now".
+|None now.
+|*Rejected.* Useful to the ADR only as the worked example of what "a new
+program family needs a versioned release" means.
+
+|`FTR-WFC-INVESTIGATION-WORKFLOW`
+|S3
+|Idea-stage; program versus roles/topology open.
+|None now. *ADR effect:* AD-1 constrains the answer.
+|*Rejected.*
+
+|`FTR-WFC-PROGRESSIVE-WORKER-EXECUTION`
+|S3
+|Exploratory, may never ship; `robust@v1` expects a complete candidate in one
+Worker Hop.
+|None now.
+|*Rejected.*
+
+|`FTR-WFC-CATALOG-RETRIEVAL-ERGONOMICS-AND-DIAGNOSTICS`
+|S3
+|Low-priority developer tooling; not a K1 blocker.
+|None now.
+|*Rejected* from hardening; P2 candidate.
+
+|`FTR-WFC-DOCUMENTATION-INFORMATION-ARCHITECTURE-FOLLOWUP`
+|S3
+|Editorial information architecture; low.
+|None now.
+|*Rejected* from hardening; P2 owns it.
+
+|`FTR-WFC-DOCUMENTATION-CURATION`
+|S2
+|25 source-path bridges and 5 root shims retained; two named consumers deleted
+by `41f0d52`.
+|Consumer re-inventory and selective removal.
+|*Out of scope:* brief 5 and planning output 8.4, owned by P2. Carried here
+only as the dependency noted in <<dependencies>>.
+
+|`FTR-WFC-REFERENCE-MODELS-MODULARIZATION`
+|S3
+|M1/M2 done; maintainer acceptance separate.
+|None.
+|*Out of scope:* P2.
+
+|`FTR-WFC-OPERATIONAL-PROVENANCE-PILOT`
+|S3
+|P1 done; go/no-go separate.
+|None.
+|*Out of scope:* maintainer-owned.
+
+|`FTR-WFC-AGENT-PUBLIC-INTERNET-CAPABILITY`
+|S2
+|Ordinary access decided and promoted; broader effective-behavior
+qualification open; the accepted grants intentionally permit broad networking
+including possible intranet access, and WFC-owned containment is not
+integrated.
+|Further qualification.
+|*Out of scope:* maintainer-owned, and a trust-boundary question this plan has
+no authority to narrow or widen. Flagged as risk R4 in <<dependencies>>.
+
+|`BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH`
+|S2
+|Live qualification and record reconciliation outstanding.
+|None by any Commission.
+|*Out of scope:* maintainer-owned per the commissioning task.
+
+|`BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS`, `BUG-WFC-FINDING-DELTA-COMPATIBILITY-SHIM`,
+`BUG-WFC-IMMUTABLE-FINDING-ECHO`, `BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION`,
+`BUG-WFC-SEC-03-GIT-SCOPE-COMMIT-AUTHORITY`,
+`BUG-WFC-EVIDENCE-COMMAND-RESOLUTION-DIAGNOSTICS`
+|--
+|Implementation accepted; only product closure or Runtime promotion remains.
+|None by any Commission.
+|*Out of scope:* maintainer-owned closure records. Listed so the matrix is
+complete, and so no Commission re-implements an accepted correction.
+|===
+
+[[shortlist]]
+=== 4.1 Shortlisted hardening Commissions
+
+Four candidates, in dependency order. *Recommendation: authorize H4 then H1 as
+the minimum set* -- H1 is the only S1 item with reproduced, quantified
+recurrence and maintainer activation, and H4 is the only item that restores a
+capability the post-Beta plan itself needs. H3 is cheap and self-contained and
+is recommended if budget allows. H2 is recommended only if AD-2 and AD-3 are
+decided; otherwise it has no target.
+
+Every Commission below shares these boundaries, stated once:
+`edit`,`commit` inside its named leaves only; Coordinator-owned Git with a
+`CommitIntent` naming every changed leaf individually and never a directory; no
+Worker Finding operation; no `governance/` or `project_memory/` path, because
+those are maintainer-owned Consumer-Config and curated memory; no edit of
+`_open.adoc`, the brief, `beta1_*.adoc` or any other record outside scope; no
+tag, release, push, merge, rebase or Runtime promotion; no weakening or
+deletion of an existing test; `robust@v1` with an independent reviewer as the
+only Finding authority.
+
+[[h1]]
+==== H1 -- Phase-authority-scoped `findings` surface
+
+[cols="1,4"]
+|===
+|Proposed id |`wfc-postbeta-hardening-phase-scoped-findings-001`
+|Finding |`structured_result_schema.py:82-83` offers both Finding-delta shapes
+to every phase, including phases whose `permitted_operations` is empty
+(`reducer.py:1700-1703`). 4 of 32 Runs, 13 of 126 Hops.
+|Change |Thread the admitted phase's `finding_authority` through
+`vertical.py` into `projected_result_schema`/`structured_result_envelope_schema`
+and derive the `findings` item schema from it, declaratively, with no phase
+name in product code (`FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA` lines 77-92).
+|Scope paths |`src/workflow_coordinator/structured_result_schema.py`,
+`src/workflow_coordinator/vertical.py`,
+`src/workflow_coordinator/adapter.py`,
+`src/workflow_coordinator/codex_adapter.py`,
+`src/workflow_coordinator/claude_adapter.py`,
+`tests/unit/test_codex_adapter_conformance.py`,
+`tests/unit/test_claude_adapter_conformance.py`,
+`tests/unit/test_slice3_vertical.py`,
+`docs/backlog/FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA.adoc`,
+`docs/backlog/BUG-WFC-PHASE-COMPLETION-CONTRACT-OPAQUENESS.adoc`,
+`docs/warm_storage/concepts/wfc_postbeta_hardening_phase_scoped_findings_broad_review.adoc`,
+`docs/warm_storage/concepts/wfc_postbeta_hardening_phase_scoped_findings_focused_review.adoc`.
+If the final design also needs `prompt.py` or `model.py`, that is a scope
+escalation, not a silent addition.
+|Hop budget |*10.* Reasoning: this is a cross-module seam change touching the
+schema projection, its single selection site and two provider adapters, with
+conformance tests on both adapter sides. The three Beta Runs of comparable
+seam count took 8, 8 and 9 Hops (BP4a, BP6b final assurance, BP6c-002) and the
+one that was budgeted at 10 exhausted it (BP4b, four correction cycles). 10 is
+the observed ceiling for this class, not a round number. If a fifth correction
+cycle is needed, stopping at the budget is the correct outcome.
+|Dependencies |*Blocking:* G1 (ADR accepted) and G2 (maintainer answers AD-4).
+*None* on H2/H3/H4.
+|Testable acceptance |(a) A new test in
+`tests/unit/test_codex_adapter_conformance.py`, mirroring
+`test_requested_route_is_projected_as_the_exact_permitted_route_enum`
+(`:418`), asserting that for `finding_authority=()` the generated `findings`
+item schema admits no authoritative state transition, and that for
+`finding_authority=('resolve',)` it admits exactly `resolved`; the test fails
+on `git stash`-reverted product code. (b) The equivalent assertion for the
+Claude path in `tests/unit/test_claude_adapter_conformance.py`. (c) The three
+existing reducer negatives still pass *unmodified*:
+`tests/unit/test_reducer.py::test_finding_lifecycle_requires_gate_or_human_authority`
+(`:141`),
+`::test_new_finding_creation_uses_explicit_authority_operation` (`:309`),
+`::test_supervisor_has_no_finding_disposition_surface` (`:338`); verify with
+`git diff --name-only HEAD -- tests/unit/test_reducer.py` printing nothing.
+(d) A test showing a forged out-of-schema delta is still refused by the
+reducer -- reuse (c), do not add a weaker variant. (e) `make check` (ruff
+check, ruff format --check, `python -m pytest -q`) exits 0. (f)
+`docs/backlog/FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA.adoc` carries a dated
+implementation paragraph; its `Status::` line is left to the maintainer.
+|Non-goals |No reducer behavior change. No automatic repair or silent omission
+of an unauthorized delta. No new `FindingState`, Finding operation or
+authority kind. No phase name in product code. No change to `robust@v1`,
+`simple@v1` or any program definition. No change to route projection or the
+contract-kind split delivered by P1-P3. No `v3` transition redesign. No
+widening of any phase's authority.
+|===
+
+[[h2]]
+==== H2 -- One source of truth for a closed program revision
+
+[cols="1,4"]
+|===
+|Proposed id |`wfc-postbeta-hardening-program-source-of-truth-001`
+|Finding |Each closed program exists three times:
+`governance/workflow-programs/<id>/v1.yaml`, the Python literal in
+`commissioning.py:130-155`, and a third literal in
+`tests/unit/test_consumer_compiler.py:225-230`. (a) and (b) are currently
+identical except the YAML `source` key, but nothing enforces that, and the test
+named `..._matches_v1_...` does not read `v1.yaml`.
+|Change |Add an equivalence assertion between the packaged literal and the
+catalogue YAML modulo `source`, and record `direct@v1`'s support status in the
+consumer-facing catalogue text.
+|Scope paths |`tests/unit/test_consumer_compiler.py`,
+`src/workflow_coordinator/commissioning.py` (docstring and, if AD-3 selects
+derivation, the loader),
+`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc` (the
+chapter's only content leaf; `_chapter.adoc` is the include stub and should not
+need editing), plus the two review artifacts. *`governance/` is read-only for this
+Commission:* a Commission scope may not overlap it
+(`tests/unit/test_consumer_compiler.py:233-238`), so any catalogue edit or
+deletion is a maintainer action.
+|Hop budget |*4.* Reasoning: one module plus one test file. BP1 (`0ff1570`)
+and BP8 (`b8f39e4`) were comparable and each took 2 Hops; 4 allows one
+correction cycle. A budget of 10 here would be an invitation to scope creep
+into the program definitions, which are out of scope.
+|Dependencies |*Blocking:* G2 with AD-2 and AD-3 decided. Without AD-3 there
+is no target shape; without AD-2 the catalogue text has nothing truthful to
+say about `direct@v1`.
+|Testable acceptance |(a) A new test asserting
+`commissioning._robust_template() == yaml.safe_load(governance/workflow-programs/robust/v1.yaml)`
+minus the `source` key, and the same for `simple`; the test fails if either
+side is mutated. (b) The existing
+`test_consumer_compile_robust_matches_v1_apart_from_guidance_and_component_paths`
+(`:215`) either reads the catalogue file or is renamed to state what it
+actually asserts -- not deleted. (c)
+`python3 -m pytest -q tests/unit/test_consumer_compiler.py` exits 0 and
+`make check` exits 0. (d) `python3 -m pytest -q tests/unit/test_quickstart_commands.py`
+exits 0, so the quickstart's documented commands still match the real parsers.
+(e) The quickstart's supported-program list matches
+`commissioning._consumer_program_template`'s accepted pairs exactly, asserted
+by a test rather than by reading.
+|Non-goals |No change to any program definition. No new program. No file
+created, edited or deleted under `governance/`. No change to `direct@v1`'s
+withheld status without AD-2. No deletion of the self-development governance
+tree. No claim that any program is live-qualified.
+|===
+
+[[h3]]
+==== H3 -- Exact-leaf reconciliation of rename-shaped commits
+
+[cols="1,4"]
+|===
+|Proposed id |`wfc-postbeta-hardening-rename-reconciliation-001`
+|Finding |`git_facts._staged_paths` (`:498-502`) omits `--no-renames` while
+`:153`, `:162`, `:181` and `:689` pass it, so a same-content delete/add is
+reported as the destination only and `trusted_commit` refuses
+(`:817`, `:1211`). Reproduced in `RUN-49357f88`.
+|Change |Make the staged-path projection rename-blind, or compare rename pairs
+explicitly. Either way the refusal stays fail-closed; the fix removes a false
+refusal, it does not admit anything new.
+|Scope paths |`src/workflow_coordinator/git_facts.py`,
+`tests/unit/test_slice4b_git_authority.py`,
+`tests/unit/test_bounded_path_commit.py`,
+`docs/backlog/BUG-WFC-TRUSTED-COMMIT-RENAME-RECONCILIATION.adoc`,
+`docs/operator_manual/ch04_evidence/01_acceptance.adoc` (its
+`#commit-intent-admission` section currently warns about this shape), plus the
+two review artifacts. Add
+`docs/backlog/BUG-WFC-COMMIT-INTENT-DIRECTORY-PATH-RECONCILIATION.adoc` only
+if M8 selects the documentation option.
+|Hop budget |*6.* Reasoning: one function in the most safety-sensitive module
+in the tree (`git_facts.py`, 1243 lines, the trusted-commit boundary). The
+change is small but every Beta Run that touched this area needed review
+attention; 6 allows two correction cycles, which matches the 5-Hop docs-and-
+code Runs (`RUN-3e19e853`, `RUN-3d46d381`) plus one margin. Not 10: a larger
+budget here would signal redesign, which the non-goals forbid.
+|Dependencies |*None.* Independent of the ADR and of H1/H2/H4; may run in
+parallel with H1. M8 (leaf-only versus expansion) is needed only for the
+optional directory paragraph.
+|Testable acceptance |(a) A new test in
+`tests/unit/test_slice4b_git_authority.py` that stages a same-content rename
+whose source and destination are both inside the authorized scope and both in
+the `CommitIntent`, and asserts the commit succeeds; it must fail with
+`staged paths differ from commit intent` on reverted product code. (b) A
+companion negative: a rename whose source is *outside* the authorized scope is
+still refused. (c) `tests/unit/test_bounded_path_commit.py:87`
+(`test_refuses_directory_shaped_intent_path_without_expanding_it`) and the
+other 18 tests in that file (19 in total) pass unmodified:
+`git diff --name-only HEAD -- tests/unit/test_bounded_path_commit.py` prints
+nothing unless (b) is placed there, in which case only additions appear.
+(d) `make check` exits 0. (e) The BUG record carries a dated paragraph naming
+the fix and the test; its `Status::` line is left to the maintainer.
+|Non-goals |No weakening of scope, dirty-state, hook-neutralization or
+identity checks. No directory expansion of `CommitIntent` paths unless M8
+selects it, and then only as documentation. No change to `preserve_candidate`.
+No change to the exact-leaf contract itself. No redesign of
+`trusted_commit`.
+|===
+
+[[h4]]
+==== H4 -- Admitted initial-phase entry through the product Front Door
+
+[cols="1,4"]
+|===
+|Proposed id |`wfc-postbeta-hardening-initial-phase-entry-001`
+|Finding |`commissioning.py:367` hard-codes `"initial_phase": "implement"`.
+Before `41f0d52` a review-only Run was launchable and was used twice
+(`WI-WFC-BETA1-BP2-ADMISSION-AUDIT-001`,
+`WI-WFC-BETA1-BP3-REMEDIATION-REVIEW-001`); after the retirement there is no
+such path. This blocks the recorded `Next action::` of
+`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION` and any independent re-review of an
+existing candidate.
+|Change |A bounded, admitted initial-phase selection in the Consumer Request,
+constrained to phases the selected program actually declares, in the shape
+AD-6 picks.
+|Scope paths |`src/workflow_coordinator/commissioning.py`,
+`src/workflow_coordinator/frontdoor/request.py`,
+`src/workflow_coordinator/frontdoor/plan.py`,
+`src/workflow_coordinator/frontdoor/verify.py`,
+`tests/unit/test_consumer_compiler.py`,
+`tests/unit/test_frontdoor_init_plan.py`,
+`tests/unit/test_quickstart_commands.py`,
+`docs/backlog/FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION.adoc`,
+`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc`,
+plus the two review artifacts.
+|Hop budget |*8.* Reasoning: four product modules plus three test files and
+user documentation, which is the BP3 (`80f14d0`) and BP6c (9 Hops) shape
+rather than the BP1/BP8 (2 Hops) shape. 8 allows three correction cycles; the
+comparable Front Door Runs took 8 and 9.
+|Dependencies |*Blocking:* G2 with AD-6 decided, because
+`FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION` explicitly rejects both a free
+initial-phase field and a derived broad-review entry and requires an
+entry/assurance decision first. *Enables:* the
+`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION` review-first Run, and any later
+independent re-review Commission.
+|Testable acceptance |(a) `wfc plan` with the selected entry flag renders a
+work-item whose `initial_phase` is the requested phase, asserted in
+`tests/unit/test_consumer_compiler.py`. (b) An entry naming a phase the
+selected program does not declare is refused with a `CommissionError`,
+asserted as a negative test. (c) An entry naming a phase that is unreachable
+under the program's own routes is refused, so the change cannot create a Run
+that can never complete. (d) `verify_commission` admits the rendered bundle
+for a non-`implement` entry. (e)
+`python3 -m pytest -q tests/unit/test_quickstart_commands.py` exits 0, so every
+documented flag still matches the real parser. (f) `make check` exits 0. (g)
+The FTR carries a dated paragraph naming what was implemented and what was
+not; its `Status::` line is left to the maintainer.
+|Non-goals |No free-form initial-phase field. No phase entry derived from
+anything other than the request. No change to the reducer's route or authority
+semantics. No resume, continuation or successor mechanism -- that is
+`FTR-WFC-ATOMIC-HOP-RECOVERY` and the scope-escalation records, both outside
+`0.1.0b1`. No lifecycle rotation (AD-5). No new program revision.
+|===
+
+[[rejected]]
+=== 4.2 Explicitly rejected
+
+Not proposed as a hardening Commission, with the reason:
+
+* `BUG-WFC-WORKER-PREMATURE-BLOCKED-CONTRACT-AMBIGUITY` -- hypothesis's main
+  consequence absent from 32 Runs; prose measure already shipped (`14ee89c`).
+* `BUG-WFC-COMMISSION-TASK-RENDER-TRAILING-NEWLINE` -- the record itself says
+  not an independent gate; legitimate rider only.
+* `FTR-WFC-ATOMIC-HOP-RECOVERY`, `FTR-WFC-EXECUTION-TRUST-BOUNDARIES` --
+  explicitly outside `0.1.0b1` per `beta1_execution_plan.adoc:875-877`.
+* `FTR-WFC-ARCHITECTURAL-CORE-AND-CONSOLIDATION-BOUNDARIES` -- the record
+  forbids opening a cleanup program.
+* `FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW` -- no concrete privileged
+  exception pending.
+* `FTR-WFC-COMMIT-INTENT-BODY`, `FTR-WFC-CONTRACT-HISTORICAL-RECONSTRUCTABILITY`,
+  `FTR-WFC-DECISION-ANALYSIS-WORKFLOW`, `FTR-WFC-INVESTIGATION-WORKFLOW`,
+  `FTR-WFC-PROGRESSIVE-WORKER-EXECUTION` -- idea-stage or deferred with no
+  recurring evidence; the first two are answered by the ADR's compatibility
+  statement rather than by code.
+* `FTR-WFC-CATALOG-RETRIEVAL-ERGONOMICS-AND-DIAGNOSTICS`,
+  `FTR-WFC-DOCUMENTATION-INFORMATION-ARCHITECTURE-FOLLOWUP`,
+  `FTR-WFC-SELF-DEVELOPMENT-EXECUTION-INTEGRATION-DEBT` -- documentation or
+  reconciliation work; P2 owns them.
+* Brief 4.2 candidate (5), the short OS-user-name collision -- *resolved*; see
+  <<reconciliation>>.
+
+[[deferred]]
+=== 4.3 Deferred, with the trigger that would activate each
+
+* `BUG-WFC-SELF-DEVELOPMENT-GATE-FINDING-AUTHORITY` (P3.5) -- activate when
+  AD-1 and AD-2 are decided *and* a live program would otherwise ship an
+  opener-without-disposer phase. Today the 46 empty-authority gate phases are
+  all in historical archive material, and the two live consumer programs grant
+  `resolve` on every gate.
+* `FTR-WFC-LIFECYCLE-ROTATION` -- activate on AD-5, or earlier if the
+  one-checkout-per-Run workaround starts costing Operator time at scale.
+* `FTR-WFC-CORRECTION-CONVERGENCE-ESCAPE` Slices 5/6 and
+  `BUG-WFC-CORRECTION-BLOCKING-SET-CARRYOVER` -- activate when a real Run needs
+  the escape. Recommended ADR answer instead: internal, unexposed machinery.
+* `FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION` -- activate as the first
+  candidate for a future `robust@v2`.
+* `TECH-DEBT-WFC-LEGACY-COMMIT-MECHANICS` -- activate only under AD-4's
+  compatibility policy; it is a result-schema field removal.
+* `BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS`,
+  `BUG-WFC-NESTED-PREPARE-OFFLINE-BUILD-ISOLATION`,
+  `BUG-WFC-EVIDENCE-COMMAND-CONSUMER-NEUTRALITY` -- carry to P3, where
+  fresh-environment install and release preflight already provide stronger
+  acceptance than a standalone Commission.
+* `FTR-WFC-SCOPE-ESCALATION-CONTINUATION` R1A -- re-scope rather than retry;
+  four attempts have not produced an accepted implementation.
+* `BUG-WFC-COMMIT-INTENT-DIRECTORY-PATH-RECONCILIATION` expansion option --
+  activate only if M8 selects expansion over the leaf-only contract.
+
+[[dependencies]]
+== 5. Dependency table, critical path and human-only actions
+
+Every dependency below was verified against a file or record, named in the
+"basis" column.
+
+[cols="1,2,2,2,3",options="header"]
+|===
+|# |Item |Blocked by |May run in parallel with |Basis for the dependency
+
+|G0
+|Beta-epic closure record
+|maintainer only
+|--
+|`beta1_execution_plan.adoc:843-845`, `:849-872`; `_open.adoc` Beta-epic
+closure readiness paragraph. *Human-only.*
+
+|ADR
+|`wfc-postbeta-adr-workflow-generality-001`
+|M1-M3 as inputs; G0 per `beta1_execution_plan.adoc:855-857` ("each as its own
+planned work")
+|H3; P2 planning
+|The execution plan lists the ADR as the first post-closure item.
+
+|G1
+|Gate: no result-schema refactoring before the ADR is accepted
+|ADR independently accepted, no blocking Findings, `task-check` exit 0
+|--
+|Brief 3.4 "*Gate:*". *Binding.*
+
+|G2
+|Maintainer decides AD-1..AD-6 and authorizes the hardening set
+|G1
+|--
+|`beta1_execution_plan.adoc:842` "Decisions are maintainer-owned".
+*Human-only.*
+
+|H1
+|Phase-scoped `findings` surface
+|G1, G2 (AD-4)
+|H3, H4, P2
+|`FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA:38` "This activation authorizes no
+implementation or Commission".
+
+|H2
+|Program source of truth
+|G2 (AD-2, AD-3)
+|H1, H3, H4
+|AD-3 has no target shape until decided; `governance/` edits are
+maintainer-only per `test_consumer_compiler.py:233-238`.
+
+|H3
+|Rename reconciliation
+|nothing
+|ADR, H1, H2, H4, P2
+|No record makes it ADR-dependent; the defect is a verified asymmetry in
+`git_facts.py`.
+
+|H4
+|Initial-phase entry
+|G2 (AD-6)
+|H1, H3, P2
+|`FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION` requires the entry/assurance
+decision first.
+
+|RW1
+|Review-first Run accepting the pytest-storage correction
+|H4
+|anything
+|`commissioning.py:367`; the record's `Next action::` is a review.
+
+|G3
+|Gate: hardening changes have passing authoritative checks and independent
+review; historical failures reproduced as prevented or safely refused
+|H1 (+H3/H4 if authorized)
+|--
+|Brief 4.3 "*Gate:*".
+
+|P2
+|Documentation consolidation planning
+|G0
+|ADR, H1-H4
+|`beta1_execution_plan.adoc:860`. Its C4 consumer inventory must be redone
+because `41f0d52` deleted two named consumers.
+
+|P3
+|Release engineering planning
+|G3, P2
+|--
+|`beta1_execution_plan.adoc:861-862`. Also needs the missing
+`spreadsheet-handling-4acca3da/` staging (<<limits-up-front>>).
+
+|P4
+|Final consumer qualification on `spreadsheet-handling`
+|P3 complete, release candidate built
+|--
+|`beta1_execution_plan.adoc:863`; brief 7.2 keeps it separate from BP9.
+*Needs human access to a second repository.*
+
+|M-tag
+|`0.1.0b1` tag and publication
+|all of the above + explicit maintainer release record
+|--
+|`beta1_execution_plan.adoc:866-869`. *Human-only; no Operator or Commission
+may set it.*
+|===
+
+=== 5.1 Critical path
+
+`G0 -> ADR -> G1 -> G2 -> H1 -> G3 -> P3 -> P4 -> M-tag`.
+
+H3 is off the critical path entirely and can be authorized at any time,
+including before the ADR. H4 is off the critical path for the tag but *on* the
+critical path for RW1 and for any later review-only Commission, which is why
+it is in the minimum set. H2 is off the critical path. P2 can run in parallel
+with the ADR and the hardening Commissions; only P3 needs both P2 and G3.
+
+Longest chain in Hops, if the minimum set is authorized: ADR 6 + H4 8 + H1 10 =
+24 Hops, plus RW1. The 32 archived Beta Runs consumed 126 Hops in total, so
+this is roughly one fifth of the Beta campaign's Hop cost -- which is the
+honest size of "a bounded hardening offensive" and the reason this plan
+shortlists two rather than four.
+
+=== 5.2 Dependencies that are a maintainer decision or a human-only action
+
+. *G0* Beta-epic closure record -- maintainer only.
+. *G2* the AD-1..AD-6 answers and the hardening authorization -- maintainer
+  only; M1-M8 below.
+. *M-tag* the `0.1.0b1` tag, release and publication -- maintainer only, with
+  an explicit release record.
+. The installed-wheel live per-adapter qualification and the unfamiliar-user
+  quickstart trial (BP9 acceptance) -- maintainer only.
+. The Claude record reconciliation
+  (`BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH`) and DG-6 -- maintainer
+  only.
+. Product-closure records for BP1-BP9 and for the six accepted BUGs in
+  <<classification>> -- maintainer only.
+. The push -- maintainer only; nothing has been pushed.
+. Any edit or deletion under `governance/` or `project_memory/` -- maintainer
+  only, because a Commission scope may not overlap the Consumer Config
+  governance directory.
+. Registering this plan in `_open.adoc` -- maintainer only; `_open.adoc` is
+  outside this WorkItem's scope. The needed entry is a one-line card under
+  "Post-Beta-to-release brief" linking this file as a planning candidate with
+  no authority, matching how `beta1_bp7_cutover_plan.adoc` is carried at
+  `_open.adoc:154-158`.
+. Credential, GitHub, PyPI and public-visibility choices -- P3's subject, not
+  this plan's; flagged here only so the list is complete.
+
+=== 5.3 Risks this plan carries forward
+
+* *R1* G2 is never given, and the hardening offensive stalls with an accepted
+  ADR and no authorized change. Verification: the ADR's acceptance is
+  observable; G2's absence is observable. Stop behavior: nothing starts; no
+  Commission may infer authorization.
+* *R2* H1 is authorized before AD-4 is answered and implements a shape the ADR
+  later rejects. Mitigation: G1 and G2 are both listed as blocking in H1's
+  dependencies, and H1's non-goals forbid a reducer change, so the worst case
+  is a reverted schema projection.
+* *R3* A Worker proposes a Finding operation during one of these very
+  Commissions and loses Hops to the defect H1 exists to fix. Observed rate: 4
+  of 32 Runs. Mitigation: each Commission's task text must state, in the
+  Worker's own words, that only the independent reviewer opens or resolves
+  Findings. Recovery: the Run stops `awaiting_human` and a successor is
+  commissioned; no Hop is silently lost.
+* *R4* The accepted public-internet grants intentionally permit broad
+  networking, including possible intranet access, and WFC-owned containment is
+  unintegrated. This plan neither narrows nor widens that boundary. Any
+  Commission above runs under whatever provider configuration the maintainer
+  has promoted; none of them needs network access.
+* *R5* P3 cannot start from the current staging set, because
+  `spreadsheet-handling-4acca3da/` is absent. Verification: list the staged
+  directory. Recovery: the Operator re-stages before the P3 Commission.
+
+[[ad-records]]
+== 6. (D) Remaining architecture decisions, one record each
+
+These are architecture decisions, kept separate from the operational and
+release decisions in <<decisions>>. Each is a recommendation, not a settled
+outcome.
+
+[[ad1]]
+=== AD-1 The product's workflow-generality contract
+
+Question:: Does WFC's public product contract commit to closed, product-owned,
+versioned workflow programs on a generic kernel (C), to consumer-definable
+phases, routes, authorities and topology (A), or to hard-coded programs (B)?
+Options:: A, B, C as in brief 3.2.
+Evidence in the repository:: C is already implemented on the consumer path
+(`commissioning.py:215-235`) while the kernel stays data-driven and
+phase-name-free (`reducer.py:1693-1703`). The benefit of A is unexercised: 4
+phase kinds in 126 Hops, 0 uses of `direct@v1` or of any convergence role. The
+cost of a broad contract is measured: 13 of 126 Hops lost to
+`invalid_finding_delta`. B would duplicate the reducer, evidence, recovery and
+archive machinery that 18 completed Runs exercise.
+Consequences:: Under C the public configuration boundary is "task inputs,
+scope and execution parameters, plus a choice from a product-owned program
+set"; the 107 self-development governance YAML files become declared historical
+archive rather than a public surface; a new program family becomes a versioned
+release. Under A, P3.5 must guard arbitrary topology and the schema narrowing
+in AD-4 becomes much harder to bound.
+Recommendation:: *C*, recorded as a decision with A and B named as rejected,
+and with the explicit statement that declarative internal implementation does
+not imply an open public DSL (brief 3.3).
+Who decides:: The maintainer, on the ADR.
+Blocks:: The whole ADR; G1; indirectly P3.5, `PHASE-WRITE-SCOPE`,
+`INVESTIGATION-WORKFLOW` and `DECISION-ANALYSIS-WORKFLOW`.
+
+[[ad2]]
+=== AD-2 The status of `direct@v1`
+
+Question:: Is `direct@v1` a supported product program, internal or historical
+material, or removable debt?
+Options:: (a) support it, which requires first fixing its
+opener-without-disposer `verification` phase; (b) declare it unsupported
+internal/historical material, retained but not offered; (c) remove it.
+Evidence:: `governance/workflow-programs/direct/v1.yaml` `verification` phase
+is `authority: gate` with `finding_authority: []` -- the FD-08 defect shape
+that stopped `RUN-82bf4621` with `completion_blocked_by_open_blocking_findings`.
+Withheld from the consumer compiler at `commissioning.py:218`. Zero archived
+Beta Runs used it. One rendered bundle survives at
+`governance/commissions/fd0-direct-v1-quickstart-001/`.
+`beta1_execution_plan.adoc:808` already records that it does not ship in Beta 1.
+Consequences:: (a) adds a third supported program and a real fix before any
+release claim. (b) costs one sentence in the ADR and one line in the
+quickstart's limitations, and leaves the historical Run evidence readable. (c)
+touches `governance/`, which is maintainer-only, and would make
+`governance/commissions/fd0-direct-v1-quickstart-001/` unparseable against a
+missing program.
+Recommendation:: *(b)*. Record it as unsupported, retained historical material;
+do not remove it, because the brief 3.3 warns against removing solely because
+current self-development does not exercise something, and its rendered bundle
+and the FD-08 record are evidence.
+Who decides:: The maintainer.
+Blocks:: H2; the quickstart's program catalogue.
+
+[[ad3]]
+=== AD-3 The single source of truth for a closed program revision
+
+Question:: Is the authoritative definition of `robust@v1`/`simple@v1` the
+catalogue YAML, the packaged Python literal, or one derived from the other?
+Options:: (a) the packaged literal is authoritative and the catalogue YAML
+becomes self-development input, with a test asserting equivalence; (b) the
+catalogue YAML is authoritative and the package loads it as a resource; (c)
+keep both, with a test asserting equivalence.
+Evidence:: Three copies exist (`governance/workflow-programs/<id>/v1.yaml`;
+`commissioning.py:130-155`; `tests/unit/test_consumer_compiler.py:225-230`).
+(a) and (b) are currently identical except the YAML `source` key -- verified
+field by field -- and nothing enforces it. The test named
+`..._matches_v1_...` (`:215`) asserts against its own literal.
+`implementation_identity.RESOURCE_DIGESTS` already provides the mechanism for
+option (b): packaged resources are digest-checked on every read
+(`commissioning.py:199-212`).
+Consequences:: (b) is the most honest for an installed product -- an installed
+wheel has no `governance/` tree -- but changes the packaged resource set and
+therefore the implementation identity. (a) and (c) keep identity stable and
+cost one test. Under any option the misleading test name should be corrected.
+Recommendation:: *(c) now, (b) later*: add the equivalence test in H2 so
+divergence becomes impossible, and record (b) as the intended direction for the
+release-engineering package, where the packaged resource set is being reviewed
+anyway.
+Who decides:: The maintainer.
+Blocks:: H2.
+
+[[ad4]]
+=== AD-4 Phase-authority-scoped result contracts
+
+Question:: Does the projected result contract narrow the `findings` surface by
+the admitted phase's `finding_authority`, and for which contract versions and
+which adapters?
+Options:: (a) narrow for all contract versions and both adapters; (b) narrow
+for the current versions only, leaving legacy versions unchanged; (c) do not
+narrow; rely on prompt projection plus the reducer.
+Evidence:: `structured_result_schema.py:82-83` does not narrow;
+`:94` shows the narrowing pattern already works for `requested_route`;
+`prompt.py:138,154` already projects the authority as prose, and three
+`correct`-phase stops happened *with* that prose present, which is the evidence
+that (c) is insufficient. `vertical.py:301-303` is a single selection site, so
+threading one more value is a small change. `FTR-WFC-PHASE-SCOPED-RESULT-SCHEMA`
+lines 15-39 is the maintainer's activation; lines 148-159 its non-goals.
+Recurrence: 4 of 32 Runs, 13 of 126 Hops.
+Consequences:: (a) risks breaking the historical-reconstructability of archived
+results whose schema is replayed; `tests/architecture/test_replays.py` exists
+precisely to catch that. (b) keeps archived replays intact and still removes
+the live defect. (c) leaves 13-Hop-per-32-Run losses in place and leaves the
+maintainer's own activation unimplemented.
+Recommendation:: *(b)*, with the reducer untouched, the three negative reducer
+tests retained unmodified, and the narrowing derived from configuration with no
+phase name in product code.
+Who decides:: The maintainer.
+Blocks:: H1; `TECH-DEBT-WFC-LEGACY-COMMIT-MECHANICS`; the compatibility
+statement the ADR owes for `CONTRACT-HISTORICAL-RECONSTRUCTABILITY`.
+
+[[ad5]]
+=== AD-5 The lifecycle model: one Run per checkout
+
+Question:: Is "one `wfc run` per canonical checkout, forever" part of the
+product contract, or does controlled rotation after a terminal, archived,
+Evidence-verified lifecycle belong to a later lifecycle revision?
+Options:: (a) contract: one Run per checkout, documented, with
+clone-or-worktree as the supported pattern; (b) add controlled rotation now;
+(c) defer rotation to a named later revision while documenting (a) as the Beta
+contract.
+Evidence:: `frontdoor/lifecycle.py:741-752` refuses `refused_active_lifecycle`
+(exit 26, `:125`) on any `authorized` journal record, regardless of a terminal
+classification and verified archive -- "the classification name says 'active'
+but the check is 'present'", in the FTR's own words.
+`FTR-WFC-LIFECYCLE-ROTATION:6` requires this ADR to decide it. Recurrence: once
+(BP7 Proof Run 2). The BP6c review relies on one-Run-per-checkout for
+unambiguous archive lookup, so rotation is a real design task, not a flag.
+Consequences:: (b) requires the archive lookup to become Run-scoped, which the
+BP6c review currently relies on *not* being, so it is larger than it looks.
+(a)/(c) keep the documented workaround, which every post-Beta Commission above
+already assumes (each runs in a fresh worktree).
+Recommendation:: *(c)*. State (a) as the `0.1.0b1` contract and record the
+FTR's five design constraints as the entry conditions for a later revision.
+Who decides:: The maintainer.
+Blocks:: `FTR-WFC-LIFECYCLE-ROTATION`.
+
+[[ad6]]
+=== AD-6 Program entry at a phase other than `implement`
+
+Question:: May a Commission enter a selected program at a phase other than
+`implement`, and if so, how is the entry constrained?
+Options:: (a) no: `implement`-only remains the product contract; (b) yes, via
+an explicit request field constrained to phases the selected program declares
+*and* that can reach a terminal route; (c) yes, derived from the request's
+shape.
+Evidence:: `commissioning.py:367` hard-codes `"initial_phase": "implement"`.
+The engine permits other entries and two archived Beta Runs used `broad_review`
+as the entry, both 1 Hop, both completed -- but both through the Harness
+deleted by `41f0d52`. `FTR-WFC-FRONT-DOOR-PHASE-ENTRY-CONTINUATION` explicitly
+rejects a free initial-phase field and the derived broad-review entry, and
+requires an entry/assurance decision and successor tests first.
+Consequences:: Under (a) the recorded `Next action::` of
+`BUG-WFC-PYTEST-TEMP-RESOURCE-EXHAUSTION` cannot be performed by any
+Commission, and neither can an independent re-review of an existing candidate;
+the maintainer would have to do both outside WFC, which weakens the
+self-development claim the product rests on. (c) is already rejected by the
+FTR. (b) is bounded: two negative tests (undeclared phase; unreachable phase)
+make it safe, and `verify_commission` already re-admits the rendered bundle.
+Recommendation:: *(b)*, with both negative constraints mandatory. This is the
+one capability the post-Beta plan needs and currently lacks.
+Who decides:: The maintainer.
+Blocks:: H4; RW1; any later review-only Commission.
+
+[[decisions]]
+== 7. Decisions the maintainer must take, with a recommendation each
+
+Architecture decisions AD-1..AD-6 are above and are not repeated. The list
+below is what must be decided for *this plan* to turn into authorized work.
+
+. *M1 -- Is the post-Beta ADR authorized as one Commission now?* Recommend
+  *yes*, after G0, as `wfc-postbeta-adr-workflow-generality-001` with a 6-Hop
+  budget and the scope in <<adr-commission>>. It is the brief's own gate and
+  five other records wait on it.
+. *M2 -- Does the ADR answer all six AD questions, or only AD-1?* Recommend
+  *all six*. AD-2, AD-3, AD-5 and AD-6 are each one section and each unblocks a
+  concrete record; splitting them into later ADRs would cost four more Runs.
+. *M3 -- Where does the ADR live?* Recommend
+  `docs/architecture/adr/ADR-WFC-CLOSED-VERSIONED-WORKFLOW-PROGRAMS.adoc`.
+  Note that no `docs/architecture/` *directory* exists today -- only the file
+  `docs/architecture.md` -- so this creates a new home next to a same-named
+  file, which the brief 5.1 warns against ("do not create another competing
+  navigation tree"). The alternative, and the cheaper one, is a backlog leaf
+  `docs/backlog/ADR-WFC-CLOSED-VERSIONED-WORKFLOW-PROGRAMS.adoc` beside the
+  records it governs, which `docs/README.adoc:124-127` already reaches through
+  the backlog overview. Creating a navigation home is the maintainer's call;
+  `docs/README.adoc` is outside this plan's scope either way.
+. *M4 -- Which hardening Commissions are authorized, and in what order?*
+  Recommend the minimum set *H4 then H1*, with *H3* added if budget allows
+  (it is independent of everything and can start immediately), and *H2* only
+  after AD-2 and AD-3. Total minimum: 18 Hops.
+. *M5 -- Are the proposed Hop budgets accepted?* Recommend *yes*: ADR 6, H1 10,
+  H2 4, H3 6, H4 8. Each is justified against the observed Beta distribution in
+  <<run-facts>> rather than estimated. A budget stop is a correct outcome, not
+  a failure, as BP4b showed.
+. *M6 -- Is this plan registered in `_open.adoc`?* Recommend *yes*, as a
+  planning candidate with no authority, in the shape used for
+  `beta1_bp7_cutover_plan.adoc`. `_open.adoc` is outside this WorkItem's scope,
+  so this is a maintainer edit.
+. *M7 -- Disposition of the two obsolete BUGs.* Recommend recording
+  `BUG-WFC-COMMISSION-RENDER-CHECK-WRITES-BUNDLE` and
+  `BUG-WFC-OPERATOR-PREPARE-EXECUTABLE-VALIDATION` as *obsolete -- subject
+  retired, product path satisfies the requirement*, citing the evidence in
+  <<obsolete-records>>, rather than commissioning corrections for retired code.
+  This is a record disposition, which only the maintainer makes.
+. *M8 -- Leaf-only `CommitIntent` contract, or secure directory expansion?*
+  Recommend *leaf-only, stated explicitly in the contract*: the refusal is
+  already deliberate and tested
+  (`tests/unit/test_bounded_path_commit.py:87`), it occurred once, and
+  expansion adds a path-resolution surface to the trusted-commit boundary. If
+  accepted, the only work is one paragraph, foldable into H3.
+. *M9 -- Does `beta1_execution_plan.adoc:834-836` and `DEC-WFC-023` get
+  reconciled now or at the next touch?* Recommend *at the next touch*: both
+  reference the retired `scripts/wfc_op.py` archive path (<<cross-cutting>>).
+  Neither blocks anything, and both are outside this WorkItem's scope.
+. *M10 -- Re-stage the P3 inputs?* Recommend *yes, before P3 is commissioned*:
+  `spreadsheet-handling-4acca3da/` is described in `PROVENANCE.txt` but absent
+  from the staged directory, and a Worker sandbox cannot read a sibling
+  repository (`RUN-e6d478e4`).
+
+== 8. Limits of this plan
+
+* Built by reading the repository at `f9b9a7a` and the verified staged Run
+  facts. The test suite was *not* executed: `python3 -m pytest` reports
+  `No module named pytest` in the planning agent's sandbox. Every acceptance
+  criterion is therefore written as a command plus its expected result for a
+  later Coordinator-trusted run. `asciidoctor` is available and was used only
+  to check this document's rendering.
+* Coordinator `task-check` for this WorkItem is a separate, Coordinator-owned
+  step, not performed here. No agent-observed check in this document is
+  Coordinator-trusted evidence.
+* Severity labels, Hop budgets and the shortlist are bounded technical
+  judgment. They are not maintainer decisions, and <<decisions>> says so for
+  each.
+* No `Status::` line, lifecycle paragraph or disposition of any existing record
+  was changed, and no Finding operation was reported; only an independent
+  reviewer opens or resolves Findings.
+* The brief's sections 5, 6 and 7 and planning outputs 8.4-8.8 are deliberately
+  not reconciled here. P2 and P3 owe that work, and <<dependencies>> names what
+  they inherit.
+* `direct@v1`, the 107 self-development governance YAML files and the 104
+  rendered Commission bundles were inventoried by counting and parsing, not by
+  reviewing each file's content. A per-file support judgment is AD-2's and
+  AD-1's consequence, not a claim made here.
