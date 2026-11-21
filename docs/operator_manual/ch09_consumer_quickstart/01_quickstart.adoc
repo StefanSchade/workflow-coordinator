@@ -1,0 +1,233 @@
+ifndef::assembled[]
+= WFC Operator Manual -- Consumer quickstart
+:operator-docs: ../..
+
+Maturity::  stable
+Authority:: informative
+Updated::   2026-11-21
+Owns::      A first-time external user's path from installation to one inspected, archived Run on an unrelated repository, and this Beta's honest limitations. Normative mechanics stay owned by the chapters this page links to.
+endif::[]
+
+[[consumer-quickstart]]
+== Consumer quickstart
+
+This is for someone who has *not* read the rest of this manual and is
+applying WFC to their own, unrelated repository -- not WFC's own
+development. It covers only installation through one inspected, archived
+Run. For anything beyond that, follow the links below into the full manual.
+
+[[quickstart-prerequisites]]
+=== Prerequisites
+
+* Git, and a completely clean working tree -- `wfc run` refuses a dirty tree.
+* Python 3.10 or newer, to run `wfc` itself. Your own project's build and
+  test tools are *yours* to install; WFC provisions nothing project-specific.
+* An already-installed, already-authenticated provider CLI for the adapter
+  you intend to use: `codex` for `codex_cli`, or `claude` for `claude_cli`.
+  Confirm it resolves with `which codex` or `which claude`.
+
+[[quickstart-install]]
+=== Install
+
+[source,shell]
+----
+python3 -m venv .venv
+source .venv/bin/activate
+pip install /path/to/workflow-coordinator
+wfc --version --json
+----
+
+Install from a release artifact (sdist or wheel) or a source checkout; there
+is no separate build step WFC performs for you. `--version --json` reports
+the executing package's implementation identity.
+
+[[quickstart-init]]
+=== `wfc init` and configuration
+
+From your repository root:
+
+[source,shell]
+----
+wfc init --repository . --scope-ceiling src --evidence-repository ../wfc-evidence
+----
+
+This writes `.wfc/config.yaml` (never commits it) and creates or adopts the
+named Evidence repository -- a separate, remote-less Git repository. Edit
+`.wfc/config.yaml` yourself to add a `default_execution` binding for each
+role you will use, for example:
+
+[source,yaml]
+----
+default_execution:
+  worker:
+    adapter: codex_cli
+    model: <your model>
+    reasoning: medium
+----
+
+`adapter` must be `codex_cli` or `claude_cli`; no other value is accepted.
+Then commit the file yourself:
+
+[source,shell]
+----
+git add .wfc/config.yaml
+git commit -m "chore: add wfc configuration"
+----
+
+`--scope-ceiling` is repeatable and names every path a future task's scope
+may touch. A ceiling path covers only itself and its own descendants; list a
+root-level file (for example `go.mod`) individually -- it is never implied by
+a sibling directory.
+
+[[quickstart-request]]
+=== Writing a request
+
+Write a short task document:
+
+[source,text]
+----
+# Add JSON output to the list command
+
+Add a --json flag that prints the same rows as JSON.
+
+## Acceptance
+task-check passes
+
+## Withheld authority
+none beyond scope
+
+## Default escalation
+stop on ambiguity
+----
+
+[[quickstart-plan]]
+=== `wfc plan` preview
+
+[source,shell]
+----
+wfc plan task.md --repository . --scope src \
+  --commission-id add-json-output-001 --work-item-id WI-ADD-JSON-OUTPUT-001 \
+  --authority-source "Repository owner authorizes this bounded task." \
+  --program simple@v1 \
+  --persona worker="Bounded worker persona; implement the requested change within scope." \
+  --evidence-argv sh --evidence-argv checks/check.sh \
+  --guidance-path GUIDANCE.md \
+  --execution-override worker.adapter=codex_cli --execution-override worker.model=<model>
+----
+
+`wfc plan` is entirely read-only: it writes nothing, runs no project command,
+and never touches Git. It prints the Commission bytes and execution envelope
+it *would* compile. Once the preview looks right, hand-author the equivalent
+Consumer Request YAML (the same fields, under `task:`, `scope:`, `personas:`,
+`evidence:` and `guidance:`, plus `schema_version: 1`, `max_autonomous_hops`
+and an explicit, normally empty, `durable_artifacts: {}`) -- `wfc plan` does
+not write that file for you; `wfc run` below reads it from `--request`.
+
+[[quickstart-run]]
+=== Unattended `wfc run --yes`
+
+[source,shell]
+----
+wfc run --repository . --request request.yaml \
+  --execution-override worker.adapter=codex_cli --execution-override worker.model=<model> \
+  --yes
+----
+
+`--yes` authorizes without an interactive prompt -- what an unattended/CI
+caller uses. Pass `--executable claude` for a `claude_cli` configuration; the
+executable must match the configured adapter, and a Run uses exactly one
+adapter throughout. `wfc run` re-derives and prints the Commission and
+execution-envelope digests, requires the clean tree, commits the Commission,
+re-verifies it, launches the engine, waits, and prints `CLASSIFICATION:`/
+`MESSAGE:`/`RUN ID:`/`RUN STATUS:`/`END HEAD:`. *A non-zero exit code does not
+by itself mean failure* -- `awaiting_human` and other legitimate stops exit
+non-zero too; always read the printed classification. See
+link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#launch[LAUNCH]
+for the full mechanics.
+
+[[quickstart-status]]
+=== `wfc status` / `audit` / `report`
+
+[source,shell]
+----
+wfc status --repository .
+wfc report <evidence-repo>/archive/<classification>/<attempt-id>/audit.json
+----
+
+`wfc status` is read-only and safe from a second shell while a Run is in
+progress. Archiving happens automatically once the Run reaches a terminal
+state; `wfc report` renders the already-archived result, and `wfc audit
+<attempt-dir>` is only for reproducing or re-deriving `audit.json` directly.
+See link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#status[STATUS]
+and the link:{operator-docs}/operator_manual/ch04_evidence/_chapter.adoc#evidence[evidence chapter].
+
+[[quickstart-evidence-location]]
+=== Where Evidence lands
+
+Absent `--evidence-repository`/an `evidence:` block in `.wfc/config.yaml`,
+Evidence lands at `<XDG_DATA_HOME, or ~/.local/share>/wfc/evidence/<repository
+name>`. Raw-file retention is `local` by default; pass `--evidence-raw` on
+`wfc init` (or set `evidence.raw`) to choose `commit` or `discard` instead. WFC
+never pushes this, or any, repository -- there is no remote and no push code
+path.
+
+[[quickstart-next]]
+=== What next
+
+Prepare *one fresh checkout per Run*: a checkout that has already authorized
+one lifecycle refuses every later `wfc run`, even long after a terminal,
+archived Run, until
+link:{operator-docs}/backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc[FTR-WFC-LIFECYCLE-ROTATION]
+is decided. For a stopped Run, a failure diagnosis, or anything past this
+quickstart, continue into the full
+link:{operator-docs}/operator_manual/operator_manual.adoc[Operator Manual].
+
+[[beta-limitations]]
+== Limitations of this Beta
+
+* *Crash and surviving-provider behavior.* Per decision DG-3 Variant B, WFC
+  does not supervise a launched engine process. An unresolved launch is
+  classified `uncertain_launch` and is never treated as safe to relaunch;
+  `wfc resume` never relaunches an engine -- it only continues an
+  already-authorized controller from journal and filesystem facts. See
+  link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#terminal-states[terminal states]
+  and
+  link:{operator-docs}/operator_manual/ch07_diagnostics/01_troubleshooting.adoc#troubleshooting[troubleshooting].
+* *One adapter per Run.* Every role in a Run shares the same adapter and the
+  same provider executable; mixing adapters within one Run is not supported.
+* *One evidence command.* A Commission declares exactly one trusted
+  `task-check` command, with a timeout of at most 900 seconds; there is no
+  separate per-phase or per-Hop evidence command.
+* *Clean-tree and scope-ceiling rules.* The working tree must be completely
+  clean at launch, and every scope path must equal, or sit strictly beneath,
+  a path already named in `.wfc/config.yaml`'s `--scope-ceiling`; a
+  root-level file must be listed individually.
+* *Incomplete recovery conveniences.* There is no `wfc continue`. A stopped
+  Run is recovered manually: frozen work-in-progress is preserved as an
+  explicitly non-authoritative Git commit, then a freshly authorized
+  successor Commission inspects it from scratch -- see
+  link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc[recovery outcomes].
+  An automatic candidate-preservation commit may already exist for some
+  stops; it grants no acceptance, scope or authority and does not replace
+  that manual procedure.
+* *One lifecycle per checkout.* Until
+  link:{operator-docs}/backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc[FTR-WFC-LIFECYCLE-ROTATION]
+  is decided, prepare a fresh checkout for every Run.
+* *No token usage is reported.* The archived `audit.json` always carries
+  `usage_not_reported` among its `limits`; this is nullable by decision DG-1
+  for a future reported-usage value, not something the current product
+  measures.
+* *Qualified platform, only as far as this repository records it.* The
+  package declares Python 3.10 or newer; the only profile this repository's
+  own development actually qualifies today is CPython 3.13 on Linux x86-64.
+  ARM64 is an intended target, not a qualified one. Host OS, CPU and each
+  provider adapter require their own separate qualification.
+* *WFC never pushes.* Neither the payload repository nor the Evidence
+  repository is ever pushed by any WFC code path; every commit WFC makes
+  stays local.
+
+Live qualification of each supported provider adapter, from an installed
+wheel, is performed and recorded by the maintainer. This document does not
+claim it, and a passing fake-provider test -- including the one exercising
+this same scenario in `tests/integration/test_beta_e2e_fake_provider.py` --
+does not substitute for it.
