@@ -9,7 +9,7 @@ from pathlib import Path
 VERSION = "0.1.0b1"
 RESOURCE_DIGESTS = {
     "agent_operating_contract_v6.txt": "7abf57ab315965c4266674efdb71c6cd1415989cdb771b9232501563862ca8f7",
-    "roles/reviewer.txt": "739a5db2044b7897655c0120ea9f0c4c2c5fc8cc3074a7f03e93385f67dac4b4",
+    "roles/reviewer.txt": "e53062e41522a4fa7fc12ee8139e7ba842cc2f9e32e7f7c5a5f8013df99f7d4e",
     "roles/simple-self-check.txt": "7b5436e7998c955b0ed06812fdfb575d27eed4879334d154f84c2b9b3c7e97cb",
     "roles/worker.txt": "179656ee9824c91c151c7edb7284ab848067a28fc575b1e0fe5549df8a99daab",
 }
