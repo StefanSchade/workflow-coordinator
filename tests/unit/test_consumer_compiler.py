@@ -247,6 +247,40 @@ def test_consumer_compile_rejects_hops_above_config_ceiling(repository: Path) ->
         compile_commission(request, config, repository=repository)
 
 
+def test_consumer_compile_admits_a_thirty_two_hop_ceiling_and_request(repository: Path) -> None:
+    """A Consumer Config ceiling of 32 compiles, because the product ceiling is 64.
+
+    The compiled WorkItem and policy are re-parsed through the unchanged schemas
+    inside ``compile_commission``, so this node fails while
+    ``COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS`` is below 32.
+    """
+
+    head = git(repository, "rev-parse", "HEAD")
+    request = consumer_request_from_yaml(
+        simple_request_text(head).replace("max_autonomous_hops: 1", "max_autonomous_hops: 32")
+    )
+    config = consumer_config_from_yaml(
+        config_text().replace("max_autonomous_hops: 5", "max_autonomous_hops: 32")
+    )
+    compiled = compile_commission(request, config, repository=repository)
+    item = yaml.safe_load(compiled.texts[compiled.paths["work_item"]])
+    policy = yaml.safe_load(compiled.texts[compiled.paths["policy"]])
+    assert item["max_autonomous_hops"] == 32
+    assert policy["max_autonomous_hops"] == 32
+
+
+def test_consumer_compile_refuses_thirty_three_hops_under_that_ceiling(repository: Path) -> None:
+    head = git(repository, "rev-parse", "HEAD")
+    request = consumer_request_from_yaml(
+        simple_request_text(head).replace("max_autonomous_hops: 1", "max_autonomous_hops: 33")
+    )
+    config = consumer_config_from_yaml(
+        config_text().replace("max_autonomous_hops: 5", "max_autonomous_hops: 32")
+    )
+    with pytest.raises(CommissionError, match="exceeds the Consumer Config ceiling"):
+        compile_commission(request, config, repository=repository)
+
+
 def test_consumer_compile_rejects_tampered_package_resource(repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import workflow_coordinator.commissioning as commissioning
 

@@ -13,6 +13,7 @@ import yaml
 
 from workflow_coordinator.adapter import AgentExecutionOutcome
 from workflow_coordinator.model import (
+    COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
     DurableArtifact,
     FindingAuthority,
     MechanicalFacts,
@@ -1441,7 +1442,7 @@ def test_direct_serial_driver_rejects_limit_above_cap_before_dispatch(tmp_path):
     )
     run = new_run(
         WorkItem(2, "WI-LIMIT", "fixture", "profile.yml", "repo",
-                 ("payload.txt",), "loop", 21,
+                 ("payload.txt",), "loop", COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS + 1,
                  {WorkflowRole.WORKER: "fixture worker"}),
         workflow,
         RepositoryPolicy(
@@ -1463,7 +1464,9 @@ def test_direct_serial_driver_rejects_limit_above_cap_before_dispatch(tmp_path):
     adapter = CountingAdapter()
     state = tmp_path / "state"
     association = register_checkout(state, repository)
-    with pytest.raises(OperatorPreflightError, match="above 20"):
+    with pytest.raises(
+        OperatorPreflightError, match=f"above {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS}"
+    ):
         run_serial_hops(
             run,
             workflow,

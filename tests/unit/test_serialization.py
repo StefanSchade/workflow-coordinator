@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 from workflow_coordinator.model import (
+    COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
     ConvergenceRole,
     FindingCitation,
     FindingTransition,
@@ -386,12 +387,19 @@ def test_v3_evaluator_await_human_failed_evidence_route_is_not_a_goto_key():
     assert parsed.phases["evaluate"].review.failed_evidence_route == "ask"
 
 
-@pytest.mark.parametrize("limit", [True, 0, 1, 21])
+@pytest.mark.parametrize("limit", [True, 0, 1, COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS + 1])
 def test_profile_v3_rejects_out_of_bounds_convergence_limit(limit):
     data = profile_v3_data()
     data["convergence"]["qualified_cycle_limit"] = limit
     with pytest.raises(ValidationError, match="qualified_cycle_limit"):
         workflow_profile_from_yaml(yaml.safe_dump(data, sort_keys=False))
+
+
+def test_profile_v3_accepts_convergence_limit_at_the_coordinator_hard_maximum():
+    data = profile_v3_data()
+    data["convergence"]["qualified_cycle_limit"] = COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS
+    parsed = workflow_profile_from_yaml(yaml.safe_dump(data, sort_keys=False))
+    assert parsed.convergence.qualified_cycle_limit == COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS
 
 
 @pytest.mark.parametrize(
@@ -478,16 +486,33 @@ def test_repository_policy_v3_rejects_duplicate_or_overlapping_roots(field, path
         repository_policy_from_yaml(policy_yaml(**{field: paths}))
 
 
-@pytest.mark.parametrize("value", [True, 0, -1, 21])
+@pytest.mark.parametrize("value", [True, 0, -1, COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS + 1])
 def test_repository_policy_v3_rejects_invalid_hop_ceiling(value):
     with pytest.raises(ValidationError, match="max_autonomous_hops"):
         repository_policy_from_yaml(policy_yaml(max_autonomous_hops=value))
 
 
-@pytest.mark.parametrize("value", [1, 5, 6, 20])
+@pytest.mark.parametrize("value", [1, 5, 6, COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS])
 def test_repository_policy_v3_accepts_hop_ceiling_up_to_coordinator_hard_maximum(value):
     policy = repository_policy_from_yaml(policy_yaml(max_autonomous_hops=value))
     assert policy.max_autonomous_hops == value
+
+
+def test_repository_policy_v3_hop_ceiling_boundary_is_the_decided_sixty_four():
+    """Pin the decided product ceiling (maintainer decision 2026-11-21).
+
+    Every other ceiling assertion in the suite derives from
+    ``COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS`` and therefore follows a regressed
+    constant; this node and
+    ``test_operator.py::test_admit_a1_hop_ceiling_boundary_is_the_decided_sixty_four``
+    are what make the suite detect a change of the value itself.
+    """
+
+    assert COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 64
+    accepted = repository_policy_from_yaml(policy_yaml(max_autonomous_hops=64))
+    assert accepted.max_autonomous_hops == 64
+    with pytest.raises(ValidationError, match="exceeds Coordinator hard maximum: 64"):
+        repository_policy_from_yaml(policy_yaml(max_autonomous_hops=65))
 
 
 def test_repository_policy_old_versions_and_v3_shape_fail_closed():

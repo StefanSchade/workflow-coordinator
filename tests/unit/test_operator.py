@@ -1661,12 +1661,18 @@ def test_n_greater_than_cap_rejects_pinned_clean_input_before_execution(reposito
     counter = tmp_path / "counter"
     executable = malformed_fake(tmp_path, counter)
     work = repository / "work.yml"
-    work.write_text(work.read_text().replace("max_autonomous_hops: 1", "max_autonomous_hops: 21"))
+    above_cap = COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS + 1
+    work.write_text(
+        work.read_text().replace("max_autonomous_hops: 1", f"max_autonomous_hops: {above_cap}")
+    )
     expected_head = commit(repository)
     command = args(repository, tmp_path / "state", str(executable))
     assert command[command.index("--expected-head") + 1] == expected_head
     assert main(args(repository, tmp_path / "state", str(executable))) == 2
-    assert "at most 20 autonomous Hops" in capsys.readouterr().err
+    assert (
+        f"at most {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS} autonomous Hops"
+        in capsys.readouterr().err
+    )
     assert not counter.exists()
 
 
@@ -1709,6 +1715,27 @@ def test_admit_a1_rejects_hop_ceiling_above_coordinator_hard_maximum():
     with pytest.raises(
         operator.OperatorPreflightError,
         match=f"at most {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS} autonomous Hops",
+    ):
+        operator._admit_a1(item, workflow, policy, governing_paths=())
+
+
+def test_admit_a1_hop_ceiling_boundary_is_the_decided_sixty_four():
+    """Pin the decided product ceiling at A1 admission (maintainer decision 2026-11-21).
+
+    The parametrized nodes above derive their boundary from
+    ``COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS`` and would follow a regressed
+    constant; this node states the decided value and the fail-closed refusal
+    just above it with the unchanged diagnostic.
+    """
+
+    assert COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS == 64
+    workflow = profile({"work": phase({"finish": route("complete")})})
+    item, policy = _work_item_and_policy_with_hops(64)
+    operator._admit_a1(item, workflow, policy, governing_paths=())
+    item, policy = _work_item_and_policy_with_hops(65)
+    with pytest.raises(
+        operator.OperatorPreflightError,
+        match="at most 64 autonomous Hops",
     ):
         operator._admit_a1(item, workflow, policy, governing_paths=())
 
