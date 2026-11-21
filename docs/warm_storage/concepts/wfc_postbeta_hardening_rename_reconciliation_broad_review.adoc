@@ -1,0 +1,352 @@
+= Hardening H3, exact-leaf reconciliation of rename-shaped commits: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the hardening H3
+candidate for WorkItem `WI-WFC-POSTBETA-HARDENING-RENAME-RECONCILIATION-001`.
+The current pass is *H002*; later passes are added above earlier ones and
+earlier passes are kept unedited.
+
+== Pass H002 (current)
+
+WorkItem:: `WI-WFC-POSTBETA-HARDENING-RENAME-RECONCILIATION-001`
+Hop:: `H002` (`broad_review`, fresh independent adversarial reviewer, gate,
+blocking-only, `finding_authority: [resolve]`)
+Reviewed product:: the whole candidate at review base HEAD
+`cf183a393ae79bb4cdf7ec66d1fdd75974b4b814`, i.e. the implementation range
+`47e0647..cf183a3`: `src/workflow_coordinator/git_facts.py`,
+`tests/unit/test_slice4b_git_authority.py`,
+`docs/operator_manual/ch04_evidence/01_acceptance.adoc` and
+`docs/backlog/BUG-WFC-TRUSTED-COMMIT-RENAME-RECONCILIATION.adoc`, read against
+the surrounding trusted-commit boundary (`trusted_commit`,
+`bounded_path_commit`, `_observe_hop`, `frontdoor.lifecycle`).
+Governing acceptance:: the Commission task for this Hop with its PROPORTION
+principle and withheld authority, and
+`docs/backlog/BUG-WFC-TRUSTED-COMMIT-RENAME-RECONCILIATION.adoc`.
+`docs/cold_storage/` is provenance only.
+Disposition:: *Accept.* No blocking Finding. The stated problem reproduces at
+the base HEAD and the change removes exactly it; the fix is the one-flag,
+module-consistent change the task asked for and is strictly fail-closed or
+unchanged in every other shape I could construct; the new positive test fails
+at the base HEAD with the exact stated diagnostic; scope and withheld authority
+are honoured. One stated acceptance criterion could not hold literally and is
+flagged for the maintainer rather than owed as a correction (section 4). Six
+non-blocking observations are recorded in section 6.
+
+=== Finding state
+
+The projected authoritative Finding state for this Run is empty. The historical
+labels cited here (the BP5 Run `RUN-49357f88d4ee4a60b6a111353d5d8664`, SEC-03,
+the BUG record) are provenance, not current-Run Finding IDs, so nothing is
+resolved, reopened or superseded. Everything below is review evidence.
+
+=== 1. The stated problem reproduces at the base HEAD
+
+I extracted the base-HEAD source tree (`git archive 47e0647 src`) and ran the
+real product code from it. At `47e0647`,
+`git_facts._staged_paths()` (base `git_facts.py:498-502`) ran
+`git diff --no-ext-diff --cached --name-only` with no `--no-renames`, while the
+module's range, numstat, patch, hop-observation and raw-status invocations all
+passed the flag (base lines 153, 162, 181, 689, 1022).
+
+Running the candidate's positive test against the base product code reproduces
+the defect exactly:
+
+----
+FAIL test_rename_naming_both_authorized_leaves_is_committed_under_rename_detection[renames=true]
+FAIL ...[renames=copies]
+  base .../git_facts.py:817: TrustedCommitError: staged paths differ from commit intent
+----
+
+That is the same diagnostic the BP5 archive-completion Run stopped on. The
+refusal is a rename-detection artifact, not a safety check: the only reason the
+exact-leaf comparison failed is that one side of it collapsed a
+same-content delete-plus-add into the destination alone.
+
+At the candidate HEAD the same two cases pass, the commit contains both leaves
+and `git status --porcelain` is empty afterwards.
+
+=== 2. The fix cannot widen what is admitted
+
+The change adds `--no-renames` to one projection and nothing else. Making that
+projection report *more* paths can only make the two emptiness and equality
+checks that consume it refuse more often, never less:
+
+* `trusted_commit` `git_facts.py:814` -- pre-existing staged state is refused
+  when the projection is non-empty, so a rename-hidden staged deletion is now
+  visible there too.
+* `trusted_commit` `git_facts.py:828-830` -- `set(staged) != set(paths)` is an
+  equality, so an extra reported leaf can only match if the CommitIntent
+  already names it, and the intent's paths were already scope-validated at
+  `:813`.
+* `bounded_path_commit` `git_facts.py:1208` and `:1222` -- same two checks.
+  This path can never see the rename shape at all, because every intent path
+  must be absent at base HEAD (`:1197-1199`) and a rename source exists there;
+  it only becomes strictly more sensitive.
+
+Every other check is untouched: repository identity, HEAD movement before and
+after, submodules, subject form, clean/process filter refusal, hook
+neutralization, the dirty-set equality at `:816-822`, non-regular staged modes
+and the post-commit observation at `:838-856`.
+
+I exercised eight shapes directly against both the base and the candidate
+product code with identical intents. Seven are in the table below; all but the
+rename-positive behave identically, including the staged residue after each
+refusal. The eighth is discussed under the table.
+
+[cols="3,3,3", options="header"]
+|===
+| Shape (intent names both leaves unless stated) | Base `47e0647` | Candidate `cf183a3`
+
+| destination outside the authorized scope
+| refused `commit intent path is outside authorized scope: docs/moved.py`
+| identical
+
+| in-scope rename plus an unrelated dirty path
+| refused `unexpected dirty path: docs/unrelated.adoc`
+| identical
+
+| plain in-scope deletion, no add
+| committed `['src/a.py']`
+| identical -- deletion of an in-scope leaf was *already* admitted, so the fix
+  admits nothing new in kind
+
+| rename, intent names only the source
+| refused `unexpected dirty path: src/new.py`
+| identical
+
+| delete plus an entirely dissimilar add
+| committed both leaves
+| identical
+
+| pre-existing staged rename
+| refused `pre-existing staged state`
+| identical
+
+| same-content rename, both leaves in scope and named
+| refused `staged paths differ from commit intent`
+| *committed both leaves, clean tree* -- the intended fix
+|===
+
+Nothing is refused at the base that is admitted at the candidate except the one
+shape the hardening authorizes. Head movement and staged residue after each
+refusal are also identical (no commit, index left exactly as the base left it).
+
+One eighth shape does differ in its residue and I state it plainly: a rename
+under a *repository-root* authorized scope `(".",)`. The base refuses it before
+the commit (`staged paths differ from commit intent`, HEAD unmoved, the
+destination left staged); the candidate gets past that check, commits, and then
+fails the post-commit observation with HEAD already moved. That is not this
+change's defect -- under a `"."` scope `trusted_commit` already fails that way
+for an ordinary single-file modification at the base HEAD, because
+`_observe_hop` does not understand the root scope token at all. Observation 2
+in section 6 records the reproduction. No admission widens: the shape is
+refused on both sides.
+
+=== 3. The new test fails without the change, and nothing else moved
+
+`test_rename_naming_both_authorized_leaves_is_committed_under_rename_detection`
+is parametrized over `diff.renames` `true` and `copies`; both halves fail at the
+base HEAD with the stated message (section 1) and pass at the candidate. It
+asserts the real thing: one new commit, `changed_paths == {src/a.py,
+src/new.py}`, an empty porcelain status and the source file gone. Omitting a
+`diff.renames=false` parameter is correct proportion -- that half cannot detect
+this regression, because the base code already passes it.
+
+The two negatives (`..._naming_only_the_destination_is_still_refused`,
+`..._out_of_an_unauthorized_scope_is_still_refused`) pass at both HEADs by
+design: they guard checks this change does not touch, and the second is the
+companion negative the task requires.
+
+=== 4. Acceptance criteria, including the one that could not hold
+
+[cols="4,2,5", options="header"]
+|===
+| Criterion | Status | Evidence
+
+| New positive test for an in-scope same-content rename naming both leaves,
+  asserting success
+| met
+| section 3
+
+| It fails with `staged paths differ from commit intent` without the product
+  change, re-run by the reviewer against the base HEAD
+| met
+| section 1, re-run by this reviewer against the extracted `47e0647` tree
+
+| Companion negative: rename whose source lies outside the authorized scope is
+  still refused
+| met
+| `test_rename_out_of_an_unauthorized_scope_is_still_refused`, and the
+  out-of-scope *destination* shape in section 2
+
+| `tests/unit/test_bounded_path_commit.py` passes unmodified, including
+  `test_refuses_directory_shaped_intent_path_without_expanding_it`
+| met
+| file untouched by `cf183a3`; 25/25 of its real test functions pass at the
+  candidate in my runner
+
+| The existing tests in `tests/unit/test_slice4b_git_authority.py` pass
+  unmodified
+| *could not hold literally* -- flagged, not waived
+| see below
+
+| Required-mode suite, `ruff check`, `ruff format --check`
+| not reviewer-verifiable
+| Coordinator-owned trusted evidence; section 5
+
+| BUG record carries a dated paragraph naming the fix and the test, `Status::`
+  unchanged
+| met
+| `cf183a3` adds 45 lines and deletes none; `Status::` (line 4) is untouched
+
+| Directory-shaped CommitIntent record untouched; no `governance/` change; no
+  change to `preserve_candidate`, the exact-leaf contract or `trusted_commit`'s
+  design; no directory expansion; no agent Git write
+| met
+| the commit touches exactly four leaves and the product diff is one flag plus
+  a docstring
+|===
+
+*The criterion that could not hold, for the maintainer.* The existing
+parametrized case `test_rename_intent_still_refuses_under_rename_detection`
+asserted, in its `both=True` half, exactly the refusal this hardening is
+authorized to remove -- it characterized the defect. "New positive test
+asserting the commit succeeds" and "that existing test passes unmodified" are
+jointly unsatisfiable; no implementation could meet both. The candidate's
+resolution is the minimum one: the `both=True` half became the new positive
+case, and the `both=False` half was kept as a standalone test with the same
+shape, the same `diff.renames=true` configuration and the same
+`unexpected dirty path` assertion, plus a new assertion that `HEAD` did not
+move. No
+assertion was relaxed and no coverage was lost; I verified this by reading the
+base and candidate test bodies side by side and by running both negatives
+against the base code, where they still pass. I therefore do not treat this as
+a reproduced violation of the criterion's purpose (do not weaken a test to make
+a change pass), and I record it so the maintainer can narrow the criterion's
+wording in future tasks of this shape rather than have a Worker silently drop
+it. The Worker reported the deviation openly, which is the behaviour the task
+asked for.
+
+=== 5. Checks this reviewer could and could not run
+
+Neither `pytest` nor `ruff` is importable in this agent shell
+(`python3 -m pytest` / `-m ruff`: `No module named ...`), and no dependency may
+be downloaded. The required-mode suite, `ruff check` and `ruff format --check`
+are therefore Coordinator-owned trusted evidence, not reviewer evidence. This
+is an agent-local environmental limitation, not a product finding.
+
+What I did run, independently of the Worker's own scratch tooling: the real
+test functions from the real test files, executed through my own minimal
+`pytest` stand-in (`fixture`, `raises`, `parametrize`, `monkeypatch`, `capsys`,
+`tmp_path`) in the git-ignored `tmp/`, against real Git and real temporary
+repositories:
+
+* `tests/unit/test_slice4b_git_authority.py` -- 32/32 pass at the candidate.
+* `tests/unit/test_bounded_path_commit.py` -- 25/25 pass, file unmodified.
+* `tests/unit/test_git_facts.py` -- 40/40 pass, including its three
+  `test_salvage_staged_rename_checks_source_and_captures_both_leaves` cases.
+* `tests/unit/test_wfc_doc_catalog.py` -- 18/18 pass (the changed documents add
+  only an established `link:{operator-docs}/backlog/...` form).
+* A differential run of every collectible function under `tests/unit/` against
+  the base and the candidate source trees, same test files, same runner:
+  1001 pass / 80 fail at the candidate against 999 pass / 82 fail at the base.
+  A line-by-line comparison of the two result lists shows exactly two status
+  differences -- the two `renames=true` / `renames=copies` halves of the new
+  positive case -- plus parametrization noise (object addresses and set
+  iteration order inside test IDs). The 80 failures are identical on both
+  sides: fixtures my stand-in does not provide and tests that need the
+  verified offline wheel bundle. They are runner and environment limitations,
+  not product failures, and are not claimed as passes.
+
+Reviewer-authored probes are in the git-ignored `tmp/review-h3/` and are not
+part of the product. One environment detail, in case a later reader compares
+outputs: inside this review sandbox `git status` additionally lists
+zero-byte read-only placeholders in the worktree root (`.bashrc`,
+`.gitconfig`, `.claude/`, `.idea`, ...) created by the sandbox as deny mounts
+at session start, after the candidate commit. They exist only in the agent's
+mount namespace and are not repository content.
+
+=== 6. Non-blocking observations
+
+. *The new docstring over-claims, and the claim is about safety-relevant code.*
+  `_staged_paths`' docstring says "Every other path projection in this module
+  already passes the flag". The projection on the immediately preceding lines,
+  `_changed_worktree_paths` (`git_facts.py:490`), does not, and neither does
+  `_observe_repository`'s `git status --porcelain=v1` (`:548`). Both are safe,
+  for reasons the docstring does not state: `_changed_worktree_paths` runs only
+  after the empty-index check, and with an empty index no rename pair can form
+  (the destination is untracked, so `git diff --name-only HEAD` reports only
+  the deleted source and `ls-files --others` supplies the destination -- I
+  verified that with real Git, and verified that the same command *does* hide
+  the deletion once an add is staged). `_observe_repository`'s status output is
+  consumed for emptiness and diagnostic text only. A future maintainer who
+  trusts the docstring would believe the module is uniformly rename-blind. The
+  cheapest fixes are either one word of narrowing in that sentence or adding
+  `--no-renames` at `:490` as well; I do not consider either owed for this
+  Hop and do not block on it.
+. *Pre-existing, rename-independent: a repository-root scope (`"."`) makes
+  `trusted_commit` fail after the commit.* `_validated_intent_paths` accepts
+  `"."` as an authorized scope (`allow_root=True`, `:476`), but `_observe_hop`'s
+  scope test (`:715-718`) only accepts `path == allowed` or
+  `path.startswith(f"{allowed}/")`, so with `allowed_paths=(".",)` *every*
+  changed path yields `out-of-scope changed path: ...`, and `trusted_commit`
+  raises `post-commit observation does not match commit intent` with HEAD
+  already moved. I reproduced this at the base HEAD with a plain in-scope
+  modification, identically at the candidate, so it is neither caused nor
+  worsened in kind by this change. It is worth its own record: it is a
+  post-commit failure that leaves a commit behind. Out of this WorkItem's
+  scope; reported, not changed.
+. *The Worker's out-of-scope report is accurate.*
+  `frontdoor/lifecycle.py:481` (`_reconcile_stray_staged_state`) still projects
+  staged paths with rename detection. I read it: reconciliation only resets
+  leaves that are expected, absent at base HEAD and byte-identical, so a
+  rename-hidden staged deletion would survive its `git reset` and then stop the
+  following `bounded_path_commit` with `pre-existing staged state`. Fail-closed,
+  correctly left alone here.
+. *The frozen collected-nodes fixture is now stale.*
+  `tests/fixtures/offline-test-inputs/py313-linux-x86_64-collected-nodes.txt`
+  lines 848-849 still list the two replaced
+  `test_rename_intent_still_refuses_under_rename_detection` parameters and do
+  not list the four node IDs that replaced them. Prior reviews established that
+  no code reads
+  this file and that such staleness is left alone; correctly untouched, noted
+  for the record. The same old test name also appears in the historical BP5
+  final-assurance review artifact, which is provenance and must not be edited.
+. *One manual sentence outside the authorized documentation scope now names a
+  cause that no longer applies.* The ch07 failure matrix
+  (`docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc:97-98`) advises,
+  for the `staged paths differ from commit intent` row, that "Similar
+  added/deleted files can trigger rename detection". For that refusal in
+  `trusted_commit` they no longer can. The sentence's actual instruction (do
+  not delete, move, reconfigure Git or reset the index to bypass a refusal)
+  stays valid and it defers the detailed limits to the acceptance chapter,
+  which is now correct, so no reader is misled into an unsafe action. The task
+  scoped documentation to `ch04_evidence/01_acceptance.adoc` only, so leaving
+  this untouched was right; reported for the maintainer. The adjacent statement
+  at `01_acceptance.adoc:135` about range observation and operator reports
+  remains accurate.
+. *The BUG record's addition is longer than the task's "dated paragraph", and
+  one earlier sentence is now stale.* The appended section is five paragraphs,
+  including the rationale for not adding further test shapes and the
+  out-of-scope `lifecycle` report; both are useful provenance rather than new
+  mechanism, so this is a mild proportion remark only. The record's earlier
+  "Known limitation" section still cites the old test name; the new section
+  explicitly says it was replaced, which reconciles the reader, and that
+  section is historical observation that should not be rewritten.
+
+=== 7. Simplicity assessment
+
+The product change is one added flag in one call plus a ten-line docstring. No
+new guard, state, abstraction, parameter or branch; no rename-pair comparison;
+no second source of truth about staged paths. The task explicitly allowed an
+explicit rename-pair comparison if the simple fix could be shown wrong, and I
+looked for that: the simple fix is not wrong, because the deleted source leaf's
+authorization and its dirty state are each checked independently
+(`:813`, `:816-822`) and the post-commit observation is already rename-blind
+(`:702`), so making the staged projection rename-blind restores the exact-leaf
+semantics the rest of the boundary already assumes. A rename-pair comparison
+would add lasting state and a second notion of identity to a fail-closed
+equality check for no reachable gain. Nothing simpler than the candidate exists
+inside the authorized scope: the only smaller change would be to drop the
+docstring, and a non-obvious flag of this kind deserves its explanation.
