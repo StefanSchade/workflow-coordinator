@@ -902,8 +902,11 @@ def _isolated_index_copy(identity: Path, *, prefix: str) -> Path:
     try:
         if index_location.exists():
             shutil.copy2(index_location, copied_index)
-    except Exception:
-        os.unlink(copied_index)
+    except BaseException:
+        try:
+            os.unlink(copied_index)
+        except FileNotFoundError:
+            pass
         raise
     return Path(copied_index)
 

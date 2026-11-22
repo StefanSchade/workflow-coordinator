@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -190,6 +191,28 @@ def test_isolated_index_copy_preserves_live_index_mtime_not_fresh_copy_time(repo
         assert copied_index.stat().st_mtime_ns == live_mtime_ns
     finally:
         copied_index.unlink()
+
+
+def test_isolated_index_copy_cleans_up_its_temp_file_on_a_non_exception_interrupt(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A raise that is not an ``Exception`` (``KeyboardInterrupt`` here, standing
+    in for any ``BaseException``) must still leave no throwaway index copy
+    behind; catching only ``Exception`` would leak the ``mkstemp`` file on
+    that path.
+    """
+
+    def interrupting_copy2(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(GF.shutil, "copy2", interrupting_copy2)
+
+    tmp_dir = Path(tempfile.gettempdir())
+    before = {p.name for p in tmp_dir.glob("wfc-preserve-index-*")}
+    with pytest.raises(KeyboardInterrupt):
+        GF._isolated_index_copy(repo, prefix="wfc-preserve-index-")
+    after = {p.name for p in tmp_dir.glob("wfc-preserve-index-*")}
+    assert after == before
 
 
 def test_head_moved_since_classification_is_refused(repo: Path):
