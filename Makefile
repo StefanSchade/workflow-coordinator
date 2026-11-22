@@ -73,3 +73,11 @@ doc-catalog:
 
 doc-catalog-check:
 	$(PYTHON) scripts/wfc_doc_catalog.py check
+
+.PHONY: release-check dist-audit
+
+release-check:
+	$(PYTHON) scripts/wfc_release_check.py $(if $(TAG),--tag $(TAG))
+
+dist-audit:
+	$(PYTHON) scripts/wfc_dist_audit.py dist/*.whl dist/*.tar.gz

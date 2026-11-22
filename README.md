@@ -17,7 +17,7 @@ The supported package requires Python 3.10 or newer. Install it with
 execution always requires separate consumer authority and is never implied by
 installation.
 
-For detailed setup, test selection and code navigation, see the [Developer Guide](docs/developer_guide/developer_guide.adoc).
+For detailed setup, test selection and code navigation, see the [Developer Guide](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/developer_guide/developer_guide.adoc).
 For development, install `python3 -m pip install '.[dev]'`. The small Makefile
 provides `make test`, `make lint`, `make format-check`, `make check`,
 `make coverage`, `make coverage-html`, and `make build`. Set `PYTHON` to the
@@ -29,7 +29,7 @@ unit tests. Use `make snapshot` (or `make snapshot-multi`) to create compact,
 line-numbered WFC-prefixed repository snapshots in `build/snapshots/`; the output
 includes a table of contents and a repository tree.
 
-Project Memory lives in [`project_memory/`](project_memory/README.adoc), whose
+Project Memory lives in [`project_memory/`](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/project_memory/README.adoc), whose
 canonical JSON tables are authoritative. `make memory-export` renders them as an
 ODS workbook; after editing it, `make memory-import` validates the converted
 workbook and writes it back into the canonical JSON as ordinary working-tree
@@ -39,10 +39,10 @@ Memory promotion protocol. `make memory-roundtrip-check` is the independent
 transformation invariant and writes neither canonical JSON nor the workbook;
 `make memory-setup` installs the pinned maintainer-only spreadsheet tooling.
 
-The [standalone authority index](docs/README.adoc) is the authoritative
+The [standalone authority index](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/README.adoc) is the authoritative
 classification of current documentation, executable surfaces, provenance,
 history, and planning evidence. Start there before maintaining or operating the
-project. The compact [task router](docs/ai_info/_ai_info.adoc) provides the
+project. The compact [task router](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/ai_info/_ai_info.adoc) provides the
 normal current-reading path for a specific task.
 
 The installed `wfc --version --json` reports the executing package version,

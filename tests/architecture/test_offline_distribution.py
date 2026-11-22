@@ -1,11 +1,17 @@
 """Real isolated distribution builds and installed-package checks."""
 
+import importlib.util
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+_spec = importlib.util.spec_from_file_location(
+    "wfc_dist_audit", ROOT / "scripts/wfc_dist_audit.py"
+)
+dist_audit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(dist_audit)
 PROBE = '''
 import hashlib, importlib.resources, pathlib, workflow_coordinator
 p = pathlib.Path(workflow_coordinator.__file__).resolve()
@@ -33,6 +39,8 @@ def test_clean_isolated_distribution_and_wheel_install(tmp_path):
     result = run(sys.executable, '-m', 'build', '--outdir', str(dist), str(export), cwd=tmp_path)
     assert (result.stdout + result.stderr).count('Creating isolated environment') >= 2
     assert len(list(dist.glob('*.tar.gz'))) == len(list(dist.glob('*.whl'))) == 1
+    for archive in (*dist.glob('*.whl'), *dist.glob('*.tar.gz')):
+        assert dist_audit.audit(archive) == []
     venv = tmp_path / 'installed'
     run(sys.executable, '-m', 'venv', str(venv), cwd=tmp_path)
     python = venv / 'bin/python'
