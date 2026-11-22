@@ -897,7 +897,18 @@ _SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _isolated_index_copy(identity: Path) -> Path:
-    """A throwaway copy of the live index; reads through it never touch the real one."""
+    """A throwaway copy of the live index; reads through it never touch the real one.
+
+    The copy's mtime must match the live index file's own mtime, not the time
+    of the copy. Git's own racy-clean protection (the defence against a
+    same-second, same-size worktree edit being wrongly read as clean) decides
+    whether to trust a cache entry's stat by comparing that entry's mtime
+    against the *index file's* mtime. A plain byte copy stamps a fresh, later
+    mtime on the copy, which can quietly defeat that protection and make
+    ``git status`` read through the copy report a genuinely dirty path as
+    clean. ``copy2`` carries the original mtime forward so the copy is exactly
+    as racy-safe as the live index it stands in for.
+    """
 
     index_location = Path(_readonly_git(identity, "rev-parse", "--git-path", "index"))
     if not index_location.is_absolute():
@@ -905,7 +916,7 @@ def _isolated_index_copy(identity: Path) -> Path:
     descriptor, copied_index = tempfile.mkstemp(prefix="wfc-preserve-index-")
     os.close(descriptor)
     if index_location.exists():
-        shutil.copyfile(index_location, copied_index)
+        shutil.copy2(index_location, copied_index)
     return Path(copied_index)
 
 

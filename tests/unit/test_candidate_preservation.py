@@ -168,6 +168,30 @@ def test_repeat_capture_is_idempotent_no_second_ref(repo: Path):
     assert refs.splitlines() == ["refs/wfc/preserved/RUN-repeat/1"]
 
 
+def test_isolated_index_copy_preserves_live_index_mtime_not_fresh_copy_time(repo: Path):
+    """Regression for an intermittent false ``not_needed`` on a same-size,
+    same-second worktree edit (``test_repeat_capture_is_idempotent_no_second_ref``
+    flaked on exactly this). Git's own racy-clean protection -- the defence
+    against a worktree edit landing within the index's own timestamp
+    granularity being wrongly read as clean -- decides whether to trust a
+    cached stat match by comparing a cache entry's mtime against the *index
+    file's own* mtime. A plain byte copy stamps a fresh "now" mtime on the
+    copy and so silently defeats that protection for any edit close enough to
+    the commit that staged it. The throwaway copy ``preserve_candidate``
+    reads ``git status`` through must therefore carry the live index's own
+    mtime forward, not the time of the copy -- checked here as an exact
+    attribute equality, not a timing-dependent race.
+    """
+    live_index = repo / ".git" / "index"
+    live_mtime_ns = live_index.stat().st_mtime_ns
+
+    copied_index = GF._isolated_index_copy(repo)
+    try:
+        assert copied_index.stat().st_mtime_ns == live_mtime_ns
+    finally:
+        copied_index.unlink()
+
+
 def test_head_moved_since_classification_is_refused(repo: Path):
     base = head(repo)
     (repo / "scope" / "a.txt").write_text("v2\n", encoding="utf-8")
