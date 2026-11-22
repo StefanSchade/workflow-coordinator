@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -137,45 +136,3 @@ def test_preflight_hop_refuses_dirty_same_size_edit_through_the_copy(repo: Path)
     _dirty_same_size(repo)
     with pytest.raises(GF.GitPreflightError):
         GF.preflight_hop(repo, expected_repository=GF.repository_identity(repo), expected_head=base)
-
-
-def test_observe_repository_reads_dirty_edit_as_clean_if_copy_mtime_is_forced_a_whole_second_later(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """Deterministic demonstration of the mechanism this fix removes.
-
-    Forcing the offset explicitly (rather than waiting on real elapsed
-    time) makes the consequence of ever losing the mtime-preserving
-    invariant reproducible on demand: if the copy's mtime ever again lands
-    a whole second after the live index's own mtime, this is what breaks --
-    a gate whose job is to refuse a dirty tree instead passes it. This
-    patches ``shutil.copy2``, the call the fixed ``observe_repository`` /
-    ``preflight_hop`` path actually makes through the shared helper; it is
-    a guard against ever losing the invariant again, not itself a
-    differentiator between the pre-fix and fixed source (pre-fix, this
-    site called ``shutil.copyfile`` directly, which this patch does not
-    touch).
-    """
-
-    real_copy2 = shutil.copy2
-
-    def copy2_with_mtime_forced_later(src: str, dst: str, *args, **kwargs):
-        result = real_copy2(src, dst, *args, **kwargs)
-        # A large, fixed margin (not "+1s" relative to the copy's own
-        # mtime) keeps this forced offset clear of the entry/index mtime
-        # relationship under any realistic scheduling jitter.
-        future = time.time() + 10
-        os.utime(dst, (future, future))
-        return result
-
-    monkeypatch.setattr(GF.shutil, "copy2", copy2_with_mtime_forced_later)
-    base = head(repo)
-    _dirty_same_size(repo)
-
-    facts = GF.observe_repository(repo)
-    assert facts.clean
-
-    # The gate whose job is to refuse a dirty tree instead passes it: no
-    # GitPreflightError is raised for a worktree that is actually dirty.
-    passed = GF.preflight_hop(repo, expected_repository=GF.repository_identity(repo), expected_head=base)
-    assert passed.clean

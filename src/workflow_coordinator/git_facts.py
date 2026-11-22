@@ -899,8 +899,12 @@ def _isolated_index_copy(identity: Path, *, prefix: str) -> Path:
         index_location = identity / index_location
     descriptor, copied_index = tempfile.mkstemp(prefix=prefix)
     os.close(descriptor)
-    if index_location.exists():
-        shutil.copy2(index_location, copied_index)
+    try:
+        if index_location.exists():
+            shutil.copy2(index_location, copied_index)
+    except Exception:
+        os.unlink(copied_index)
+        raise
     return Path(copied_index)
 
 
