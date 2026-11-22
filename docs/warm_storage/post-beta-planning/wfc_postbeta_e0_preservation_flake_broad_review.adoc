@@ -1,0 +1,302 @@
+= Post-Beta P3 package E0 — the flaky candidate-preservation test: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the E0 candidate for
+WorkItem `WI-WFC-POSTBETA-E0-PRESERVATION-FLAKE-001` (package entry
+link:../../backlog/postbeta_plan_p3_release_engineering.adoc#e0[E0] of the
+accepted P3 plan). Later passes are added above earlier ones; earlier passes are
+kept unedited apart from the `(current)` marker, which moves to the newest pass.
+
+== Pass H002 — `RUN-df2b1f2b…` (current)
+
+Status:: *ACCEPT*, no blocking Finding. The Worker's mechanism is real and I
+reproduced it deterministically rather than taking it on trust: an index copy
+whose mtime lands in a later whole second than the live index's own mtime makes
+`git status` read a genuinely modified file as clean (30/30 forced, 0/30 with the
+mtime carried forward), and through `preserve_candidate` that produces
+`not_needed` for a real, unpreserved change (10/10 forced; 15/500 under natural
+timing before the fix, 0/500 after). The answer is (b), a real product defect,
+the one-call fix removes the cause rather than the symptom, no assertion or
+refusal was weakened, and the new regression test fails 50/50 before and passes
+200/200 after. One maintainer-facing discovery is *outside* this WorkItem's
+authority and does not block it: the identical root cause is still present at
+three other index-copy sites in the same module, and two of them mis-report a
+dirty worktree today — see <<e0-o1,O1>>.
+WorkItem:: `WI-WFC-POSTBETA-E0-PRESERVATION-FLAKE-001`
+Run / Hop:: `RUN-df2b1f2b94ad4199b141c29f36cb4e0c` / `H002` (`broad_review`,
+fresh independent adversarial reviewer, gate, blocking-only,
+`finding_authority: [resolve]`).
+Invocation:: `INV-deb8770941794809b1fc6c0197f1a405`.
+Reviewed product:: the whole E0 candidate at base HEAD
+`12c7b2594c790613b32b7283ce59ffcd07dbbcc4`, implementation range
+`084f57d..12c7b25`: two leaves, `+37 / -2` lines —
+`src/workflow_coordinator/git_facts.py` (one call changed, a docstring extended)
+and `tests/unit/test_candidate_preservation.py` (one test added, nothing else
+touched). `git show --stat` and the full diff agree; no third leaf exists in the
+range.
+Governing acceptance:: the Commission task with its ordered four steps, its
+withheld authority and its heavy-task note; package entry E0 of
+link:../../backlog/postbeta_plan_p3_release_engineering.adoc[the accepted P3
+plan], whose Acceptance additionally asks whether the mis-report can occur
+"outside this test's narrow two-rapid-calls pattern" and whose Non-goals forbid
+behavior change outside the one function investigated;
+`docs/developer_guide/ch03_engineering_conventions.adoc` for proportion, tests
+and boundary discipline. `docs/cold_storage/` is provenance, not a source of
+current requirements.
+
+=== Finding state
+
+The projected authoritative Finding state for this Run is empty. No Finding is
+opened or dispositioned here. `E0`, `MD-5`, `G2`, `F001`–`F003` and the
+`MD5_flake_repro.py` label appearing in this record or in the reviewed code
+comments are plan-internal or provenance labels, not current-Run Finding IDs.
+
+=== What I re-derived rather than quoted
+
+`pytest` is not installed in this review sandbox (`python -m pytest` →
+`No module named pytest`; there is no virtual environment in the worktree, and
+required mode needs a verified offline bundle this Hop has none of). I therefore
+did not re-run, and do not restate as my own, any of the Worker's pytest counts.
+Instead I executed the two test *bodies* directly, in-process, against the
+committed source, and built my own probes for the mechanism. Every number below
+is from my own execution on this host (Git 2.47.3, Python 3.13.5, ext4,
+`umask 002`), in disposable repositories under the sandbox `TMPDIR`. The
+repository worktree and index were not modified by any probe: the only new paths
+are ignored `__pycache__` directories (`git check-ignore` confirms
+`.gitignore:1`).
+
+=== 1. The mechanism, re-derived and made deterministic
+
+The Worker's account is correct, and it is sharper than "racy stat luck": the
+threshold is a *whole second*.
+
+`_isolated_index_copy` (`src/workflow_coordinator/git_facts.py:899-920`) hands
+`git status` a throwaway copy of the live index
+(`:1015`, `:1046`). Git's racy-clean defence decides whether a cache entry's
+stat may be trusted by comparing the entry's cached mtime with the *index file's
+own* mtime; when the entry is racily clean Git re-reads the content instead of
+believing the stat. A copy stamped with a fresh "now" mtime presents an index
+file that looks newer than its own entries, so the defence switches off and a
+same-size edit made in the same second as the staging commit is believed clean.
+
+Forcing the copy's mtime instead of waiting for luck makes this deterministic.
+With `scope/a.txt` committed as `v1\n` and immediately overwritten with `v2\n`,
+reading `git status --porcelain=v1` through three indexes in the same trial:
+
+[cols="3,1"]
+|===
+|Index the read goes through |False "clean" reads
+
+|copy with mtime = index mtime + 2 s |*30 / 30*
+|copy with mtime = index mtime (`copy2`, as committed) |0 / 30
+|the live index itself |0 / 30
+|===
+
+The threshold is second-granular, not nanosecond-granular (12 trials per row,
+same trial, same repository):
+
+[cols="3,1"]
+|===
+|Copy mtime offset from the live index's mtime |False "clean" reads
+
+|+0 ns |0 / 12
+|+1 µs |0 / 12
+|+1 ms |1 / 12
+|+100 ms |4 / 12
+|+999 ms |12 / 12
+|+1 s |12 / 12
+|+2 s |12 / 12
+|===
+
+The intermediate rows are the boundary being crossed by chance: the protection
+fails exactly when the copy's mtime falls in a later whole second than the index
+write. That predicts the field failure rate directly — the probability is the
+elapsed time between the index write and the copy, divided by one second. I
+measured that gap inside `preserve_candidate`: median *13.6 ms* over 25 trials
+(mean 13.5, min 12.5, max 14.2), so ≈1.4 % for the first call and more for a
+later call in the same scenario. That is the right order for every observation
+in this lifecycle: the Operator's 1-of-6 single-file runs and 2-of-40 standalone
+reproduction, my own 15/500 (3.0 %) for the two-call body below, and 8/300
+(2.7 %) for a sibling site whose copy happens later in its own flow. The
+hypothesis in the task is confirmed, with the granularity and the rate now
+explained rather than assumed.
+
+=== 2. Defect or racy fixture: (b), confirmed end to end
+
+The Worker's answer — `preserve_candidate` itself can mis-report a real,
+unpreserved change as `not_needed` — is correct, and this is not an artifact of
+the test's two rapid calls. Running the exact body of
+`test_repeat_capture_is_idempotent_no_second_ref`
+(`tests/unit/test_candidate_preservation.py:156-168`) with the module's
+`shutil.copy2` replaced by the pre-fix `shutil.copyfile`:
+
+* 15 failures in 500 runs. Of the first five, four were
+  `('preserved', 'not_needed')` and one was `('not_needed', 'not_needed')` — the
+  *first* call already reporting no candidate for a file it had never preserved.
+* Forcing the copy's mtime one second later makes the whole flow fail 10/10,
+  with `('not_needed', 'not_needed')` every time: a single ordinary call, no
+  repetition, no second observer.
+
+So the P3 plan's Acceptance question is answered in the affirmative: the false
+`not_needed` is a property of one `preserve_candidate` call over a same-size
+same-second edit, not of the test's narrow pattern. A candidate worth preserving
+is reported absent — the safety-relevant outcome the task names. With the
+committed fix the same body ran *500 runs, 0 failures*.
+
+=== 3. The fix: minimal, and it removes the cause
+
+`shutil.copyfile` → `shutil.copy2` at `git_facts.py:919`. The copy now carries
+the live index's own mtime, so the copy is exactly as racy-safe as the index it
+stands in for and Git's own protection does the work; nothing in WFC re-implements
+or second-guesses it. That is the smallest change that removes the cause, and I
+could not find a materially simpler one: no new state, no retry, no sleep, no
+tolerance window, no added refusal. I checked the alternatives an adversarial
+reader would propose and they are all worse — an explicit `os.utime` after
+`copyfile` is the same effect with two statements instead of one; `copy2` on the
+real index is not an option since the whole point of the copy is that reads never
+touch the registered index; forcing `git status --no-optional-locks` to re-hash
+would be a performance and semantics change for every call.
+
+Behaviour preservation, checked rather than assumed:
+
+* No refusal, limit, error path or return shape was touched. The range's two
+  deleted lines are exactly the replaced `shutil.copyfile` call and the
+  one-line docstring that the longer docstring replaces; no test line was
+  deleted or edited, and every `PreservationRefused` and every existing
+  assertion is byte-identical.
+* No retry, sleep, `skip`, `xfail` or marker was added anywhere in the range.
+* `copy2` also copies the source's mode, which widens the throwaway file from
+  `mkstemp`'s `0600` to the index's `0664`. I checked whether that matters for
+  this function and it does not: the sibling private index in
+  `_build_candidate_tree` is written by Git itself through a lock-and-rename and
+  already ends up `0664` on this host, so `0600` was never a property this
+  function maintained, and the copy carries only index metadata that is already
+  readable to anyone who can read the checkout. Recorded in <<e0-o3,O3>>, no
+  change requested.
+* `copy2` follows symlinks exactly as `copyfile` did, and the worktree/`--git-path`
+  resolution above it is unchanged.
+
+=== 4. The new regression test
+
+`test_isolated_index_copy_preserves_live_index_mtime_not_fresh_copy_time`
+(`tests/unit/test_candidate_preservation.py:171-192`) asserts
+`copied.stat().st_mtime_ns == live_index.stat().st_mtime_ns` and unlinks the copy
+in a `finally`. Run as a body against the committed source and against the
+pre-fix copy mechanism:
+
+* as committed: *200 runs, 0 failures*
+* with `copyfile` restored: *50 runs, 50 failures*
+
+It fails before and passes after, deterministically in both directions, with no
+timing dependence: it is an exact attribute equality, not a race the test hopes
+to win. It is also the right guard for the future — if the copy mechanism ever
+regresses, this test fails outright instead of making
+`test_repeat_capture_is_idempotent_no_second_ref` flaky again
+(see <<e0-o2,O2>>).
+
+=== 5. Acceptance, element by element
+
+[cols="2,1,3"]
+|===
+|Criterion |Met |Evidence
+
+|Mechanism demonstrated and stated
+|yes
+|Section 1; the docstring at `git_facts.py:900-911` states it accurately,
+including the "can" (it is conditional on the second boundary).
+
+|Worker states whether `preserve_candidate` can mis-report a real change
+|yes
+|Stated as (b) in the H001 summary; independently confirmed in section 2,
+including single-call and first-call failures.
+
+|Root cause fixed; deterministic regression test failing before, passing after
+|yes
+|Sections 3 and 4.
+
+|No retry, sleep bandage, skip or xfail
+|yes
+|Full-diff read of the range; nothing of the kind is present.
+
+|Test and whole file ≥ 40 runs, zero failures, counts reported
+|yes, by equivalent execution
+|I could not run `pytest` here (see "What I re-derived"). The two bodies ran
+500 and 200 times with zero failures against the committed source; the task's
+own standalone reproduction logic ran 500 clean in the `same` variant. The
+Worker's reported 60/60 pytest runs are plausible and consistent with this but
+are not evidence I can confirm; the file's other tests are exercised by the
+Coordinator's own suite run.
+
+|Full required suite green
+|not verifiable here
+|Required mode (`python -m pytest -q`) needs the verified offline bundle this
+sandbox has none of, and `pytest` is not installed at all. This is
+Coordinator-trusted evidence (`task-check`), not an agent result; I make no
+claim about it either way. Nothing in the change can plausibly touch another
+test: the only product change is the mtime of a throwaway temporary file, and
+no test references the copy mechanism except the new one.
+
+|No file outside the named scope changed
+|yes
+|`git show --stat 12c7b25` lists exactly the two authorized leaves.
+|===
+
+[[e0-observations]]
+=== 6. Non-blocking observations
+
+[[e0-o1]]
+O1 — maintainer-facing: the same root cause is still live elsewhere:: `git_facts.py`
+repeats this index-copy idiom four times, and the fix reached one of them. Still
+on `shutil.copyfile`:
+`salvage_inventory` (`:122`), `salvage_omissions` (`:273`) and
+`observe_repository` (`:577`). These are not hypothetical. On this host, with
+the committed source and *natural* timing over 300 trials of the same
+same-size-same-second edit:
++
+--
+* `salvage_inventory` returned an *empty capture* — no tracked change at all —
+  in *8 of 300* trials (2.7 %), silently losing the salvage material.
+* `observe_repository` happened to read correctly in all 300 (its copy is made
+  ~13 ms after the index write, the most favourable case), but with the copy's
+  mtime forced one second later it read the dirty worktree as clean in *19 of
+  20*, and `preflight_hop` — the gate whose job is to refuse a dirty tree —
+  *passed the dirty worktree as clean in all 19*.
+* `salvage_omissions` only lists untracked/ignored paths, so the stat cache is
+  not load-bearing there; it is the same idiom but I found no wrong result.
+
+The fix for each is the same single call. It is *correctly* absent from this
+candidate: the task's withheld authority forbids "any other behavior change" and
+E0's Non-goals forbid behavior change outside the one function investigated, so
+the Worker could not have done it here. It does need its own commission, and the
+`preflight_hop` case is the more consequential one, because a gate that accepts
+a dirty worktree is a trust-boundary failure rather than a lost candidate. The
+H001 summary did not mention these sites; that omission is why this record states
+them with reproduction numbers.
+--
+
+[[e0-o2]]
+O2 — the originally flaky test was left unchanged, and that is sound:: The task
+also required that the test "must not depend on wall-clock timing luck".
+`test_repeat_capture_is_idempotent_no_second_ref` is unchanged, but its outcome
+is no longer a race: the window it lands in is now handled by Git's own
+protection, which section 1 shows is unconditional within the second and which
+held 500/500 here. The alternative — rewriting the fixture to avoid the window —
+would have removed the only test that exercises the real scenario. Keeping it
+and adding the exact-equality mtime test is the better arrangement.
+
+[[e0-o3]]
+O3 — `copy2` copies mode and metadata, not only mtime:: Verified immaterial for
+this function (section 3). Worth a sentence only if a future change moves these
+temporary indexes somewhere with a stricter permission expectation; the function
+makes no `0600` promise today.
+
+[[e0-o4]]
+O4 — the docstring is the right place, and it is accurate:: `git_facts.py:900-911`
+explains the mechanism at the call it governs, without copying rationale that
+belongs elsewhere. No documentation change was owed: the only current document
+naming `_isolated_index_copy` is E0's own entry in the P3 plan
+(`docs/backlog/postbeta_plan_p3_release_engineering.adoc:227`), which describes
+the investigation rather than a behavior contract, and nothing outside
+`docs/cold_storage/` states a claim about the copy's timestamps that this change
+makes stale.
