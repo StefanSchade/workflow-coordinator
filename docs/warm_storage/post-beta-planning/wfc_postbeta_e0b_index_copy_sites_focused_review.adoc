@@ -1,0 +1,307 @@
+= Post-Beta P3 package E0b — the remaining index-copy sites: independent focused review
+:toc:
+:toclevels: 2
+
+This record holds every independent focused-review pass over the E0b candidate
+for WorkItem `WI-WFC-POSTBETA-E0B-INDEX-COPY-SITES-001`. Later passes are added
+above earlier ones; earlier passes are kept unedited apart from the `(current)`
+marker, which moves to the newest pass. The broad-review passes of this Run are
+held separately in
+link:wfc_postbeta_e0b_index_copy_sites_broad_review.adoc[the broad-review
+record] and are not edited here; package E0, whose observation O1 is the source
+of E0b, has its own record in
+link:wfc_postbeta_e0_preservation_flake_broad_review.adoc[the E0 broad review].
+
+== Pass H004 — `RUN-d91e299c…` (current)
+
+Status:: *CHANGES REQUIRED*, one blocking Finding carried forward, and it is a
+one-word residue rather than a new defect. `F001` is *resolved*: the wall-clock
+flaky test is gone, nothing in either test file depends on timing any more, and
+the deterministic guards it was accused of duplicating still fail before the fix
+and pass after (20/20 → 0/40 per site, re-measured here). The mtime fix itself I
+re-verified end to end from the sources: all three sites carry the live index's
+mtime, and the pre-fix trust-boundary failure reproduces against the pre-E0b
+source (`preflight_hop` passed a dirty worktree 1/100) and is gone from the
+committed one (0/100). `F002` *stays open*: the correction restored the lost
+temp-file cleanup for `Exception` — 0 leaked files at all four sites under
+injected `ENOSPC`, strictly better than the pre-E0b baseline, which leaked one
+at `preserve_candidate` — but `except Exception` leaves the identical leak on
+the `BaseException` path that the pre-fix `finally` blocks covered: injected
+`KeyboardInterrupt` during the copy leaks 1 file at each of the three sites
+where the baseline leaked 0. That is the same measured behaviour change `F002`
+names, narrowed to one exception class, and the repository already has the exact
+idiom for it (`persistence.py:109-114`, `operator.py:1368-1372`).
+WorkItem:: `WI-WFC-POSTBETA-E0B-INDEX-COPY-SITES-001`
+Run / Hop:: `RUN-d91e299ce92847f690424674f25e2e4f` / `H004` (`focused_review`,
+fresh independent adversarial reviewer, gate, blocking-only,
+`finding_authority: [resolve]`).
+Invocation:: `INV-76170ed6c6b245e8891edc4450011097`.
+Reviewed correction commit:: `2f54da287603a81d4800fe99bb7e3597255614fb` (range
+`5bb2173..2f54da2`, two leaves, `+6 / -45`:
+`src/workflow_coordinator/git_facts.py` — the shared helper gains
+`try/except Exception: os.unlink(...); raise` around the copy (`:902-907`) — and
+`tests/unit/test_index_copy_mtime.py`, from which the forced-mtime test and its
+now-unused `import time` are removed (181 → 138 lines, 7 → 6 tests).
+Reviewed product:: the whole E0b candidate at `2f54da2`, implementation range
+`22e18b5..2f54da2`: four leaves, `+575 / -31` —
+`src/workflow_coordinator/git_facts.py`,
+`tests/unit/test_candidate_preservation.py` (one line, E0's test follows the new
+keyword), the new `tests/unit/test_index_copy_mtime.py`, and the broad-review
+artifact. `git diff --stat 22e18b5..2f54da2` and the two full diffs agree; no
+fifth leaf exists in the range and `git status --short -uall` shows no tracked
+modification in the worktree.
+Governing acceptance:: the Commission task with its four ordered DO steps, its
+Acceptance list and its withheld authority ("no weakening of any assertion or
+refusal; no other behavior change"); the two carried Findings as projected;
+`docs/developer_guide/ch03_engineering_conventions.adoc` for proportion, tests
+and boundary discipline. `docs/cold_storage/` is provenance, not a source of
+current requirements.
+Date:: 2026-11-22.
+
+=== 1. Disposition
+
+Verdict:: `changes_required`
+Route:: `correction` — one bounded change in the file already in scope.
+Finding disposition:: `F001` → *resolved*. `F002` → *open*, with new material
+evidence (the `BaseException` measurement below); I open no further Finding,
+because the residue is the same statement `F002` already makes — "the three
+sites lost their temp-file cleanup when the copy fails" — for the one exception
+class the correction left out. Labels `E0`, `E0b`, `O1`–`O7`, `B1`/`B2` and the
+commit-message labels in this record are plan-internal or provenance labels, not
+Run Finding IDs.
+
+=== 2. What I re-derived rather than quoted
+
+`pytest` is not installed in this review sandbox (`python3 -c "import pytest"` →
+`ModuleNotFoundError`; no virtual environment in the worktree, no network). I
+therefore restate no pytest count from the Worker's summary. Instead I executed
+the committed test *bodies* in-process against three sources — the committed one
+(`src/`), the H001 one (`b47c39b:src/.../git_facts.py`) and the pre-E0b one
+(`b47c39b^:…`), each materialized into its own scratch copy of the package —
+with a minimal `monkeypatch` stand-in and one disposable repository per trial
+under the sandbox `TMPDIR`. Every number below is from my own execution on this
+host (Python 3.13.5, ext4). No probe wrote into the repository worktree or
+index; the probe script lived in the gitignored `/tmp/` scratch directory
+(`.gitignore:15`) and was removed afterwards. The Coordinator-owned
+`python -m pytest -q` task-check is not an agent result and I claim nothing
+about it either way.
+
+=== 3. `F001` — the flaky forced-mtime test: resolved
+
+The invariant is that no committed regression test depends on winning a
+wall-clock race (task DO (3) and Acceptance: "rely on no timing luck, sleep,
+retry, skip or xfail").
+
+* The test is gone. `tests/unit/test_index_copy_mtime.py` is 138 lines with six
+  tests; the deleted body and the `import time` it needed are absent from the
+  file and `import time` appears nowhere else in it. A search of both test files
+  for `sleep`, `retry`, `skip`, `xfail` and `time.` returns one hit — the word
+  "time" inside E0's docstring prose in
+  `test_candidate_preservation.py:178`. No marker, no retry, no sleep.
+* Deleting it was the right correction, not a convenience. I re-measured the
+  deleted body's mechanism against the committed source: *2 false failures in
+  200 runs* (1.0 %), each `forced-later copy did NOT produce a false clean` —
+  the same failing direction on a correct product that the broad pass measured
+  at 6/400 and the Worker at 1/400. Three independent measurements, one rate.
+* Nothing was lost with it. Task DO (3) asks for the forced behaviour test only
+  "where you can do it without timing luck"; the broad pass established that at
+  this site you cannot, so the conditional is honoured by removal rather than
+  evaded. The two guards that remain at this site both hold on this host: the
+  exact-mtime check (section 4.2) and
+  `test_observe_repository_reads_dirty_same_size_edit_through_the_copy`
+  (0 failures in 100 runs committed). The mechanism stays stated for the next
+  reader in the helper docstring (`git_facts.py:882-895`).
+* No assertion elsewhere was weakened to achieve this: the deletion removes one
+  whole test function and its import, and the diff of
+  `tests/unit/test_candidate_preservation.py` over the whole implementation
+  range is still the single keyword line, with E0's assertion byte-identical.
+
+=== 4. `F002` — cleanup when the copy fails: corrected for `Exception`, open for `BaseException`
+
+==== 4.1 What the correction fixed, measured
+
+The helper now wraps the copy (`git_facts.py:902-907`). Injecting
+`OSError(ENOSPC)` into the copy and counting leftover files in a private
+`TMPDIR`, one disposable repository per site:
+
+[cols="3,1,1,1"]
+|===
+|Site |pre-E0b (`b47c39b^`) |H001 (`b47c39b`) |committed (`2f54da2`)
+
+|`salvage_inventory`  |0 |1 |*0*
+|`salvage_omissions`  |0 |1 |*0*
+|`observe_repository` |0 |1 |*0*
+|`preserve_candidate` |1 |1 |*0*
+|===
+
+`OSError` still propagates from every site, so the documented `ENOSPC`
+diagnostic path is unchanged in kind. The success path leaves nothing behind
+either: with no injection, all four sites complete (`preserve_candidate`
+creating its ref) and leave 0 files in the private `TMPDIR`. On this class of
+failure the committed helper is therefore not merely restored but *better* than
+the baseline — it closes the pre-existing `preserve_candidate` leak as well,
+with one change in one place, exactly as the broad pass proposed.
+
+==== 4.2 What it still leaves, measured
+
+`except Exception` does not cover the exception classes the pre-fix `finally`
+blocks covered. Injecting `KeyboardInterrupt` into the copy instead, same probe:
+
+[cols="3,1,1"]
+|===
+|Site |pre-E0b (`b47c39b^`) |committed (`2f54da2`)
+
+|`salvage_inventory`  |0 |*1* (`wfc-salvage-index-…`)
+|`salvage_omissions`  |0 |*1* (`wfc-salvage-omissions-index-…`)
+|`observe_repository` |0 |*1* (`wfc-observe-index-…`)
+|`preserve_candidate` |1 |1
+|===
+
+This is the same reproduced behaviour change `F002` names, not a new
+requirement: before E0b each site created the temp file and copied into it
+*inside* its `try: … finally: os.unlink(…)`, so *any* exception — including
+`KeyboardInterrupt` and `SystemExit` — was cleaned up; after the correction only
+`Exception` is. `Ctrl-C` during a Hop is an ordinary event and
+`observe_repository` runs at every Hop boundary, so the window, while short, is
+one that real operation reaches; the consequence is one leaked index-sized file
+per interrupt in the process temp directory.
+
+The feasible correction is the repository's own idiom for precisely this
+situation, which already exists twice and would make the deviation disappear
+rather than add mechanism:
+
+[source,python]
+----
+    except BaseException:
+        try:
+            os.unlink(copied_index)
+        except FileNotFoundError:
+            pass
+        raise
+----
+
+`persistence.py:109-114` (atomic write) and `operator.py:1368-1372` (descriptor
+publication) are byte-equivalent; `ruff` selects only `F` here
+(`pyproject.toml:59-63`), so no lint rule argues for the narrower clause, and
+the module's five existing `finally` blocks (`git_facts.py:125`, `:269`,
+`:569`, `:963`, `:1056`) all guard the unlink with `except FileNotFoundError`.
+The blocking half is only the exception class; the inner guard is the
+non-blocking half (<<e0b-f-o1,O1>>) and comes free with the idiom.
+
+=== 5. The product re-checked against its baseline
+
+Not only the last correction — the whole candidate, from the sources:
+
+[cols="2,1,3"]
+|===
+|Criterion |Met |Evidence (my own execution)
+
+|Three sites fixed at the root, one shared helper
+|yes
+|One `shutil.copy2` of an index in all of `src/` (`git_facts.py:904`), reached
+from four call sites (`:115`, `:260`, `:558`, `:1003`), each passing its own
+`prefix`. No caller of the old one-argument signature remains anywhere in
+`src/` or `tests/`.
+
+|Deterministic tests fail before, pass after, per site
+|yes
+|The three exact-mtime bodies: pre-E0b *20/20 fail* at each site
+(`delta_ns` 4–8 ms, never zero), committed *0/40 fail* at each site
+(120 body runs). E0's own body: 0/40 committed.
+
+|The consequence is actually gone
+|yes
+|The three behaviour bodies, 100 reps each against both sources: pre-E0b
+`preflight_hop` *passed a dirty worktree 1/100* (the trust-boundary failure O1
+named), committed *0/100* at all three; `salvage_inventory` and
+`observe_repository` 0/100 both ways at this host's 4–8 ms copy gap.
+
+|No timing luck, sleep, retry, skip or xfail
+|yes
+|Section 3.
+
+|E0's test remains
+|yes
+|Unchanged but for the keyword; 0/40 here.
+
+|No other behaviour of the module changed
+|*no*
+|Section 4.2 — `F002` stays open. Everything else checks out: identical
+`GIT_INDEX_FILE` strings, identical prefixes, no refusal, limit, message or
+return shape touched, success path leak-free at all four sites, and
+`python -m py_compile` clean on all three changed files.
+
+|Other stat-sensitive index copies in `src/`
+|yes, and none
+|`shutil.*` and `GIT_INDEX_FILE` searched: no `copyfile` anywhere in `src/`; the
+only other `copy2` is `frontdoor/archive.py:357` (archive payload, SHA-256
+verified); the fifth `GIT_INDEX_FILE` use, `_build_candidate_tree`
+(`:951`), writes its private index with `read-tree` through Git itself, so no
+stat cache is carried over a byte copy — independently confirmed.
+
+|≥ 40 repetitions, zero failures
+|equivalent evidence
+|By in-process execution: 0 failures in 40 reps of the three exact-mtime bodies
+and of E0's, 0 in 100 reps of the three behaviour bodies. The Worker's pytest
+counts I can neither confirm nor dispute (no `pytest` here).
+
+|Full required suite green
+|not verifiable here
+|Coordinator `task-check`; no agent claim.
+
+|No file outside the named scope changed
+|yes
+|`git diff --stat 22e18b5..2f54da2` lists exactly the three authorized code/test
+leaves plus the broad-review artifact; `git status --short -uall` shows no
+tracked modification.
+|===
+
+[[e0b-f-observations]]
+=== 6. Non-blocking observations
+
+[[e0b-f-o1]]
+O1 — the bare `os.unlink` in the new handler can replace the diagnostic it was added to preserve:: If
+the unlink itself fails, its exception propagates instead of the copy's. The
+realistic path is narrow but not imaginary and it coincides with the one
+recorded production failure: `/tmp` is full, an operator or a `tmpfiles` sweep
+removes the file, the copy raises `ENOSPC`, and the caller sees `FileNotFoundError`
+rather than the `ENOSPC` that
+`docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc:352` tells the
+operator to look for. The module's own five `finally` blocks already guard this
+with `except FileNotFoundError: pass`; adopting the idiom quoted in section 4.2
+settles it in the same edit. Non-blocking on its own — it degrades a diagnostic,
+it does not produce a wrong result.
+
+[[e0b-f-o2]]
+O2 — no test guards the restored cleanup:: The cleanup is now required behaviour
+(it is what `F002` is about) and it regressed once inside this very package, yet
+nothing fails if it is dropped again. A guard would be fully deterministic —
+inject an exception into the copy, assert the temp directory is empty, no timing
+involved — and parameterizing it over `OSError` and `KeyboardInterrupt` would
+pin section 4.2 as well. `ch03`'s "a behavior change needs a test that fails
+without it" points this way and the cost is about a dozen lines; I record it
+rather than require it, because the task's test obligation was written about the
+mtime invariant, not about this error path.
+
+[[e0b-f-o3]]
+O3 — the helper docstring explains the mtime but not the unlink:: Fifteen lines
+say why `copy2` and not `copyfile`; the three lines that keep a failed copy from
+leaking say nothing about themselves, and the `finally` that used to do the job
+is now at the caller. One short sentence in the existing docstring would keep
+the next reader from simplifying the handler away. Editorial only.
+
+[[e0b-f-o4]]
+O4 — line numbers in the older records have drifted:: The helper moved from
+`:899` to `:881` when the three sites were routed through it, so the citations
+in the E0 record and in the P3 update records now point one screen off. Those
+are frozen passes and provenance, correct as of their own base HEAD; nothing to
+correct, worth knowing when following a reference.
+
+[[e0b-f-o5]]
+O5 — the broad pass's measurements reproduce, at this host's rate:: My natural
+pre-fix rates (1/100 for `preflight_hop`, 0/100 for the other two) sit at the
+low end of the broad pass's 1–3/300 and well under O1's original 8/300, for the
+reason the model predicts: the window is the index-write-to-copy gap over one
+second, and the exact-mtime deltas measured here are 4–8 ms. The rate is
+host-dependent; the exact-mtime guards are not, which is why they carry the
+regression signal and the behaviour tests merely corroborate it.
