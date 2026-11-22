@@ -1,0 +1,238 @@
+name: release
+
+# Implements docs/developer_guide/ch04_release_management.adoc (package E3 of
+# docs/backlog/postbeta_plan_p3_release_engineering.adoc). C6/MD-5 (what runs
+# on a hosted runner) stays OPEN until a hosted run of this workflow proves
+# route R-A green; this file is that route, offered as evidence, not as a
+# maintainer decision. No repository secret is used anywhere: TestPyPI and
+# PyPI publication use OIDC Trusted Publishing (MD-1); the `pypi` Environment's
+# required-reviewer rule (G8) is a maintainer-created repository setting, not
+# anything this file can create.
+#
+# Action versions are pinned to a version tag believed current, not a commit
+# SHA (no network was available while authoring this file to verify SHAs).
+# Pinning every action to a commit SHA is recorded as a maintainer follow-up
+# in ch04_release_management.adoc.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Branch-push runs already have origin/main locally (it is the pushed
+      # ref); a tag-push run does not, and release-check's tag mode (and this
+      # job's own reachability expectations) needs it to decide whether the
+      # tagged commit is reachable from origin/main.
+      - name: Fetch origin/main for the tag-mode reachability check
+        run: git fetch origin main
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13.5'
+
+      - name: Relax unprivileged user namespaces for bubblewrap
+        run: sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install Asciidoctor (for the strict documentation render, G5)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y asciidoctor
+
+      - name: Fetch offline test inputs
+        run: >
+          python3 scripts/wfc_test_inputs.py fetch
+          --profile cp313-linux-x86_64 --bundle "$RUNNER_TEMP/wfc-bundle"
+
+      - name: Install WFC (editable) from the offline bundle
+        run: >
+          python3 scripts/wfc_test_inputs.py exec
+          --profile cp313-linux-x86_64 --bundle "$RUNNER_TEMP/wfc-bundle"
+          -- python3 -m pip install -e '.[dev]'
+
+      - name: Lint
+        run: make lint
+
+      - name: Format check
+        run: make format-check
+
+      # Step-scoped only: GIT_CONFIG_NOSYSTEM is set as this step's own `env:`,
+      # not via a persistent `git config --global`, and it neutralizes only
+      # the runner's own system-level git-lfs filter config for this step's
+      # subprocess tree. It must not, and does not, touch WFC's own
+      # clean/process filter-refusal test, which is part of the unmodified
+      # suite run here.
+      - name: Required test suite
+        env:
+          GIT_CONFIG_NOSYSTEM: "1"
+        run: >
+          python3 scripts/wfc_test_inputs.py exec
+          --profile cp313-linux-x86_64 --bundle "$RUNNER_TEMP/wfc-bundle"
+          -- python3 -m pytest -q
+
+      - name: Build distributions
+        run: >
+          python3 scripts/wfc_test_inputs.py exec
+          --profile cp313-linux-x86_64 --bundle "$RUNNER_TEMP/wfc-bundle"
+          -- python3 -m build
+
+      - name: Distribution content audit (C2, G3)
+        run: make dist-audit
+
+      - name: Clean-environment install and CLI identity smoke (C3, G4)
+        run: |
+          set -euo pipefail
+          expected_version="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+          wheel="$(ls dist/*.whl)"
+          python3 -m venv "$RUNNER_TEMP/wfc-smoke-venv"
+          python3 scripts/wfc_test_inputs.py exec \
+            --profile cp313-linux-x86_64 --bundle "$RUNNER_TEMP/wfc-bundle" \
+            -- "$RUNNER_TEMP/wfc-smoke-venv/bin/pip" install "$wheel"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wfc-smoke-venv/bin/wfc" --help
+          "$RUNNER_TEMP/wfc-smoke-venv/bin/wfc" --version --json > "$RUNNER_TEMP/wfc-version.json"
+          cat "$RUNNER_TEMP/wfc-version.json"
+          python3 - "$RUNNER_TEMP/wfc-version.json" "$expected_version" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1]) as handle:
+              payload = json.load(handle)
+          expected = sys.argv[2]
+          if payload["version"] != expected:
+              raise SystemExit(f"C3: reported version {payload['version']!r} != expected {expected!r}")
+          if payload["source_commit"] is not None:
+              raise SystemExit(f"C3: source_commit is not null: {payload['source_commit']!r}")
+          print(f"C3 clean-venv install smoke OK (version={payload['version']}, source_commit=null)")
+          PY
+
+      - name: Documentation renders strictly (G5)
+        run: |
+          asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN \
+            docs/operator_manual/operator_manual.adoc docs/developer_guide/developer_guide.adoc \
+            docs/functional_model/workflow_program_use_cases.adoc docs/README.adoc \
+            docs/semantic_model/workflow_execution_semantics.adoc docs/backlog/_open.adoc \
+            docs/technical_model/workflow_program_architecture.adoc \
+            docs/ai_info/_ai_info.adoc docs/ai_info/doc_conventions.adoc
+
+      - name: Release preflight (G1)
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            make release-check TAG="${GITHUB_REF_NAME}"
+          else
+            make release-check
+          fi
+
+      - name: Record artifact checksums
+        run: |
+          cd dist
+          sha256sum *.whl *.tar.gz > SHA256SUMS.txt
+          {
+            echo '### Release artifact SHA-256'
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Nothing downstream rebuilds this artifact; publish-testpypi and
+      # publish-pypi download it unchanged and re-verify SHA256SUMS.txt.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: testpypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Verify the checked artifact is unchanged (G6)
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS.txt
+          rm SHA256SUMS.txt
+
+      # A real upload (rehearsal), not --dry-run: only a real upload proves
+      # the Trusted Publisher OIDC wiring and the index's metadata acceptance
+      # (MD-1, G6). This spends the TestPyPI version, which cannot be reused.
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+
+  publish-pypi:
+    needs: publish-testpypi
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    # The `pypi` Environment's required-reviewer rule (G8) is a repository
+    # setting only the maintainer can create (external to this file, ES-2),
+    # and must be confirmed to exist and name the maintainer before the first
+    # tag is pushed (ES-4). Approval of the pending deployment is never
+    # inferred from a green `check`/`publish-testpypi` job.
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Verify the checked artifact is unchanged
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS.txt
+          rm SHA256SUMS.txt
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  release:
+    needs: publish-pypi
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release create "${tag}" \
+            dist/*.whl dist/*.tar.gz \
+            --title "${tag}" \
+            --notes "Release notes: https://github.com/${GITHUB_REPOSITORY}/blob/${tag}/docs/release_notes/release_notes.adoc"

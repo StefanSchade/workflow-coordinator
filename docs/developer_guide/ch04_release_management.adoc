@@ -5,10 +5,13 @@ ifndef::assembled[]
 Standing:: Informative release guidance; it records the accepted release
 contract. `scripts/wfc_release_check.py`, `scripts/wfc_dist_audit.py` and the
 `release-check`/`dist-audit` Make targets exist and implement this contract
-(package E2). The `.github/workflows/release.yml` pipeline this chapter
-describes as *planned* is authorized but not yet implemented (package E3 of
-`docs/backlog/postbeta_plan_p3_release_engineering.adoc`); nothing in this
-chapter should be read as a claim that the workflow file exists today.
+(package E2). `.github/workflows/release.yml` (package E3 of
+`docs/backlog/postbeta_plan_p3_release_engineering.adoc`) now exists and
+implements the CI section below. No hosted run of that workflow has happened
+yet; nothing in this chapter should be read as a claim that one has. C6/MD-5
+(<<md5-open>>) stays *open* until a hosted run proves the workflow's route
+R-A green -- this file is that route, offered as evidence, not as the
+maintainer's decision.
 endif::[]
 
 [[release-management]]
@@ -22,9 +25,11 @@ records the *decided contract* -- what a release must be true of -- not only
 an implementation report. `scripts/wfc_release_check.py` and
 `scripts/wfc_dist_audit.py`, run through the `release-check` and `dist-audit`
 Make targets, exist and implement this contract (E2).
-`.github/workflows/release.yml` is a *planned implementation of this
-contract* (E3); until it lands, the hosted-runner gates below are still run
-by hand.
+`.github/workflows/release.yml` *implements this contract* (E3, <<release-ci>>
+below). Until a hosted run of that workflow proves route R-A green
+(<<md5-open>>), the whole-required-suite gate (G2) on a hosted runner remains
+evidence towards MD-5, not yet the binding mechanism, and the hosted-runner
+gates can still be run by hand if needed.
 
 [[release-contract]]
 === The release contract
@@ -83,11 +88,13 @@ assumed otherwise), and it is enforced mechanically by
 `wfc_release_check.py`'s README-link check (E2, G1). The strict AsciiDoctor
 render (G5, <<release-gates>>) stays a gate regardless; this does not
 reopen C2.
-C6 -- What runs on a hosted runner:: *Open.* See <<md5-open>> below for the
-investigation, the unknowns and the escalation rule, and <<release-gates>>
-for G2.
+C6 -- What runs on a hosted runner:: *Open.* The workflow (<<release-ci>>)
+implements route R-A as evidence towards MD-5, not as its disposition. See
+<<md5-open>> below for the investigation, the still-unknown items and the
+escalation rule, and <<release-gates>> for G2.
 C7 -- Distribution destination:: *Decided* (MD-1 below): TestPyPI, then PyPI,
-then a GitHub Release, through the planned GitHub Actions pipeline (E3).
+then a GitHub Release, through the GitHub Actions pipeline at
+`.github/workflows/release.yml` (<<release-ci>>, E3).
 
 [[decided-maintainer-points]]
 === MD-1 and G8, decided
@@ -108,13 +115,75 @@ auto-publishes on every tag push. The setting is created by the maintainer
 exercised when the maintainer approves the pending deployment. Approval is
 *never* inferred from a green job.
 
+[[release-ci]]
+=== The CI workflow (E3)
+
+`.github/workflows/release.yml` exists and implements the contract above. It
+has two triggers -- `push` to `main` and `push` of tags matching `v*` -- and a
+top-level `permissions: contents: read`; no step references a repository
+secret anywhere in the file. Four jobs:
+
+* `check` (both triggers, no elevated permissions beyond the top-level
+  `contents: read`): checks out full history (`fetch-depth: 0`) and
+  additionally fetches `origin/main` (needed for the tag-mode reachability
+  check, independently of C1's static version); pins the runner to
+  `ubuntu-24.04` and `setup-python` to the exact patch `3.13.5` (MD-5 route
+  R-A); relaxes unprivileged user namespaces for bubblewrap via `sudo
+  sysctl`; neutralizes the runner's system git-lfs filter only for the
+  required-suite step's own `env:` (step-scoped, never a persistent `git
+  config --global`, and never a weakening of WFC's own filter-refusal test,
+  which is part of the unmodified suite run in that same step); fetches the
+  offline test-input bundle (`scripts/wfc_test_inputs.py fetch`) and installs
+  WFC's dev extras from it (`... exec -- python3 -m pip install -e '.[dev]'`,
+  link:ch01_development.adoc#offline-test-inputs[offline test inputs]); runs
+  `make lint`, `make format-check`, and the unmodified
+  required suite (`... exec -- python3 -m pytest -q`); builds once (`...
+  exec -- python3 -m build`); runs `make dist-audit` (C2, G3); runs the C3/G4
+  clean-environment install-and-identity smoke from a directory outside the
+  checkout; runs the G5 strict documentation render; runs `make
+  release-check` in branch mode on a `main` push and in tag mode
+  (`TAG=$\{GITHUB_REF_NAME}`) on a tag push (G1); records the two artifacts'
+  SHA-256 in the job summary and uploads `dist/` as a workflow artifact.
+  Nothing downstream rebuilds it.
+* `publish-testpypi` (tags only, `needs: check`, environment `testpypi`, job
+  permissions `contents: read` and `id-token: write`): downloads the checked
+  artifact unchanged, re-verifies its recorded SHA-256, then uploads it to
+  TestPyPI through OIDC (`pypa/gh-action-pypi-publish`) -- a real upload
+  (G6), not `--dry-run`.
+* `publish-pypi` (tags only, `needs: publish-testpypi`, environment `pypi`,
+  same job permissions): the `pypi` Environment's required-reviewer rule
+  (G8) is a repository setting only the maintainer can create -- external to
+  this file, confirmed before the first tag (ES-2) and exercised at approval
+  time (ES-5); it is *not* created or simulated by this workflow. The same
+  unchanged artifact is re-verified and uploaded to PyPI through OIDC the
+  same way.
+* `release` (tags only, `needs: publish-pypi`, job permissions `contents:
+  write` only): downloads the same artifact and uses the preinstalled `gh`
+  CLI to create the GitHub Release from the tag, attaching exactly the two
+  artifact files, with a short fixed-body release note pointing at the
+  tag-pinned `docs/release_notes/release_notes.adoc` (C4's adoc section is
+  not converted to the release body; linking it avoids a lossy adoc-to-
+  Markdown conversion).
+
+Action versions are pinned to a version tag (`actions/checkout@v6`,
+`actions/setup-python@v6`, `actions/upload-artifact@v4`,
+`actions/download-artifact@v4`, `pypa/gh-action-pypi-publish@release/v1`),
+not a commit SHA -- authoring this file had no network access to verify
+SHAs. *Maintainer follow-up:* pin every action to a reviewed commit SHA.
+*Maintainer follow-up:*
+link:../backlog/postbeta_plan_p3_release_engineering.adoc#ext[ES-1 through
+ES-6] (the Trusted Publisher registration, repository and Environment
+settings, the first hosted `main` run, the tag, approval and publication,
+and Q1's consumer-repository access) remain the maintainer's external
+actions; nothing in this file performs or simulates any of them.
+
 [[release-gates]]
 === Release sequence and gates
 
 Every gate is release-blocking; there is no advisory class. Each step below
 names the gate(s) guarding it.
 
-. Push the release commit to `main`; the planned `check` job runs --
+. Push the release commit to `main`; the `check` job (<<release-ci>>) runs --
   *G1* preflight clean (topology, tag-equals-version, notes frozen, README
   links absolute), *G2* required suite green, *G3* both artifacts contain
   exactly the C2 allow-list, *G4* clean-environment install and CLI identity
@@ -204,11 +273,13 @@ internal probe); three further conditional skip sites exist suite-wide and
 must be asserted *not* to fire on the runner -- `make` and `git` present,
 `governance/self-development` checked out -- not silently relied upon.
 Reproducible on a GitHub runner? (fact [2]):: Not yet proven, but plausible:
-the planned route is `ubuntu-24.04` (pinned label) plus `setup-python`
+route R-A, now implemented as `.github/workflows/release.yml`'s `check` job
+(<<release-ci>>), uses `ubuntu-24.04` (pinned label) plus `setup-python`
 pinned to the exact patch `3.13.5`, a `sudo sysctl` relaxing unprivileged
 userns for bwrap, a step-scoped neutralization of the runner's git-lfs
 filter (not WFC's own filter-refusal test), the normal `fetch`+`exec` flow,
-then the unmodified suite.
+then the unmodified suite. No hosted run of this workflow has happened yet;
+this is still the unexercised route, not a hosted-run result.
 A second host profile's closure review? (fact [3]):: Re-verified against the
 profile: the 12 wheel pins are checked only by filename, size, SHA-256,
 metadata and wheel tag (manylinux/`py3-none`/`cp313` plus a glibc floor) --
@@ -228,10 +299,34 @@ version for CPython 3.13.5 on `ubuntu-24.04`; (b) bwrap userns after the
 neutralization suffices; (d) that `fetch` reaches `files.pythonhosted.org`;
 (e) whether a second profile is wanted if the pip version differs.
 
-*Cheapest evidence:* the first hosted run of the planned E3 workflow on
-`main` answers (a)-(d).
+*Cheapest evidence:* the first hosted run of the E3 workflow
+(<<release-ci>>) on `main` answers (a)-(d).
 
 *Escalation rule:* a real, reproducible blocker is documented with the
 failing log and escalated -- a digest-pinned container, a documented partial
 gate, or otherwise -- to the maintainer; MD-5 is not loosened and G2 is not
 narrowed without that decision.
+
+[[md5-hosted-run-record]]
+==== Hosted-run record
+
+*Status: not yet recorded.* No hosted run of `.github/workflows/release.yml`
+has happened. This section is a placeholder for the maintainer (or the
+`check` job's own first `main`-push run, ES-3) to fill in with that run's
+findings against unknowns (a)-(e) above, once it exists. Until filled in,
+C6/MD-5 stays *open* and this is not evidence of anything having run.
+
+[cols="1,4",options="header"]
+|===
+|Unknown |Finding
+|(a) runner's actual seed pip version for CPython 3.13.5 on `ubuntu-24.04` |(not yet recorded)
+|(b) bwrap userns after the `sysctl` |(not yet recorded)
+|(c) runner's Git git-lfs filter and whether the neutralization suffices |(not yet recorded)
+|(d) `fetch` reaches `files.pythonhosted.org` |(not yet recorded)
+|(e) whether a second profile is wanted if the pip version differs |(not yet recorded)
+|===
+
+Run date:: (not yet recorded)
+Run URL:: (not yet recorded)
+Disposition:: (not yet recorded -- green/red, and whether route R-A is
+thereby proven or a real blocker must be escalated per the rule above)
