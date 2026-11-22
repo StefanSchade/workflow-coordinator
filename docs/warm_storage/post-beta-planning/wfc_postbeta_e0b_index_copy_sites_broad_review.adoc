@@ -1,0 +1,418 @@
+= Post-Beta P3 package E0b — the remaining index-copy sites: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the E0b candidate for
+WorkItem `WI-WFC-POSTBETA-E0B-INDEX-COPY-SITES-001`, the successor of package E0
+(link:wfc_postbeta_e0_preservation_flake_broad_review.adoc#e0-o1[E0's observation
+O1]). Later passes are added above earlier ones; earlier passes are kept unedited
+apart from the `(current)` marker, which moves to the newest pass.
+
+== Pass H002 — `RUN-d91e299c…` (current)
+
+Status:: *CHANGES REQUIRED*, two blocking Findings. The product fix is right and I
+confirmed it at the root: all three remaining sites now carry the live index's
+mtime into the throwaway copy, and the wrong results they produced before the fix
+are gone (`salvage_inventory` 1/300 → 0/300 empty captures, `observe_repository`
+1/300 → 0/300 false clean, `preflight_hop` 3/300 → 0/300 dirty worktrees passed;
+all measured here, both directions). The three new exact-mtime tests are exactly
+the deterministic guards the task asked for: each fails 20/20 against the pre-fix
+source and passes 40/40 against the committed one. What blocks is not the fix but
+two things the candidate added around it: one new test is itself wall-clock flaky
+and failed *6 of 400* runs against the committed, correct source
+(<<e0b-b1,B1>>), and routing the three sites through the shared helper silently
+dropped their temp-file cleanup on a failing copy — reproduced with `ENOSPC` at
+the very site of the recorded 2026-10-28 `/tmp` exhaustion incident
+(<<e0b-b2,B2>>). Both are small, localized corrections; nothing in the mtime fix
+itself needs to change.
+WorkItem:: `WI-WFC-POSTBETA-E0B-INDEX-COPY-SITES-001`
+Run / Hop:: `RUN-d91e299ce92847f690424674f25e2e4f` / `H002` (`broad_review`, fresh
+independent adversarial reviewer, gate, blocking-only,
+`finding_authority: [resolve]`).
+Invocation:: `INV-c985186722434755b0457a5d9e48bc68`.
+Reviewed product:: the whole E0b candidate at base HEAD
+`b47c39b27fc79a7b63d3e43818eabba7718c6626`, implementation range
+`22e18b5..b47c39b`: three leaves, `+194 / -29` lines —
+`src/workflow_coordinator/git_facts.py` (the shared helper gains a required
+`prefix` keyword; three inlined `mkstemp` + `shutil.copyfile` blocks are replaced
+by one call each; `preserve_candidate` passes its own prefix),
+`tests/unit/test_candidate_preservation.py` (one line: E0's test follows the new
+keyword) and the new `tests/unit/test_index_copy_mtime.py` (7 tests, 181 lines).
+`git show --stat b47c39b` and the full diff agree; no fourth leaf exists in the
+range, and `git status --short -uall` shows no tracked modification in the
+worktree.
+Governing acceptance:: the Commission task with its four ordered DO steps, its
+Acceptance list and its withheld authority ("no weakening of any assertion or
+refusal; no other behavior change"); package entry E0/E0b of
+link:../../backlog/postbeta_plan_p3_release_engineering.adoc[the accepted P3
+plan] and the E0 acceptance record in
+link:../../backlog/_open.adoc[the open backlog]; E0's own broad review, whose
+observation O1 is the source of this package;
+`docs/developer_guide/ch03_engineering_conventions.adoc` for proportion, tests and
+boundary discipline. `docs/cold_storage/` is provenance, not a source of current
+requirements.
+
+=== Finding state
+
+The projected authoritative Finding state for this Run is empty. I propose the two
+blocking Findings below as new; their run-local IDs are allocated by the
+Coordinator, so they are labelled `B1`/`B2` here. `E0`, `E0b`, `O1`–`O7`, `MD-5`
+and the commit-message labels appearing in this record are plan-internal or
+provenance labels, not current-Run Finding IDs.
+
+=== What I re-derived rather than quoted
+
+`pytest` is not installed in this review sandbox (`python3 -c "import pytest"` →
+`ModuleNotFoundError`; no virtual environment in the worktree, no network, and
+required mode needs a verified offline bundle this Hop has none of). I therefore
+did not re-run, and do not restate as my own, any of the Worker's pytest counts.
+Instead I executed the test *bodies* in-process against two sources — the
+committed one (`src/`) and the pre-fix one (`b47c39b^:src/.../git_facts.py`
+materialized into a scratch copy of the package) — with a minimal `monkeypatch`
+stand-in, one disposable repository per trial under the sandbox `TMPDIR`. Every
+number below is from my own execution on this host (Git 2.47.3, Python 3.13.5,
+ext4). No probe wrote into the repository worktree or index; the only new paths
+are ignored `__pycache__` directories.
+
+=== 1. The three sites, measured before and after
+
+The pre-fix source has `shutil.copyfile` at exactly the three lines O1 named —
+`:122` `salvage_inventory`, `:273` `salvage_omissions`, `:577`
+`observe_repository` — and `shutil.copy2` at `:919` (E0's fixed helper). Each site
+is reproduced below with the same minimal scenario: a one-file repository, the
+file committed as `v1\n`, then overwritten with the same-size `v2\n`.
+
+Natural timing, 300 trials per row, fresh repository per trial:
+
+[cols="3,1,1"]
+|===
+|Observable |pre-fix |as committed
+
+|`salvage_inventory` returns an *empty capture* for a real tracked change
+|1 / 300
+|*0 / 300*
+
+|`observe_repository` reports `clean` for a dirty worktree
+|1 / 300
+|*0 / 300*
+
+|`preflight_hop` *passes* a dirty worktree (no `GitPreflightError`)
+|3 / 300
+|*0 / 300*
+
+|`salvage_omissions` returns a wrong ignored-path list
+|0 / 300
+|0 / 300
+|===
+
+Forced reproduction (the copy's mtime pushed 2 s past the live index's, applied to
+whichever call the source makes), 20 trials:
+
+[cols="3,1,1"]
+|===
+|Observable |pre-fix, forced |committed, same force applied after `copy2`
+
+|`salvage_inventory` empty capture |20 / 20 |19 / 20
+|`observe_repository` false clean |20 / 20 |19 / 20
+|`preflight_hop` passed a dirty worktree |20 / 20 |19 / 20
+|`salvage_omissions` wrong list |*0 / 20* |0 / 20
+|===
+
+Two things follow. First, the defect is real at both consequential sites and the
+`preflight_hop` consequence is the trust-boundary one O1 called out: the gate whose
+job is to refuse a dirty tree accepted it. Second, the right-hand column is *not* a
+defect in the committed source — it is my probe deliberately destroying the
+invariant *after* the fixed code establishes it, and it is the measurement that
+proves the carried mtime is the whole mechanism. It is also the reason the
+candidate's own forced test proves nothing about the fix (see <<e0b-b1,B1>>).
+
+My natural rates (0.3–1 %) are lower than O1's 8/300 (2.7 %) for the same reason
+O1 itself predicts: the failure probability is the elapsed time between the index
+write and the copy divided by one second, and on this host that gap is 4–8 ms
+(measured directly from the mtime deltas in the pre-fix exact-mtime runs below)
+against O1's 13.6 ms. The mechanism explains both numbers; neither contradicts the
+other.
+
+`salvage_omissions`: the stat cache is *not* load-bearing. `ls-files --others
+--ignored --exclude-standard` answers index *membership*, not stat freshness, so no
+forced offset produced a wrong list (0/20 even with the copy 2 s in the future).
+Fixing it anyway is correct and I would not have accepted leaving it: it is the
+identical idiom at the identical boundary, and the task's own reasoning — "it must
+not remain a trap for the next reader" — is the right standard.
+
+=== 2. The fix: the shared helper is the simpler of the two options
+
+One helper serving all four call sites, with the site-specific `mkstemp` prefix as
+a required keyword, is the arrangement the task preferred and it is the right one
+here: the four sites had byte-identical idioms, so the alternative (four
+`shutil.copy2` calls) would have kept four copies of a rule that exists for one
+reason. The diff removes 29 lines and adds 11 in the product file. The required
+keyword (rather than a default) is a good call: it makes every site state its own
+prefix, which matters because two live documents name those prefixes —
+`docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc:352`
+(`/tmp/wfc-observe-index-*`) and the Front Door boundary plan at `:479` — and both
+remain accurate. `tempfile.mkstemp` is still called without `dir=`, so the
+documented "follows process temp settings, not a hard-coded `/tmp`" statement also
+still holds. No documentation was owed by this change and none is stale.
+
+Behaviour preservation, checked rather than assumed:
+
+* The `GIT_INDEX_FILE` values are now `str(Path(...))` of the same `mkstemp` path —
+  identical strings; confirmed by the 300-trial behaviour runs, which exercise all
+  three sites end to end against real Git.
+* No refusal, limit, error message or return shape was touched; no assertion was
+  weakened; no `sleep`, retry, `skip`, `xfail` or marker was added in the product
+  file. E0's test survives with its assertion byte-identical (only the new keyword)
+  and passes 40/40 here.
+* `_build_candidate_tree` (`:935`) is *not* a fourth copy site: its private index is
+  written by Git itself (`read-tree` into a fresh `mkstemp` file), so no stat cache
+  is carried over a byte copy. Independently confirmed.
+* Other stat-sensitive copies in `src/`: I searched (`shutil.copyfile`,
+  `shutil.copy2`, `shutil.copy`, `copytree`, and every `GIT_INDEX_FILE` use). The
+  only other `copy2` is `frontdoor/archive.py:357`, which copies archive payload
+  files and verifies them by SHA-256; no other index copy exists. The Worker's
+  report on this point is correct.
+* One behaviour *did* change, on the error path, and it was not intended: see
+  <<e0b-b2,B2>>.
+
+=== 3. The new tests
+
+[cols="4,1,1,2"]
+|===
+|Test |pre-fix |committed |Verdict
+
+|`…salvage_inventory_index_copy_preserves_live_index_mtime`
+|20/20 fail
+|0/40 fail
+|deterministic guard, fails before, passes after
+
+|`…salvage_omissions_index_copy_preserves_live_index_mtime`
+|20/20 fail
+|0/40 fail
+|same
+
+|`…observe_repository_index_copy_preserves_live_index_mtime`
+|20/20 fail
+|0/40 fail
+|same
+
+|`…salvage_inventory_reads_dirty_same_size_edit_through_the_copy`
+|≈1/300 fail
+|0/300 fail
+|correct and stable; catches a regression only probabilistically, never fails falsely
+
+|`…observe_repository_reads_dirty_same_size_edit_through_the_copy`
+|≈1/300 fail
+|0/300 fail
+|same
+
+|`…preflight_hop_refuses_dirty_same_size_edit_through_the_copy`
+|≈3/300 fail
+|0/300 fail
+|same
+
+|`…observe_repository_reads_dirty_edit_as_clean_if_copy_mtime_is_forced_a_whole_second_later`
+|n/a
+|*6/400 fail*
+|<<e0b-b1,B1>> — wall-clock flaky, and not a before/after differentiator
+|===
+
+The first three are exactly what the task asked for ("an exact attribute check that
+the copy used by each site carries the live index's mtime"), one per site, through
+the real public entry point rather than the helper, so each site's own path is
+pinned. The pre-fix delta they report is the 4–8 ms copy gap, never zero. The next
+three are honest correctness tests whose outcome is the same in both timing
+branches post-fix (Git's protection covers the same-second case; a later-second
+edit differs by stat), which is why they are stable rather than lucky. The seventh
+is the problem.
+
+=== 4. Blocking Findings
+
+[[e0b-b1]]
+B1 — the forced-mechanism test is wall-clock flaky and fails against the correct product:: `tests/unit/test_index_copy_mtime.py:142`
+(`test_observe_repository_reads_dirty_edit_as_clean_if_copy_mtime_is_forced_a_whole_second_later`)
+asserts `facts.clean` after a same-size edit while `shutil.copy2` is patched to
+stamp the copy 10 s in the future. That false clean only materializes when the
+same-size edit lands in the *same whole second* as the staged entry's cached stat.
+It is therefore a race the test has to win:
++
+--
+* Its exact body against the committed source: *6 failures in 400 runs* (1/100,
+  then 5/300 — 1.5 %), each `forced-later copy did NOT produce a false clean`.
+* Forcing the edit into the next whole second instead of hoping it stays inside the
+  current one: *20/20 failures*. The dependence is on wall-clock alignment, not on
+  anything the product does.
+
+This violates an explicit acceptance criterion — "deterministic regression tests …
+rely on no timing luck, sleep, retry, skip or xfail" and "Do not rely on wall-clock
+races" — and it does so in the worst direction: an intermittent *failure* on a
+correct, fixed product, i.e. a new flake added to the suite by the package whose
+whole purpose is to remove one. The Worker's 40 and 60 clean file repetitions are
+consistent with a 1.5 % rate (≈55 % chance of seeing nothing in 40 runs); they do
+not establish determinism.
+
+The test also carries no regression signal to weigh against that cost, as the
+Worker's own docstring concedes: it patches `copy2`, which the pre-fix source at
+this site never called, so it is "not itself a differentiator between the pre-fix
+and fixed source". My right-hand column in section 1 is the same measurement and
+shows why: once the invariant is destroyed after the fact, fixed and pre-fix
+behave identically. Against the pre-fix source the test does fail — but because
+the patch misses the `copyfile` call it meant to force, which is the inverse of a
+regression signal: it reports "fail" for a source that does not call `copy2` at
+all, whatever that source otherwise does.
+
+Feasible, simpler correction: delete the test. The deterministic guard for this
+site is the exact-mtime test (0/40 here, 20/20 pre-fix) and the behaviour guard is
+`…observe_repository_reads_dirty_same_size_edit_through_the_copy` (0/300). Nothing
+is lost but the flake. If the mechanism is worth stating for the next reader, the
+helper docstring at `git_facts.py:882-895` already states it. A deterministic
+alternative that keeps an executable demonstration is possible in principle
+(pinning the worktree file's stat to the cached entry and disabling
+`core.trustctime` in the fixture), but it buys a demonstration of Git's behaviour,
+not of ours, and I do not request it — removal is the proportionate fix. No new
+requirement is implied either way; what is required is only that no committed test
+depends on winning a wall-clock race.
+--
+
+[[e0b-b2]]
+B2 — the three sites lost their temp-file cleanup when the copy fails:: Before this
+change, each site created the temp file and copied into it *inside* its
+`try: … finally: os.unlink(...)` block, so a failing copy left nothing behind. The
+shared helper is called *before* the `try`, so a copy that raises now leaks the
+`mkstemp` file (empty or partially written) for the process lifetime. Reproduced by
+raising `OSError(ENOSPC)` from the copy and counting leftover `wfc-*` files in a
+private `TMPDIR`:
++
+--
+[cols="3,1,1"]
+|===
+|Site |pre-fix leaked |committed leaked
+
+|`salvage_inventory` |0 |*1*
+|`salvage_omissions` |0 |*1*
+|`observe_repository` |0 |*1*
+|`_isolated_index_copy` (E0's own, unchanged) |1 |1
+|===
+
+This is a behaviour change the task's withheld authority forbids ("no other
+behavior change") and one the task's own DO (2) named explicitly: the shared helper
+was to be adopted "keeping every existing behavior, prefix, cleanup and error
+handling". I am not inventing a requirement — the cleanup existed at all three
+sites and is gone.
+
+It is not academic. The one recorded production failure of exactly this copy is
+`ENOSPC` on a full `/tmp` at `/tmp/wfc-observe-index-*`
+(`docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc:352`), and
+`observe_repository` runs at every Hop boundary, so repeated failures now
+accumulate debris in the filesystem that is already exhausted — the regression
+lands precisely where it hurts.
+
+Feasible, simpler correction: unlink inside the helper when the copy raises
+(`try: shutil.copy2(...) except BaseException: os.unlink(copied_index); raise`, or
+the equivalent `try/except` that re-raises). That is three lines in *one* place and
+it also closes the identical pre-existing leak at E0's `preserve_candidate` site —
+strictly better than the four `finally` blocks the previous shape needed.
+--
+
+=== 5. Acceptance, element by element
+
+[cols="2,1,3"]
+|===
+|Criterion |Met |Evidence
+
+|Each of the three sites reproduced or analysed with measured numbers
+|yes
+|Section 1; the Worker's forced per-site numbers and the "`salvage_omissions` stat
+cache is not load-bearing" statement both reproduce here.
+
+|Fixed at the root (live index mtime carried), preferably one shared helper
+|yes
+|Section 2; 0/300 at every site after, 1–3/300 before.
+
+|Deterministic tests fail before and pass after for the consequential sites
+|yes
+|Section 3, first three rows: 20/20 before, 0/40 after.
+
+|Rely on no timing luck, sleep, retry, skip or xfail
+|*no*
+|<<e0b-b1,B1>>: 6/400 failures of a committed test against the correct source;
+20/20 when the hidden alignment is removed.
+
+|E0's test remains
+|yes
+|Only the new keyword changed; 0/40 here.
+
+|No other behavior of the module changed
+|*no*
+|<<e0b-b2,B2>>: the three sites' temp-file cleanup on a failing copy is gone
+(0 → 1 leaked file per site, reproduced with `ENOSPC`).
+
+|≥ 40 repetitions of the new tests and affected files, zero failures
+|not as reported
+|By equivalent execution I get zero failures for six of the seven new tests
+(40–300 runs each) and E0's test (40), but 6/400 for the seventh. The Worker's
+pytest counts are not evidence I can confirm (`pytest` is absent here); the
+discrepancy is a rate, not a contradiction.
+
+|A search for other stat-sensitive index copies in `src/` is reported
+|yes
+|Section 2; independently re-run and confirmed — none besides the four fixed sites.
+
+|Full required suite green
+|not verifiable here
+|`python -m pytest -q` needs the verified offline bundle and a `pytest` this
+sandbox has none of. That is Coordinator-trusted evidence (`task-check`), not an
+agent result; I make no claim either way.
+
+|No file outside the named scope changed
+|yes
+|`git show --stat b47c39b` lists exactly the three authorized leaves;
+`git status --short -uall` shows no tracked modification.
+|===
+
+[[e0b-observations]]
+=== 6. Non-blocking observations
+
+[[e0b-o1]]
+O1 — the three "reads a dirty same-size edit" tests are worth keeping as they are:: They
+pass deterministically after the fix because both timing branches reach the same
+verdict, and before the fix they fail only at the natural rate (≈0.3–1 % here). They
+are therefore weak regression detectors but zero-risk ones, and they document the
+consequence in product terms rather than in `stat` terms. Keeping them alongside the
+exact-mtime guards is the right arrangement; nothing to change.
+
+[[e0b-o2]]
+O2 — `_capture_copy_mtimes` records two entries per `copy2` and relies on the last one:: `shutil.copy2`
+calls the module-level `copyfile` internally, so wrapping both names records the
+inner data copy (fresh mtime) and then the outer corrected one. The helper's
+docstring explains this and `records[-1]` is the state actually left on disk, so the
+assertion is sound — but it is a CPython implementation detail. A stat of the real
+copy (for instance by capturing the path the site used) would not depend on it. Not
+worth a change on its own; worth knowing if the helper is ever extended.
+
+[[e0b-o3]]
+O3 — `copy2` adds a `copystat` failure mode that `copyfile` did not have:: A failing
+`os.utime` on the fresh temp file would now raise `OSError` out of
+`observe_repository`/`preflight_hop` where `copyfile` would have succeeded. On a
+local `TMPDIR` file the process just created and owns this is not a realistic path,
+and it is the same trade E0 already accepted at one site. Recorded only so that a
+future move of these temporaries onto an exotic filesystem is made with open eyes.
+The mode widening noted in E0's O3 (`0600` → the index's `0664`) now also applies to
+the three sites; the same reasoning holds — these files carry index metadata that is
+already readable to anyone who can read the checkout, and no site promised `0600`.
+
+[[e0b-o4]]
+O4 — the natural failure rate is host-dependent and the model predicts it:: 4–8 ms
+index-write-to-copy gap here against 13.6 ms in E0's review, giving 0.3–1 % against
+2.7 %. Anyone re-measuring these numbers on another host should expect a different
+rate and the same mechanism; the exact-mtime tests are rate-independent, which is
+exactly why they are the right guards.
+
+[[e0b-o5]]
+O5 — no documentation was owed:: The two live documents that name these temp prefixes
+and the `mkstemp` placement
+(`docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc:352`, the Front Door
+boundary plan `:479`) stay accurate because the prefixes and the `dir=`-less
+`mkstemp` are preserved. The backlog's E0 entry
+(`docs/backlog/_open.adoc:406-411`) already names E0b as the successor; recording
+E0b's own outcome there is the maintainer's upkeep, not this Hop's scope.
