@@ -1,5 +1,14 @@
 # Workflow Coordinator
 
+Workflow Coordinator is a Git-based coordinator for controlled agentic
+execution: explicit authorization boundaries, independent review, trusted
+commits and recorded run evidence. This first beta is qualified and
+practically focused on software-development workflows, on one qualified
+platform (CPython 3.13, Linux x86-64). Its core mechanics are designed to
+stay domain-neutral for work on versioned artifacts more broadly -- an
+enabling component of a longer-term "Agent Anything Factory" direction, a
+strategic target image rather than a feature this release delivers.
+
 Workflow Coordinator is a bounded, repository-native engine for serial agent
 workflows with explicit Git, evidence, authority, and human-stop boundaries.
 

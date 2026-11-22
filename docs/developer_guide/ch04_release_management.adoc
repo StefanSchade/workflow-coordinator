@@ -1,0 +1,224 @@
+ifndef::assembled[]
+= WFC Developer Guide -- Release management
+:developer-docs: ..
+
+Standing:: Informative release guidance; it records the accepted release
+contract. The scripts, workflow file and Make targets it describes as
+*planned* are authorized but not yet implemented (packages E2 and E3 of
+`docs/backlog/postbeta_plan_p3_release_engineering.adoc`); nothing in this
+chapter should be read as a claim that they exist today.
+endif::[]
+
+[[release-management]]
+== Release management
+
+WFC has one release line: beta pre-releases on `0.1.0bN`, published to PyPI
+through a GitHub Actions pipeline, following the sibling
+`spreadsheet-handling` repository's release flow and tooling shape as
+closely as WFC's own threat model and distribution needs allow. This chapter
+records the *decided contract* -- what a release must be true of -- not an
+implementation report. `scripts/wfc_release_check.py`, `scripts/wfc_dist_audit.py`,
+the `release-check`/`dist-audit` Make targets and `.github/workflows/release.yml`
+are *planned implementations of this contract* (E2, E3); until they land, every
+check below is run by hand.
+
+[[release-contract]]
+=== The release contract
+
+C1 -- Versioning and the tag:: The package version is *static* in
+`pyproject.toml` (plain `setuptools`, no `setuptools-scm`); the first
+published version is `0.1.0b1`, tag `v0.1.0b1`, no bump. Preflight asserts
+`tag == "v" + version`. The test literal at
+`tests/architecture/test_bp1_identity.py:41` (`first['version'] ==
+'0.1.0b1'`) names the version explicitly so a future bump touches it
+knowingly.
+C2 -- Artifact content allow-list:: Both built artifacts are audited against
+an *exact* allow-list; the audit fails on anything *unlisted*, not only on
+the forbidden names below, so a new top-level directory cannot leak in
+silently.
++
+[cols="1,3",options="header"]
+|===
+|Artifact |Allowed contents
+|Wheel |The `workflow_coordinator` package (`.py` files plus exactly the
+four reviewed resource texts: `agent_operating_contract_v6.txt`,
+`roles/reviewer.txt`, `roles/simple-self-check.txt`, `roles/worker.txt`) and
+`*.dist-info`.
+|Sdist |`pyproject.toml`, `setup.cfg` (setuptools writes it in; untracked, not
+a mistake), `PKG-INFO`, `README.md`, `LICENSE`, `src/**`.
+|===
++
+Forbidden by name in both, in addition to anything simply unlisted:
+`docs/`, `tests/`, `governance/`, `project_memory/`, `.wfc/`, `scripts/`,
+`requirements/`, `tmp/`, `build/`, any `*.ods`, any Evidence or Run artifact.
+Already true without a `MANIFEST.in`: the measured sdist is 49 files /
+830,282 bytes and the wheel 44 files / 822,648 bytes, with no docs, tests,
+governance, `.wfc/` or Project Memory content -- tidy today, but unguarded
+until `wfc_dist_audit.py` (E2) enforces it mechanically.
+C3 -- Clean-environment install check:: Install the *built artifact* (not an
+editable checkout) into a fresh venv and run `wfc --help` and `wfc --version
+--json` from a directory *outside* the checkout. Assert the reported
+version equals the tag and `source_commit` is `null`. The suite already
+proves the underlying mechanism (`tests/architecture/test_bp1_identity.py`);
+the release adds only the outside working directory and the assertion.
+C4 -- Release notes:: Preflight fails when the tag has no matching section in
+`docs/release_notes/release_notes.adoc`, or that section's heading still
+says `-- planned`. Content: what changed since Beta, the consumer
+quickstart's limitations, and the one qualified platform profile.
+C5 -- Version-pinned documentation:: No HTML is published for `0.1.0b1`
+(MD-4, *decided*: deferred, not rejected -- GitHub-hosted documentation with
+version-bound links suffices now; a Pages-style solution is a possible
+later extension once a second consumer exists). `README.md` links
+documentation by *absolute, tag-pinned* repository URL
+(`blob/<tag>/docs/...`), workable because `StefanSchade/workflow-coordinator`
+is already public and judged clean (MD-3, *decided*; this corrects every
+earlier conditional statement that assumed otherwise). The strict
+AsciiDoctor render (G5, <<release-gates>>) stays a gate regardless; this
+does not reopen C2.
+C6 -- What runs on a hosted runner:: *Open.* See <<md5-open>> below for the
+investigation, the unknowns and the escalation rule, and <<release-gates>>
+for G2.
+C7 -- Distribution destination:: *Decided* (MD-1 below): TestPyPI, then PyPI,
+then a GitHub Release, through the planned GitHub Actions pipeline (E3).
+
+[[decided-maintainer-points]]
+=== MD-1 and G8, decided
+
+MD-1 -- Distribution destination:: TestPyPI, PyPI and a GitHub Release,
+through a GitHub Actions release pipeline, following the
+`spreadsheet-handling` flow as closely as possible. Both PyPI and TestPyPI
+use *OIDC Trusted Publishing*: no long-lived token is stored as a repository
+secret anywhere in this pipeline. TestPyPI is a *real upload* -- a
+rehearsal, not `--dry-run` (G6 below) -- because only a real upload proves
+the Trusted Publisher OIDC wiring, the index's metadata acceptance and an
+installable result.
+G8 -- Release authorized (maintainer):: A GitHub Environment named `pypi`
+with a *required-reviewer* rule naming the maintainer gates the
+`publish-pypi` job. This is an improvement over the reference, which
+auto-publishes on every tag push. The setting is created by the maintainer
+(external to this repository), confirmed before the first tag, and
+exercised when the maintainer approves the pending deployment. Approval is
+*never* inferred from a green job.
+
+[[release-gates]]
+=== Release sequence and gates
+
+Every gate is release-blocking; there is no advisory class. Each step below
+names the gate(s) guarding it.
+
+. Push the release commit to `main`; the planned `check` job runs --
+  *G1* preflight clean (topology, tag-equals-version, notes frozen, README
+  links absolute), *G2* required suite green, *G3* both artifacts contain
+  exactly the C2 allow-list, *G4* clean-environment install and CLI identity
+  (C3), *G5* documentation renders strictly.
+. With `check` green, the maintainer gives the Q1 consumer-qualification Run
+  the downloaded `check` artifact unchanged (a rebuild's byte-identity is
+  unverified) and authorizes it -- *G7* consumer qualification dispositioned,
+  on completion.
+. Only once Q1 is accepted *and* the `pypi` environment's pre-tag
+  confirmation is in hand does the maintainer push the tag; `check` re-runs
+  in tag mode, re-proving everything against the tagged commit.
+. `publish-testpypi` runs unattended -- *G6* TestPyPI rehearsal.
+. The pipeline waits at the `pypi` environment's required-reviewer gate --
+  *G8*, above.
+. `publish-pypi`, then `release`, run after approval; the maintainer verifies
+  the PyPI index page and the GitHub Release.
+
+[cols="1,3,2",options="header"]
+|===
+|Gate |What it verifies |Owner
+|G1 |Topology, tag-equals-version, notes frozen, README links absolute. |Operator and CI
+|G2 |`python -m pytest -q`, zero flake, host and profile recorded. Operator-run now; CI once MD-5 is settled feasible. |Operator now, CI later
+|G3 |Both artifacts contain exactly the C2 allow-list. |CI and Operator
+|G4 |Fresh-venv install outside the checkout; `wfc --help`; `wfc --version --json` reports the tag's version. |CI and Operator
+|G5 |`asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN` over the assembled books: exit 0, no output. |CI
+|G6 |`publish-testpypi` uploads the real checked artifact via OIDC. |CI and Operator
+|G7 |The Q1 archive and its independent review disposition; a truthful stop is itself a valid outcome. |Maintainer
+|G8 |The `pypi` environment's required-reviewer approval. |Maintainer
+|===
+
+[[release-runbook]]
+=== Release runbook
+
+*Preflight.* Before tagging: working tree clean, on `main`, local `main` in
+sync with `origin/main`; `tag == "v" + version`; `docs/release_notes/release_notes.adoc`
+has a matching, non-`planned` section for the tag; README links are absolute
+and tag-pinned. The planned `make release-check` (E2) will automate this
+read-only check in both branch mode (pre-tag) and tag mode (`TAG=v<version>`,
+detached HEAD).
+
+*Tag.* Create `v<version>` from the qualified commit on `main` only after
+Q1 (consumer qualification) is accepted and the `pypi` environment's
+pre-tag confirmation is in hand (<<release-gates>>). Do not tag an
+unqualified commit "to look at it" -- a pushed tag spends a TestPyPI
+version even if the publish then fails.
+
+*Publish.* `publish-testpypi` runs unattended on the tag (G6); `publish-pypi`
+waits for the `pypi` environment's required-reviewer approval (G8), then
+runs; `release` creates the GitHub Release from the same tag, attaching the
+same two artifact files the `check` job already built and audited. No job
+rebuilds the artifact after `check`.
+
+*Verify.* After `publish-pypi`: the PyPI project page shows the new version.
+After `release`: the GitHub Release shows the same version and artifacts.
+
+*Partial-failure recovery.* PyPI refuses to re-upload an already-published
+version, so once `publish-pypi` succeeds the version is irreversible;
+do not retag. If a step before `publish-pypi` fails (tag pushed, `check`
+or `publish-testpypi` red), delete the remote and local tag, fix the
+problem, and re-tag from a corrected commit -- no artifact has reached an
+index yet. If `publish-pypi` succeeds but `release` fails, re-run `release`
+alone; it only reads the already-published tag and artifacts.
+
+*A published version is never retagged.* Once `publish-pypi` has succeeded,
+fix forward with the next version; PyPI's own refusal to re-upload makes
+this a hard rule, not a style preference.
+
+[[md5-open]]
+=== Open: must the whole required suite run on a hosted runner? (C6, MD-5)
+
+*Status: open.* The earlier recommendation -- a subset on the runner -- is
+*not* accepted. Target: the whole required suite, on a qualified hosted
+environment, as a binding gate (G2), if technically possible.
+
+Setup requirements (fact [1]):: `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE` set to a
+bundle verified byte-for-byte; `check_host` compares implementation, Python
+minor, machine, system, SOABI, seed pip exactly and glibc as a floor; 12
+pinned wheels; an editable WFC install; real bubblewrap userns, Git without
+a clean/process filter, GNU make, PEP-517 isolation. Four conditional skips
+fire on the Operator's reference host (three opt-in live-provider, one
+internal probe); three further conditional skip sites exist suite-wide and
+must be asserted *not* to fire on the runner -- `make` and `git` present,
+`governance/self-development` checked out -- not silently relied upon.
+Reproducible on a GitHub runner? (fact [2]):: Not yet proven, but plausible:
+the planned route is `ubuntu-24.04` (pinned label) plus `setup-python`
+pinned to the exact patch `3.13.5`, a `sudo sysctl` relaxing unprivileged
+userns for bwrap, a step-scoped neutralization of the runner's git-lfs
+filter (not WFC's own filter-refusal test), the normal `fetch`+`exec` flow,
+then the unmodified suite.
+A second host profile's closure review? (fact [3]):: Re-verified against the
+profile: the 12 wheel pins are checked only by filename, size, SHA-256,
+metadata and wheel tag (manylinux/`py3-none`/`cp313` plus a glibc floor) --
+none depends on the CPython build, so the pins would not change. The
+build-dependent part is `seed_pip_version` (`ensurepip.version()`), which
+Debian patches to a bundled pip distinct from upstream; other host fields
+are generic. A second profile's review therefore reduces to a byte-equality
+diff of `wheels` plus a review of the build-specific `host` fields -- never
+a full dependency re-audit.
+What cannot run at all? (fact [4]):: Nothing by design -- the four skips
+above are opt-in or internal, and the three further sites are host- and
+checkout-dependent conditions to verify, never silently widened or assumed.
+
+*Still unknown, needing a hosted run:* (a) the runner's actual seed pip
+version for CPython 3.13.5 on `ubuntu-24.04`; (b) bwrap userns after the
+`sysctl`; (c) whether the runner's Git carries a git-lfs filter and the
+neutralization suffices; (d) that `fetch` reaches `files.pythonhosted.org`;
+(e) whether a second profile is wanted if the pip version differs.
+
+*Cheapest evidence:* the first hosted run of the planned E3 workflow on
+`main` answers (a)-(d).
+
+*Escalation rule:* a real, reproducible blocker is documented with the
+failing log and escalated -- a digest-pinned container, a documented partial
+gate, or otherwise -- to the maintainer; MD-5 is not loosened and G2 is not
+narrowed without that decision.
