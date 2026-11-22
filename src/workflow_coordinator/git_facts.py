@@ -112,15 +112,9 @@ def salvage_inventory(
     # Git may refresh an index while comparing it with the worktree, even for
     # `diff`/`ls-files`.  Give the whole capture an isolated index copy so a
     # platform-specific refresh can never touch the registered checkout.
-    index_location = Path(_readonly_git(identity, "rev-parse", "--git-path", "index"))
-    if not index_location.is_absolute():
-        index_location = identity / index_location
-    descriptor, copied_index = tempfile.mkstemp(prefix="wfc-salvage-index-")
-    os.close(descriptor)
+    copied_index = _isolated_index_copy(identity, prefix="wfc-salvage-index-")
     try:
-        if index_location.exists():
-            shutil.copyfile(index_location, copied_index)
-        capture_env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": copied_index}
+        capture_env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": str(copied_index)}
         if _run_git(identity, "cat-file", "-e", f"{base_head}^{{commit}}", env=capture_env).returncode:
             raise GitPreflightError("salvage base HEAD is not a commit")
         return _salvage_inventory_with_index(
@@ -263,17 +257,11 @@ def salvage_omissions(repository: Path, *, allowed_paths: tuple[str, ...]) -> tu
     identity = repository_identity(repository)
     if not allowed_paths:
         raise GitPreflightError("salvage requires an explicit authorized scope")
-    index_location = Path(_readonly_git(identity, "rev-parse", "--git-path", "index"))
-    if not index_location.is_absolute():
-        index_location = identity / index_location
-    descriptor, copied_index = tempfile.mkstemp(prefix="wfc-salvage-omissions-index-")
-    os.close(descriptor)
+    copied_index = _isolated_index_copy(identity, prefix="wfc-salvage-omissions-index-")
     try:
-        if index_location.exists():
-            shutil.copyfile(index_location, copied_index)
         completed = _run_git(
             identity, "ls-files", "--others", "--ignored", "--exclude-standard",
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": copied_index},
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": str(copied_index)},
         )
         if completed.returncode:
             raise GitPreflightError(completed.stderr.strip() or "Git command failed")
@@ -567,15 +555,9 @@ def _observe_repository(repository: Path, *, git_command: GitCommand) -> GitFact
 
 def observe_repository(repository: Path) -> GitFacts:
     identity = _repository_identity(repository, git_command=_readonly_git)
-    index_location = Path(_readonly_git(identity, "rev-parse", "--git-path", "index"))
-    if not index_location.is_absolute():
-        index_location = identity / index_location
-    descriptor, copied_index = tempfile.mkstemp(prefix="wfc-observe-index-")
-    os.close(descriptor)
+    copied_index = _isolated_index_copy(identity, prefix="wfc-observe-index-")
     try:
-        if index_location.exists():
-            shutil.copyfile(index_location, copied_index)
-        environment = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": copied_index}
+        environment = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": str(copied_index)}
 
         def observation_git(repo: Path, *args: str, check: bool = True) -> str:
             completed = _run_git(repo, *args, env=environment)
@@ -896,7 +878,7 @@ PRESERVATION_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 _SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
-def _isolated_index_copy(identity: Path) -> Path:
+def _isolated_index_copy(identity: Path, *, prefix: str) -> Path:
     """A throwaway copy of the live index; reads through it never touch the real one.
 
     The copy's mtime must match the live index file's own mtime, not the time
@@ -907,13 +889,15 @@ def _isolated_index_copy(identity: Path) -> Path:
     mtime on the copy, which can quietly defeat that protection and make
     ``git status`` read through the copy report a genuinely dirty path as
     clean. ``copy2`` carries the original mtime forward so the copy is exactly
-    as racy-safe as the live index it stands in for.
+    as racy-safe as the live index it stands in for. Shared by every call site
+    that hands Git an isolated index copy; ``prefix`` keeps each site's own
+    ``mkstemp`` naming.
     """
 
     index_location = Path(_readonly_git(identity, "rev-parse", "--git-path", "index"))
     if not index_location.is_absolute():
         index_location = identity / index_location
-    descriptor, copied_index = tempfile.mkstemp(prefix="wfc-preserve-index-")
+    descriptor, copied_index = tempfile.mkstemp(prefix=prefix)
     os.close(descriptor)
     if index_location.exists():
         shutil.copy2(index_location, copied_index)
@@ -1012,7 +996,7 @@ def preserve_candidate(
             + ", ".join(filters)
         )
 
-    copied_index = _isolated_index_copy(identity)
+    copied_index = _isolated_index_copy(identity, prefix="wfc-preserve-index-")
     try:
         read_env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": str(copied_index)}
 

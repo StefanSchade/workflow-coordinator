@@ -185,7 +185,7 @@ def test_isolated_index_copy_preserves_live_index_mtime_not_fresh_copy_time(repo
     live_index = repo / ".git" / "index"
     live_mtime_ns = live_index.stat().st_mtime_ns
 
-    copied_index = GF._isolated_index_copy(repo)
+    copied_index = GF._isolated_index_copy(repo, prefix="wfc-preserve-index-")
     try:
         assert copied_index.stat().st_mtime_ns == live_mtime_ns
     finally:
