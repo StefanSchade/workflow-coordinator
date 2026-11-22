@@ -12,7 +12,228 @@ record] and are not edited here; package E0, whose observation O1 is the source
 of E0b, has its own record in
 link:wfc_postbeta_e0_preservation_flake_broad_review.adoc[the E0 broad review].
 
-== Pass H004 — `RUN-d91e299c…` (current)
+== Pass H006 — `RUN-d91e299c…` (current)
+
+Status:: *ACCEPT*, no blocking Finding left open. `F002` is *resolved*: the
+correction replaces `except Exception` with the repository's own
+`except BaseException` + `FileNotFoundError`-guarded `unlink` + `raise` idiom in
+the one shared helper, and the temp-file leak is gone at all four call sites for
+every exception class I could inject — `OSError(ENOSPC)`, `KeyboardInterrupt`
+and `SystemExit` all leave 0 files where the H004 revision left 1 at each site
+for the two `BaseException` classes, and where the pre-E0b baseline itself left
+1 at `preserve_candidate`. The committed helper is therefore strictly better
+than the baseline on every error class, not merely restored. The injected error
+still propagates unchanged in type and message from every site, and the inner
+guard additionally closes the prior non-blocking observation
+<<e0b-f-o1,O1>>: with the temp file already gone, the H004 revision raised
+`FileNotFoundError` at all four sites while the committed one raises the
+original `ENOSPC` the operator manual tells the operator to look for. The new
+regression test is a clean pre/post differentiator with no timing construct:
+its body fails 40/40 against the H004 revision and 0/40 against the committed
+one. The E0b product as a whole re-checks out against its baseline: the three
+sites still carry the live index's mtime (exact-attribute bodies 20/20 fail
+pre-E0b, 0/40 fail committed, per site), E0's own test is unchanged but for the
+keyword, and nothing outside the authorized leaves moved.
+WorkItem:: `WI-WFC-POSTBETA-E0B-INDEX-COPY-SITES-001`
+Run / Hop:: `RUN-d91e299ce92847f690424674f25e2e4f` / `H006` (`focused_review`,
+fresh independent adversarial reviewer, gate, blocking-only,
+`finding_authority: [resolve]`).
+Invocation:: `INV-34bebde6e12b497abbb036a1e2fbadfb`.
+Reviewed correction commit:: `fbb8b8b55fd0b6044c59c88d4530344f8e951e9a` (range
+`5790889..fbb8b8b`, two leaves, `+28 / -2`:
+`src/workflow_coordinator/git_facts.py` — the handler at `:905-910` becomes
+`except BaseException:` with a `FileNotFoundError`-guarded `os.unlink` and
+`raise` — and `tests/unit/test_candidate_preservation.py`, which gains
+`import tempfile` and one deterministic test,
+`test_isolated_index_copy_cleans_up_its_temp_file_on_a_non_exception_interrupt`.
+Reviewed product:: the whole E0b candidate at `fbb8b8b`, implementation range
+`22e18b5..fbb8b8b`: five leaves, `+908 / -31` — the module, the two test files
+and the two review artifacts. `git status --short -uall` shows no tracked
+modification in the worktree.
+Governing acceptance:: the Commission task with its four ordered DO steps, its
+Acceptance list and its withheld authority ("no weakening of any assertion or
+refusal; no other behavior change"); `F002` as projected; `ch03` for proportion,
+tests and boundary discipline.
+Date:: 2026-11-22.
+
+=== 1. Disposition
+
+Verdict:: `accept`
+Route:: `renew_broad_review` — the product is sound from this reviewer's seat;
+what remains is a whole-product pass, not another correction.
+Finding disposition:: `F002` → *resolved*, on the measurements in section 3. I
+open no new Finding. The residue the earlier passes named is gone and the three
+observations I carry forward in section 5 are editorial or additive, none of
+them a defect in a committed behaviour.
+
+=== 2. How I measured
+
+`pytest` is not installed in this review sandbox (`python3 -c "import pytest"` →
+`ModuleNotFoundError`; no virtual environment, no network), so I restate no
+pytest count from the Worker's summary. I executed the committed test *bodies*
+and purpose-built injection probes in-process against three sources, each
+materialized into its own scratch copy of the package under the sandbox
+`TMPDIR`: the committed one (`fbb8b8b`), the H004-reviewed one (`2f54da2`) and
+the pre-E0b one (`b47c39b^`). Each leak trial used a disposable repository and a
+*private* temp directory (`tempfile.tempdir`), so the count below is exactly the
+debris of that one call. Python 3.13.5; `stat -f` reports an ext2/ext3/ext4
+filesystem for both the checkout and the scratch area. No probe wrote into the
+repository
+worktree or index; the probe tree lived under the sandbox `TMPDIR`, outside the
+checkout. The Coordinator-owned `python -m pytest -q` task-check is not an agent
+result and I claim nothing about it either way.
+
+=== 3. `F002` — cleanup when the index copy fails: resolved
+
+The invariant is the task's "no other behavior of the module changed": before
+E0b each of the three sites created its temp index *inside* a `try/finally`, so
+a failing copy left nothing behind; routing them through the shared helper moved
+the creation outside that `finally`. H003 restored the cleanup for `Exception`;
+`F002` stayed open because `KeyboardInterrupt` and `SystemExit` still leaked.
+
+Leftover files after injecting a failure into the copy, one disposable
+repository and one private temp directory per cell:
+
+[cols="3,1,1,1,1,1,1,1",options="header"]
+|===
+|Site
+|pre `ENOSPC` |pre `KbdInt` |pre `SysExit`
+|H004 `ENOSPC` |H004 `KbdInt` |H004 `SysExit`
+|committed, each of the three
+
+|`salvage_inventory`  |0 |0 |0 |0 |1 |1 |*0*
+|`salvage_omissions`  |0 |0 |0 |0 |1 |1 |*0*
+|`observe_repository` |0 |0 |0 |0 |1 |1 |*0*
+|`preserve_candidate` |1 |1 |1 |0 |1 |1 |*0*
+|===
+
+("pre" is the pre-E0b baseline `b47c39b^`, "H004" the revision `2f54da2` that
+pass H004 reviewed, "committed" is `fbb8b8b`, whose three columns are all 0 and
+are collapsed into one.)
+
+Three further checks on the same handler:
+
+* *The error still reaches the caller.* In every cell above the injected
+  exception propagates out of the site unchanged in type and message
+  (`OSError: [Errno 28] No space left on device`, `KeyboardInterrupt`,
+  `SystemExit: 1`). The handler re-raises; it swallows nothing.
+* *The success path is unaffected.* With no injection, all four sites complete
+  normally (`preserve_candidate` creating its ref) and leave 0 files in the
+  private temp directory.
+* *The diagnostic is no longer masked* (prior <<e0b-f-o1,O1>>). Injecting a copy
+  that unlinks the temp file and *then* raises `ENOSPC`: the H004 revision
+  surfaced `FileNotFoundError` at all four sites, the committed one surfaces the
+  original `OSError [Errno 28]` at all four — the error
+  `docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc:352` points the
+  operator at. The `except FileNotFoundError: pass` guard is what buys this, and
+  it is the same shape as the module's five existing `finally` blocks and as
+  `persistence.py:109-114` / `operator.py:1368-1372`. No new mechanism was
+  invented for it.
+
+The new test is a genuine differentiator and owes nothing to timing: its body
+fails *40 of 40* runs against `2f54da2` (`leaked ['wfc-preserve-index-…']`) and
+*0 of 40* against the committed source. It monkeypatches `copy2` to raise
+`KeyboardInterrupt` and compares the set of `wfc-preserve-index-*` names in the
+temp directory before and after — an exact set equality, no sleep, retry, skip,
+xfail or wall-clock window, and it answers the prior <<e0b-f-o2,O2>> for the
+`BaseException` half of the handler.
+
+=== 4. The product re-checked against its baseline
+
+[cols="2,1,3"]
+|===
+|Criterion |Met |Evidence (my own execution at `fbb8b8b`)
+
+|Three sites fixed at the root, one shared helper
+|yes
+|One `shutil.copy2` of an index in all of `src/` (`git_facts.py:904`), reached
+from four call sites (`:115`, `:260`, `:558`, `:1006`), each passing its own
+`prefix`; no caller of the old one-argument signature remains.
+
+|Deterministic tests fail before, pass after, per site
+|yes
+|The three exact-mtime bodies: pre-E0b *20/20 fail* at each site
+(`delta_ns` 4–8 ms, never zero), committed *0/40 fail* at each site. E0's own
+body: 0/40 committed (and 0/20 pre-E0b, as expected — E0 fixed that site).
+
+|The consequence is gone
+|yes
+|The three behaviour bodies, 100 reps each against the committed source:
+`observe_repository` reads the dirty same-size edit, `preflight_hop` refuses it
+and `salvage_inventory` captures it — 0 failures each. (Natural pre-fix
+reproduction is host-rate-dependent: `preflight_hop` 0/100 this run against
+pre-E0b where pass H004 saw 1/100. The exact-mtime guards, not the natural
+races, carry the regression signal.)
+
+|No timing luck, sleep, retry, skip or xfail
+|yes
+|Section 3 and pass H004 section 3; the new test adds no timing construct.
+
+|E0's test remains
+|yes
+|Unchanged but for the `prefix` keyword; 0/40 here.
+
+|No other behaviour of the module changed
+|yes
+|Section 3: leak behaviour now 0 at all four sites for all three injected
+classes — better than the baseline, which leaked at `preserve_candidate` — with
+errors propagating unchanged and the success path untouched. The whole-range
+module diff is the four call-site conversions, the helper's `prefix` parameter,
+the cleanup handler and `str(copied_index)` for an already-`str`-valued
+environment variable; no refusal, limit, message or return shape is touched.
+`python -m py_compile` clean on all three changed files.
+
+|Other stat-sensitive index copies in `src/`
+|yes, and none
+|No `copyfile` anywhere in `src/`; the only other `copy2` is
+`frontdoor/archive.py:357` (archive payload, not an index); the fifth
+`GIT_INDEX_FILE` user, `_build_candidate_tree` (`:954`), fills its private index
+through `read-tree`, so no stat cache rides a byte copy.
+
+|≥ 40 repetitions, zero failures
+|equivalent evidence
+|0 failures in 40 reps of each of the four exact-mtime bodies and of the new
+cleanup body; 0 in 100 reps of each of the three behaviour bodies. The Worker's
+pytest counts I can neither confirm nor dispute (no `pytest` here).
+
+|Full required suite green
+|not verifiable here
+|Coordinator `task-check`; no agent claim.
+
+|No file outside the named scope changed
+|yes
+|`git diff --stat 22e18b5..fbb8b8b` lists the module, the two test files and the
+two review artifacts — all authorized leaves; `git status --short -uall` shows
+no tracked modification.
+|===
+
+[[e0b-f6-observations]]
+=== 5. Non-blocking observations
+
+O1 (H006) — the cleanup test watches the process-wide temp directory:: It globs
+`tempfile.gettempdir()` rather than an isolated directory, so it is exact only
+because the suite runs serially (`addopts = "-q"`, no `xdist` in
+`pyproject.toml:36-39`). A concurrent test creating a `wfc-preserve-index-*`
+file inside its window would make it fail. Passing a private `dir=` to the
+helper is not possible without changing production signature, so the cheap
+alternative would be to assert on the specific path the helper returns; as the
+suite stands there is nothing to fix, and I record this only so a future move to
+parallel execution knows where to look.
+
+O2 (H006) — the `Exception` half of the handler is still untested:: The new test
+pins the `BaseException` path (the half that regressed); an `OSError` injection
+would pin the other half for the same dozen lines, and `ch03`'s "a behavior
+change needs a test that fails without it" would then hold for the whole
+handler. Additive, not a defect — measured at 0 leaked in section 3.
+
+O3 (H006) — the helper docstring still explains only the mtime:: Fifteen lines
+say why `copy2` and not `copyfile`; the six lines that keep a failed copy from
+leaking, and the `FileNotFoundError` guard that preserves the original
+diagnostic, say nothing about themselves. Pass H004 recorded this as its O3 and
+it is unchanged. One sentence would keep a future reader from simplifying the
+handler away. Editorial only.
+
+== Pass H004 — `RUN-d91e299c…`
 
 Status:: *CHANGES REQUIRED*, one blocking Finding carried forward, and it is a
 one-word residue rather than a new defect. `F001` is *resolved*: the wall-clock
