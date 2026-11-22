@@ -1,0 +1,296 @@
+= Post-Beta E3 -- the release pipeline workflow (check, TestPyPI, PyPI behind approval, GitHub Release): focused review
+:toc:
+:toclevels: 2
+
+This record holds every independent focused-review pass over the E3
+correction candidates for WorkItem
+`WI-WFC-POSTBETA-E3-RELEASE-PIPELINE-001`. The current pass is *H004*; later
+passes are added above earlier ones and earlier passes are kept unedited apart
+from the `(current)` marker. The broad-review passes are recorded separately in
+`wfc_postbeta_e3_release_pipeline_broad_review.adoc`.
+
+== Pass H004 -- `RUN-824cb8be...` (current)
+
+WorkItem:: `WI-WFC-POSTBETA-E3-RELEASE-PIPELINE-001`
+Hop:: `H004` (`focused_review`, gate, blocking-only,
+`finding_authority: [resolve]`)
+Candidate:: `a752d534274ea328d218d484663045ca77449497` (correction
+`d2e4f1e..a752d53` over the H001 candidate `414d039`, which the H002 broad
+review assessed)
+Finding state:: The projected authoritative Finding state for this Run holds
+one Finding, *F001* (open, blocking, introduced by H002). `C1`--`C7`,
+`G1`--`G8`, `MD-1`--`MD-6`, `ES-1`--`ES-6`, `Q1`, route `R-A` and the
+`F-GH-REPO` label used in the broad-review artifact are plan- and
+review-internal labels, not Finding IDs.
+Disposition:: *Accept.* F001 is *resolved*: the `release` job's
+`gh release create` step now carries an explicit repository context, in the
+exact minimal form the Finding named, and the mechanism was re-confirmed
+against `gh`'s published manual rather than from memory. No new blocking
+Finding. The whole product was re-measured at this HEAD rather than carried
+over from H002; the nine non-blocking observations in section 4 remain
+non-blocking. The Coordinator's `task-check` is the trusted evidence for the
+full required suite; this pass claims no suite result.
+
+=== 1. The correction and its scope
+
+`git diff --stat d2e4f1e..a752d53` is one leaf, one line:
+`.github/workflows/release.yml` `+1/-0`. The inserted line is
+`+  GH_REPO: ${{ github.repository }}` at `:232`, inside the existing `env:`
+mapping of the `release` job's `Create GitHub Release` step, beside the
+pre-existing `GH_TOKEN` entry. Nothing else in the file changed, and
+`docs/developer_guide/ch04_release_management.adoc` is byte-identical to the
+revision H002 reviewed (`git diff --name-only 124bc97..a752d53` lists the two
+candidate leaves plus the H002 review artifact only).
+
+So every withheld-authority boundary still holds: no `scripts/`, `tests/`,
+`Makefile`, `pyproject.toml`, `README.md`, `src/`, `governance/`,
+`project_memory/`, offline-input profile or other workflow file appears in the
+range; no second workflow file exists under `.github/workflows/`; no test was
+weakened or deleted. The working tree at this HEAD is clean apart from the 22
+wrapper-injected untracked entries the task note names, which are not
+candidate output. I performed no mutating Git operation; my only writes are
+this artifact, the `.gitignore`-covered assertion script under `build/wfc/`
+and the regenerated `.gitignore`-covered `build/wfc/document_catalog.jsonl`.
+
+=== 2. F001 -- resolved
+
+F001 held that the `release` job gave `gh` no way to resolve the repository to
+act on: the job has no `actions/checkout`, the command carried no `--repo`, and
+the step's `env:` set only `GH_TOKEN`, so `gh release create` would exit on
+"could not determine base repository" -- deterministically, as the pipeline's
+terminal step, after the irreversible PyPI publication that `needs:
+publish-pypi` guarantees has already happened.
+
+The remedy applied is exactly the minimal form the Finding named, and it adds
+no mechanism, no step, no permission and no dependency on a checkout:
+
+[source,yaml]
+----
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+----
+
+Why that closes the Finding, re-derived here rather than taken from the
+Worker's summary or from the earlier pass:
+
+* *`GH_REPO` is the variable `gh` reads for repository selection.* I
+  re-confirmed this against the published `gh help environment` manual in this
+  pass: `GH_REPO` is documented as specifying "the GitHub repository in the
+  `[HOST/]OWNER/REPO` format for commands that otherwise operate on a local
+  repository" -- which is precisely this job's situation. `GITHUB_REPOSITORY`,
+  which Actions does set and which the step's `--notes` value interpolates
+  through the shell, is still not a variable `gh` reads, so the pre-correction
+  job really had none of `gh`'s three resolution sources available.
+* *The value has the accepted shape.* The `github.repository` context expands
+  to `OWNER/REPO`. The host prefix is optional and absent, so `gh` falls back
+  to its default host `github.com`, which is this project's host; no `GH_HOST`
+  is needed (see observation 9 for the Enterprise case, which does not arise
+  here).
+* *Authentication is unchanged and still run-scoped.* `GH_TOKEN` remains
+  `+${{ github.token }}+`, the ephemeral Actions token, documented as the
+  variable `gh` uses for `github.com`. The job keeps `permissions: contents:
+  write` and nothing was broadened.
+* *The attachment contract is untouched.* The command still passes
+  `dist/*.whl dist/*.tar.gz` -- exactly the two artifact files -- from the
+  single downloaded `release-dist` artifact, and the job still contains no
+  build step.
+* *No injection surface was added.* `github.repository` is repository
+  metadata, not attacker-controllable event content, and it is passed through
+  an `env:` entry rather than interpolated into the `run:` body. After the
+  correction the file still has zero `+${{ }}+` expressions inside any `run:`
+  script.
+
+Asserted mechanically at this HEAD (PyYAML parse of the workflow): the
+`release` job has exactly one `gh release create` step; that step's `env:` is
+exactly `{GH_TOKEN: ${{ github.token }}, GH_REPO: ${{ github.repository }}}`;
+the job still has no checkout step, exactly one `download-artifact`, no build,
+`needs: publish-pypi`, the tag-only `if`, no `environment`, and
+`permissions: {contents: write}`.
+
+*Execution limit, stated plainly:* `gh` is not installed in this sandbox
+(`command -v gh` produces nothing), so I did not execute
+`gh release create`. The resolution of F001 rests on the documented behaviour
+of the variable the Finding itself identified as the remedy, plus the
+mechanically asserted structure of the corrected step. The first hosted
+tag-push run is the trusted evidence that the Release is actually created, and
+nothing in this pass claims such a run happened.
+
+=== 3. Whole-product re-verification at this HEAD
+
+A focused pass still checks the product against its baseline, not only the
+diff. Everything below was executed or parsed at `a752d53` in this pass.
+
+==== 3.1 Structural acceptance, asserted programmatically
+
+I wrote my own PyYAML-based assertion script (80 assertions, independent of
+the H002 script) covering the task's acceptance list clause by clause. *78
+passed; 2 reported FAIL and both are defects in my own assertions*, each
+re-read in the file and dismissed:
+
+* "no global git config write" matched the explanatory comment at `:72`, which
+  states that the git-lfs neutralization is *not* done via a persistent
+  `git config --global`. No such command exists in the file.
+* "no attacker-controllable context" matched the substring `inputs.` inside
+  the path `scripts/wfc_test_inputs.py`. There is no `github.event`, no
+  `head_ref` and no workflow `inputs.` reference in the file.
+
+What the passing assertions establish:
+
+* *Triggers.* `on` has the single key `push` with exactly
+  `branches: ['main']` and `tags: ['v*']`.
+* *Permissions.* Top-level `permissions` is exactly `{contents: read}`;
+  `check` declares no `permissions` block (inherits read); both publish jobs
+  declare exactly `{contents: read, id-token: write}`; `release` declares
+  exactly `{contents: write}`. `id-token: write` occurs on exactly the two
+  publish jobs; `contents: write` on exactly `release`.
+* *No secret.* Neither `secrets.` nor a `secrets:` key occurs anywhere, and
+  there is no `ssh`, `scp`, `rsync`, `known_hosts`, `PYPI_API`, `password`,
+  `twine` or `wfc-setup` reference: the reference repository's deploy-key and
+  setup coupling was not adopted.
+* *Jobs, chain, conditions, environments.* Job ids are exactly `check`,
+  `publish-testpypi`, `publish-pypi`, `release`; `check` has neither `needs`
+  nor `if`; the chain is `check` -> `publish-testpypi` -> `publish-pypi` ->
+  `release`; all three downstream jobs carry the identical
+  `startsWith(github.ref, 'refs/tags/v')`; environments are `testpypi` and
+  `pypi` on the two publish jobs and nowhere else; all four jobs pin
+  `runs-on: ubuntu-24.04`; no `matrix`, `schedule`, `workflow_dispatch`,
+  `pages` or `publish-docs` anywhere.
+* *`check` step inventory.* `actions/checkout` with `fetch-depth: 0`;
+  `setup-python` at the exact patch `3.13.5`; the
+  `kernel.apparmor_restrict_unprivileged_userns=0` sysctl;
+  `wfc_test_inputs.py fetch` and `... exec`, with `cp313-linux-x86_64` as the
+  only `--profile` value in the file; `make lint`; `make format-check`; the
+  unmodified `python3 -m pytest -q` under `exec` with no `-k`, `-m`,
+  `--deselect`, `--ignore`, `--wfc-partial` or path restriction anywhere in
+  the file; exactly one `python -m build` in the whole file; `make
+  dist-audit`; the C3 smoke (fresh venv, the built wheel, `--help`,
+  `--version --json`, `cd "$RUNNER_TEMP"` outside the checkout, and the two
+  assertions on `version` and `source_commit`); the G5 render flags
+  byte-for-byte; `make release-check` in both modes; the SHA-256 record into
+  `$GITHUB_STEP_SUMMARY`; exactly one `upload-artifact`.
+  `GIT_CONFIG_NOSYSTEM` is set on the required-suite step and on no other
+  step.
+* *Checked-once artifact through OIDC.* Each downstream job downloads the one
+  `release-dist` artifact, re-verifies `sha256sum -c SHA256SUMS.txt`, and
+  contains no build; both publish jobs call `pypa/gh-action-pypi-publish`
+  exactly once with no `password`/`user` (so Trusted Publishing via
+  `id-token: write`) and no dry-run flag; `publish-testpypi` sets
+  `repository-url: https://test.pypi.org/legacy/` and `publish-pypi` sets
+  none, using the action's PyPI default.
+* *Pinning.* Five distinct action references, none `@main`/`@master`, no
+  invented SHA.
+
+==== 3.2 Documentation checks
+
+[cols="3,2",options="header"]
+|===
+|Check |Result
+|`asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN docs/developer_guide/developer_guide.adoc`
+|exit 0, no output
+|`python3 scripts/wfc_doc_catalog.py generate`
+|491 records, 369,324 bytes; "unchanged"
+|`python3 scripts/wfc_doc_catalog.py check`
+|"catalog current"; informationally 84 unresolved links and 4 Project Memory
+`source_path` misses, all pre-existing `docs/cold_storage/` or
+`docs/warm_storage/` historical references, the two deliberate syntax examples
+in `FTR-WFC-REFERENCE-MODELS-MODULARIZATION.adoc`, and the four long-standing
+`src/workflow_coordinator/{evidence,model,reducer,serialization}.py` entries.
+Neither list names `ch04_release_management.adoc`, `release.yml` or either new
+chapter link target.
+|`python3 scripts/wfc_release_check.py` on this checkout
+|exit 1 with exactly the five expected feature-branch refusals (branch not
+`main`, unclean tree, `main` out of sync, HEAD unreachable, notes still
+`planned`); read-only, tree unchanged
+|===
+
+==== 3.3 The chapter, re-checked against the corrected file
+
+`docs/developer_guide/ch04_release_management.adoc` did not change in this
+correction, and it did not need to: its `release` bullet says only that the
+job "downloads the same artifact and uses the preinstalled `gh` CLI to create
+the GitHub Release from the tag, attaching exactly the two artifact files",
+which the corrected step does. No chapter statement is contradicted or made
+stale by the added `GH_REPO` entry; the chapter names no environment variable
+for that step.
+
+The DO (2) properties are unchanged and still hold: the `release-ci` section
+describes all four jobs with triggers, `needs`, permissions, environments, the
+checked-once artifact and that nothing downstream rebuilds it; C6/MD-5 stays
+*open* in C6, in the standing block, in fact [2] of `md5-open` and in the G2
+gate row; `md5-hosted-run-record` is a placeholder whose status line and all
+five unknown rows read "(not yet recorded)"; both maintainer follow-ups (SHA
+pinning, and ES-1..ES-6 as external maintainer actions) are recorded; and no
+text claims a hosted run.
+
+=== 4. Non-blocking observations
+
+Observations 1-7 are carried unchanged from the H002 broad review and remain
+non-blocking; 8 and 9 are new in this pass. None blocks acceptance and none
+asks for new mechanism.
+
+. Every ordinary `main` push shows `check` red until the release notes are
+  frozen, because `make release-check` runs on both triggers as the plan and
+  task require. Correct in the release context, noise outside it; narrowing G1
+  is the maintainer's call. Flagged, not waived.
+. `GIT_CONFIG_NOSYSTEM=1` suppresses `/etc/gitconfig` only; a git-lfs filter
+  in the runner user's `~/.gitconfig` would survive it. That is open unknown
+  (c); the first hosted run should settle it (for example with `git config
+  --show-origin --get-regexp '^filter\.'`), and row (c) of the hosted-run
+  record is where the answer belongs.
+. The Asciidoctor install is an unpinned `apt-get install -y asciidoctor`, is
+  needed because the hosted image does not ship it, and is the one `check`
+  step the chapter's bullet list omits.
+. G5's nine-file list omits `docs/release_notes/release_notes.adoc`, which C4
+  makes release-blocking content; the chapter's own G5 wording ("the assembled
+  books") makes the omission defensible.
+. G1 runs last in `check` rather than first, so a one-line preflight refusal
+  costs a full red cycle. Ordering only.
+. `python -m build` builds from the working checkout after an editable install
+  and a suite run, not from a Git export; `dist-audit` and the C3 smoke bound
+  the consequence.
+. The chapter's partial-failure paragraph says re-running `release` alone
+  "only reads the already-published tag and artifacts". With F001 fixed this
+  sentence is now the one slightly optimistic line in the runbook:
+  `gh release create` writes, and a re-run after a partially succeeded create
+  fails on an existing release. A `--clobber`-style retry note, or one word in
+  the chapter, would settle it; it changes no gate and I do not require it.
+. `gh release create` depends on `gh` being present in the `ubuntu-24.04`
+  runner image (the chapter says "preinstalled"). That is a runner-image fact
+  I cannot verify offline, and it is of the same class as MD-5's unknowns
+  (a)-(d); the first hosted tag run proves it. The alternative -- installing
+  `gh` in the job -- would be mechanism against an unmeasured failure, so I do
+  not propose it.
+. `GH_REPO` carries no host prefix, so `gh` uses its default host. That is
+  correct for this project and would only need `GH_HOST` (or a
+  `HOST/OWNER/REPO` value) if the pipeline ever ran against a GitHub
+  Enterprise host, which the contract does not contemplate.
+
+=== 5. Measured checks and the environment limits of this pass
+
+Executed here: the 80 structural assertions (section 3.1), the V1 strict
+render, catalog `generate` and `check`, `wfc_release_check.py`, and the Git
+range and status inspections (read-only).
+
+Not runnable in this sandbox -- agent-local environment limits, not candidate
+properties:
+
+* `make lint` and `make format-check`: `python3 -m ruff check .` fails with
+  "No module named ruff".
+* `python -m pytest -q` and every suite-dependent assertion: "No module named
+  pytest"; there is no project virtual environment and the verified offline
+  bundle is absent, and fetching it is network-gated and out of scope for a
+  review pass.
+* `python -m build`, `make dist-audit` and the C3 smoke: no `build`,
+  `setuptools` or project venv, so no artifact exists to audit or install.
+* `gh release create`: `gh` is not installed (section 2).
+* The hosted-runner facts, MD-5 unknowns (a)-(e), cannot be observed from
+  here by construction.
+
+The Coordinator's `task-check` remains the trusted evidence for the full
+required suite, and the first hosted run remains the trusted evidence for
+route R-A. This pass claims neither. Two Bash invocations in this pass were
+refused by the session's permission surface (a chained `git diff`/`git status`
+command and a chained `asciidoctor`/`echo` command); both were re-run as
+single commands and produced the results reported above, so no check was lost.
