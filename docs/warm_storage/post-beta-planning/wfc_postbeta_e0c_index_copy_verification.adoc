@@ -1,0 +1,142 @@
+= Post-Beta P3 package E0c: pre-review verification of the E0b index-copy candidate
+:toc:
+:toclevels: 2
+
+Maturity:: verification record, written by `WI-WFC-POSTBETA-E0C-INDEX-COPY-FINAL-REVIEW-001`
+H001 (Worker) at base HEAD `dae78e3d38452176d0e76c7c707732f618dd0340`. Not a
+review, not an acceptance. The independent reviewer performs the whole-product
+broad review of the E0b candidate separately and takes no credit from this
+record.
+Authority:: informative. Grants no acceptance, Finding disposition, Runtime
+promotion, tag, push or merge authority. No Finding operation was performed or
+proposed here; a Worker never opens, resolves or dispositions a Finding.
+Updated:: 2026-11-22
+Owns:: The method and measured results of this Hop's four checks against the
+committed E0b candidate (implementation range `22e18b5..38106ae`).
+Does not own:: The E0b candidate's own review record
+(link:wfc_postbeta_e0b_index_copy_sites_broad_review.adoc[broad],
+link:wfc_postbeta_e0b_index_copy_sites_focused_review.adoc[focused]) or the
+E0c independent reviewer's verdict.
+
+No file under `src/` or `tests/` was changed by this Hop; `git status --short
+-uall` at entry and at exit of this Hop is empty.
+
+== 1. No `shutil.copyfile` of an index remains in `src/`
+
+----
+$ grep -rn 'shutil\.copyfile\|shutil\.copy2\|shutil\.copy(\|shutil\.copytree' src/
+src/workflow_coordinator/frontdoor/archive.py:357:    shutil.copy2(src, dest)
+src/workflow_coordinator/git_facts.py:904:            shutil.copy2(index_location, copied_index)
+----
+
+Two hits, both `copy2`, no `copyfile` anywhere in `src/`. `git_facts.py:904` is
+the one shared helper `_isolated_index_copy`; `archive.py:357` copies an
+archive payload file (not a Git index) and is unrelated. A second search
+confirms every `GIT_INDEX_FILE` use (`git_facts.py:117,264,560,954,1008`) and
+that the four throwaway-index call sites (`:115,260,558,1006`) all pass through
+the one helper; `_build_candidate_tree` (`:944-971`) fills its private index
+with `read-tree`, not a byte copy, so it carries no stat cache.
+
+== 2. Each site's copy carries the live index's mtime (exact attribute check, executed)
+
+`pytest` is not installed in this Worker's sandbox
+(`python3 -c "import pytest"` -> `ModuleNotFoundError`; no virtual environment,
+no network), so the committed test *bodies* were executed in-process instead,
+against the committed `src/` as-is, with a minimal stand-in for the `pytest`
+names the two files use (`fixture`, `raises`, `MonkeyPatch`, `mark.ftr`) built
+under a scratch directory outside the repository and not part of this commit.
+Each of the four exact-mtime assertions ran 40 times, fresh disposable
+repository per run:
+
+[cols="3,1,1"]
+|===
+|Site (test) |Assertion |Result
+
+|`salvage_inventory`
+(`test_salvage_inventory_index_copy_preserves_live_index_mtime`)
+|`dst_mtime_ns == src_mtime_ns` on the last recorded copy
+|0/40 fail
+
+|`salvage_omissions`
+(`test_salvage_omissions_index_copy_preserves_live_index_mtime`)
+|same
+|0/40 fail
+
+|`observe_repository`
+(`test_observe_repository_index_copy_preserves_live_index_mtime`)
+|same
+|0/40 fail
+
+|`preserve_candidate`
+(`test_isolated_index_copy_preserves_live_index_mtime_not_fresh_copy_time`)
+|`copied_index.stat().st_mtime_ns == live_mtime_ns`
+|0/40 fail
+|===
+
+All four sites carry the live index's own mtime into the throwaway copy, as
+the shared helper's docstring (`git_facts.py:881-895`) states.
+
+== 3. Repetition and the full suite
+
+The new tests and both affected test files -- every `def test_` function in
+`tests/unit/test_index_copy_mtime.py` (6) and `tests/unit/test_candidate_preservation.py`
+(18), 24 functions total -- were run the same way, 40 times each with a fresh
+disposable repository per run (`monkeypatch`-needing tests got a fresh
+stand-in `MonkeyPatch` per run, undone after):
+
+----
+test_index_copy_mtime.py::test_observe_repository_index_copy_preserves_live_index_mtime            40/40 pass
+test_index_copy_mtime.py::test_observe_repository_reads_dirty_same_size_edit_through_the_copy      40/40 pass
+test_index_copy_mtime.py::test_preflight_hop_refuses_dirty_same_size_edit_through_the_copy          40/40 pass
+test_index_copy_mtime.py::test_salvage_inventory_index_copy_preserves_live_index_mtime              40/40 pass
+test_index_copy_mtime.py::test_salvage_inventory_reads_dirty_same_size_edit_through_the_copy         40/40 pass
+test_index_copy_mtime.py::test_salvage_omissions_index_copy_preserves_live_index_mtime               40/40 pass
+test_candidate_preservation.py::  (16 unaffected acceptance tests, unchanged by E0b)                  40/40 pass each
+test_candidate_preservation.py::test_isolated_index_copy_preserves_live_index_mtime_not_fresh_copy_time 40/40 pass
+test_candidate_preservation.py::test_isolated_index_copy_cleans_up_its_temp_file_on_a_non_exception_interrupt 40/40 pass
+----
+
+960 total reps (24 functions x 40), *0 failures*. This is exploratory
+validation in this Worker's sandbox, not Coordinator-trusted evidence.
+
+Full `python -m pytest -q`:: not executable in this sandbox --
+`python3 -m pytest -q` reports `No module named pytest` (no virtual
+environment, no network, and the required suite additionally needs the
+verified offline wheel bundle `tests/conftest.py` demands via
+`WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`, which this sandbox also has none of).
+This is the same agent-local environmental limitation every independent
+reviewer pass of this Run recorded (H002, H004, H006); it is Coordinator-owned
+trusted evidence (`task-check`) executed separately by the launching wrapper,
+not an agent result, and no pass/skip count is claimed here either way.
+
+== 4. What remains in the E0b review records
+
+Nothing blocking is open: `F001` and `F002` are both resolved as of pass H006
+(`accept`, no blocking Finding left). What remains is five non-blocking,
+editorial observations (broad-review O2-O5; focused O1-O3 across H004/H006),
+none of which the reviewers themselves called a defect or asked to be acted
+on: the helper docstring explains the mtime but not the unlink/cleanup
+mechanism (focused O3, carried since H004); the cleanup test globs the
+process-wide temp directory rather than an isolated one, exact only because
+the suite runs serially (H006 O1); the `Exception` half of the cleanup handler
+has a dedicated test but the already-measured `BaseException` half does not
+(H006 O2); and two cross-host/line-drift notes (broad O4, focused O4/O5) that
+state facts about measurement variance and stale citations in frozen prior
+passes, not about the committed code. None of these touch a behaviour,
+refusal, or assertion, and correcting any of them now -- against a task whose
+own scope is a verification record, not a product change -- would be
+disproportionate to what the governing acceptance asks for; they are left as
+the independent reviewers who raised them left them.
+
+== Commands run (exploratory, this Worker's sandbox)
+
+----
+grep -rn 'shutil\.copyfile\|shutil\.copy2\|shutil\.copy(\|shutil\.copytree' src/
+grep -rn 'GIT_INDEX_FILE' src/
+grep -n '_isolated_index_copy(' src/workflow_coordinator/git_facts.py
+python3 -m pytest -q                 # No module named pytest
+python3 -c "import pytest"           # ModuleNotFoundError
+# in-process execution of the two test files' bodies against a minimal
+# pytest-name stand-in, 40 reps/function, under a scratch dir outside the
+# repository (not part of this commit)
+----
