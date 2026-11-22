@@ -1,0 +1,221 @@
+= Post-Beta E2 — release preflight tool, distribution audit tool, Make targets, README link repair: focused review
+
+WorkItem:: WI-WFC-POSTBETA-E2-RELEASE-PREFLIGHT-AUDIT-001
+Run:: RUN-11674482788747c1a9520200a09d3299
+Hop:: H004 (focused review, gate)
+Candidate:: `a73b18f3e9c3ebcc0b63f1e86af2a271037f1c4a` (correction
+`7613489..a73b18f` over the H001 candidate `b6cf807`)
+Disposition:: Accept. F001 is resolved in both reproduced directions; no
+blocking Finding remains. The Coordinator's own task-check evidence stays
+separate from this review.
+
+== 1 The correction and its scope
+
+`git show --stat a73b18f` touches exactly two leaves,
+`scripts/wfc_dist_audit.py` (+16/-7) and `tests/unit/test_release_tooling.py`
+(+47/-3). No `.adoc`, no `README.md`, no `Makefile`, nothing under `src/`,
+`governance/`, `project_memory/`, `tests/fixtures/` or the offline-input
+profile appears in the diff, so every withheld-authority boundary holds and
+the documentation, Makefile and README surfaces reviewed in H002 are
+byte-identical to what the broad review measured. The working tree at the
+candidate carries no tracked modification; `git status --short -uall` lists 22
+untracked wrapper-injected entries only.
+
+No existing assertion was weakened. The two pre-existing audit cases that the
+diff touches (`test_dist_audit_accepts_a_conforming_wheel_and_sdist`,
+`test_dist_audit_rejects_a_forbidden_sdist_entry`) keep their assertions
+verbatim and only gain real `tarfile.DIRTYPE` members, which strengthens them;
+the fourteen release-check cases are untouched.
+
+== 2 F001 — resolved
+
+F001 held that both allow-list predicates exempted every slash-terminated
+entry name before any rule ran, which produced a false pass on a
+payload-carrying forbidden wheel directory entry and — because `tarfile` does
+not preserve the trailing slash — a false failure on a real-shaped sdist whose
+legitimate `src` directory member fell through to the file rules.
+
+The remedy applied is the one the Finding named: the blanket exemption is
+gone. `_wheel_entry_allowed` (`scripts/wfc_dist_audit.py:44-58`) normalises the
+trailing slash and then applies the C2 rules to every entry, allowing a
+directory name only where it names an allowed tree (`workflow_coordinator` or
+a `*.dist-info`); `_sdist_entry_allowed` (`:61-68`) takes directory-ness from
+`tarfile`'s own `member.isdir()` (`:92`) instead of inferring it from a slash,
+and allows a directory only at the archive root, `src` or under `src/`. That
+is one branch fewer than before, not extra mechanism, and it stays one rule in
+one implementation shared by the CLI and the architecture test.
+
+Verified by execution at the candidate HEAD:
+
+* *Direction (a), false pass, closed.* A wheel carrying a zip entry named
+  exactly `docs/` with a payload now yields
+  `unlisted entry 'docs/' is not in the C2 allow-list (forbidden by name: ...)`.
+  I repeated the probe for `tests/`, `.wfc/`, `governance/`,
+  `project_memory/`, `scripts/` and `build/`: every one is rejected, one
+  violation each. A legitimate `workflow_coordinator/` directory entry still
+  audits clean.
+* *Direction (b), false failure, closed.* An sdist staged as an
+  allow-list-only tree and archived through the path `setuptools` uses
+  (`shutil.make_archive(..., 'gztar')`, i.e. recursive `tarfile.add` of the
+  `<name>-<version>/` base directory) produces 15 members of which 5 are real
+  directory members, and `audit()` returns `[]`. The bare `src` member that
+  previously produced `unlisted entry 'workflow_coordinator-0.1.0b1/src'` is
+  now correctly allowed.
+* *The fixture no longer hides either case.* `_write_sdist`
+  (`tests/unit/test_release_tooling.py:224-239`) writes a `DIRTYPE` root
+  member plus the requested directories, and the two added cases
+  (`test_dist_audit_rejects_a_forbidden_wheel_directory_entry:276-284`,
+  `test_dist_audit_rejects_a_forbidden_sdist_directory_entry:304-315`) fail
+  against the pre-correction predicates and pass here, so the regression is
+  detectable.
+
+== 3 Re-verification of the whole candidate
+
+Re-derived at the candidate HEAD rather than carried over from H002:
+
+* *Both tools run on the real checkout.* `python3 scripts/wfc_release_check.py`
+  exits 1 with four accurate lines and nothing else: branch
+  `wfc/postbeta-e2` is not `main`, the tree is not clean (the wrapper's
+  untracked entries), `HEAD is not reachable from origin/main`, and the
+  release-notes section for `0.1.0b1` is still marked `planned`. The absence
+  of a README line is the positive measurement that the four repaired links
+  are the only documentation links and that none is repository-relative; the
+  absence of an out-of-sync line shows local `main` matches `origin/main` in
+  this checkout.
+* *Both modes and every listed refusal.* All 20 functions of
+  `tests/unit/test_release_tooling.py` were executed in-process (pytest is not
+  installed in this sandbox, so each `test_*` was called with a fresh
+  temporary directory as `tmp_path`): 20 passed, 0 failed — 9 branch-mode
+  cases (clean pass, wrong branch, dirty tree, ahead of origin, missing
+  origin, tag mismatch, missing notes section, `planned` notes, relative
+  README link), 5 tag-mode cases (pass on a reachable tagged commit,
+  unreachable commit, no exact tag, explicit tag mismatch, notes plus README),
+  and 6 audit cases. Mode selection comes from
+  `git symbolic-ref -q --short HEAD` (`:37-41`), and tag mode skips only the
+  branch-identity, clean-tree and sync checks while keeping reachability,
+  tag-equals-version, notes and README (`run_checks:140-154`).
+* *Read-only, network-free, standard library only.* An AST pass over both
+  scripts reports imports `argparse, pathlib, tarfile, zipfile` and
+  `argparse, os, re, subprocess, tomllib, pathlib` — no `urllib`, `socket` or
+  third party, and the only Git subcommands invoked are `symbolic-ref`,
+  `rev-parse`, `status --porcelain`, `merge-base` and `describe`, none of
+  which contacts a remote. The audit opens archives in read mode only
+  (`zipfile.ZipFile(path)`, `tarfile.open(path, "r:gz")`) and never extracts.
+  Measured: after an audit the archive's SHA-256, size and `mtime_ns` and the
+  surrounding directory listing are unchanged; after a preflight run the
+  worktree index file (`.git/worktrees/.../index`) is byte-identical.
+* *Allow-list against the chapter.* The wheel row, the four reviewed resource
+  texts, the `*.dist-info` allowance and the sdist row transcribe C2
+  (`docs/developer_guide/ch04_release_management.adoc:39-62`) exactly, and the
+  forbidden-by-name set in the failure message matches the chapter's list word
+  for word. A non-`.py` file inside the package, a top-level `.py`, an extra
+  resource text and a missing resource text are all refused. The real
+  artifacts fit the row they are audited against: `git ls-files src` is 34
+  `.py` files plus exactly the four `resources/*.txt` texts, consistent with
+  the chapter's measured 44-file wheel, and whatever a real `setuptools` sdist
+  adds under `src/` (its `*.egg-info` metadata) falls under `src/**`.
+* *One implementation, two callers.*
+  `tests/architecture/test_offline_distribution.py:10-14,42-43` (the
+  `for archive in ...` loop and its assertion) loads
+  `scripts/wfc_dist_audit.py` by `importlib` and asserts `audit(archive) == []`
+  for the wheel and sdist it already builds; no second copy of the rule exists.
+* *Make targets, README, chapter.* `Makefile:77-84` declares
+  `.PHONY: release-check dist-audit` and two minimal recipes and changes
+  nothing else; the `format-check` file list is untouched, which is correct
+  under the withheld authority even though it leaves the new files out of that
+  target. `git show b6cf807 -- README.md` is four replaced lines, each a
+  `blob/v0.1.0b1/` URL, with no other word altered. ch04 states the two
+  scripts and both Make targets as existing, keeps `release.yml` planned
+  (`:25-27`), describes the two modes as implemented, makes C5 a `must` with
+  the mechanical-enforcement clause, and leaves C6 and the MD-5 section open
+  and unchanged.
+* *No workflow file, publication, credential or governance entity* appears
+  anywhere in `b6cf807..a73b18f`.
+
+== 4 Non-blocking observations
+
+The five non-blocking observations of the broad review (section 4 there)
+stand; the one that touches the corrected code is restated with its current
+state, and three observations are new. None of them blocks.
+
+. *The sdist mapping still strips the first path component without asserting a
+  root prefix* (broad-review observation 3). `audit_sdist:91` maps a member
+  without a `/` to the empty string, which `_sdist_entry_allowed:62-63` allows
+  as the archive root. In an archive lacking the PEP 625
+  `<name>-<version>/` root a top-level file or directory would therefore be
+  accepted. Not reachable from a real build; the one-line root-prefix
+  assertion remains available and was explicitly non-blocking in H002.
+. *A directory-typed entry inside the package tree is still accepted
+  regardless of name* (new, narrower residual of the same family).
+  `_wheel_entry_allowed` accepts `workflow_coordinator/evil.txt/` and
+  `workflow_coordinator/sub/` because a directory under the package tree is
+  allowed by name alone, so a hand-crafted wheel could carry payload bytes in
+  such an entry. This does not reach C2's stated rationale — a new *top-level*
+  directory can no longer leak in silently, which is what F001 reproduced —
+  the entry stays inside the package tree the row allows, and no build
+  produces such an entry. Recorded, not required; closing it would mean
+  requiring a directory entry to name an existing allowed subtree, which is
+  more mechanism than the criterion asks for.
+. *The README check enforces absoluteness, not the tag pin*; *in branch mode
+  without `TAG` the tag-equals-version comparison is a tautology*; *the notes
+  check is coupled to the `== <version> -- <status>` heading shape* — all three
+  unchanged from H002, all three following the chapter's own wording.
+. *Duplicate line when `origin/main` is unknown.* In branch mode with no
+  `origin/main`, `check_local_main_sync` and
+  `check_head_reachable_from_origin_main` both return the identical
+  "origin/main is not known locally" sentence, so the operator sees it twice.
+  Two checks failing for one cause; cosmetic.
+. *`*.ods` under `src/` would be accepted by the sdist row.* The chapter lists
+  `src/**` as allowed and `any *.ods` as forbidden in both artifacts; for a
+  hypothetical `src/x.ods` those two clauses disagree, and the implementation
+  follows the allow-list, which is what DO (2) prescribes ("fails on anything
+  unlisted", the forbidden set being named in the message). No `.ods` exists
+  under `src/`, and the repository's `project_memory.ods` sits at the root
+  where both rules refuse it. This is a question for the chapter's owner, not
+  a defect to fix here, and no additional mechanism should be added for it.
+
+== 5 Measured checks and the environment limits of this pass
+
+Executed here, with the result stated:
+
+* both tools on the real checkout — preflight exits 1 with four accurate
+  lines; the audit runs against archives built in a temporary directory;
+* all 20 functions of `tests/unit/test_release_tooling.py` in-process: 20
+  passed, 0 failed;
+* F001 probes in both directions, plus the six other forbidden top-level
+  directory names, a legitimate package directory entry, an `evil.dist-info`
+  entry and an in-package non-`.py` file;
+* read-only proof: archive digest, size, mtime and directory listing
+  unchanged after an audit; worktree Git index byte-identical after a
+  preflight;
+* strict V1 render,
+  `asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN`
+  over `docs/developer_guide/developer_guide.adoc`: exit 0, no output;
+* `python3 scripts/wfc_doc_catalog.py check`: `catalog current` with
+  `Informational: 84 unresolved links; 4 Project Memory source_path misses` —
+  the same 84 and 4 the broad review measured at the review base, none of them
+  naming ch04, `README.md`, the new scripts or the new tests, so the candidate
+  adds neither an unresolved link nor a Project Memory miss. Re-run after this
+  artifact was written: the identical 84 and 4, and `catalog drifted`, the
+  drift being this artifact's own new record in the untracked
+  `build/wfc/document_catalog.jsonl`, which the prescribed `generate` step
+  absorbs; `generate` was not run here because that file lies outside this
+  Hop's authorized scope. This artifact uses no link macro, only backticked
+  paths, and renders cleanly under
+  `asciidoctor --safe-mode=safe -o /dev/null --failure-level=WARN`.
+
+Not executable in this sandbox, and therefore not claimed:
+
+* `python -m pytest -q` — pytest is not importable here and the venv on PATH
+  lies outside this session's readable set, so no suite count is claimed; the
+  full required suite is Coordinator-trusted evidence;
+* `ruff check` and `ruff format --check` — ruff is not installed in this
+  sandbox;
+* `python -m build` and `make dist-audit` on a freshly built `dist/` — the
+  PEP-517 isolated build needs network access for `setuptools>=68` and the
+  offline test inputs are absent. This is an agent-local environment
+  limitation, not a product defect; it is why direction (b) of F001 is
+  evidenced through the identical archiving code path
+  (`shutil.make_archive`/`tarfile.add`) rather than through a real build, and
+  why `make dist-audit` on real artifacts remains Coordinator-trusted
+  evidence.
