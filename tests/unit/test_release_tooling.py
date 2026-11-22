@@ -222,7 +222,11 @@ def _conforming_wheel_entries() -> dict[str, str]:
 
 
 def _write_sdist(
-    path: Path, prefix: str, entries: dict[str, str], directories: tuple[str, ...] = ()
+    path: Path,
+    prefix: str,
+    entries: dict[str, str],
+    directories: tuple[str, ...] = (),
+    unprefixed: dict[str, str | None] | None = None,
 ) -> None:
     with tarfile.open(path, "w:gz") as archive:
         root = tarfile.TarInfo(prefix)
@@ -237,6 +241,16 @@ def _write_sdist(
             info = tarfile.TarInfo(f"{prefix}/{name}")
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
+        for name, content in (unprefixed or {}).items():
+            if content is None:
+                info = tarfile.TarInfo(name)
+                info.type = tarfile.DIRTYPE
+                archive.addfile(info)
+            else:
+                data = content.encode("utf-8")
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
 
 
 def _conforming_sdist_entries() -> dict[str, str]:
@@ -313,6 +327,32 @@ def test_dist_audit_rejects_a_forbidden_sdist_directory_entry(tmp_path):
     assert any(
         "/docs" in violation and "forbidden by name" in violation for violation in violations
     )
+
+
+def test_dist_audit_rejects_an_sdist_directory_outside_the_archive_root(tmp_path):
+    sdist = tmp_path / SDIST_NAME
+    _write_sdist(
+        sdist,
+        "workflow_coordinator-0.1.0b1",
+        _conforming_sdist_entries(),
+        directories=("src", "src/workflow_coordinator"),
+        unprefixed={"docs": None},
+    )
+    violations = dist_audit.audit(sdist)
+    assert any("'docs'" in violation for violation in violations)
+
+
+def test_dist_audit_rejects_an_sdist_file_outside_the_archive_root(tmp_path):
+    sdist = tmp_path / SDIST_NAME
+    _write_sdist(
+        sdist,
+        "workflow_coordinator-0.1.0b1",
+        _conforming_sdist_entries(),
+        directories=("src", "src/workflow_coordinator"),
+        unprefixed={"secret.ods": "bad"},
+    )
+    violations = dist_audit.audit(sdist)
+    assert any("secret.ods" in violation for violation in violations)
 
 
 def test_dist_audit_rejects_a_wheel_missing_a_required_resource(tmp_path):

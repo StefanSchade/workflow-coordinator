@@ -84,11 +84,22 @@ def audit_wheel(path: Path) -> list[str]:
     return violations
 
 
+def _sdist_root(path: Path) -> str:
+    name = path.name
+    return name[: -len(".tar.gz")] if name.endswith(".tar.gz") else name
+
+
 def audit_sdist(path: Path) -> list[str]:
     violations = []
+    root = _sdist_root(path)
     with tarfile.open(path, "r:gz") as archive:
         for member in archive.getmembers():
-            relative = member.name.split("/", 1)[1] if "/" in member.name else ""
+            if member.name == root:
+                continue
+            if not member.name.startswith(f"{root}/"):
+                violations.append(_violation(path, member.name))
+                continue
+            relative = member.name[len(root) + 1 :]
             if not _sdist_entry_allowed(relative, member.isdir()):
                 violations.append(_violation(path, member.name))
     return violations
