@@ -41,7 +41,9 @@ def test_committed_config_repository_name_and_governance_dir():
 
 def test_committed_config_scope_ceiling_and_hop_limit():
     config = _load_config()
-    assert config.work_item_scope_ceiling == ("src", "tests", "scripts", "docs")
+    assert config.work_item_scope_ceiling == (
+        "src", "tests", "scripts", "docs", "README.md", "pyproject.toml",
+    )
     assert config.max_autonomous_hops == 32
 
 
