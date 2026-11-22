@@ -1,0 +1,367 @@
+= Post-Beta E2 -- release preflight tool, distribution audit tool, Make targets, README link repair: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the E2 candidate
+for WorkItem `WI-WFC-POSTBETA-E2-RELEASE-PREFLIGHT-AUDIT-001`. The current
+pass is *H002*; later passes are added above earlier ones and earlier passes
+are kept unedited apart from the `(current)` marker, which moves to the newest
+pass.
+
+== Pass H002 -- `RUN-11674482...` (current)
+
+WorkItem:: `WI-WFC-POSTBETA-E2-RELEASE-PREFLIGHT-AUDIT-001`
+Hop:: `H002` (`broad_review`, independent adversarial pass, gate,
+blocking-only, `finding_authority: [resolve]`)
+Reviewed product:: the whole E2 candidate at review base HEAD
+`b6cf807a73f4f4abbf6cfbf4715ac65286b68f37`, implementation range
+`1e58e67..b6cf807`. Seven changed leaves, `git show --numstat`:
+`scripts/wfc_release_check.py` (new, 183 lines),
+`scripts/wfc_dist_audit.py` (new, 121 lines),
+`tests/unit/test_release_tooling.py` (new, 280 lines),
+`tests/architecture/test_offline_distribution.py` (`+8`), `Makefile` (`+8`),
+`docs/developer_guide/ch04_release_management.adoc` (`+33/-20`) and
+`README.md` (`+4/-4`).
+Governing acceptance:: the Commission task (DO 1--7, CHECKS, NON-GOALS, the
+withheld authority and the COMMIT MECHANICS rules),
+`docs/developer_guide/ch04_release_management.adoc` as the specification both
+tools implement, and `docs/backlog/postbeta_plan_p3_release_engineering.adoc`
+sections 3 (C1--C7), 5 (package E2) and 7 (G1--G8).
+`docs/cold_storage/` is provenance, not a source of requirements.
+Finding state:: The projected authoritative Finding state for this Run is
+empty; no Finding was open on entry. One genuinely new blocking Finding is
+proposed here with `finding_id: null` for Coordinator allocation. `C1`--`C7`,
+`G1`--`G8`, `E0`--`E3`, `MD-1`--`MD-6` and `Q0`/`Q1` appearing in this artifact
+and in the reviewed documents are plan-internal labels, not current-Run
+Finding IDs.
+Verdict:: *changes required*, one blocking Finding
+(<<e2-finding-direntry,F-DIRENTRY -- the audit exempts every slash-terminated
+archive entry from the C2 allow-list>>). Everything else in the candidate
+verified, much of it by execution. Five non-blocking observations are in
+<<e2-observations>>.
+
+=== What I re-derived rather than quoted
+
+Nothing below is taken from the Worker's summary. The changed-leaf set came
+from `git show --numstat`/`--name-only` and each diff hunk was read; both
+scripts were read whole and then *executed* -- against the real checkout,
+against the Worker's own synthetic fixtures, and against adversarial archives
+and archive shapes I built myself; all eighteen new test functions were
+executed in-process (no pytest in this sandbox, see
+<<e2-environment>>); the four README links, the Makefile recipes, the chapter
+text, the real release-notes heading, the real package inventory and the
+self-development scope ceiling were read directly; the strict render and the
+documentation-catalog check were run.
+
+== 1. Scope and mutation discipline
+
+`git show --name-only b6cf807` yields exactly the seven leaves above. All
+seven are inside the WorkItem scope
+(`.wfc/governance/wfc-postbeta-e2-release-preflight-audit-001/work-item.yaml`)
+and inside the `.wfc/config.yaml` ceiling
+(`src`, `tests`, `scripts`, `docs`, `README.md`, `pyproject.toml`, `Makefile`).
+
+Untouched, as the withheld authority requires: `src/`, `governance/`,
+`project_memory/`, `requirements/`, `pyproject.toml`, the offline-input
+profile and its pinned digests, every archived Run evidence leaf, and every
+normative document. `.github/` does not exist in the checkout -- no workflow
+file was created, and no publication, credential, tag or push appears
+anywhere in the diff. `git status --short -uall` shows no tracked change; the
+only entries are the 22 untracked wrapper-injected dotfile paths, which are
+not candidate output.
+
+*`Makefile`.* Exactly one appended block: `.PHONY: release-check dist-audit`
+and the two recipes. No existing target, variable or `.PHONY` line is
+modified. Correctly, the new files were *not* added to `format-check`'s
+explicit file list -- that would have exceeded "limited to the two new targets
+and their `.PHONY` declaration".
+
+*`README.md`.* `+4/-4` in four hunks. I enumerated every inline link in the
+file: there are exactly four, and all four are now
+`https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/<path>`
+for `docs/developer_guide/developer_guide.adoc`, `project_memory/README.adoc`,
+`docs/README.adoc` and `docs/ai_info/_ai_info.adoc`. All four target paths
+exist in the checkout, the tag segment matches C5's form and `pyproject.toml`'s
+`version = "0.1.0b1"`, there are no reference-style link definitions, and no
+other `.adoc` mention remains. Every other word of the file is byte-unchanged.
+
+*`ch04_release_management.adoc`.* The standing note and the chapter body now
+state the two scripts and the two Make targets as existing and keep
+`.github/workflows/release.yml` as *planned* (E3) -- no claim that the
+workflow exists. C2's closing sentence changes from "unguarded until" to "now
+enforced mechanically by `wfc_dist_audit.py` (E2)". C5 becomes a binding
+requirement ("`README.md` *must* link documentation only by *absolute,
+tag-pinned* repository URL ...; no repository-relative documentation link may
+appear"). The preflight runbook paragraph describes mode selection from
+`git symbolic-ref -q HEAD`, the branch-mode-only checks and the tag-mode
+reachability check, and matches what the script does. C6, the `G2` row and the
+whole `md5-open` section are byte-unchanged: MD-5 stays open and no decision
+is taken on the maintainer's behalf.
+
+[[e2-finding-direntry]]
+== 2. Blocking Finding F-DIRENTRY -- the audit exempts every slash-terminated archive entry from the C2 allow-list
+
+*Invariant violated.* C2, in the chapter and in plan section 3: "the audit
+fails on anything *unlisted*, not only on the forbidden names ..., so a new
+top-level directory cannot leak in silently"; forbidden by name in both
+artifacts are `docs/`, `tests/`, `governance/`, `project_memory/`, `.wfc/`,
+`scripts/`, `requirements/`, `tmp/`, `build/`. Task DO (2): "checks every
+archive entry against the C2 allow-list exactly as the chapter writes it ...
+fails on anything unlisted".
+
+*What the code does.* `scripts/wfc_dist_audit.py:45-46` and `:56-57` both
+begin their allow-list predicate with an unconditional exemption:
+
+[source,python]
+----
+if name.endswith("/"):      # _wheel_entry_allowed
+    return True
+if not relative or relative.endswith("/"):   # _sdist_entry_allowed
+    return True
+----
+
+Every entry whose name ends in a slash is therefore never tested against the
+allow-list at all -- including the names C2 forbids outright. This single
+special case produces a false pass and a false failure, in opposite
+directions.
+
+*(a) False pass, reproduced.* A wheel containing a zip entry named exactly
+`docs/` and carrying a 14-byte payload audits clean:
+
+----
+wheel names: ['workflow_coordinator/__init__.py', <the four resource texts>, 'docs/']
+payload size of docs/ entry: 14
+wheel audit: []
+----
+
+`tests/`, `.wfc/`, `governance/` and every other forbidden or unlisted
+directory name behave the same way. This is the one case C2's rationale
+sentence names, and the tool's own failure message advertises those names as
+enforced.
+
+*(b) False failure on the real sdist shape, reproduced.* `tarfile` strips the
+trailing slash from a directory member when reading, so for an sdist the
+exemption never fires and legitimate directory members fall through to the
+file rules instead. `_sdist_entry_allowed` accepts `src/...` but not the bare
+directory name `src`, so the member
+`workflow_coordinator-0.1.0b1/src` is reported as an unlisted entry. I could
+not run `python -m build` here (<<e2-environment>>), so I built the archive
+through the same archiving path setuptools uses -- distutils'
+`archive_util.make_tarball`, i.e. a recursive `tarfile.add(base_dir)`, which
+`shutil.make_archive(..., "gztar")` performs identically -- over a staged tree
+holding only allow-listed content:
+
+----
+total members: 17  dirs: 6
+VIOLATIONS: 1
+   workflow_coordinator-0.1.0b1.tar.gz: unlisted entry 'workflow_coordinator-0.1.0b1/src'
+----
+
+If a real `python -m build` sdist carries directory members, as that code path
+produces, then `make dist-audit` exits 1 on a conforming release artifact
+(G3 cannot pass) and the extended distribution test's
+`assert dist_audit.audit(archive) == []`
+(`tests/architecture/test_offline_distribution.py:42-43`) fails on the
+artifact it just built. The chapter's measured sdist inventory does not settle
+this by itself -- 49 entries is consistent both with 43 files plus six
+directory members and with 49 files including the `src/*.egg-info` set -- so
+the decisive measurement on a real build belongs to Coordinator-trusted
+evidence. Part (a) is reproduced unconditionally and requires the same fix
+regardless of how (b) measures.
+
+*Why the fixtures did not catch it.* `_write_sdist`
+(`tests/unit/test_release_tooling.py:224-230`) writes every entry as a default
+`TarInfo`, i.e. `REGTYPE`, so the synthetic sdist contains no directory member
+and never exercises the real archive shape; no wheel case uses a
+slash-terminated name. The Worker's "rejects a forbidden entry" case uses
+`docs/evil.adoc`, which the file rules catch on the file name, not on the
+directory.
+
+*Feasible remedy, verified here.* Drop the special case and test every entry
+uniformly after normalising the trailing slash, allowing a directory name only
+when it names an allowed tree: for the wheel, `workflow_coordinator`, anything
+under `workflow_coordinator/` and anything under a `*.dist-info`; for the
+sdist, the archive root, `src` and anything under `src/`. I applied exactly
+that to a throwaway copy of the two predicates and re-ran every case:
+
+* the `make_archive`-built real-shape sdist audits clean;
+* the wheel with the payload-carrying `docs/` entry yields one violation;
+* a wheel with a legitimate `workflow_coordinator/` directory entry still
+  audits clean;
+* the four existing audit cases are unaffected (their entries are files).
+
+It removes a branch rather than adding mechanism, and keeps "one rule, one
+implementation". Per the repository's own test rule, the fix needs a test that
+fails without it: the sdist fixture should emit real `DIRTYPE` members (the
+shape a build produces) and one wheel case should assert that a
+slash-terminated forbidden name is rejected.
+
+== 3. What the candidate gets right, verified by execution
+
+=== 3.1 `wfc_release_check.py` -- modes and refusals
+
+Run on the real checkout it reports one clear line per failed check and exits
+1, with the four lines the current state warrants (`wfc/postbeta-e2`, the
+wrapper-dirty tree, HEAD not reachable from `origin/main`, and the still
+`planned` notes section) and no spurious fifth: the README-link check passes
+against the repaired file, and the `origin/main` sync check does not fire,
+`refs/heads/main` and `refs/remotes/origin/main` both being `9e0773f`.
+
+Mode selection is `git symbolic-ref -q --short HEAD` (`:38`), attached means
+branch mode and detached means tag mode, as the task and the chapter specify.
+Branch mode adds branch identity, clean tree and `origin/main` sync; tag mode
+drops those three -- the chapter assigns the clean-tree assertion to the
+pre-tag group, so dropping it in tag mode is the specified behaviour, not an
+omission -- and both modes assert reachability from `origin/main`,
+tag-equals-version, the notes section and the README links. A missing
+`origin/main` fails closed in either mode, and a non-repository or absent
+`git symbolic-ref` degrades to tag mode and then fails on that same check
+rather than passing silently.
+
+I executed all eighteen new test functions (nine branch-mode, five tag-mode,
+four audit) in-process against fresh synthetic repositories with a local bare
+`origin`: 18 passed, 0 failed. They cover the branch-mode pass and every
+listed branch-mode refusal (not `main`, dirty tree, out of sync, HEAD
+unreachable, tag/version mismatch, missing notes section, `planned` notes,
+relative README link), the tag-mode pass, and the tag-mode refusals
+(unreachable commit, no exact tag, explicit tag mismatch, `planned` notes plus
+relative README link). No case touches the network or depends on this
+checkout's state.
+
+The notes parser matches the real file: `docs/release_notes/release_notes.adoc`
+heading `== 0.1.0b1 -- planned` is found and refused as `planned`, which is
+C4 behaving on the actual artifact rather than only on a fixture.
+
+=== 3.2 Read-only, network-free, standard library only
+
+Imports are `argparse`, `os`, `re`, `subprocess`, `tomllib`, `pathlib`,
+`tarfile`, `zipfile` -- no third-party package and no network module. The only
+subprocesses are local Git reads (`symbolic-ref`, `status --porcelain`,
+`rev-parse`, `merge-base --is-ancestor`, `describe`); there is no `fetch`,
+`ls-remote` or any remote-contacting invocation, so neither tool can reach the
+network. `tomllib` in a development script follows existing practice
+(`tests/unit/test_wfc_test_inputs.py:17`).
+
+Measured rather than assumed:
+
+* running the preflight left the Git index byte-identical and its mtime
+  unchanged, so "writes nothing" holds in practice as well as by inspection;
+* the audit opens archives read-only (`zipfile.ZipFile(path)`,
+  `tarfile.open(path, "r:gz")`) and only lists members. With both archives
+  `chmod 0444`, auditing left their SHA-256 and mtimes identical and created
+  no extracted file or directory beside them -- the audit never modifies an
+  artifact.
+
+=== 3.3 One implementation, two callers
+
+`tests/architecture/test_offline_distribution.py` loads
+`scripts/wfc_dist_audit.py` by `importlib` and asserts
+`dist_audit.audit(archive) == []` for each built wheel and sdist, so the Make
+target and the test share one rule and one implementation. The eight added
+lines are purely additive; no existing assertion was weakened, removed or
+loosened, here or anywhere in the diff. The frozen
+`tests/fixtures/offline-test-inputs/py313-linux-x86_64-collected-nodes.txt` is
+an informational record that no test reads, so the eighteen new node IDs
+cannot break it.
+
+=== 3.4 Allow-list against the chapter, Make targets, documentation
+
+Apart from F-DIRENTRY, the allow-list transcribes C2 exactly. The wheel row
+names the four reviewed resource texts individually and a wheel missing any of
+them fails; a fifth resource text, a non-`.py` file inside the package, a
+top-level `.py` file, an `*.ods` and any other unlisted path are all rejected,
+and the failure message names the forbidden-by-name set explicitly. The four
+texts under `src/workflow_coordinator/resources/` are exactly the four the
+chapter lists, and the package carries no other non-`.py` tracked file, so the
+real wheel's content matches the row it is audited against.
+
+The Makefile recipes are minimal and correct (`release-check` passes
+`--tag` only when `TAG` is set, which the script also accepts from the
+environment; `dist-audit` audits `dist/*.whl dist/*.tar.gz`, and an empty
+`dist/` fails rather than passing vacuously). I verified the recipes by
+reading them and by running the underlying commands; `make` itself was not
+runnable in this sandbox (<<e2-environment>>).
+
+The strict V1 render,
+`asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN`
+over `docs/developer_guide/developer_guide.adoc`, exits 0 with no output.
+`scripts/wfc_doc_catalog.py check` at the review base HEAD reports `catalog
+current` with 84 unresolved links and 4 Project Memory misses, none of which
+involves ch04, the new scripts or the new tests -- all are pre-existing entries
+in `docs/backlog/`, `docs/cold_storage/` and `docs/warm_storage/`, so the
+candidate adds neither an unresolved link nor a Project Memory miss. After this
+artifact is written the same check reports the identical 84 and 4 diagnostics
+and `catalog drifted`, the drift being this artifact's own new record in the
+untracked `build/wfc/document_catalog.jsonl`, which the `generate` step the
+CHECKS prescribe absorbs; I did not run `generate` myself, since the review
+scope is this artifact alone.
+
+[[e2-observations]]
+== 4. Non-blocking observations
+
+. *The README check enforces absoluteness, not the tag pin.*
+  `check_readme_links` refuses any link target that is not `http://`,
+  `https://`, `#` or `mailto:`, which is exactly the refusal DO (1) specifies
+  and matches the `G1` row ("README links absolute"). An absolute but
+  unpinned `blob/main/docs/...` URL would therefore pass, while C5 now reads
+  `must link ... only by absolute, tag-pinned repository URL`. The chapter's
+  clause "it is enforced mechanically by `wfc_release_check.py`'s README-link
+  check" can be read as claiming the pin itself is checked. Either narrow the
+  sentence or extend the check to require `blob/<tag>/`; adding the stricter
+  check is beyond what the task authorises, so this is recorded, not required.
+. *In branch mode without `TAG` the tag-equals-version check is a tautology.*
+  `_resolve_tag` derives `v<version>` from `pyproject.toml` and then compares
+  it with the same value, so `G1`'s tag-equals-version bites only when the
+  operator supplies `TAG`. This follows the chapter's wording, and the
+  mismatch case is tested with an explicit tag; worth knowing when running the
+  gate by hand.
+. *The sdist mapping strips the first path component without asserting a root
+  prefix.* An archive without the standard `<name>-<version>/` root is
+  mis-mapped: a top-level file maps to the empty string and is allowed. PEP
+  625 artifacts always carry the prefix, so this is not reachable from a real
+  build, but a one-line assertion that all members share one root prefix would
+  close it, and it sits naturally with the F-DIRENTRY fix.
+. *The notes check is coupled to the `== <version> -- <status>` heading shape.*
+  A frozen heading written as `== 0.1.0b1` alone would be reported as "no
+  section for version". That shape is the chapter's own convention and the real
+  file follows it, so this is a note about the coupling, not a defect.
+. *Link targets in the README check include non-documentation links.* Any
+  relative link, documentation or not, is refused, and a relative-looking link
+  inside a fenced code block would be flagged. The file has no such case
+  today; the broader rule is the safer direction.
+
+[[e2-environment]]
+== 5. Measured checks and the environment limits of this pass
+
+Executed here, with the result stated:
+
+* both tools run on the real checkout -- preflight exits 1 with four accurate
+  lines, the audit runs against archives I built;
+* all eighteen new test functions, run in-process: 18 passed, 0 failed;
+* adversarial archive probes: payload-carrying `docs/` wheel entry (false
+  pass, F-DIRENTRY), forbidden and unlisted wheel and sdist entries, extra and
+  missing resource texts, `*.ods` inside the package, real-shape
+  `make_archive` sdist (false failure, F-DIRENTRY), and the verified remedy;
+* read-only proof: Git index unchanged after the preflight; archive digests,
+  mtimes and the surrounding directory unchanged after the audit;
+* V1 strict render over the developer guide: exit 0, no output;
+* `wfc_doc_catalog.py check`: `catalog current` at the review base HEAD, and
+  the same 84 unresolved links and 4 Project Memory misses afterwards -- the
+  candidate adds neither.
+
+Not executable in this sandbox, and therefore not claimed:
+
+* `python -m pytest -q` -- pytest is not importable and the PATH venv lies
+  outside the sandbox's readable set, so no suite count is claimed; the full
+  required suite remains Coordinator-trusted evidence;
+* `ruff check` and `ruff format --check` -- ruff is not installed. As a partial
+  substitute I verified the four files have no line over the configured
+  `line-length = 100` (the pre-existing long lines in
+  `test_offline_distribution.py` are untouched and `select = ["F"]` does not
+  include `E501`), no tabs, no trailing whitespace and a single final newline;
+* `python -m build` and `make dist-audit` on a freshly built `dist/` -- the
+  PEP-517 isolated build needs network access and the offline test inputs are
+  absent, and `make` could not be invoked in this session. This is an
+  agent-local environment limitation, not a product defect; it is the reason
+  part (b) of F-DIRENTRY is evidenced through the identical archiving code path
+  rather than through a real build.
