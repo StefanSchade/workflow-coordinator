@@ -42,18 +42,27 @@ FORBIDDEN_NAMES = (
 
 
 def _wheel_entry_allowed(name: str) -> bool:
-    if name.endswith("/"):
+    is_directory = name.endswith("/")
+    normalized = name.rstrip("/")
+    if not normalized:
         return True
-    if name in WHEEL_RESOURCE_FILES:
+    if normalized in WHEEL_RESOURCE_FILES:
         return True
-    if "/" in name and name.split("/", 1)[0].endswith(".dist-info"):
+    top_level = normalized.split("/", 1)[0]
+    if top_level.endswith(".dist-info"):
         return True
-    return name.startswith("workflow_coordinator/") and name.endswith(".py")
+    if top_level != "workflow_coordinator":
+        return False
+    if is_directory:
+        return True
+    return normalized.endswith(".py")
 
 
-def _sdist_entry_allowed(relative: str) -> bool:
-    if not relative or relative.endswith("/"):
+def _sdist_entry_allowed(relative: str, is_directory: bool) -> bool:
+    if not relative:
         return True
+    if is_directory:
+        return relative == "src" or relative.startswith("src/")
     if relative in SDIST_TOP_LEVEL_FILES:
         return True
     return relative.startswith("src/")
@@ -80,7 +89,7 @@ def audit_sdist(path: Path) -> list[str]:
     with tarfile.open(path, "r:gz") as archive:
         for member in archive.getmembers():
             relative = member.name.split("/", 1)[1] if "/" in member.name else ""
-            if not _sdist_entry_allowed(relative):
+            if not _sdist_entry_allowed(relative, member.isdir()):
                 violations.append(_violation(path, member.name))
     return violations
 

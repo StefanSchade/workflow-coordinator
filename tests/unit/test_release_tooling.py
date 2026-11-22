@@ -221,8 +221,17 @@ def _conforming_wheel_entries() -> dict[str, str]:
     return entries
 
 
-def _write_sdist(path: Path, prefix: str, entries: dict[str, str]) -> None:
+def _write_sdist(
+    path: Path, prefix: str, entries: dict[str, str], directories: tuple[str, ...] = ()
+) -> None:
     with tarfile.open(path, "w:gz") as archive:
+        root = tarfile.TarInfo(prefix)
+        root.type = tarfile.DIRTYPE
+        archive.addfile(root)
+        for directory in directories:
+            info = tarfile.TarInfo(f"{prefix}/{directory}")
+            info.type = tarfile.DIRTYPE
+            archive.addfile(info)
         for name, content in entries.items():
             data = content.encode("utf-8")
             info = tarfile.TarInfo(f"{prefix}/{name}")
@@ -245,7 +254,12 @@ def test_dist_audit_accepts_a_conforming_wheel_and_sdist(tmp_path):
     wheel = tmp_path / WHEEL_NAME
     _write_wheel(wheel, _conforming_wheel_entries())
     sdist = tmp_path / SDIST_NAME
-    _write_sdist(sdist, "workflow_coordinator-0.1.0b1", _conforming_sdist_entries())
+    _write_sdist(
+        sdist,
+        "workflow_coordinator-0.1.0b1",
+        _conforming_sdist_entries(),
+        directories=("src", "src/workflow_coordinator"),
+    )
     assert dist_audit.audit(wheel) == []
     assert dist_audit.audit(sdist) == []
 
@@ -259,15 +273,45 @@ def test_dist_audit_rejects_an_unlisted_wheel_entry(tmp_path):
     assert any("evil.txt" in violation for violation in violations)
 
 
+def test_dist_audit_rejects_a_forbidden_wheel_directory_entry(tmp_path):
+    entries = _conforming_wheel_entries()
+    entries["docs/"] = "bad"
+    wheel = tmp_path / WHEEL_NAME
+    _write_wheel(wheel, entries)
+    violations = dist_audit.audit(wheel)
+    assert any(
+        "docs/" in violation and "forbidden by name" in violation for violation in violations
+    )
+
+
 def test_dist_audit_rejects_a_forbidden_sdist_entry(tmp_path):
     entries = _conforming_sdist_entries()
     entries["docs/evil.adoc"] = "bad"
     sdist = tmp_path / SDIST_NAME
-    _write_sdist(sdist, "workflow_coordinator-0.1.0b1", entries)
+    _write_sdist(
+        sdist,
+        "workflow_coordinator-0.1.0b1",
+        entries,
+        directories=("src", "src/workflow_coordinator", "docs"),
+    )
     violations = dist_audit.audit(sdist)
     assert any(
         "docs/evil.adoc" in violation and "forbidden by name" in violation
         for violation in violations
+    )
+
+
+def test_dist_audit_rejects_a_forbidden_sdist_directory_entry(tmp_path):
+    sdist = tmp_path / SDIST_NAME
+    _write_sdist(
+        sdist,
+        "workflow_coordinator-0.1.0b1",
+        _conforming_sdist_entries(),
+        directories=("src", "src/workflow_coordinator", "docs"),
+    )
+    violations = dist_audit.audit(sdist)
+    assert any(
+        "/docs" in violation and "forbidden by name" in violation for violation in violations
     )
 
 
