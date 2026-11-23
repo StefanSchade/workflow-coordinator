@@ -33,7 +33,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Mapping
 
 _RECORD_HEADER_SEP = " "
 

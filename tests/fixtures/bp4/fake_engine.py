@@ -16,7 +16,6 @@ production lifecycle controller always launches the real, unchanged engine.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import time

@@ -1,0 +1,191 @@
+= Post-Beta L1: Ruff `select = ["F"]` lint baseline -- 17 findings fixed
+:toc:
+:toclevels: 2
+
+Maturity:: implementation record, written by
+`WI-WFC-POSTBETA-L1-CI-LINT-BASELINE-001` H001 (Worker) at base HEAD
+`8e1864e76cafa0ec8d69c80d585ba58a5f72e6f4`. Not a review, not an acceptance.
+Authority:: informative. Grants no acceptance, Finding disposition, promotion,
+tag, push or merge authority. No Finding operation was performed or proposed
+here; a Worker never opens, resolves or dispositions a Finding. MD-5 (whether
+the whole required suite has run on a hosted runner) stays *open*; this record
+settles nothing about it.
+Updated:: 2026-11-23
+
+== Background
+
+The first hosted run on `main` `b7e62be` failed at `make lint`
+(`python3 -m ruff check .`, `select = ["F"]` since `pyproject.toml`
+commit `56af453`) with 17 findings. This Hop reproduced exactly 17 findings
+using an available local `ruff 0.17.5` (no network access was available in
+this sandbox to install a fresh copy or to reach a `0.16.8` install; the
+0.17.5 reproduction below is what this Hop verified directly). No rule,
+config or CI gate was changed to fix any of them.
+
+----
+$ ruff check . --output-format=concise
+src/workflow_coordinator/frontdoor/journal.py:36:25: F401 [*] `typing.Iterator` imported but unused
+tests/fixtures/bp4/fake_engine.py:19:8: F401 [*] `json` imported but unused
+tests/unit/test_lifecycle_controller.py:388:5: F841 Local variable `prelaunch` is assigned to but never used
+tests/unit/test_lifecycle_controller.py:389:5: F841 Local variable `probe` is assigned to but never used
+tests/unit/test_lifecycle_crash_matrix.py:203:5: F841 Local variable `prelaunch` is assigned to but never used
+tests/unit/test_lifecycle_crash_matrix.py:215:5: F841 Local variable `prelaunch` is assigned to but never used
+tests/unit/test_lifecycle_crash_matrix.py:216:5: F841 Local variable `probe` is assigned to but never used
+tests/unit/test_lifecycle_crash_matrix.py:237:5: F841 Local variable `prelaunch` is assigned to but never used
+tests/unit/test_lifecycle_crash_matrix.py:238:5: F841 Local variable `probe` is assigned to but never used
+tests/unit/test_lifecycle_crash_matrix.py:272:5: F841 Local variable `prelaunch` is assigned to but never used
+tests/unit/test_lifecycle_crash_matrix.py:273:5: F841 Local variable `probe` is assigned to but never used
+tests/unit/test_lifecycle_crash_matrix.py:311:5: F841 Local variable `prelaunch` is assigned to but never used
+tests/unit/test_lifecycle_crash_matrix.py:312:5: F841 Local variable `probe` is assigned to but never used
+tests/unit/test_lifecycle_crash_matrix.py:328:5: F841 Local variable `prelaunch` is assigned to but never used
+tests/unit/test_lifecycle_crash_matrix.py:329:5: F841 Local variable `probe` is assigned to but never used
+tests/unit/test_operator_admit_parsed.py:16:49: F401 `tests.unit.test_operator.repository` imported but unused
+tests/unit/test_operator_admit_parsed.py:22:19: F811 Redefinition of unused `repository` from line 16
+Found 17 errors.
+----
+
+== The 17 findings, by class, and the fix
+
+F401 (2), unused imports::
+`journal.py:36` (`typing.Iterator`) and `fake_engine.py:19` (`json`). Confirmed
+unused by `grep -n` for `Iterator` / `json` in each file before removing: each
+name appeared only on its own `import` line, never elsewhere (no `__all__`,
+no string reference). Fixed by deleting the unused name from the import
+statement. No behavior change: nothing read these names.
+
+F841 (13), unused local bindings in two test files::
+`test_lifecycle_controller.py:388-389` and 11 sites across
+`test_lifecycle_crash_matrix.py` (203, 215-216, 237-238, 272-273, 311-312,
+328-329). Each assigns the result of `L._do_prelaunch(...)` or
+`L._do_probe(...)` to a local (`prelaunch` / `probe`) that no later line in
+the same test reads; both functions have side effects relied on by the
+test (they write journal records and advance on-disk lifecycle state that
+later calls in the same test, or `resume_lifecycle`, observe). Fixed by
+keeping every call exactly where it was, in the same order, only changing
+the assignment to a bare expression statement (`L._do_prelaunch(...)` instead
+of `prelaunch = L._do_prelaunch(...)`). No fixture, assertion or control flow
+was touched; the call sequence and its side effects are identical.
+
+F401 + F811 (2), the pytest fixture re-export idiom::
+`test_operator_admit_parsed.py:16` imports `repository` from
+`tests.unit.test_operator` only so pytest can resolve it as a fixture when a
+local fixture's parameter is also named `repository` (line 22); ruff sees an
+unused import (F401) and a parameter that "redefines" it (F811). Deleting the
+import or renaming the parameter would break fixture resolution (pytest
+matches a fixture to a parameter by name), so this was *not* autofixed and the
+import was *not* removed. Instead, two narrowly scoped, commented `# noqa`
+suppressions were added, one per violation, each on the line ruff actually
+reports it on: `# noqa: F401 -- pytest fixture re-exported by import` on the
+import line (16), and `# noqa: F811 -- pytest fixture param shadows the
+re-exported import` on the fixture definition line (22). +
+Correction against the task text: the task's suggested example combined both
+codes (`# noqa: F401, F811`) on the single import line. This Hop verified
+empirically that `ruff check` still reports F811 on line 22 when the
+suppression sits only on line 16 (`noqa` is a strictly per-line directive in
+ruff, as in flake8); a single combined suppression on the import line does
+not clear the F811. Two per-line suppressions, not a configuration-level or
+file-level ignore, were required to reach zero findings.
+
+== Measured results
+
+`ruff check .` (ruff 0.17.5, locally available):: `All checks passed!` (0
+findings, exit 0).
+
+`ruff format --check` on the `make format-check` file list
+(`scripts/memory_workbook.py`, `scripts/wfc_snapshot.py`,
+`tests/unit/test_memory_workbook.py`, `tests/unit/test_wfc_snapshot.py`,
+`tests/architecture/test_package_boundaries.py`, none of them touched by this
+Hop):: `5 files already formatted`, unchanged.
+
+`make lint` with `PYTHON` set to an interpreter that has ruff runs exactly
+`python -m ruff check .`, confirmed identical to the direct command above (0
+findings). `make lint` with the default `PYTHON` (system `python3`, no ruff
+installed) fails with `/usr/bin/python3: No module named ruff` -- a
+missing-module error, not a 17-finding failure and not a silent pass; see
+"Local/hosted discrepancy" below.
+
+Collect-only counts, the three affected test files, before and after this
+Hop's edits (identical):
+[cols="2,1,1"]
+|===
+|File |Before |After
+
+|`tests/unit/test_lifecycle_controller.py` |23 |23
+|`tests/unit/test_lifecycle_crash_matrix.py` |20 |20
+|`tests/unit/test_operator_admit_parsed.py` |3 |3
+|===
+
+Running those three files together, before and after the edits, with
+`python -m pytest -q --wfc-partial <the three files>` (explicit subset, not
+required-suite acceptance): 46 passed, both times, identical count.
+
+`repository` fixture resolution in `test_operator_admit_parsed.py` after the
+two `noqa` suppressions: `python -m pytest --wfc-partial
+tests/unit/test_operator_admit_parsed.py -v` -> all 3 tests (including
+`parsed_inputs`, the fixture that declares the `repository: Path` parameter)
+collected and passed.
+
+These are this Worker's own exploratory checks in its sandbox, not
+Coordinator-trusted evidence; the Coordinator's own `task-check`
+(`python -m pytest -q`, the full required suite) is executed separately.
+
+== Verified cause of the local/hosted discrepancy
+
+Each statement below was checked against this repository's own history and
+configuration rather than assumed; one claim in the task text is corrected.
+
+`make lint` was never part of any Run's task-check:: confirmed --
+`docs/developer_guide/ch01_development.adoc` states the configured Coordinator
+`task-check` runs `python -m pytest -q` (the whole required suite), not
+`make lint`; `src/workflow_coordinator/commissioning.py` wires `task-check`
+to an `argv` supplied by the evidence profile, independent of `make lint`.
+A Run's acceptance never exercised `ruff check .`.
+
+Most of the findings were introduced with the BP4 lifecycle controller work,
+but not all of them:: `git log -S` on each file's offending text shows
+`journal.py`'s `Iterator` import, `fake_engine.py`'s `json` import, and all
+13 `F841` sites trace to commit `1a2fede`
+(`WI-WFC-BETA1-BP4-LIFECYCLE-CONTROLLER-001 H001`, 2026-11-19) -- 15 of the
+17 findings. The remaining 2 (`test_operator_admit_parsed.py`'s F401/F811
+pair) trace to the earlier commit `c7b84e2`
+(`WI-WFC-BETA1-BP2-ADMISSION-EXTRACTION-001 H001`, 2026-11-18), not to BP4.
+The task text's framing ("introduced with the BP4 lifecycle controller work")
+is corrected here: it holds for 15 of 17 findings; the fixture-import pair
+predates BP4.
+
+`ruff check .` has run against the whole repository, with `select = ["F"]`,
+since before either introducing commit:: confirmed -- commit `56af453`
+(`fix(devx): scope runnable Ruff checks`, 2026-09-23) set
+`[tool.ruff.lint] select = ["F"]` and left `make lint` as `ruff check .`
+(unscoped); that same commit scoped only `format-check` to a specific file
+list, not `lint`. Both BP2 (`c7b84e2`, 2026-11-18) and BP4 (`1a2fede`,
+2026-11-19) post-date `56af453`, so the rule that flags all 17 findings was
+already active repository-wide when each was introduced.
+
+The Operator's own earlier ruff checks covered only the newly added files::
+*not independently verified by this Hop.* Ad hoc commands an Operator ran
+outside of a commit leave no artifact in this repository's history for a
+Worker to inspect; this record states that claim as the task's own
+attribution to the Operator, not as something this Hop confirmed.
+
+The system `python3` has no ruff, so `make lint` fails with a missing-module
+error rather than reporting green:: confirmed by running `make lint` with
+the default `PYTHON` in this sandbox: `/usr/bin/python3: No module named
+ruff`, `make: *** [Makefile:21: lint] Error 1`. A developer running the
+unqualified `make lint` locally would see this failure, not a false "clean"
+result -- the risk is a skipped check, not a misleadingly green one.
+
+CI installs `ruff` unpinned via the dev extra:: confirmed --
+`pyproject.toml`'s `[project.optional-dependencies] dev` lists `ruff>=0.6`
+with no upper bound, and `.github/workflows/release.yml` installs with
+`python3 -m pip install -e '.[dev]'` before running `make lint`.
+
+== Non-goals observed
+
+No change to `pyproject.toml`, `Makefile`, `.github`, ruff configuration, any
+rule, select list or per-file ignore; no `--fix` or `--fix --unsafe-fixes`
+output was applied (every fix above was a manual, targeted edit); no
+formatting churn beyond the touched lines; no new lint rule; no behavior
+change in `src/` beyond deleting one confirmed-unused import. MD-5 (whether
+the whole required suite has run on a hosted runner) stays open; this record
+takes no position on it.

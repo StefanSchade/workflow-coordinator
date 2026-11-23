@@ -200,7 +200,7 @@ def test_crash_immediately_after_authorize_resume_continues_to_completion(reposi
 def test_crash_after_prelaunch_resume_continues_without_rechecking_from_scratch(repository: Path, tmp_path: Path, state_home: Path):
     request_path = _write_request(repository, tmp_path / "request.yaml")
     checkout_dir, journal, authorized, lock = _authorize_only(repository, request_path)
-    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    L._do_prelaunch(repository, checkout_dir, journal, authorized)
     J.release_lock(lock)
 
     os.environ["WFC_FAKE_ENGINE_MODE"] = "stopped"
@@ -212,8 +212,8 @@ def test_crash_after_prelaunch_resume_continues_without_rechecking_from_scratch(
 def test_crash_after_probe_before_commit_resume_commits_exactly_once(repository: Path, tmp_path: Path, state_home: Path):
     request_path = _write_request(repository, tmp_path / "request.yaml")
     checkout_dir, journal, authorized, lock = _authorize_only(repository, request_path)
-    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
-    probe = L._do_probe(repository, checkout_dir, journal, authorized)
+    L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    L._do_probe(repository, checkout_dir, journal, authorized)
     J.release_lock(lock)
 
     os.environ["WFC_FAKE_ENGINE_MODE"] = "awaiting_human"
@@ -234,8 +234,8 @@ def test_crash_between_materialize_and_bounded_path_commit_resume_commits_exactl
     """
     request_path = _write_request(repository, tmp_path / "request.yaml")
     checkout_dir, journal, authorized, lock = _authorize_only(repository, request_path)
-    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
-    probe = L._do_probe(repository, checkout_dir, journal, authorized)
+    L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    L._do_probe(repository, checkout_dir, journal, authorized)
 
     real_bounded_path_commit = L.bounded_path_commit
     monkeypatch.setattr(
@@ -269,8 +269,8 @@ def test_crash_after_real_git_add_before_commit_resume_commits_exactly_once(
 
     request_path = _write_request(repository, tmp_path / "request.yaml")
     checkout_dir, journal, authorized, lock = _authorize_only(repository, request_path)
-    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
-    probe = L._do_probe(repository, checkout_dir, journal, authorized)
+    L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    L._do_probe(repository, checkout_dir, journal, authorized)
 
     real_trusted_git = git_facts._trusted_git
 
@@ -308,8 +308,8 @@ def test_stray_staged_state_unrelated_to_lifecycle_refuses_as_inconsistent(
 
     request_path = _write_request(repository, tmp_path / "request.yaml")
     checkout_dir, journal, authorized, lock = _authorize_only(repository, request_path)
-    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
-    probe = L._do_probe(repository, checkout_dir, journal, authorized)
+    L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    L._do_probe(repository, checkout_dir, journal, authorized)
 
     foreign = repository / "src" / "unrelated.txt"
     foreign.write_text("not part of this Commission\n", encoding="utf-8")
@@ -325,8 +325,8 @@ def test_stray_staged_state_unrelated_to_lifecycle_refuses_as_inconsistent(
 def test_crash_after_verify_before_launch_resume_continues_with_no_recommit(repository: Path, tmp_path: Path, state_home: Path):
     request_path = _write_request(repository, tmp_path / "request.yaml")
     checkout_dir, journal, authorized, lock = _authorize_only(repository, request_path)
-    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
-    probe = L._do_probe(repository, checkout_dir, journal, authorized)
+    L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    L._do_probe(repository, checkout_dir, journal, authorized)
     commit_rec = L._do_commit(repository, checkout_dir, journal, authorized)
     L._do_verify(repository, checkout_dir, journal, authorized, commit_rec)
     head_after_commit = commit_rec.data["commit"]

@@ -13,13 +13,13 @@ from workflow_coordinator.serialization import (
     work_item_from_yaml,
     workflow_profile_from_yaml,
 )
-from tests.unit.test_operator import args, git, repository
+from tests.unit.test_operator import args, git, repository  # noqa: F401 -- pytest fixture re-exported by import
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
 
 
 @pytest.fixture
-def parsed_inputs(repository: Path, tmp_path: Path):
+def parsed_inputs(repository: Path, tmp_path: Path):  # noqa: F811 -- pytest fixture param shadows the re-exported import
     command = args(repository, tmp_path / "state", "unused")
     namespace = operator._parse_args(command)
     paths = {name: getattr(namespace, name) for name in

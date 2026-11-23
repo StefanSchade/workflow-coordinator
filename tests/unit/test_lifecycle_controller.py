@@ -385,8 +385,8 @@ def test_resume_adopts_a_matching_commit_left_by_a_crash_after_commit(repository
     inputs = _inputs(repository, request_path)
 
     authorized, lock = L._authorize(inputs, checkout_dir, journal)
-    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
-    probe = L._do_probe(repository, checkout_dir, journal, authorized)
+    L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    L._do_probe(repository, checkout_dir, journal, authorized)
     commit_rec = L._do_commit(repository, checkout_dir, journal, authorized)
     committed_head = commit_rec.data["commit"]
 
