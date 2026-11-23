@@ -1,0 +1,581 @@
+= FTR-WFC-CONSUMER-DEMO-WORKSPACE -- Consumer Demo Workspace and Offline Rehearsal
+
+Type:: future technical record
+Status:: proposed / backlog; candidate for `0.1.0b2` without a committed
+release date; not implemented
+Current controlling source:: This record; see link:_open.adoc[the
+active-work manifest] for its current card.
+Not authorized here:: Any implementation, Commission or Run, change to the
+package, the CLI, the release contract, the release workflow or a released
+artifact, and any of the maintainer decisions listed in <<decisions>>.
+Date:: 2026-11-23.
+Design analysis::
+link:../warm_storage/post-beta-planning/wfc_postbeta_consumer_surface_concept.adoc[WFC
+Consumer Surface -- Demonstrations, Tutorials and Documentation
+Publication], which holds the evidence, the options considered and the
+decision matrix. This record states only what is to be built and is
+complete without it.
+Companion:: link:FTR-WFC-CONSUMER-TUTORIALS.adoc[FTR-WFC-CONSUMER-TUTORIALS]
+writes the pages that use this kit.
+
+== Problem
+
+A first Run today is typed by hand: the
+link:../operator_manual/ch09_consumer_quickstart/02_first_run_example.adoc[first
+consumer example] builds its repository from about sixty lines of shell
+here-documents and has the reader hand-author a Consumer Request containing
+a commit hash. Nothing lets a newcomer watch a Run without an authenticated
+provider and usage cost, and the behaviour that distinguishes WFC -- an
+independent review opening a Finding, a correction, a stop that waits for a
+human, a refusal before launch -- can be seen only when a paid,
+non-deterministic Run happens to go that way.
+
+== Expected user-visible outcome
+
+With WFC installed and this repository checked out at the matching tag:
+
+[source,shell]
+----
+python3 examples/consumer-demo/make_workspace.py ~/wfc-demo
+python3 examples/consumer-demo/rehearse.py ~/wfc-demo t2-farewell
+----
+
+The first command creates a disposable demo workspace outside every Git
+repository: a small consumer repository, its Evidence repository and three
+ready-made Commission requests. The second runs one complete WFC Run in a
+fresh worktree, offline and in seconds, with a scripted stand-in for the
+provider, and tells the reader where to look. The same workspace then
+serves real Runs with the reader's own provider. Deleting the directory
+removes every trace.
+
+== Decided design direction and rationale
+
+* *A generator in this repository, not a repository to clone.* A checkout
+  authorizes one lifecycle, and a request names a commit of the repository
+  it runs in. A fresh consumer repository per workspace and a fresh worktree
+  per Run follow directly. Keeping the generator here means it is tagged
+  with the product, tested by the product's own suite and has no version pin
+  to maintain.
+* *The consumer repository is a real, separate Git repository.* It is
+  created outside this checkout; the kit refuses a target inside any Git
+  work tree. The example repository and the WFC source repository can
+  therefore not be confused on disk.
+* *The real CLI does the work.* The kit calls the installed `wfc init` and
+  `wfc run`; it writes no Consumer Config and no Commission itself, so both
+  always have the installed version's format.
+* *A rehearsal is labelled as one, in the record itself.* It binds the model
+  name `rehearsal-no-model`, which `wfc run` archives for every Hop, and
+  prints a banner before and after.
+* *No package change.* Nothing is added to the wheel or the sdist, and no
+  subcommand is added.
+
+== Scope
+
+. `examples/consumer-demo/`: the seed repository, three task/request pairs
+  and one refusal variant, four rehearsal scenarios, `make_workspace.py`,
+  `rehearse.py`, `scripted_provider.py`, a short `README.md`.
+. Tests as listed in <<tests>>.
+. After decision D2, one step in the hosted `check` job (<<slices>>, S3).
+
+== Non-goals
+
+* No general demo or scaffolding framework: one example repository, a fixed
+  set of scenarios, no plug-in mechanism, no configuration file.
+* No change to `src/`, to any existing subcommand's behaviour or output, to
+  `pyproject.toml` or to the artifact allow-list.
+* No new dependency: standard library, Git and the installed `wfc` only.
+* The kit never installs, upgrades or locates WFC by itself, creates no
+  virtual environment, and never calls a real provider.
+* No separate public demo repository, no published HTML, no slides.
+* No tutorial prose; that is the companion record.
+
+[[design]]
+== Design
+
+=== Kit layout
+
+[source,text]
+----
+examples/consumer-demo/
+├── README.md               what this is, the two commands, link to the tutorials
+├── make_workspace.py       creates a demo workspace
+├── rehearse.py             runs one scenario offline
+├── scripted_provider.py    stand-in for the provider executable
+├── seed/                   copied verbatim into the consumer repository
+│   ├── README.md
+│   ├── .gitignore
+│   ├── greeter/__init__.py
+│   ├── greeter/__main__.py
+│   ├── greeter/core.py
+│   ├── tests/__init__.py
+│   ├── tests/test_core.py
+│   ├── docs/notes.adoc
+│   ├── checks/check.sh
+│   ├── checks/doc_titles.py
+│   └── .wfc/governance/repository-policy.md
+├── requests/               templates; the token {{GUIDANCE_COMMIT}} is substituted
+│   ├── t1-hello-page.task.md
+│   ├── t1-hello-page.request.yaml
+│   ├── t2-farewell.task.md
+│   ├── t2-farewell.request.yaml
+│   ├── t3-scope-stop.task.md
+│   ├── t3-scope-stop.request.yaml
+│   └── t3-probe-refusal.request.yaml
+└── scenarios/
+    ├── t1-hello-page.json
+    ├── t2-farewell.json
+    ├── t3-scope-stop.json
+    └── t3-probe-refusal.json
+----
+
+The three Python files use the standard library only, import nothing from
+`workflow_coordinator` and nothing from `tests/`, and pass `make lint`.
+
+=== Seed repository
+
+Small enough to read in a minute, real enough to have a test.
+
+[cols="2,5",options="header"]
+|===
+|File |Content
+
+|`README.md`
+|Three lines: a tiny demonstration repository created by the WFC consumer
+demo kit; disposable; it has no remote.
+
+|`.gitignore`
+|The single line `+__pycache__/+`. Required: the check below runs Python
+tests, which write bytecode, and `wfc run` refuses a Run whose baseline
+probe leaves any new file that Git does not ignore.
+
+|`greeter/core.py`
+|One function: `greet(name: str) -> str` returning `f"Hello, {name}!"`.
+
+|`greeter/__main__.py`
+|Prints `greet()` of the first argument, default `world`.
+
+|`tests/test_core.py`
+|One `unittest.TestCase` asserting `greet("Ada") == "Hello, Ada!"`.
+
+|`docs/notes.adoc`
+|`= Notes`, a blank line, `Initial notes.`
+
+|`checks/check.sh`
+|`set -e`, then `python3 -m unittest discover -s tests -t . -q`, then
+`python3 checks/doc_titles.py`. A header comment states the rule: this one
+command is the pre-launch baseline probe and the task-check, so it must
+pass on the clean tree and must change no file.
+
+|`checks/doc_titles.py`
+|Asserts that at least one `*.adoc` exists under `docs/` and that the first
+line of each starts with `= `.
+
+|`.wfc/governance/repository-policy.md`
+|One sentence of repository guidance, for example "Keep changes small,
+inside the authorized scope, and covered by the check."
+|===
+
+`greeter/__init__.py` and `tests/__init__.py` are empty and required (test
+discovery fails without the second).
+
+[[workspace]]
+=== The workspace `make_workspace.py` creates
+
+[source,text]
+----
+<workspace>/                 not a Git repository
+├── WFC-DEMO-WORKSPACE       marker: kit path, `wfc --version --json` output
+├── greeter/                 consumer repository, branch main, no remote
+│   └── .wfc/config.yaml     written by `wfc init`, committed by the kit
+├── greeter-evidence/        Evidence repository created by `wfc init`, no remote
+├── requests/                rendered task documents and Consumer Requests
+└── rehearsal-home/          HOME of rehearsals only; WFC lifecycle state lands here
+----
+
+Run worktrees are created later as siblings of `greeter/`:
+`greeter-run-<scenario>/` by a rehearsal, `greeter-live-<name>/` by the
+reader. They must be siblings, because the Consumer Config names the
+Evidence repository as `../greeter-evidence`, relative to the worktree
+root.
+
+Command: `python3 make_workspace.py WORKSPACE [--wfc PATH]`. The `wfc`
+executable is `--wfc`, else the environment variable `WFC_BIN`, else `wfc`
+on `PATH`. Steps, in order:
+
+. Preflight; any failure prints one line and returns 2 without creating
+  anything: Python 3.10 or newer; `git` on `PATH`; `wfc --version --json`
+  succeeds and prints a JSON object; `WORKSPACE` does not exist or is an
+  empty directory; `WORKSPACE` is not inside a Git work tree.
+. Create `greeter/` with `git init -b main`; set the repository-local
+  identity `WFC Demo <wfc-demo@example.invalid>`; copy `seed/` preserving
+  the executable bit of `checks/check.sh`; commit everything as `chore: seed
+  demo repository`.
+. Run `wfc init --repository greeter --scope-ceiling greeter
+  --scope-ceiling tests --scope-ceiling docs --max-autonomous-hops 6
+  --evidence-repository ../greeter-evidence`; commit `.wfc/config.yaml` as
+  `chore: add WFC Consumer Config`. The file's `default_execution` stays
+  empty: every Run in the demo names its bindings on the command line.
+. Run `sh checks/check.sh` in `greeter/`; require exit 0 and an empty
+  `git status --porcelain`. This is what the baseline probe will require.
+. Render `requests/`: copy each template, replacing `{{GUIDANCE_COMMIT}}`
+  with the output of `git log -1 --format=%H --
+  .wfc/governance/repository-policy.md`.
+. Write the marker and print the layout, the installed WFC version, the two
+  next commands, and -- if `git config --get-regexp
+  '^filter\..*\.(clean|process)$'` prints anything -- a notice that a
+  configured Git filter (Git LFS included) will make a *live* Run refuse its
+  trusted commits on this machine, and that a rehearsal is affected only
+  when the filter is configured at system level.
+
+Return codes: 0 created; 2 preflight or usage; 1 a later step failed. On 1
+the partial workspace is left in place and its path printed; the kit never
+deletes a directory.
+
+=== Requests
+
+All four share `schema_version: 1`, `authority_source: The workspace owner
+authorizes this bounded demo task.`, `evidence.argv: [sh, checks/check.sh]`
+(the refusal variant excepted), `evidence.timeout_seconds: 300`, and
+`guidance: {path: .wfc/governance/repository-policy.md, source_commit:
+{{GUIDANCE_COMMIT}}}`. Each task document has the sections the task parser
+expects: a `# title` line, the body, `## Acceptance`, `## Withheld
+authority`, `## Default escalation`; the request's `task` block carries the
+same five texts.
+
+[cols="2,2,3,4",options="header"]
+|===
+|Name |Program, Hops |Scope |Task
+
+|`t1-hello-page`
+|`simple@v1`, 3
+|`docs/hello.adoc`
+|Create `docs/hello.adoc` whose first line is `= Hello`, followed by one
+sentence.
+
+|`t2-farewell`
+|`robust@v1`, 6
+|`greeter/core.py`, `tests/test_core.py`,
+`docs/reviews/t2-farewell_broad_review.md`,
+`docs/reviews/t2-farewell_focused_review.md`
+|Add `farewell(name)` returning `Goodbye, <name>!` and a unit test for it.
+Acceptance: the task-check passes and a test asserts `farewell("Ada") ==
+"Goodbye, Ada!"`.
+
+|`t3-scope-stop`
+|`simple@v1`, 3
+|`docs/farewell.adoc`
+|Create `docs/farewell.adoc` *and link it from `docs/notes.adoc`*. Withheld
+authority: no change outside `docs/farewell.adoc`. The task cannot be
+completed inside its scope, on purpose.
+
+|`t3-probe-refusal`
+|`simple@v1`, 3
+|`docs/hello.adoc`
+|The `t1` task with `evidence.argv: [sh, checks/not-there.sh]`.
+|===
+
+`commission_id` is `<name>-001` and `work_item_id` is `WI-<NAME>-001` in
+upper case. `t2-farewell` declares both personas (`worker`,
+`independent_reviewer`) and
+`durable_artifacts: {broad_review: [<the broad path>], focused_review:
+[<the focused path>]}`; `robust@v1` requires both artefacts and requires
+their paths to lie inside the scope. The others declare the `worker`
+persona and `durable_artifacts: {}`.
+
+[[provider]]
+=== Scripted provider
+
+`scripted_provider.py` stands in for the Codex CLI. The contract, which the
+existing test fixture `tests/fixtures/bp9/scripted_provider.py` already
+implements and from which this file is derived as an independent copy:
+
+* *Invocation.* The Codex adapter calls the executable with its usual
+  arguments; the provider needs only three of them: `--cd DIR` (the
+  repository), `--output-last-message FILE` (where the answer goes) and the
+  prompt on standard input. All other arguments are ignored.
+* *Prompt.* The text before the first blank line is a header of `key=value`
+  lines. The provider reads `phase`, `output_contract`, `run_id`, `hop_id`,
+  `invocation_id` and `work_item_id`.
+* *Script.* The environment variable `WFC_DEMO_SCRIPT` names a JSON file
+  with a `steps` list; a cursor file beside it (`<script>.cursor`) holds the
+  index of the next step. Each invocation consumes one step. No step left,
+  or a step whose `expect_phase` differs from the prompt's `phase`, ends
+  with a non-zero exit and a one-line message.
+* *Step.* `expect_phase`; `write`, a map of repository-relative path to file
+  content, written before answering; `result`, the structured result.
+* *Answer.* One JSON object `{schema_version: 1, run_id, hop_id,
+  invocation_id, result}` written to the output file. In `result`, the
+  script's neutral key `disposition` is renamed to the field the Hop's
+  `output_contract` demands (`status` for `work-result...`, `verdict` for
+  `review-verdict...`, `outcome` for `structured_result_v...`). A
+  `commit_intent` of `{paths, type, description}` becomes `{paths, subject}`
+  with subject `<type>: <work_item_id> <hop_id> <description>`. A Finding
+  with `finding_id: "__OPEN__"` receives the id of the last line in the
+  prompt matching `finding=<id>|state=open|blocking=true|`.
+* *Safety.* A `write` path that is absolute, contains `..` or resolves
+  outside `--cd` is refused with a non-zero exit. The provider makes no
+  commit, starts no process and opens no network connection.
+
+=== Scenarios
+
+A scenario file is `{"expected_exit_code": N, "expected_classification":
+"...", "roles": [...], "steps": [...]}`. Every `result` carries
+`schema_version: 1`, `scope_changed: false`, `claimed_commits: []`,
+`evidence_refs: []` and a `summary`, besides the fields below.
+
+[cols="2,1,6",options="header"]
+|===
+|Scenario |Expected |Steps
+
+|`t1-hello-page`
+|`completed`, 0
+|`implement`: write `docs/hello.adoc`; `disposition: completed`,
+`requested_route: accept`; CommitIntent `docs`, that one path.
+
+|`t2-farewell`
+|`completed`, 0
+|Five Hops. (1) `implement`: add `farewell()` to `greeter/core.py` only;
+`completed`, route `broad_review`. (2) `broad_review`: write the broad
+review artefact; `changes_required`, route `correction`, one Finding
+`{finding_id: null, invariant: "farewell() must be covered by a unit test",
+blocking: true, proposed_state: "open", evidence_refs: [<broad path>],
+successor_ref: null, new_material_evidence: true}`. (3) `correct`: add the
+test to `tests/test_core.py`; `completed`, route `focused_review`. (4)
+`focused_review`: write the focused artefact; `accept`, route
+`renew_broad_review`, Finding `{finding_id: "__OPEN__", proposed_state:
+"resolved", evidence_refs: [<focused path>], successor_ref: null,
+new_material_evidence: false}`. (5) `broad_review`: append an acceptance
+line to the broad artefact; `accept`, route `accept`. Each Hop's
+CommitIntent names exactly the file it wrote.
+
+|`t3-scope-stop`
+|`awaiting_human`, 10
+|`implement`: write nothing; `disposition: blocked`, `requested_route:
+accept`, `requires_human: true`, `escalation: {kind: "scope", question:
+"The task asks for a link in docs/notes.adoc, which is outside the
+authorized scope."}`, `commit_intent: null`.
+
+|`t3-probe-refusal`
+|`refused_probe`, 23
+|No step. The baseline probe fails before any provider starts.
+|===
+
+All other results use `requires_human: false`, `escalation: null` and
+`findings: []`. `roles` is `["worker"]`, for `t2-farewell`
+`["worker", "independent_reviewer"]`.
+
+=== `rehearse.py`
+
+Command: `python3 rehearse.py WORKSPACE SCENARIO [--wfc PATH]`.
+
+. Require the marker file in `WORKSPACE`, a known scenario, and that
+  `greeter-run-<scenario>/` does not exist. Otherwise return 2; for an
+  existing worktree the message says that a checkout holds one lifecycle
+  and that a new workspace is the way to rehearse again.
+. `git -C greeter worktree add ../greeter-run-<scenario> -b
+  demo/<scenario> main`.
+. Copy the scenario to `rehearsal-home/scripts/<scenario>.json`.
+. Run, with the environment changed as follows -- `HOME` set to
+  `<workspace>/rehearsal-home`, `TMPDIR` to `<workspace>/rehearsal-home/tmp`,
+  `WFC_DEMO_SCRIPT` to the copied script, and `XDG_STATE_HOME`,
+  `XDG_DATA_HOME`, `XDG_CONFIG_HOME` removed:
++
+[source,shell]
+----
+wfc run --repository <workspace>/greeter-run-<scenario> \
+  --request <workspace>/requests/<scenario>.request.yaml \
+  --executable <kit>/scripted_provider.py \
+  --execution-override <role>.adapter=codex_cli \
+  --execution-override <role>.model=rehearsal-no-model \
+  --execution-override <role>.reasoning=medium \
+  --hop-timeout-seconds 60 --yes
+----
++
+with the three overrides repeated for each role of the scenario. The
+isolated `HOME` keeps WFC's lifecycle state inside the workspace and hides
+the user-level Git configuration, so a filter configured there (the usual
+place for Git LFS) does not disturb a rehearsal. A filter in the
+system-level Git configuration still applies and still makes WFC refuse.
+. Print the banner, WFC's own output unchanged, the banner again, and three
+  inspection commands: `git -C <worktree> log --format='%h %an %s'`, the
+  `wfc report` call for the archived Attempt when one exists, and the
+  `HOME=... wfc status --repository <worktree>` call.
+. Return 0 when WFC's exit code equals `expected_exit_code` and, if the
+  output contains a `CLASSIFICATION:` line, its value equals
+  `expected_classification`. Otherwise print both expectations and what was
+  seen, and return 1: the rehearsal no longer matches this WFC version.
+
+The banner reads: `REHEARSAL -- no model was called. A script played the
+worker and the reviewer. This shows WFC's control flow, commits and
+evidence, not what a model would do. The archived record names the model
+"rehearsal-no-model".`
+
+Observed with the `0.1.0b1` wheel and the existing fixture, for orientation
+and as test expectations: `t2-farewell` ends `CLASSIFICATION: completed`
+with `5 of 6 hops`, a Commission commit and five Hop commits
+(`feat`, `docs`, `test`, `docs`, `docs`) each with the subject
+`<type>: WI-T2-FAREWELL-001 H00n ...`, one Finding `F001` introduced by
+`H002` and resolved by `H004` in `audit.json`, and one new commit in
+`greeter-evidence/`. `t3-scope-stop` ends `CLASSIFICATION: awaiting_human`,
+exit 10, with the Commission commit and no payload commit.
+`t3-probe-refusal` prints `baseline probe failed ...; no provider ran`,
+exits 23, makes no commit and archives nothing.
+
+== Integration points
+
+* `README.md`, the consumer quickstart and the tutorial pages link to the
+  kit; the companion record owns those edits.
+* The Agent Skill qualification proposed in `FTR-WFC-AGENT-SKILL-DISTRIBUTION`
+  may use a workspace created by `make_workspace.py` as its unfamiliar
+  consumer repository and `t3-scope-stop` as its Commission built to stop.
+  Nothing here depends on that record.
+* `tests/fixtures/bp9/scripted_provider.py` and its test stay as they are.
+* Release contract: `examples/` is in neither artifact. The distribution
+  audit already fails on unlisted content; no allow-list text changes.
+
+== Security and authority invariants
+
+[horizontal]
+SI-1:: The kit writes only inside the workspace directory named on the
+command line, and creates that directory only when it is absent or empty
+and outside every Git work tree.
+SI-2:: The kit never deletes or overwrites an existing file or directory.
+SI-3:: No repository the kit creates has a remote. Nothing is pushed,
+tagged or published.
+SI-4:: The kit does not install, upgrade or download anything and opens no
+network connection.
+SI-5:: `rehearse.py` operates only on a directory carrying the marker file.
+Running it is the human's authorization of that one scripted Run; the
+`--yes` it passes authorizes nothing else and nothing outside the workspace.
+SI-6:: The scripted provider writes only the paths its script names, inside
+the worktree it was given, and those paths are also bounded by the
+Commission's scope through WFC's own enforcement.
+SI-7:: A rehearsal is identifiable after the fact: the model name
+`rehearsal-no-model` in every archived Hop, and the demo identity on every
+commit.
+SI-8:: The kit grants no authority and changes no WFC behaviour: all
+admission, scope, review and commit decisions are those of the unmodified
+installed `wfc`.
+SI-9:: The real `HOME`, the user's Git configuration and any existing WFC
+state are neither read for mutation nor written.
+
+== Acceptance criteria
+
+[horizontal]
+AC-1:: `make_workspace.py` on an empty target produces the layout of
+<<workspace>>; `greeter/` has exactly two commits, a clean tree and no
+remote; `sh checks/check.sh` exits 0 there and leaves the tree clean.
+AC-2:: Each refusal of the preflight returns 2 and creates nothing: target
+exists and is non-empty; target inside a Git work tree; `wfc` not found.
+AC-3:: For each of the three task requests, `wfc plan` with the rendered
+task document and the request's fields exits 0 in a fresh worktree.
+AC-4:: Each of the four scenarios, run through `rehearse.py`, returns 0 and
+shows the expected classification and exit code.
+AC-5:: After `t2-farewell`: six commits beyond `main` in the worktree, the
+changed paths are exactly the four scope paths plus the Commission
+directory, `python3 -m greeter Ada` still prints `Hello, Ada!`, the
+archived `audit.json` reports one resolved Finding and the model
+`rehearsal-no-model` for all five Hops.
+AC-6:: After `t3-scope-stop`: no commit touches a path outside the
+Commission directory. After `t3-probe-refusal`: no new commit, no archived
+Attempt.
+AC-7:: A second `rehearse.py` call for the same scenario returns 2 and
+changes nothing.
+AC-8:: After any sequence of kit commands, nothing outside the workspace
+has changed: verified in the test by a throw-away `HOME` that stays empty.
+AC-9:: `make lint` and the existing suite pass; a wheel and an sdist built
+from the tree contain no path under `examples/`.
+AC-10 (S3 only):: The hosted `check` job runs `make_workspace.py` and all
+four scenarios with the `wfc` installed from the built wheel, from a
+directory outside the checkout, and fails when any returns non-zero.
+
+[[tests]]
+== Required tests
+
+In the required suite, `tests/integration/test_consumer_demo_kit.py`. Every
+test builds its workspace under `tmp_path`, sets `HOME` to a temporary
+directory, and puts a `wfc` wrapper for the working tree on `PATH`, as
+`tests/integration/test_beta_e2e_fake_provider.py` does with
+`tests/fixtures/bp9/wfc_entry.py`.
+
+* *Workspace:* AC-1 and AC-2.
+* *Plan:* AC-3, with `--execution-override` for adapter, model and
+  reasoning of each role (all three are required when the Consumer Config
+  has no default binding).
+* *Scenarios:* AC-4 to AC-7.
+* *Containment:* AC-8, and a unit test that the scripted provider refuses an
+  absolute path, a `..` path and a path resolving outside `--cd`.
+* *Boundary:* an AST check that the three kit modules import only the
+  standard library.
+* *Distribution:* extend `tests/architecture/test_offline_distribution.py`
+  for AC-9.
+
+No test calls a provider or the network.
+
+== Failure and recovery expectations
+
+[cols="3,5",options="header"]
+|===
+|Situation |Expected behaviour
+
+|`wfc` missing or not answering `--version --json`
+|Return 2 with the command that was tried; nothing created.
+
+|`wfc init` or a Git command fails during creation
+|Return 1; the partial workspace stays; the message says to remove it and
+start again. No automatic clean-up.
+
+|A rehearsal ends differently than expected
+|Return 1 with expected and actual classification and exit code. The
+worktree, the lifecycle state and any archive stay for inspection. This is
+the signal that the kit and the installed WFC have drifted apart.
+
+|The reader wants to rehearse a scenario again
+|Create a new workspace. Reusing a worktree is refused by WFC itself.
+
+|A live Run is refused because of a configured Git filter
+|Outside the kit's control; the creation notice and the quickstart's
+filter section explain it.
+|===
+
+[[slices]]
+== Implementation sequence
+
+Each slice is independently verifiable and leaves the tree releasable.
+
+S1 -- Workspace:: `seed/`, `requests/`, `make_workspace.py`, the kit
+`README.md`; the workspace, plan, boundary and distribution tests. No
+scripted provider yet. A reader can already create the workspace and run
+the tasks live.
+S2 -- Rehearsal:: `scripted_provider.py`, `scenarios/`, `rehearse.py`; the
+scenario and containment tests. Requires D1.
+S3 -- Installed-wheel rehearsal in CI:: One step after the existing
+clean-environment install smoke in the `check` job of
+`.github/workflows/release.yml`, and one sentence in the gate table of
+link:../developer_guide/ch04_release_management.adoc[release management].
+Requires D2. It adds no secret, no permission and no third-party action.
+
+[[decisions]]
+== Decisions requiring maintainer approval
+
+[horizontal]
+D1 -- The rehearsal seam:: Documenting `--executable` with the kit's
+scripted provider makes a test seam visible to users. _Recommended: accept
+it for the kit's own provider only, stated as a rehearsal device with no
+compatibility promise for other executables._
+D2 -- A further check in gate G4:: Whether the installed-wheel rehearsal
+joins the hosted `check` job. _Recommended: yes, after S1 and S2 have been
+on `main` without a spurious failure; the step is offline and takes
+seconds._
+D3 -- Directory name:: `examples/consumer-demo/` introduces a new top-level
+directory. _Recommended: as named; `examples/` is the conventional place
+and stays outside both artifacts._
+
+== Open questions not settled by evidence
+
+* Whether the scenarios behave identically on CPython 3.10 to 3.12. They
+  were observed on 3.13 only; the informational compatibility job is the
+  natural place to find out.
+* How long `rehearsal-no-model` and the scripted results stay valid across
+  changes to the Hop prompt header or the result contracts. The scenario
+  tests answer this per change; no stability is promised to users.
