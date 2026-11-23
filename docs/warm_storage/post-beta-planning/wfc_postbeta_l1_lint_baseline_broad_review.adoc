@@ -4,10 +4,249 @@
 
 This record holds every independent broad-review pass over the L1 lint-baseline
 candidates for WorkItem `WI-WFC-POSTBETA-L1-CI-LINT-BASELINE-001`. The current
-pass is *H002*; later passes are added above earlier ones and earlier passes are
+pass is *H005*; later passes are added above earlier ones and earlier passes are
 kept unedited apart from the `(current)` marker.
 
-== Pass H002 -- `RUN-d7572589...` (current)
+== Pass H005 -- `RUN-d7572589...` (current)
+
+WorkItem:: `WI-WFC-POSTBETA-L1-CI-LINT-BASELINE-001`
+Hop:: `H005` (`broad_review`, gate, blocking-only,
+`finding_authority: [resolve]`)
+Candidate:: `c6a6a2f3de78584613e841d69ed3eadbefb04ef4` -- the whole WorkItem
+product `b7e62be..c6a6a2f`: the H001 implementation `64945b0`, the H003 record
+correction `6d0ed96` and the two review artifacts.
+Finding state:: The projected authoritative Finding state for this Run holds
+one Finding, *F001* (blocking, introduced by H002, already *resolved* by H004).
+This pass proposes *no new Finding* and leaves F001 resolved. `MD-5`, `F401`,
+`F811`, `F841` and the "17 findings" label are plan-, rule- and
+review-internal labels, not Finding IDs.
+Disposition:: *Accept.* I re-derived every load-bearing claim at this HEAD with
+my own tools rather than reading the two earlier passes' conclusions, and the
+product holds: the entire code delta over the five named files is the removal
+of 13 unused bindings, the removal of two provably unused imports and the
+addition of two `noqa` comments -- nothing else, by word-level diff. The
+record's corrected commit attribution matches what the history actually shows.
+No rule, configuration, gate or test changed. `MD-5` stays *open*: the hosted
+`make lint` and the required suite on the hosted runner are not observable
+from here, and nothing in this pass claims them.
+
+=== 1. Scope and withheld authority
+
+`git diff --name-only b7e62be..c6a6a2f` is 17 leaves: the nine commissioning
+leaves under `.wfc/governance/wfc-postbeta-l1-ci-lint-baseline-001/` (commit
+`8e1864e`, not candidate output), the five source/test files the task names,
+the record and the two review artifacts. `git diff b7e62be..c6a6a2f --
+pyproject.toml Makefile .github tests/conftest.py` is *empty* -- zero lines --
+so the ruff configuration (`[tool.ruff.lint] select = ["F"]`, no
+`per-file-ignores`, no `exclude`), both `make` recipes and the single
+`release.yml` workflow are byte-identical to the baseline. Nothing was pushed,
+tagged or published, and no decision was taken on the maintainer's behalf.
+
+=== 2. The delta, measured at word level
+
+`git diff --word-diff=porcelain 8e1864e..c6a6a2f` over the five files reduces,
+after collapsing identical lines, to exactly eleven distinct changes:
+
+* `-prelaunch =` x7 and `-probe =` x6 -- the 13 `F841` bindings;
+* `-Iterator,` in `journal.py`'s `from typing import ...`;
+* `-import json` in `tests/fixtures/bp4/fake_engine.py`;
+* `+# noqa: F401 -- ...` and `+# noqa: F811 -- ...`, one comment each.
+
+No other token in any of the five files changed. That settles several
+acceptance criteria at once and independently of any narrative: every `F841`
+fix keeps its call (only the `NAME =` prefix is gone, so callee, arguments and
+statement order are untouched), no assertion, fixture, decorator or `def` line
+moved, no test was weakened or deleted, and there is no formatting churn. As a
+second, independent measurement, the multiset of every call expression per
+module (callee plus unparsed arguments, by AST) is unchanged: 286 calls before
+and after in `test_lifecycle_controller.py`, 186 in
+`test_lifecycle_crash_matrix.py`, with no call present on only one side. Both
+step functions are side-effecting and return the record they already wrote
+(`lifecycle.py:330` `_do_prelaunch` ends in `return journal.append(
+"prelaunch_passed", ...)`, `:385` `_do_probe` likewise), so discarding the
+returned `JournalRecord` cannot change what the test exercises. All five files
+byte-compile under `python3 -I -m py_compile`.
+
+=== 3. Independent reproduction of the baseline and of its removal
+
+With no ruff in this sandbox (section 6) I wrote my own small checker for the
+three rules at issue -- F401, F841 and the F811 parameter/import redefinition --
+with ruff's default dummy-variable regex and per-line `noqa` handling
+(`build/wfc/h005_fcheck.py`, gitignored, written for this pass).
+
+* *Pre-change revision `8e1864e`, the five files:* it reports
+  `journal.py:36` F401 `Iterator` and all 13 F841 sites at *precisely* the
+  task's line numbers (`test_lifecycle_controller.py:388,389`;
+  `test_lifecycle_crash_matrix.py:203,215,216,237,238,272,273,311,312,328,329`).
+  For `fake_engine.py:19` it reports `json` as unused as a name but present in
+  string constants (`run.json`, `dispatch.json`, ...), which is the
+  conservative form of the same finding -- ruff ignores strings, so this is
+  ruff's F401.
+* *This HEAD, the same five files:* *0 reports*.
+* *This HEAD, every tracked `.py` file* (`git ls-files '*.py'`): six F841
+  candidates outside the candidate's files, each of which I read -- all six are
+  class-body attributes of a class nested inside a test
+  (`test_a2_evidence_commands.py:399-401` `BrokenProcess`,
+  `test_operator.py:177` and `test_slice3_vertical.py:689,711` `calls = 0`),
+  not local bindings, so ruff's F841 does not apply to them. They are false
+  positives of my checker, not residual findings.
+
+Two limits, stated rather than glossed: my checker covers three F rules, not
+the whole `F` family, and it has no scope-resolving model, which is why it does
+*not* reproduce the fixture file's F401/F811 pair (module-wide it sees the name
+`repository` loaded, whereas ruff correctly resolves that load to the fixture
+*parameter*). Both are limits of my cross-check, not of the candidate; the
+other F rules were already clean in the hosted 17-finding baseline and the
+measured delta in section 2 cannot introduce one. In particular the one failure
+mode a dropped binding could create -- a later read of the dropped name, i.e.
+F821 -- is excluded by construction: a later read in the same function is
+exactly what would have prevented the F841 that each site did report.
+
+=== 4. The fixture re-export still resolves
+
+`tests/unit/test_operator_admit_parsed.py` is *AST-identical* before and after
+(`ast.dump` equality: `True`); the only delta is the two trailing comments. The
+import at `:16` still binds `args`, `git` and `repository`, and the fixture
+parameter at `:22` is still named `repository`, so pytest's name-based
+resolution cannot have changed -- no run is needed to establish that, and no
+run could have falsified it. The two suppressions are per-line, single-rule and
+commented, each on the line that reports its code; exactly one of them sits on
+the import, and the repository contains no new configuration-level, per-file or
+global ignore (section 1).
+
+Test counts cannot have changed either, for the same structural reason: no
+`def`, decorator or `parametrize` list was touched. Statically,
+`test_lifecycle_controller.py` has 23 `test_` functions before and after,
+`test_operator_admit_parsed.py` 3, and `test_lifecycle_crash_matrix.py` 14 of
+which `test_classification_matrix` carries a 7-case `parametrize` -> 20. That
+is the record's 23 / 20 / 3 = 46.
+
+=== 5. The record's claims, re-derived
+
+I re-ran the provenance evidence from the primary sources, not from H003's
+summary or H004's pass:
+
+[cols="3,2",options="header"]
+|===
+|Record claim |Result
+
+|`git log -S` shows three BP4 commits, with 9 of the 17 findings present at
+`1a2fede` (2 F401 plus 7 of the 13 F841: the 2 controller sites and 5 of the 11
+crash-matrix sites)
+|Confirmed. `git log --oneline -S "prelaunch = L._do_prelaunch"` over both test
+files lists `1a2fede` (H001), `ade01b8` (H003), `41bab45` (H006) and this
+WorkItem's own `64945b0`. My checker on the per-revision file contents counts
+*5* F841 sites in `test_lifecycle_crash_matrix.py` at `1a2fede`, *7* at
+`ade01b8`, *11* at `41bab45` and *11* at the base `b7e62be`, and *2* in
+`test_lifecycle_controller.py` at `1a2fede` (then `:385-386`), with
+`journal.py`'s `Iterator` and `fake_engine.py`'s `json` already unused at
+`1a2fede`. 2 + 5 + 2 = 9; +2 at `ade01b8`; +4 at `41bab45`.
+
+|15 of 17 trace to BP4 across those three Hops; the remaining F401/F811 pair
+to `c7b84e2` (BP2), not BP4
+|Confirmed: 9 + 2 + 4 = 15, and `git log -S` on the import line of
+`test_operator_admit_parsed.py` names `c7b84e2` only.
+
+|`select = ["F"]` was repository-wide active before every introducing commit
+|Confirmed. `56af453` (2026-09-23) narrowed `select` from `["E", "F", "I"]` to
+`["F"]` and scoped only the `format-check` recipe, leaving `lint` as the
+unscoped `ruff check .`. Dates: `c7b84e2` 2026-11-18; `1a2fede`, `ade01b8`,
+`41bab45` all 2026-11-19.
+
+|`make lint` was never part of a Run's acceptance; system `python3` has no
+ruff, so `make lint` there fails with a missing-module error rather than a
+false green
+|Confirmed. `Makefile:20-21` is `$(PYTHON) -m ruff check .`; this sandbox's
+`python3` has no ruff (`ModuleNotFoundError: No module named 'ruff'`), which
+is a hard failure, not a pass. The configured `task-check` is the pytest suite
+(`ch01_development.adoc`, `commissioning.py`), and `release.yml` runs
+`make lint` (`:66`) only after `pip install -e '.[dev]'` (`:63`).
+
+|CI installs ruff unpinned via the dev extra
+|Confirmed: `pyproject.toml:28` `ruff>=0.6`, no upper bound; `release.yml` is
+the only workflow.
+
+|`format-check` is unaffected
+|Confirmed: that recipe names five files
+(`scripts/memory_workbook.py`, `scripts/wfc_snapshot.py`,
+`tests/unit/test_memory_workbook.py`, `tests/unit/test_wfc_snapshot.py`,
+`tests/architecture/test_package_boundaries.py`), none of them in this
+candidate.
+
+|The Operator's earlier ruff checks covered only the newly added files --
+recorded as *not independently verified*
+|Correct handling, and I reach the same conclusion: ad hoc Operator commands
+leave no repository artifact, so the record attributes the claim instead of
+confirming it.
+
+|No rule, config or CI gate changed; MD-5 open
+|True of the diff (section 1) and stated in the record's header and
+"Non-goals observed".
+|===
+
+The record's own `ruff check .` / `make lint` / `make format-check` / pytest
+numbers remain Worker-reported exploratory results, which the record itself
+says plainly; I could not re-execute them (section 6). The record, the focused
+review and this artifact each render clean under
+`asciidoctor --safe-mode=safe --failure-level=WARN` and contain no secret and
+no absolute home-directory path. `scripts/wfc_doc_catalog.py check` reports the
+pre-existing informational set (84 unresolved links, 4 Project Memory
+`source_path` misses, none naming an L1 artifact) and "catalog drifted" only
+against the gitignored local `build/wfc/document_catalog.jsonl` that an earlier
+pass generated before this artifact was edited -- no committed file is stale.
+
+=== 6. Non-blocking observations
+
+. *The `noqa: F401` at `:16` covers the whole import line.* If `args` or `git`
+  (used today at `:23` and `:35`) ever became unused, that would be masked
+  too. This is inherent to per-line `noqa` and the alternative -- splitting the
+  import to isolate `repository` -- would be a larger edit than the task
+  allows. Worth knowing, not worth changing.
+. *The acceptance wording "at most one ... suppression on that import".* Ruff
+  reports the F401 at `:16` and the F811 at `:22`, and `noqa` is strictly
+  per-line, so no single directive can clear both. Exactly one directive sits
+  *on that import*, which is what the criterion constrains, and the second is
+  on the fixture line in the same in-scope file; I therefore read the criterion
+  as satisfied rather than waived, and flag the wording for the maintainer as
+  H002 did. If exactly one directive in the file is wanted, that is a decision
+  about the criterion, not about this candidate.
+. *`ruff>=0.6` is unpinned in CI*, so a future ruff release can turn an
+  unchanged tree red. Pre-existing and outside this WorkItem's authority;
+  a question for the maintainer.
+. *The record is 203 lines* against "keep it compact", and its `Maturity` line
+  describes the H003 correction as "one sentence" where it reworded the
+  adjacent same-fact statement as well. Substantively accurate; not worth a
+  further Hop.
+
+=== 7. What this pass executed, and what it could not
+
+Executed here (all read-only with respect to Git): the word-level and
+name-only range diffs, my own F-rule checker over the five files at two
+revisions, over four historical revisions and over every tracked `.py` file,
+the AST call-multiset comparison, the `ast.dump` identity check,
+`python3 -I -m py_compile` on the five files, `git log` / `git log -S` and the
+per-revision site counts, the reads of `Makefile`, `pyproject.toml`,
+`release.yml`, `lifecycle.py` and `ch01_development.adoc`, and the strict
+Asciidoctor render of the three L1 artifacts.
+
+Agent-local environment limits, not candidate properties: this sandbox has
+*neither ruff nor pytest* (`No module named 'ruff'`, `No module named
+'pytest'`, no project virtualenv) and no package download is permitted, so I
+executed neither `ruff check .`, `make lint`, `make format-check` nor any
+test. *This pass therefore claims no ruff or pytest execution of its own*; it
+substitutes the independent static reproduction in sections 2-4. The hosted
+`make lint` step is the trusted confirmation of the exit-0 criterion, and the
+Coordinator's `task-check` -- projected to this Hop as *passed* -- is the
+trusted evidence for the required suite. The hosted-runner facts behind
+`MD-5` are unobservable from here by construction, so `MD-5` stays open. A few
+Bash invocations in this pass were refused by the session's permission surface
+(shell variables and some chained forms); each was re-run in an accepted form,
+so no planned check was lost other than the ruff and pytest runs above.
+
+I performed no mutating Git operation. My only writes are this artifact and
+gitignored scratch files under `build/wfc/`.
+
+== Pass H002 -- `RUN-d7572589...`
 
 WorkItem:: `WI-WFC-POSTBETA-L1-CI-LINT-BASELINE-001`
 Hop:: `H002` (`broad_review`, gate, blocking-only,
