@@ -1,0 +1,298 @@
+= Post-Beta B1 Agent Skill S1: pre-review verification of the stopped Run's candidate
+:toc:
+:toclevels: 2
+
+Maturity:: verification record, written by
+`WI-WFC-POSTBETA-B1-AGENT-SKILL-S1-CONTINUATION-001` H001 (Worker) at base
+HEAD `5adde694d6d05583dc0d8bb1f6513a3dfceb51fa`. Not a review, not an
+acceptance. The independent reviewer performs the whole-slice broad review of
+the candidate separately, from scratch against
+link:../../backlog/FTR-WFC-AGENT-SKILL-DISTRIBUTION.adoc[the FTR] and the
+original task document, and takes no credit from this record.
+Authority:: informative. Grants no acceptance, Finding disposition, Runtime
+promotion, tag, push or merge authority. No Finding operation was performed
+or proposed here; a Worker never opens, resolves or dispositions a Finding.
+Updated:: 2026-11-24
+Owns:: The method and measured results of this Hop's criterion-by-criterion
+check of the S1 candidate (implementation commit `3cc758f`, stopped Run
+`RUN-863ccdcaecd9449a94ac47ceea610b4e`, Commission
+`wfc-postbeta-b1-agent-skill-s1-001`) against every acceptance criterion of
+the original task document and the FTR's S1 scope.
+Does not own:: The independent reviewer's verdict, or any historical review
+record of the stopped Run (none exists: no
+`wfc_postbeta_b1_skill_s1_broad_review.adoc` or
+`..._focused_review.adoc` is present in this tree, confirmed by directory
+listing).
+
+No correction was made. `git status --short -uall` lists only the
+wrapper-injected entries (dotfiles, `.claude/`, `.idea/`, `.vscode/`, `.mcp.json`,
+`.ripgreprc`; 22 before and 22 after this Hop); no file under `src/`, `tests/`
+or `docs/` outside this new record was touched.
+
+== Method
+
+Every check below was executed, not assumed. This sandbox has no `pytest` or
+`build` on the system `python3`; a throwaway virtual environment was created
+at `/tmp/wfc-claude-2b56a705739ca316/claude-1000/verify-venv` (outside the
+repository, not committed) with `pip install pytest pyyaml build ruff` over
+the network (`pypi.org`, `files.pythonhosted.org`, explicitly declared to the
+sandbox), then used for every command below unless noted otherwise. This
+exploratory validation is not Coordinator-trusted evidence; the Coordinator's
+own task-check runs the full required suite separately with its own verified
+offline inputs.
+
+== 1. The four skill files, their order, limits and rules (content contract)
+
+----
+$ wc -l src/workflow_coordinator/agent_skill/wfc/SKILL.md \
+        src/workflow_coordinator/agent_skill/wfc/references/*.md
+  133 SKILL.md
+   83 references/commission.md
+  101 references/setup.md
+   95 references/stops-and-evidence.md
+----
+
+SKILL.md is 133 lines (<=300). Heading line numbers:
+`What this is` 18, `Authorization` 29, `Preflight` 64, `When WFC fits...` 81,
+`The loop` 92, `Never` 112, `Where exact facts come from` 122 -- the fourth
+heading starts at line 81, so the first three sections lie entirely inside
+the first 80 lines, in the prescribed order. Each reference file is well
+under 200 lines and opens by naming the Operator Manual section it distils
+(`setup.md` -> chapter 9 consumer quickstart; `commission.md` -> chapter 2
+Commission authoring; `stops-and-evidence.md` -> chapters 3, 6 and 4). Each is
+linked from `SKILL.md` by a one-level-deep relative path
+(`references/<name>.md`), confirmed by `grep`.
+
+`find src/workflow_coordinator/agent_skill -name '__init__.py'` returns
+nothing: the directory is data-only, as the FTR requires (no
+`+__init__.py+`, not added to `RESOURCE_DIGESTS`); confirmed separately that
+`implementation_identity.py` is byte-identical to the pre-candidate commit
+(`git diff 066e19c..3cc758f -- src/workflow_coordinator/implementation_identity.py`
+is empty) and that `wfc --version --json`'s `resources` map lists only the
+four pre-existing `.txt` resources, not the skill files.
+
+`ls -la` on both directories shows mode `644` on all four files (no
+executable bit) and no `scripts/`, `assets/` or `agents/` subdirectory.
+
+== 2. Content lint and drift guards (new test file, targeted run)
+
+----
+$ verify-venv/bin/python -m pytest -q --wfc-partial \
+    tests/unit/test_agent_skill_content.py \
+    tests/unit/test_release_tooling.py \
+    tests/architecture/test_offline_distribution.py
+........................................   [39 passed with `build` installed]
+==== WFC PARTIAL RUN: subset only, NOT the required suite or its acceptance ====
+----
+
+All 39 collected tests in the three files pass, including
+`test_frontmatter_parses_with_portable_keys_only`,
+`test_description_length_and_worker_reviewer_exclusion`,
+`test_skill_md_body_order_and_line_limits`,
+`test_no_forbidden_syntax`, `test_classifications_named_in_stops_and_evidence_exist_in_exit_codes`,
+`test_documentation_urls_pin_version_and_resolve_in_tree`,
+`test_drift_guard_wfc_commands_match_real_cli` (with the single named
+exemption `PENDING_SUBCOMMANDS = {"skill"}`), and the two new
+`test_dist_audit_rejects_a_wheel_missing_a_required_skill_file` /
+`test_dist_audit_rejects_a_fifth_file_under_agent_skill` cases together with
+the extended `test_clean_isolated_distribution_and_wheel_install` wheel
+assertion. (The first attempt at the last test failed only because the
+venv's isolated PEP-517 build step needed network access that the sandbox
+command had not yet declared; once declared, it passed -- see section 4.)
+
+== 3. Every named command and flag against the real CLI (AC-6), done directly
+
+Beyond the drift-guard test, each subcommand actually named in the skill
+files was invoked with `--help` against this tree's real parser and read by
+eye against the example lines in the skill text:
+
+----
+$ python -c "from workflow_coordinator.frontdoor.cli import main; main(['init','--help'])"
+$ python -c "from workflow_coordinator.frontdoor.cli import main; main(['plan','--help'])"
+$ python -c "from workflow_coordinator.frontdoor.cli import main; main(['run','--help'])"
+$ python -c "from workflow_coordinator.frontdoor.cli import main; main(['status','--help'])"
+$ python -c "from workflow_coordinator.frontdoor.cli import main; main(['report','--help'])"
+$ python -c "from workflow_coordinator.frontdoor.cli import main; main(['--version','--json'])"
+----
+
+`wfc init --repository . --scope-ceiling src --evidence-repository ...`
+(`setup.md`), `wfc plan task.md --repository . --scope ... --commission-id ...
+--work-item-id ... --authority-source ... --program ... --persona ...
+--evidence-argv ... --guidance-path ...` (`commission.md`), `wfc run --request
+... --yes` and `wfc run --executable` (`SKILL.md`, `setup.md`), `wfc status
+--repository .` (`stops-and-evidence.md`) and `wfc report <path>` all name
+flags that are each printed by the corresponding `--help`. `grep -n "frontdoor/cli.py"`
+confirms the dispatcher's bare-subcommand fallthrough to
+`operator.main` the skill warns against ("never run one") is the tree's real
+behaviour (`cli.py:41-42`), for every subcommand not in its explicit dispatch
+list -- `skill` included, consistent with the one named `PENDING_SUBCOMMANDS`
+exemption.
+
+`EXIT_CODES` keys were printed directly
+(`from workflow_coordinator.frontdoor.lifecycle import EXIT_CODES`) and every
+classification named in `stops-and-evidence.md`'s classification list
+(`completed`, `awaiting_human`, `awaiting_human_budget`, `reconcile_required`,
+`stopped`, `interrupted`, `engine_active`, `engine_exited_before_state`,
+`uncertain_launch`, `inconsistent`, `no_lifecycle`, and the nine `refused_*`
+names) is a key of it.
+
+Documentation URLs: all six are
+`https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/operator_manual/...`;
+`implementation_identity.VERSION` and `pyproject.toml`'s `version` are both
+`0.1.0b1`, and each named file (`ch09_consumer_quickstart/01_quickstart.adoc`,
+`ch10_level1_orchestration/01_operating_pattern.adoc`,
+`ch02_commissioning/02_authoring.adoc`, `ch03_running/02_launch_status.adoc`,
+`ch06_recovery/01_outcomes.adoc`, `ch04_evidence/02_archive.adoc`) exists in
+this tree -- the same six, and no others, that the task document names as the
+sources to distil.
+
+== 4. A real build of wheel and sdist, then the audit (AC-1)
+
+`make build`'s own default (`python -m build`, PEP-517 isolated) failed in
+this sandbox: the isolated build environment's own nested `pip` call could
+not resolve `setuptools>=68` even with the outer command's network declared,
+apparently because the sandbox's network allowance is evaluated per
+declared command and the nested isolated-venv `pip` subprocess inside that
+same `pytest`/`build` invocation still needed it stated for that exact
+invocation; this reproduced identically through the distribution test
+(section 2) and standalone. Falling back to `--no-isolation` against the
+verify-venv (which already has `setuptools`, `wheel` and `build` installed)
+built successfully:
+
+----
+$ python -m build --no-isolation --outdir <scratch>/dist-out .
+Successfully built workflow_coordinator-0.1.0b1.tar.gz and workflow_coordinator-0.1.0b1-py3-none-any.whl
+
+$ python scripts/wfc_dist_audit.py <scratch>/dist-out/workflow_coordinator-0.1.0b1-py3-none-any.whl \
+                                    <scratch>/dist-out/workflow_coordinator-0.1.0b1.tar.gz
+dist-audit: all checks passed (2 archive(s))
+
+$ unzip -l <scratch>/dist-out/workflow_coordinator-0.1.0b1-py3-none-any.whl | grep agent_skill
+     7353  ...  workflow_coordinator/agent_skill/wfc/SKILL.md
+     3811  ...  workflow_coordinator/agent_skill/wfc/references/commission.md
+     4030  ...  workflow_coordinator/agent_skill/wfc/references/setup.md
+     4317  ...  workflow_coordinator/agent_skill/wfc/references/stops-and-evidence.md
+----
+
+Exactly the four skill files, by exact name, in addition to today's content;
+the audit passes on both archives. Once the one-off network declaration for
+the Bash tool call was supplied, the PEP-517-isolated path inside
+`tests/architecture/test_offline_distribution.py` (section 2) also passed
+end to end, including its fifth-file-under-`agent_skill/`-fails-the-audit
+assertion -- so the no-isolation fallback was only needed for the very first,
+undeclared attempt, not a persistent gap. The `dist/` and `build/` scratch
+this produced was removed before finishing (outside the committed tree in
+one case, gitignored `build/` in the other).
+
+== 5. Lint, strict render and the doc catalog (AC-8 and the chapter 4 change)
+
+----
+$ python -m ruff check .
+All checks passed!
+
+$ asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN \
+    docs/developer_guide/ch04_release_management.adoc
+(no output)
+
+$ asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN \
+    docs/developer_guide/developer_guide.adoc
+(no output)
+
+$ python scripts/wfc_doc_catalog.py generate
+523 records, 392489 bytes; written
+
+$ python scripts/wfc_doc_catalog.py check
+...
+Informational: 83 unresolved links; 4 Project Memory source_path misses
+catalog current
+----
+
+83 unresolved links and 4 Project Memory misses, unchanged from the task
+document's stated baseline -- no new drift. `git status --short -uall
+docs/` after both catalog commands is empty: nothing under `docs/` was
+modified by generating or checking the catalog.
+
+== 6. Packaging and audit-script diffs read against D1 (AC-1, AC-8)
+
+`git show 3cc758f -- pyproject.toml scripts/wfc_dist_audit.py docs/developer_guide/ch04_release_management.adoc`
+was read in full: `package-data` gains exactly the two new glob entries
+(`agent_skill/wfc/*.md`, `agent_skill/wfc/references/*.md`) and nothing
+else -- not the version; `wfc_dist_audit.py` adds `WHEEL_SKILL_FILES` as a
+`frozenset` of the four exact paths (not a glob), checked by exact membership
+in `_wheel_entry_allowed` and by a required-present loop parallel to the
+existing resource-file one; the chapter 4 C2 wheel row names the same four
+files and no other line in that chapter changed. The extended
+`test_release_tooling.py`/`test_offline_distribution.py` assertions add
+without weakening any existing one (confirmed by reading the diff: every new
+`assert` is additive, the pre-existing `examples/` assertion is untouched).
+
+== 7. `git show 3cc758f --stat` against the task document's declared scope
+
+The implementation commit touches exactly the ten files the task document's
+"Files and modules" / DO list names: the four new skill `.md` files,
+`pyproject.toml`, `scripts/wfc_dist_audit.py`,
+`docs/developer_guide/ch04_release_management.adoc`, the new
+`tests/unit/test_agent_skill_content.py`, and the extended
+`tests/unit/test_release_tooling.py` / `tests/architecture/test_offline_distribution.py`.
+Nothing under `src/` besides the four data files; no `frontdoor/cli.py`
+change; no `agents/openai.yaml`; no release-notes change -- the withheld-authority
+list for S1 holds.
+
+== What was corrected
+
+Nothing. Every criterion checked above measured as already met by the
+candidate; no defect or gap against the FTR or the original task document was
+demonstrated, so no file inside the authorized scope was edited.
+
+== What remains for the independent reviewer
+
+A whole-slice broad review from scratch against the FTR and the original
+task document, by the reviewer's own execution -- this record substitutes for
+none of it. Two points this Hop could not independently re-verify beyond
+reading are noted for that review's own judgment, not as defects: (a) the
+`PENDING_SUBCOMMANDS = {"skill"}` exemption is, as designed, the only reason
+the drift guard does not fail on the `wfc skill ...` lines in the command
+interface prose the skill text does *not* itself contain (the skill files
+name no `wfc skill` command text beyond `wfc skill status`/`wfc skill show`/
+`wfc skill install`, each already covered by the exemption via its
+`skill` token); (b) `commission.md` opens citing chapter 2 (Commission
+authoring) per the files table, while its baseline-probe paragraph restates
+facts (the 900-second timeout, `refused_probe`) that are also documented in
+chapter 9's quickstart -- both are among the six authorized sources for S1,
+so this is not sourcing from outside the six, but the reviewer may judge
+differently on which single section a reference "opens... citing" should be
+read to cover.
+
+== Commands run (exploratory, this Worker's sandbox)
+
+----
+wc -l SKILL.md references/*.md
+grep -n "^## " SKILL.md
+find agent_skill -name '__init__.py'
+ls -la agent_skill/wfc agent_skill/wfc/references
+git diff 066e19c..3cc758f -- src/workflow_coordinator/implementation_identity.py
+python -m venv verify-venv && verify-venv/bin/pip install pytest pyyaml build ruff
+verify-venv/bin/python -m pytest -q --wfc-partial tests/unit/test_agent_skill_content.py \
+    tests/unit/test_release_tooling.py tests/architecture/test_offline_distribution.py
+python -c "from workflow_coordinator.frontdoor.cli import main; main(['init','--help'])"   # and plan/run/status/report/--version
+python -c "from workflow_coordinator.frontdoor.lifecycle import EXIT_CODES; print(sorted(EXIT_CODES))"
+python -m build --no-isolation --outdir <scratch>/dist-out .
+python scripts/wfc_dist_audit.py <scratch>/dist-out/*.whl <scratch>/dist-out/*.tar.gz
+unzip -l <scratch>/dist-out/*.whl | grep agent_skill
+python -m ruff check .
+asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN \
+    docs/developer_guide/ch04_release_management.adoc docs/developer_guide/developer_guide.adoc
+python scripts/wfc_doc_catalog.py generate
+python scripts/wfc_doc_catalog.py check
+git show 3cc758f --stat
+git show 3cc758f -- pyproject.toml scripts/wfc_dist_audit.py docs/developer_guide/ch04_release_management.adoc
+git show 3cc758f -- tests/unit/test_release_tooling.py tests/architecture/test_offline_distribution.py
+python -m pytest -q   # confirms WFC_TEST_INPUTS/WFC_TEST_PROFILE required; not run as full-suite acceptance
+----
+
+Full `python -m pytest -q`:: not executable as the required suite in this
+sandbox -- it needs the verified offline wheel bundle `tests/conftest.py`
+demands via `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`, which this sandbox has
+none of (confirmed by running it: `pytest.UsageError`). This is Coordinator-
+owned trusted evidence executed separately after this Hop with verified
+offline inputs; no pass/skip count is claimed here either way.
