@@ -59,7 +59,21 @@ def _known_scenarios() -> list[str]:
     return sorted(path.stem for path in SCENARIOS_DIR.glob("*.json"))
 
 
-def _check_preconditions(workspace: Path, scenario: str) -> Path:
+def _check_wfc_available(wfc_bin: str) -> None:
+    try:
+        result = subprocess.run([wfc_bin, "--version", "--json"], capture_output=True, text=True)
+    except OSError as error:
+        raise PreconditionError(f"could not run `{wfc_bin} --version --json`: {error}") from error
+    if result.returncode != 0:
+        raise PreconditionError(
+            f"`{wfc_bin} --version --json` exited {result.returncode}: {result.stderr.strip()}"
+        )
+
+
+def _check_preconditions(workspace: Path, scenario: str, wfc_bin: str) -> Path:
+    if shutil.which("git") is None:
+        raise PreconditionError("`git` was not found on PATH")
+    _check_wfc_available(wfc_bin)
     if not (workspace / MARKER_NAME).is_file():
         raise PreconditionError(
             f"{workspace} is not a demo workspace (missing {MARKER_NAME}); run make_workspace.py first"
@@ -164,7 +178,7 @@ def _run_inspection_commands(wfc_bin: str, workspace: Path, worktree: Path, env:
 
 def rehearse(workspace: Path, scenario: str, wfc_bin: str) -> int:
     try:
-        worktree = _check_preconditions(workspace, scenario)
+        worktree = _check_preconditions(workspace, scenario, wfc_bin)
     except PreconditionError as error:
         print(f"rehearse.py: {error}", file=sys.stderr)
         return 2

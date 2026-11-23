@@ -420,6 +420,28 @@ def test_second_rehearsal_of_the_same_scenario_returns_2_and_changes_nothing(
     assert worktrees_after == ["greeter-run-t1-hello-page"]
 
 
+def test_rehearse_refuses_when_wfc_is_not_found_and_a_retry_with_a_working_wfc_still_succeeds(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    # F001 (S2 broad review): an unresolvable `wfc` must be caught by a
+    # preflight check before the worktree and branch are created, so the
+    # scenario's single lifecycle survives for a retry with a working `wfc`.
+    _wfc_on_path(tmp_path, monkeypatch)
+    workspace = tmp_path / "ws"
+    created = _run_make_workspace(workspace)
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    missing_bin = tmp_path / "no-such-wfc"
+    failed = _run_rehearse(workspace, "t1-hello-page", "--wfc", str(missing_bin))
+    assert failed.returncode == 2
+    assert "could not run" in failed.stderr
+    assert not (workspace / "greeter-run-t1-hello-page").exists()
+    assert _git(workspace / "greeter", "branch", "--list", "demo/t1-hello-page").strip() == ""
+
+    retried = _run_rehearse(workspace, "t1-hello-page")
+    assert retried.returncode == 0, retried.stdout + retried.stderr
+
+
 def test_throwaway_home_stays_empty_through_a_full_rehearsal_sequence(
     tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch,
 ):
