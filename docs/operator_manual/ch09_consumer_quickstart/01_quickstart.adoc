@@ -29,9 +29,112 @@ Run. For anything beyond that, follow the links below into the full manual.
   today's clean tree without changing anything -- `wfc run` executes it
   verbatim as a mandatory pre-launch baseline probe (see
   <<quickstart-request>>).
+* A Git identity (`user.name`/`user.email`) visible in your effective Git
+  *configuration* -- never only via `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/
+  `GIT_CONFIG_GLOBAL` environment variables -- and no configured
+  `filter.*.clean`/`filter.*.process` (including Git LFS) reachable from this
+  repository. See <<quickstart-git-identity-and-filters>> below for why and
+  how to check.
+* *Linux only:* `bwrap` (bubblewrap) is *not* required for ordinary
+  `wfc init`/`plan`/`run` use with the Claude or Codex adapters; see
+  <<quickstart-bwrap-and-platform>>.
+* `TMPDIR` (or the platform default temp location) pointing *outside* this
+  repository's working tree for your own tooling's temporary files; a
+  temporary base inside the repository can itself make the tree look dirty
+  to `wfc run`'s clean-tree check.
+
+[[quickstart-git-identity-and-filters]]
+=== Git identity and filters
+
+WFC's trusted Git operations -- the Commission commit, candidate
+preservation, and `wfc run`'s bounded path commit -- strip every inherited
+`GIT_*` environment variable before running Git, precisely so that an
+agent-controlled process environment cannot smuggle in a different commit
+identity or routing than the one your own Git configuration establishes. One
+practical consequence: if you only ever set identity through
+`GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
+`GIT_COMMITTER_EMAIL` or `GIT_CONFIG_GLOBAL` environment variables rather than
+Git configuration itself, that identity becomes invisible to these trusted
+commits and Git falls back to its own defaults (or fails if none exist). Set
+`user.name`/`user.email` in a configuration file Git actually reads instead
+-- your normal global (`~/.gitconfig`) or system config, or, if `HOME`
+changes between processes (for example an isolated test or CI environment),
+a stable `$XDG_CONFIG_HOME/git/config`.
+
+The same trusted operations also refuse outright whenever any effective
+`filter.*.clean` or `filter.*.process` Git configuration is visible to them
+-- including Git LFS's `filter.lfs.clean`/`filter.lfs.process` -- even if the
+specific commit at hand would never have invoked that filter. This is a
+deliberately conservative current product limit, not a bug: a worktree
+`.gitattributes` entry can select a configured filter that the trusted-commit
+path has no way to safely vet, so it refuses the whole class instead.
+Diagnose it read-only before relying on trusted commits in a given
+repository:
+
+[source,shell]
+----
+git config --show-origin --get-regexp '^filter\..*\.(clean|process)$'
+----
+
+Any output means a repository that needs that filter cannot currently use
+WFC's trusted commits. This is *not* advice to strip Git LFS or other filter
+configuration from your own repositories in general -- those filters can be
+functionally necessary for your project; it only means this specific
+repository cannot combine them with WFC today. A follow-up backlog record
+tracking relaxing this is planned.
+
+[[quickstart-bwrap-and-platform]]
+=== Bubblewrap and qualified platform
+
+Installing the `workflow-coordinator` package never installs or requires
+`bwrap` (bubblewrap) for ordinary consumer use: `wfc init`, `wfc plan`, and
+`wfc run` with either the Claude or the Codex adapter invoke the configured
+provider CLI directly and do not themselves sandbox it with `bwrap`. `bwrap`
+is exercised by WFC's own development test suite (a planned, not-yet-wired
+execution-boundary mechanism; see
+link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc[self-development
+topology]) and by the host preparation `.github/workflows/release.yml` uses
+for WFC's own hosted CI -- not by the installed `wfc` command you run
+against your own repository. If you do work with WFC's own source (see the
+link:{operator-docs}/developer_guide/ch01_development.adoc[Developer Guide]),
+note that installing the package alone does not guarantee working
+unprivileged user namespaces on your host; the hosted CI runner needed an
+explicit kernel setting to enable them for `bwrap` (see that workflow file).
+
+Separately, the package declares Python 3.10 or newer, but the only profile
+this repository's own development has qualified today is CPython 3.13 on
+Linux x86-64; ARM64 is an intended target, not a qualified one (see
+<<beta-limitations>>). An installed, authenticated `claude` or `codex`
+executable is a prerequisite, not a qualification: it has its own sandbox
+and permission behavior that WFC does not document beyond what its adapters
+configure, and an installed provider CLI is not by itself a fully qualified
+adapter/model combination for this release.
 
 [[quickstart-install]]
 === Install
+
+Once 0.1.0b1 is published to PyPI, this is the primary path:
+
+[source,shell]
+----
+python3 -m venv ~/.venvs/wfc
+source ~/.venvs/wfc/bin/activate
+python3 -m pip install 'workflow-coordinator==0.1.0b1'
+wfc --version --json
+wfc --help
+----
+
+The exact `==0.1.0b1` pin installs this pre-release deliberately -- a plain
+`pip install workflow-coordinator` does not install a pre-release by
+default. `--version --json` reports the executing package's implementation
+identity; for a wheel install from PyPI this reports `"version": "0.1.0b1"`
+and `"source_commit": null` -- a wheel is not a Git checkout, so there is no
+commit to report. This paragraph describes the state once that publication
+has happened; it does not claim it has happened yet.
+
+Installing from a release artifact (sdist or wheel) or a source checkout
+remains the secondary path, for example before publication or when working
+from a local build:
 
 [source,shell]
 ----
@@ -41,9 +144,9 @@ pip install /path/to/workflow-coordinator
 wfc --version --json
 ----
 
-Install from a release artifact (sdist or wheel) or a source checkout; there
-is no separate build step WFC performs for you. `--version --json` reports
-the executing package's implementation identity.
+There is no separate build step WFC performs for you either way. For a
+source checkout at a clean, matching commit, `--version --json` instead
+reports that commit's SHA as `source_commit`.
 
 [[quickstart-init]]
 === `wfc init` and configuration

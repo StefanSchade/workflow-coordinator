@@ -1,0 +1,399 @@
+ifndef::assembled[]
+= WFC Operator Manual -- A first consumer example
+:operator-docs: ../..
+
+Maturity::  stable
+Authority:: informative
+Updated::   2026-11-23
+Owns::      A complete, copy-pasteable walkthrough of one bounded task on a tiny demo repository, and the plan/authorization/run/archived-evidence distinction. The preceding <<consumer-quickstart>> page owns installation and prerequisites.
+endif::[]
+
+[[consumer-quickstart-first-run-example]]
+== A first consumer example
+
+This continues directly from <<consumer-quickstart>> -- read its
+<<quickstart-prerequisites>> and <<quickstart-install>> sections first. It
+walks through one complete bounded task on a tiny, disposable demo
+repository, from an empty Git repository to an archived Run, naming exactly
+which steps were actually executed to verify this page and which were not.
+
+[[first-run-verified]]
+=== What was verified, and what was not
+
+`wfc init`, `wfc plan`, and parsing the hand-authored Consumer Request YAML
+(`frontdoor.request.consumer_request_from_yaml`) were executed against the
+exact repository shown below, on the installed `wfc` 0.1.0b1, and succeeded.
+Their commands and output below are real. `wfc run` was *not* executed for
+this page: it needs an already-installed, already-authenticated provider CLI
+(`claude` or `codex`), which depends on your own account and host, and whose
+live behavior is qualified separately by the maintainer, not by this
+document (see the
+link:{operator-docs}/release_notes/release_notes.adoc[Release Notes]). The
+`wfc run` step below therefore shows only the command that was prepared and
+what to look for, never invented output.
+
+[[first-run-layout]]
+=== Layout
+
+Three sibling directories, none nested inside another:
+
+* `greeter/` -- the consumer repository itself (branch `main`, a Git identity
+  already configured).
+* `greeter-evidence/` -- the Evidence repository `wfc init` creates; a
+  separate, remote-less Git repository, never nested inside `greeter/`.
+* `scratch/` -- the task document and the Consumer Request YAML, kept
+  *outside* `greeter/` so its tree stays completely clean through `wfc run`
+  (see <<quickstart-request>>).
+
+[[first-run-repository]]
+=== Build the demo repository
+
+[source,shell]
+----
+mkdir greeter && cd greeter
+git init -b main
+git config user.name "<your name>"
+git config user.email "<your email>"
+
+cat > README.md <<'EOF'
+# Greeter
+
+A tiny demo repository.
+EOF
+
+mkdir docs
+cat > docs/notes.adoc <<'EOF'
+= Notes
+
+Initial notes.
+EOF
+
+mkdir checks
+cat > checks/check.py <<'EOF'
+"""Non-mutating check: every AsciiDoc file under docs/ starts with a level-0 title."""
+from pathlib import Path
+
+files = sorted(Path("docs").rglob("*.adoc"))
+assert files, "no AsciiDoc files under docs/"
+for path in files:
+    first = path.read_text(encoding="utf-8").splitlines()[0]
+    assert first.startswith("= "), f"{path}: first line is {first!r}"
+EOF
+
+git add README.md docs/notes.adoc checks/check.py
+git commit -m initial
+
+python3 checks/check.py   # exit 0: non-mutating, and true before the task below
+----
+
+This check is the one you will later declare as both the pre-launch baseline
+probe and the Commission's `task-check` evidence (see
+<<first-run-why-before-and-after>>). It passes right now, on the clean tree
+above, before the task has even been written.
+
+[[first-run-init]]
+=== `wfc init`, configuration and guidance
+
+From `greeter/`:
+
+[source,shell]
+----
+wfc init --repository . --scope-ceiling docs --evidence-repository ../greeter-evidence
+----
+
+This was executed and printed (among other lines):
+
+[source,text]
+----
+wrote Consumer Config: .wfc/config.yaml
+NEXT EXPLICIT ACTION: review this file, fill in default_execution for your roles, and commit it yourself -- `wfc init` never commits it.
+Evidence repository (created new): ...  (raw retention: local)
+NOTHING WAS PUSHED: the Evidence repository has no remote configured.
+----
+
+`--scope-ceiling docs` means a later task's scope may touch `docs` and
+anything beneath it, and nothing else. `../greeter-evidence` is the Evidence
+repository's location, resolved relative to `--repository`; it did not exist
+before this command and was created fresh. Edit the written
+`.wfc/config.yaml` yourself to add `default_execution` for the `worker`
+role -- `wfc init` never commits it:
+
+[source,yaml]
+----
+schema_version: 1
+repository_name: greeter
+governance_dir: .wfc/governance
+work_item_scope_ceiling:
+- docs
+max_autonomous_hops: 5
+default_execution:
+  worker:
+    adapter: claude_cli
+    model: <your model>
+    reasoning: medium
+evidence:
+  repository: ../greeter-evidence
+----
+
+`adapter` must be `codex_cli` or `claude_cli`; substitute whichever
+executable you actually confirmed with `which claude` or `which codex`
+(<<quickstart-prerequisites>>), and your adapter's own supported model.
+
+`wfc plan` and `wfc run` read repository-policy guidance from Git history at
+a pinned commit, never from the working tree, so write and commit it before
+planning:
+
+[source,shell]
+----
+mkdir -p .wfc/governance
+cat > .wfc/governance/repository-policy.md <<'EOF'
+Keep changes small, scoped, and reviewed before they land.
+EOF
+
+git add .wfc/config.yaml .wfc/governance/repository-policy.md
+git commit -m "chore: add wfc configuration, guidance and check"
+----
+
+The tree is clean again after this commit; `checks/check.py` still exits `0`.
+
+[[first-run-task]]
+=== Write the task, outside the repository
+
+[source,shell]
+----
+mkdir -p ../scratch
+cat > ../scratch/task.md <<'EOF'
+# Add a hello page
+
+Create docs/hello.adoc: a short AsciiDoc page whose first line is `= Hello`
+followed by one sentence of your choice.
+
+## Acceptance
+The task-check passes and docs/hello.adoc exists with the title line as its
+first line.
+
+## Withheld authority
+No change outside docs/hello.adoc.
+
+## Default escalation
+Stop and ask on any ambiguity.
+EOF
+----
+
+`../scratch/task.md` sits next to, not inside, `greeter/`: an untracked file
+anywhere inside the repository would make `wfc run` refuse a dirty tree.
+
+[[first-run-plan]]
+=== `wfc plan`: a read-only preview
+
+From `greeter/`:
+
+[source,shell]
+----
+wfc plan ../scratch/task.md --repository . --scope docs/hello.adoc \
+  --commission-id hello-page-001 --work-item-id WI-HELLO-PAGE-001 \
+  --authority-source "Repository owner authorizes this bounded demo task." \
+  --program simple@v1 \
+  --persona worker="Bounded worker: create exactly the requested file, nothing else." \
+  --evidence-argv python3 --evidence-argv checks/check.py \
+  --guidance-path .wfc/governance/repository-policy.md
+----
+
+This was executed, read-only, and exited `0`. Abridged real output (the
+digests are specific to this scratch repository; yours will differ):
+
+[source,text]
+----
+wfc plan preview -- commission hello-page-001 / work item WI-HELLO-PAGE-001
+program: simple@v1
+authority_source: Repository owner authorizes this bounded demo task.
+
+Task:
+  title: Add a hello page
+  body: Create docs/hello.adoc: a short AsciiDoc page whose first line is `= Hello` followed by one sentence of your choice.
+  acceptance: The task-check passes and docs/hello.adoc exists with the title line as its first line.
+  withheld_authority: No change outside docs/hello.adoc.
+  escalation_default: Stop and ask on any ambiguity.
+
+scope: docs/hello.adoc
+personas: worker=Bounded worker: create exactly the requested file, nothing else.
+max_autonomous_hops: 5 (config ceiling: 5)
+evidence.argv: python3 checks/check.py
+evidence.timeout_seconds: 900
+guidance: .wfc/governance/repository-policy.md@870f8fda465d0a4305271153fb8451b56386d80e
+
+projected Commission target directory (not created by plan): .wfc/governance/hello-page-001
+projected Commission files (not written by plan):
+projected Commission manifest digest: sha256:cac8efec75c1ab68c3ec13486028bf1ff11358f7df4a21235c7845877d2e1f4d
+
+resolved execution envelope (separate from the Commission; not published):
+  worker: adapter=claude_cli model=claude-haiku-5-5 reasoning=medium
+execution envelope digest: sha256:ca4d70521081f7d0ab3c57c2b4104ca4ccf49cabd8d3df76d2b7ef80ff31b681
+
+NEXT EXPLICIT ACTION: nothing was run or written by this preview -- no project command, provider, Commission write or Git mutation. Launching a Run is separate, later work (not part of this preview).
+----
+
+`--evidence-argv python3 --evidence-argv checks/check.py` is not executed by
+`plan`; it only names, token by token, the check script committed above,
+which `wfc run` will actually run, both as the pre-launch baseline probe and
+as the Commission's `task-check` evidence. `--guidance-path` resolved at the
+repository's current HEAD, which the guidance commit above already
+satisfies; `870f8fda...` is the commit that introduced
+`.wfc/governance/repository-policy.md` -- recompute it yourself with
+`git log -1 --format=%H -- .wfc/governance/repository-policy.md` rather than
+reusing this value, since yours will differ.
+
+[[first-run-request]]
+=== Hand-author the Consumer Request YAML
+
+`wfc plan` previews what it would compile; it does not write the request
+file. Author it yourself, in `scratch/`, with the same fields the preview
+showed, plus `schema_version: 1` and an explicit, normally empty,
+`durable_artifacts: {}`:
+
+[source,yaml]
+----
+schema_version: 1
+commission_id: hello-page-001
+work_item_id: WI-HELLO-PAGE-001
+authority_source: Repository owner authorizes this bounded demo task.
+program:
+  id: simple
+  revision: v1
+task:
+  title: Add a hello page
+  body: 'Create docs/hello.adoc: a short AsciiDoc page whose first line is `= Hello` followed by one sentence of your choice.'
+  acceptance: The task-check passes and docs/hello.adoc exists with the title line as its first line.
+  withheld_authority: No change outside docs/hello.adoc.
+  escalation_default: Stop and ask on any ambiguity.
+scope:
+- docs/hello.adoc
+personas:
+  worker: 'Bounded worker: create exactly the requested file, nothing else.'
+evidence:
+  argv:
+  - python3
+  - checks/check.py
+  timeout_seconds: 900
+max_autonomous_hops: 5
+durable_artifacts: {}
+guidance:
+  path: .wfc/governance/repository-policy.md
+  source_commit: <output of the git log command above, for your own commit>
+----
+
+Parsing this file with `frontdoor.request.consumer_request_from_yaml` was
+verified to succeed against the equivalent file for this exact repository.
+Keep it in `scratch/`, not inside `greeter/`: `wfc run` reads it from
+`--request` by plain filesystem path, so it need not live inside the
+repository, and keeping it outside keeps the tree clean.
+
+[[first-run-run]]
+=== `wfc run --yes`: not executed here
+
+[source,shell]
+----
+wfc run --repository . --request ../scratch/request.yaml --executable claude --yes
+----
+
+This command was prepared but *not run* for this page -- it needs an
+authenticated `claude` (matching the `claude_cli` adapter configured in
+`default_execution` above; `--executable` must match the configured
+adapter, and a Run uses exactly one adapter throughout). Running it
+yourself will re-derive and print the Commission and execution-envelope
+digests, require the clean tree, run `checks/check.py` as the mandatory
+baseline probe (see <<first-run-why-before-and-after>>), commit the
+Commission, re-verify it, launch the engine, run the Worker through however
+many Hops the task needs, and print
+`CLASSIFICATION:`/`MESSAGE:`/`RUN ID:`/`RUN STATUS:`/`END HEAD:` once it
+reaches a terminal state. Read the printed classification, not the exit
+code -- see
+link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#launch[LAUNCH]
+and
+link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#terminal-states[terminal
+states] for every classification this can print and what each one means. If
+it refuses instead of launching, consult
+link:{operator-docs}/operator_manual/ch07_diagnostics/01_troubleshooting.adoc#troubleshooting[troubleshooting].
+
+[[first-run-status]]
+=== `wfc status` and `wfc report`
+
+[source,shell]
+----
+wfc status --repository .
+wfc report ../greeter-evidence/archive/unclassified/<attempt-id>/audit.json
+----
+
+Also not executed here, for the same reason. `wfc status` is read-only and
+safe to run from a second shell while a Run is in progress; it prints the
+same classification fields as `wfc run`, plus a `PRESERVATION:` block and an
+`ARCHIVE:` block once archiving has happened. Archiving itself is automatic
+once the Run reaches a terminal state -- `wfc run` prints the exact
+destination path to use, and this walkthrough's Run would archive under
+`archive/unclassified/` since nothing here sets a domain/workstream. `wfc
+report` renders that already-archived result. See
+link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#status[STATUS]
+and the
+link:{operator-docs}/operator_manual/ch04_evidence/_chapter.adoc#evidence[evidence
+chapter] for the full field meanings.
+
+[[first-run-concepts]]
+=== Plan, authorization, run, and archived evidence
+
+Four distinct things happened or were prepared above; keep them separate:
+
+Plan (read-only preview):: `wfc plan` writes nothing, runs no project
+command, and never touches Git. It only projects the Commission bytes and
+resolves the execution envelope it *would* compile, so you can inspect the
+digests before anything becomes real.
+
+Authorization (the human's explicit act):: Nothing above is authorized
+merely by having been previewed or hand-authored. `wfc run` requires
+explicit confirmation -- an interactive `y`, or `--yes` for a non-interactive
+caller -- immediately before it acquires the checkout's ownership lock and
+starts mutating anything. There is no implicit or automatic authorization
+path.
+
+Run (the controlled lifecycle):: Once authorized, `wfc run` performs, in
+order, a one-shot baseline probe, the Commission commit, re-verification,
+engine launch, and however many Hops the Worker and the independent
+reviewer need, each step journaled write-ahead before its real effect. This
+is the only point at which a provider is ever invoked.
+
+Archived evidence (the separate Evidence repository):: `greeter-evidence/`
+is a distinct, remote-less Git repository that a terminal Run's facts are
+archived into; it is never the `greeter/` repository itself, and WFC never
+pushes either one.
+
+[[first-run-why-before-and-after]]
+=== Why the check must pass before *and* after
+
+`wfc run` executes the declared evidence command -- here, `python3
+checks/check.py` -- *before* any provider starts, as a mandatory baseline
+probe against today's already-clean tree. A non-zero exit, an unresolvable
+executable, a timeout, or any tree mutation there refuses the whole Run
+before launch (classification `refused_probe`, exit code `23`) and still
+consumes this checkout's one lifecycle -- see <<quickstart-request>> and
+<<beta-limitations>>. The identical command is also the Commission's
+declared `task-check` evidence, run again later to judge the actual result.
+
+A check that only asserts the *not-yet-created* result -- for example one
+that fails until `docs/hello.adoc` exists -- would therefore refuse the Run
+at the baseline probe, before the Worker ever ran. The check used in this
+walkthrough avoids that: "every AsciiDoc file under `docs/` starts with a
+level-0 title" is true on the clean tree above, before `docs/hello.adoc`
+exists, and remains true afterward, once it does. Write your own
+`task-check` the same way: true on today's clean tree, and still true (or
+newly true, for a positive assertion that already holds vacuously) once the
+task's change lands.
+
+[[first-run-next]]
+=== What next
+
+For a stopped Run, a refusal, or anything past one inspected Run, continue
+into the full
+link:{operator-docs}/operator_manual/operator_manual.adoc[Operator Manual],
+starting from
+link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc[recovery
+outcomes] or
+link:{operator-docs}/operator_manual/ch07_diagnostics/01_troubleshooting.adoc#troubleshooting[troubleshooting].
