@@ -1,0 +1,269 @@
+= Post-Beta L1 -- the Ruff `select = ["F"]` lint baseline (17 findings): broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the L1 lint-baseline
+candidates for WorkItem `WI-WFC-POSTBETA-L1-CI-LINT-BASELINE-001`. The current
+pass is *H002*; later passes are added above earlier ones and earlier passes are
+kept unedited apart from the `(current)` marker.
+
+== Pass H002 -- `RUN-d7572589...` (current)
+
+WorkItem:: `WI-WFC-POSTBETA-L1-CI-LINT-BASELINE-001`
+Hop:: `H002` (`broad_review`, gate, blocking-only,
+`finding_authority: [resolve]`)
+Candidate:: `64945b03f73448637e62deb08f94449c7dca6660` (the H001 implementation
+over the commissioning commit `8e1864e`)
+Finding state:: The projected authoritative Finding state for this Run holds no
+Finding. `MD-5`, `F401`, `F811`, `F841` and the "17 findings" label are
+plan-, rule- and review-internal labels, not Finding IDs. This pass proposes
+*one new blocking Finding* (see section 4).
+Disposition:: *Changes required*, one bounded documentation correction. The code
+change itself is correct, minimal and mechanically verified: every
+side-effecting call is preserved, both deleted imports are proven unused, the
+fixture re-export is preserved by a comment-only edit, and no rule, gate,
+configuration or test was touched or weakened. The record document, however,
+asserts as `git log -S`-verified that all 13 `F841` sites trace to the single
+commit `1a2fede`; re-running that command shows 7 of 13 do and 6 were
+introduced by two later BP4 Hops. That is an overclaim in exactly the clause
+the acceptance criteria police ("the verified cause ... without overclaiming").
+MD-5 stays *open*; the Coordinator's `task-check` is the trusted evidence for
+the required suite and this pass claims no suite result.
+
+=== 1. The candidate and its scope
+
+`git show --stat 64945b0` is six leaves: the five source/test files the task
+names and the new record. No other leaf appears in the range
+`8e1864e..64945b0`.
+
+So every withheld-authority boundary holds: `pyproject.toml`, `Makefile`,
+`.github/`, the ruff configuration, every CI gate and every other source, test
+and fixture file are untouched; no `select` entry, per-file ignore or `exclude`
+was added; no test was weakened or deleted; nothing was pushed, tagged or
+published. The working tree at this HEAD is clean apart from the 22
+wrapper-injected untracked entries the task note names, which are not candidate
+output. I performed no mutating Git operation; my only writes are this artifact
+and one `.gitignore`-covered scratch script under `build/wfc/` plus the
+regenerated `.gitignore`-covered `build/wfc/document_catalog.jsonl`.
+
+=== 2. The fixes, verified mechanically rather than read
+
+I re-derived each fix class from the two revisions with my own AST/normalization
+script (`build/wfc/norm_check.py`, gitignored), not from the Worker's summary.
+
+*F841 (13 sites, two test files) -- call preserved, binding dropped.* For both
+`tests/unit/test_lifecycle_controller.py` and
+`tests/unit/test_lifecycle_crash_matrix.py` I normalized away an optional
+`NAME = ` prefix on every `L._do_prelaunch(`/`L._do_probe(` line and compared
+the before and after revisions: *byte-identical*. Independently, the multiset of
+every call expression in each module (callee plus unparsed arguments) is
+identical before and after -- 286 calls in the controller file, 186 in the crash
+matrix. So the entire textual delta is the removal of the 13 bindings; no call,
+argument, assertion, fixture, ordering or control-flow element changed. Both
+step functions return a `JournalRecord` (`lifecycle.py:330`, `:385`) whose
+side effects -- `journal.append("prelaunch_intent"/"prelaunch_passed"/...)`,
+the `LifecycleError` refusals, the repository observations -- happen inside the
+call; discarding the returned dataclass cannot change them. The one assignment
+that *is* read (`test_lifecycle_controller.py:332`, used at `:333` and `:338`)
+was correctly left alone, as were the sites that already were bare calls
+(`:424-425`, `:449-450`).
+
+*F401 (2) -- unused imports, proven unused before removal.* `Iterator` occurs
+nowhere in `journal.py` at the pre-change revision -- not as a name, not as an
+attribute base, not inside any string constant -- and the module has no
+`__all__`; repository-wide, `grep -rn Iterator src tests scripts` is empty, so
+no importer could have re-imported it through `journal`. `json` in
+`tests/fixtures/bp4/fake_engine.py` likewise has no bare-name and no `json.*`
+attribute use and no `__all__`; the only `json` substrings are the docstring
+and the filenames `operator-plan.json`, `run.json`, `dispatch.json`,
+`operator-summary.json` -- the fixture writes those through
+`atomic_write_json` / `write_run_snapshot` from
+`workflow_coordinator.persistence`, never through the stdlib module. The
+fixture is executed as a subprocess script and imported by no test, so no
+import-time surface changed. The call multiset of each file is unchanged. All
+five changed files byte-compile.
+
+*F401 + F811 (2) -- the pytest fixture re-export.* The change to
+`tests/unit/test_operator_admit_parsed.py` is *AST-identical* before and after:
+the only delta is two trailing comments, at `:16` on the import and at `:22` on
+the `parsed_inputs` fixture's parameter line. The import still binds `args`,
+`git` and `repository` in the module namespace (`args` and `git` are also used
+directly at `:23` and `:35`), and the fixture parameter is still named
+`repository`, so pytest's name-based fixture resolution is unchanged *by
+construction*: no edit could have broken it. Both suppressions are per-line,
+single-rule, commented and sited on the line ruff reports the violation on; no
+configuration-level, file-level or global ignore was added anywhere in the
+repository.
+
+=== 3. The record's claims, re-checked against this repository
+
+Verified here, independently:
+
+[cols="3,2",options="header"]
+|===
+|Record claim |Result
+
+|`56af453` set `[tool.ruff.lint] select = ["F"]` (2026-09-23) and scoped only
+`format-check`, leaving `lint` as the unscoped `ruff check .`
+|Confirmed. That commit narrowed `select` from `["E", "F", "I"]` to `["F"]` and
+changed only the `format-check` recipe. `F` was therefore selected even before
+it.
+
+|Both introducing commits post-date `56af453`
+|Confirmed: `c7b84e2` 2026-11-18, `1a2fede` 2026-11-19.
+
+|The `test_operator_admit_parsed.py` F401/F811 pair predates BP4 and traces to
+`c7b84e2` (`WI-WFC-BETA1-BP2-ADMISSION-EXTRACTION-001 H001`)
+|Confirmed by `git log -S` on the import line: `c7b84e2` is the only commit.
+This is a correct correction of the task text.
+
+|`make lint` was never part of a Run's acceptance
+|Confirmed. `docs/developer_guide/ch01_development.adoc:183` states the
+configured `task-check` is `python -m pytest -q`; `commissioning.py:361` wires
+`task-check` to the evidence profile's `argv`. Nothing wires `ruff`.
+
+|System `python3` has no ruff, so `make lint` fails with a missing-module error
+rather than a false green
+|Confirmed in this sandbox too: `python3 -m ruff --version` ->
+`/usr/bin/python3: No module named ruff`, exit 1. The `Makefile:21` recipe
+reference in the record matches the current file.
+
+|CI installs `ruff` unpinned via the dev extra and then runs `make lint`
+|Confirmed: `pyproject.toml:28` has `ruff>=0.6` with no upper bound, and
+`.github/workflows/release.yml` runs `python3 -m pip install -e '.[dev]'`
+(`:63`) before `make lint` (`:66`). `release.yml` is the only workflow.
+
+|The Operator's earlier ruff checks covered only the newly added files --
+recorded as *not independently verified*
+|Correct handling. Ad hoc Operator commands leave no repository artifact; the
+record attributes the claim rather than confirming it, which is what the task
+asked for.
+
+|Collect-only counts 23 / 20 / 3 (total 46), unchanged
+|Consistent with static analysis: 23 `test_` functions and no parametrization in
+the controller file; 14 functions of which one is a 7-case
+`@pytest.mark.parametrize` (13 + 7 = 20) in the crash matrix; 3 in
+`test_operator_admit_parsed.py`. I could not execute pytest (section 5).
+
+|`format-check` unaffected
+|Confirmed from the `Makefile`: that target names five files
+(`scripts/memory_workbook.py`, `scripts/wfc_snapshot.py`,
+`tests/unit/test_memory_workbook.py`, `tests/unit/test_wfc_snapshot.py`,
+`tests/architecture/test_package_boundaries.py`), none of them touched by this
+candidate.
+
+|No rule, config or CI gate changed; MD-5 stays open
+|Both stated in the record and true of the diff.
+|===
+
+The record also renders clean
+(`asciidoctor --safe-mode=safe --failure-level=WARN`, exit 0), carries the
+conventional `Maturity`/`Authority`/`Updated` header, contains no secret and no
+absolute home-directory path, and introduces no document-catalog regression
+(`wfc_doc_catalog.py check`: "catalog current"; the 84 unresolved links and 4
+Project Memory `source_path` misses are the pre-existing set and none of them
+names this record).
+
+=== 4. The blocking Finding -- the record's commit attribution is an overclaim
+
+The record states, in the section headed "Verified cause of the local/hosted
+discrepancy":
+
+____
+"`git log -S` on each file's offending text shows `journal.py`'s `Iterator`
+import, `fake_engine.py`'s `json` import, and all 13 `F841` sites trace to
+commit `1a2fede` ... -- 15 of the 17 findings."
+____
+
+Re-running that command contradicts the sentence it is cited for:
+
+* `git log --oneline -S "prelaunch = L._do_prelaunch"` over the two test files
+  lists *three* BP4 commits, not one: `1a2fede` (H001), `ade01b8` (H003) and
+  `41bab45` (H006).
+* Counting the sites per revision in `test_lifecycle_crash_matrix.py`:
+  5 at `1a2fede`, 7 at `ade01b8`, 11 at `41bab45` and 11 at the base `b7e62be`.
+  So 2 of the 11 came from H003 and 4 from H006.
+* In `test_lifecycle_controller.py` the two F841 sites (then `:385-386`) are
+  present at `1a2fede`.
+
+The true figures are therefore *9 of the 17 findings trace to `1a2fede`*
+(`Iterator`, `json`, 2 controller sites, 5 crash-matrix sites) and *15 of 17 to
+the three BP4 Hops together*; "all 13 F841 sites" and "15 of the 17 findings"
+at a single commit are both wrong. The substantive causal conclusion is
+unaffected -- all three commits belong to the BP4 lifecycle-controller WorkItem,
+and the findings genuinely pre-existed the hosted run -- but the acceptance
+criteria require the record to state the *verified* cause "without
+overclaiming", and the task required the Worker to "not claim more than you
+verified". A verification-attributed statement that the cited command disproves
+is the defect, in a durable provenance document whose later readers have no way
+to notice it.
+
+Remedy, one sentence in one file already inside the Worker's scope: name the
+three BP4 commits (`1a2fede` H001, `ade01b8` H003, `41bab45` H006) and give the
+9-of-17 / 15-of-17 split, keeping the existing, correct `c7b84e2` attribution
+for the fixture pair. No code change, no new mechanism and no change to any
+other claim is needed or wanted.
+
+=== 5. Non-blocking observations
+
+None of these blocks acceptance and none asks for new mechanism.
+
+. *Two per-line suppressions against the acceptance wording "at most one".* The
+  acceptance text allows "at most one narrowly scoped commented suppression on
+  that import". Ruff reports the F401 at `:16` and the F811 at `:22` -- the
+  task's own finding list says so -- and `# noqa` is strictly per-line, so no
+  single directive on the import line can clear both. The implemented pair is
+  the minimal correct form, and the alternatives I can see each break another
+  binding constraint: deleting the import or renaming the parameter breaks
+  fixture resolution; a per-file or configuration ignore is explicitly withheld.
+  I therefore do not treat the second directive as a violation, and I flag the
+  wording for the maintainer rather than waive it: if exactly one directive is
+  wanted, that is a decision about the criterion, not about this candidate.
+  The record's own "Correction against the task text" paragraph documents the
+  deviation, which is the right handling.
+. *`ruff` is unpinned in CI* (`ruff>=0.6`), so a future ruff release can
+  introduce findings on an unchanged tree. Pre-existing and out of this
+  WorkItem's withheld authority; worth the maintainer's attention separately.
+. *Pre-existing `# noqa: E402` comments* in `tests/fixtures/bp4/fake_engine.py`
+  and `tests/fixtures/bp9/wfc_entry.py` are inert under `select = ["F"]` and
+  were correctly left untouched. `RUF100` is not enabled, so they report
+  nothing.
+. *The record is 191 lines*, a little beyond "keep it compact", but every
+  section earns its place and I propose no cuts.
+
+=== 6. Measured checks and the environment limits of this pass
+
+Executed here: the AST/normalization equivalence script (section 2),
+`python3 -I -m py_compile` on all five changed files, the Git range, `git
+log`/`git log -S` and per-revision site counts (all read-only), the
+`Makefile`/`pyproject.toml`/`release.yml`/`ch01`/`commissioning.py` reads,
+`wfc_doc_catalog.py generate` and `check`, and the strict Asciidoctor render of
+the record.
+
+Not runnable in this sandbox -- agent-local environment limits, not candidate
+properties:
+
+* *`ruff check .`, `make lint` and `make format-check`.* There is no ruff in
+  this worktree and none on the interpreter (`python3 -m ruff --version` ->
+  "No module named ruff"); there is no project virtual environment and no
+  offline input bundle, and this session's permission surface refused the one
+  `pip install` attempt, so I did not install one. *I therefore did not
+  independently reproduce either the 17-finding baseline or the exit-0 result.*
+  What I can report instead: the F-rule semantics of each fix are verified
+  statically above, and the worktree carries a `.ruff_cache/0.17.5/` written
+  during H001 whose ten cache entries contain no diagnostic text at all
+  (no "unused", no rule code), which is what a clean run leaves behind. The
+  hosted `make lint` step remains the trusted confirmation, and nothing in this
+  pass claims a ruff execution of my own.
+* *`python -m pytest -q` and every suite-dependent assertion*: "No module named
+  pytest". The test-count and fixture-resolution claims above rest on static
+  analysis and on the AST-identity of the fixture file, not on a run. The
+  Coordinator's `task-check` remains the trusted evidence for the required
+  suite.
+* The hosted-runner facts behind MD-5 cannot be observed from here by
+  construction; MD-5 stays open.
+
+Four Bash invocations in this pass were refused by the session's permission
+surface (three chained or variable-bearing commands and the `pip install`);
+the chained ones were re-run as single commands and produced the results
+reported above, so only the ruff installation was lost.
