@@ -364,11 +364,53 @@ DMC resumption review's ingress-fidelity defect R1) is postponed, see
 |===
 
 Check command, Q1-A (Python standard library only; no consumer venv, no pytest,
-no full consumer test run needed)::
-`python3 -c 'from pathlib import Path; p = Path("docs/cold_storage/wfc_smoke_claude_0_1_0b1.adoc"); assert p.is_file(); assert p.read_text(encoding="utf-8").splitlines()[0] == "= WFC Consumer Smoke Claude 0.1.0b1"'`
+no full consumer test run needed; baseline-compatible, see below)::
+`python3 -c 'from pathlib import Path; p = Path("docs/cold_storage/wfc_smoke_claude_0_1_0b1.adoc"); assert not p.exists() or (p.is_file() and not p.is_symlink() and p.read_text(encoding="utf-8").splitlines()[:1] == ["= WFC Consumer Smoke Claude 0.1.0b1"])'`
 
 Check command, Q1-B (same constraints)::
-`python3 -c 'from pathlib import Path; p = Path("docs/cold_storage/wfc_smoke_codex_0_1_0b1.adoc"); assert p.is_file(); assert p.read_text(encoding="utf-8").splitlines()[0] == "= WFC Consumer Smoke Codex 0.1.0b1"'`
+`python3 -c 'from pathlib import Path; p = Path("docs/cold_storage/wfc_smoke_codex_0_1_0b1.adoc"); assert not p.exists() or (p.is_file() and not p.is_symlink() and p.read_text(encoding="utf-8").splitlines()[:1] == ["= WFC Consumer Smoke Codex 0.1.0b1"])'`
+
+[[q1-baseline]]
+Why the check is conditional (maintainer correction of 2026-11-23, verified)::
+`wfc run` executes the Commission's one evidence command verbatim as the
+mandatory pre-launch baseline probe on the clean tree and refuses the whole
+Run before any provider starts (`refused_probe`, exit 23, lifecycle consumed)
+when it does not exit 0 (`frontdoor/lifecycle.py`, `_do_probe`: the argv is
+run without a shell in the repository root). The first version of the checks
+asserted that the not-yet-existing file exists and would have been refused at
+that point. The corrected checks pass on the clean baseline (file absent) and
+check an already present file strictly: a regular file (not a directory, not a
+symlink) whose first line equals the expected title. Verified by the Operator:
+absent file: exit 0; correct file: exit 0; wrong title, empty file, symlink
+(even to correct content), directory and BOM-prefixed title: exit 1; a final
+line without newline and CRLF line endings pass (the consumer repository has
+`* text=auto eol=lf`). The consumer repository `/home/stefan/repos/spreadsheet-handling/core`
+was inspected read-only: branch `main`, clean tree, `docs/cold_storage/` tracked
+and not ignored, neither target file exists, no effective `filter.*.clean` or
+`filter.*.process` configuration. Request and CLI semantics: in the Consumer
+Request YAML the argv is the list `python3`, `-c`, `<code>` (parser verified);
+on the `wfc plan` command line a token that starts with `-` must be given as
+`--evidence-argv=-c` (a separate `-c` is read by argparse as an option and
+refused), and the code token is passed as one quoted argument. The scope
+ceiling of the consumer configuration must name the target file (a file-exact
+entry is allowed) for the Commission scope to be accepted.
+[[q1-postrun]]
+Post-run verification (separate, outside the WFC task-check, after each Run)::
+The conditional check alone does not prove that the Worker created the file:
+a successful baseline probe, or a Run that created nothing and still passed
+the check, must never count as a successful consumer smoke Run. After each Run
+the Operator and the maintainer verify, read-only (no Git or Run-artifact
+mutation), that: (1) the Run reached the expected successful terminal state
+(`completed`, with the independent review accepted); (2) the target `.adoc`
+file exists as a regular file, not a symlink; (3) its first line equals the
+expected title exactly; (4) the accepted Trusted Commit contains the new file
+(for example `git show --stat <commit>`); (5) the commit contains no change
+outside the authorized scope (the target file only, besides the Coordinator's
+own Commission commit); (6) review, status, report and the archived evidence
+exist and are consistent with each other and with the actual outcome (the
+Commission and execution-envelope digests, the terminal classification, the
+archived `audit.json`). The result record names this verification and the
+limits stated under "Explicitly not acceptance".
 
 Prerequisites:: A release candidate built from the qualified pre-tag commit on
 `main` (<<gates>>), installed *from the artifact* — never an editable checkout
@@ -480,7 +522,7 @@ Acceptance:: As <<q1,Q1>>'s Acceptance, per Run.
 Withheld authority:: No change outside the one new leaf; no WFC repository
 change; no tag, publish or other external action; no claim of bugfix
 qualification.
-Evidence command:: The check command of the Run (<<q1>>).
+Evidence command:: The baseline-compatible check command of the Run (<<q1>>, <<q1-baseline>>); the separate read-only post-run verification (<<q1-postrun>>) is part of the acceptance, not of the Commission.
 Execution:: One adapter per Run (`claude_cli` / `codex_cli`); models as in the
 <<q1>> table, the Codex model confirmed as supported and qualified when Q1-B is
 prepared; the Runs one after the other in separate fresh worktrees; expected
