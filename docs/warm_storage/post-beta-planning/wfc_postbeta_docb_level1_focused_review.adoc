@@ -1,0 +1,221 @@
+= Post-Beta DOC-B — Claude Code as Level-1 orchestrator: focused review
+:toc:
+:toclevels: 2
+
+This record holds every independent focused-review (re-review) pass over a
+correction to the DOC-B candidate for WorkItem
+`WI-WFC-POSTBETA-DOCB-LEVEL1-001`. The broad-review record is
+link:wfc_postbeta_docb_level1_broad_review.adoc[`wfc_postbeta_docb_level1_broad_review.adoc`].
+Later passes are added above earlier ones; earlier passes are kept unedited
+apart from the `(current)` marker, which moves to the newest pass.
+
+== Pass H004 — `RUN-21bf57ae…` (current)
+
+Status:: *CHANGES REQUIRED*, one blocking Finding remains. Two of the three
+corrections land exactly as the broad review asked (`--executable claude`, and
+dropping the instruction to *commit* the Consumer Request). The third — the
+wait loop — was inverted as proposed, but the inverted condition was not
+re-tested against the implementation: measured here, it still never terminates
+after a pre-launch refusal, and it now additionally exits on its *very first*
+poll of a fresh worktree while the Run is still starting. The rest of the
+chapter is unchanged and remains as assessed in the broad review.
+WorkItem:: `WI-WFC-POSTBETA-DOCB-LEVEL1-001`
+Run / Hop:: `RUN-21bf57ae5f1c415ca9046148fae501a8` / `H004` (`focused_review`,
+gate, blocking-only, `finding_authority: [resolve]`).
+Invocation:: `INV-91b3d1d0e7444b3cbd080ed200f2b77c`.
+Candidate:: `4483d2b22c5575f9ad30af5a436caca4f521c396`, correction range
+`b793d33..4483d2b`.
+Finding state:: `F001` (open, blocking) stays *open* with new material
+evidence; `F002` and `F003` are *resolved*. No new Finding is opened in this
+Hop: the premature-exit behaviour described in <<docb-h004-f001>> is the same
+documented loop, the same two source lines and the same invariant as `F001`.
+Date:: 2026-11-23.
+
+=== 1 The correction, as measured
+
+`git diff --stat b793d33..4483d2b` shows two leaves and nothing else:
+`docs/operator_manual/ch10_level1_orchestration/01_operating_pattern.adoc`
+(`+5 / -4`) and `02_worked_sequence.adoc` (`+1 / -1`). `_chapter.adoc`,
+`docs/operator_manual/operator_manual.adoc` and the broad-review artifact are
+byte-identical to the reviewed H001/H002 state; no file under `src/`,
+`scripts/`, `tests/`, `governance/`, `docs/README.adoc`,
+`docs/ai_info/_ai_info.adoc` or the release plan was touched, so the withheld
+authority is respected and the three corrections are strictly local to the
+flagged lines.
+
+=== 2 `F002` — resolved
+
+`01_operating_pattern.adoc:247-248` now reads
+`nohup wfc run --repository . --request ../wfc-scratch/<package>/request.yaml --executable claude --yes`.
+
+* `--executable EXECUTABLE` is a real `wfc run` option
+  (`build/wfc/postbeta-inputs/CLI_FACTS.txt`, `=== wfc run --help`), so the
+  command line stays verifiable against the staged CLI facts.
+* The value `claude` is what the canonical quickstart prescribes for a
+  `claude_cli` configuration ("Pass `--executable claude` for a `claude_cli`
+  configuration; the executable must match the configured adapter",
+  `docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc:198-200`),
+  and it is the adapter the chapter's subject, `DEMO_FACTS.txt` and the
+  chapter's own second leaf (`02_worked_sequence.adoc:89`) bind.
+* The silent fall-through to `DEFAULT_EXECUTABLE = "codex"`
+  (`src/workflow_coordinator/frontdoor/lifecycle.py:72`, bound at
+  `:960`) can therefore no longer happen for a reader who copies the block,
+  which was the whole of `F002`. Both `wfc run` invocations in the chapter now
+  carry the flag; `grep -n "wfc run"` over the chapter shows no third one.
+
+=== 3 `F003` — resolved
+
+`01_operating_pattern.adoc:237-241` now says "author the equivalent Consumer
+Request YAML (it is read by filesystem path, not from the repository tree;
+keeping it in the scratch directory keeps the worktree clean; see … `wfc plan`
+preview)", and `02_worked_sequence.adoc:123` says "author the Consumer
+Request".
+
+* This agrees with the section both leaves link to: "`wfc run` below reads it
+  from `--request` by plain filesystem path, so it need not live inside the
+  repository either -- keeping it in the scratch directory keeps the tree
+  clean" (`ch09_consumer_quickstart/01_quickstart.adoc:182-185`). The chapter
+  no longer states a rule the canonical source contradicts.
+* The internal impossibility is gone too: the `--request
+  ../wfc-scratch/<package>/request.yaml` and `--request
+  ../scratch/request.yaml` paths in both leaves are outside the worktree, and
+  nothing now tells the reader to commit a file that cannot be committed from
+  there.
+* No "commit the request" phrasing remains anywhere in the chapter
+  (`grep -n "commit the"` over both leaves is empty). The one remaining
+  commit statement nearby is `01_operating_pattern.adoc:58-60`, which has the
+  Commission inputs and the guidance file "reviewed and committed before `wfc
+  run` ever" — correct, because the guidance commit *is* load-bearing.
+
+[[docb-h004-f001]]
+=== 4 `F001` — still open (new material evidence)
+
+The corrected block (`01_operating_pattern.adoc:250-252`) is
+
+[source,shell]
+----
+while wfc status --repository . | grep -q '^CLASSIFICATION: \(not_launched\|lifecycle_active\|uncertain_launch\|engine_active\)$'; do
+  sleep 30
+done
+----
+
+The inversion removed the unreachable `refused_` branch, which is real
+progress, but the chosen in-flight set is not the set of states a Run can
+occupy while it is in flight. `not_launched` is not an in-flight value: it is
+what `_evaluate` returns when an `authorized` record exists, no launch marker
+exists and the ownership lock is free
+(`src/workflow_coordinator/frontdoor/lifecycle.py:686-690`) — i.e. exactly the
+state a checkout is left in after any refusal between authorization and launch,
+because those refusals release the lock and re-raise
+(`:795-797`, `:321-353`, `:390-412`, `:544`).
+
+*Reproduced* (disposable consumer repository built the way
+`tests/unit/test_lifecycle_controller.py` builds one, `XDG_STATE_HOME`
+redirected into the scratch directory, the real `frontdoor.lifecycle` driven to
+a refusal, then the real `wfc status` CLI path, then the chapter's own grep
+pattern applied to its output):
+
+* unresolvable provider binary (`--executable claude` with no `claude` on
+  `PATH` — the very flag this correction adds): `RUN refusal classification:
+  refused_prelaunch | provider executable is not resolvable on PATH: claude`,
+  then `CLASSIFICATION: not_launched` / `MESSAGE: authorized; launch not yet
+  reached`, and the documented pattern *matches* → the loop sleeps forever.
+* dirty worktree: `RUN refusal classification: refused_prelaunch | repository
+  worktree is not clean at the authorized baseline`, then the same
+  `not_launched` status and the same non-terminating match.
+
+So the failure mode `F001` named ("sleeps forever on the most likely
+first-attempt outcomes — dirty tree, failed baseline probe, unresolvable
+provider binary") is *not* fixed; it moved from the enumerated-terminal side to
+the enumerated-in-flight side. A reader who copies the block sees the refusal
+only in `run.log` (`wfc run` prints `wfc run: <reason>` on stderr and no
+`CLASSIFICATION:` line on a refusal, `lifecycle.py:1041-1044`), never in the
+monitor.
+
+*Second, newly measured behaviour of the same two lines.* On a fresh worktree
+nothing is journaled yet, so `wfc status` returns `no_lifecycle`
+(`lifecycle.py:682-684`), which the inverted condition treats as terminal. The
+loop's first poll runs immediately after the `nohup … &` line, and the status
+process does strictly less work than `wfc run` does before journaling
+`authorized` (same imports, then one journal read versus config read, two full
+commission compilations with both digests, and three fsynced writes,
+`:278-309`). Measured by spawning both as separate interpreter processes in the
+documented order: the first `wfc status` finished *0.18 s* after the run was
+spawned and printed `CLASSIFICATION: no_lifecycle` / `MESSAGE: no lifecycle
+recorded for this checkout`; the documented pattern did *not* match, i.e. the
+loop exits on its first iteration and the following `wfc status` is read as the
+Run's outcome while the Run is in fact starting normally. (Repeated twice, same
+result; the probe's own run later reached authorization and the pre-launch
+probe before failing to launch for an agent-local reason — no installed `wfc`
+console script in this shell, `lifecycle.py:94` — which does not affect the
+measured first-poll window.) The pre-correction `until` loop did not have this
+behaviour; `no_lifecycle` is also the *permanent* state after a refusal that
+happens before authorization (`refused_unauthorized`, `refused_drift`), so the
+two values cannot be separated by classification alone.
+
+*Feasible remedy, no new mechanism.* The attempt's owner is the `wfc run`
+process itself: it waits for the engine and then prints the classification or
+the refusal reason. Waiting on that process instead of enumerating
+classification values terminates on every outcome, needs no maintenance when a
+classification is added, and cannot exit early — for example capture `$!` after
+the `nohup … &` line and `wait` for it, then read `wfc status` once; where the
+monitoring shell is not the launching shell (the normal Level-1 case), key the
+poll on the launched process or on `run.log` having received its final
+`CLASSIFICATION:`/`wfc run:` line rather than on the classification
+enumeration. Any variant is acceptable that (a) terminates for every refusal
+and (b) does not treat the pre-authorization window as terminal; this review
+prescribes no particular shell idiom. `02_worked_sequence.adoc:123` inherits
+whatever `<<level1-loop>>` states ("launch and wait exactly as in Commission
+1") and needs no separate change.
+
+For the record: `LEVEL1_PRACTICE_FACTS.txt:18-19` does describe the practice as
+waiting "until the classification is no longer
+lifecycle_active/engine_active/not_launched". That is the Operator's account of
+practice; the Commission requires every command claim to be verified against
+the implementation, and the implementation behaves as measured above. This is
+an observation about the source, not a conflict that needs escalation: the
+chapter is free to describe the practice and still print a loop that
+terminates.
+
+=== 5 Checks, with their limits
+
+* *Strict render.* `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+  --failure-level=WARN` on `docs/operator_manual/operator_manual.adoc` exits 0
+  with no output at the candidate HEAD; the same invocation on
+  `docs/README.adoc` and `docs/ai_info/_ai_info.adoc` exits 0 with no output.
+  Neither index file was edited.
+* *Document catalog.* At the candidate HEAD, before this artifact existed,
+  `python3 scripts/wfc_doc_catalog.py check` reported `Informational: 83
+  unresolved links; 4 Project Memory source_path misses` and `catalog
+  current` — the same baseline the correction Hop reported. With this artifact
+  added the two informational counts are unchanged (83 / 4) and the verdict
+  line becomes `catalog drifted`, because the generated
+  `build/wfc/document_catalog.jsonl` does not yet contain this new leaf. No
+  unresolved link and no memory miss names a `ch09`, `ch10` or
+  `operator_manual` path (`grep -i "ch10\|ch09\|operator_manual"` over the
+  check output is empty); the four misses are the pre-existing
+  `src/workflow_coordinator/*.py` entries. `generate` was not run here:
+  `build/wfc/document_catalog.jsonl` is outside this Hop's authorized scope.
+  This artifact will add one record and no unresolved link.
+* *Required suite.* Not run agent-side and not claimed; the full suite and the
+  task-check are Coordinator-owned trusted evidence. The reproduction above is
+  exploratory agent-side evidence about the *implementation's* behaviour, run
+  read-only against a disposable repository outside this worktree; it changed
+  nothing in the product or in the test suite.
+
+=== 6 Non-blocking observations
+
+* The launch block passes `--executable claude` but no
+  `--execution-override worker.adapter=claude_cli`, so it assumes the
+  Consumer Config's own `default_execution` binds `claude_cli`. That is the
+  normal case for a repository set up as the chapter describes and the
+  quickstart carries the override form; worth at most a clause, not a change.
+* `wfc status` exits 0 for `not_launched` and 1 for `no_lifecycle` in the
+  measured runs, which is a further reason the chapter is right to tell the
+  reader to read the printed `CLASSIFICATION` rather than an exit code
+  (`:256-258`). No change needed.
+* The broad review's non-blocking observations stand unchanged; nothing else
+  new was found in the chapter, whose structure, Level 0/Level 1 framing,
+  supported-versus-provided table, human-decision list, acceptance-evidence
+  section and `Starting small, and what it costs` section are untouched by this
+  correction.
