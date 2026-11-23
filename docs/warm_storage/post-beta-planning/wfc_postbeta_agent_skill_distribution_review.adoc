@@ -2,16 +2,16 @@
 :toc:
 :toclevels: 2
 
-Maturity::  in-review
-Authority:: exploratory
+Maturity::  reviewed
+Authority:: informative
 Updated::   2026-11-23
-Owns::      An independent design review of how an installed WFC package can make itself usable by a fresh Level-1 coding agent (Claude Code or Codex): what the agent must know, how that knowledge is shipped, installed and kept in step with the installed version, and how onboarding is qualified. Research for a maintainer decision; the implementable proposal is link:../backlog/FTR-WFC-AGENT-SKILL-DISTRIBUTION.adoc[FTR-WFC-AGENT-SKILL-DISTRIBUTION]. Not an accepted design and not an implementation mandate.
+Owns::      The supporting design analysis for link:../../backlog/FTR-WFC-AGENT-SKILL-DISTRIBUTION.adoc[FTR-WFC-AGENT-SKILL-DISTRIBUTION]: how an installed WFC package can make itself usable by a fresh Level-1 coding agent (Claude Code or Codex), the host evidence, the options considered and the three points reconsidered after independent review (<<followup>>). The maintainer accepted the architecture on 2026-11-23; the FTR is the controlling record and is complete without this document. Nothing here authorizes a Run.
 
 [horizontal]
 WFC:: `workflow-coordinator@baab49e` (`main`, release `0.1.0b1`). Unprefixed paths are relative to this repository.
 Hosts:: Claude Code 2.1.322 and codex-cli 0.167.0 on the WFC development machine (Debian 13, Linux x86-64).
 Inspected:: 2026-11-23.
-Method:: Primary documentation (<<sources>>), source inspection of this repository, and two read-only host probes run in a throw-away home directory with dummy skills: Claude Code's headless `init` event and Codex's `app-server` `skills/list` request. No model request was billed, no WFC Run was started, nothing was installed into a real agent configuration.
+Method:: Primary documentation (<<sources>>), source inspection of this repository, and three host probes run in a throw-away home directory with dummy skills: Claude Code's headless `init` event, Codex's `app-server` `skills/list` request, and the request a Codex role session sends, captured by a local dummy provider under the adapter's exact arguments. No provider was contacted, no model request was billed, no WFC Run was started, nothing was installed into a real agent configuration.
 
 Claim markers: *[D]* stated by the cited documentation. *[H]* observed on the hosts above by a probe. *[V]* verified in this repository's source. *[U]* not established by any evidence here. Unmarked sentences are argument.
 
@@ -31,7 +31,7 @@ A dedicated command is justified, narrowly: the path table, conflict handling an
 [[gap]]
 == The consumer-onboarding gap
 
-`pip install workflow-coordinator==0.1.0b1` delivers the `wfc` Front Door and nothing an agent can read *[V]*: the release contract's artifact allow-list (C2) excludes `docs/` from both artifacts (link:../developer_guide/ch04_release_management.adoc#release-contract[release contract]), and the README links documentation by tag-pinned GitHub URL. The operating knowledge lives in the link:../operator_manual/operator_manual.adoc[Operator Manual], in particular the link:../operator_manual/ch09_consumer_quickstart/01_quickstart.adoc#consumer-quickstart[consumer quickstart] and link:../operator_manual/ch10_level1_orchestration/_chapter.adoc#level1-orchestration[Level-1 orchestration]. Chapter 10 says itself how a Level-1 session gets its rules today: from "durable documents and a project instruction file", with a standing-instruction template the human pastes (link:../operator_manual/ch10_level1_orchestration/01_operating_pattern.adoc#level1-context[context and standing instructions]). The Q1 consumer smokes qualified the CLI with both adapters, driven by an operator who already knew all of this.
+`pip install workflow-coordinator==0.1.0b1` delivers the `wfc` Front Door and nothing an agent can read *[V]*: the release contract's artifact allow-list (C2) excludes `docs/` from both artifacts (link:../../developer_guide/ch04_release_management.adoc#release-contract[release contract]), and the README links documentation by tag-pinned GitHub URL. The operating knowledge lives in the link:../../operator_manual/operator_manual.adoc[Operator Manual], in particular the link:../../operator_manual/ch09_consumer_quickstart/01_quickstart.adoc#consumer-quickstart[consumer quickstart] and link:../../operator_manual/ch10_level1_orchestration/_chapter.adoc#level1-orchestration[Level-1 orchestration]. Chapter 10 says itself how a Level-1 session gets its rules today: from "durable documents and a project instruction file", with a standing-instruction template the human pastes (link:../../operator_manual/ch10_level1_orchestration/01_operating_pattern.adoc#level1-context[context and standing instructions]). The Q1 consumer smokes qualified the CLI with both adapters, driven by an operator who already knew all of this.
 
 A fresh agent in an unfamiliar repository therefore fails in predictable ways that the CLI does not prevent, because they happen outside a Run: it edits files directly instead of commissioning; it writes the task document inside the repository and dirties the tree; it reads the process exit code instead of `CLASSIFICATION`; it relaunches in a checkout whose single lifecycle is spent; it treats a stop as something to fix in place; it runs an unrecognized `wfc` token, which falls through to the legacy operator entry point *[V]* (`frontdoor/cli.py`). None of these is an authority breach. All of them are onboarding failures.
 
@@ -85,7 +85,7 @@ The Agent Skills specification defines only the directory content: a `SKILL.md` 
 |`codex app-server`, request `skills/list`, returns name, scope and path per skill *[H]*; the app server is marked experimental.
 |===
 
-Two observations matter for WFC's own boundary. Claude role agents launched by WFC's adapter (`--restricted --safe-mode`) do not list personal or project skills at all *[H]*. Codex role agents are launched with `codex exec` and no skill-related option *[V]*; whether they list a user-level `wfc` skill was not observed for `exec` *[U]*, and the app-server listing suggests they do.
+Two observations matter for WFC's own boundary. Claude role agents launched by WFC's adapter (`--restricted --safe-mode`) do not list personal or project skills at all *[H]*. Codex role agents are launched with `codex exec` and no skill-related option *[V]*, and their prompt does contain the name, description and path of every user-level and repository-level skill, though not its body *[H]* (<<followup-level0>>).
 
 Packaging: a wheel is installed by unpacking and by format-level steps only; the specification describes no install-time hook *[D]*, so "never modify agent configuration during `pip install`" is the default behaviour, not an extra rule. Data files belong inside the package, are declared as `package-data`, are read through `importlib.resources.files()` and are to be treated as read-only *[D]*, which is how WFC already ships its four reviewed resource texts *[V]*.
 
@@ -119,7 +119,7 @@ The Operator Manual stays the owner of every procedure. The skill is a distillat
 |`wfc init --help`; the envelope printed by `wfc plan`
 
 |Commission authoring and authorization
-|The approval rule: preview, show the human, launch only on explicit approval
+|The authorization rule: preview; launch when the human's decision covers the Commission; ask once for what is undecided
 |`commission.md`: task document, request fields, scope and ceiling, program, Hop budget
 |`wfc plan` output (scope, digests, envelope); `wfc plan --help`
 
@@ -180,9 +180,9 @@ A is recommended. From E it takes one element: `wfc skill show` prints the packa
 
 *Layout.* `src/workflow_coordinator/agent_skill/wfc/` holds `SKILL.md` and `references/setup.md`, `commission.md`, `stops-and-evidence.md`: Markdown only, no `scripts/`, no `assets/`. It is separate from `resources/`, whose four texts are digest-pinned execution inputs. The CLI lives in one module, `frontdoor/skill.py`, standard library only, imported by nothing but the dispatcher. The deterministic core never learns that skills exist.
 
-*Commands.* `wfc skill install (claude|codex) [--scope user|project] [--repository PATH] [--skills-dir DIR] [--dry-run] [--force]`, `wfc skill status [--json]` and `wfc skill show [FILE]`. `--skills-dir` is the single escape hatch for a relocated configuration or another Agent Skills host. There is no `uninstall`: `status` prints the directory, and removing that directory is the uninstall.
+*Commands.* `wfc skill install (claude|codex) [--scope user|project] [--repository PATH] [--skills-dir DIR] [--dry-run] [--force]`, `wfc skill status (claude|codex) [--scope user|project] [--json]` and `wfc skill show [FILE]`. Status is evaluated for the named host only (<<followup-status>>). `--skills-dir` is the single escape hatch for a relocated configuration or another Agent Skills host. There is no `uninstall`: `status` prints the directory, and removing that directory is the uninstall.
 
-*Version coupling.* The installer copies the packaged bytes unchanged and adds a marker, `.wfc-skill.json`, with the WFC version and a SHA-256 per file. An installed directory is then in exactly one state: `current` (equals the package), `stale` (equals its own marker, differs from the package), `modified` (differs from both) or `foreign` (no marker). The first step of `SKILL.md` runs `wfc --version --json` and `wfc skill status`; on anything but `current` the agent follows `wfc skill show` for the session and tells the human to re-run the install.
+*Version coupling.* The installer copies the packaged bytes unchanged and adds a marker, `.wfc-skill.json`, with the WFC version and a SHA-256 per file. An installed directory is then in exactly one state: `current` (equals the package), `stale` (equals its own marker, differs from the package), `modified` (differs from both) or `foreign` (no marker). The first step of `SKILL.md` runs `wfc --version --json` and `wfc skill status` for the agent's own host; if the installation the skill was loaded from is anything but `current`, the agent follows `wfc skill show` for the session and tells the human to re-run the install.
 
 *Install semantics.* Absent: create. `current`: no-op. `stale`: replace, since the copy is untouched and owned by WFC. `modified` or `foreign`: refuse and list the differing files; `--force` replaces the directory. A symbolic link as destination is always refused. The new directory is staged beside the skills root and renamed into place, so a failure leaves the old installation, the new one or none, never a partial one. `--dry-run` prints the state and the plan and writes nothing. Re-running is idempotent.
 
@@ -200,7 +200,7 @@ A is recommended. From E it takes one element: `wfc skill show` prints the packa
 |3 |A fresh session starts in the repository; the host lists `wfc` with its description. |Host; scriptable check
 |4 |"Use WFC to ..." relies on description matching. `/wfc ...` or `$wfc ...` loads the skill deterministically. |Human; the explicit form is the documented one
 |5 |Preflight, repository readiness, Commission draft, `wfc plan` preview. |Agent
-|6 |Approval of scope, authority source, program, Hop budget and execution bindings; the commit of configuration and guidance. |Human, irreducibly
+|6 |The decision on scope, program and Hop budget of a new Commission, unless the human's instruction or an earlier approval already contains it (<<followup-authorization>>); the commit of configuration and guidance. |Human, once per decision
 |7 |`wfc run --yes` in a fresh worktree, `wfc status`, `wfc report`, independent verification, report to the human. |Agent
 |8 |Any stop; integration, push, tag. |Human
 |===
@@ -227,9 +227,9 @@ Three tiers, kept apart because they prove different things.
 
 *Tier B -- host discovery probes, scripted, maintainer-run.* After `wfc skill install` into an isolated home: Claude Code's `init` event lists `wfc`; Codex's `skills/list` returns `wfc` with the expected scope and path. No model usage. Recorded with the host versions, because both interfaces are outside WFC's control.
 
-*Tier C -- agent qualification, fresh contexts, per host (Q2-A Claude, Q2-B Codex).* A clean environment with the built wheel, an unfamiliar consumer repository, and an agent account or configuration with no memory, no project instruction file and no WFC checkout within reach. Scenarios: a small bounded task by explicit invocation; the same asked in plain words, repeated, to measure implicit selection; `wfc` absent from `PATH`; a stale installed skill; a Commission designed to stop; a mid-task request outside the approved scope. Pass criteria are read from artifacts, not from the agent's account of itself: the preflight commands in the transcript, a human approval turn before `wfc run`, the `CLASSIFICATION`, the Evidence commit with `manifest.json` and `audit.json`, a trusted commit confined to the declared scope, the review record for `robust@v1`, no commit by the Level-1 agent between the Commission commit and the trusted commit, no push, and a clean consumer tree.
+*Tier C -- agent qualification, fresh contexts, per host (Q2-A Claude, Q2-B Codex).* A clean environment with the built wheel, an unfamiliar consumer repository, and an agent account or configuration with no memory, no project instruction file and no WFC checkout within reach. Scenarios: a small bounded task by explicit invocation; the same asked in plain words, repeated, to measure implicit selection; `wfc` absent from `PATH`; a stale installed skill; a Commission designed to stop; a mid-task request outside the approved scope. Pass criteria are read from artifacts, not from the agent's account of itself: the preflight commands in the transcript, a launch covered by what the human decided (no approval question where the instruction already decided everything, exactly one where it did not), the `CLASSIFICATION`, the Evidence commit with `manifest.json` and `audit.json`, a trusted commit confined to the declared scope, the review record for `robust@v1`, no commit by the Level-1 agent between the Commission commit and the trusted commit, no push, and a clean consumer tree.
 
-A passing Tier A plus a completed Run is still "successful CLI invocation". Onboarding is accepted only on Tier C, and a truthful failure there is a result, as it was for Q1.
+A passing Tier A plus a completed Run is still "successful CLI invocation". Onboarding is accepted only on Tier C, and a truthful failure there is a result, as it was for Q1. As decided, the explicit-invocation scenarios gate `0.1.0b2`; the plain-language rate is a reported measurement.
 
 [[open]]
 == Tradeoffs and unresolved questions
@@ -237,11 +237,39 @@ A passing Tier A plus a completed Run is still "successful CLI invocation". Onbo
 * *Staleness is detected, not prevented.* Copy semantics mean an upgrade needs a second command. The preflight and `wfc skill show` bound the damage; the alternative (option D) changes agent instructions without an explicit step.
 * *A distillation can drift from the manual.* Mechanical guards cover commands, flags, classifications and links, not prose. The upkeep rule "update documentation with behavior" has to name the skill.
 * *Implicit selection is unmeasured* *[U]* on both hosts. Tier C measures it; until then only explicit invocation is claimed.
-* *Level-0 exposure on Codex* *[U]*. If `codex exec` role agents list a user-level `wfc` skill, a Worker could be drawn towards `wfc` commands inside a Hop. WFC's own refusals (one lifecycle per checkout, the provider sandbox) still hold and the skill grants nothing, but the clean answer is to suppress skills in role sessions, which is an adapter change with its own record. The skill carries a textual guard meanwhile.
-* *The Codex user path.* The documentation names `~/.agents/skills`; Codex's own installer still writes `$CODEX_HOME/skills`. The recommendation follows the documentation; a host release could settle or reverse this.
+* *Level-0 visibility on Codex* is established; that any role agent acts on it is not *[U]*. See <<followup-level0>> for the finding, the chosen guard and the two verified suppressions held in reserve.
+* *The Codex user path.* The documentation names `~/.agents/skills`; Codex's own installer still writes `$CODEX_HOME/skills`. The decision follows the documentation; a host release could settle or reverse this.
 * *Fresh-context isolation with credentials* *[U]*. How to give an authenticated but otherwise empty agent configuration to Tier C (a separate OS user is the plain answer) is not settled here.
 * *`implementation_tree_sha256` changes with skill text* *[V]*, since it hashes the whole package directory. No source in `src/` compares it today; any external use as a Runtime identity should be checked before the first skill-bearing build is promoted.
-* *Skill name.* `wfc` gives `/wfc` and `$wfc` and can collide with a user's own skill; the conflict states cover the collision, the name itself is a public interface once shipped.
+* *Skill name.* `wfc` (accepted) gives `/wfc` and `$wfc` and can collide with a user's own skill; the conflict states cover the collision.
+
+[[followup]]
+== Review follow-up (2026-11-23)
+
+Three points were raised by independent review after the first version of this analysis. Each was reconsidered on its merits.
+
+[[followup-authorization]]
+=== Human authorization and existing delegations -- accepted, with a limit
+
+The first version told the agent to obtain "explicit approval" before every `wfc run --yes` and made "a human approval turn precedes `wfc run`" a pass criterion. That is stricter than WFC's own contract and the criticism is right. The implemented authorization point is `wfc run`'s confirmation of the Commission digest and the execution-envelope digest; `--yes` conveys it for a non-interactive caller, and nothing else is checked *[V]* (`frontdoor/lifecycle.py`, `_make_confirm`). The manual names that confirmation "the maintainer's explicit authorization to launch" (link:../../operator_manual/ch03_running/01_preparation.adoc[preparation]) and chapter 10 says when Level 1 needs the human: before "authorizing a new Commission's scope, authority, program or Hop budget for the first time", and not when "launching a Commission whose scope, program and Hop budget the human has already approved for this package" (link:../../operator_manual/ch10_level1_orchestration/01_operating_pattern.adoc#level1-human-decisions[human decisions]). A mandatory turn per Run would have made the skill a second, stricter authority model and would have failed a correct agent in qualification.
+
+The limit: the correction must not swing into inventing delegation. WFC has no delegation object, file or flag, and does not verify what `--yes` asserts. The skill therefore only teaches the agent to recognise a decision the human has already made -- in the task instruction, in a standing instruction, or by approving a decomposition -- and to test coverage fact by fact against the `wfc plan` projection: scope equal to or inside what was approved, the same program, a Hop budget not above it, bindings as approved or as committed in `.wfc/config.yaml`. Covered: launch, report the digests, no further turn. Not covered or ambiguous: ask once, for the undecided facts only. The committed scope ceiling is a bound, not an approval of a particular Commission. Stops, widening, pushes, configuration changes and discards stay with the human under every delegation, as chapter 10 lists them. The request's `authority_source` names the instruction relied upon, which is the one place the implemented Commission records the basis.
+
+[[followup-status]]
+=== Status semantics -- accepted
+
+The first version let `wfc skill status` report all four destinations and told the agent to fall back "if any reported installation is not `current`". A Codex copy that is absent or stale would then have degraded a perfectly current Claude Code installation. That is a defect, not a matter of wording. Status now takes the host as a required argument and evaluates only that host; an installation is one destination, identified by host and scope, with exactly one state; states are never aggregated; `absent` is an ordinary state and never an error. The agent's rule is keyed to the directory its `SKILL.md` was loaded from, with a defined fallback when it cannot tell which that is. There is no all-hosts mode.
+
+[[followup-level0]]
+=== Level-0 visibility -- investigated; guard kept, no adapter change
+
+*Finding.* With the Codex adapter's exact arguments (`codex --ask-for-approval never exec --ephemeral --json --sandbox workspace-write ...`), an isolated home holding a user-level skill named `wfc` and a repository holding a project-level skill, the request Codex sent to a local dummy provider contained a `## Skills` section listing both skills by name, description and path. The body of `SKILL.md` was not included *[H]* (codex-cli 0.167.0). The adapter passes the environment through and sets no skill option *[V]*. Claude role sessions list neither *[H]*. So a Codex Worker or Reviewer does see one catalogue line for the operator skill.
+
+*What is not shown.* That any role agent loads the file or acts on it. A role agent that did would find a guide that tells it to keep out, and WFC's refusals do not depend on its restraint: a second `wfc run` in a checkout with a lifecycle is refused as `refused_active_lifecycle` *[V]*. The exposure is also not specific to this skill: a Codex role session inherits every skill of the user and the repository, and `wfc` is the only one written with that reader in mind.
+
+*Two suppressions were verified to work* *[H]*: an `agents/openai.yaml` in the skill with `policy.allow_implicit_invocation: false` removes it from the listing (skill-side, no WFC code, but it also ends plain-language selection in Level-1 Codex sessions); the argument `-c 'skills.config=[{name="wfc",enabled=false}]'` removes it by name (adapter-side).
+
+*Recommendation.* Neither now. Visibility of one line is demonstrated, harm is not; the skill-side switch would remove on Codex the very behaviour whose reliability the qualification is meant to measure, and the adapter-side one is a core-adjacent change fixing one instance of a general property. The smallest justified measure is the one already in the design, made precise: because a role session sees the description and nothing else, the exclusion ("not inside a WFC Worker or Reviewer Hop") must be in the description, and a content test asserts it. The residual question -- does a role agent ever load the skill -- is recorded in the FTR with an observation duty for the Codex qualification and the two suppressions as the prepared response, the skill-side one first. The general property, role sessions inheriting user configuration, belongs to link:../../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[execution trust boundaries] and is not decided here.
 
 [[sources]]
 == Sources
