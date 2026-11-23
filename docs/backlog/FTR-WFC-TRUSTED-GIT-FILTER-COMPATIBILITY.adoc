@@ -1,0 +1,148 @@
+= FTR-WFC-TRUSTED-GIT-FILTER-COMPATIBILITY -- Trusted Git Operations and Configured Clean/Process Filters (Post-Beta Hardening Candidate)
+
+Type:: future technical record
+Status:: proposed / backlog / post-Beta; not a blocker and not implemented
+for 0.1.0b1
+Current controlling source:: This record; see link:_open.adoc[the
+active-work manifest] for its current card.
+Not authorized here:: Any implementation, ADR, weakening of the existing
+refusal rule, design decision between the alternatives below, or scheduling
+of the investigation described below. Nothing about the current Beta
+release is changed by this record.
+Date:: 2026-11-23.
+
+== Current state: fail-closed refusal of configured clean/process filters
+
+WFC's three trusted Git write paths in `src/workflow_coordinator/git_facts.py`
+each refuse outright whenever any effective
+`filter.*.clean`/`filter.*.process` Git configuration is visible to them,
+including Git LFS's `filter.lfs.clean`/`filter.lfs.process` -- even when the
+specific commit at hand would never have invoked that filter (verified by
+reading the cited lines directly):
+
+* `_configured_external_filters()` (`git_facts.py:741-759`) runs `git config
+  --null --name-only --get-regexp '^filter\..*\.(clean|process)$'` and
+  returns every matching key.
+* `trusted_commit()` (`git_facts.py:782-786`) refuses with "configured
+  clean/process filter is not permitted for trusted commit: <keys>".
+* candidate preservation's byte-safe counterpart,
+  `_configured_external_filters_byte_safe()` (`git_facts.py:1000-1003`),
+  refuses with "configured clean/process filter is not permitted for
+  candidate preservation: <keys>".
+* the bounded path commit used by `wfc run` (`git_facts.py:1185-1188`)
+  refuses with "configured clean/process filter is not permitted for bounded
+  path commit: <keys>".
+
+The code comment at `_configured_external_filters()` states the rule's own
+rationale: "A worktree `.gitattributes` file can select a named filter,
+while the executable clean/process command lives in Git configuration.
+Trusted mutation therefore refuses any such effective configuration rather
+than allowing agent-authored attributes to select an operator-configured
+process." No source in this repository states the rule was intended only as
+an interim measure, so this record makes no such claim; it is a deliberately
+conservative current product limit, consistent with the quickstart
+(`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc`,
+"Git identity and filters") and the release notes
+(`docs/release_notes/release_notes.adoc`).
+
+== The reproduced hosted-CI finding
+
+During the 2026-11-23 hosted-CI qualification of
+`.github/workflows/release.yml`, run #5 of that workflow failed because the
+GitHub-hosted runner's own system-level `/etc/gitconfig` defined
+`filter.lfs.clean`/`filter.lfs.process`; the required test suite's own
+trusted-commit tests then correctly refused inside the runner -- the same
+fail-closed behaviour this record documents, triggered by the runner's
+pre-existing configuration, not by the repository under test. The fix,
+commit `d3998ba` ("fix(ci): remove runner Git-LFS filters for trusted commit
+tests"), removes both keys from the runner's *system* Git configuration
+(`sudo git config --system --unset-all filter.lfs.clean`/`.process`) inside
+the isolated runner's own `Required test suite` step, step-scoped only; it
+does not touch, weaken or bypass WFC's own filter-refusal test, which runs
+unmodified in that same step. Verify both anchors directly: `git show
+d3998ba` and the cited step in `.github/workflows/release.yml`.
+
+== The practical limit for consumers
+
+A consumer repository, or a consumer's host, with an effective
+`filter.*.clean`/`filter.*.process` configuration -- most commonly Git LFS --
+cannot use any of WFC's trusted commits today, regardless of whether a given
+Commission's scope ever touches a filtered path. Diagnose this, read only,
+before relying on trusted commits in a given repository:
+
+[source,shell]
+----
+git config --show-origin --get-regexp '^filter\..*\.(clean|process)$'
+----
+
+Any output means that repository cannot currently combine that filter
+configuration with WFC. This is not advice to strip Git LFS or any other
+functionally necessary filter from a consumer's own repository; it only
+states today's product limit.
+
+== The security problem this rule exists to prevent
+
+As the code comment above states, a worktree's `.gitattributes` file can
+*select* a named filter by path pattern, while the actual executable
+clean/process command for that filter lives in Git configuration, not in
+the versioned worktree. An agent operating inside the authorized Trusted Git
+boundary could author or modify `.gitattributes` to select a filter whose
+configured command executes at a later `git add` -- inside the same
+boundary the trusted commit is meant to protect -- without that command
+itself ever appearing in the reviewed diff. Refusing every effective
+clean/process filter configuration, rather than attempting to vet individual
+filters, is the current, conservative answer.
+
+== Investigation paths (questions, not a chosen solution)
+
+A later, separately authorized investigation could examine, each with its
+own security consequence and none recommended here:
+
+* *Scoped per-commit disabling* -- disable filters only for the paths a
+  given trusted commit actually touches, verified filter-free by an
+  attributes lookup; weakens the rule's current blanket simplicity, and the
+  attributes lookup itself then joins the trust boundary.
+* *An explicit allow-list of reviewed filters, pinned by command identity* --
+  permits specific, maintainer-reviewed filters (for example Git LFS with a
+  pinned `clean`/`process` command string); shifts trust to the allow-list's
+  own maintenance and to whether a pinned command string reliably identifies
+  a safe executable across hosts.
+* *Running Git with filters disabled and verifying content equality* --
+  compare filtered and unfiltered blob content before committing; depends on
+  whether that comparison can itself be made trustworthy without executing
+  the filter.
+* *Refusing only when an in-scope path actually selects a filter via
+  attributes* -- narrows the refusal from "any configured filter visible
+  anywhere" to "a filter the current Commission's scope would actually
+  invoke"; needs a correct, byte-faithful attributes-to-path resolution that
+  itself becomes security-relevant.
+
+== Measurable criteria for a later investigation
+
+* Whether a candidate change removes the refusal for at least one real,
+  named filter configuration (for example Git LFS) without any regression on
+  the security property the current rule protects: an agent cannot cause an
+  unreviewed external command to execute inside the Trusted Git boundary.
+* Whether the diagnosis command above still correctly identifies every case
+  the new mechanism would still refuse.
+* No regression against the existing fail-closed behaviour for any filter
+  configuration not explicitly allow-listed or scoped out.
+
+== Non-goals
+
+* No implementation, schema or `trusted_commit()`/candidate-preservation/
+  bounded-path-commit contract change.
+* No ADR.
+* No design decision between the alternatives above.
+* No change to any existing fail-closed check, the Trusted Git boundary, or
+  any accepted normative document.
+* No scheduling or authorization of the investigation itself.
+
+== Lifecycle
+
+This record is *proposed / backlog*, post-Beta, not a blocker and not
+implemented for 0.1.0b1. Promotion to an active, separately scoped
+investigation Commission, and any later design decision among the
+alternatives above, are the maintainer's to authorize; only an accepted
+review of that future investigation's own output may change this record's
+status.
