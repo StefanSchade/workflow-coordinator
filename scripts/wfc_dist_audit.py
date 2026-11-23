@@ -3,9 +3,9 @@
 
 Reads the wheel and sdist archives given on the command line and fails on any
 entry outside the exact allow-list, and on a wheel missing any of the four
-reviewed resource texts; never writes to or modifies an artifact. One rule,
-one implementation: this module is both the Make target's CLI and the
-distribution test's caller.
+reviewed resource texts or the four agent-skill files; never writes to or
+modifies an artifact. One rule, one implementation: this module is both the
+Make target's CLI and the distribution test's caller.
 """
 
 from __future__ import annotations
@@ -21,6 +21,14 @@ WHEEL_RESOURCE_FILES = frozenset(
         "workflow_coordinator/resources/roles/reviewer.txt",
         "workflow_coordinator/resources/roles/simple-self-check.txt",
         "workflow_coordinator/resources/roles/worker.txt",
+    }
+)
+WHEEL_SKILL_FILES = frozenset(
+    {
+        "workflow_coordinator/agent_skill/wfc/SKILL.md",
+        "workflow_coordinator/agent_skill/wfc/references/setup.md",
+        "workflow_coordinator/agent_skill/wfc/references/commission.md",
+        "workflow_coordinator/agent_skill/wfc/references/stops-and-evidence.md",
     }
 )
 SDIST_TOP_LEVEL_FILES = frozenset(
@@ -46,7 +54,7 @@ def _wheel_entry_allowed(name: str) -> bool:
     normalized = name.rstrip("/")
     if not normalized:
         return True
-    if normalized in WHEEL_RESOURCE_FILES:
+    if normalized in WHEEL_RESOURCE_FILES or normalized in WHEEL_SKILL_FILES:
         return True
     top_level = normalized.split("/", 1)[0]
     if top_level.endswith(".dist-info"):
@@ -81,6 +89,8 @@ def audit_wheel(path: Path) -> list[str]:
     violations = [_violation(path, name) for name in names if not _wheel_entry_allowed(name)]
     for missing in sorted(WHEEL_RESOURCE_FILES - set(names)):
         violations.append(f"{path.name}: missing required resource file '{missing}'")
+    for missing in sorted(WHEEL_SKILL_FILES - set(names)):
+        violations.append(f"{path.name}: missing required skill file '{missing}'")
     return violations
 
 
