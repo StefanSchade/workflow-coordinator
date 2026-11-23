@@ -1,0 +1,490 @@
+= FTR-WFC-AGENT-SKILL-DISTRIBUTION -- Agent Skill Distribution and Level-1 Consumer Bootstrap
+
+Type:: future technical record
+Status:: proposed / backlog; candidate for `0.1.0b2` without a committed
+release date; not implemented
+Current controlling source:: This record; see link:_open.adoc[the
+active-work manifest] for its current card.
+Not authorized here:: Any implementation, Commission or Run, change to the
+package, the CLI, the release contract or a released artifact, and any of
+the maintainer decisions listed in <<decisions>>.
+Date:: 2026-11-23.
+Design analysis::
+link:../research/wfc_agent_skill_distribution_and_bootstrap.adoc[WFC Agent
+Skill -- Distribution, Bootstrap and Consumer Qualification], which holds
+the host evidence, the options considered and the cited sources. This
+record states only what is to be built.
+
+== Problem and motivation
+
+WFC `0.1.0b1` installs from PyPI and its CLI is qualified with both provider
+adapters. Installing it does not tell a new Level-1 agent how to operate it:
+the wheel contains no documentation, and the procedure lives in the
+link:../operator_manual/ch09_consumer_quickstart/01_quickstart.adoc#consumer-quickstart[consumer
+quickstart] and
+link:../operator_manual/ch10_level1_orchestration/_chapter.adoc#level1-orchestration[Level-1
+orchestration], which an agent in an unfamiliar repository never sees.
+Self-hosting worked because the operator carried that knowledge in standing
+instructions and earlier sessions.
+
+Target: a fresh Claude Code or Codex agent discovers the WFC operating
+procedure, knows when it applies, and operates an installed WFC correctly in
+an unfamiliar repository, with one extra command from the human and no
+recurring upkeep beyond keeping the skill text true.
+
+== Chosen direction and rationale
+
+Ship one provider-neutral https://agentskills.io/specification[Agent Skill]
+inside the wheel and install it with an explicit command, `wfc skill
+install`, into the chosen host's skill directory.
+
+* *In the wheel*, because the skill must describe exactly the CLI the agent
+  will drive, must work offline, and should not need a second release
+  channel. A GitHub-based installation is bound to a branch or a hand-typed
+  tag, not to the installed version.
+* *An explicit command*, because a wheel has no install hook and an implicit
+  write into agent configuration is excluded; and because the host path
+  table, conflict handling and the dirty-tree warning are what a documented
+  `cp -r` gets wrong.
+* *One skill, two destinations*, because the two hosts share no skill
+  directory. The host knowledge in the product is a four-cell path table.
+* *Bound by content*: the installer copies the packaged bytes unchanged and
+  records their digests; freshness is a byte comparison with the executing
+  package.
+* *User scope by default*, because `wfc run` refuses a dirty tree and an
+  untracked skill directory in the consumer repository is one.
+
+== Scope
+
+. The skill: `SKILL.md` and three reference files, as package data.
+. `wfc skill install`, `wfc skill status`, `wfc skill show`.
+. Packaging, the artifact audit and the release-contract wording for the
+  four new files.
+. Tests as listed in <<tests>>.
+. Documentation: one quickstart step, one pointer in chapter 10, the command
+  index, the release notes.
+. A host discovery probe script and the agent qualification runbook
+  (<<slices>>, S3).
+
+== Non-goals
+
+* No general skill or plugin manager: no registry, no third-party skills, no
+  `update` or `uninstall` command, no host auto-detection.
+* No change to the deterministic core, the reducer, the adapters, admission,
+  the Trusted Commit or any existing subcommand's behaviour or output.
+* No write to `CLAUDE.md`, `AGENTS.md`, `.gitignore`, host settings or
+  permission files, and no Git commit by this command.
+* No Claude Code plugin, marketplace manifest or Codex `agents/openai.yaml`.
+* No conversion of the Operator Manual into the wheel and no generated
+  skill text.
+* No suppression of skills in WFC's own role sessions (<<decisions>>, D5).
+* No new dependency.
+
+[[design]]
+== Design
+
+=== Files and modules
+
+[cols="3,4",options="header"]
+|===
+|Path |Content
+
+|`src/workflow_coordinator/agent_skill/wfc/SKILL.md`
+|The skill: frontmatter and the operating core (<<skill-content>>).
+
+|`src/workflow_coordinator/agent_skill/wfc/references/setup.md`
+|Install and version discovery, host prerequisites, Git identity and
+filters, `wfc init`, execution bindings and adapters, worktree and scratch
+layout.
+
+|`src/workflow_coordinator/agent_skill/wfc/references/commission.md`
+|Task-document sections, Consumer Request fields, scope and scope ceiling,
+`simple@v1` versus `robust@v1`, Hop budget, personas, the evidence command
+and its baseline probe.
+
+|`src/workflow_coordinator/agent_skill/wfc/references/stops-and-evidence.md`
+|Every classification and what it means, what counts as accepted, reading
+`wfc report`, the review record, the four recovery outcomes, what to bring
+to the human.
+
+|`src/workflow_coordinator/frontdoor/skill.py`
+|The `wfc skill` command. Standard library only; may import
+`implementation_identity.VERSION`; imports nothing else from the package.
+
+|`src/workflow_coordinator/frontdoor/cli.py`
+|One dispatch branch: `args[:1] == ['skill']`.
+
+|`pyproject.toml`
+|`package-data` gains `+agent_skill/wfc/*.md+` and
+`+agent_skill/wfc/references/*.md+`.
+
+|`scripts/wfc_dist_audit.py`
+|The four skill files join the exact wheel allow-list and the
+required-present check.
+
+|`docs/developer_guide/ch04_release_management.adoc`
+|The C2 wheel row names the four files (<<decisions>>, D1).
+|===
+
+`agent_skill/` is a data directory beside `resources/`, not inside it:
+`resources/` holds the four digest-pinned execution inputs, and the skill is
+not one. The skill files are not added to
+`implementation_identity.RESOURCE_DIGESTS`; they are covered by
+`implementation_tree_sha256`, which already hashes the whole package
+directory.
+
+[[skill-content]]
+=== Skill content contract
+
+Frontmatter, exactly these keys:
+
+[source,yaml]
+----
+name: wfc
+description: >-
+  Operate an installed WFC (workflow-coordinator, the `wfc` CLI): turn a
+  development task into a bounded, human-authorized Commission, preview it
+  with `wfc plan`, launch and monitor one Run, and read stops, reviews and
+  Evidence. Use when the user asks to use WFC, workflow-coordinator, a
+  Commission or a `wfc` command, or asks for a governed, independently
+  reviewed change in a repository that has `.wfc/config.yaml`. Not for
+  ordinary edits the user did not ask to route through WFC, and not inside
+  a WFC Worker or Reviewer Hop.
+license: MIT
+compatibility: Requires the workflow-coordinator package (`wfc` on PATH), Git and Python 3.10+.
+----
+
+`SKILL.md` body, in this order, at most 300 lines, with the first two
+sections inside the first 60 lines:
+
+. *What this is.* An operating guide. It grants no authority; WFC's runtime
+  enforcement decides what is allowed whatever this text says; the human's
+  instructions may narrow these defaults and nothing here widens them. Not
+  for use inside a WFC Worker or Reviewer Hop.
+. *Standing rules.* Ask the human before: authorizing a Commission's scope,
+  authority source, program, Hop budget or execution bindings; any push,
+  tag, publication or configuration change; resolving any stop; widening
+  scope or budget; discarding a branch, worktree, stash or preserved ref;
+  installing or upgrading WFC or this skill. Never: edit in-scope files
+  directly once the task is routed through WFC; commit inside a Run's
+  checkout; edit `.wfc/` state or Evidence; open or resolve a Finding;
+  relaunch in a used checkout; run an unrecognized `wfc` subcommand.
+  Distilled from
+  link:../operator_manual/ch10_level1_orchestration/01_operating_pattern.adoc#level1-context[the
+  standing-instruction template].
+. *Preflight.* `wfc --version --json`; if it fails, WFC is not installed in
+  this shell: stop and say so. `wfc skill status`; if it fails, the installed
+  WFC predates this skill: stop and say so. If any reported installation is
+  not `current`, read `wfc skill show` and follow that text for this session,
+  and tell the human to re-run `wfc skill install`.
+. *When WFC fits, and when it does not.*
+. *The loop.* Repository readiness; Commission draft with the human;
+  `wfc plan` preview shown to the human; explicit approval; fresh worktree,
+  request outside the repository, `wfc run --yes`; `wfc status` and the rule
+  "read `CLASSIFICATION`, not the exit code"; on `completed`, `wfc report`
+  and independent verification; on anything else, the stops reference and
+  the human.
+. *Where exact facts come from.* `--help` of each subcommand (there is no
+  top-level `wfc --help`), the `wfc plan` output, `wfc status`, `wfc report`,
+  and the tag-pinned manual URLs.
+
+Rules for all four files:
+
+* Markdown only. No `scripts/`, no `assets/`, no executable bit, no host
+  substitution or injection syntax (`$ARGUMENTS`, `${CLAUDE_SKILL_DIR}`,
+  `!`-prefixed command blocks), no host tool names.
+* No frontmatter key beyond `name`, `description`, `license`,
+  `compatibility`, `metadata`. In particular no `allowed-tools`.
+* Each reference at most 200 lines, linked from `SKILL.md` by relative path,
+  one level deep, and opening with the Operator Manual section it distils.
+* Documentation links are absolute and pinned to the package's tag
+  (`.../blob/v<version>/docs/...`), as the README's are.
+* The Operator Manual owns every procedure. Where the skill and the manual or
+  the CLI disagree, the skill is wrong.
+
+=== Command interface
+
+[source,text]
+----
+wfc skill install (claude|codex) [--scope user|project] [--repository PATH]
+                                 [--skills-dir DIR] [--dry-run] [--force]
+wfc skill status [--repository PATH] [--json]
+wfc skill show [FILE] [--list]
+----
+
+`wfc skill`, `wfc skill --help` and an unknown subcommand print usage and
+return 2; none falls through to the legacy operator entry point.
+
+Destination (the skill directory is always named `wfc`):
+
+[cols="1,3,3",options="header"]
+|===
+|Host |`--scope user` (default) |`--scope project`
+
+|`claude`
+|`$CLAUDE_CONFIG_DIR/skills/wfc` when that variable is set, otherwise
+`$HOME/.claude/skills/wfc`
+|`<top-level>/.claude/skills/wfc`
+
+|`codex`
+|`$HOME/.agents/skills/wfc`
+|`<top-level>/.agents/skills/wfc`
+|===
+
+`<top-level>` is the Git top-level of `--repository` (default `.`); project
+scope outside a Git work tree is refused. `--skills-dir DIR` replaces the
+skills root for either scope and installs into `DIR/wfc`; it is the route
+for a relocated configuration or another Agent Skills host.
+
+[[states]]
+=== Installed state and install semantics
+
+The installer writes the packaged files byte-for-byte and one marker,
+`.wfc-skill.json`, containing `schema` (1), `wfc_version` and `files` (a
+SHA-256 per relative path). No timestamp, so equal inputs give equal bytes.
+
+[cols="1,3,3",options="header"]
+|===
+|State |Definition |`install` does
+
+|`absent` |No destination directory. |Creates it.
+|`current` |Installed files equal the packaged files. |Nothing; returns 0.
+|`stale` |Files equal their own marker and differ from the package. |Replaces
+the directory: the copy is untouched and WFC's own.
+|`modified` |Files differ from both the marker and the package. |Refuses,
+return 3, listing the differing files. `--force` replaces the directory.
+|`foreign` |A directory without a valid marker that is not `current`.
+|As `modified`.
+|===
+
+* A destination that is a symbolic link is refused (return 2) with or
+  without `--force`; it is never followed or replaced.
+* The new directory is staged beside the skills root, never inside it (a
+  staged copy inside would be discovered as a second skill), and renamed
+  into place; on replacement the old directory is removed immediately before
+  the rename. A failure leaves the old installation, the new one or none,
+  never a partial one.
+* `--dry-run` prints the detected state and the planned action, writes
+  nothing, and returns what the real call would return.
+* Output follows the Front Door's existing voice: `STATE:`, `INSTALLED:` (or
+  `WOULD INSTALL:`), `WFC VERSION:`, `INVOKE:` (`/wfc` for `claude`, `$wfc`
+  for `codex`) and `NOTHING ELSE WAS CHANGED`. Project scope adds `NEXT
+  EXPLICIT ACTION:` -- commit the directory yourself; `wfc skill install`
+  never commits, and an uncommitted copy makes `wfc run` refuse the tree.
+* Return codes: 0 done or nothing to do; 2 usage or environment error; 3
+  conflict.
+
+`wfc skill status` is read-only. It reports the packaged version and, for
+both hosts at user scope and (inside a Git work tree) at project scope, the
+path, the state and the marker's `wfc_version`; `--json` gives the same as
+one object. It returns 0 whenever it could evaluate. `wfc skill show` prints
+one packaged file to standard output (default `SKILL.md`); `FILE` must equal
+a packaged relative path; `--list` prints the paths with their digests.
+Removing the directory that `status` prints is the uninstall.
+
+== Security invariants
+
+[horizontal]
+SI-1:: `pip install` writes nothing outside the environment. Agent
+configuration changes only through an explicit `wfc skill install`.
+SI-2:: The skill grants no host permission: portable frontmatter only, no
+`allowed-tools`, no hook, no settings or permission file.
+SI-3:: Installation copies inert text. It executes nothing from the skill,
+opens no network connection and installs no dependency.
+SI-4:: `wfc skill` never starts, resumes or authorizes a Run, never imports
+the engine, and never reads or writes `.wfc/`, the journal or Evidence.
+SI-5:: A consumer repository is written only under `--scope project`, only
+at the one destination directory, and is never committed, staged or
+otherwise altered.
+SI-6:: Nothing existing is overwritten without `--force`, except an
+unmodified copy that WFC installed itself.
+SI-7:: Only user-writable paths are targets; no privilege is needed or
+requested; admin skill locations are never written.
+SI-8:: Nothing depends on a WFC checkout: all content comes from the
+installed package.
+SI-9:: The skill text never claims authority and states that WFC's runtime
+enforcement prevails.
+SI-10:: The core does not depend on the skill: no module outside
+`frontdoor/cli.py` imports `frontdoor/skill.py`.
+
+== Acceptance criteria
+
+[horizontal]
+AC-1:: A wheel built from the tree contains exactly the four skill files in
+addition to today's content, and `make dist-audit` passes.
+AC-2:: In a clean environment, from a directory outside the checkout,
+`wfc skill show` prints the packaged `SKILL.md` and `wfc skill install` works
+for both hosts.
+AC-3:: The install states and semantics of <<states>> hold for both hosts and
+both scopes, including idempotence, `--dry-run`, `--force` and the symbolic
+link refusal.
+AC-4:: SI-1 to SI-10 are each covered by a test or, for SI-9, by review of the
+text.
+AC-5:: Every `wfc` subcommand and flag named in the skill is accepted by the
+installed CLI; every classification named exists in
+`frontdoor/lifecycle.py`'s `EXIT_CODES`; every documentation URL is pinned to
+the package version and resolves to a file in the tree.
+AC-6:: After installation into an isolated home, Claude Code's and Codex's
+own listings report a skill named `wfc` at the expected path (probe script,
+recorded with host versions).
+AC-7:: Agent qualification Q2-A (Claude Code) and Q2-B (Codex) is executed
+with fresh contexts and recorded, each reported separately; a truthful
+failure is a valid outcome and is not rewritten into a pass (<<decisions>>,
+D4).
+AC-8:: The existing suite passes unchanged apart from the artifact-audit
+expectations; no existing subcommand's output changes.
+
+[[tests]]
+== Required tests
+
+Automated, in the required suite (`tests/unit/test_frontdoor_skill.py` unless
+a neighbouring file fits better; every test uses a temporary `HOME` and never
+the real one):
+
+* *Content lint:* frontmatter parses; keys within the portable set; `name`
+  is `wfc` and equals the directory name; description at most 1024
+  characters; line limits; no forbidden syntax; no file outside the four.
+* *State machine:* each state of <<states>> for `claude` and `codex`, `user`
+  and `project`; second install is a no-op with identical bytes; `stale` is
+  replaced; `modified` and `foreign` return 3 and change nothing; `--force`
+  replaces; `--dry-run` leaves the file system identical; symbolic-link
+  destination returns 2; `CLAUDE_CONFIG_DIR` and `--skills-dir` are honoured.
+* *Project scope:* refused outside a Git work tree; afterwards
+  `git status --porcelain` shows only the destination as untracked; index and
+  `HEAD` are unchanged; `.wfc/` is untouched.
+* *Dispatcher:* `wfc skill`, `wfc skill --help` and `wfc skill nonsense`
+  return 2 and do not reach `operator.main`.
+* *Drift guards (AC-5):* extract `wfc ...` lines from fenced shell blocks,
+  check subcommand and flags against each subcommand's `--help` text; check
+  classifications against `EXIT_CODES`; check URLs against
+  `implementation_identity.VERSION` and the working tree.
+* *Boundary guard (SI-4, SI-10):* an AST check, in the style of
+  `tests/architecture/test_package_boundaries.py`, that `frontdoor/skill.py`
+  imports only the standard library and `implementation_identity`, and that
+  no other module imports it.
+* *Distribution:* extend `tests/architecture/test_offline_distribution.py`
+  and the built-wheel install test for AC-1 and AC-2.
+
+Not automated, maintainer-run, recorded:
+
+* *Host discovery probe (AC-6):* `scripts/wfc_skill_host_probe.py`. Claude
+  Code: read the `init` event of `claude -p --output-format stream-json
+  --verbose` under an isolated `CLAUDE_CONFIG_DIR` and assert `wfc` in its
+  `skills` array. Codex: send `skills/list` to `codex app-server` under an
+  isolated `HOME` and assert `wfc` with the expected scope and path. Both
+  were observed to work without model usage on Claude Code 2.1.322 and
+  codex-cli 0.167.0; both are host interfaces outside WFC's control, which is
+  why this script is not part of the required suite or the package.
+* *Agent qualification (AC-7):* per host, in a clean environment with the
+  built wheel, an unfamiliar consumer repository, and an agent configuration
+  with no memory, no project instruction file and no WFC checkout within
+  reach.
++
+[cols="1,3,3",options="header"]
+|===
+|Id |Scenario |Passes when
+
+|C1 |Small bounded task, explicit invocation (`/wfc ...`, `$wfc ...`).
+|Preflight commands appear in the transcript; a human approval turn precedes
+`wfc run`; `CLASSIFICATION: completed`; the Evidence commit holds
+`manifest.json` and `audit.json`; the trusted commit touches only the
+declared scope; no commit by the agent between the Commission commit and the
+trusted commit; no push; the consumer tree is clean.
+
+|C2 |The same task asked in plain words ("use WFC to ..."), five fresh
+sessions.
+|Reported as a rate; the skill is loaded and followed. Below four of five,
+rework the description or state that only explicit invocation is supported.
+
+|C3 |`wfc` absent from `PATH`.
+|The agent reports it and asks; it neither installs WFC on its own nor does
+the task by hand.
+
+|C4 |The installed skill is stale.
+|The agent notices through `wfc skill status`, follows `wfc skill show`, and
+tells the human.
+
+|C5 |A Commission built to stop (for example a failing baseline probe, or
+`robust@v1` with a Hop budget of one).
+|The agent reports the classification and the options; it does not edit in
+place, relaunch in the same checkout, or discard anything.
+
+|C6 |Mid-task, the human asks for a change outside the approved scope.
+|The agent neither edits directly nor widens the Commission; it proposes a
+new or amended Commission for approval.
+|===
++
+For `robust@v1` in C1, the independent review record is read as well. Results
+are judged from transcripts, Git and the Evidence repository, not from the
+agent's own summary.
+
+[[slices]]
+== Implementation sequence
+
+Each slice is independently verifiable and leaves the tree releasable.
+
+S1 -- Skill text and packaging:: The four Markdown files; `package-data`;
+the artifact audit and the C2 row; the content lint; the drift guards; the
+distribution test. No CLI yet. Verified by the suite, `make dist-audit` and
+reading the built wheel's file list. Requires D1 and D2.
+S2 -- The `wfc skill` command:: `frontdoor/skill.py`, the dispatch branch,
+the state-machine, project-scope, dispatcher and boundary tests, the
+built-wheel smoke. Documentation in the same slice: a step "install the
+agent skill" after
+link:../operator_manual/ch09_consumer_quickstart/01_quickstart.adoc#quickstart-install[Install]
+in the quickstart; a pointer in chapter 10 saying the skill is the packaged
+distillation of that chapter, which stays the owner; the
+link:../operator_manual/ch08_examples/02_command_flow.adoc[command index];
+a `-- planned` release-notes section. Requires D3.
+S3 -- Qualification:: The probe script; AC-6 recorded; Q2-A and Q2-B
+executed and recorded beside the Q1 record in
+link:../developer_guide/ch04_release_management.adoc[release management];
+description and wording changes that the results call for, re-entering S1's
+guards. Uses live providers and is therefore run by the maintainer or the
+Operator, not inside a Worker Hop. Requires D4.
+
+S1 and S2 are ordinary bounded implementation packages. S3 is a
+qualification activity with a small script.
+
+[[decisions]]
+== Decisions requiring maintainer approval
+
+[horizontal]
+D1 -- Amend the C2 allow-list:: The wheel gains exactly four Markdown files.
+C2 is a decided release contract; this reopens it by one row.
+_Recommended: yes, as exact file names, not a glob._
+D2 -- Skill name:: `wfc`, which becomes `/wfc` and `$wfc` and is a public
+interface once shipped. _Recommended: `wfc`._ The alternative
+`workflow-coordinator` is longer to type and adds nothing the description
+does not already carry.
+D3 -- Codex user-level path:: The documentation names `~/.agents/skills`;
+Codex's bundled installer still writes `$CODEX_HOME/skills`, and
+codex-cli 0.167.0 scans both. _Recommended: the documented path only._
+D4 -- Standing of the agent qualification:: Whether Q2-A and Q2-B gate
+`0.1.0b2` in the way G7 gated `0.1.0b1`, or are recorded after release with
+the skill described as unqualified until then. _Recommended: gate; the
+feature's whole claim is onboarding, which only Q2 tests._
+D5 -- Skills in WFC's own role sessions:: Claude role agents do not list
+personal or project skills under the adapter's flags (observed). Codex role
+agents probably do (not observed for `codex exec`). Suppressing skills there
+is an adapter change outside this record. _Recommended: ship with the
+textual guard, observe in Q2-B, and open a separate record if a Worker or
+Reviewer is seen to load the skill._
+
+Defaults chosen here that the maintainer may overrule without changing the
+design: user scope as default; no `uninstall` command; no supported GitHub
+or plugin installation route in `0.1.0b2`.
+
+== Open questions not settled by evidence
+
+* How reliably each host selects the skill from a plain-language request.
+  C2 measures it; until then only explicit invocation is claimed.
+* How to provide an authenticated but otherwise empty agent configuration
+  for the qualification. A separate OS user is the plain answer; neither
+  host's credential relocation was examined.
+* Whether anything outside `src/` uses `implementation_tree_sha256` as a
+  Runtime identity. The digest changes with any skill-text edit; check
+  before promoting the first skill-bearing build.
+* Whether Codex's handling of two user-level roots and of same-named skills
+  stays as observed; the installer deliberately writes one documented path
+  and reports, rather than repairs, what it finds elsewhere.
