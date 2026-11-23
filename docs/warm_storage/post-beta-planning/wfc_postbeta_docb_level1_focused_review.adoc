@@ -9,7 +9,159 @@ link:wfc_postbeta_docb_level1_broad_review.adoc[`wfc_postbeta_docb_level1_broad_
 Later passes are added above earlier ones; earlier passes are kept unedited
 apart from the `(current)` marker, which moves to the newest pass.
 
-== Pass H004 — `RUN-21bf57ae…` (current)
+== Pass H006 — `RUN-21bf57ae…` (current)
+
+Status:: *ACCEPT*, no blocking Finding remains. The H005 correction replaces
+the classification-enumeration poll with a wait on the backgrounded `wfc run`
+process — the first of the two remedies <<docb-h004-f001>> named — and that
+removes both failure modes the previous pass measured, without adding any
+mechanism. The rest of the chapter is byte-identical to the state assessed in
+H004 and the broad review.
+WorkItem:: `WI-WFC-POSTBETA-DOCB-LEVEL1-001`
+Run / Hop:: `RUN-21bf57ae5f1c415ca9046148fae501a8` / `H006` (`focused_review`,
+gate, blocking-only, `finding_authority: [resolve]`).
+Invocation:: `INV-b6a97e27d5bf4f7fb70f49044847ffe2`.
+Candidate:: `32ad326716696d43bf164f7f2a7e69c3d9f3e15b`, correction range
+`09693f5..32ad326`.
+Finding state:: `F001` is *resolved*. `F002` and `F003` remain resolved from
+H004 and are unaffected: the corrected lines are the loop only. No new Finding
+is opened; the residual points below are non-blocking observations.
+Date:: 2026-11-23.
+
+=== 1 The correction, as measured
+
+`git show --stat 32ad326` shows one leaf and nothing else:
+`docs/operator_manual/ch10_level1_orchestration/01_operating_pattern.adoc`
+(`+5 / -4`). `_chapter.adoc`, `02_worked_sequence.adoc`,
+`docs/operator_manual/operator_manual.adoc` and both review artifacts are
+untouched, so nothing under `src/`, `scripts/`, `tests/`, `governance/`,
+`docs/README.adoc`, `docs/ai_info/_ai_info.adoc` or the release plan moved and
+the withheld authority is respected.
+
+The block at `01_operating_pattern.adoc:247-255` now reads
+
+[source,shell]
+----
+nohup wfc run --repository . --request ../wfc-scratch/<package>/request.yaml \
+  --executable claude --yes > ../wfc-scratch/<package>/run.log 2>&1 &
+run_pid=$!
+
+wait "$run_pid"
+wfc status --repository .
+----
+
+=== 2 `F001` — resolved
+
+The invariant `F001` was opened on is that a command the chapter documents as
+part of the launch/monitor/verify/integrate loop must behave correctly for the
+classification values the implementation can actually produce. The corrected
+block no longer names a classification value at all, so the invariant is now
+satisfied structurally rather than by enumeration. Both failure modes H004
+measured are gone, and each of H004's two acceptance conditions holds against
+the implementation:
+
+* *(a) terminates for every outcome.* The `wfc run` process is the attempt's
+  own owner. On a successful launch it blocks in `process.wait()` on the engine
+  child it spawned (`src/workflow_coordinator/frontdoor/lifecycle.py:799`, and
+  `:853` on the relaunch path), then journals the `classified` record
+  (`:803-812`, `:725-735`), then runs preservation and the postrun archive
+  (`:894-902`) before printing and exiting. On *any* refusal between
+  authorization and launch, `LifecycleError` propagates to `cmd_run`, which
+  prints `wfc run: <reason>` to stderr and returns that classification's exit
+  code (`:1041-1044`) — the process exits promptly, so `wait` returns. The
+  staged CLI facts state the same order independently: "engine launch; wait;
+  classification" (`build/wfc/postbeta-inputs/CLI_FACTS.txt`, `=== wfc run
+  --help`). There is no outcome in which the documented shell sleeps forever.
+* *(b) does not treat the pre-authorization window as terminal.* No status is
+  read before the launch process has exited, so the `no_lifecycle` window H004
+  measured at 0.18 s (`:682-684`) can no longer be mistaken for an outcome.
+
+Keying on the process is additionally stronger than any corrected enumeration
+would have been: because the controller archives before it exits, the
+`wfc report <evidence-repo>/archive/<classification>/<attempt-id>/audit.json`
+step the chapter names next (`:262-263`; the path shape matches
+`ch04_evidence/02_archive.adoc:127`) is reachable without racing the postrun
+step, which a status poll keyed on the engine's own state root could have done.
+
+Commands in the corrected block check out against the staged CLI facts:
+`wfc run` accepts `--repository`, `--request`, `--executable` and `--yes`, and
+`wfc status` accepts `--repository` (`CLI_FACTS.txt`, `=== wfc run --help` and
+`=== wfc status --help`). `nohup`, `$!` and `wait` are POSIX shell, not product
+surface.
+
+*Limit of this pass, stated honestly.* Two attempts to re-measure the shell
+snippet itself (a fake-`wfc run` stand-in launched with `nohup … &`, then
+`wait "$run_pid"`) were refused by this session's command-permission layer,
+which has no approval surface; they were not run and nothing is claimed from
+them. The resolution above therefore rests on the implementation's own control
+flow and the staged CLI facts, both read directly, plus the standard semantics
+of `wait` on a background child of the same shell — not on a fresh measurement
+of the printed lines. The earlier measurements that established the defect are
+in <<docb-h004-f001>> and are unaffected.
+
+=== 3 Checks, with their limits
+
+* *Strict render.* `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+  --failure-level=WARN` over `docs/operator_manual/operator_manual.adoc`,
+  `docs/README.adoc` and `docs/ai_info/_ai_info.adoc` exits 0 with no output at
+  the candidate HEAD. Neither index file was edited.
+* *Document catalog.* `python3 scripts/wfc_doc_catalog.py check` reports
+  `Informational: 83 unresolved links; 4 Project Memory source_path misses` —
+  the same counts as the H004 baseline — and one `added:` record, this review
+  artifact. No unresolved link and no memory miss names a `ch09`, `ch10` or
+  `operator_manual` path (filtering the check output for those three strings is
+  empty); the four misses are the pre-existing `src/workflow_coordinator/*.py`
+  entries. `generate` was not run: `build/wfc/document_catalog.jsonl` is an
+  untracked build artifact outside this Hop's authorized scope, and its
+  `catalog drifted` verdict only reflects that it predates this artifact.
+* *Cross-links.* All 28 distinct `link:{operator-docs}/…` targets in the
+  chapter resolve: every file exists and every named anchor is defined
+  (`[[mental-model]]`, `[[future-orchestration]]`, `[[mutation-scope]]`,
+  `[[hop-budget]]`, `[[terminal-states]]`, `[[beta-limitations]]` and so on).
+  No reference to the concurrent DOC-A leaf
+  (`ch09_consumer_quickstart/02_first_run_example.adoc`) exists, correctly, in
+  this checkout.
+* *Chapter conventions.* `_chapter.adoc` carries the four front-matter fields,
+  the `ifndef::assembled[]` block, the `[[level1-orchestration]]` anchor,
+  `:assembled:` and the two leaf includes, matching
+  `ch09_consumer_quickstart/_chapter.adoc`; the chapter is included at
+  `operator_manual.adoc:110`, immediately after ch09 at `:108`.
+* *Required suite.* Not run agent-side and not claimed; the full suite and the
+  task-check are Coordinator-owned trusted evidence.
+
+=== 4 Non-blocking observations
+
+* *The launching shell is now the waiting shell.* `$run_pid` is only valid in
+  the shell that spawned the Run, so a Level-1 agent whose controlling shell or
+  tool call ends before a long Run does (the pre-launch baseline probe alone can
+  take minutes) cannot resume the documented wait. `nohup` keeps the Run alive,
+  the linked `ch03_running/02_launch_status.adoc#status` states that
+  `wfc status` is "safe and useful from a second shell while a Run executes in
+  the first", and the chapter's own standing-instructions template says to
+  monitor with `wfc status` — so the reader is not stranded. One clause in the
+  loop section ("if the launching shell is lost, read `wfc status --repository
+  .` from any shell") would close the gap. Not a defect in the printed commands
+  and explicitly admitted as a variant by <<docb-h004-f001>>.
+* *`run.log` is named but never read.* On a refusal `wfc run` prints no
+  `CLASSIFICATION:` line at all — only `wfc run: <reason>` on stderr
+  (`lifecycle.py:1042`), which the redirect captures — while the following
+  `wfc status` reports `not_launched` or `no_lifecycle`. The chapter names
+  `run.log` only as a redirect target; a clause telling the reader that the
+  refusal reason is in the log would make the first-attempt failure legible.
+* *Prose.* "Launch unattended and detached, then wait on the backgrounded
+  `wfc run` process itself" is accurate, but `nohup … & … wait` is functionally
+  a foreground Run with a log; "detached" carries little weight once waited on.
+  Stylistic only.
+* *Size.* The chapter is 565 source lines (`29 + 389 + 147`) against the
+  Commission's "roughly 250 to 450 lines in total". There is no padding: prose
+  is hard-wrapped near 72 columns and the 28 cross-links alone occupy some 60
+  lines. The acceptance criterion itself is qualitative ("dense and compact"),
+  the overage is unchanged by this correction, and the maintainer may of course
+  judge the rough bound differently.
+* H004's `--execution-override` observation and the broad review's non-blocking
+  observations stand unchanged.
+
+== Pass H004 — `RUN-21bf57ae…`
 
 Status:: *CHANGES REQUIRED*, one blocking Finding remains. Two of the three
 corrections land exactly as the broad review asked (`--executable claude`, and
