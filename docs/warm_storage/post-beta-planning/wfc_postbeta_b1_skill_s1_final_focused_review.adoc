@@ -1,0 +1,173 @@
+= Post-Beta B1 Agent Skill S1 — correction of the classification section: focused review
+:toc:
+:toclevels: 2
+
+WorkItem:: WI-WFC-POSTBETA-B1-AGENT-SKILL-S1-CONTINUATION-001
+Run:: RUN-78f675711b934347a4e3caec5032778b
+Hop:: H004 (focused review, gate; blocking-only)
+Candidate:: `2310d37c99f946b92e090f8f5f48bb29498a01f8` (correction
+`2a8b46a..2310d37` over the S1 candidate `3cc758f` of the stopped Run
+`RUN-863ccdcaecd9449a94ac47ceea610b4e`)
+Reviewed against:: `docs/backlog/FTR-WFC-AGENT-SKILL-DISTRIBUTION.adoc` and the
+original Commission's task document, as applied to the single Finding of
+link:wfc_postbeta_b1_skill_s1_final_broad_review.adoc[the H002 broad review]
+Disposition:: *Accept.* F001 is resolved in both of its parts. No blocking
+Finding remains. One non-blocking observation (O6) is recorded below. The
+Coordinator's own `task-check` evidence (full required suite, strict render,
+wheel build) stays separate from this review.
+
+== 1 The correction and its scope
+
+`git diff --numstat 2a8b46a 2310d37` is one leaf,
+`src/workflow_coordinator/agent_skill/wfc/references/stops-and-evidence.md`
+(+21/-5). Nothing else appears in the diff: no other packaged skill file, no
+`pyproject.toml`, nothing under `src/` besides that data file, no test, no
+`.adoc`, no `.github/`, no `governance/`, and neither review record of this Run
+nor the stopped Run's history. Every withheld surface therefore holds by the
+diff alone, and the packaging half of S1 that H002 measured is byte-identical.
+
+The file is 111 lines (was 95), inside the 200-line budget the content guard
+asserts (`tests/unit/test_agent_skill_content.py:182`). It remains
+non-executable and adds no URL and no `wfc` command beyond `wfc run`,
+`wfc resume` and `wfc status`, which this tree's CLI accepts
+(`frontdoor/lifecycle.py:1083-1091`).
+
+== 2 F001 (a) — the lifecycle-consumption claim: resolved
+
+The single bullet that asserted of all nine `refused_*` classifications that
+"each still consumes this checkout's one lifecycle" is gone. The replacement
+splits them into four groups, and each group is true of this tree:
+
+* `refused_unauthorized` / `refused_drift` / `refused_journal_root` — "raised
+  before authorization is recorded … the checkout's one lifecycle is *not*
+  consumed". `_authorize` raises `refused_unauthorized` at
+  `frontdoor/lifecycle.py:272` and `refused_drift` at `:285`, both before the
+  `authorize_intent`/`authorized` records are appended at `:299-308`;
+  `require_disjoint_journal_root` (`frontdoor/journal.py:100-106`) rejects a
+  non-disjoint journal root before any record can be written. The lifecycle
+  exists exactly when an `authorized` record exists, which is the predicate
+  `_advance` tests at `:742-752`. Two tests already in the required suite
+  assert the no-side-effect half directly
+  (`tests/unit/test_lifecycle_controller.py:131-146`, the state home does not
+  even exist afterwards, and `:148-169`, `Journal(...).read_all() == ()`); I
+  re-read both and re-ran the file (section 4). H002's three-run reproduction
+  on a disposable consumer repository is not repeated here — the code and the
+  two tests settle the same fact and the correction follows them.
+* `refused_no_lifecycle` — "`wfc resume` found nothing recorded … there was
+  never a lifecycle to consume": `:745`, raised only when
+  `journal.latest(("authorized",))` is `None` and no `authorize` callable was
+  supplied, which is precisely `resume_lifecycle`.
+* `refused_active_lifecycle` — "a lifecycle is already authorized for this
+  checkout (at most one ever is, even long after an archived Run)": `:749-752`,
+  and the wording matches both the refusal's own message ("use `wfc resume`")
+  and `ch07_diagnostics/01_troubleshooting.adoc:48-54`.
+* `refused_prelaunch` / `refused_probe` / `refused_identity_changed` /
+  `refused_launch_exhausted` — "raised once a lifecycle is already authorized":
+  `:326`, `:337`, `:347-353`, `:366-377`, `:390`, `:400-414`, `:544` and
+  `:836-844` all sit after `_authorize` returned. This keeps the one claim the
+  sources do make — the quickstart's and `references/commission.md:83`'s
+  "`refused_probe` … still consumes this checkout's one lifecycle" — and the
+  remedy sentence restates
+  `ch07_diagnostics/01_troubleshooting.adoc:41-47` ("correct the input, then
+  either `wfc resume` … or prepare a fresh checkout").
+
+The harmful direction F001 named is closed: nothing in the file now tells an
+agent that a fresh, untouched checkout was spent by a refusal that never
+touched it.
+
+== 3 F001 (b) — the completeness claim: resolved
+
+The section headed "Every classification, and what it means" now covers all 23
+keys of `frontdoor.lifecycle.EXIT_CODES`, with no extra name. Measured by
+extracting the keys from the `EXIT_CODES` literal and the backticked names from
+that section and comparing both ways: 23 keys, "missing from doc: []", "in doc
+not a key: []". The three that were absent are added and each is accurate:
+
+* `launch_failed_no_engine` — "a launch attempt never produced an engine
+  process (`wfc status` reports the attempt count against the retry limit)":
+  `_evaluate` returns exactly `f"no engine process was ever created (attempt
+  {attempts} of {MAX_LAUNCH_ATTEMPTS})"` (`:696-701`).
+* `not_launched` / `lifecycle_active` — "(`wfc status` only) authorized but
+  launch has not begun, or still launching/running; `lifecycle_active` means
+  another process currently holds this checkout's lock": `:686-690` chooses
+  between the two on `query_lock_held`, and both are reachable only through
+  `_evaluate`; `_advance` never returns either (with no launch marker it
+  proceeds to prelaunch, and `_continue_after_launch` is entered only with a
+  marker present), so the "`wfc status` only" qualifier is right. The manual's
+  prose calls the first one `authorized`
+  (`ch03_running/02_launch_status.adoc:79-81`) while the CLI's key is
+  `not_launched`; the skill follows the CLI, which is the resolution the
+  content contract prescribes, and the guard
+  (`test_agent_skill_content.py:194-206`) enforces it.
+
+== 4 What I ran
+
+Agent-side, exploratory; not Coordinator-trusted evidence. No `pytest` or
+`ruff` is importable from this worktree's own `python3`, so I used the
+pre-existing virtual environment at `/tmp/wfc-p1-venv` (pytest 9.2.0, PyYAML
+present) outside the repository.
+
+* `python -m pytest -q --wfc-partial -p no:cacheprovider
+  tests/unit/test_agent_skill_content.py tests/unit/test_lifecycle_controller.py
+  tests/unit/test_release_tooling.py` → 61 passed, 0 failed (the partial-run
+  banner is printed as designed). `test_agent_skill_content.py` alone → 14
+  passed.
+* `python -m ruff check .` → `All checks passed!`.
+* `python3 scripts/wfc_doc_catalog.py generate` → `525 records, 394362 bytes;
+  unchanged` on the reviewed candidate, and `526 records, 395429 bytes;
+  written` once this record itself existed; `check` → `Informational: 83
+  unresolved links; 4 Project Memory source_path misses` / `catalog current`
+  both times — the stated baseline, nothing added by the correction or by this
+  record. The generated catalogue is git-ignored and is not part of the commit.
+* `git status --short -uno` is empty; `-uall` lists only the ~22
+  wrapper-injected untracked entries documented by the task. I left no scratch
+  file inside the repository.
+* `asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN`
+  on this file printed nothing.
+* Not run by me, by design: the full required suite and the isolated wheel
+  build that H002 could not measure either. Those are the Coordinator's
+  `task-check`.
+
+== 5 Findings
+
+[horizontal]
+F001:: *Resolved.* Both parts of the Finding are remedied inside the file and
+the scope it named, by the remedy it named, and nothing else in the candidate
+changed (sections 1-3).
+
+No new blocking Finding. The acceptance elements H002 recorded as holding are
+untouched by this diff; the two it recorded as "not measurable here" (isolated
+wheel build, full required suite) remain the Coordinator's `task-check`.
+
+== 6 Non-blocking observation
+
+O6:: `refused_drift` and `refused_prelaunch` each have raise sites on *both*
+sides of the authorization record, and the corrected grouping assigns each of
+them to one side only. `refused_drift` also fires in `_do_commit`
+(`frontdoor/lifecycle.py:511-515`) when the commission digest no longer matches
+the authorized one, which is after the `authorized` record exists; the file now
+places `refused_drift` in the "not consumed — `wfc run` again in the same
+checkout" group. `refused_prelaunch` conversely fires at `:291` when the
+checkout lock cannot be acquired, which is before this call's `authorized`
+record; the file places it in the "once a lifecycle is already authorized"
+group. Neither is blocking, for two measured reasons. The post-authorization
+drift site is a defensive re-derivation that I could not reach without editing
+WFC's own private state: `_do_commit` recompiles from the commission texts
+cached in the checkout state home, the guidance text is pinned at its
+`source_commit` (`commissioning.py:313`), the package components are identity-
+verified (`_verify_identities_unchanged`), and an ordinary repository change in
+between is caught earlier as `refused_prelaunch` (`:347-349`, `:390`). The
+`:291` site, symmetrically, only fires while another controller holds this
+checkout's lock, which in practice means that controller has authorized the
+lifecycle, so the group text is true of it in practice. In both cases the
+worst outcome of following the file is one further truthful refusal that names
+the right next command, not a destructive act — the asymmetry that made F001
+blocking does not apply. A cheap tightening, for S2 or a documentation pass, is
+the manual's own conditional wording ("either `wfc resume` if a lifecycle was
+already authorized, or a fresh checkout",
+`ch07_diagnostics/01_troubleshooting.adoc:41-47`) for these two names.
+
+H002's observations O1-O5 are unaffected by this diff and still stand as
+written there; O4 (the git-ignored `.pytest_cache` entry for
+`test_clean_isolated_distribution_and_wheel_install`) remains a reason to read
+the `task-check` result on that one test deliberately.
