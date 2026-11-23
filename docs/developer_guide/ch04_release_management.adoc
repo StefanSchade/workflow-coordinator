@@ -7,11 +7,13 @@ contract. `scripts/wfc_release_check.py`, `scripts/wfc_dist_audit.py` and the
 `release-check`/`dist-audit` Make targets exist and implement this contract
 (package E2). `.github/workflows/release.yml` (package E3 of
 `docs/backlog/postbeta_plan_p3_release_engineering.adoc`) now exists and
-implements the CI section below. No hosted run of that workflow has happened
-yet; nothing in this chapter should be read as a claim that one has. C6/MD-5
-(<<md5-open>>) stays *open* until a hosted run proves the workflow's route
-R-A green -- this file is that route, offered as evidence, not as the
-maintainer's decision.
+implements the CI section below. According to the maintainer, the workflow
+ran on GitHub-hosted runners in seven attempts on 2026-11-23; the
+<<md5-hosted-run-record,hosted-run record>> separates that account from the
+primary run evidence, which is not in this repository. C6/MD-5
+(<<md5-open>>) stays *open* until the maintainer accepts that evidence --
+this file is the route, offered as evidence, not as the maintainer's
+decision.
 endif::[]
 
 [[release-management]]
@@ -121,7 +123,7 @@ exercised when the maintainer approves the pending deployment. Approval is
 `.github/workflows/release.yml` exists and implements the contract above. It
 has two triggers -- `push` to `main` and `push` of tags matching `v*` -- and a
 top-level `permissions: contents: read`; no step references a repository
-secret anywhere in the file. Four jobs:
+secret anywhere in the file. Five jobs (one informational):
 
 * `check` (both triggers, no elevated permissions beyond the top-level
   `contents: read`): checks out full history (`fetch-depth: 0`) and
@@ -129,10 +131,15 @@ secret anywhere in the file. Four jobs:
   check, independently of C1's static version); pins the runner to
   `ubuntu-24.04` and `setup-python` to the exact patch `3.13.5` (MD-5 route
   R-A); relaxes unprivileged user namespaces for bubblewrap via `sudo
-  sysctl`; neutralizes the runner's system git-lfs filter only for the
-  required-suite step's own `env:` (step-scoped, never a persistent `git
-  config --global`, and never a weakening of WFC's own filter-refusal test,
-  which is part of the unmodified suite run in that same step); fetches the
+  sysctl` and installs `bubblewrap` (the hosted runner lacked it, attempt #6);
+  in the required-suite step provides the Git identity through
+  `$XDG_CONFIG_HOME/git/config` (WFC strips inherited `GIT_*` variables from
+  trusted Git calls, so an identity given by those variables would be
+  invisible), keeps `TMPDIR` outside the checkout, and removes the *runner's
+  system-level* `filter.lfs.clean`/`filter.lfs.process` entries (attempt #5;
+  this is a statement about the ephemeral hosted runner, not advice for
+  users, and WFC's own filter-refusal test and rule stay unchanged and are
+  part of the unmodified suite run in that same step); fetches the
   offline test-input bundle (`scripts/wfc_test_inputs.py fetch`) and installs
   WFC's dev extras from it (`... exec -- python3 -m pip install -e '.[dev]'`,
   link:ch01_development.adoc#offline-test-inputs[offline test inputs]); runs
@@ -145,6 +152,29 @@ secret anywhere in the file. Four jobs:
   (`TAG=$\{GITHUB_REF_NAME}`) on a tag push (G1); records the two artifacts'
   SHA-256 in the job summary and uploads `dist/` as a workflow artifact.
   Nothing downstream rebuilds it.
+* `python-compat` (both triggers, `needs: check`, no elevated permissions, not
+  a prerequisite of any publishing job, matrix CPython 3.10, 3.11 and 3.12 on
+  `ubuntu-24.04`): the maintainer's small compatibility job of 2026-11-23.
+  `requires-python = ">=3.10"` and the classifiers are unchanged; the only
+  fully qualified profile stays CPython 3.13 on Linux x86-64 in `check`.
+  This job downloads the `release-dist` artifact that `check` built once,
+  re-verifies its SHA-256, installs the wheel into a clean virtual environment
+  with ordinary index dependencies (PyYAML and pytest; the 3.13-specific
+  offline bundle is *not* reused), verifies the installed metadata version,
+  the packaged resources (SHA-256 against `wfc --version --json`) and the CLI
+  identity (`wfc --help`, `wfc --version --json`, version equal to
+  `pyproject.toml`, `source_commit` null), and runs eleven provider-free
+  test modules against the *installed* wheel (`-o pythonpath=.` replaces the
+  repository's `src` entry; `--wfc-partial`, the repository's explicit marker
+  for a deliberately partial run). It does *not* cover the full required
+  suite, bubblewrap, build isolation, real providers or any release gate, and
+  is neither qualification of those interpreters nor a statement about
+  upstream security support (CPython 3.10 has reached upstream end of life).
+  The development tooling is not part of this contract: for example
+  `scripts/wfc_release_check.py` and some test modules import `tomllib`
+  (CPython 3.11 and newer), so the *full* development suite does not run
+  unmodified on 3.10. Debian 12 with CPython 3.11 on ARM64 is a future
+  qualification target, not a Beta-1 requirement.
 * `publish-testpypi` (tags only, `needs: check`, environment `testpypi`, job
   permissions `contents: read` and `id-token: write`): downloads the checked
   artifact unchanged, re-verifies its recorded SHA-256, then uploads it to
@@ -165,11 +195,18 @@ secret anywhere in the file. Four jobs:
   not converted to the release body; linking it avoids a lossy adoc-to-
   Markdown conversion).
 
-Action versions are pinned to a version tag (`actions/checkout@v6`,
-`actions/setup-python@v6`, `actions/upload-artifact@v4`,
-`actions/download-artifact@v4`, `pypa/gh-action-pypi-publish@release/v1`),
-not a commit SHA -- authoring this file had no network access to verify
-SHAs. *Maintainer follow-up:* pin every action to a reviewed commit SHA.
+Every third-party action is pinned to a full commit SHA with the release
+named in a trailing comment (resolved on 2026-11-23 with `git ls-remote`
+against the upstream repositories; the pinned commit is the one the previously
+used mutable reference pointed to, so nothing was upgraded):
+`actions/checkout` `d23441a` (v6.1.0), `actions/setup-python` `ece7cb0`
+(v6.3.0), `actions/upload-artifact` `ea165f8` (v4.6.2),
+`actions/download-artifact` `d3f86a1` (v4.3.0) and
+`pypa/gh-action-pypi-publish` `7245906` (v1.14.3, the commit of its
+`release/v1` branch). Newer major versions of these actions exist and were
+deliberately not adopted. To change a version, resolve the new tag to its
+commit (`git ls-remote --tags <repo> <tag> <tag>^{}`, using the peeled commit
+for an annotated tag) and change SHA and comment together.
 *Maintainer follow-up:*
 link:../backlog/postbeta_plan_p3_release_engineering.adoc#ext[ES-1 through
 ES-6] (the Trusted Publisher registration, repository and Environment
@@ -292,8 +329,10 @@ route R-A, now implemented as `.github/workflows/release.yml`'s `check` job
 pinned to the exact patch `3.13.5`, a `sudo sysctl` relaxing unprivileged
 userns for bwrap, a step-scoped neutralization of the runner's git-lfs
 filter (not WFC's own filter-refusal test), the normal `fetch`+`exec` flow,
-then the unmodified suite. No hosted run of this workflow has happened yet;
-this is still the unexercised route, not a hosted-run result.
+then the unmodified suite. The route was exercised on 2026-11-23 in seven hosted
+attempts (see the <<md5-hosted-run-record,hosted-run record>>); the
+step-scoped neutralization of the git-lfs filter turned out to be insufficient
+and was replaced by removing the runner's system-level filter entries.
 A second host profile's closure review? (fact [3]):: Re-verified against the
 profile: the 12 wheel pins are checked only by filename, size, SHA-256,
 metadata and wheel tag (manylinux/`py3-none`/`cp313` plus a glibc floor) --
@@ -324,23 +363,63 @@ narrowed without that decision.
 [[md5-hosted-run-record]]
 ==== Hosted-run record
 
-*Status: not yet recorded.* No hosted run of `.github/workflows/release.yml`
-has happened. This section is a placeholder for the maintainer (or the
-`check` job's own first `main`-push run, ES-3) to fill in with that run's
-findings against unknowns (a)-(e) above, once it exists. Until filled in,
-C6/MD-5 stays *open* and this is not evidence of anything having run.
+*Status: prepared for the maintainer's acceptance; MD-5 is still open and the
+maintainer has not decided it.* Recorded on 2026-11-23 by the Operator from
+three kinds of source, kept apart on purpose:
+
+* *Primary hosted-run evidence* (the GitHub Actions runs themselves, their
+  IDs, URLs, logs and timestamps): *not in this repository* and not seen by
+  the Operator. No run ID, URL or log excerpt is recorded here, and none is
+  invented. The maintainer holds it.
+* *Maintainer-provided account* (the maintainer's order of 2026-11-23, staged
+  for the Operator; seven attempts, the failure of each, the last attempt's
+  outcome). Stated below as the maintainer's account, not as something the
+  Operator observed.
+* *Git reconstruction* (verified here with `git show`): the commits that
+  changed `.github/workflows/release.yml` and the repository between the
+  attempts, with their author times (CET, 2026-11-23). A commit shows what was
+  changed in response, not which run failed or on which commit it ran; the
+  mapping of attempts to commits is *not* recorded in the repository, except
+  that the maintainer names `b7e62be` for the first attempt.
+
+[cols="1,4,3",options="header"]
+|===
+|Attempt |Maintainer's account of the outcome |Git reconstruction of the response
+
+|#1 |repository-wide Ruff (`make lint`) found 17 findings not caught by earlier local checks; the first attempt ran on `b7e62be` |package L1 (Run `RUN-d7572589ade84b74a067ef946efd7a90`, correction `64945b0`, record `wfc_postbeta_l1_lint_baseline_record.adoc`); no rule, configuration or gate changed
+|#2 to #4 |the Git identity and the pytest temporary directories were insufficient on the runner |`d2f90cd` (07:33, identity and `TMPDIR`), `1afd551` (08:08, identity for trusted subprocesses), `96d173f` (08:15, identity via `XDG_CONFIG_HOME/git/config`, because WFC strips inherited `GIT_*` variables from trusted Git calls)
+|#5 |trusted commits were refused because the runner's system Git configuration defines the Git-LFS `clean` and `process` filters |`d3998ba` (09:17): the required-suite step lists the effective filters and removes `filter.lfs.clean`/`filter.lfs.process` from the ephemeral runner's *system* config; WFC's own refusal (`git_facts.py`) is unchanged
+|#6 |`bubblewrap` (`bwrap`) was missing on the runner |`aeb11ad` (09:42): a step installs `bubblewrap` before the suite
+|#7 |lint, format check, the required tests, the build and further checks including the documentation render passed; the release preflight refused because the `0.1.0b1` release-notes section is still `planned` |no code change: the refusal is the intended release blocker (C4), not a product defect
+|===
+
+Findings against unknowns (a)-(e), with the evidence class of each:
 
 [cols="1,4",options="header"]
 |===
 |Unknown |Finding
-|(a) runner's actual seed pip version for CPython 3.13.5 on `ubuntu-24.04` |(not yet recorded)
-|(b) bwrap userns after the `sysctl` |(not yet recorded)
-|(c) runner's Git git-lfs filter and whether the neutralization suffices |(not yet recorded)
-|(d) `fetch` reaches `files.pythonhosted.org` |(not yet recorded)
-|(e) whether a second profile is wanted if the pip version differs |(not yet recorded)
+|(a) runner's actual seed pip version for CPython 3.13.5 on `ubuntu-24.04` |The actual version is *not recorded*. *Inference, not observation:* the required suite ran in attempt #7 according to the maintainer, and `conftest.py` refuses to run the suite when `check_host` fails, which compares the seed pip version exactly with the profile's `25.1.1`; so the runner's seed pip equalled the profile. The Operator has not seen the log line.
+|(b) bwrap userns after the `sysctl` |Attempt #6 showed that `bwrap` itself was absent (a package, not a kernel setting), fixed by `aeb11ad`. *Inference:* tests that need working unprivileged user namespaces ran in #7 per the maintainer; whether the `sysctl` was needed, or sufficient on its own, is not separately recorded.
+|(c) runner's Git git-lfs filter and whether the neutralization suffices |*Answered by the account and the commits:* the runner's system Git configuration does carry the Git-LFS filters, and the step-scoped `GIT_CONFIG_NOSYSTEM` neutralization planned earlier did *not* suffice for WFC's trusted subprocesses, which discard inherited `GIT_*` variables. The CI therefore removes the two system-level filter entries on the ephemeral runner (`d3998ba`). This is a statement about the hosted runner only, not advice for users' machines; see the quickstart's host requirements and `FTR-WFC-TRUSTED-GIT-FILTER-COMPATIBILITY`.
+|(d) `fetch` reaches `files.pythonhosted.org` |*Inference:* the offline-input `fetch` step precedes the suite in the job; attempt #7 passed the suite per the maintainer, so the fetch succeeded. Not separately logged here.
+|(e) whether a second profile is wanted if the pip version differs |No decision is needed on this evidence if (a) holds as inferred; no second host profile was created.
 |===
 
-Run date:: (not yet recorded)
-Run URL:: (not yet recorded)
-Disposition:: (not yet recorded -- green/red, and whether route R-A is
-thereby proven or a real blocker must be escalated per the rule above)
+Run date:: 2026-11-23 (attempts #1 to #7; the individual run times are in the
+maintainer's Actions history).
+Run URL(s) and IDs:: *not recorded here.* The maintainer is asked to add the
+URL of attempt #7 (and, if wanted, of the first run of the amended workflow)
+and to confirm the commit it ran on.
+Disposition:: *Proposed for the maintainer, not decided by the Operator:* on
+this account, route R-A (a native `ubuntu-24.04` runner with `setup-python`
+3.13.5, offline bundle, the whole unmodified required suite) appears feasible
+without a subset, a container or a weakened test, with the setup corrections
+listed above. What remains for the maintainer's acceptance of MD-5: (1)
+attach or confirm the primary evidence (run URL and ID, the commit, and the
+green status of the test, lint, build and documentation steps in attempt #7);
+(2) read the (a)-(d) inferences against the actual log lines and correct this
+record where the log disagrees; (3) decide whether MD-5 is settled by this
+evidence, or whether it waits for the first run of the amended workflow of
+2026-11-23 (the commit that adds SHA pinning and the compatibility job), which
+is the next hosted validation. Until the maintainer decides, C6/MD-5 stays
+*open* and G2 stays an Operator-run gate.
