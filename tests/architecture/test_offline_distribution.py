@@ -4,6 +4,8 @@ import importlib.util
 import os
 import subprocess
 import sys
+import tarfile
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +43,15 @@ def test_clean_isolated_distribution_and_wheel_install(tmp_path):
     assert len(list(dist.glob('*.tar.gz'))) == len(list(dist.glob('*.whl'))) == 1
     for archive in (*dist.glob('*.whl'), *dist.glob('*.tar.gz')):
         assert dist_audit.audit(archive) == []
+    # AC-9 (FTR-WFC-CONSUMER-DEMO-WORKSPACE): neither artifact carries any
+    # path under examples/, the new top-level directory the consumer demo
+    # kit lives in.
+    wheel = next(dist.glob('*.whl'))
+    with zipfile.ZipFile(wheel) as archive:
+        assert not [name for name in archive.namelist() if 'examples/' in name]
+    sdist = next(dist.glob('*.tar.gz'))
+    with tarfile.open(sdist, 'r:gz') as archive:
+        assert not [member.name for member in archive.getmembers() if 'examples/' in member.name]
     venv = tmp_path / 'installed'
     run(sys.executable, '-m', 'venv', str(venv), cwd=tmp_path)
     python = venv / 'bin/python'
