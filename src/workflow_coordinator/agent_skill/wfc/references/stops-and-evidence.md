@@ -35,12 +35,28 @@ mechanical refusal does.
 * `uncertain_launch` -- an unresolved launch; never treated as safe to
   relaunch.
 * `inconsistent` -- contradictory engine/journal facts.
+* `launch_failed_no_engine` -- a launch attempt never produced an engine
+  process (`wfc status` reports the attempt count against the retry limit).
 * `no_lifecycle` -- nothing recorded yet for this checkout; not an error.
-* `refused_unauthorized` / `refused_drift` / `refused_prelaunch` /
-  `refused_probe` / `refused_identity_changed` / `refused_launch_exhausted` /
-  `refused_active_lifecycle` / `refused_journal_root` /
-  `refused_no_lifecycle` -- a mechanical refusal before or around launch;
-  each still consumes this checkout's one lifecycle.
+* `not_launched` / `lifecycle_active` -- (`wfc status` only) authorized but
+  launch has not begun, or still launching/running; `lifecycle_active` means
+  another process currently holds this checkout's lock.
+* `refused_unauthorized` / `refused_drift` / `refused_journal_root` --
+  raised before authorization is recorded (confirmation refused, the
+  Commission drifted between plan and authorization, or the journal root
+  is not disjoint from the repository); the checkout's one lifecycle is
+  *not* consumed -- correct the input and `wfc run` again in the same
+  checkout.
+* `refused_no_lifecycle` -- `wfc resume` found nothing recorded for this
+  checkout; there was never a lifecycle to consume.
+* `refused_active_lifecycle` -- a lifecycle is already authorized for this
+  checkout (at most one ever is, even long after an archived Run); use
+  `wfc resume`, or prepare a fresh checkout for the next Run.
+* `refused_prelaunch` / `refused_probe` / `refused_identity_changed` /
+  `refused_launch_exhausted` -- raised once a lifecycle is already
+  authorized (this call or an earlier one); correct the reported fact, then
+  either `wfc resume` the same checkout or prepare a fresh one, per the
+  printed message.
 
 ## What counts as accepted
 
