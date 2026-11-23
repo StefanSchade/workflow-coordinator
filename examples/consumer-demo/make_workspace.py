@@ -96,6 +96,8 @@ def _preflight(workspace: Path, wfc_bin: str) -> str:
             raise PreflightError(f"workspace target exists and is not a directory: {workspace}")
         if any(workspace.iterdir()):
             raise PreflightError(f"workspace target exists and is not empty: {workspace}")
+    elif not workspace.parent.is_dir():
+        raise PreflightError(f"workspace target's parent directory does not exist: {workspace.parent}")
     if _is_inside_git_work_tree(workspace):
         raise PreflightError(f"workspace target is inside a Git work tree: {workspace}")
     return version_json
@@ -211,13 +213,10 @@ def _print_layout(workspace: Path, version_json: str) -> None:
     print()
     print(f"installed WFC version: {json.loads(version_json)['version']}")
     print()
-    print("Next steps (live, with your own provider credentials; rehearse.py does not exist yet):")
-    print("  wfc plan requests/<name>.task.md --repository greeter ... "
-          "(see requests/<name>.request.yaml for the exact fields)")
-    print("  wfc run --repository greeter --request requests/<name>.request.yaml "
-          "--execution-override worker.adapter=<adapter> "
-          "--execution-override worker.model=<model> "
-          "--execution-override worker.reasoning=<reasoning> --yes")
+    print("Next steps:")
+    print(f"  python3 {KIT_DIR / 'rehearse.py'} {workspace} <scenario>   (offline, scripted; see scenarios/*.json)")
+    print("  docs/operator_manual/ch09_consumer_quickstart/ for a live Run with your own")
+    print("  provider credentials, in a fresh worktree of your own (a sibling of greeter/).")
 
 
 def create_workspace(workspace: Path, wfc_bin: str) -> int:
