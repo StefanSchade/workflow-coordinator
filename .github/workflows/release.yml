@@ -9,10 +9,14 @@ name: release
 # required-reviewer rule (G8) is a maintainer-created repository setting, not
 # anything this file can create.
 #
-# Action versions are pinned to a version tag believed current, not a commit
-# SHA (no network was available while authoring this file to verify SHAs).
-# Pinning every action to a commit SHA is recorded as a maintainer follow-up
-# in ch04_release_management.adoc.
+# Every third-party action is pinned to a full commit SHA, resolved on
+# 2026-11-23 with `git ls-remote` against the upstream repositories: the SHA is
+# the commit the previously used mutable reference (`v6`, `v4`, `release/v1`)
+# pointed to, and the trailing comment names the exact release that commit
+# carries. No action was upgraded by pinning. To change a version, resolve the
+# new tag to its commit with `git ls-remote --tags <repo> <tag> <tag>^{}` (use
+# the peeled `^{}` commit for an annotated tag) and update SHA and comment
+# together. See ch04_release_management.adoc.
 
 on:
   push:
@@ -28,7 +32,7 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0 (v6)
         with:
           fetch-depth: 0
 
@@ -39,7 +43,7 @@ jobs:
       - name: Fetch origin/main for the tag-mode reachability check
         run: git fetch origin main
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0 (v6)
         with:
           python-version: '3.13.5'
 
@@ -170,11 +174,116 @@ jobs:
 
       # Nothing downstream rebuilds this artifact; publish-testpypi and
       # publish-pypi download it unchanged and re-verify SHA256SUMS.txt.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (v4)
         with:
           name: release-dist
           path: dist/
           if-no-files-found: error
+
+  # Separate, smaller Python-compatibility job (maintainer decision of
+  # 2026-11-23): `requires-python = ">=3.10"` and the classifiers are unchanged;
+  # the one fully qualified profile stays CPython 3.13 / Linux x86-64 in `check`.
+  # This job installs the wheel that `check` built once (never a rebuild) into a
+  # clean environment per interpreter and runs a small provider-free set of
+  # installed-package tests. It is NOT qualification: no offline bundle, no
+  # bubblewrap, no provider, no full suite, no release gate (no job waits for
+  # it; it reports the compatibility facts for the maintainer).
+  python-compat:
+    needs: check
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0 (v6)
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0 (v6)
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0 (v4)
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Verify that the wheel is the one `check` built
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Install the built wheel into a clean environment
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/compat-venv"
+          "$RUNNER_TEMP/compat-venv/bin/python" -m pip install --disable-pip-version-check "$(ls dist/*.whl)" "pytest>=8.2"
+          "$RUNNER_TEMP/compat-venv/bin/python" --version
+
+      - name: Installed metadata, package resources and CLI identity
+        run: |
+          set -euo pipefail
+          expected_version="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -n 1)"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/compat-venv/bin/wfc" --help > /dev/null
+          "$RUNNER_TEMP/compat-venv/bin/wfc" --version --json > "$RUNNER_TEMP/compat-version.json"
+          cat "$RUNNER_TEMP/compat-version.json"
+          "$RUNNER_TEMP/compat-venv/bin/python" - "$RUNNER_TEMP/compat-version.json" "$expected_version" <<'PY'
+          import hashlib
+          import importlib.metadata
+          import importlib.resources
+          import json
+          import sys
+
+          with open(sys.argv[1]) as handle:
+              payload = json.load(handle)
+          expected = sys.argv[2]
+          installed = importlib.metadata.version("workflow-coordinator")
+          if not (payload["version"] == installed == expected):
+              raise SystemExit(f"version mismatch: reported {payload['version']!r}, metadata {installed!r}, expected {expected!r}")
+          if payload["source_commit"] is not None:
+              raise SystemExit(f"source_commit is not null: {payload['source_commit']!r}")
+          root = importlib.resources.files("workflow_coordinator").joinpath("resources")
+          for name, digest in payload["resources"].items():
+              actual = hashlib.sha256(root.joinpath(*name.split("/")).read_bytes()).hexdigest()
+              if actual != digest:
+                  raise SystemExit(f"resource {name} digest {actual} != reported {digest}")
+          print(f"compat install OK (python {sys.version.split()[0]}, version={installed}, {len(payload['resources'])} resources verified)")
+          PY
+
+      # `-o pythonpath=.` replaces the repository's `src` entry so the tests
+      # import the INSTALLED wheel, not the checkout. `--wfc-partial` is the
+      # repository's explicit marker for a deliberately partial run: this is a
+      # compatibility smoke selection and never the required-suite acceptance.
+      - name: Provider-free tests against the installed wheel
+        env:
+          GIT_CONFIG_NOSYSTEM: "1"
+          XDG_CONFIG_HOME: ${{ runner.temp }}/wfc-compat-config
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          mkdir -p "$XDG_CONFIG_HOME/git"
+          git config --file "$XDG_CONFIG_HOME/git/config" user.name "WFC CI Compat"
+          git config --file "$XDG_CONFIG_HOME/git/config" user.email "wfc-ci@example.invalid"
+          "$RUNNER_TEMP/compat-venv/bin/python" -m pytest -q -p no:cacheprovider -o pythonpath=. --wfc-partial \
+            tests/unit/test_quickstart_commands.py \
+            tests/unit/test_serialization.py \
+            tests/unit/test_reducer.py \
+            tests/unit/test_consumer_compiler.py \
+            tests/unit/test_frontdoor_init_plan.py \
+            tests/unit/test_evidence_config.py \
+            tests/unit/test_a3_operating_contract.py \
+            tests/unit/test_codex_adapter_conformance.py \
+            tests/unit/test_claude_adapter_conformance.py \
+            tests/unit/test_persistence.py \
+            tests/unit/test_report.py
+
+      - name: Coverage and limits of this job
+        if: always()
+        run: |
+          {
+            echo "### Python compatibility job (Python ${{ matrix.python-version }})"
+            echo "Covered: the wheel built once by check, installed into a clean venv; installed metadata, packaged resources and CLI identity; 11 provider-free test modules run against the installed wheel."
+            echo "Not covered: the full required suite, bubblewrap, offline-bundle build isolation, real providers, Q1, any release gate. CPython 3.13 on Linux x86-64 in the check job remains the only fully qualified profile; this job is not qualification and not upstream security support."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   publish-testpypi:
     needs: check
@@ -185,7 +294,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0 (v4)
         with:
           name: release-dist
           path: dist
@@ -200,7 +309,7 @@ jobs:
       # the Trusted Publisher OIDC wiring and the index's metadata acceptance
       # (MD-1, G6). This spends the TestPyPI version, which cannot be reused.
       - name: Publish to TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3 (release/v1)
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist/
@@ -219,7 +328,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0 (v4)
         with:
           name: release-dist
           path: dist
@@ -231,7 +340,7 @@ jobs:
           rm SHA256SUMS.txt
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3 (release/v1)
         with:
           packages-dir: dist/
 
@@ -242,7 +351,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0 (v4)
         with:
           name: release-dist
           path: dist
