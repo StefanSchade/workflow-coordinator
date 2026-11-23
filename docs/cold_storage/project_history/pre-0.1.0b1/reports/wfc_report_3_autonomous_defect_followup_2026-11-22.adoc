@@ -1,0 +1,99 @@
+= Report 3: Vom Flaky Test zur selbst beauftragten Produktkorrektur (22. November 2026)
+:toc:
+:toclevels: 3
+:sectnums:
+:lang: de
+
+[cols="1,4"]
+|===
+|Status |Externes historisches Arbeitsdokument. Nicht im WFC-Repository, nicht autorisierend, keine Produktanforderung. Zur späteren Prüfung und Übernahme beim Beta-Epic-Wrap-up vorgesehen.
+|Erstellt |22.11.2026; Rekonstruktion aus dem aktuellen Repository-Snapshot und einem vom Maintainer übermittelten Operator-Bericht.
+|Gegenstand |E0/E0b während der Release-Vorbereitung P3: falsche Git-Zustandsbeobachtung bei Kopien des Index und selbstständige Beauftragung einer verwandten Korrektur.
+|Quellenstand |Der verfügbare WFC-Snapshot endet bei `69142c4` (22.11., 10:29). Der Maintainer zeigt später `main` bei `566bc40` und einen eigenen Worktree `workflow-coordinator-e0b` auf Branch `wfc/postbeta-e0b` bei `5bb2173`. E0s integrierter Code und E0bs Ergebnis sind im vorliegenden Snapshot *nicht* unabhängig verifizierbar.
+|Autorenschaft |Nachträgliche Synthese für den Maintainer. Der E0/E0b-Befund stammt aus dem Bericht des Level-1-Operators Sonnet; keine unabhängige Prüfung der dort behaupteten Resultate.
+|===
+
+== Evidenzklassen
+
+[horizontal]
+[B]:: Im bereitgestellten Snapshot unmittelbar überprüfbar (Quellcode, P3-Plan oder Git-Log bis `69142c4`).
+[R]:: Vom Operator beziehungsweise Maintainer berichtet, anhand der vorliegenden Quellen noch nicht unabhängig verifiziert.
+[I]:: Interpretation, Hypothese oder strategische Folgerung.
+[L]:: Informationslücke; nicht durch einen plausiblen Wert aufgefüllt.
+
+== Ausgangslage: P3 und der Flaky Test
+
+Der für `0.1.0b1` beschlossene Release-Prozess soll vor der Veröffentlichung die vollständige erforderliche Testsuite ausführen (MD-5). Ein wiederholt ausgeführter Test, `test_repeat_capture_is_idempotent_no_second_ref`, fiel nach Operator-Angaben in ungefähr zwei von 40 Läufen aus. Der zunächst naheliegende Verdacht einer racy Test-Fixture war unbestätigt. [R]
+
+Der angenommene P3-Plan beauftragte deshalb E0 ausdrücklich mit der Unterscheidung zwischen Testproblem und Produktdefekt. Der Prüfauftrag verlangte eine deterministische Reproduktion, eine sachliche Erklärung und einen Nachweis über Regressionstests; die betroffene Produktfunktion durfte nur verändert werden, falls der Produktdefekt nachgewiesen wurde. [B] Eine flächendeckende Einschränkung der Release-Tests war nicht autorisiert. [B]
+
+== Entdeckung und erste Korrektur
+
+=== Mechanismus
+
+In der Snapshot-Fassung von `src/workflow_coordinator/git_facts.py` kopiert `_isolated_index_copy` den realen Git-Index mittels `shutil.copyfile` in einen temporären Index. Weitere Stellen nutzen ebenfalls `shutil.copyfile`, darunter `observe_repository`, `salvage_inventory` und `salvage_omissions`. [B]
+
+Git verwendet Stat-Informationen und die Zeitrelation zum Index, um bei zeitnahen Änderungen die sogenannte Racy-Git-Situation zu erkennen. Eine Kopie mit neuem Zeitstempel kann die ursprüngliche Zeitrelation verfälschen. Bei gleich großer Änderung innerhalb der relevanten Zeitauflösung kann eine Datei deshalb fälschlich als unverändert beobachtet werden. [I: Mechanismus am Snapshot und am Operator-Bericht rekonstruiert; die konkrete deterministische Reproduktion liegt nicht vor.]
+
+Der Operator berichtet, E0 habe das Problem als Produktdefekt bestätigt, in `_isolated_index_copy` `shutil.copyfile` durch `shutil.copy2` ersetzt und einen Test hinzugefügt, der `mtime_ns` exakt prüft. E0 sei nach `main` integriert worden (`566bc40`). [R] Dass `copy2` Metadaten einschließlich mtime erhält, adressiert den beschriebenen Mechanismus; das allein ersetzt keine Verhaltensregression mit einer zuvor übersehenen Änderung. [I]
+
+=== Warum das mehr als eine Flake ist
+
+Im Snapshot nutzt `preflight_hop` die durch `observe_repository` erhobenen `tracked_changes` zur Verweigerung eines Hops bei unerwartet geändertem Arbeitsbaum (`dirty tracked state`). [B] Eine falsche Negativbeobachtung wäre damit ein Defekt an einer sicherheitsrelevanten Vorbedingung, nicht nur ein ästhetisches Testproblem. [I]
+
+Die konkreten Folgen sind nach Funktion zu unterscheiden: `preserve_candidate` kann eine Änderung übersehen; `observe_repository` kann eine Dirty-State-Prüfung beeinträchtigen. `salvage_inventory` ist hinsichtlich seiner tatsächlichen Abfragen separat zu prüfen. `salvage_omissions` verwendet im Snapshot `git ls-files --others --ignored --exclude-standard`; daraus folgt *nicht* ohne weitere Evidenz, dass dort derselbe False-Negative-Inhaltsvergleich möglich ist. Der gemeinsame Kopiermechanismus rechtfertigt eine Konsolidierungsprüfung, nicht die Behauptung identischer Exploitierbarkeit. [B]/[I]
+
+== E0b: selbstständig angestoßener Folgeauftrag
+
+Der unabhängige Reviewer von E0 soll die weiteren Kopierstellen als Beobachtung `O1` gemeldet haben. Der Level-1-Operator hat daraus ohne erneute Maintainer-Einzelbeauftragung E0b abgeleitet: ein gemeinsamer Helper für die Indexkopien, deterministische Regressionstests und einen 40-fachen Stabilitätsnachweis. [R]
+
+Der Maintainer meldet den Stand am 22.11. um etwa 12:40: E0 in `main` (`566bc40`), E0b gestartet und noch `engine_active`; nach E0b sollen Diff und Tests geprüft, ein Fast-Forward durchgeführt und anschließend E1 begonnen werden. [R] Eine abgeschlossene unabhängige E0b-Abnahme ist *nicht* belegt. [L]
+
+Die Reihenfolge ist bemerkenswert: Eine ursprünglich auf Release-Fähigkeit gerichtete Aufgabe führt zu einer Root-Cause-Untersuchung; deren Review erweitert den Fehlerhorizont; Level 1 erzeugt einen sachlich begrenzten Folgeauftrag und integriert ihn in die bestehende Release-Sequenz. [R]/[I]
+
+== Warum dieser Fall für die Level-1-Autonomie zählt
+
+Diese Episode ist ein konkretes Beispiel *adaptiver Planung zwischen WFC-Runs*. Nicht ein Mensch hat die vier Fundstellen als neue Tickets formuliert; nach dem berichteten Ablauf hat der Reviewer eine verwandte Schwachstelle entdeckt und der Operator sie in eine Commission übersetzt. [R]
+
+Der Vorgang liegt innerhalb der bestehenden Autorität: Fehlerkorrektur als Voraussetzung eines bereits beauftragten Releases, ohne eigenmächtigen Push, Tag oder Veröffentlichung. Die Ebene der Produktstrategie und Release-Akzeptanz bleibt beim Maintainer. [R]/[I]
+
+Wichtig ist die Produktgrenze: WFC Level 0 führt begrenzte Runs aus und erzwingt deren Verträge. Die adaptive Beauftragung geschieht hier durch den *konversationellen Sonnet-Operator auf Level 1*, nicht durch eine bereits als WFC-Produktfunktion implementierte autonome Multi-Commission-Planung. [B]/[I]
+
+== Zusammenhang mit den zwei vorliegenden historischen Reports
+
+* *Report 1: Take-off und Level-1-Autonomie (18.–21.11.)* untersucht den Übergang von einzeln menschlich sequenzierten Runs zu einem Operator, der Commissions, Reviews, Recoveries und Archivierung über längere Zeiträume selbst organisiert. Die dortigen Zahlen und Klassifikationen sind Selbstauskunft des Operators und nicht vollständig extern geprüft. Dieser Bericht ergänzt die historische Linie um einen neuen Vorfall am 22.11.
+* *Report 2: BP7 und Qualitätsökonomie (20.–21.11.)* zeigt anhand konkreter Reviews, dass zusätzliche Prüftiefe verfügbar wurde und Defekte entdeckte, zugleich aber viel Dokumentations- und Reviewvolumen erzeugte. Er belegt mangels Messung keine Kostenvorteile gegenüber menschlichen Teams. E0/E0b fügt ein Beispiel hinzu, in dem Review nicht nur Korrekturen an einem Kandidaten verlangt, sondern eine neue, verwandte Aufgabe auslöst.
+
+== Strategische Hypothese: "Agent Anything Factory"
+
+[NOTE]
+====
+Dies ist eine Produkt- und Präsentationshypothese des Maintainers, *keine* mit E0/E0b bewiesene Generalität.
+====
+
+Die beobachtete Factory verarbeitet derzeit Softwareänderungen und dokumentenbezogene Arbeiten, weil Ziele, Bearbeitungsstände, Artefakte, Prüfkommandos und Reviews über ein Git-Repository geführt werden können. [B]/[R] Die darüber hinausgehende Hypothese lautet: Dieselbe Struktur kann andere digitale Werkstücke bearbeiten, sofern deren Input, Zwischenprodukte und Ergebnisse geeignet versioniert, autorisiert, geprüft und begutachtet werden können. [I]
+
+Mögliche Werkstücke sind etwa Lateinkurse, Controlling-Auswertungen, Due-Diligence-Berichte, Vertragsanalysen oder Projektpläne. Ihre Speicherung in Git ist eine *notwendige Betriebsform für das heutige WFC-Modell, aber keine hinreichende Bedingung für Qualität*. [I] Entscheidend sind zusätzlich:
+
+* definierbare Abnahmekriterien und hinreichend kompetente Reviews;
+* belastbare Herkunft und Aktualität von Eingangsdaten sowie kontrollierter Zugriff;
+* klare Zuständigkeit für Werturteile, Rechts- und Fachentscheidungen;
+* Trennung zwischen im Repository erzeugten Artefakten und externen Wirkungen (z. B. Verträge abschließen, Buchungen auslösen, Unternehmensdaten ändern).
+
+Eine Due Diligence mit ungeprüften Quellen oder eine juristische Analyse ohne qualifizierte Sachprüfung wären trotz formal korrekten WFC-Runs nicht fachlich verlässlich. [I] Die These sollte daher als Architekturpotenzial mit geplanten Domänenpiloten vorgetragen werden, nicht als bereits nachgewiesene universelle Fähigkeit.
+
+== ASE und mögliche CTO-Präsentation
+
+Die im WFC-Repository erhaltene Forschungsnotiz `docs/research/ase_wfc_higher_order_orchestration.adoc` (Stand 14.11.2026) ordnet ASE als strukturelle Level-1-Ebene für Backlog, Abhängigkeiten, Flotten und Integration ein und WFC als begrenzte Level-0-Ausführung mit Commit-, Scope-, Evidenz- und Review-Grenzen. Sie ist *explorativ*, kein angenommener Integrationsentwurf. [B]
+
+Der neu beobachtete Sonnet-Operator zeigt eine Form adaptiver Planung, die in dieser Forschungsnotiz noch als Lücke eines integrierten ASE/WFC-Produkts beschrieben wurde: aus einem Review-Fund wird ein neuer Auftrag, ohne dass der Maintainer ihn einzeln formuliert. Das beweist nicht, dass ASE/WFC integriert wäre, sondern markiert ein konkretes Anforderungsszenario für eine mögliche Verbindung. [R]/[I]
+
+Für eine CTO-Präsentation wäre die überprüfbare Aussage: "Ein übergeordneter Agent steuerte über mehrere Tage eine Folge unabhängig geprüfter, von WFC begrenzter Änderungen. Er reagierte auf neu entdeckte Produktfehler mit einer weiteren Commission; die Freigabegrenzen für Release und externe Aktionen blieben beim Menschen." [R] Die größere Anything-Factory-These wäre das Zielbild, nicht das Ergebnis dieses Falls. [I]
+
+== Nachträge für den späteren History-Wrap-up
+
+* [L] E0: Commission, Run-ID, Review-Artefakt, Abschluss-Evidenz und tatsächlicher Diff von `566bc40` unabhängig verifizieren.
+* [L] E0b: Run-ID, Commission, Reviewer-Disposition, endgültiger Integrationscommit und Regressionstest mit Fail-before/Pass-after erfassen; nicht rückwirkend als abgeschlossen darstellen.
+* [L] Prüfen, ob alle vier Fundstellen durch denselben Helper umgestellt wurden und welche funktional tatsächlich die racy-stat-Fehlbeobachtung auslösen konnten.
+* [L] Für die Querverbindung die zwei Reports vom 21.11. als externe, nicht autorisierende Analysequellen erhalten; spätere Aufnahme in `docs/cold_storage/project_history/pre-0.1.0b1/` erst nach Maintainerentscheidung.
+* [I] Für den Claim "Agent Anything Factory" mindestens einen nichtsoftwarebezogenen, realen Pilot mit domänenspezifischen Qualitätskriterien durchführen. Die vorhandenen Software-Runs sind keine Evidenz für fachliche Korrektheit in Latein, Recht oder Controlling.

@@ -1,0 +1,281 @@
+= Report 2: BP7 als Fallstudie einer neuen Qualitätsökonomie (20.–21. November 2026)
+:toc:
+:toclevels: 3
+:sectnums:
+:lang: de
+
+[cols="1,4"]
+|===
+|Status |Externes Arbeitsdokument. Nicht im Repository, nicht autorisierend, keine Produktanforderung. Übernahme ins Repository erst beim Beta-Epic-Wrap-up (Entscheidung des Maintainers).
+|Erstellt |21.11.2026, ca. 05:00 Uhr (Europe/Berlin)
+|Auftrag |Maintainer, 21.11.2026 03:58 Uhr
+|Autor |Claude (Sonnet 5.5), der Level-1-Operator, der BP7 gesteuert hat. Der Report prüft damit zum Teil die eigene Arbeit und die eigene Kostenstruktur. Das ist ein Interessenkonflikt; Wertungen sind als Interpretation markiert und gehören unabhängig gegengelesen.
+|Gegenstand |BP7 (Self-Development-Cutover): Planung, Konfiguration, Archiv-Äquivalenz, zwei Self-Hosting-Proofs und die Retirement-Commission C5. Zeitraum 20.11. 14:28 bis 21.11. 00:19.
+|Offen |BP9 läuft (Teil 1 gestartet 21.11. 03:37) und gehört nicht zu diesem Report. BP7 selbst ist als Run-Reihe abgeschlossen; die Produktabnahme von BP7 liegt beim Maintainer.
+|===
+
+== Lesehilfe: Evidenzklassen
+
+[cols="1,5"]
+|===
+|[B] |*Belegt.* Direkt in einer Primärquelle sichtbar: Git-Commit mit Zeitstempel, archivierte Run-Daten im Evidence-Repository, Review-Artefakte, Konversationsprotokoll dieser Sitzung.
+|[R] |*Rekonstruiert.* Aus mehreren Quellen abgeleitet. Plausibel, aber nicht durch eine einzelne Primärquelle gedeckt.
+|[I] |*Interpretation.* Meine Deutung.
+|[L] |*Datenlücke.* Nicht rekonstruierbar; nichts wird erfunden.
+|===
+
+== Executive Summary
+
+* *Die Aufgabe.* Der alte Harness (`scripts/wfc_op.py`) sollte entfernt werden, nachdem das Produkt-Front-Door seine Aufgaben übernommen hat. Zunächst wirkt das wie eine Löschung. In der Ausführung bestand es aus acht Runs mit 33 Hops, davon 17 Review-Hops, dazu acht Commission-Commits und 64 geänderten Dateien (ohne Commission-Artefakte), in rund neuneinhalb Stunden Kalenderzeit (14:30 bis 00:18). [B]
+* *Was die Gründlichkeit konkret gebracht hat.* Die Reviews fanden in BP7 sieben mal `changes_required` (7 von 17 Reviews, 41 %). Zwei Funde waren Korrektheitsfunde mit Wirkung auf Verhalten oder Abnahmefähigkeit: die sechs fest verdrahteten `test_wfc_op.py`-Knoten in `tests/conftest.py`, die die Required-Mode-Suite nach der Löschung konstruktionsbedingt hätten scheitern lassen, und eine `OSError`-Lücke im neuen Diagnosecode von Proof Run 1, die den fail-closed-Refusal durch eine ungefangene Ausnahme ersetzt hätte. Die übrigen Funde betrafen Spezifikations- und Dokumentationsvollständigkeit: falsche Zuordnung von Funktionen, ein redundanter Vergleich, fehlende Aufwandsschätzungen, nicht erfasste Manual-Seiten und vier Stellen, an denen das Manual nach C5 noch einen entfernten Befehl verlangt hätte. Sicherheitsrelevante Funde gab es in BP7 nicht. [B]
+* *Was nicht gezeigt ist.* Es gibt keine belastbaren Token- oder Kostenzahlen für Worker und Reviewer (`usage_not_reported`) und keine Messung menschlicher Vergleichsteams. Die These, KI mache ein sonst unbezahlbares Maß an Prüfung wirtschaftlich zugänglich, lässt sich aus BP7 daher nur in ihrem ersten Teil stützen: Prüftiefe war verfügbar und wurde routinemäßig genutzt (17 Reviews bei 33 Hops, im Median zwei Reviews je Run). Über Wirtschaftlichkeit im Vergleich sagt der Verlauf nichts. [I]
+* *Gegenbefunde.* Mehrere Review-Artefakte sind länger als die Änderung, die sie prüfen; die Review-Familie (Opus) ist dem Worker-Modell (Sonnet) ähnlich; die größten Fehler lagen vorgelagert (Plan-Scope, Wrapper, Staging) und wurden zum Teil erst von WFC oder vom Maintainer entdeckt; und ein Teil des Aufwands ist durch das Regelwerk selbst erzeugt (drei Stopps wegen Finding-Autorität und Arbeitsbaum). [B]/[I]
+* *Bewertung der These.* Teilweise gestützt als Aussage über Verfügbarkeit, nicht gestützt als Aussage über Kosten-Nutzen oder Vergleich mit Menschen. Eine ehrlichere Formulierung der Hypothese ist unten (Abschnitt 9). [I]
+
+== Quellen und Grenzen
+
+* [B] Run-Daten: `run/operator-summary.json` der acht BP7-Archive im Evidence-Repository (Phase, Ausgang, Modell je Hop, Commits).
+* [B] Git: Commit-Zeiten im Development-Repository (Europe/Berlin), `git diff --numstat`.
+* [B] Review-Artefakte: `docs/warm_storage/concepts/wfc_beta1_bp7_*review.adoc`, `wfc_proof1_*`, `wfc_proof2_*`, `wfc_bp7_c5_*`. Hinweis: Die Broad-Review-Dateien werden von jedem Broad-Review-Hop neu geschrieben; vorhanden ist jeweils nur die letzte Fassung. Zeilenzahlen in Abschnitt 6 sind die der letzten Fassung.
+* [B] Plan: `docs/backlog/beta1_bp7_cutover_plan.adoc` (945 Zeilen), darin Gap-Analyse, Sequenz, Aufwandsbegründung.
+* [B] Konversationsprotokoll dieser Sitzung (für Zeitpunkte, Fehler und Maintainer-Entscheidungen).
+* [L] Token und Kosten der Worker- und Reviewer-Aufrufe, Dauer der einzelnen Hops (nur Commit-Zeitpunkte, keine Hop-Laufzeiten im Archiv), Gesprächsinhalte der Worker und Reviewer, jede Messung menschlicher Teams.
+* [R] Token der Level-1-Sitzung im BP7-Fenster (20.11. 14:28 bis 21.11. 00:19): 203 Assistentennachrichten, 114.590 Ausgabe-Tokens, 325.377 Cache-Erstellungs-, 26.907.134 Cache-Lese-Tokens, 486 unzwischengespeicherte Eingabe-Tokens. Nur diese Sitzung, Untergrenze, ungeprüft gegen eine Abrechnung.
+* Run-Dauer ist hier als Zeit zwischen Launch (aus den Tool-Aufrufen im Protokoll) und letztem Run-Commit berechnet [R]; sie enthält Task-Checks und Hop-Übergänge.
+
+== Ausgangslage: Garantien des alten Harness und ihr Ersatz
+
+Der Plan (`beta1_bp7_cutover_plan.adoc`, Abschnitt 1) legte pro Fähigkeit des Harness die Entsprechung im Produkt fest, jeweils geprüft gegen den Quellcode. Zusammengefasst [B]:
+
+[cols="2,3,3"]
+|===
+|Garantie des Harness |Ersatz im Produkt |Einordnung im Plan
+|Commission-Compile gegen `governance/self-development/` (v1-`CommissionIntent`-Pfad) |`compile_commission` gegen geschlossene Programme (`simple@v1`, `robust@v1`) |Bewusst verengt
+|Rollen- und Komponententexte |Paketressourcen, digest-gepinnt, byte-identisch geprüft |Gleichwertig, andere Quelle der Wahrheit
+|Repository-Policy/Guidance |Pflichtfeld `ConsumerRequest.guidance` |Neuer Input (Commission C1)
+|Execution-Bindings (`--role-binding` bei jedem `prepare`) |`ConsumerConfig.default_execution` mit Override |Gleichwertig, anderer Bindungspunkt
+|Hop-Ceiling, Evidence-Command, Durable Artifacts |Identische bzw. gleichwertige Mechanik |Vollständig gleichwertig
+|Frischer Export plus venv je Attempt (Preparation-Schritte 4/5) |Keine; `wfc run` nutzt ein vom Consumer bereitgestelltes `wfc` |Bewusste Entfernung (DG-5), verschiebt eine Vorbedingung auf die vorbereitete Umgebung
+|Offline-Input-Verifikation (`fetch`/`verify`/`exec`) |Nicht im Front-Door-Umfang |Bewusst außerhalb (DG-5); im Betrieb blieb der Wrapper `wfc_test_inputs.py exec` nötig
+|Scratch-Verzeichnis je Attempt (0700, `TMPDIR`) |Kein Allokator im Produkt |Benannte echte Lücke; ch05-Disziplin bleibt bindend
+|Trennung State/OPS/Scratch/Evidence |`checkout_dir`/`engine-state` plus separat aufgelöstes Evidence-Ziel |Gleichwertige Invariante, andere Form
+|Mechanische Archivierung (`archive_run.py` im Evidence-Repo) |`frontdoor/archive.py`, automatisch in `wfc run`/`resume` (BP6c) |Gleichwertig, verbessert; eine akzeptable Differenz (Attempt-Identität)
+|Audit/Report |`audit.json`, `wfc report` |Neu, nicht Teil der Parität
+|===
+
+Ersetzen sollte den Harness ausschließlich das Produkt-Front-Door, mit der Maintainer-Entscheidung DG-4 (20.11. 10:16): Cutover vor dem Tag; der alte Harness bleibt bis zwei echte, archivierte Self-Hosted-Runs vorliegen. [B]
+
+== Vorgehensweise
+
+=== Sequenz
+
+[cols="1,3,2,2"]
+|===
+|Schritt |Inhalt |Runs |Abnahmebedingung
+|Planung |Konkreter, quellbasierter Cutover-Plan |Planung-001, Planung-002 |Unabhängiges Review; Maintainer-Übernahme des Plans (16:28) nach formal gestopptem Run
+|C1 |Guidance-Dokument und Consumer-Config `.wfc/config.yaml` |C1 |Unabhängiges Broad Review
+|C1b |Archiv-Äquivalenz-Test verallgemeinern (Fixture-Fall für einen echten Run) |C1b-001 (blockiert), C1b-002 |Unabhängiges Review, Provenance der Fixture-Hashes
+|Proof Run 1 |Echte Aufgabe (Evidence-Diagnostik) über das Front Door |Proof 1 (8 Hops) |Review, `task-check`, automatische Archivierung, Äquivalenz-Probe
+|Proof Run 2 |Echte Aufgabe (Docs-Reconciliation) über das Front Door |Proof 2 (5 Hops) |dito
+|C5 |Harness, v1-Compile-Pfad, zugehörige Tests entfernen; Manual umstellen |C5 (5 Hops) |Required-Mode-Suite grün, keine Live-Referenzen, Manual stimmt mit CLI-Hilfe überein
+|===
+
+=== Angewandte Prüfungen
+
+* *Unabhängiges Review* durch Opus (Reviewer) gegen Sonnet (Worker) in jedem Run: Broad Review, Korrektur, Focused Review, erneutes Broad Review (`robust@v1`). [B]
+* *Coordinator-`task-check`* (`python -m pytest -q`, Required-Mode) nach den Hops mit Kandidaten: elf bestandene Läufe in Proof 1, Proof 2 und C5; ein Fehlschlag in Planung-002 (Level-1-Fehler). [B]
+* *Provenance-Prüfung* der gestagten Fixture-Eingaben gegen die Manifest-Hashes in C1b-002. [B]
+* *Archiv-Äquivalenz:* In der Praxis lief sie als einmaliger Vergleich des eingefrorenen Altarchivierers mit dem Produktarchiv auf einer Wegwerfkopie des retained STATE; alle drei Proof-Runs ergaben dieselben 7 Dateien mit identischem Pfad, identischer Größe und identischem SHA-256, Unterschied nur im Quellpfad. [B] Für die Proofs wurde bewusst kein zusätzlicher Fixture-Fall per Commission gebaut (Abweichung vom Plan, in `_open.adoc` vermerkt).
+* *Operator-eigene Gegenprüfung* nach jedem Run (Diff, Suite, Scope, zitierte Hashes). [B]
+* *Referenzsuche* vor C5: Der Plan führte 14 Manual-/Guide-Dateien auf; die Suche nach allen Live-Referenzen auf Entferntes erweiterte den Scope um Modell- und Architekturseiten und einen Quellkommentar. [B]
+
+== Konkrete Funde
+
+=== Funde der Reviews (blockierend)
+
+[cols="1,3,3,2"]
+|===
+|Run/Hop |Fund |Warum er zählt |Klasse
+|Planung-001 H002, F1 |Zwei Funktionen (`derive_attempt_id`, `validate_explicit_attempt_identity`) waren dem Harness zugeschrieben; beide liegen in `frontdoor/archive.py`. |Der Plan hätte die Archiv-Äquivalenz auf einer falschen Beschreibung des Unterschieds begründet. [B] |Korrektheit der Spezifikation
+|Planung-001 H002, F2 |C1b beauftragte einen Archiv-Äquivalenz-Vergleich, den das Repository bereits enthielt, mit einer nicht erfüllbaren Abnahme; der Altarchivierer wurde nur im Geschwister-Repo gesucht. |Doppelarbeit und unerfüllbare Abnahme vor der Umsetzung vermieden. [B] |Zuschnitt/Aufwand
+|Planung-002 H002, F1 |`tests/conftest.py:21-33` pinnt sechs Required-Real-Knoten aus `test_wfc_op.py`; nach der Löschung würde jeder Required-Mode-Lauf mit `TESTS_FAILED` enden (`conftest.py:134-144`). |C5 hätte seine eigene Abnahme konstruktionsbedingt nicht erfüllen können. [B] |Korrektheit des Abnahmegates
+|Planung-002 H002, F2 |Keine Aufwandsschätzung und keine Begründung je Sub-Commission. |Die Aufgabenstellung verlangte sie; fehlt sie, ist der Plan nicht prüfbar. [B] |Prozessvollständigkeit
+|Planung-002 H004, F3 |C5-Doku-Scope nennt nur sieben Manual-Dateien; weitere Dateien tragen Live-Anweisungen für den Harness. |Der Scope wuchs von 7 auf 14 Dateien. [B] |Dokumentationsvollständigkeit
+|Proof 1 H002 |Die Meilenstein-Notiz im BUG-Record nannte einen nie geänderten Pfad und ließ den eigenen Pfad aus. |Falsche Provenance im Backlog-Record. [B] |Dokumentation
+|Proof 1 H005 |Die enge `except`-Auswahl der neuen Diagnosesonde ließ eine einfache `OSError` aus einem untersuchten Sibling-Eintrag aus `resolve_executable` entweichen und ersetzte so den typisierten fail-closed-Refusal durch eine Ausnahme, die die Admission-Naht nicht umhüllt. |Echte Verhaltensregression in neuem Produktcode; Korrektur `323de15` (2 Zeilen, plus 17 Test-Zeilen). [B] |Korrektheit, fail-closed
+|Proof 2 H002 |Ein neuer Lifecycle-Absatz verwies auf einen Abschnitt ("What this is not"), der im Record nicht existiert. |Tote Querverweise in Records, die Operatoren lesen. [B] |Dokumentation
+|C5 H002, F001 |`ch06_recovery/02_successors.adoc` forderte weiter, den gelöschten Harness aufzurufen. |Ein Operator hätte einen nicht vorhandenen Befehl ausführen sollen. [B] |Operator-Anweisung
+|C5 H002, F002 |`ch03_running/01_preparation.adoc` verlangte im normativen Vertrag weiter `launch.sh` und eine OPS-Umgebung. |Normativer Text widersprach dem implementierten Pfad. [B] |Operator-Anweisung
+|C5 H002, F003 |`ch07_diagnostics/02_failure_modes.adoc` beschrieb das "aktuelle Scratch-Layout" des entfernten Allokators samt Flag. |Seite stand nicht auf der Plan-Liste. [B] |Dokumentationsvollständigkeit
+|C5 H002, F004 |`developer_guide/ch01_development.adoc:213` behauptete eine Required-Mode-Garantie, die C5 entfernt hatte. |Dokumentierte Garantie existierte nicht mehr. [B] |Dokumentation/Korrektheit
+|===
+
+=== Unterschiede zwischen Harness und Produktpfad, die erst die Prüfung offenlegte
+
+* [B] Das Produkt erlaubt einen Lifecycle pro Checkout; Proof Run 2 konnte nicht im verbrauchten Checkout laufen. Die Regel stand als P12 im BP4a-Review, aber nicht in der Vorbedingungsliste des Plans. Folge: Backlog-Item `FTR-WFC-LIFECYCLE-ROTATION`.
+* [B] Ein Front-Door-Run hat kein OPS-Verzeichnis (`ops_dir: null` im Manifest); das Produktarchiv trägt eine andere Attempt-Identität (`<repository>-run-<run_id>`) und ein `audit.json`. Die Äquivalenz bezieht sich auf die 7 kopierten Dateien.
+* [B] Das Produkt hat keinen Scratch-Allokator; der Betrieb brauchte weiterhin eigene `TMPDIR`-Disziplin und den Offline-Input-Wrapper für den Coordinator-`task-check`.
+* [B] Der Plan unterschätzte den Löschumfang bei den Tests: `tests/architecture/test_self_development_governance.py` (45 Tests, 8.003 gelöschte Zeilen) wurde vollständig entfernt statt "getrimmt". Das C5-Review hat per Test geprüft: 40 Tests trieben `operator._preflight` gegen den eingefrorenen Legacy-Baum, fünf generische Tests existieren unter denselben Namen in `tests/architecture/test_product_invariants.py` (Namen vom Operator nachgeprüft; Gleichwertigkeit der Assertions laut Review, vom Operator nicht erneut geprüft).
+
+== Aufwand
+
+=== Runs, Hops und Commits
+
+[cols="2,2,1,1,1,1,3"]
+|===
+|Run |Zeitraum (Launch bis letzter Commit) |Hops |Reviews (davon `changes_required`) |Run-Commits |Dauer |Ausgang
+|Planung-001 |14:32–15:04 |3 |1 (1) |3 |32 min |`awaiting_human` (Worker meldete `residual`)
+|Planung-002 |15:20–16:07 |7 |3 (2) |6 |47 min |`awaiting_human` (`task-check` Exit 4, Level-1-Fehler); Plan per Maintainer übernommen
+|C1 |17:13–17:25 |2 |1 (0) |2 |12 min |`completed`
+|C1b-001 |17:35–ca. 17:45 |1 |0 |0 |ca. 10 min |`awaiting_human` (Worker `blocked`, Staging fehlte)
+|C1b-002 |17:54–18:29 |2 |1 (0) |2 |35 min |`completed`
+|Proof 1 |18:36–20:44 |8 |5 (2) |8 |128 min |`completed`
+|Proof 2 |21:37–22:11 |5 |3 (1) |5 |34 min |`completed`
+|C5 |22:19–00:09 |5 |3 (1) |5 |110 min |`completed`
+|Summe |ca. 408 min Run-Zeit |33 |17 (7) |31 |6 h 48 min |5 `completed`, 3 gestoppt
+|===
+
+* [B] Hop-Verteilung: 8 Implement, 11 Broad Review, 8 Correct, 6 Focused Review. Zwei Hops blieben `blocked` (C1b-001 Implement, Planung-002 Correct H007).
+* [B] Commits im BP7-Bereich (`3d7c7ca^..main`): 47. Davon 31 Run-Commits (Worker, Reviewer, Korrekturen), 8 Commission-Commits (`3d7c7ca`, `08d2c9d`, `3c4acbc`, `ef96b89`, `e2e43de`, `16a3034`, `105f507`, `6f47b5d`) und 8 Operator-Commits (Doku, Config, Akzeptanz). [R: Differenzbildung]
+* [B] Berührte Dateien im BP7-Bereich (ohne `governance/commissions` und `.wfc/governance`): 64 Dateien, +6.997/−13.236 Zeilen. Davon gelöscht im Produkt-/Testbaum durch C5: `scripts/wfc_op.py` (1.334), `tests/unit/test_wfc_op.py` (1.653), `tests/unit/test_commissioning.py` (775), `tests/architecture/test_self_development_governance.py` (8.003), 413 Zeilen in `commissioning.py`; zusammen 12.190 Zeilen Löschung in `src/`, `tests/`, `scripts/`. Die Doku-Umstellung in C5 betraf 21 Dateien (+1.012/−948).
+* [B] Dauer: 20.11. 14:28 (Maintainer-Auftrag) bis 21.11. 00:18 (Doku-Commit `41c6a9a`) = 9 h 50 min Kalenderzeit.
+* [B] Menschlicher Aufwand im selben Fenster: 11 inhaltliche Maintainer-Nachrichten (14:28, 15:19, 16:28, 17:10, 17:53, 20:02, 20:06, 21:24, 21:35, 21:45, 21:47), im Mittel eine Nachricht je rund drei Hops.
+* [R] Level-1-Sitzungs-Tokens im Fenster: siehe Quellen. Token und Kosten der Runs: [L].
+
+=== Plan gegen Ist
+
+[cols="2,2,2"]
+|===
+|Schritt |Plan (Hops) |Ist (Hops)
+|C1 |ca. 3 |2
+|C1b |ca. 4 |3 (1 blockiert plus 2)
+|Proof Runs |nicht festgelegt |8 und 5
+|C5 |ca. 9 |5
+|Planung |nicht geschätzt |10 über zwei Runs
+|===
+
+[I] Die detaillierteste Vorarbeit (C5) wurde am deutlichsten überschätzt. Das ist vereinbar mit der Lesart, dass der Planungsaufwand Hops in der Ausführung gespart hat; belegt ist es nicht, denn es gibt keinen Vergleichslauf ohne Planung.
+
+== Nutzen
+
+Zuordnung der Funde aus Abschnitt 3 nach Wirkung [I]:
+
+* *Korrektheitsrelevant (Verhalten oder Abnahmefähigkeit):* Planung-002 F1 (Required-Real-Pins), Proof 1 H005 (`OSError`-Lücke im neuen Code), Planung-001 F1 (falsche Funktionszuordnung im Spezifikationstext). Ohne die ersten beiden wäre entweder C5 nicht abnehmbar gewesen oder der Produktcode hätte eine Verhaltensregression enthalten. [B]
+* *Operator-relevant (Anleitung hätte auf nicht Vorhandenes verwiesen):* C5 F001, F002, F004 sowie die erweiterte Dateiliste aus Planung-002 F3 und C5 F003. Ein Operator, der dem Manual nach C5 gefolgt wäre, hätte einen gelöschten Befehl ausführen sollen oder einen nicht existierenden Vertrag befolgt. [B]
+* *Aufwandsvermeidend:* Planung-001 F2 (redundanter Vergleich, unerfüllbare Abnahme). [B]
+* *Dokumentationsgenauigkeit:* Proof 1 H002, Proof 2 H002 (falsche Provenance, tote Querverweise). [B]
+* *Sicherheitsrelevant:* keiner der BP7-Funde. [B] Die sicherheitsnahen Funde der Beta-Serie lagen in BP4b und BP6b und sind nicht Gegenstand dieses Reports.
+
+Zusätzlich lieferte die Gesamtprüfung *positive Nachweise*, keine Funde: Äquivalenz der Archive (7 von 7 Dateien identisch), Vollständigkeit der Referenzsuche nach C5 (keine Live-Referenz auf entfernten Code), Coverage-Erhalt der fünf generischen Tests. [B]
+
+== Kosten der Gründlichkeit
+
+* *Review-Volumen gegenüber Änderung [B]:* Letzte Fassungen der Review-Artefakte: Planung-001 357 Zeilen; Planung-002 443 plus 585; C1 247; C1b-002 320; Proof 1 311 plus 374; Proof 2 296 plus 187; C5 653 plus 360 (zusammen 4.133 Zeilen). Proof 1 änderte 47 Produktzeilen und 147 Testzeilen und erzeugte 685 Review-Zeilen; Proof 2 änderte vier Lifecycle-Absätze und erzeugte 483 Review-Zeilen. [I] Ein Teil dieses Volumens ist durable Evidenz und gewollt; als Lesefläche ist es hoch.
+* *Mehrfachprüfungen [B]:* Jeder Run durchlief nach dem Muster Broad, Korrektur, Focused, Broad meist zwei Broad-Reviews, die jeweils laut ihrem Text die Kriterien "von Grund auf" neu herleiten (Proof 1: "re-derived from scratch in this Hop against the whole product change rather than inherited from the earlier Hops"). Das erzeugt bewusst Redundanz; ihr Zusatznutzen ist im Einzelfall schwer zu trennen. Beispiel: Proof 1 H008 akzeptierte ohne neuen Fund, nachdem H007 akzeptiert hatte. [I]
+* *Unverhältnismäßigkeit im Kleinen [I]:* 8 Hops und fast zwei Stunden Run-Zeit für eine Fehlermeldungsverbesserung (Proof 1); 5 Hops für vier Dokumentabsätze (Proof 2). Der Nutzen lag hier im Nachweis des Pfads (Proof), nicht in der Aufgabe; das ist bei Proofs gewollt, würde aber bei einer Routineaufgabe als überzogen gelten.
+* *Teilweise ungenutzte Infrastruktur [B]:* C1b baute einen verallgemeinerten Fixture-Mechanismus (Test +247 Zeilen, Fixture-Verzeichnis); für die Proof-Runs wurde stattdessen ein einmaliger Ad-hoc-Vergleich genutzt. Der Fixture-Fall für den Guidance-Run wird getestet, die beiden Proof-Fälle haben keinen Fixture-Fall.
+* *Selbstverursachte Komplexität [B]:* Drei Stopps entstanden aus dem Regelwerk selbst: zwei `invalid_finding_delta` (BP6b, Planung-001: Worker meldeten Finding-Operationen, die nur Reviewer führen dürfen) und der Stopp bei unfertigem Arbeitsbaum (C1b-001, BP6c-001). Dazu kamen die Level-1-Fehler (Wrapper, Staging, Scope, Monitor) mit etwa 47 Minuten verlorener Meldezeit (Monitor) und einem verlorenen Run (C1b-001, Planung-002 formal). Der Plan selbst umfasste 945 Zeilen, ein Teil davon für Schritte (C1b), die sich später nur eingeschränkt auszahlten.
+* *Zeit [B]:* Aus den Commit-Zeiten ergeben sich bei Proof 1 und C5 Run-Zeiten von je rund zwei Stunden; die menschliche Kalenderzeit enthielt außerdem Wartezeiten (z. B. 00:19 bis 03:36 auf die Maintainer-Entscheidung).
+
+== Shift-left: was früh erkannt wurde
+
+[cols="2,3,3"]
+|===
+|Früh erkannt (Plan oder Review vor Umsetzung/Integration) |Spät erkannt (im Betrieb) |Quelle
+|Planung-001 F1/F2: falsche Zuordnung, redundanter C1b |Monitor-`pgrep`-Selbstmatch (nach 47 min durch Maintainer) |[B]
+|Planung-002 F1: Required-Real-Pins vor C5 |Offline-Wrapper beim Planung-002-Launch vergessen (Stopp bei Hop 7) |[B]
+|Planung-002 F3: Doku-Scope 7 auf 14 Dateien |C1-Scope außerhalb des Ceilings (durch `commission check` mechanisch) |[B]
+|C5 H002 F001–F004: vier Manual-Defekte vor Integration auf `main` |Lifecycle-Einmal-Regel erst beim Start von Proof 2 sichtbar, obwohl in BP4a-P12 vermerkt |[B]
+|Operator-Referenzsuche vor C5 |C1b-001: fehlendes Staging externer Eingaben (Worker blockierte korrekt) |[B]
+|===
+
+[I] Der Plan-Review fing Fehler in der *Spezifikation* früh; er verhinderte aber nicht, dass die Umsetzung (C5) vier weitere Defekte erzeugte, von denen drei in Dateien lagen, die der Plan bereits aufführte (F001, F002, F004) und einer in einer Datei außerhalb der Plan-Liste (F003). Shift-left senkte die Fehlerzahl also nicht auf null, sondern verlagerte die Entdeckung vor die Integration. Operative Level-1-Fehler wurden fast ausschließlich spät entdeckt.
+
+== Das robuste Profil
+
+* *Unabhängige Reviews [B]:* In jedem BP7-Run prüfte ein frischer Opus-Aufruf; er sah den Kandidaten ohne den Worker-Kontext. In 7 von 17 Fällen forderte er Änderungen, in der Gesamtserie 27 von 64.
+* *Finding-Governance [B]:* Nur der Reviewer eröffnet und schließt Findings; der Reducer stoppt fail-closed, wenn ein Worker eine Finding-Operation meldet. In BP7 geschah das einmal (Planung-001, `residual`), in der Serie fünfmal. Das Prinzip funktionierte mechanisch, hat aber wiederholt Folgekosten erzeugt (Stopp, Archivierung, Nachfolger).
+* *Technische Abnahmekriterien [B]:* Der Coordinator-`task-check` lief nach den Review-Hops und bestand elfmal in den drei Front-Door-Runs. Ein Fehlschlag (Planung-002) trug zur Disposition bei, weil er die formale Vollendung verhinderte, obwohl das inhaltliche Review akzeptierte.
+* *Wiederholte Verifikation [B]:* Die Review-Texte dokumentieren konkrete Gegenprüfungen, nicht nur Zustimmung: Test-Deletion-Pass mit mechanischer Prüfung je Testfunktion (C5), Hash-Prüfung zitierter Dateien, Reproduktion von Verhalten.
+* *Grenze [I]:* Sonnet-Worker und Opus-Reviewer gehören zur selben Modellfamilie. Ob korrelierte Blindstellen vorliegen, ist nicht geprüft; die Funde zu Plan-Scope-Lücken wurden vom Reviewer gefunden, der Wrapper- und Monitorfehler dagegen nicht von einem Reviewer, sondern von WFC beziehungsweise vom Menschen.
+
+== Prüfung der These
+
+*These (Maintainer):* KI macht nicht nur Codegenerierung billiger, sondern auch ein Maß an Prüfung, Kritik, Überarbeitung und Nachweisführung wirtschaftlich zugänglich, das bei vergleichbaren menschlichen Teams oft am Ressourcenaufwand scheitern würde.
+
+*Was BP7 stützt [B]/[I]:*
+
+* Prüfung war verfügbar und wurde routinemäßig genutzt: 17 Review-Hops bei 33 Hops (52 %), im Mittel gut zwei Reviews je Run (acht Runs), in unter zehn Stunden Kalenderzeit.
+* Die Prüfungen waren nicht pro forma: 41 % der Reviews forderten Änderungen; zwei Funde betrafen Verhalten oder Abnahmefähigkeit; ein Fund steckte im neuen Code des Proofs selbst.
+* Die Prüfung betraf Dinge, die in Teams oft unterbleiben: Zeile-für-Zeile-Prüfung aller Live-Referenzen auf Gelöschtes, Test-für-Test-Prüfung einer Löschung, Hash-Prüfung zitierter Records.
+
+*Was BP7 nicht stützt [B]/[L]:*
+
+* *Wirtschaftlichkeit:* Es gibt keine Token- oder Kostenzahlen der Runs. "Billig" ist nicht belegt; belegt ist nur Verfügbarkeit im Rahmen eines Flatrate-Kontos, dessen Budgetgrenzen den Maintainer in der Serie beschäftigten (30 % des 5-Stunden-Fensters nach sieben Hops am 19.11.). Die Budgetfrage zeigt, dass Prüfung nicht kostenlos ist.
+* *Vergleich mit Menschen:* Kein Vergleich wurde gemessen. Aussagen darüber, was ein menschliches Team getan hätte, sind Hypothesen.
+* *Wert pro Prüfung:* Die Mehrzahl der Funde war Dokumentations- und Prozessvollständigkeit. Wie viel davon ein Mensch mit weniger Aufwand erreicht hätte, ist offen.
+* *Kausalität:* Dass die Prüftiefe die Fehler *verhindert* hat, ist nicht von der Alternative zu trennen, dass ohne sie die Fehler später aufgefallen wären (etwa beim Ausführen von C5 durch die Required-Mode-Suite, die den conftest-Fehler ohnehin gemeldet hätte, nur als Fehlschlag in C5 statt als Planungsfund). [I]
+
+*Zur AI-Slop-Debatte [I]:* Der Verlauf liefert zwei Lesarten, die beide haltbar sind. Dafür spricht, dass verfügbare Review-Kapazität zu systematisch gründlicherer Entwicklung geführt hat (Gegenprüfung statt Vertrauen). Dagegen spricht, dass dieselbe Verfügbarkeit Volumen erzeugt: Review-Artefakte, die länger sind als die Änderung, und Mehrfachprüfungen mit abnehmendem Zusatznutzen. Gründlichkeit und Aufblähung sind in diesem Datensatz nicht sauber trennbar.
+
+*Eine vorsichtigere Formulierung, die die Daten tragen würden:* "In diesem Verlauf war unabhängige Prüfung so verfügbar, dass sie in jedem Run mehrfach eingesetzt wurde und in 41 % der Reviews konkrete Änderungen auslöste. Ob dies wirtschaftlich besser ist als vergleichbare menschliche Prüfung, wurde nicht gemessen."
+
+*Was für eine belastbare Prüfung der These fehlt:* Token- und Kostendaten je Hop (DG-1 Fast-Follow); eine Auswertung, welche Funde ohne Review später sichtbar geworden wären; eine Gegenprobe ohne Planungs-Run oder ohne zweites Broad Review; ein Vergleichswert menschlicher Review-Zeit für dieselben Artefakte; eine zweite Modellfamilie als Reviewer.
+
+== Offene Datenlücken
+
+* [L] Tokens und Kosten von Worker- und Reviewer-Aufrufen; Hop-Laufzeiten einzeln.
+* [L] Gesprächsinhalte der Worker und Reviewer (nur Ergebnisse in Run-Archiven und Commits).
+* [L] Kontrafaktische Daten (was ohne die jeweilige Prüfung passiert wäre).
+* [L] Vergleichsdaten menschlicher Teams.
+* [R] Run-Dauern als Launch bis letzter Commit; C1b-001 (Ende ca. 17:45) und die Differenzbildung der Commit-Klassen sind Näherungen.
+* [I] Alle Wertungen ("selbstverursachte Komplexität", "Unverhältnismäßigkeit") sind Selbsteinschätzung des Level-1-Agenten und gehören gegengelesen.
+* BP9 ist nicht ausgewertet.
+
+[appendix]
+== Anhang A: Zeitachse der BP7-Runs
+
+[cols="2,2,3"]
+|===
+|Zeit (20./21.11., Europe/Berlin) |Ereignis |Evidenz
+|14:28 |Maintainer: BP6c akzeptiert, Runtime-Promotion freigegeben, BP7-Planung fortsetzen |Protokoll [B]
+|14:30 |Commission Planung-001 committet (`3d7c7ca`) |Git [B]
+|14:32–15:04 |Planung-001, 3 Hops, Stopp `invalid_finding_delta` |Evidence `c5a3ae2` [B]
+|15:19 |Commission Planung-002 (`08d2c9d`) |Git [B]
+|15:20–16:07 |Planung-002, 7 Hops, Stopp bei Hop 7 |Evidence `6e0d10c` [B]
+|16:28 |Maintainer übernimmt den Plan (`5258acb`) |Protokoll, Git [B]
+|17:10/17:11 |Maintainer: Empfehlungen 1–3; C1-Commission (`3c4acbc`) |Protokoll, Git [B]
+|17:13–17:25 |C1, 2 Hops |Evidence `3d50922` [B]
+|17:33 |C1b-001-Commission (`ef96b89`) |Git [B]
+|17:35–ca. 17:45 |C1b-001 blockiert |Evidence `a5031af` [B]
+|17:53 |C1b-002-Commission (`e2e43de`) nach Maintainer-Freigabe der Recovery |Git, Protokoll [B]
+|17:54–18:29 |C1b-002, 2 Hops |Evidence `2a0478d` [B]
+|18:41 |Proof-1-Commission (`16a3034`) |Git [B]
+|18:36–20:44 |Proof 1, 8 Hops (Launch 18:36; Commission-Commit 18:41) |Evidence `eb13031` [B]
+|21:24 |Maintainer-Hinweis zum hängenden Monitor |Protokoll [B]
+|21:42 |Proof-2-Commission (`105f507`) |Git [B]
+|21:37–22:11 |Proof 2, 5 Hops (Launch-Versuch 21:36 abgewiesen) |Evidence `d4dd46b` [B]
+|22:24 |C5-Commission (`6f47b5d`) |Git [B]
+|22:19–00:09 |C5, 5 Hops |Evidence `7391b8b` [B]
+|00:18 |Integration nach `main`, Doku-Commit `41c6a9a` |Git [B]
+|===
+
+Die Launch-Zeiten sind aus den Tool-Aufrufen im Protokoll; der Commission-Commit eines Front-Door-Runs entsteht innerhalb des Lifecycles nach dem Launch (daher steht der Commit nach dem Launch).
+
+[appendix]
+== Anhang B: Quellen für nachprüfbare Beispiele
+
+[cols="2,3"]
+|===
+|Fund |Fundstelle
+|Falsche Funktionszuordnung |`docs/warm_storage/concepts/wfc_beta1_bp7_cutover_planning_001_broad_review.adoc` (Blocking Finding 1)
+|Redundanter C1b |dito, Blocking Finding 2
+|Required-Real-Pins |`wfc_beta1_bp7_cutover_planning_002_broad_review.adoc` (Blocking Finding 1), `tests/conftest.py:21-33`, `:134-144` (Stand vor C5)
+|Fehlende Aufwandsschätzung |`…planning_002_broad_review.adoc` (Blocking Finding 2)
+|Doku-Scope-Lücke |`…planning_002_focused_review.adoc` ("New blocking Finding")
+|`OSError`-Lücke |`wfc_proof1_evidence_diagnostics_broad_review.adoc`, Abschnitt "Review history", Korrektur `323de15`
+|Toter Querverweis |`wfc_proof2_bug_lifecycle_broad_review.adoc`, "Blocking finding"
+|C5-Manual-Funde |`wfc_bp7_c5_retirement_broad_review.adoc` (Pass H002, Blocking Findings 1–4), `wfc_bp7_c5_retirement_focused_review.adoc`
+|Test-Deletion-Pass |`wfc_bp7_c5_retirement_broad_review.adoc` (Pass H005, "Test-deletion pass" und Abschnitt zu den Test-Trims)
+|Lifecycle-Einmal-Regel |`wfc_beta1_bp4a_lifecycle_controller_001_broad_review.adoc` (P12), `docs/backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc`
+|===

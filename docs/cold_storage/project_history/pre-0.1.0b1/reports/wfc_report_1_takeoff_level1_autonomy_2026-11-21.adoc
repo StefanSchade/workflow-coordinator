@@ -1,0 +1,399 @@
+= Report 1: Take-off und Level-1-Autonomie im WFC-Beta-Epic (18.–21. November 2026)
+:toc:
+:toclevels: 3
+:sectnums:
+:lang: de
+
+[cols="1,4"]
+|===
+|Status |Externes Arbeitsdokument. Nicht im Repository, nicht autorisierend, keine Produktanforderung. Übernahme ins Repository erst beim Beta-Epic-Wrap-up (Entscheidung des Maintainers).
+|Erstellt |21.11.2026, ca. 04:30 Uhr (Europe/Berlin)
+|Auftrag |Maintainer, 21.11.2026 03:58 Uhr
+|Autor |Claude (Sonnet 5.5), der Level-1-Operator, dessen Arbeit hier untersucht wird. Der Report ist damit eine Selbstauskunft und wurde nicht unabhängig geprüft. Wo eine Aussage nur auf meiner eigenen Erinnerung oder Zusammenfassung beruht, ist das markiert.
+|Zeitraum |Beginn: Commit `5ca0b13`, 18.11.2026 09:38:58 Uhr. Ende: letztes zuverlässig belegtes Ereignis, 21.11.2026 04:01 Uhr (Stand der Datensammlung).
+|Offen |BP9 (Teil 1: Fake-Provider-E2E-Test) läuft zum Zeitpunkt der Datensammlung und ist als offen zu behandeln. Alles danach ist nicht Teil dieses Reports.
+|===
+
+== Lesehilfe: Evidenzklassen
+
+[cols="1,5"]
+|===
+|[B] |*Belegt.* Direkt in einer Primärquelle sichtbar: Git-Commit samt Zeitstempel, archivierte Run-Daten im Evidence-Repository (`operator-summary.json`, `manifest.json`), Review-Artefakte oder das Konversationsprotokoll dieser Level-1-Sitzung.
+|[R] |*Rekonstruiert.* Aus mehreren Quellen abgeleitet oder nur aus meiner eigenen Sitzungszusammenfassung bekannt. Plausibel, aber nicht durch eine einzelne Primärquelle gedeckt.
+|[I] |*Interpretation.* Meine Deutung. Nicht aus den Quellen allein zwingend.
+|[L] |*Datenlücke.* Nicht rekonstruierbar. Es wird nichts erfunden.
+|===
+
+== Executive Summary
+
+* *Umfang.* Von `5ca0b13` (18.11., 09:38:58) bis zum Stand der Datensammlung (21.11., 04:01) vergingen 66 h 22 min, bis zum Abschluss der BP7-Umsetzung (21.11., 00:19) 62 h 40 min. [B] In dieser Zeit entstanden 190 Commits auf `main` (Stand `41c6a9a`), 31 archivierte WFC-Runs mit 124 Hops (davon 64 Review-Hops) und 31 Run-Archive im Evidence-Repository. [B]
+* *Take-off-Zeitpunkt.* Der Take-off liegt nach meiner Einordnung am 19.11. um 18:18 (Autonomie-Freigabe), nach einem Warmlaufen von rund elf Stunden Sitzungszeit, davon fast zehn Wartezeit. Als erster Beleg selbstständigen Verkettens gilt der 20.11. um 03:08 (siehe Abschnitt "Wann war der Take-off?"). [I]
+* *Zwei verschiedene Phasen.* Die ersten 16 Runs (18.11. 12:27 bis 19.11. 14:12: Epic-Planung, BP1, BP8, BP2, BP3, BP5) wurden nicht von dieser Level-1-Sitzung gestartet. Wer sie steuerte, ist aus meinen Quellen nicht rekonstruierbar. [L] Die Level-1-Sitzung begann am 19.11. um 06:51; operativ wurde sie am 19.11. ab 17:03 tätig. 15 Runs (79 Hops) wurden von ihr gestartet und betreut. [B]
+* *Rolle des Menschen.* In der Level-1-Sitzung gab es 55 inhaltliche Maintainer-Nachrichten. Davon waren 8 Architektur-/Designentscheidungen, 6 fachliche Produktentscheidungen oder -akzeptanzen, 16 operative Freigaben oder Dispositionen, 9 Status- oder Betriebsthemen, 13 Prozess-/Autonomie-/Dokumentationsvorgaben und 3 Fehlereingriffe (primäre Klassifikation, siehe Abschnitt 5; die Klassifikation ist meine Interpretation). [R]
+* *Autonome Abschnitte.* Zwischen den Maintainer-Nachrichten lagen sechs Abstände von über zwei Stunden. In diesen Abständen liefen unter anderem BP4b, BP6a, BP6b, BP6c-002, die zwei Self-Hosting-Proofs und die Retirement-Commission, ohne dass der Maintainer eingriff. [B]
+* *Fehler gab es auf beiden Ebenen.* Level 1 machte zehn belegte operative oder gedankliche Fehler (Abschnitt 6.1). Sie wurden entweder durch WFC mechanisch abgefangen (fail-closed), durch den Maintainer korrigiert oder von einem Worker korrekt blockiert. Keiner führte zu einem Verlust von Run-Daten oder zu einem Push. [B]
+* *Stopps.* Von 15 Level-1-Runs endeten 9 `completed`, 6 mit Stopp: ein Hop-Budget-Stopp (BP4b) und fünf `awaiting_human`. Drei dieser Stopps wurden durch einen frischen Nachfolge-Run geheilt (BP6b, BP6c, C1b), zwei durch eine separate Maintainer-Entscheidung übernommen (BP4b, BP7-Planung). [B]
+* *Bewertung.* Der Zeitraum zeigt einen funktionierenden Durchstich: Ein zweistufiger Betrieb, in dem WFC (Level 0) Autoritätsgrenzen mechanisch erzwingt und ein Agent (Level 1) die Folge von Commissions steuert, während der Mensch Architektur und Akzeptanz entscheidet. Er zeigt nicht, dass Level 1 ohne den Menschen auskommt: Alle Autoritätsentscheidungen, jede Disposition eines gestoppten Runs und jede Produktakzeptanz blieben beim Maintainer, und die Fehler von Level 1 wurden meist von WFC oder dem Maintainer entdeckt, nicht von Level 1 selbst. [I]
+
+== Quellen, Methode und Grenzen
+
+=== Verwendete Quellen
+
+[cols="2,5"]
+|===
+|Git (Development-Repository) |`git log 5ca0b13..main`, Zeitstempel in Europe/Berlin. Auch Worktree-Branches und Salvage-Refs.
+|Evidence-Repository `workflow-coordinator-run-evidence` |37 Commits seit 18.11.; darin 31 Run-Archive und deren `run/operator-summary.json` (Hop-Folgen mit Phase, Ausgang, Modell). Run-Dauer und Ablauf wurden aus den Commit-Zeitstempeln im Development-Repository abgeleitet.
+|Review-Artefakte |`docs/warm_storage/concepts/wfc_*review.adoc` für die BP7-Runs.
+|Konversationsprotokoll der Level-1-Sitzung |`~/.claude/projects/-home-stefan-repos-spreadsheet-handling/d3d9f0f7-19fb-48ed-bf79-f8f7de307cb2.jsonl` (9,3 MB). Aus ihm stammen die Maintainer-Nachrichten, meine Antworten, die Tool-Aufrufe und deren Ergebnisse mit Zeitstempeln. Maintainer-Nachrichten, die während laufender Arbeit eingereiht wurden, stehen darin als `queue-operation`/`attachment`-Einträge (vier solche Nachrichten) und nicht als normale Nutzer-Nachrichten; sie sind eingerechnet, mit dem Zeitpunkt des Eintippens. Es enthält auch die Nachrichten der drei Kontext-Zusammenfassungen (19.11. 22:40, 20.11. 11:12, 20.11. 19:32).
+|Project History |`docs/cold_storage/project_history/pre-0.1.0b1/12-agentic-development.adoc` (ein von Level 1 verfasstes Kapitel; keine unabhängige Quelle).
+|===
+
+=== Grenzen
+
+* [L] *Nicht vorhanden:* der Steuerungs-Chat des Maintainers (er sagt am 19.11. 06:59 selbst, er steuere inhaltlich "in einem Chat"), die Gesprächsprotokolle der Agenten, die BP1–BP5 und die Dokumentations-Runs vor dem 19.11. steuerten, sowie die Protokolle der Worker- und Reviewer-Aufrufe innerhalb der Runs (nur ihre archivierten Ergebnisse, nicht ihre Gespräche).
+* [L] *Token und Kosten der Runs:* WFC meldet in diesem Stand keine Token-Nutzung (`usage_not_reported` in jedem Run-Audit; DG-1 = Fast-Follow). Es gibt daher keine belastbaren Token- oder Kostenzahlen für Worker und Reviewer.
+* [R] *Token der Level-1-Sitzung:* Aus den `usage`-Feldern des Protokolls ergeben sich (nach Eindeutigkeit von Nachrichten-ID und Request-ID) 446 Assistentennachrichten mit insgesamt 339.297 Ausgabe-Tokens, 1.787.451 Cache-Erstellungs-Tokens, 75.175.804 Cache-Lese-Tokens und 1.080 unzwischengespeicherten Eingabe-Tokens. Die Zahlen gelten nur für diese eine Sitzung, sind eine Untergrenze und nicht gegen eine Abrechnung geprüft. Sie sagen nichts über Kosten.
+* [B] *Kontextverlust:* Die Sitzung hatte drei Kontext-Zusammenfassungen. Das Protokoll enthält den vollständigen Verlauf, aber meine eigene Erinnerung an frühere Abschnitte beruht ab dort auf Zusammenfassungen. Dieser Report stützt sich deshalb auf das Protokoll und nicht auf die Erinnerung.
+* [B] *Zeitstempel:* Das Protokoll speichert UTC; alle Zeiten sind nach Europe/Berlin umgerechnet (MEZ, UTC+1). Commit-Zeiten stammen aus Git (Autorendatum).
+* [I] *Klassifikation:* Die Klassen der Maintainer-Nachrichten (Abschnitt 5) sind meine Zuordnung, jeweils mit einer primären Klasse. Einige Nachrichten sind mehrfach lesbar; das ist im Text vermerkt.
+* Git-Commits allein belegen weder Gesprächsinhalte noch Autonomie. Die Autonomie-Aussagen stützen sich deshalb auf die Tool-Aufrufe und Nachrichten im Protokoll, nicht auf Commit-Autorenschaft. 13 der 47 Commits im BP7-Bereich (`3d7c7ca^..main`) tragen die Co-Author-Zeile von Level 1; die übrigen sind überwiegend Coordinator-Commits innerhalb der Runs [R].
+
+== Phasen im Überblick
+
+[cols="2,3,4"]
+|===
+|Phase |Zeitraum |Inhalt
+|A: vor dem Level-1-Betrieb |18.11. 09:38 bis 19.11. 17:03 |16 Runs: die beiden Planungs-Runs der Epic-Ausführung, BP1, BP8, BP2, BP3 und BP5 (der letzte startete 19.11. 13:47). Run-Kommandos und Entscheidungen dieser Phase sind nur über Git und Evidence sichtbar. [L] Wer sie ausführte, ist in meinen Quellen nicht belegt.
+|B: Level 1 wartet |19.11. 06:51 bis 16:50 |Die Sitzung wird am 19.11. um 06:59 als Operator eingesetzt, liest Manual und Plan, stellt am 07:00 fest, dass ein BP5-Run läuft (`RUN-49357f88…`), startet nichts und ändert nichts. Der Maintainer sagt um 07:02: Einstieg nach Abschluss von BP5. [B] Für 9 h 47 min gibt es keine Interaktion. [B]
+|C: Level 1 aktiv, enge Freigaben |19.11. 16:50 bis 19.11. 18:18 |Übergabe, BP4a-Vorbereitung, erste Commission, erste Freigaben, erster Launch (17:54). [B]
+|D: Level 1 mit erweiterter Autonomie |ab 19.11. 18:18 |Der Maintainer sagt: committen, launchen, Runtime-Promotion und nächste Commissions selbst anstoßen; die Autoritätsgrenze hänge davon ab, wie weit die Planung Autonomie zulasse. [B]
+|===
+
+== Wann war der Take-off? Warmlaufen und Marker
+
+Die Sitzung begann am 19.11. um 06:51, aber der Betrieb im Sinne einer weitgehend selbstständigen Steuerung begann deutlich später. Die folgende Zuordnung ist eine Interpretation [I]; die Marker sind belegt [B].
+
+[cols="2,3,4"]
+|===
+|Zeit |Marker |Bedeutung
+|19.11. 06:51–16:50 |Sitzung offen, Rolle zugewiesen, keine Aktivität |Kein Warmlaufen im Handeln: 9 h 47 min Wartezeit, weil BP5 außerhalb lief. Der Einstieg ist ein Wartezustand, kein Betrieb.
+|19.11. 17:00–17:55 |Stopp aufgehoben, DG-3, erste Commission, "Commit freigegeben", "launch freigegeben", "Poll regelmäßig" |*Warmlaufen:* Jeder Schritt (Commit, Prepare, Launch) hatte eine eigene Maintainer-Freigabe.
+|19.11. 18:12 und 18:18 |Maintainer: schrittweise mehr Autonomie; committen, launchen, Runtime-Promotion, nächste Commissions selbst anstoßen |*Autonomie-Grant.* Ab hier gilt die Planung, nicht die Einzelfreigabe, als Grenze.
+|19.11. 21:32–21:33 |"mach weiter mit BP4b und danach selbstständig mit BP5, BP6, BP9 soweit du kommst" |Erste ausdrückliche Anweisung zu einer mehrstufigen Kette; BP4b wird sofort gestartet.
+|20.11. 01:16–04:59 |BP6a (Start 01:19), Zuschnitt von BP6, BP6b gestartet 03:08 ohne Maintainer-Nachricht dazwischen |*Erster Abschnitt ohne menschliches Eingreifen* (3 h 42 min) mit einer selbst geschnittenen und selbst gestarteten Folge-Commission.
+|===
+
+[I] Meine Einordnung: Der Take-off liegt nicht am Sitzungsbeginn und auch nicht beim ersten Launch (19.11. 17:54), sondern bei der Autonomie-Freigabe am 19.11. um 18:18. Als erster Beleg für selbstständiges Verketten gilt der 20.11. 03:08. Das "Warmlaufen" umfasst damit rund elf Stunden Sitzungszeit (davon fast zehn Wartezeit) und gut eine Stunde eng geführten Betriebs. Ein anderer Maintainer könnte den Zeitpunkt anders setzen; deshalb sind die Marker einzeln aufgeführt.
+
+== Chronologie
+
+Alle Zeiten Europe/Berlin. Run-Zeiten (Start, Ende) beziehen sich auf den ersten und letzten Commit des Runs; der Start des Engine-Prozesses liegt davor.
+
+=== 18.11.2026: vor der Level-1-Sitzung
+
+* 09:38:58 `5ca0b13` "docs(history): record operational scale and offline qualification". [B]
+* 12:27 bis 23:41: Planung der Epic-Ausführung (Runs `…execution-planning-001` und `-002`), BP1, BP8, BP2 (vier Runs), BP3 (zwei Runs). Drei dieser Runs stoppten: `execution-planning-001` (`reconcile_required` nach einem Provider-429), `bp2-config-compiler-001` (`reconcile_required`) und `bp3-remediation-001` (`awaiting_human`, `invalid_finding_delta`); siehe Anhang B. [B]
+* Die Steuerung dieser Runs ist nicht belegt. [L]
+
+=== 19.11.2026
+
+* 01:22 bis 14:12: BP3-Remediation-Review, BP5 in fünf Runs (Archive-Port, Recovery, Completion, Final Assurance, Retry-Integrity), davon vier gestoppt und einer (Final Assurance) abgeschlossen. [B]
+* 06:51 Level-1-Sitzung beginnt (`/clear`, Modell Sonnet 5.5). [B]
+* 06:59 Maintainer weist die Rolle zu: "du sollst als operator den prozess uebernehmen", Manual lesen, die WFC-Aufrufe folgten "einer regelapparat-logik" und seien "sehr rigide"; er steuere inhaltlich in einem anderen Chat. [B] Klasse: Prozessvorgabe.
+* 07:00 Ich melde den Stand (BP5-Completion-Run läuft seit 06:58) und starte nichts. 07:02 Maintainer: "BP5 ist in Umsetzung, wir steigen ein, wenn wir da durch sind." [B]
+* 16:50 Der Maintainer legt die Abschlussmeldung von Codex zu BP5 vor und bittet, die Übergabedoku zu lesen. Ich stelle fest: Kein Run läuft, `main` steht auf `2651abe`, ein Maintainer-Stopp vor BP4a gilt weiter. [B]
+* 17:00 Maintainer hebt den Stopp auf: BP4a, "zunächst die Commission vorbereiten, noch nicht starten", und entscheidet *DG-3 = Variante B* (kein Linux-Subreaper, kein neuer Supervising Host). Er weist darauf hin, dass der Runtime-Stand die neue Archivierungsschnittstelle noch nicht enthält. [B] Klasse: Architekturentscheidung.
+* 17:03 Ich rendere eine kombinierte BP4-Commission (Controller plus Preservation), uncommitted, und lege offene Fragen O1–O6 vor. [B]
+* 17:39 Maintainer entscheidet O1–O6: Schnitt in BP4a und BP4b; Ownership-`flock` zugelassen; und *korrigiert meine Crash-Matrix, Fall 9*: ein freier Lock bei fehlendem Engine-State beweise nicht, dass die Engine nie gestartet wurde. [B] Klasse: Architekturentscheidung mit Fehlerkorrektur an Level 1.
+* 17:41 Reduzierte Commission neu gerendert. 17:45 "Commit freigegeben, mach commission check und prepare"; 17:46 Commit `9ebd04d`, `commission check` OK, `prepare` (Attempt `wfc-beta1-bp4-lifecycle-controller-001-20261119-01`). [B]
+* 17:54 "launch freigegeben, starte im Hintergrund". *Erster Level-1-Launch* (`RUN-4000d70a…`, BP4a). 17:55 "Poll regelmäßig und melde dich bei Stopp". [B]
+* 18:12 und 18:18 Maintainer weitet die Autonomie aus (siehe Phase D). Ich lege die Grenzen als Memory ab: Stopp und Frage bei offenen DG-Gates, Produktakzeptanz, Claude-Record-Abgleich, Live-Qualifikation, Push und jedem Scope- oder Autoritätskonflikt. [B]
+* 19:01 Maintainer fragt, ob BP4a und BP4b umsetzungsstrategisch hinreichend klar seien. Ich antworte mit drei Lücken in BP4a und einer weniger klaren BP4b-Strategie und formuliere dabei sinngemäß, eine laufende Commission könnte "verworfen" werden. 19:05 Maintainer: "nichts verwerfen ohne Rücksprache.. was vermutest du denn da für einen Grund zu verwerfen?" Ich nehme die Formulierung zurück (19:05). 19:07 Maintainer: bisher kein Backtracking, "eher vorwärts mit angepasstem Plan". [B] Klasse: Fehlereingriff/Grenzziehung.
+* 19:47 bis 20:36 Statusabfragen und Budgetfragen (30 % des 5-h-Fensters nach 7 Hops; Wunsch nach niedrigerem Reasoning-Level). BP4a läuft über zwei Korrekturzyklen (Findings F001–F003). [B]
+* 20:52 und 20:58 Inode-Problem auf `/tmp` und Root-Dateisystem. Ein Löschversuch von mir wird vom Berechtigungssystem blockiert; ich versuche keinen Umweg. Um 21:00 reiht der Maintainer ein: "bitte räume die vorgeschlagenen Inodes auf". Der Scratch (`~/wfc-scratch`) belegte 280 GB und den Großteil der Inodes. 21:12 Maintainer: "ja, lösche den Scratch der älteren Attempts". Danach sinken die Inodes von 100 % auf 22 %. [B]
+* 21:27 Maintainer verlangt, die Regel "nach verifizierter Archivierung bereinigen" im Runbook zu verankern. 21:28 (eingereiht): "dann BP4a archivieren. hast du alles um mit BP4B anzufangen?". BP4a archiviert (Evidence `997b16b`). [B]
+* 21:32 "mach weiter mit BP4b und danach selbstständig mit B5 B6 B9 soweit du kommst", Sonnet als Worker, Opus als Reviewer. 21:33 BP4b gestartet (Commission `69099da`); 21:33 (eingereiht) fragt der Maintainer, was DG-1 sei und ob es an ihm hänge. [B]
+* 21:45 Maintainer entscheidet *DG-1 = (b) Fast-Follow* und verlangt, die Scratch-Aussage im Manual runtime-generisch statt Payload-spezifisch zu formulieren. [B] Klasse: Produktentscheidung mit Dokumentationskorrektur.
+* 22:40 erste Kontext-Zusammenfassung. [B]
+
+=== 20.11.2026
+
+* 00:59 BP4b endet `awaiting_human_budget` (10 von 10 Hops); letzter Review H010 war ACCEPT. 01:00 archiviert (`0001fcc`). 01:06 Maintainer fragt, ob wir fortschreiten oder festgefahren sind; ich bewerte: Fortschritt (jedes Finding ein neuer Fall; Korrekturen +34/+60/+120/+50 Zeilen), aber die 10 Hops seien ein Prozesssignal. 01:16 "BP4b annehmen, mach den Doku-Commit und weiter mit BP6". [B] Klasse: Produktakzeptanz.
+* 01:19 BP6a gestartet; 03:05 abgeschlossen in 5 Hops (Evidence `1975624`). Ich schneide BP6 selbst in BP6b und BP6c und dokumentiere das; 03:08 BP6b gestartet. [B] *Von Level 1 selbst entschieden.*
+* 05:03 BP6b endet `awaiting_human`: Der Worker meldete eine Finding-Operation `resolve`, die nur der Reviewer ausführen darf; WFC stoppt mit `invalid_finding_delta`. Archiviert (`78ab3a3`). [B]
+* 04:59 und 05:05 Maintainer spricht Evidence-Orte an und klärt, dass es mehrere Arten von Evidence und Speicherorte gibt; Level 1 habe zwei davon gleichgesetzt. [B]
+* 05:29 Maintainer-Vorgabe für BP7: bestehendes Evidence-Repo weiterverwenden, `raw: commit`, keine zweite Archivierungsstrecke, keine Verlagerung der State-Roots. 05:31 Disposition BP6b: "2, Nachfolge-Run mit unabhängigem Review". BP6b-Final-Assurance gestartet (Commission `b589af8`). [B]
+* 06:36 Maintainer beauftragt das Project-History-Kapitel (zwischen zwei Runs). 08:11–09:03 Austausch über ein Roadmap-Dokument außerhalb des Repos und das Shift-left-Prinzip; 08:16 Klarstellung, `~/repos/spreadsheet-handling/` sei ein Themenordner, kein Repo. [B]
+* 09:22 BP6b-Final-Assurance abgeschlossen (8 Hops, `bed4cf1`). 09:24 BP6c-001 gestartet. [B]
+* 10:00 BP6c-001 stoppt nach einem Hop: Der Worker stellte eine Scope-Frage (`semantic_stop`), die einen echten Entwurfsfehler aufdeckt (Attempt-ID aus dem Verzeichnisnamen des State-Roots, für jeden Run `engine-state`). Candidate gesichert als nicht-autoritativer Ref (`07ac532`); Evidence `75acb72`. 10:15 Maintainer: *Option 1, Attempt-Identität aus der Run-Identität.* 10:16 (eingereiht): *DG-4 = (a)* (Cutover vor dem Tag; alter Harness bleibt, bis zwei echte archivierte Self-Hosted-Runs vorliegen, danach nur noch das Produkt-Front-Door) und *DG-5 = (a)* (Preparation-Sequenz auf Implementierungsidentität und eine vom Consumer bereitgestellte, von WFC geprüfte Umgebung; keine allgemeine Provisionierung). 10:17 BP6c-002 gestartet; die DG-Entscheidungen sind in `b9564da` eingetragen. [B]
+* 11:12 zweite Kontext-Zusammenfassung. 13:57 BP6c-002 abgeschlossen (Evidence `7a3b6fa`). [B]
+* 14:28 Maintainer akzeptiert BP6c, gibt die Runtime-Promotion auf den BP6c-Stand frei (kein Push), verlangt die Fortsetzung der BP7-Planung und die Vorbereitung von BP9 und Epic-Closure. [B]
+* 14:30–14:32 Vorbereitung der BP7-Planungs-Commission: `commission check` verweigert, `prepare` verweigert wegen absoluter Pfade, Scratch-Verzeichnis existiert, `launch` mit den Flags von `prepare` aufgerufen und von der Argumentprüfung verweigert (Fehler siehe 6.1). Start 14:32. [B]
+* 15:04 BP7-Planung-001 stoppt (`invalid_finding_delta`, Finding-Operation `residual`); Evidence `c5a3ae2`. 15:19 Maintainer: Nachfolge-Run aufsetzen. 15:20 Start von Planung-002 ohne Offline-Wrapper (Fehler 6.1). [B]
+* 16:07 Planung-002 stoppt bei Hop 7 (`human_authority:prerequisite`, `task-check` Exit 4). Das unabhängige Review H006 hatte den Plan akzeptiert. 16:15 Bericht an den Maintainer; 16:28 "Option 1, Plan übernehmen". [B]
+* 17:10 "Empfehlungen zu 1–3 übernehmen, C1 und C1b starten". 17:11 C1-Commission verweigert (Scope über dem Policy-Ceiling) und Render verweigert (alte Dateien); korrigiert. C1 gestartet 17:13, abgeschlossen 17:25 (Evidence `3d50922`). [B]
+* 17:35 C1b-001 gestartet; 17:45 Worker meldet `blocked`, weil das Evidence-Fixture nicht im Sandbox lesbar gestaged war (Fehler 6.1); archiviert (`a5031af`). 17:53 Maintainer gibt die Recovery frei (Stash nur dreier Dateien, Salvage-Ref bleibt). C1b-002 gestartet 17:54, abgeschlossen 18:29 (Evidence `2a0478d`). [B]
+* 18:36 *Proof Run 1* (erster selbst-gehosteter Run über das Produkt-Front-Door, `wfc run --yes`). 19:32 dritte Kontext-Zusammenfassung. 20:02 "Proof Run 2 nach Ergebnis von Run 1 wählen", 20:06 "Status prüfen, sobald Run 1 endet". Run 1 endet 20:44 (H008 akzeptiert), automatisch archiviert 20:49 (`eb13031`). [B]
+* 21:24 Maintainer: H008 habe schon um 20:44 akzeptiert, "der Monitor läuft auffällig lange weiter", Vermutung eines `pgrep`-Selbstmatches. Ich bestätige: Der Run war beendet; der Monitor-Prozess hatte seine eigene Kommandozeile gefunden (Fehler 6.1). Bericht 21:31. [B]
+* 21:35 "Docs-Reconciliation als Proof Run 2 nehmen". 21:36 Proof-Run-2-Start im verbrauchten Checkout verweigert (`refused_active_lifecycle`); 21:37 Neustart in frischem Worktree, abgeschlossen 22:11, archiviert 22:16 (`d4dd46b`). [B]
+* 21:45 Maintainer fragt nach der Einmal-Lifecycle-Regel und nennt das Zielbild (ein Checkout pro aktivem Run, sequenzielle Hops, kontrollierte Wiederverwendung). 21:47 "Backlog-Item nach Run 2 anlegen". [B]
+* 22:19 Retirement-Run (C5) gestartet, 00:09 letzter Review-Commit, 00:13 archiviert (`7391b8b`). [B]
+
+=== 21.11.2026
+
+* 00:18 C5 fast-forward nach `main`, Doku-Commit `41c6a9a`. 00:19 Bericht an den Maintainer: BP7 vollständig umgesetzt; BP9-Entscheidungen vorgelegt. [B]
+* 03:36 Maintainer: "Ja, Promotion durchführen und BP9 mit den Empfehlungen starten." 03:37 Runtime auf `4af5927` promotet (kein Push), BP9 Teil 1 gestartet. [B]
+* 03:58 Auftrag zu diesem Report. [B]
+
+== Menschliche Interaktionen
+
+=== Klassifikation
+
+Die 55 inhaltlichen Maintainer-Nachrichten der Level-1-Sitzung (einschließlich der vier eingereihten; ohne Monitor-Meldungen, Slash-Befehle und die drei Kontext-Zusammenfassungen) wurden jeweils einer primären Klasse zugeordnet. Die Zuordnung ist meine Interpretation [I]; die Einzelnachrichten stehen in Anhang A.
+
+[cols="3,1",options="header"]
+|===
+|Klasse|Anzahl
+|ARCH (Architektur-/Designentscheidung)|8
+|PROD (fachliche Produktentscheidung oder -akzeptanz)|6
+|OPS (operative Freigabe, Anweisung oder Disposition)|16
+|ERR (Fehlereingriff oder Korrektur an Level 1)|3
+|STAT (Statusabfrage oder Betriebsthema)|9
+|PROC (Prozess-, Autonomie- oder Dokumentationsvorgabe)|13
+|Summe inhaltlicher Nachrichten|55
+|===
+
+Mehrfach lesbar sind insbesondere: 19.11. 17:39 (Architekturentscheidung, zugleich Fehlerkorrektur an Level 1), 19.11. 21:45 (Produktentscheidung DG-1, zugleich Dokumentationskorrektur) und 20.11. 05:05 (Klarstellung der Speicherorte, die auf einen Fehler von Level 1 antwortet).
+
+=== Der Maintainer als Entscheider
+
+Alle Architektur- und Produktentscheidungen des Zeitraums, die in der Level-1-Sitzung sichtbar sind, kamen vom Maintainer: DG-3 Variante B, der Schnitt BP4a/BP4b, DG-1 Fast-Follow, DG-4 und DG-5, die Annahme von BP4b und BP6c, die BP6c-Option 1 (Attempt-Identität), die BP7-Vorgaben zum Evidence-Ziel, die Übernahme des BP7-Plans nach gestopptem Run, die drei BP7-Entscheidungen, die Task-Wahl für Proof Run 2 und die Runtime-Promotionen. [B] Diese Ereignisse sind weniger zahlreich als die operativen Freigaben (16) und Prozessvorgaben (13); die Beobachtung, dass der Maintainer "überwiegend für fachliche und architektonische Entscheidungen erforderlich" war, deckt sich damit nur teilweise: Zusammen machen Architektur- und Produktentscheidungen 14 von 55 Nachrichten aus, die übrigen betreffen Freigaben, Prozess und Betrieb. [I]
+
+=== Autonome Abschnitte
+
+Abstände von mindestens zwei Stunden zwischen zwei Maintainer-Nachrichten, mit dem, was in dieser Zeit lief:
+
+[cols="2,2,1",options="header"]
+|===
+|Von|Bis|Dauer
+|19.11. 07:02|19.11. 16:50|9 h 47 min
+|19.11. 21:45|20.11. 01:06|3 h 21 min
+|20.11. 01:16|20.11. 04:59|3 h 42 min
+|20.11. 10:16|20.11. 14:28|4 h 12 min
+|20.11. 17:53|20.11. 20:02|2 h 08 min
+|20.11. 21:47|21.11. 03:36|5 h 48 min
+|===
+
+[cols="2,5"]
+|===
+|19.11. 07:02–16:50 |Keine Level-1-Aktivität; BP5 lief außerhalb dieser Sitzung. [B]
+|19.11. 21:45–20.11. 01:06 |BP4b (10 Hops, 22:00–00:59), Archivierung 01:00. Level 1 wartete im Wesentlichen auf Run-Ereignisse. [B]
+|20.11. 01:16–04:59 |BP6a (5 Hops, abgeschlossen 03:05), Doku-Nachzug, Zuschnitt von BP6 in 6a/6b/6c durch Level 1, Start BP6b (03:08). [B]
+|20.11. 10:16–14:28 |BP6c-002 (9 Hops, 10:47–13:57), Archivierung und Doku-Nachzug. [B]
+|20.11. 17:53–20:02 |C1b-002 (17:54–18:34), Proof Run 1 gestartet 18:36 und bei der Nachricht um 20:02 noch am Laufen. [B]
+|20.11. 21:47–21.11. 03:36 |Proof Run 2 (21:37–22:16), C5 (22:19–00:13), Integration und Doku bis 00:18, Bericht 00:19. Danach 3 h 17 min Wartezeit auf den Maintainer bis 03:36. Rechnerisch autonom waren 21:47–00:19 (2 h 32 min). [B]
+|===
+
+== Fehler, Stopps und Recoveries
+
+=== Operative Level-1-Fehler
+
+[cols="1,3,3,3"]
+|===
+|Zeit |Fehler |Wie er auffiel |Wirkung und Recovery
+
+|19.11. 17:03/17:39 |Crash-Matrix, Fall 9: Ein freier Lock bei fehlendem Engine-State wurde als "Launch nie begonnen" gewertet. |Maintainer-Korrektur (17:39). [B] |Entwurfsfehler vor dem Launch erkannt; die Klassifikation ("nicht begonnen" nur bei belegbar nicht begonnenem Launch, sonst `uncertain_launch`) wurde korrigiert.
+|19.11. 19:02–19:05 |Formulierung über mögliches "Verwerfen" einer laufenden Commission. |Maintainer: "nichts verwerfen ohne Rücksprache". [B] |Formulierung zurückgenommen, Regel im Memory und in den späteren Recovery-Vorgängen angewandt: archivieren, bewahren, fragen, frischer Nachfolger.
+|19.11. ca. 20:53 |Löschversuch (Ziel im Protokoll nicht eindeutig) ohne vorherige Maintainer-Freigabe. |Berechtigungssystem blockierte; kein Umweg. [B] |Kein Datenverlust; Freigabe 21:12, danach Bereinigung nach Plan.
+|20.11. 04:59/05:05 |Level 1 setzte zwei verschiedene Arten von Evidence und deren Speicherorte gleich. |Maintainer-Klarstellung. [B] |Begriffe geklärt, BP6b/6c-Annahmen und BP7-Vorgabe daran ausgerichtet.
+|20.11. 14:30–14:32 |Vorbereitung der Planungs-Commission: `commission check` verweigert, `prepare` mit absoluten Pfaden verweigert, vorhandenes Scratch-Verzeichnis, `launch` mit den Flags von `prepare` aufgerufen. |Fail-closed-Verweigerungen des Harness. [B] |Keine Run-Wirkung. Leeres Scratch-Verzeichnis entfernt; korrekter Aufruf.
+|20.11. 15:20 |Planung-002 ohne Offline-Input-Wrapper gestartet. |Coordinator-`task-check` brach mit Exit 4 ab (`WFC_TEST_INPUTS` fehlte), Stopp bei Hop 7. [B] |Run formal nicht `completed`; der Plan war unabhängig akzeptiert. Maintainer übernahm den Plan (16:28). Regel: Launch immer über den Wrapper.
+|20.11. 17:11 |C1-Commission: Plan-Scope (`.wfc/`) lag außerhalb des Policy-Ceilings; Render mit vorhandenen Dateien. |Verweigerung durch `commission check` ("Intent scope exceeds the policy-basis work-item ceiling") und durch den Renderer. [B] |Scope verengt, `.wfc/` vom Operator selbst committet; Plan-Notiz korrigiert. Gleichzeitig war der Fehler im Plan (Level-1-Worker) angelegt.
+|20.11. 17:35–17:45 |C1b-001: Fixture-Input aus dem Evidence-Repo nicht für die Worker-Sandbox gestaged. |Worker meldete korrekt `blocked` und erfand nichts. [B] |Run gestoppt (`a5031af`), Candidate als Salvage-Ref bewahrt (`acb5561`), gezielter Stash nach Freigabe, Staging unter `build/wfc/`, Nachfolger C1b-002 abgeschlossen.
+|20.11. 20:44–21:24 |Hintergrund-Monitor mit `pgrep -f` fand seine eigene Kommandozeile und endete nicht. |Maintainer-Hinweis 21:24. [B] |Meldung des Run-Endes um rund 47 Minuten verzögert (Run-Ende 20:44, mein Bericht 21:31). Danach Status-Klassifikation statt `pgrep` im Monitor. Die früheren Monitore vom selben Tag nutzten ein `pgrep`-Muster mit Shell-Variable (`$A`), das ihre eigene, unexpandierte Kommandozeile nicht traf; bei Proof Run 1 stand ein Literal im Muster. [R, aus den Monitor-Kommandos im Protokoll abgeleitet]
+|20.11. 21:36 |Proof Run 2 im verbrauchten Checkout gestartet. |`refused_active_lifecycle`. [B] |Die Einmal-Regel stand im BP4a-Review (P12), aber nicht in meiner Vorbedingungsliste. Neuer Worktree; Backlog-Item `FTR-WFC-LIFECYCLE-ROTATION`.
+|===
+
+Geringfügig und nur aus meiner eigenen Zusammenfassung bekannt [R]: ein Tippfehler bei einem Paketnamen in einem `pip install` (scheiterte harmlos) und eine abgelehnte Verkettung von `sleep` mit anderen Kommandos im Monitor-Kontext.
+
+=== Gestoppte und fehlgeschlagene Runs der Level-1-Sitzung
+
+[cols="2,3,3,3"]
+|===
+|Run |Stopp |Urheber des Stopps |Recovery
+|BP4b (`4b9a2863…`) |`awaiting_human_budget`, 10 von 10 Hops direkt nach ACCEPT-Review H010 |WFC-Hop-Ceiling; fünf Review-Zyklen zu Nicht-UTF-8-Randfällen |Maintainer-Akzeptanz (01:16), keine Neuinterpretation des Runs.
+|BP6b (`18a6ae05…`) |`invalid_finding_delta` (Worker meldete `resolve`) |WFC-Reducer (Finding-Autorität) |Nachfolge-Run BP6b-Final-Assurance (`b5b62321…`), abgeschlossen.
+|BP6c-001 (`6f9aeb02e3…`) |`semantic_stop` des Workers; WFC stoppte wegen unfertigem Arbeitsbaum |Worker entdeckte echten Entwurfsfehler (Attempt-Identität) |Salvage-Ref `07ac532`, Maintainer-Option 1, Nachfolger BP6c-002 abgeschlossen.
+|BP7-Planung-001 |`invalid_finding_delta` (Worker meldete `residual`) |WFC-Reducer |Nachfolger Planung-002.
+|BP7-Planung-002 |`human_authority:prerequisite` bei Hop 7 (`task-check` Exit 4) |Level-1-Fehler (kein Wrapper) |Maintainer-Übernahme des unabhängig akzeptierten Plans; kein neuer Run.
+|C1b-001 |Worker `blocked`, WFC stoppte wegen unfertigem Arbeitsbaum |Level-1-Fehler (Staging fehlte); Worker korrekt |Nachfolger C1b-002 abgeschlossen.
+|===
+
+Die Run-ID-Kürzel sind die ersten zehn Zeichen nach `RUN-`; die vollständigen IDs stehen im Evidence-Repository.
+
+== Wer entschied was
+
+[cols="2,5"]
+|===
+|Von Level 1 selbst entschieden (innerhalb der freigegebenen Autonomie) |Zuschnitt von BP6 in 6a/6b/6c; Nachfolger-Commissions für BP6b und C1b (nach Maintainer-Disposition); Auswahl von Proof Run 1 (Evidence-Diagnose-BUG) und Vorbereitung der Requests; Worktree-Workaround für Proof Run 2; Erweiterung des C5-Scopes nach einer Referenz-Suche; Ad-hoc-Äquivalenzprüfung mit dem eingefrorenen Altarchivierer statt eines Fixture-Falls; Doku-Nachzug, Ledger-Nachzug und Scratch-Bereinigung nach verifizierter Archivierung. [B]
+|Vom Maintainer freigegeben oder entschieden |Alle DG-Entscheidungen im Zeitraum (DG-1, DG-3, DG-4 und DG-5; DG-4/DG-5 am 20.11. 10:16), Produktakzeptanzen (BP4b, BP6c, BP7-Plan), Disposition gestoppter Runs, Runtime-Promotion (Freigaben 14:28 und 03:36), Recovery-Freigabe C1b, Task-Wahl Proof Run 2, Backlog-Item zur Lifecycle-Rotation, BP9-Zuschnitt. Push wurde nie freigegeben und nie ausgeführt. [B]
+|Von WFC mechanisch erzwungen |Scope-Ceiling-Verweigerung (C1), `invalid_finding_delta` (BP6b, Planung-001), Hop-Ceiling (BP4b), Stopp bei unfertigem Arbeitsbaum (BP6c-001, C1b-001), `refused_active_lifecycle`, Verweigerung absoluter Pfade, Coordinator-`task-check` (elf bestandene Läufe in Proof 1, Proof 2 und C5; ein Fehlschlag in Planung-002). Level 1 konnte und wollte diese Grenzen nicht überschreiben. [B]
+|===
+
+== Quantitative Zusammenfassung
+
+[cols="3,2,3"]
+|===
+|Größe |Wert |Quelle und Klasse
+|Kalenderdauer bis Abschluss BP7 |62 h 40 min (18.11. 09:38:58 bis 21.11. 00:19) |Git/Protokoll [B]
+|Kalenderdauer bis Datensammlung |66 h 22 min (bis 21.11. 04:01) |[B]
+|Berührte Kalendertage |4 (18.–21.11.) |[B]
+|Commits auf `main` (Stand `41c6a9a`) |190 |Git [B]
+|Commits im Evidence-Repo seit 18.11. |37 (31 Run-Archive, 5 kuratierende Docs-Commits, 1 Nachträglicher Archiv-Commit für C3) |Evidence-Git [B]
+|Archivierte Runs |31 (18 `completed`, 9 `awaiting_human`, 3 `reconcile_required`, 1 `awaiting_human_budget`) |`operator-summary.json` [B]
+|Hops gesamt |124 (Implement 29, Broad Review 40, Correct 31, Focused Review 24) |[B]
+|Reviews |64 Review-Hops, davon 27 mit `changes_required` (42 %) |[B]
+|Blockierte Hops |2 (Worker `blocked`) |[B]
+|Runs vor der Level-1-Sitzung |16 Runs, 45 Hops, 22 Reviews (7 mit `changes_required`) |[B], Zuordnung [R]
+|Runs durch Level 1 |15 Runs, 79 Hops, 42 Reviews (20 mit `changes_required`), 9 `completed`, 6 Stopps |[B]
+|Davon BP7 |8 Runs, 33 Hops, 17 Reviews (7 `changes_required`), 5 `completed`, 3 Stopps |[B]
+|Stopps mit erfolgreichem Nachfolger |3 (BP6b, BP6c, C1b) |[B]
+|Stopps durch Maintainer-Entscheidung übernommen |2 (BP4b, BP7-Planung) |[B]
+|Maintainer-Nachrichten (inhaltlich) |55; 8 Architektur, 6 Produkt, 16 operativ, 3 Fehlereingriff, 9 Status/Betrieb, 13 Prozess |Protokoll, Klassifikation [I]
+|Dokumentierte Level-1-Fehler |10 belegt (6.1), 2 geringfügige aus Zusammenfassung |[B]/[R]
+|Pushes |0 |Protokoll und Git [B]
+|Level-1-Sitzungs-Tokens (Untergrenze) |339.297 Ausgabe, 1,79 Mio. Cache-Erstellung, 75,2 Mio. Cache-Lesen |Protokoll-`usage` [R]
+|Token/Kosten der Runs |nicht rekonstruierbar |`usage_not_reported` [L]
+|===
+
+== Bewertung
+
+=== Was der Zeitraum bereits zeigt [I]
+
+* *Der Durchstich funktioniert.* Ein Agent steuerte über zwei Tage eine Folge von 15 Runs mit Vorbereitung, Start, Beobachtung, Archivierung, Ledger-Nachzug, Dokumentation und Recovery, in einem Regelwerk, das von WFC mechanisch erzwungen wurde. Fast alle Hindernisse, die auftraten, wurden fail-closed behandelt: Es gab keinen stillen Datenverlust, keine überschriebene Historie und keinen Push.
+* *Die zwei Ebenen trennen Verantwortung sinnvoll.* WFC erzwang Scope, Finding-Autorität, Hop-Ceiling und Evidence-Vertrag; Level 1 interpretierte Stopps und führte Recovery aus; der Maintainer entschied, was ein Stopp bedeutet und was akzeptiert wird. Die Wiederholung der Finding-Autoritätsstopps (BP5-Retry, BP6b, Planung-001) zeigt, dass die mechanische Grenze funktionierte, aber auch dass die Workers sie wiederholt falsch einschätzten.
+* *Die menschliche Rolle verschob sich.* In Phase C und D beantwortete der Maintainer überwiegend Fragen, die nur er beantworten konnte (Scope-Schnitt, Gates, Akzeptanz), und gab Freigaben; das Dispatching einzelner Schritte übernahm Level 1.
+* *Review und Gegenprüfung fanden echte Defekte.* 27 von 64 Reviews forderten Änderungen. Beispiele aus BP4a: ein Controller, der bei echtem Prozess-Tod mitten in `bounded_path_commit` gestagte Leaves zurückließ (F003, reproduziert per Prozess-Kill).
+
+=== Grenzen der Level-1-Autonomie [I]
+
+* *Level 1 entdeckte seine eigenen operativen Fehler selten selbst.* Von den zehn belegten Fehlern fing WFC vier mechanisch ab, das Berechtigungssystem einen, der Maintainer vier, und ein Worker blockierte einen korrekt. Das ist ein Hinweis, dass Level-1-Checklisten (Wrapper, Staging, Liveness-Prüfung) nicht ohne Weiteres durch Erinnerung stabil bleiben; die Regeln wurden jeweils erst nach dem Fehler formuliert.
+* *Die Rollen- und Autoritätsgrenzen wurden eingehalten.* Level 1 hat keine Produktakzeptanz gesetzt, keinen Run verworfen und nicht gepusht. Das ist hier jedoch teils durch die Freigabe-Regeln und das Berechtigungssystem erzwungen, nicht nur durch Selbstdisziplin (siehe die blockierte Löschung).
+* *Wiederverwendung und Parallelität fehlen.* Das Produkt erlaubt einen Lifecycle pro Checkout; die Steuerung war streng sequentiell. Ein mehrfach paralleler Betrieb wurde nicht erprobt.
+* *Der Nachweis ist klein.* Es handelt sich um einen Verlauf, ein Repository, einen Maintainer und ein Modellpaar. Er sagt nichts über Kosten, Produktivität oder Übertragbarkeit.
+* *Aussagen über "Take-off" sind Wertungen.* Die Daten stützen "ungewöhnlich dichte, weitgehend kontinuierliche agentische Arbeit", aber nicht ohne Weiteres "Industrialisierung": Die Wartezeiten auf den Menschen (fünf Abstände von mehr als drei Stunden) und der Bedarf an Maintainer-Eingriffen bei Fehlern sind Teil des Befunds.
+
+== Offene Datenlücken
+
+* [L] Wer die Runs vor dem 19.11. 17:03 steuerte und welche Entscheidungen dabei fielen.
+* [L] Der Steuerungs-Chat des Maintainers und seine Abwägungen außerhalb der Nachrichten, die in diese Sitzung gelangten.
+* [L] Token- und Kostendaten der Worker- und Reviewer-Aufrufe.
+* [L] Gesprächsinhalte der Worker und Reviewer (nur ihre archivierten Ergebnisse liegen vor).
+* [L] Der Zeitraum von BP9 ab 21.11. 03:37; BP9 Teil 1 läuft und ist hier nicht bewertet.
+* [R] Einige Detailangaben zu Level-1-Fehlern (Tippfehler, abgelehnte Verkettung) stammen nur aus meiner Zusammenfassung.
+
+[appendix]
+== Anhang A: Maintainer-Nachrichten und Klassifikation
+
+Primäre Klassen: ARCH Architektur/Design, PROD Produktentscheidung oder -akzeptanz, OPS operative Freigabe oder Disposition, ERR Fehlereingriff, STAT Status oder Betrieb, PROC Prozess/Autonomie/Dokumentation.
+
+[cols="1,1,6",options="header"]
+|===
+|Zeit (Europe/Berlin)|Klasse|Gegenstand
+|19.11. 06:59|PROC|Rollenvergabe: Operator-Auftrag, Manual lesen, Steuerung der WFC-Aufrufe
+|19.11. 07:02|OPS|BP5 läuft noch; Einstieg erst nach dessen Abschluss
+|19.11. 16:50|OPS|Übergabe der BP5-Abschlussmeldung (Codex) zum Lesen
+|19.11. 17:00|ARCH|Stopp aufgehoben; BP4a-Vorbereitung; DG-3 = Variante B (kein Subreaper, kein Supervising Host)
+|19.11. 17:39|ARCH|O1-O6: Scope-Schnitt BP4a/BP4b, Lock-Entscheidung; enthält Korrektur der Crash-Matrix (Fall 9) = Fehlerkorrektur an Level 1
+|19.11. 17:45|OPS|Commit freigegeben; commission check und prepare
+|19.11. 17:54|OPS|Launch freigegeben, im Hintergrund
+|19.11. 17:55|OPS|Anweisung: regelmäßig pollen, bei Stopp melden
+|19.11. 18:12|PROC|Absicht, schrittweise mehr Autonomie zu geben
+|19.11. 18:18|PROC|Autonomie präzisiert: committen, launchen, Runtime-Promotion, nächste Commissions selbst anstoßen
+|19.11. 19:01|ARCH|Rückfrage: sind BP4a/BP4b umsetzungsstrategisch hinreichend klar?
+|19.11. 19:05|ERR|Grenzziehung: "nichts verwerfen ohne Rücksprache" (nach Level-1-Formulierung über mögliches Verwerfen)
+|19.11. 19:07|PROC|Grundsatz: kein Backtracking, vorwärts mit angepasstem Plan; Einzelfall hinterfragen
+|19.11. 19:47|STAT|Status des BP4a-Runs
+|19.11. 20:20|STAT|Hinweis auf Hop-7-Commit, Bitte um Einsicht
+|19.11. 20:23|STAT|Budget-/Plausibilitätsfrage (5-h-Fenster) und Wunsch nach niedrigerem Reasoning-Level
+|19.11. 20:28|STAT|Rückfragen zu Budget und weiterem Plan
+|19.11. 20:36|STAT|Frage, was der Run nach dem Accept-Commit tut
+|19.11. 20:52|STAT|Betriebsproblem: Inodes auf /tmp
+|19.11. 20:58|STAT|Betriebsproblem: auch Root-Dateisystem prüfen
+|19.11. 21:00|OPS|Freigabe (während laufender Arbeit eingereiht): die vorgeschlagenen Inodes aufräumen
+|19.11. 21:12|OPS|Freigabe: Scratch der älteren Attempts löschen
+|19.11. 21:27|PROC|Vorgabe: Scratch nach verifizierter Archivierung bereinigen, im Runbook verankern
+|19.11. 21:28|OPS|Eingereiht: BP4a archivieren; Rückfrage, ob alles für BP4b vorliegt
+|19.11. 21:32|OPS|Weiter mit BP4b, danach selbstständig BP5/BP6/BP9; Rollenmodelle freigestellt
+|19.11. 21:33|STAT|Eingereiht: Rückfrage, was DG-1 ist und ob es an ihm hängt
+|19.11. 21:45|PROD|DG-1 = (b) Fast-Follow; zugleich Korrektur: Scratch-Regel im Manual runtime-generisch formulieren
+|20.11. 01:06|STAT|Bewertung des BP4b-Laufs: Fortschritt oder festgefahren?
+|20.11. 01:16|PROD|BP4b annehmen, Doku-Commit, weiter mit BP6
+|20.11. 04:59|ERR|Hinweis zum Evidence-Ort im Repo (Level-1-Aussage zur Evidence-Verortung)
+|20.11. 05:05|ARCH|Klarstellung der Speicherorte (Development, State, OPS/Scratch, Evidence-Repo); Level 1 hatte zwei Arten von Evidence gleichgesetzt
+|20.11. 05:29|ARCH|BP7-Planungsvorgabe: bestehendes Evidence-Repo, raw: commit, keine zweite Archivierungsstrecke
+|20.11. 05:31|OPS|Disposition BP6b: Option 2, Nachfolge-Run mit unabhängigem Review
+|20.11. 06:36|PROC|Auftrag: Project-History-Kapitel zur agentischen Entwicklung (zwischen zwei Runs)
+|20.11. 08:11|PROC|Frage, ob ein Planungsdokument im tmp-Verzeichnis die Agenten verwirrt
+|20.11. 08:15|PROC|Entscheidung, das Dokument eine Ebene über dem Repo abzulegen
+|20.11. 08:16|PROC|Klarstellung: ~/repos/spreadsheet-handling/ ist ein Themenordner, kein Repo
+|20.11. 08:58|PROC|Roadmap-Dokument liegt im Themenordner
+|20.11. 09:01|PROC|Zustimmung; Shift-left-Prinzip für die spätere Umsetzungsplanung
+|20.11. 09:03|PROC|Ursachenanalyse zu den BP4a/BP4b-Schwierigkeiten (Interpretation des Maintainers)
+|20.11. 10:15|ARCH|BP6c: Option 1, Archividentität aus Run-Identität; Idempotenz und Zwei-Run-Regression
+|20.11. 10:16|ARCH|Eingereiht: DG-4 = (a) Cutover vor dem Tag, alter Harness bis zwei archivierte Self-Hosted-Runs; DG-5 = (a) Preparation-Sequenz auf Implementierungsidentität und Consumer-Umgebung
+|20.11. 14:28|PROD|BP6c akzeptiert; Runtime-Promotion freigegeben; BP7-Planung fortsetzen; BP9/Closure vorbereiten
+|20.11. 15:19|OPS|Disposition BP7-Planung-001: Nachfolge-Run aufsetzen und starten
+|20.11. 16:28|PROD|BP7-Plan als Maintainer-Entscheidung übernehmen (Option 1) trotz formal gestopptem Run
+|20.11. 17:10|PROD|BP7: Empfehlungen zu offenen Entscheidungen 1-3 übernommen; C1 und C1b starten
+|20.11. 17:53|OPS|Recovery-Freigabe C1b (Stash nur dreier Dateien, Salvage-Ref bleibt) und Vormerken für Project History
+|20.11. 20:02|OPS|Proof Run 2 nach dem Ergebnis von Run 1 wählen
+|20.11. 20:06|OPS|Status prüfen, sobald Run 1 endet
+|20.11. 21:24|ERR|Monitor läuft nach Run-Ende weiter; pgrep-Selbstmatch vermutet; unabhängige Prüfung verlangt
+|20.11. 21:35|PROD|Task-Wahl Proof Run 2: Docs-Reconciliation
+|20.11. 21:45|ARCH|Zielbild: ein Checkout pro aktivem Run, sequenzielle Hops, kontrollierte Wiederverwendung
+|20.11. 21:47|OPS|Backlog-Item zur Lifecycle-Rotation nach Run 2 anlegen
+|21.11. 03:36|OPS|Runtime-Promotion durchführen; BP9 mit den drei Empfehlungen starten
+|21.11. 03:58|PROC|Auftrag: zwei historische Analyse-Reports (dieses Dokument)
+|===
+
+[appendix]
+== Anhang B: Alle 31 archivierten Runs im Zeitraum
+
+Hops, Reviews und Ausgang aus `run/operator-summary.json` des jeweiligen Archivs. "Steuerung": `L1` = in der Level-1-Sitzung gestartet (Start nach 19.11. 17:54), `vor L1` = davor. Run-Kürzel: erste zehn Zeichen nach `RUN-`.
+
+[cols="1,4,2,1,1,3,1,1",options="header"]
+|===
+|Nr|Attempt / WorkItem|Run-ID (gekürzt)|Hops|Reviews (davon changes_required)|Ausgang|Evidence|Steuerung
+|1|execution-planning·20261118-01|1e6d1934e7…|9|5 (3)|reconcile_required (reconcile_requires_explicit_resume)|7f0ed59|vor L1
+|2|execution-planning-002·20261118-01|d5843454dd…|2|1 (0)|completed|edae8d5|vor L1
+|3|bp1-packaging-identity-001·20261118-01|9925de75d5…|2|1 (0)|completed|696ec4c|vor L1
+|4|bp8-test-extraction-001·20261118-01|86dfb32fad…|2|1 (0)|completed|37b06b2|vor L1
+|5|bp2-admission-extraction-001·20261118-01|c0a3e84e5a…|2|1 (0)|completed|042f4de|vor L1
+|6|bp2-admission-audit-001·20261118-01|99950ca417…|1|1 (0)|completed|68b1458|vor L1
+|7|bp2-config-compiler-001·20261118-01|c98692094e…|3|1 (1)|reconcile_required (reconcile_requires_explicit_resume)|e27a9ed|vor L1
+|8|bp2-config-compiler-002·20261118-01|24bd58dfdc…|2|1 (0)|completed|1a740b2|vor L1
+|9|bp3-init-plan-commit-001·20261118-01|7551242df8…|2|1 (0)|completed|383bac0|vor L1
+|10|bp3-remediation-001·20261118-01|69816e710b…|2|1 (0)|awaiting_human (invalid_finding_delta:gate cannot create Finding F001 as res)|4e218d3|vor L1
+|11|bp3-remediation-review-001·20261119-01|6538d0568b…|1|1 (0)|completed|bc65ff7|vor L1
+|12|bp5-archive-port-001·20261119-01|54acb740a0…|1|0 (0)|awaiting_human (dirty tracked state; non-ignored untracked state; post-evide)|3d4a1a5|vor L1
+|13|bp5-archive-port-recovery-001·20261119-01|ae145d94de…|5|2 (1)|reconcile_required (reconcile_requires_explicit_resume)|120d54f|vor L1
+|14|bp5-archive-completion-001·20261119-01|49357f88d4…|1|0 (0)|awaiting_human (dirty tracked state; post-evidence worktree is not clean wit)|c0b1a67|vor L1
+|15|bp5-final-assurance-001·20261119-01|1a90bf114e…|7|4 (1)|completed|e850325|vor L1
+|16|bp5-retry-integrity-001·20261119-01|fd57179859…|3|1 (1)|awaiting_human (invalid_finding_delta:agent cannot perform Finding operation)|0e2b79d|vor L1
+|17|bp4-lifecycle-controller-001·20261119-01|4000d70af4…|8|5 (2)|completed|997b16b|L1
+|18|bp4b-candidate-preservation-001·20261119-01|4b9a28634b…|10|5 (4)|awaiting_human_budget (autonomous_hop_budget_exhausted)|0001fcc|L1
+|19|bp6a-audit-projection-001·20261120-01|b8d979037a…|5|3 (1)|completed|1975624|L1
+|20|bp6b-evidence-retention-001·20261120-01|18a6ae0575…|5|2 (2)|awaiting_human (invalid_finding_delta:agent cannot perform Finding operation)|78ab3a3|L1
+|21|bp6b-final-assurance-001·20261120-01|b5b62321c8…|8|5 (2)|completed|bed4cf1|L1
+|22|bp6c-lifecycle-archive-wiring-001·20261120-01|6f9aeb02e3…|1|0 (0)|awaiting_human (dirty tracked state; non-ignored untracked state; post-evide)|75acb72|L1
+|23|bp6c-lifecycle-archive-wiring-002·20261120-01|d0883c96b5…|9|5 (2)|completed|7a3b6fa|L1
+|24|bp7-cutover-planning-001·20261120-01|7ec656770d…|3|1 (1)|awaiting_human (invalid_finding_delta:agent cannot perform Finding operation)|c5a3ae2|L1
+|25|bp7-cutover-planning-002·20261120-01|f737ec61d6…|7|3 (2)|awaiting_human (human_authority:prerequisite)|6e0d10c|L1
+|26|bp7-guidance-config-001·20261120-01|dd7b7d19c1…|2|1 (0)|completed|3d50922|L1
+|27|bp7-archive-equivalence-harness-001·20261120-01|e6d478e4a7…|1|0 (0)|awaiting_human (dirty tracked state; non-ignored untracked state; post-evide)|a5031af|L1
+|28|bp7-archive-equivalence-harness-002·20261120-01|c158a62359…|2|1 (0)|completed|2a0478d|L1
+|29|Front-Door-Run PROOF1-EVIDENCE-DIAGNOSTICS-001|25295d0d0d…|8|5 (2)|completed|eb13031|L1
+|30|Front-Door-Run PROOF2-BUG-LIFECYCLE-RECONCILIATION-001|3e19e853f3…|5|3 (1)|completed|d4dd46b|L1
+|31|Front-Door-Run BETA1-BP7-RETIREMENT-001|3d46d38115…|5|3 (1)|completed|7391b8b|L1
+|===
