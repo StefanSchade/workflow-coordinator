@@ -1,0 +1,387 @@
+ifndef::assembled[]
+= WFC Operator Manual -- The Level-1 operating pattern
+:operator-docs: ../..
+
+Maturity::  informative
+Authority:: informative
+Updated::   2026-11-23
+Owns::      What Level 0/Level 1 means, the supported-versus-provided boundary, prerequisites, context handling, Commission decomposition, the launch/monitor/verify/integrate loop, stops and recovery, sequencing, the human-decision list, acceptance evidence, and cost framing for the external Level-1 pattern. Defers to the Commission, running, self-development and recovery chapters for all underlying mechanics.
+endif::[]
+
+[[level1-what-is-this]]
+== What Level 1 is, and what it is not
+
+*Level 0* is WFC itself: the installed `wfc` Front Door and the deterministic
+reducer underneath it, executing one bounded, admitted Commission with
+authorization checks, a trusted commit and, where configured, independent
+review (link:{operator-docs}/operator_manual/ch01_orientation/01_model.adoc#mental-model[mental model]).
+
+*Level 1* is an external agent session -- in current practice a second Claude
+Code (Sonnet-class) session, not a WFC component -- that decomposes a larger
+goal into bounded Commissions, authors each one, launches and monitors the
+Run, verifies the result, and integrates accepted work. The maintainer keeps
+*all authority not explicitly delegated* to Level 1: Level 1 never widens a
+Commission's scope or authority on its own, never pushes, tags or publishes,
+and never promotes a Runtime.
+
+This is an already-recognized architectural observation, not an integrated
+product capability. Orientation records that on 17 November 2026 "an
+external operator sequenced separately authorized Commissions, checked their
+outcomes and archived them; WFC did not itself select or run that series as
+a multi-Commission program"
+(link:{operator-docs}/operator_manual/ch01_orientation/02_boundaries.adoc#future-orchestration[relation
+to future higher orchestration]). A dated maintainer planning input uses the
+same vocabulary for the same practice, not as an accepted contract:
+`docs/backlog/ROADMAP-POST-BETA-TO-RELEASE-BRIEF.adoc`, "Evolution of
+Level-1 orchestration". Where this chapter relies on that practice rather
+than on code or an accepted contract, it is phrased as practice and
+observation, not as a product guarantee.
+
+[[level1-support-table]]
+== Supported by WFC today, versus provided by Level 1 and the human
+
+There is no universal factory control in this Beta and no autonomous
+planning product: WFC does not choose the next goal, decompose a task,
+author a Commission, choose a model, launch itself, or chain Runs together.
+
+[cols="1,1",options="header"]
+|===
+|Supported by WFC today
+|Provided by the external Level-1 agent and the human
+
+|The deterministic Front Door (`wfc init`/`plan`/`run`/`resume`/`status`/
+`audit`/`report`/`archive`): compiles, digests, authorizes, launches,
+classifies and archives exactly one bounded Commission at a time.
+|Deciding what the larger goal is, decomposing it into bounded Commissions,
+and authoring each task document, scope, program and persona.
+
+|Commission authority (scope, program, personas, evidence, durable
+artifacts, guidance) reviewed and committed before `wfc run` ever
+authorizes it.
+|Choosing `commission-id`/`work-item-id`, the Hop budget, and which program
+(`simple@v1` or `robust@v1`) a given package needs.
+
+|Independent review and the Findings model under the configured program, or
+a Worker self-check plus the configured evidence command for `simple@v1`.
+|Choosing which adapter/model/reasoning performs each role (the execution
+envelope) for a given Run.
+
+|Fail-closed mechanics: clean-tree and baseline-probe refusal, scope
+refusal, the unchanged-index precondition, one authorized lifecycle per
+checkout.
+|Launching each Run unattended (`--yes`), monitoring it, and deciding what
+happens after a stop.
+
+|The trusted commit of exactly the admitted `CommitIntent` paths, and
+automatic Evidence archival.
+|Independent verification before integrating, fast-forward integration of
+accepted work into `main`, and recording the Run id and Evidence commit.
+
+|`wfc status`/`audit`/`report` projecting classification and sanitized Run
+facts from persisted records.
+|Sequencing multiple Commissions one Run at a time, and stopping to ask the
+human at an open decision gate.
+
+|Nothing -- WFC never pushes, tags, publishes or promotes a Runtime from any
+code path.
+|Any push, tag, publication, configuration change or Runtime promotion.
+|===
+
+[[level1-prerequisites]]
+== Prerequisites and directory layout
+
+Install and host requirements are the consumer quickstart's own subject; see
+the
+link:{operator-docs}/operator_manual/ch09_consumer_quickstart/_chapter.adoc#consumer-quickstart-chapter[consumer
+quickstart chapter] rather than repeating them here. Beyond that, the
+Level-1 pattern needs:
+
+* the *product (or consumer) repository* the Commission's scope lives in;
+* a separate, *remote-less Evidence repository* next to it (sibling
+  directory, created or adopted by `wfc init --evidence-repository`; see
+  link:{operator-docs}/operator_manual/ch01_orientation/01_model.adoc#repositories-and-trust-boundaries[repositories
+  and trust boundaries]);
+* an *installed Runtime kept separate from development* -- for
+  self-development, the accepted implementation installed once per
+  promotion
+  (link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-topology[topology
+  and preparation]); an ordinary consumer Run instead uses its own installed
+  `wfc` per the quickstart;
+* *one Git worktree per Run* -- `wfc run` authorizes at most one lifecycle
+  per canonical checkout, even long after a terminal, archived Run
+  (link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-checkout-rotation[one
+  fresh checkout per Run];
+  link:{operator-docs}/backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc[FTR-WFC-LIFECYCLE-ROTATION]
+  tracks the underlying gap);
+* a *scratch/`TMPDIR` directory outside the repository* for the task
+  document and each Run's own temporary storage -- an untracked file
+  anywhere inside the repository counts as a dirty tree and refuses launch
+  (link:{operator-docs}/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc#quickstart-request[writing
+  a request]).
+
+[[level1-context]]
+== Context and standing instructions
+
+A Level-1 session gets and keeps its goals from durable documents and a
+project instruction file (for example `CLAUDE.md`, pointing at the
+project's documentation entry point), not from chat memory. Long sessions
+genuinely lose context -- standing rules have had to be re-stated from
+durable documents partway through a long run of Commissions in practice;
+treat that as expected, and keep instructions short enough to re-paste.
+A short, copyable template:
+
+[source,text]
+----
+Standing instructions for Level 1 (adapt and keep in your project
+instruction file):
+
+You may, on your own initiative, within an already-authorized Commission:
+- read this repository and its sibling Evidence repository;
+- prepare a fresh Git worktree and author a task document/Consumer Request
+  outside the repository;
+- preview with `wfc plan` (read-only, never writes or launches);
+- launch one authorized Run with `wfc run --request ... --yes`, detached
+  in the background, and monitor it with `wfc status`;
+- inspect an archived Run's Evidence and independent review record;
+- remove a worktree and its scratch directory once that Run is archived
+  and its result is integrated or otherwise dispositioned.
+
+You must always stop and ask me before you:
+- push, tag, publish, or change any configuration I have not already
+  approved for this Commission;
+- promote a Runtime, or change which installed WFC version a Run executes;
+- widen a Commission's scope, authority, program or Hop budget beyond what
+  I set, or raise it in place after a stop;
+- decide how a stopped Run (`awaiting_human`, `reconcile_required`,
+  `awaiting_human_budget`, `stopped`, `interrupted`) is resolved;
+- discard any work, branch, worktree, stash entry or preserved ref.
+
+Default: stop and ask on any ambiguity rather than guess.
+----
+
+[[level1-decomposition]]
+== From a larger goal to bounded Commissions
+
+Break the goal into packages, each becoming one Commission with: file-exact
+(or deliberately directory-scoped) `scope`, an `Acceptance` section,
+`Withheld authority`, a `Default escalation`, and a Hop budget
+(`max_autonomous_hops`) -- see
+link:{operator-docs}/operator_manual/ch02_commissioning/01_authority.adoc#mutation-scope[Commission
+mutation-scope granularity] for the scope choice itself. A practical rule of
+thumb for the Hop budget is *roughly twice the expected number of Hops*: a
+bounded worst-case safety ceiling the human wants to see state at, not an
+expectation of actual length -- consistent with the manual's own warning
+against conflating "expected Hops" with `max_autonomous_hops`
+(link:{operator-docs}/operator_manual/ch02_commissioning/02_authoring.adoc#hop-budget[Hop-budget
+mechanics]) and its provisional self-development default of around ten Hops
+for an ordinary implement/review/correction package
+(link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-hop-budget[self-development
+Hop-budget guidance]). There is no in-place raise once a Run stops on an
+exhausted budget; a fresh Commission is required (same source).
+
+Launch *one Run at a time*: read-only preparation of the next package may
+proceed alongside an already-launched Run, but do not authorize a second
+lifecycle in a checkout, and see the previous Run through to a terminal,
+recorded state first. Choose the program per package, as the commissioning
+chapter states it: `simple@v1` runs a sole Worker self-check plus the
+Coordinator's configured evidence command, with no independent
+review/correction loop; `robust@v1` adds a fresh independent review and,
+when warranted, correction and renewed broad review
+(link:{operator-docs}/operator_manual/ch02_commissioning/02_authoring.adoc#direct-v1-quickstart[Consumer
+Request quickstart]). A small, low-risk package is a reasonable `simple@v1`
+candidate; anything whose acceptance should rest on adversarial review
+belongs on `robust@v1`.
+
+[[level1-authorization-review]]
+== Authorization and independent review stay in the loop
+
+`wfc plan` is a read-only preview: it writes nothing, runs no project
+command and never touches Git
+(link:{operator-docs}/operator_manual/ch02_commissioning/02_authoring.adoc#normal-workflow[normal
+operator workflow]). `--yes` on `wfc run` is the human's *standing*
+delegation to launch unattended, decided when the Commission is authored --
+Level 1 never substitutes its own judgment for a scope or authority decision
+the human has not already made. Independent review and the Findings model
+behave exactly as the commissioning and evidence chapters describe them
+(link:{operator-docs}/operator_manual/ch02_commissioning/03_review.adoc#review-breadth[review
+breadth] and
+link:{operator-docs}/operator_manual/ch04_evidence/01_acceptance.adoc#review-topology[the
+converging review topology]); Level 1 never opens or resolves a Finding
+itself -- only the independent reviewer does. The trusted commit itself is
+always WFC's own deterministic mechanics
+(link:{operator-docs}/operator_manual/ch04_evidence/01_acceptance.adoc#commit-intent-admission[CommitIntent
+admission]); Level 1 is never a substitute for it and is never skipped in
+favor of a Level-1-authored commit inside a Run.
+
+[[level1-loop]]
+== The launch / monitor / verify / integrate loop
+
+Every command below is checked against the real `wfc --help` output
+(`CLI_FACTS.txt`). Fresh worktree, then preview, read-only:
+
+[source,shell]
+----
+git worktree add ../wfc-work/<package>-wt -b work/<package> main
+cd ../wfc-work/<package>-wt
+
+wfc plan ../wfc-scratch/<package>/task.md --repository . \
+  --scope <scope-path> \
+  --commission-id <package>-001 --work-item-id WI-<PACKAGE>-001 \
+  --authority-source "<who authorizes this, and why>" \
+  --program simple@v1 \
+  --persona worker="<bounded worker persona>" \
+  --evidence-argv <argv0> --evidence-argv <argv1> \
+  --guidance-path .wfc/governance/repository-policy.md
+----
+
+Read the projected scope, Commission digest and resolved execution envelope;
+once it looks right, author and commit the equivalent Consumer Request YAML
+(see
+link:{operator-docs}/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc#quickstart-plan[`wfc
+plan` preview]). Launch unattended and detached, then wait on the
+classification rather than polling blindly:
+
+[source,shell]
+----
+nohup wfc run --repository . --request ../wfc-scratch/<package>/request.yaml \
+  --yes > ../wfc-scratch/<package>/run.log 2>&1 &
+
+until wfc status --repository . | grep -q '^CLASSIFICATION: \(completed\|awaiting_human\|awaiting_human_budget\|reconcile_required\|stopped\|interrupted\|refused_\|uncertain_launch\|inconsistent\)$'; do
+  sleep 30
+done
+wfc status --repository .
+----
+
+Read the printed `CLASSIFICATION`, not the process exit code -- a legitimate
+stop such as `awaiting_human` exits non-zero too
+(link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#launch[LAUNCH]
+and
+link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#terminal-states[terminal
+states]). On `completed`, render the archived result with
+`wfc report <evidence-repo>/archive/<classification>/<attempt-id>/audit.json`.
+
+*Verify independently before integrating*: re-run the repository's own
+checks in the worktree, diff the change against the declared scope, and
+read the independent review record (the `durable_artifacts` the Commission
+named) yourself -- do not integrate on the Worker's own say-so (see
+<<level1-acceptance>> below). Only then fast-forward the accepted branch
+into `main` and record the Run id, Hops used and Evidence commit (for
+example in the project's own backlog/ledger):
+
+[source,shell]
+----
+git -C <main-checkout> merge --ff-only work/<package>
+git worktree remove ../wfc-work/<package>-wt
+git branch -d work/<package>
+----
+
+[[level1-stops]]
+== Stops, errors and recovery
+
+Read a stop by its classification, following
+link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#terminal-states[terminal
+states and `awaiting_human`]: `awaiting_human` means authority/mechanics
+could not legally continue, not that the provider or review failed. A
+stopped Run is *never edited in place*. Its frozen work is preserved as a
+non-authoritative Git commit or branch
+(link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc#recovery-outcomes[the
+four recovery outcomes]; an automatic candidate-preservation commit may
+already exist for some stops, but grants no acceptance), and a freshly
+authorized Commission -- for example review-only, off the stopped branch --
+continues it following
+link:{operator-docs}/operator_manual/ch06_recovery/02_successors.adoc[the
+successor-continuation runbook]. Hop-budget exhaustion
+(`awaiting_human_budget`) forces a new Commission; there is no in-place
+raise. Because a used checkout refuses every later `wfc run`, a retry needs
+a *fresh* worktree, not a relaunch in the same one. Nothing is discarded
+without the human: salvage branches, preserved refs and stashes stay until
+the maintainer disposes of them.
+
+[[level1-sequences]]
+== Several Commissions in sequence
+
+When later packages depend on earlier ones, launch strictly one Run at a
+time and integrate each accepted Run before the next one's scope can safely
+assume it landed; read-only preparation of a later package may proceed
+alongside an in-flight Run. After each accepted Run, record the Run id,
+Hops used and Evidence commit before moving on, so the sequence's own
+history stays reconstructable without re-deriving it from chat.
+
+[[level1-human-decisions]]
+== When Level 1 continues on its own, and when a human decision is required
+
+Level 1 may continue without asking when it is: previewing with `wfc plan`;
+launching a Commission whose scope, program and Hop budget the human has
+already approved for this package; monitoring an in-flight Run; verifying an
+already-`completed` Run against its declared scope and review record; and
+removing a worktree/scratch directory once that Run is archived and
+integrated or dispositioned.
+
+A human decision is required before: authorizing a new Commission's scope,
+authority, program or Hop budget for the first time; any push, tag,
+publication, configuration change or Runtime promotion; resolving a stopped
+Run (`awaiting_human`, `awaiting_human_budget`, `reconcile_required`,
+`stopped`, `interrupted`) and choosing among the four recovery outcomes;
+widening scope or raising a Hop budget; and discarding any branch, worktree,
+stash entry or preserved ref.
+
+[[level1-acceptance]]
+== Establishing what was actually accepted
+
+Treat the archived Evidence -- the Evidence-repository commit holding
+`manifest.json` and the sanitized `audit.json` projection
+(link:{operator-docs}/operator_manual/ch04_evidence/02_archive.adoc#archive[ARCHIVE]
+and
+link:{operator-docs}/operator_manual/ch04_evidence/02_archive.adoc#evidence-architecture[evidence
+architecture]) -- and the independent review record as the source of truth,
+not the Worker's own self-reported summary. `wfc report`/`wfc audit` render
+exactly the already-archived, already-classified facts; a Coordinator
+task-check that passed is Coordinator-trusted evidence, while an agent's own
+claim that something passed is not. Checking "what was accepted" means
+reading the classification, the review verdict and the task-check result
+together, not any single agent's narrative of its own work.
+
+[[level1-storage]]
+== Scratch, worktrees, Evidence and Runtime separation
+
+Keep four things apart, per the mental model's own
+link:{operator-docs}/operator_manual/ch01_orientation/01_model.adoc#repositories-and-trust-boundaries[repositories
+and trust boundaries]: the *scratch* directory (task document plus each
+Run's own temporary storage; ephemeral, removed once archived -- see
+link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-scratch-cleanup[scratch
+cleanup]); the *worktree/checkout* a Run executes in (removed after
+integration or disposition, per
+link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-checkout-cleanup[checkout
+cleanup]); the *Evidence repository* (durable, remote-less, never deleted);
+and the *Runtime* (the accepted, separately installed implementation,
+changed only by explicit maintainer promotion -- never "latest main";
+link:{operator-docs}/operator_manual/ch05_self_development/02_promotion.adoc#runtime-promotion[Runtime
+promotion]).
+
+[[level1-cost]]
+== Starting small, and what it costs
+
+Start small: an existing Claude Code subscription in the region of 25 EUR a
+month, if its current terms permit this use; a very small low-risk demo
+task; only a few bounded Runs; a cheaper Haiku-class Worker where the
+adapter supports it (`default_execution.worker.model` accepts any model
+your adapter supports, for example `claude-haiku-5-5`). Then judge your own
+requirements, limits and cost from the results you actually get -- this is
+expectation management, not a benchmark.
+
+Distinguish three things: a *subscription*, the *actual usage rights and
+limits* it grants for this kind of automated, repeated use, and
+*separately billed API usage* if a Run's adapter falls back to that.
+Nothing here, and nothing in WFC, states that any subscription or model
+guarantees unlimited WFC Runs. A seriously and continuously operated
+factory -- capable models, independent reviews, and real repair/correction
+loops -- can generate considerably higher token or usage cost than a
+handful of demo Commissions; the review/correction cycles in
+link:{operator-docs}/operator_manual/ch02_commissioning/03_review.adoc#review-breadth[review
+breadth] and
+link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-hop-budget[Hop-budget
+guidance] are exactly what drives that cost up. WFC in this Beta does not
+measure complete token usage itself: an archived `audit.json` always carries
+the limit `usage_not_reported`
+(link:{operator-docs}/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc#beta-limitations[Beta
+limitations]). Judge cost from your own archived Runs, not from a promise.
