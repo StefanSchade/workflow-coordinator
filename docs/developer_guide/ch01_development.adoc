@@ -55,6 +55,46 @@ run). Collection-only, help and version invocations run no tests and do not veri
 the bundle. The plain `pip install '.[dev]'` shown above uses whatever index your pip
 configuration selects; the required suite does not.
 
+[[dev-host-requirements]]
+=== Host requirements: bubblewrap and Git identity/filters
+
+`bwrap` (bubblewrap) is *not* a general requirement of every WFC command; the
+product's own `wfc init`/`plan`/`run` never invoke it (see the Operator
+Manual's
+link:{developer-docs}/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc#quickstart-bwrap-and-platform[consumer-facing
+summary]). It *is* required, on Linux, to run the full development test
+suite: `tests/unit/test_execution_boundary_config.py` and the integration
+tests `tests/integration/test_execution_boundary_bwrap.py` and
+`tests/integration/test_nested_claude_bwrap_qualification.py` resolve and
+invoke a real `bwrap` executable, with no skip when it is absent. Install it
+with your distribution's package manager (for example
+`apt-get install bubblewrap`) and confirm `bwrap --version` succeeds.
+Installing the package alone does not guarantee working unprivileged user
+namespaces on your host or container; if `bwrap` itself reports a
+permission/namespace error rather than running, that is a host kernel
+setting to investigate (`.github/workflows/release.yml`'s `check` job
+documents the one hosted-runner setting it needed), not a WFC defect.
+
+The suite's own Git-authority tests
+(link:{developer-docs}/../tests/unit/test_slice4b_git_authority.py[Git
+authority tests], `test_bounded_path_commit.py`,
+`test_candidate_preservation.py`) exercise trusted commits for real, so the
+same prerequisites the Operator Manual states for a consumer repository
+apply to your development checkout too: a Git identity reachable through
+actual Git configuration (not only `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/
+`GIT_CONFIG_GLOBAL` environment variables -- see the Operator Manual's
+link:{developer-docs}/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc#quickstart-git-identity-and-filters[Git
+identity and filters] section for why), and no effective
+`filter.*.clean`/`filter.*.process` configuration (diagnose with the same
+`git config --show-origin --get-regexp` command given there). This matters
+more in development than for an ordinary consumer Run: a test environment
+with an isolated or changing `HOME` (a container, or a hosted CI runner)
+needs identity set somewhere that process actually reads, for example
+`$XDG_CONFIG_HOME/git/config`, and a hosted runner's own system Git
+configuration may already carry a Git-LFS filter that must be removed for
+that runner's own process tree before the required suite's trusted-commit
+tests run as expected.
+
 === Pytest scratch
 
 `tests/conftest.py` leaves explicit `--basetemp` or `PYTEST_DEBUG_TEMPROOT` to
@@ -66,7 +106,14 @@ symlinked scratch and a checkout under `/tmp`. Invalid or inaccessible scratch
 fails configuration rather than falling back. Pytest controls numbered bases,
 locks and retention; the selected base appears in the pytest header. An explicit
 `--basetemp` has pytest's destructive reset semantics: choose it carefully.
-This override affects pytest allocation only, not the environment or temporary
+Prefer a `TMPDIR` outside the checkout entirely: a scratch base still inside
+the working tree (even under the permitted `tmp/`) sits inside the same Git
+work tree WFC's own integrity checks observe, which can change what a test
+sees. `tests/unit/test_wfc_doc_catalog.py::test_git_failure_is_reported_not_guessed`
+is the observed case -- it expects a Git failure from a path with no
+repository of its own, and fails instead if that path resolves underneath
+the checkout, where Git finds the enclosing repository's own `.git`. This
+override affects pytest allocation only, not the environment or temporary
 file choices of subprocesses and `tempfile`.
 
 [[product-only-tests]]
