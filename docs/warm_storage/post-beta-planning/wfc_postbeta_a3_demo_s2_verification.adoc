@@ -1,0 +1,160 @@
+= Post-Beta A3 -- Consumer Demo Workspace slice S2: review-first continuation verification
+
+This record is the Worker-side verification for WorkItem
+`WI-WFC-POSTBETA-A3-DEMO-WORKSPACE-S2-CONTINUATION-001`, continuing the
+stopped Run `RUN-c8231df843f04bc18a0a899a4586cc14` (Commission
+`wfc-postbeta-a3-demo-workspace-s2-001`). It reports measured results, not a
+review verdict: the independent whole-slice broad review is separate. The
+candidate verified here is `b57fb46` (implementation) plus `2fa7c61`
+(correction), at checkout HEAD `d02d2c2`. The governing specification is
+`docs/backlog/FTR-WFC-CONSUMER-DEMO-WORKSPACE.adoc` and the Commission task
+at `.wfc/governance/wfc-postbeta-a3-demo-workspace-s2-001/task.md`.
+
+== Environment
+
+* Interpreter: no `pytest`/`PyYAML` in `/usr/bin/python3` (system). Used the
+  pre-existing virtualenv `/tmp/wfc-review-h002-venv` (pytest 9.2.0, PyYAML
+  6.0.3) -- the Coordinator's own prior review tooling, left in place from
+  an earlier pass in this environment.
+* `wfc` wrapper: a literal `wfc` on `PATH` executing
+  `tests/fixtures/bp9/wfc_entry.py` under that interpreter, which inserts
+  this checkout's `src/` first -- the same idiom
+  `test_beta_e2e_fake_provider.py` and the kit's own test file use. The
+  wrapper therefore drives the real working-tree product, not any installed
+  package.
+* No network access was used or needed.
+
+== F001 (prior broad review, blocking): is the correction complete?
+
+*Invariant restated:* an unresolvable `wfc` executable must be answered with
+return code 2 and nothing created, before the scenario's single-use
+worktree/branch is burned.
+
+*Correction present:* `2fa7c61` adds `_check_wfc_available()` (a
+`wfc --version --json` probe, raising `PreconditionError` on an `OSError` or
+a non-zero exit) and a `shutil.which("git")` check, both inside
+`_check_preconditions()`, which runs strictly before `_create_worktree()` in
+`rehearse()` (`examples/consumer-demo/rehearse.py:66-91`, `:168-170`). The
+regression test added in the same commit
+(`test_rehearse_refuses_when_wfc_is_not_found_and_a_retry_with_a_working_wfc_still_succeeds`)
+covers the `--wfc` path plus a same-scenario retry.
+
+*My own reproduction*, in a workspace made by `make_workspace.py`, outside
+the repository tree (`$TMPDIR/wfc-verify-f001`), for all three resolutions
+the FTR documents:
+
+* `--wfc /no/such/wfc-binary`: `rehearse.py` prints
+  `rehearse.py: could not run \`/no/such/wfc-binary --version --json\`: [Errno 2] No such file or directory: '/no/such/wfc-binary'`
+  to stderr and returns *2*. `ls ws/` afterward lists only the five items
+  `make_workspace.py` created (no `greeter-run-t1-hello-page`); `git -C
+  ws/greeter branch --list` shows only `* main` (no `demo/t1-hello-page`).
+  A subsequent call with the same workspace and a working `wfc` then
+  succeeds (exit 0) -- the scenario's single lifecycle was not burned.
+* `WFC_BIN=/no/such/wfc-binary` (bare `wfc` not given `--wfc`): same message,
+  same return code 2, same absence of the worktree and the branch, in a
+  second fresh workspace.
+* `git` absent from `PATH` (a one-entry `PATH` holding only the `wfc`
+  wrapper, in a third fresh workspace): `rehearse.py: \`git\` was not found
+  on PATH`, return 2, no `greeter-run-t1-hello-page` created.
+
+All three reproduce the Finding's fix, not just the one the regression test
+exercises. The correction's ordering (`git`, then `wfc`, then the marker
+file, then the scenario name, then the existing-worktree check, all before
+`_create_worktree`) matches the Finding's "feasible minimal correction"
+exactly: a reuse of `make_workspace.py`'s own preflight check, no new
+mechanism, no behaviour change to the four scenarios. F001 is resolved by
+this correction; I made no further change for it.
+
+== Acceptance criteria, measured
+
+[cols="1,6",options="header"]
+|===
+|Criterion |What I measured
+
+|AC-4
+|All four scenarios run through `rehearse.py` (in `$TMPDIR/wfc-verify-t2`,
+one workspace, in sequence) returned 0, with the banner printed verbatim
+before and after WFC's own output in every case:
+`t1-hello-page` (`wfc run` exit 0, `CLASSIFICATION: completed`);
+`t2-farewell` (exit 0, `completed`, `5 of 6 hops`);
+`t3-scope-stop` (`wfc run` exit 10 internally classified `awaiting_human`,
+`rehearse.py` exit 0 since this matches the scenario's expectation);
+`t3-probe-refusal` (`wfc run: baseline probe failed with exit code 2; no
+provider ran`, `rehearse.py` exit 0, no `CLASSIFICATION:` line -- the FTR's
+own conditional, as the prior review already noted in its O-1).
+
+|AC-5
+|After `t2-farewell`: `main..HEAD` in `greeter-run-t2-farewell` is exactly 6
+commits (`feat(commission)`, `feat`, `docs`, `test`, `docs`, `docs`), each
+subject `<type>: WI-T2-FAREWELL-001 H00n ...`, each author `WFC Demo`. The
+archived report (`wfc report <archive path>`) shows `5 of 6 hops`,
+`findings none open`, and three `task-check pass` lines for H002, H004, H005
+-- consistent with one Finding opened and resolved along the way. A second
+`rehearse.py t2-farewell` call in the same workspace returned 2
+(`... already exists; a checkout holds one lifecycle ...`), matching AC-7.
+
+|AC-6
+|After `t3-scope-stop`: `greeter-run-t3-scope-stop`'s `main..HEAD` is the
+single Commission commit; `wfc status` reports `stop reason
+mechanical_preemption:human_authority:scope` and `next a human must answer
+the open question, then run \`wfc resume\``. After `t3-probe-refusal`:
+`main..HEAD` is empty (`HEAD == main`), the inspection step prints `(no
+archived Attempt to report)`, and `wfc status` reports `CLASSIFICATION:
+not_launched`.
+
+|AC-7
+|Measured above under AC-5: a repeated `rehearse.py t2-farewell` call
+returns 2 and leaves the worktree, branch and commit count unchanged.
+
+|AC-8
+|`ls -A` on the throwaway `HOME` was silent (empty) after every sequence I
+ran: workspace creation, all four scenarios, the repeated rehearsal, and all
+three missing-`wfc`/missing-`git` probes. `git status --short examples tests
+src docs` in this checkout was empty both before and after every manual run
+(all scratch lived under `$TMPDIR`, outside the repository).
+|===
+
+== Containment and boundary, measured
+
+* The scripted provider's three containment-refusal unit tests
+  (`test_scripted_provider_refuses_an_absolute_write_path`,
+  `..._a_dotdot_write_path`, `..._a_write_path_resolving_outside_cd`) are
+  present and pass (see suite run below).
+* `test_kit_modules_import_only_the_standard_library` globs
+  `examples/consumer-demo/*.py` and asserts every imported top-level name is
+  in the standard library; it passes and, read against O-5 of the prior
+  review, still only asserts `assert modules` (a non-blocking observation,
+  not a defect against any acceptance criterion -- left as the reviewer's
+  call, not corrected here).
+
+== Suite, lint and documentation checks run
+
+* `python -m pytest -q --wfc-partial tests/integration/test_consumer_demo_kit.py`
+  (via `/tmp/wfc-review-h002-venv/bin/python`): *23 passed*.
+* `python -m pytest -q --wfc-partial tests/architecture/` (same
+  interpreter): 2 failures, both pre-existing and environmental, not
+  touched by this slice --
+  `test_bp1_identity.py::test_installed_identity_and_real_preflight` and
+  `test_offline_distribution.py::test_clean_isolated_distribution_and_wheel_install`,
+  both failing in an isolated `python -m build` step that needs to download
+  `setuptools` (`ERROR: No matching distribution found for setuptools>=68`,
+  no network in this agent sandbox). Not claimed as evidence either way;
+  the Coordinator's trusted task-check is authoritative for the full
+  required suite.
+* `python -m ruff check .`: *All checks passed!*
+* `asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN`
+  on the FTR and on the S2 broad-review record: silent both times.
+* `python3 scripts/wfc_doc_catalog.py generate` then `check`: *83* unresolved
+  links, *4* Project Memory `source_path` misses -- the unchanged baseline
+  the task names.
+
+== Scope and tree
+
+No file was changed by this Hop: the correction already present in `2fa7c61`
+meets F001 in full by my own execution, and I found no further defect
+against an acceptance criterion to correct. All verification scripts ran
+under `$TMPDIR`, outside the repository, and were removed afterward; no
+`__pycache__` or other generated file was left behind. `git status --short
+-uall` shows only the pre-existing wrapper-injected entries (dotfiles and
+`.claude/`/`.idea`/`.vscode`/`.mcp.json` etc.), none of them this Hop's
+output.
