@@ -32,17 +32,17 @@ WFC's authority model, stated as rules, neither looser nor stricter than it
 is implemented and practised. This skill introduces no approval step of its
 own and has no delegation object, file or flag of its own to grant one.
 
-1. **Authority facts** -- the human decides the scope, program, Hop budget,
-   and effective execution bindings shown by `wfc plan`. `--yes` asserts
-   that the human has, and WFC does not verify the assertion.
+1. **Authority facts** -- the human decides scope, program, Hop budget,
+   and any binding in `wfc plan` that differs from the role's committed
+   `default_execution`. `--yes` asserts this authorization without verification.
 2. **Initial authorization** -- for a fact the human has not yet decided:
    propose a value, show the `wfc plan` projection, ask once, undecided
    facts only.
 3. **Existing delegation** -- a decision already made (task instruction,
-   standing instruction, or an approved decomposition) covers a launch when
-   every fact `wfc plan` projects lies within it: proceed with `--yes`
-   without a further approval turn, and report the digests and what was
-   launched.
+   standing instruction, or an approved decomposition) covers a launch with
+   scope, program and Hop budget within the delegation and each binding as
+   approved or matching its committed role default. Proceed with `--yes`
+   without a further approval turn, and report the digests and what was launched.
 4. **Narrow reading** -- ambiguity is not delegation: ask. The scope ceiling
    in `.wfc/config.yaml` bounds a Commission; it does not approve one.
 5. **Never delegated by a launch** -- resolving a stop; widening scope or

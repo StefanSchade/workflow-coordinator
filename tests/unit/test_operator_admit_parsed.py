@@ -1,5 +1,6 @@
 """The parsed admission seam retains the operator's checks and result."""
 
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 
@@ -118,4 +119,29 @@ def test_engine_argv_digest_rejects_changed_phase_envelope_before_admission(pars
     source.write_text(pinned.replace("pinned-model", "other-model"))
     with pytest.raises(operator.OperatorPreflightError, match="execution envelope digest changed"):
         operator._preflight(namespace)
+    assert not inputs["state_root"].exists()
+
+
+@pytest.mark.parametrize(("version", "key"), [(1, "bindings"), (2, "phase_bindings")])
+@pytest.mark.parametrize("field", ["model", "reasoning"])
+@pytest.mark.parametrize(("value", "expected"), [('"\\uD800"', None), ('"mod\\u00E9r\\u00E9"', "modéré")])
+def test_engine_preflight_validates_utf8_execution_values(parsed_inputs, version, key, field, value, expected):
+    namespace, inputs = parsed_inputs
+    source = inputs["binding_source"]
+    phase = inputs["work_item"].initial_phase
+    name = "worker" if version == 1 else phase
+    fixed_field = "reasoning: medium" if field == "model" else "model: example"
+    data = (
+        f"schema_version: {version}\n{key}:\n"
+        f"  {name}: {{adapter: codex_cli, {fixed_field}, {field}: {value}}}\n"
+    ).encode("utf-8")
+    source.write_bytes(data)
+    namespace.execution_bindings_sha256 = hashlib.sha256(data).hexdigest()
+    if expected is None:
+        with pytest.raises(operator.OperatorPreflightError, match=f"{field} must be valid UTF-8"):
+            operator._preflight(namespace)
+    else:
+        *_, configuration = operator._preflight(namespace)
+        binding = configuration.binding_for(phase, inputs["profile"].phases[phase].role)
+        assert getattr(binding, field) == expected
     assert not inputs["state_root"].exists()

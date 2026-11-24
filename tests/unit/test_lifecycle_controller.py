@@ -187,6 +187,65 @@ def test_phase_binding_drift_during_confirmation_is_refused(repository: Path, tm
     assert not J.checkout_directory(J.canonical_checkout(repository)).exists()
 
 
+@pytest.mark.parametrize(
+    ("model", "phase_reasoning", "error"),
+    [
+        (" modèle ", '"mod\\u00E9r\\u00E9"', None),
+        ("model\n", "medium", "worker.model must be a single-line value"),
+        ("model", '"\\uD800"', "phase_execution.implement.reasoning must be valid UTF-8"),
+    ],
+)
+def test_plan_and_run_agree_on_execution_flags_and_config(
+    repository: Path, tmp_path: Path, state_home: Path, monkeypatch, capsys,
+    model: str, phase_reasoning: str, error: str | None,
+):
+    config = repository / L.DEFAULT_CONFIG_PATH
+    config.write_text(config.read_text() + f"\nphase_execution: {{implement: {{reasoning: {phase_reasoning}}}}}\n")
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    task_path = tmp_path / "task.md"
+    task_path.write_text(
+        "# bounded smoke task\n\nexercise the BP4a lifecycle controller\n\n"
+        "## Acceptance\n\ntask-check passes\n\n## Withheld authority\n\nnone beyond scope\n\n"
+        "## Default escalation\n\nstop on ambiguity\n",
+        encoding="utf-8",
+    )
+    execution_flags = [
+        "--execution-override", "worker.adapter=codex_cli", "--execution-override", f"worker.model={model}",
+    ]
+    confirmed = []
+
+    def refuse_confirm(_commission_digest, envelope_digest):
+        confirmed.append(envelope_digest)
+        return False
+
+    monkeypatch.setattr(L, "_make_confirm", lambda **_: refuse_confirm)
+    capsys.readouterr()
+    plan_code = cli_main([
+        "plan", str(task_path), "--repository", str(repository), "--scope", "src",
+        "--commission-id", "bp4-smoke", "--work-item-id", "WI-BP4-SMOKE",
+        "--authority-source", "test authorizes this bounded lifecycle.", "--program", "simple@v1",
+        "--persona", "worker=Bounded worker persona.", "--max-autonomous-hops", "3",
+        "--evidence-argv", "sh", "--evidence-argv", "checks/check.sh", "--evidence-timeout", "60",
+        "--guidance-path", "GUIDANCE.md", *execution_flags,
+    ])
+    plan = capsys.readouterr()
+    run_code = cli_main(["run", "--repository", str(repository), "--request", str(request_path), *execution_flags])
+    run = capsys.readouterr()
+
+    if error is None:
+        assert plan_code == 0, plan.err
+        assert run_code == L.EXIT_CODES["refused_unauthorized"], run.err
+        assert f"implement (worker): adapter=codex_cli model={model} reasoning=modéré" in plan.out
+        assert len(confirmed) == 1
+        assert f"execution envelope digest: sha256:{confirmed[0]}" in plan.out
+    else:
+        assert plan_code == 2
+        assert run_code == L.EXIT_CODES["refused_prelaunch"]
+        assert error in plan.err and error in run.err
+        assert not confirmed
+    assert not state_home.exists()
+
+
 def test_authorized_run_then_second_run_on_same_checkout_is_refused(repository: Path, tmp_path: Path, state_home: Path):
     request_path = _write_request(repository, tmp_path / "request.yaml")
     inputs = _inputs(repository, request_path)

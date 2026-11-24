@@ -19,7 +19,7 @@ import yaml
 
 from ..commissioning import CommissionError, _mapping, _path, _text, _yaml_load
 from ..model import RunExecutionConfiguration, WorkflowRole
-from ..serialization import run_execution_configuration_from_yaml
+from ..serialization import ValidationError, execution_binding_value, run_execution_configuration_from_yaml
 
 _ADAPTERS = {"codex_cli", "claude_cli"}
 
@@ -96,7 +96,7 @@ class ExecutionEnvelope:
     digest: str
 
 
-def _execution_value(value: Any, *, context: str) -> str:
+def _single_line_value(value: Any, *, context: str) -> str:
     text = _text(value, context=context)
     if text.splitlines() != [text]:
         raise CommissionError(f"{context} must be a single-line value")
@@ -107,7 +107,7 @@ def _evidence_config_value(value: Any, *, context: str) -> EvidenceConfigValue:
     data = _mapping(value, context=context, required=set(), optional={"repository", "raw"})
     repository = None
     if "repository" in data:
-        repository = _execution_value(data["repository"], context=f"{context}.repository")
+        repository = _single_line_value(data["repository"], context=f"{context}.repository")
     raw = _DEFAULT_EVIDENCE_RAW
     if "raw" in data:
         raw_value = data["raw"]
@@ -122,6 +122,24 @@ def _evidence_config_value(value: Any, *, context: str) -> EvidenceConfigValue:
 _EXECUTION_FIELDS = {"adapter", "model", "reasoning"}
 
 
+def execution_overrides_from_flags(values: list[str]) -> dict[str, dict[str, str]]:
+    """Parse the role override flags shared by preview and authorization."""
+
+    overrides: dict[str, dict[str, str]] = {}
+    for item in values:
+        dotted_key, equals, value = item.partition("=")
+        if not equals:
+            raise CommissionError(f"--execution-override must be ROLE.FIELD=VALUE, got: {item}")
+        role, _, field = dotted_key.partition(".")
+        if not role or field not in _EXECUTION_FIELDS:
+            raise CommissionError(
+                f"--execution-override must be ROLE.FIELD=VALUE with FIELD one of "
+                f"adapter/model/reasoning, got: {item}"
+            )
+        overrides.setdefault(role, {})[field] = value
+    return overrides
+
+
 def _execution_fields(value: Any, *, context: str, partial: bool) -> dict[str, str]:
     data = _mapping(
         value, context=context,
@@ -129,9 +147,10 @@ def _execution_fields(value: Any, *, context: str, partial: bool) -> dict[str, s
     )
     fields = {}
     for key, value in sorted(data.items()):
-        selected = _execution_value(value, context=f"{context}.{key}")
-        if "\0" in selected:
-            raise CommissionError(f"{context}.{key} must not contain NUL")
+        try:
+            selected = execution_binding_value(value, context=f"{context}.{key}")
+        except ValidationError as error:
+            raise CommissionError(str(error)) from error
         if key == "adapter" and selected not in _ADAPTERS:
             raise CommissionError(f"{context}.adapter must be one of: {', '.join(sorted(_ADAPTERS))}")
         fields[key] = selected
@@ -181,7 +200,7 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
         raise CommissionError("Consumer Config.phase_execution must be a mapping with string keys")
     phase_execution: dict[str, dict[str, str]] = {}
     for key, binding_value in sorted(phase_execution_raw.items()):
-        phase = _execution_value(key, context="Consumer Config.phase_execution phase key")
+        phase = _single_line_value(key, context="Consumer Config.phase_execution phase key")
         context = f"Consumer Config.phase_execution.{phase}"
         fields = _execution_fields(binding_value, context=context, partial=True)
         if not fields:

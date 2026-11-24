@@ -29,7 +29,9 @@ import yaml
 
 from ..commissioning import CommissionError, CompiledCommission, compile_commission
 from ..git_facts import GitPreflightError, repository_head, repository_identity
-from .config import ConsumerConfig, ExecutionEnvelope, consumer_config_from_yaml, resolve_execution
+from .config import (
+    ConsumerConfig, ExecutionEnvelope, consumer_config_from_yaml, execution_overrides_from_flags, resolve_execution,
+)
 from .request import ConsumerRequest, consumer_request_from_yaml
 
 DEFAULT_CONFIG_PATH = ".wfc/config.yaml"
@@ -105,20 +107,6 @@ def _durable_artifacts_from_flags(values: list[str]) -> dict[str, list[str]]:
         phase, path = _parse_key_value(item, flag="--durable-artifact")
         artifacts.setdefault(phase, []).append(path)
     return artifacts
-
-
-def _execution_overrides_from_flags(values: list[str]) -> dict[str, dict[str, str]]:
-    overrides: dict[str, dict[str, str]] = {}
-    for item in values:
-        dotted_key, value = _parse_key_value(item, flag="--execution-override")
-        role, _, field = dotted_key.partition(".")
-        if not role or field not in {"adapter", "model", "reasoning"}:
-            raise CommissionError(
-                f"--execution-override must be ROLE.FIELD=VALUE with FIELD one of "
-                f"adapter/model/reasoning, got: {item}"
-            )
-        overrides.setdefault(role, {})[field] = value
-    return overrides
 
 
 def _program_ref_from_flag(value: str) -> tuple[str, str]:
@@ -305,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
             guidance_path=args.guidance_path, guidance_commit=guidance_commit,
         )
         compiled = compile_commission(request, config, repository=repository, target_dir=args.target_dir)
-        overrides = _execution_overrides_from_flags(args.execution_override)
+        overrides = execution_overrides_from_flags(args.execution_override)
         envelope = resolve_execution(config, overrides, compiled.phase_roles)
     except (CommissionError, GitPreflightError) as error:
         print(f"wfc plan: {error}", file=sys.stderr)

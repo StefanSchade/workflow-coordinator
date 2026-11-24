@@ -361,6 +361,7 @@ def test_phase_bindings_follow_executing_topology_and_merge_field_by_field() -> 
 @pytest.mark.parametrize("invalid, message", [
     ("phase_execution: []", "must be a mapping"),
     ("phase_execution: {3: {model: x}}", "with string keys"),
+    ("phase_execution: {[implement]: {model: x}}", "(?s)invalid Consumer Config YAML:.*found unhashable key"),
     ("phase_execution: {implement: {}}", "at least one field"),
     ("phase_execution: {implement: {model: x, effort: high}}", "forbidden field.*effort"),
     ("phase_execution: {implement: {model: x, 3: y}}", "keys must be strings"),
@@ -369,6 +370,7 @@ def test_phase_bindings_follow_executing_topology_and_merge_field_by_field() -> 
     ("phase_execution: {implement: {model: ' '}}", "model must be a non-empty string"),
     ("phase_execution: {implement: {model: null}}", "model must be a non-empty string"),
     ('phase_execution: {implement: {model: "x\\0y"}}', "NUL"),
+    ('phase_execution: {implement: {model: "\\uD800"}}', "model must be valid UTF-8"),
     ('phase_execution: {implement: {reasoning: "high\\nmedium"}}', "single-line"),
 ])
 def test_config_refuses_invalid_phase_execution_values(invalid: str, message: str) -> None:

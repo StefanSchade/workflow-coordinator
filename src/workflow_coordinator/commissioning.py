@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import subprocess
+from collections.abc import Hashable
 from dataclasses import dataclass
 from importlib.resources import files as _resource_files
 from pathlib import Path
@@ -49,6 +50,8 @@ def _construct_unique_mapping(loader: _IntentLoader, node: yaml.MappingNode, dee
     result: dict[Any, Any] = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, Hashable):
+            raise ConstructorError("while constructing a mapping", node.start_mark, "found unhashable key", key_node.start_mark)
         if key in result:
             raise ConstructorError("while constructing a mapping", node.start_mark, f"duplicate key: {key}", key_node.start_mark)
         result[key] = loader.construct_object(value_node, deep=deep)

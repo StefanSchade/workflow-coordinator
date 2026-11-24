@@ -72,6 +72,7 @@ default_execution:
 
 WFC starts with `default_execution.<role>` and applies
 `--execution-override ROLE.FIELD=VALUE` from `wfc plan` or `wfc run`.
+Both commands preserve the value exactly, including surrounding spaces.
 The optional `phase_execution.<phase>` entry applies last. For `robust@v1`,
 keep the role binding for `independent_reviewer` and add the top-level
 mapping below with your approved provider model IDs.
@@ -87,8 +88,8 @@ Use exact phase names reachable from the chosen program's entry through
 or `reasoning`. Every effective binding must have all three fields. WFC
 refuses unknown or unreachable phase keys, extra fields, incomplete
 bindings and empty or invalid values. `model` and `reasoning` must be
-nonempty, single-line strings without NUL. Choose models and reasoning
-supported by the provider. All effective bindings must use one adapter
+nonempty, single-line strings encodable as UTF-8, with no NUL. Choose models
+and reasoning supported by the provider. All effective bindings must use one adapter
 (`codex_cli` or `claude_cli`) and `wfc run --executable` must match it.
 
 Read the effective bindings by phase in `wfc plan` before authorization.

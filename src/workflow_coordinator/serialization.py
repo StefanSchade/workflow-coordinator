@@ -412,10 +412,16 @@ def _persona(value: Any, *, context: str) -> str:
     return persona
 
 
-def _execution_value(value: Any, *, context: str) -> str:
+def execution_binding_value(value: Any, *, context: str) -> str:
     selected = _string(value, context=context)
-    if selected.splitlines() != [selected] or "\0" in selected:
+    if selected.splitlines() != [selected]:
         raise ValidationError(f"{context} must be a single-line value")
+    if "\0" in selected:
+        raise ValidationError(f"{context} must not contain NUL")
+    try:
+        selected.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValidationError(f"{context} must be valid UTF-8") from error
     return selected
 
 
@@ -1011,13 +1017,13 @@ def run_execution_configuration_from_yaml(text: str) -> RunExecutionConfiguratio
             raise ValidationError(f"{binding_context}.adapter must be codex_cli or claude_cli")
         resolved = ExecutionBinding(
             adapter=adapter,
-            model=_execution_value(binding["model"], context=f"{binding_context}.model"),
-            reasoning=_execution_value(
+            model=execution_binding_value(binding["model"], context=f"{binding_context}.model"),
+            reasoning=execution_binding_value(
                 binding["reasoning"], context=f"{binding_context}.reasoning"
             ),
         )
         if version == 2:
-            phase_bindings[_execution_value(name, context=f"{context}.{key} phase")] = resolved
+            phase_bindings[execution_binding_value(name, context=f"{context}.{key} phase")] = resolved
         else:
             bindings[_enum(WorkflowRole, name, context=f"{context}.{key} role")] = resolved
     return RunExecutionConfiguration(

@@ -50,7 +50,7 @@ from ..git_facts import (
 from ..implementation_identity import implementation_identity
 from ..model import RunStatus
 from ..serialization import load_run, run_execution_configuration_from_yaml
-from .config import ExecutionEnvelope, consumer_config_from_yaml, resolve_execution
+from .config import ExecutionEnvelope, consumer_config_from_yaml, execution_overrides_from_flags, resolve_execution
 from . import postrun, preservation
 from .journal import (
     CanonicalCheckout,
@@ -929,22 +929,6 @@ def status_lifecycle(repository: Path) -> LifecycleResult:
 # CLI.
 # --------------------------------------------------------------------------
 
-def _execution_overrides_from_flags(values: list[str]) -> dict[str, dict[str, str]]:
-    overrides: dict[str, dict[str, str]] = {}
-    for item in values:
-        if "=" not in item:
-            raise CommissionError(f"--execution-override must be ROLE.FIELD=VALUE, got: {item}")
-        dotted_key, value = item.split("=", 1)
-        role, _, field = dotted_key.partition(".")
-        if not role or field not in {"adapter", "model", "reasoning"}:
-            raise CommissionError(
-                f"--execution-override must be ROLE.FIELD=VALUE with FIELD one of "
-                f"adapter/model/reasoning, got: {item}"
-            )
-        overrides.setdefault(role, {})[field] = value
-    return overrides
-
-
 def _make_confirm(*, yes: bool, out=sys.stdout, in_=sys.stdin) -> Callable[[str, str], bool]:
     def confirm(commission_digest: str, envelope_digest: str) -> bool:
         print(f"Commission digest: sha256:{commission_digest}", file=out)
@@ -1040,7 +1024,7 @@ def cmd_run(argv: list[str]) -> int:
     args = _parse_run_args(argv)
     try:
         repository = repository_identity(Path(args.repository))
-        overrides = _execution_overrides_from_flags(args.execution_override)
+        overrides = execution_overrides_from_flags(args.execution_override)
         inputs = RunInputs(
             repository=repository, config_path=args.config, request_path=Path(args.request).resolve(),
             target_dir=args.target_dir, overrides=overrides, executable=args.executable,
