@@ -22,6 +22,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from workflow_coordinator.frontdoor.config import evidence_gitignore_block
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = REPOSITORY_ROOT / "tests" / "fixtures" / "bp9"
 WFC_ENTRY = FIXTURES / "wfc_entry.py"
@@ -118,6 +120,18 @@ def test_workspace_layout_two_commits_clean_tree_no_remote_and_check_passes(
     check = subprocess.run(["sh", "checks/check.sh"], cwd=greeter, capture_output=True, text=True)
     assert check.returncode == 0, check.stdout + check.stderr
     assert _git(greeter, "status", "--porcelain") == ""
+
+
+def test_workspace_evidence_gitignore_matches_managed_block_byte_for_byte(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _wfc_on_path(tmp_path, monkeypatch)
+    workspace = tmp_path / "ws"
+    result = _run_make_workspace(workspace)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    gitignore = workspace / "greeter-evidence" / ".gitignore"
+    assert gitignore.read_bytes() == evidence_gitignore_block().encode("utf-8")
 
 
 def test_workspace_renders_every_request_template_with_the_guidance_commit_substituted(

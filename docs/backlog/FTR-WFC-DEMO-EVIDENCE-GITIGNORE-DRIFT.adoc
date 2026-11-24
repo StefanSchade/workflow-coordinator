@@ -1,0 +1,48 @@
+= FTR-WFC-DEMO-EVIDENCE-GITIGNORE-DRIFT -- Guard the demo Evidence gitignore
+
+Work item:: `WI-WFC-DEMO-EVIDENCE-GITIGNORE-DRIFT-001`
+Status:: Implemented in H001. Coordinator `task-check`, independent acceptance,
+and maintainer integration are pending.
+
+== Observation
+
+The consumer demo kit duplicates the Development managed Evidence `.gitignore`
+block to keep its scripts standard-library-only. The original review verified
+byte equality but identified that no test would catch divergence. A drifted rule
+could silently change which raw files the demo Evidence repository retains.
+See O-1 in the
+link:BUG-WFC-CONSUMER-DEMO-KIT-GIT-IDENTITY.adoc[closed Git identity BUG] and its
+link:../warm_storage/post-beta-planning/wfc_bug_demo_kit_git_identity_broad_review.adoc#bug-git-identity-observations[broad review].
+
+== Implementation
+
+The new test in `tests/integration/test_consumer_demo_kit.py` runs the normal
+workspace generator and compares the full bytes of `greeter-evidence/.gitignore`
+with the UTF-8 bytes of
+`workflow_coordinator.frontdoor.config.evidence_gitignore_block()`. Comparing
+the file bytes also covers line endings and the final newline. The import lives
+in the test, preserving the kit's standard-library-only constraint. The scope
+is the new regression test and this work item record.
+
+== Measured checks
+
+Both focused runs used the following command with the local project Python
+environment on `PATH` and `test_scratch` set to a fresh directory under `/tmp`
+so the generated workspace was outside any Git work tree.
+
+[source,sh]
+----
+test_scratch=$(mktemp -d /tmp/wfc-demo-gitignore-pytest.XXXXXX)
+python -m pytest -o addopts= -q --wfc-partial --basetemp="$test_scratch/pytest" tests/integration/test_consumer_demo_kit.py::test_workspace_evidence_gitignore_matches_managed_block_byte_for_byte
+----
+
+Red:: In a disposable copy, changed `archive/**/ops/**` to `archive/**/Ops/**`
+in `EVIDENCE_GITIGNORE_BLOCK` in `examples/consumer-demo/make_workspace.py`.
+Workspace generation succeeded and the byte assertion raised `AssertionError`
+with `At index 127 diff: b'O' != b'o'`. Pytest reported `1 failed` and exited 1.
+Green:: Deleted the disposable copy and ran the same test in the implementation
+checkout against unchanged product. Pytest reported `1 passed` and exited 0.
+
+The full demo-kit test file passed locally (`29 passed`), including its
+standard-library-only check. `make lint format-check PYTHON=python` and the
+strict Asciidoctor render of this record also passed.
