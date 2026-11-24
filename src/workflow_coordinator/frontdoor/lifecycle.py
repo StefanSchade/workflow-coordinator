@@ -241,21 +241,29 @@ def _compile(
     config = consumer_config_from_yaml(config_text)
     request = consumer_request_from_yaml(request_text)
     compiled = compile_commission(request, config, repository=repository, target_dir=target_dir)
-    envelope = resolve_execution(config, overrides, tuple(sorted(request.personas)))
+    envelope = resolve_execution(config, overrides, compiled.phase_roles)
     request_file_path = f"{compiled.target_dir}/request.yaml"
     digest = _materials_digest(compiled.texts, request_file_path, request.raw_text)
     return request, config, compiled, envelope, request_file_path, digest
 
 
-def _cached_materials(repository: Path, checkout_dir: Path, authorized: JournalRecord):
+def _pinned_envelope_text(checkout_dir: Path, authorized: JournalRecord) -> str:
+    try:
+        data = (checkout_dir / "commission" / "envelope.yaml").read_bytes()
+        text = data.decode("utf-8")
+    except (OSError, UnicodeError) as error:
+        raise LifecycleError("pinned execution envelope is unavailable or invalid", classification="refused_drift") from error
+    if hashlib.sha256(data).hexdigest() != authorized.data["envelope_digest"]:
+        raise LifecycleError("execution envelope digest changed since authorization", classification="refused_drift")
+    return text
+
+
+def _cached_commission(repository: Path, checkout_dir: Path, authorized: JournalRecord):
     commission_dir = checkout_dir / "commission"
-    request_text = (commission_dir / "request.yaml").read_text(encoding="utf-8")
-    config_text = (commission_dir / "config.yaml").read_text(encoding="utf-8")
-    envelope_text = (commission_dir / "envelope.yaml").read_text(encoding="utf-8")
-    config = consumer_config_from_yaml(config_text)
-    request = consumer_request_from_yaml(request_text)
+    request = consumer_request_from_yaml((commission_dir / "request.yaml").read_text(encoding="utf-8"))
+    config = consumer_config_from_yaml((commission_dir / "config.yaml").read_text(encoding="utf-8"))
     compiled = compile_commission(request, config, repository=repository, target_dir=authorized.data["target_dir"])
-    return request, config, compiled, envelope_text
+    return request, compiled
 
 
 # --------------------------------------------------------------------------
@@ -502,12 +510,11 @@ def _reconcile_stray_staged_state(repository: Path, base_head: str, expected_tex
 
 
 def _do_commit(repository: Path, checkout_dir: Path, journal: Journal, authorized: JournalRecord) -> JournalRecord:
-    request_text = (checkout_dir / "commission" / "request.yaml").read_text(encoding="utf-8")
-    config_text = (checkout_dir / "commission" / "config.yaml").read_text(encoding="utf-8")
-    request, config, compiled, _, request_file_path, digest = _compile(
-        repository, config_text, request_text, target_dir=authorized.data["target_dir"],
-        overrides=authorized.data["overrides"],
-    )
+    _pinned_envelope_text(checkout_dir, authorized)
+    request, compiled = _cached_commission(repository, checkout_dir, authorized)
+    request_text = request.raw_text
+    request_file_path = f"{compiled.target_dir}/request.yaml"
+    digest = _materials_digest(compiled.texts, request_file_path, request_text)
     if digest != authorized.data["commission_digest"]:
         raise LifecycleError(
             "commission digest changed since authorization; refusing to commit a different Commission",
@@ -556,7 +563,7 @@ def _do_commit(repository: Path, checkout_dir: Path, journal: Journal, authorize
 # --------------------------------------------------------------------------
 
 def _do_verify(repository: Path, checkout_dir: Path, journal: Journal, authorized: JournalRecord, commit_rec: JournalRecord) -> JournalRecord:
-    envelope_text = (checkout_dir / "commission" / "envelope.yaml").read_text(encoding="utf-8")
+    envelope_text = _pinned_envelope_text(checkout_dir, authorized)
     execution_configuration = run_execution_configuration_from_yaml(envelope_text)
     envelope = ExecutionEnvelope(
         configuration=execution_configuration, text=envelope_text, digest=authorized.data["envelope_digest"],
@@ -578,7 +585,8 @@ def _do_verify(repository: Path, checkout_dir: Path, journal: Journal, authorize
 # --------------------------------------------------------------------------
 
 def _engine_argv(repository: Path, checkout_dir: Path, authorized: JournalRecord, prelaunch: JournalRecord, commit_rec: JournalRecord) -> list[str]:
-    _, _, compiled, _ = _cached_materials(repository, checkout_dir, authorized)
+    _pinned_envelope_text(checkout_dir, authorized)
+    _, compiled = _cached_commission(repository, checkout_dir, authorized)
     envelope_cache_path = checkout_dir / "commission" / "envelope.yaml"
     return [
         *_resolve_engine_command(),
@@ -591,6 +599,7 @@ def _engine_argv(repository: Path, checkout_dir: Path, authorized: JournalRecord
         "--components", compiled.paths["components"],
         "--task", compiled.paths["task"],
         "--execution-bindings", str(envelope_cache_path),
+        "--execution-bindings-sha256", authorized.data["envelope_digest"],
         "--timeout-seconds", str(authorized.data["hop_timeout_seconds"]),
         "--executable", prelaunch.data["executable_path"],
     ]

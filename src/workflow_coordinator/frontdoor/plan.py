@@ -212,6 +212,10 @@ def render_plan_summary(
     for role in sorted(envelope.configuration.bindings, key=lambda value: value.value):
         binding = envelope.configuration.bindings[role]
         lines.append(f"  {role.value}: adapter={binding.adapter} model={binding.model} reasoning={binding.reasoning}")
+    lines.append("effective execution by phase:")
+    for phase, role in sorted(compiled.phase_roles.items()):
+        binding = envelope.configuration.binding_for(phase, role)
+        lines.append(f"  {phase} ({role.value}): adapter={binding.adapter} model={binding.model} reasoning={binding.reasoning}")
     lines.append(f"execution envelope digest: sha256:{envelope.digest}")
     lines.append("")
     lines.append(
@@ -302,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         compiled = compile_commission(request, config, repository=repository, target_dir=args.target_dir)
         overrides = _execution_overrides_from_flags(args.execution_override)
-        envelope = resolve_execution(config, overrides, tuple(sorted(request.personas)))
+        envelope = resolve_execution(config, overrides, compiled.phase_roles)
     except (CommissionError, GitPreflightError) as error:
         print(f"wfc plan: {error}", file=sys.stderr)
         return 2

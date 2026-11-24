@@ -6,8 +6,9 @@ not a canonized future package organization. Its operator owns
 deterministic admission, serial workflow progression, Git observation and
 bounded mechanical commits, evidence execution, persistence, and stop routing.
 The provider-neutral execution port separates those semantics from the implemented
-`codex_cli` and `claude_cli` adapters, selected through per-role execution
-bindings (currently one adapter per Run); consumers own task inputs, repository
+`codex_cli` and `claude_cli` adapters, selected through an execution envelope
+with role defaults and optional phase overrides (one adapter per Run).
+Consumers own task inputs, repository
 policy, workflow profiles, and authorization.
 
 The responsibility boundary that matters is between a deterministic core and an

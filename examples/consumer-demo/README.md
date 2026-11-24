@@ -33,6 +33,27 @@ installed `wfc plan` (preview, no write) and `wfc run` (a real Run, without
 `requests/*.request.yaml` file for the exact fields, and the consumer
 quickstart below for the full walkthrough.
 
+## Phase-specific models for the live `t2-farewell` task
+
+For `robust@v1`, set role defaults and add `phase_execution` in the live
+worktree's `.wfc/config.yaml`. Replace the sample model names with your
+approved provider choices and commit the config before launching.
+
+```yaml
+default_execution:
+  worker: {adapter: codex_cli, model: worker-model, reasoning: medium}
+  independent_reviewer: {adapter: codex_cli, model: broad-model, reasoning: high}
+phase_execution:
+  broad_review: {model: broad-model}
+  focused_review: {model: focused-model, reasoning: medium}
+```
+
+Both review phases keep the `independent_reviewer` role and use the same
+adapter and executable. `wfc plan` shows the binding for each phase and
+its envelope digest. Phase entries apply after role defaults and role
+CLI overrides. Use this fragment with the live `t2-farewell` request in
+a dedicated worktree because its review phases belong to `robust@v1`.
+
 ## Further reading
 
 See the chapter overview,

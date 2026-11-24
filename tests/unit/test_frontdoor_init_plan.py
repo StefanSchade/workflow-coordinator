@@ -387,7 +387,7 @@ def test_plan_matches_direct_bp2b_compile_and_resolve(repository: Path):
     )
     compiled = compile_commission(request, config, repository=repository)
     envelope = resolve_execution(
-        config, {"worker": {"adapter": "codex_cli", "model": "model-a", "reasoning": "medium"}}, ("worker",)
+        config, {"worker": {"adapter": "codex_cli", "model": "model-a", "reasoning": "medium"}}, compiled.phase_roles
     )
 
     for path, text in compiled.texts.items():

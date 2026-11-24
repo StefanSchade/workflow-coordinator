@@ -10,6 +10,7 @@ specifically about CLI routing.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -167,6 +168,23 @@ def test_digest_drift_between_plan_and_authorization_refuses_before_any_commit(r
     assert git(repository, "rev-parse", "HEAD") == head_before
     checkout = J.canonical_checkout(repository)
     assert J.Journal(J.checkout_directory(checkout) / "journal.jsonl").read_all() == ()
+
+
+def test_phase_binding_drift_during_confirmation_is_refused(repository: Path, tmp_path: Path, state_home: Path):
+    config = repository / L.DEFAULT_CONFIG_PATH
+    config.write_text(config.read_text() + "\nphase_execution: {implement: {model: pinned-model}}\n")
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    head = git(repository, "rev-parse", "HEAD")
+
+    def confirm(_commission_digest, _envelope_digest):
+        config.write_text(config.read_text().replace("pinned-model", "changed-model"))
+        return True
+
+    with pytest.raises(L.LifecycleError) as excinfo:
+        L.run_lifecycle(_inputs(repository, request_path, confirm=confirm))
+    assert excinfo.value.classification == "refused_drift"
+    assert git(repository, "rev-parse", "HEAD") == head
+    assert not J.checkout_directory(J.canonical_checkout(repository)).exists()
 
 
 def test_authorized_run_then_second_run_on_same_checkout_is_refused(repository: Path, tmp_path: Path, state_home: Path):
@@ -378,6 +396,10 @@ def test_resume_after_crash_before_commit_commits_exactly_once(repository: Path,
 
 
 def test_resume_adopts_a_matching_commit_left_by_a_crash_after_commit(repository: Path, tmp_path: Path, state_home: Path):
+    config = repository / L.DEFAULT_CONFIG_PATH
+    config.write_text(config.read_text() + "\nphase_execution: {implement: {model: pinned-model}}\n")
+    git(repository, "add", L.DEFAULT_CONFIG_PATH)
+    git(repository, "commit", "-m", "test: configure a phase model")
     request_path = _write_request(repository, tmp_path / "request.yaml")
     checkout = J.canonical_checkout(repository)
     checkout_dir = J.checkout_directory(checkout)
@@ -411,6 +433,48 @@ def test_resume_adopts_a_matching_commit_left_by_a_crash_after_commit(repository
     log = git(repository, "log", "--oneline").splitlines()
     subjects = [line for line in log if "commission" in line]
     assert len(subjects) == 1, "adoption must never create a second commit"
+
+    argv = rebuilt.latest(("launch_intent",)).data["argv"]
+    envelope = Path(argv[argv.index("--execution-bindings") + 1]).read_bytes()
+    assert yaml.safe_load(envelope)["phase_bindings"]["implement"]["model"] == "pinned-model"
+    assert argv[argv.index("--execution-bindings-sha256") + 1] == hashlib.sha256(envelope).hexdigest()
+
+
+def test_resume_after_verification_checks_cached_envelope_and_uses_pinned_phase_binding(
+    repository: Path, tmp_path: Path, state_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    config = repository / L.DEFAULT_CONFIG_PATH
+    config.write_text(config.read_text() + "\nphase_execution: {implement: {model: pinned-model}}\n")
+    git(repository, "add", L.DEFAULT_CONFIG_PATH)
+    git(repository, "commit", "-m", "test: configure a phase model")
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    checkout_dir = J.checkout_directory(J.canonical_checkout(repository))
+    journal = J.Journal(checkout_dir / "journal.jsonl")
+    authorized, lock = L._authorize(_inputs(repository, request_path), checkout_dir, journal)
+    L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    L._do_probe(repository, checkout_dir, journal, authorized)
+    committed = L._do_commit(repository, checkout_dir, journal, authorized)
+    L._do_verify(repository, checkout_dir, journal, authorized, committed)
+    J.release_lock(lock)
+
+    def unexpected_resolution(*args):
+        pytest.fail("resume must use the authorized envelope")
+
+    monkeypatch.setattr(L, "resolve_execution", unexpected_resolution)
+    envelope = checkout_dir / "commission/envelope.yaml"
+    pinned = envelope.read_text()
+    envelope.write_text(pinned.replace("pinned-model", "changed-model"))
+    with pytest.raises(L.LifecycleError, match="execution envelope digest changed") as excinfo:
+        L.resume_lifecycle(repository)
+    assert excinfo.value.classification == "refused_drift"
+    assert journal.latest(("launch_intent",)) is None
+
+    envelope.write_text(pinned)
+    result = L.resume_lifecycle(repository)
+    assert result.classification == "completed"
+    plan = json.loads((Path(result.state_root) / "operator-plan.json").read_text())
+    assert plan["phase_bindings"]["implement"]["model"] == "pinned-model"
+    assert plan["execution_envelope_sha256"] == authorized.data["envelope_digest"]
 
 
 def test_resume_refuses_when_head_moved_to_a_non_matching_commit(repository: Path, tmp_path: Path, state_home: Path):

@@ -16,7 +16,7 @@ import tempfile
 import uuid
 import shutil
 from datetime import datetime, timezone
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Sequence
 
@@ -290,6 +290,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--components", required=True)
     parser.add_argument("--task", required=True)
     parser.add_argument("--execution-bindings", required=True)
+    parser.add_argument("--execution-bindings-sha256", help="expected digest of the pinned execution envelope")
     parser.add_argument("--durable-artifact", action="append", default=[])
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("--executable", default="codex")
@@ -324,7 +325,7 @@ def _preflight(
         raise OperatorPreflightError("state root already exists; one-shot operator roots are never overwritten")
     binding_source = Path(args.execution_bindings).resolve()
     try:
-        binding_text = binding_source.read_text(encoding="utf-8")
+        binding_text = binding_source.read_bytes().decode("utf-8")
     except (OSError, UnicodeError) as error:
         raise OperatorPreflightError(
             "execution-binding source is unavailable or not UTF-8"
@@ -341,6 +342,9 @@ def _preflight(
         execution_configuration = run_execution_configuration_from_yaml(binding_text)
     except ValidationError as error:
         raise OperatorPreflightError(str(error)) from error
+    expected_digest = getattr(args, "execution_bindings_sha256", None)
+    if expected_digest is not None and execution_configuration.sha256 != expected_digest:
+        raise OperatorPreflightError("execution envelope digest changed since authorization")
     return admit_parsed(
         work_item=work_item, profile=profile, policy=policy, manifest=manifest,
         execution_configuration=execution_configuration,
@@ -391,21 +395,33 @@ def admit_parsed(
             + "; ".join(details)
             + ")"
         )
-    binding_roles = set(execution_configuration.bindings)
-    if binding_roles != profile_roles:
-        missing = sorted(role.value for role in profile_roles - binding_roles)
-        unknown = sorted(role.value for role in binding_roles - profile_roles)
+    if work_item.initial_phase not in profile.phases:
+        raise OperatorPreflightError(f"WorkItem.initial_phase is absent from supplied profile: {work_item.initial_phase}")
+    if execution_configuration.schema_version == 2:
+        expected_keys = set(profile.executing_phase_roles(work_item.initial_phase))
+        bindings = execution_configuration.phase_bindings
+        kind = "phases"
+        expected_kind = "executing phases"
+    else:
+        expected_keys = {role.value for role in profile_roles}
+        bindings = {role.value: binding for role, binding in execution_configuration.bindings.items()}
+        kind = "roles"
+        expected_kind = "roles used by the profile"
+    binding_keys = set(bindings)
+    if binding_keys != expected_keys:
+        missing = sorted(expected_keys - binding_keys)
+        unknown = sorted(binding_keys - expected_keys)
         details = []
         if missing:
-            details.append("missing roles: " + ", ".join(missing))
+            details.append(f"missing {kind}: " + ", ".join(missing))
         if unknown:
-            details.append("unknown roles: " + ", ".join(unknown))
+            details.append(f"unknown {kind}: " + ", ".join(unknown))
         raise OperatorPreflightError(
-            "Run execution bindings must exactly match roles used by the profile ("
+            f"Run execution bindings must exactly match {expected_kind} ("
             + "; ".join(details)
             + ")"
         )
-    if len({binding.adapter for binding in execution_configuration.bindings.values()}) != 1:
+    if len({binding.adapter for binding in bindings.values()}) != 1:
         raise OperatorPreflightError(
             "mixed execution adapters are incompatible with the single scalar executable"
         )
@@ -426,8 +442,6 @@ def admit_parsed(
         raise OperatorPreflightError(
             f"Slice-5B supports at most {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS} autonomous Hops"
         )
-    if work_item.initial_phase not in profile.phases:
-        raise OperatorPreflightError(f"WorkItem.initial_phase is absent from supplied profile: {work_item.initial_phase}")
     initial_phase = profile.phases[work_item.initial_phase]
     legacy_artifacts = tuple(_relative_path(path, context="durable artifact") for path in durable_artifact)
     if len(set(legacy_artifacts)) != len(legacy_artifacts):
@@ -905,10 +919,10 @@ def run_serial_hops(
                     "production execution requires explicit resolved bindings"
                 )
             try:
-                resolved_binding = execution_configuration.bindings[workflow_role]
+                resolved_binding = execution_configuration.binding_for(phase_key, workflow_role)
             except KeyError as error:
                 raise OperatorPreflightError(
-                    f"no admitted execution binding for workflow role: {workflow_role.value}"
+                    f"no admitted execution binding for phase {phase_key} ({workflow_role.value})"
                 ) from error
             run_root = checkout_state_root(state_root, association)
             execution_adapter = _execution_adapter(
@@ -1798,15 +1812,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "state_root": str(state_root), "run_id": run_id,
                 "executable": args.executable, "timeout_seconds": args.timeout_seconds,
                 "execution_bindings_source": str(binding_source),
+                "execution_envelope_sha256": execution_configuration.sha256,
                 "role_personas": {
                     role.value: persona for role, persona in item.personas.items()
                 },
                 "role_bindings": {
-                    role.value: {
-                        "adapter": binding.adapter,
-                        "model": binding.model,
-                        "reasoning": binding.reasoning,
-                    }
+                    role.value: asdict(binding)
                     for role, binding in execution_configuration.bindings.items()
                 },
                 "max_autonomous_hops": item.max_autonomous_hops, "retry": False,
@@ -1815,6 +1826,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "evidence": _prepared_evidence_plan(
                     prepared_evidence, evidence_environment
                 )}
+        if execution_configuration.phase_bindings:
+            plan["phase_bindings"] = {
+                phase: asdict(binding)
+                for phase, binding in execution_configuration.phase_bindings.items()
+            }
         atomic_write_json(state_root / "operator-plan.json", plan)
     except SystemExit as error:
         return 0 if error.code == 0 else 2

@@ -42,10 +42,9 @@ _AGENT_CONTRACT_KEYS = frozenset({"id", "version", "sha256"})
 _GOVERNANCE_KEYS = frozenset({
     "policy_id", "policy_revision", "profile_id", "profile_revision",
     "agent_contract", "governing_inputs", "component_digests", "role_bindings",
-    "executable",
+    "executable", "phase_bindings", "execution_envelope_sha256",
 })
 _COMPONENT_DIGEST_KEYS = frozenset({"path", "digest"})
-_ROLE_BINDING_KEYS = frozenset({"adapter", "model", "reasoning"})
 _EXECUTABLE_KEYS = frozenset({"name"})
 _HOP_KEYS = frozenset({
     "hop_id", "sequence", "phase", "role", "adapter", "model", "reasoning",
@@ -207,18 +206,6 @@ def _build_governance_section(plan_doc: dict | None, run_doc: dict, limits: list
         _assert_keys(entry, _COMPONENT_DIGEST_KEYS, context="component_digests entry")
         component_digests[component_id] = entry
 
-    role_bindings = {}
-    for role, binding in (plan_doc.get("role_bindings") or {}).items():
-        if not isinstance(binding, dict):
-            continue
-        entry = {
-            "adapter": binding.get("adapter"),
-            "model": binding.get("model"),
-            "reasoning": binding.get("reasoning"),
-        }
-        _assert_keys(entry, _ROLE_BINDING_KEYS, context="role_bindings entry")
-        role_bindings[role] = entry
-
     executable = None
     authored_executable = plan_doc.get("executable")
     if isinstance(authored_executable, str) and authored_executable:
@@ -233,9 +220,17 @@ def _build_governance_section(plan_doc: dict | None, run_doc: dict, limits: list
         "agent_contract": agent_contract,
         "governing_inputs": governing_inputs,
         "component_digests": component_digests,
-        "role_bindings": role_bindings,
         "executable": executable,
     }
+    for key in ("role_bindings", "phase_bindings"):
+        if key == "role_bindings" or key in plan_doc:
+            section[key] = {
+                name: {field: binding.get(field) for field in ("adapter", "model", "reasoning")}
+                for name, binding in (plan_doc.get(key) or {}).items()
+                if isinstance(binding, dict)
+            }
+    if "execution_envelope_sha256" in plan_doc:
+        section["execution_envelope_sha256"] = plan_doc["execution_envelope_sha256"]
     _assert_keys(section, _GOVERNANCE_KEYS, context="governance section")
     return section
 
@@ -265,6 +260,7 @@ def _build_hops_section(
     run_doc: dict, plan_doc: dict | None, exec_evidence_doc: dict | None, limits: list[str],
 ) -> list[dict]:
     role_bindings = (plan_doc or {}).get("role_bindings") or {}
+    phase_bindings = (plan_doc or {}).get("phase_bindings")
 
     admitted_fingerprints: dict[str, Any] = {}
     if plan_doc is not None:
@@ -290,8 +286,14 @@ def _build_hops_section(
     hops_section = []
     for hop in raw_hops:
         role = hop.get("role")
-        binding = role_bindings.get(role) if isinstance(role_bindings.get(role), dict) else {}
         attempt = attempts_by_hop.get(hop.get("hop_id"))
+        phase = hop.get("phase")
+        if phase_bindings is not None and phase is None and attempt is not None:
+            # Legacy Hop summaries omit the phase. The execution attempt records it.
+            phase = attempt.get("phase")
+        binding = phase_bindings.get(phase) if phase_bindings is not None else role_bindings.get(role)
+        if not isinstance(binding, dict):
+            binding = {}
         evidence_list = []
         if attempt is not None:
             for observation in attempt.get("trusted_observations", []) or []:
@@ -300,7 +302,7 @@ def _build_hops_section(
         entry = {
             "hop_id": hop.get("hop_id"),
             "sequence": hop.get("sequence"),
-            "phase": hop.get("phase"),
+            "phase": phase,
             "role": role,
             "adapter": binding.get("adapter"),
             "model": binding.get("model"),

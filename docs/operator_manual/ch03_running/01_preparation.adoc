@@ -241,10 +241,9 @@ there is no separate `--expected-head` to pin by hand. It refuses outright if
 a lifecycle is already authorized for this checkout (`refused_active_lifecycle`)
 or if the engine state root already exists; see
 link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-checkout-rotation[checkout rotation]
-for why that means one fresh checkout per Run today. Execution bindings come
-from the Consumer Config's `default_execution` plus any
-`--execution-override ROLE.FIELD=VALUE`, with no automatic model/provider
-choice.
+for why that means one fresh checkout per Run today. See
+<<execution-bindings,Phase execution bindings>> for how the Consumer Config
+and CLI select the adapter, model and reasoning for each Hop.
 
 Provider-free preflight is `frontdoor.verify.verify_commission`, run as part
 of `wfc run`/`resume` before the engine ever launches: it re-compiles the
@@ -326,11 +325,53 @@ without `--yes` prompts `y`/`N`). The canonical preflight (now
 program's roles exactly; `--execution-override` fields are `adapter`/
 `model`/`reasoning`, never a project/path value.
 
-For an adapter executable, verify the absolute path on this host with
-`which codex` or `which claude`; do not assume a fixed location. The
-Consumer Config's `default_execution` (`.wfc/config.yaml`) supplies a
-default per role; `--execution-override` narrows or replaces one field of
-it for a single `plan`/`run` invocation only, never the committed default.
+[[execution-bindings]]
+=== Phase execution bindings
+
+In `.wfc/config.yaml`, `default_execution` supplies a complete binding for
+each role it names. Optional `phase_execution` entries supply one or more
+binding fields keyed by phase name. For each executing phase, WFC applies
+the phase's role default, then `--execution-override ROLE.FIELD=VALUE` for
+that role, then `phase_execution.<phase>`. Later sources win field by field.
+Use the same role flags for `wfc plan` and `wfc run`.
+
+This fragment configures `robust@v1`. Replace the sample model names with
+your approved provider model IDs. Both reviews still use the
+`independent_reviewer` role and its existing authority.
+
+[source,yaml]
+----
+default_execution:
+  worker: {adapter: codex_cli, model: worker-model, reasoning: medium}
+  independent_reviewer: {adapter: codex_cli, model: broad-model, reasoning: high}
+phase_execution:
+  broad_review: {model: broad-model}
+  focused_review: {model: focused-model, reasoning: medium}
+----
+
+The valid phase keys are those reachable from the selected program's entry
+through its declared `goto` routes, including the entry itself. WFC rejects
+unknown and unreachable phases, role defaults and flags for unused roles,
+unknown fields, empty override entries, and incomplete effective bindings.
+`adapter` must be `codex_cli` or `claude_cli`. `model` and `reasoning` are
+explicit nonempty, single-line strings without NUL. Use values supported by
+the chosen provider. All effective bindings must name one adapter and use
+the single `wfc run --executable`. Verify its path with `which codex` or
+`which claude`. WFC validates the bindings before provider execution and
+uses the admitted values for each Hop.
+
+`wfc plan` prints the effective binding for each phase and the envelope's
+SHA-256 digest. An omitted or empty `phase_execution` preserves the
+version-1 role-keyed envelope (`bindings`) and its existing digest for the
+same role choices. With overrides, the version-2 envelope contains a full
+`phase_bindings` map, sorted by phase name. The digest covers the serialized
+envelope. The Commission manifest separately pins the authored config bytes.
+
+`wfc run` pins the envelope at authorization and verifies its digest at
+launch. Resume and launch reconciliation use the authorized envelope. An
+envelope digest mismatch prevents dispatch. The operator plan and archived
+audit record the envelope digest and binding map. Per-Hop execution evidence
+records the actual phase, role, adapter, model and reasoning.
 
 === Expected result
 

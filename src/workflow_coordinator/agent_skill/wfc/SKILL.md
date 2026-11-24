@@ -32,9 +32,9 @@ WFC's authority model, stated as rules, neither looser nor stricter than it
 is implemented and practised. This skill introduces no approval step of its
 own and has no delegation object, file or flag of its own to grant one.
 
-1. **Authority facts** -- scope, program, Hop budget, and any execution
-   binding differing from `default_execution`: the human decides them;
-   `--yes` asserts that the human has, and WFC does not verify the assertion.
+1. **Authority facts** -- the human decides the scope, program, Hop budget,
+   and effective execution bindings shown by `wfc plan`. `--yes` asserts
+   that the human has, and WFC does not verify the assertion.
 2. **Initial authorization** -- for a fact the human has not yet decided:
    propose a value, show the `wfc plan` projection, ask once, undecided
    facts only.

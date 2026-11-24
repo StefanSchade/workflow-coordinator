@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from workflow_coordinator import operator
 from workflow_coordinator.serialization import (
@@ -13,6 +14,7 @@ from workflow_coordinator.serialization import (
     work_item_from_yaml,
     workflow_profile_from_yaml,
 )
+from tests.support import route
 from tests.unit.test_operator import args, git, repository  # noqa: F401 -- pytest fixture re-exported by import
 
 pytestmark = pytest.mark.ftr("FTR-AGENT-WORKFLOW-COORDINATOR-P5")
@@ -70,3 +72,50 @@ def test_evidence_preparation_failure_precedes_timeout(parsed_inputs, monkeypatc
     with pytest.raises(operator.OperatorPreflightError, match="evidence preparation failed") as error:
         operator.admit_parsed(**inputs)
     assert isinstance(error.value.__cause__, ValueError)
+
+
+def test_phase_envelope_admission_requires_exact_executing_phases_and_one_adapter(parsed_inputs):
+    _, inputs = parsed_inputs
+    workflow = inputs["profile"]
+    first = inputs["work_item"].initial_phase
+    inputs["profile"] = replace(workflow, phases={**workflow.phases, "unused": workflow.phases[first]})
+    executing = workflow.executing_phase_roles(first)
+    bindings = {
+        name: {"adapter": "codex_cli", "model": f"{name}-model", "reasoning": "high"}
+        for name in executing
+    }
+
+    def admit(phase_bindings):
+        config = run_execution_configuration_from_yaml(yaml.safe_dump({
+            "schema_version": 2, "phase_bindings": phase_bindings,
+        }))
+        return operator.admit_parsed(**{**inputs, "execution_configuration": config})
+
+    assert set(admit(bindings)[-1].phase_bindings) == set(executing)
+    with pytest.raises(operator.OperatorPreflightError, match=f"missing phases: {first}"):
+        admit({name: binding for name, binding in bindings.items() if name != first})
+    with pytest.raises(operator.OperatorPreflightError, match="unknown phases: unused"):
+        admit({**bindings, "unused": bindings[first]})
+
+    existing = workflow.phases[first]
+    second = "extra"
+    inputs["profile"] = replace(workflow, phases={
+        **workflow.phases, first: replace(existing, routes={second: route("goto", second)}),
+        second: existing,
+    })
+    with pytest.raises(operator.OperatorPreflightError, match="mixed execution adapters"):
+        admit({**bindings, second: {**bindings[first], "adapter": "claude_cli"}})
+
+
+def test_engine_argv_digest_rejects_changed_phase_envelope_before_admission(parsed_inputs):
+    namespace, inputs = parsed_inputs
+    source = inputs["binding_source"]
+    phase = inputs["work_item"].initial_phase
+    pinned = yaml.safe_dump({"schema_version": 2, "phase_bindings": {
+        phase: {"adapter": "codex_cli", "model": "pinned-model", "reasoning": "high"},
+    }})
+    namespace.execution_bindings_sha256 = run_execution_configuration_from_yaml(pinned).sha256
+    source.write_text(pinned.replace("pinned-model", "other-model"))
+    with pytest.raises(operator.OperatorPreflightError, match="execution envelope digest changed"):
+        operator._preflight(namespace)
+    assert not inputs["state_root"].exists()

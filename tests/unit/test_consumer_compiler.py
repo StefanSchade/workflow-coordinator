@@ -10,6 +10,7 @@ or writes `governance/`.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import subprocess
 from pathlib import Path
 
@@ -20,6 +21,9 @@ from workflow_coordinator.commissioning import CommissionError, compile_commissi
 from workflow_coordinator.frontdoor.config import consumer_config_from_yaml, resolve_execution
 from workflow_coordinator.frontdoor.request import consumer_request_from_yaml
 from workflow_coordinator.frontdoor.verify import verify_commission
+from workflow_coordinator.model import WorkflowRole
+from workflow_coordinator.serialization import run_execution_configuration_from_yaml
+from tests.support import phase, profile, route
 
 
 def git(repository: Path, *args: str) -> str:
@@ -297,11 +301,15 @@ def test_consumer_compile_rejects_tampered_package_resource(repository: Path, mo
 # ---------------------------------------------------------------------------
 
 
+_WORKER_PHASE = {"implement": WorkflowRole.WORKER}
+_TWO_ROLE_PHASES = {**_WORKER_PHASE, "assess": WorkflowRole.INDEPENDENT_REVIEWER}
+
+
 def test_resolve_execution_digest_differs_only_with_binding_and_not_with_role_order() -> None:
     config = consumer_config_from_yaml(config_text())
-    envelope_a = resolve_execution(config, {}, ("worker",))
-    envelope_b = resolve_execution(config, {"worker": {"model": "model-b"}}, ("worker",))
-    again_a = resolve_execution(config, {}, ("worker",))
+    envelope_a = resolve_execution(config, {}, _WORKER_PHASE)
+    envelope_b = resolve_execution(config, {"worker": {"model": "model-b"}}, _WORKER_PHASE)
+    again_a = resolve_execution(config, {}, _WORKER_PHASE)
     assert envelope_a.digest == again_a.digest
     assert envelope_a.digest != envelope_b.digest
     assert envelope_a.configuration.bindings != envelope_b.configuration.bindings
@@ -310,13 +318,88 @@ def test_resolve_execution_digest_differs_only_with_binding_and_not_with_role_or
 def test_resolve_execution_rejects_role_widening_beyond_the_program() -> None:
     config = consumer_config_from_yaml(config_text(roles="worker,independent_reviewer"))
     with pytest.raises(CommissionError, match="roles the selected program does not use"):
-        resolve_execution(config, {}, ("worker",))
+        resolve_execution(config, {}, _WORKER_PHASE)
 
 
 def test_resolve_execution_rejects_incomplete_binding() -> None:
     config = consumer_config_from_yaml(config_text())
     with pytest.raises(CommissionError, match="missing"):
-        resolve_execution(config, {}, ("worker", "independent_reviewer"))
+        resolve_execution(config, {}, _TWO_ROLE_PHASES)
+
+
+def test_phase_bindings_follow_executing_topology_and_merge_field_by_field() -> None:
+    workflow = profile({
+        "draft": phase({"continue": route("goto", "revise")}),
+        "revise": phase({"done": route("complete")}),
+        "unused": phase({"done": route("complete")}),
+    })
+    phase_roles = workflow.executing_phase_roles("draft")
+    overrides = {"worker": {"model": "cli-model", "reasoning": "high"}}
+    text = config_text() + "phase_execution:\n  revise: {model: revision-model}\n"
+    envelope = resolve_execution(consumer_config_from_yaml(text), overrides, phase_roles)
+    parsed = run_execution_configuration_from_yaml(envelope.text)
+    assert parsed == envelope.configuration
+    assert parsed.schema_version == 2
+    assert parsed.phase_bindings.keys() == {"draft", "revise"}
+    assert [(b.adapter, b.model, b.reasoning) for b in parsed.phase_bindings.values()] == [
+        ("codex_cli", "cli-model", "high"),
+        ("codex_cli", "revision-model", "high"),
+    ]
+    with pytest.raises(TypeError):
+        parsed.phase_bindings["draft"] = parsed.phase_bindings["revise"]
+    reordered = resolve_execution(consumer_config_from_yaml(text), overrides, dict(reversed(list(phase_roles.items()))))
+    changed = resolve_execution(consumer_config_from_yaml(text.replace("revision-model", "different")), overrides, phase_roles)
+    assert reordered.text == envelope.text
+    assert envelope.digest == hashlib.sha256(envelope.text.encode()).hexdigest() != changed.digest
+
+    for key in ("unused", "continue", "done", "typo"):
+        config = consumer_config_from_yaml(text.replace("revise:", f"{key}:"))
+        with pytest.raises(CommissionError, match=f"unknown or nonexecuting phases.*{key}"):
+            resolve_execution(config, overrides, phase_roles)
+
+
+@pytest.mark.parametrize("invalid, message", [
+    ("phase_execution: []", "must be a mapping"),
+    ("phase_execution: {3: {model: x}}", "with string keys"),
+    ("phase_execution: {implement: {}}", "at least one field"),
+    ("phase_execution: {implement: {model: x, effort: high}}", "forbidden field.*effort"),
+    ("phase_execution: {implement: {model: x, 3: y}}", "keys must be strings"),
+    ("phase_execution: {implement: {adapter: other}}", "adapter must be one of"),
+    ("phase_execution: {implement: {model: false}}", "model must be a non-empty string"),
+    ("phase_execution: {implement: {model: ' '}}", "model must be a non-empty string"),
+    ("phase_execution: {implement: {model: null}}", "model must be a non-empty string"),
+    ('phase_execution: {implement: {model: "x\\0y"}}', "NUL"),
+    ('phase_execution: {implement: {reasoning: "high\\nmedium"}}', "single-line"),
+])
+def test_config_refuses_invalid_phase_execution_values(invalid: str, message: str) -> None:
+    with pytest.raises(CommissionError, match=message):
+        consumer_config_from_yaml(config_text() + invalid)
+
+
+def test_phase_resolution_checks_effective_completeness_and_adapter_mix() -> None:
+    phases = {**_WORKER_PHASE, "amend": WorkflowRole.WORKER}
+    config = consumer_config_from_yaml(config_text() + "phase_execution: {amend: {adapter: claude_cli}}")
+    with pytest.raises(CommissionError, match="mixed execution adapters"):
+        resolve_execution(config, {}, phases)
+    full = consumer_config_from_yaml(config_text() + "phase_execution: {implement: {adapter: claude_cli}, amend: {adapter: claude_cli}}")
+    assert {binding.adapter for binding in resolve_execution(full, {}, phases).configuration.phase_bindings.values()} == {"claude_cli"}
+
+    config = dataclasses.replace(config, default_execution={})
+    with pytest.raises(CommissionError, match="phase amend is missing: model, reasoning"):
+        resolve_execution(config, {}, phases)
+    resolved = resolve_execution(config, {"worker": {"model": "cli-model", "reasoning": "high"}}, {"amend": WorkflowRole.WORKER})
+    assert resolved.configuration.phase_bindings["amend"].model == "cli-model"
+
+
+def test_empty_phase_mapping_preserves_legacy_envelope_bytes() -> None:
+    legacy = (
+        "schema_version: 1\nbindings:\n"
+        "  worker:\n    adapter: codex_cli\n    model: model-a\n    reasoning: medium\n"
+    )
+    for config in (config_text(), config_text() + "phase_execution: {}\n"):
+        envelope = resolve_execution(consumer_config_from_yaml(config), {}, _WORKER_PHASE)
+        assert envelope.text == legacy
+        assert envelope.digest == hashlib.sha256(legacy.encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -331,8 +414,8 @@ def test_consumer_simple_end_to_end_admits_with_differing_execution_digests(repo
     compiled = compile_commission(request, config, repository=repository)
     expected_head = commit_compiled(repository, compiled)
 
-    envelope_a = resolve_execution(config, {}, ("worker",))
-    envelope_b = resolve_execution(config, {"worker": {"model": "model-b"}}, ("worker",))
+    envelope_a = resolve_execution(config, {}, _WORKER_PHASE)
+    envelope_b = resolve_execution(config, {"worker": {"model": "model-b"}}, _WORKER_PHASE)
     assert envelope_a.digest != envelope_b.digest
 
     # Request/Config are supplied as separately committed inputs for `verify_commission`.
@@ -371,7 +454,7 @@ def test_consumer_robust_end_to_end_admits_both_roles(repository: Path) -> None:
     git(repository, "commit", "-q", "-m", "test: materialize compiled robust Commission")
     expected_head = git(repository, "rev-parse", "HEAD")
 
-    envelope = resolve_execution(config, {}, ("worker", "independent_reviewer"))
+    envelope = resolve_execution(config, {}, compiled.phase_roles)
     _, result = verify_commission(
         "consumer-robust-test-request.yaml", "consumer-robust-test-config.yaml",
         repository=repository, expected_head=expected_head, execution_envelope=envelope,
@@ -398,7 +481,7 @@ def test_consumer_verify_rejects_tampered_compiled_component(repository: Path) -
     git(repository, "commit", "-q", "-m", "test: tamper compiled worker component")
     tampered_head = git(repository, "rev-parse", "HEAD")
 
-    envelope = resolve_execution(config, {}, ("worker",))
+    envelope = resolve_execution(config, {}, _WORKER_PHASE)
     with pytest.raises(CommissionError, match="compiled projection equivalence mismatch"):
         verify_commission(
             "consumer-simple-test-request.yaml", "consumer-simple-test-config.yaml",
@@ -422,7 +505,7 @@ def test_consumer_verify_rejects_tampered_guidance(repository: Path) -> None:
     git(repository, "commit", "-q", "-m", "test: tamper guidance after pin")
     tampered_head = git(repository, "rev-parse", "HEAD")
 
-    envelope = resolve_execution(config, {}, ("worker",))
+    envelope = resolve_execution(config, {}, _WORKER_PHASE)
     with pytest.raises(CommissionError, match="consumer guidance differs from its pinned source object"):
         verify_commission(
             "consumer-simple-test-request.yaml", "consumer-simple-test-config.yaml",
@@ -442,7 +525,7 @@ def test_consumer_verify_rejects_dirty_or_mismatched_head(repository: Path) -> N
     git(repository, "commit", "-q", "-m", "test: materialize consumer request/config inputs")
     expected_head = git(repository, "rev-parse", "HEAD")
 
-    envelope = resolve_execution(config, {}, ("worker",))
+    envelope = resolve_execution(config, {}, _WORKER_PHASE)
     with pytest.raises(CommissionError, match="current HEAD does not equal expected HEAD"):
         verify_commission(
             "consumer-simple-test-request.yaml", "consumer-simple-test-config.yaml",
@@ -472,7 +555,7 @@ def test_consumer_verify_rejects_binding_role_mismatch(repository: Path) -> None
     expected_head = git(repository, "rev-parse", "HEAD")
 
     worker_only_config = consumer_config_from_yaml(config_text())
-    envelope = resolve_execution(worker_only_config, {}, ("worker",))
+    envelope = resolve_execution(worker_only_config, {}, _WORKER_PHASE)
     with pytest.raises(CommissionError, match="operator admission refused"):
         verify_commission(
             "consumer-robust-test-request.yaml", "consumer-robust-test-config.yaml",
@@ -492,7 +575,7 @@ def test_consumer_verify_rejects_envelope_digest_mismatched_with_its_own_text(re
     git(repository, "commit", "-q", "-m", "test: materialize consumer request/config inputs")
     expected_head = git(repository, "rev-parse", "HEAD")
 
-    envelope = resolve_execution(config, {}, ("worker",))
+    envelope = resolve_execution(config, {}, _WORKER_PHASE)
     forged = dataclasses.replace(envelope, digest="0" * 64)
     with pytest.raises(CommissionError, match="execution envelope digest does not match its own bound text"):
         verify_commission(

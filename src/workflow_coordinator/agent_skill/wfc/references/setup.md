@@ -70,10 +70,32 @@ default_execution:
     reasoning: medium
 ```
 
-`adapter` must be `codex_cli` or `claude_cli`; a Run uses exactly one
-adapter throughout, and `wfc run --executable` must match the configured
-adapter. `--execution-override ROLE.FIELD=VALUE` overrides one resolved
-binding field on `wfc plan`/`wfc run` without editing the committed file.
+WFC starts with `default_execution.<role>` and applies
+`--execution-override ROLE.FIELD=VALUE` from `wfc plan` or `wfc run`.
+The optional `phase_execution.<phase>` entry applies last. For `robust@v1`,
+keep the role binding for `independent_reviewer` and add the top-level
+mapping below with your approved provider model IDs.
+
+```yaml
+phase_execution:
+  broad_review: {model: <your broad review model>}
+  focused_review: {model: <your focused review model>, reasoning: medium}
+```
+
+Use exact phase names reachable from the chosen program's entry through
+`goto` routes. A phase entry must supply at least one of `adapter`, `model`
+or `reasoning`. Every effective binding must have all three fields. WFC
+refuses unknown or unreachable phase keys, extra fields, incomplete
+bindings and empty or invalid values. `model` and `reasoning` must be
+nonempty, single-line strings without NUL. Choose models and reasoning
+supported by the provider. All effective bindings must use one adapter
+(`codex_cli` or `claude_cli`) and `wfc run --executable` must match it.
+
+Read the effective bindings by phase in `wfc plan` before authorization.
+An omitted or empty `phase_execution` keeps the existing role-keyed
+envelope and digest. With phase overrides the digest covers the complete
+phase-keyed envelope. WFC pins that envelope through launch and resume,
+and records the choices in execution evidence.
 
 ## Git identity and filters
 

@@ -12,6 +12,7 @@ does with ``tests/fixtures/bp9/wfc_entry.py``. See
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import re
@@ -458,6 +459,85 @@ def test_t2_farewell_end_state_matches_ac5(
     assert len(resolved_findings) == 1
     assert len(audit["hops"]) == 5
     assert all(hop["model"] == "rehearsal-no-model" for hop in audit["hops"])
+
+
+def test_robust_phase_choices_match_preview_provider_argv_and_archived_evidence(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _wfc_on_path(tmp_path, monkeypatch)
+    workspace = tmp_path / "ws"
+    created = _run_make_workspace(workspace)
+    assert created.returncode == 0, created.stdout + created.stderr
+    greeter = workspace / "greeter"
+    config = greeter / ".wfc/config.yaml"
+    config.write_text(config.read_text() + """
+phase_execution:
+  broad_review: {model: broad-model, reasoning: high}
+  focused_review: {model: focused-model}
+""", encoding="utf-8")
+    _git(greeter, "add", ".wfc/config.yaml")
+    _git(greeter, "commit", "-m", "test: configure phase bindings")
+
+    requests = workspace / "requests"
+    name = "t2-farewell"
+    plan_args = _plan_args_for(requests, greeter, name)
+    preview = subprocess.run(["wfc", "plan", *plan_args], capture_output=True, text=True)
+    assert preview.returncode == 0, preview.stdout + preview.stderr
+    assert "broad_review (independent_reviewer): adapter=codex_cli model=broad-model reasoning=high" in preview.stdout
+    assert "focused_review (independent_reviewer): adapter=codex_cli model=focused-model reasoning=medium" in preview.stdout
+
+    script = tmp_path / "scenario.json"
+    script.write_bytes((SCENARIOS_DIR / f"{name}.json").read_bytes())
+    monkeypatch.setenv("WFC_DEMO_SCRIPT", str(script))
+    provider = tmp_path / "checking-provider"
+    provider.write_text(f'''#!{sys.executable}
+import subprocess
+import sys
+
+argv = sys.argv[1:]
+prompt = sys.stdin.read()
+phase = next(line.split("=", 1)[1] for line in prompt.splitlines() if line.startswith("phase="))
+model, reasoning = {{"broad_review": ("broad-model", "high"),
+                    "focused_review": ("focused-model", "medium")}}.get(phase, ("demo-model", "medium"))
+assert argv[argv.index("--model") + 1] == model, argv
+assert f'model_reasoning_effort="{{reasoning}}"' in argv, argv
+raise SystemExit(subprocess.run([sys.executable, {str(KIT_DIR / 'scripted_provider.py')!r}, *argv],
+                                input=prompt, text=True).returncode)
+''', encoding="utf-8")
+    provider.chmod(0o755)
+    overrides = []
+    for flag, value in zip(plan_args, plan_args[1:]):
+        if flag == "--execution-override":
+            overrides.extend((flag, value))
+    run = subprocess.run([
+        "wfc", "run", "--repository", str(greeter), "--request", str(requests / f"{name}.request.yaml"),
+        "--executable", str(provider), *overrides, "--yes",
+    ], capture_output=True, text=True)
+    assert run.returncode == 0, run.stdout + run.stderr
+    destination = _destination_relative_from(run.stdout)
+    assert destination is not None
+    attempt = workspace / "greeter-evidence" / destination
+    plan = json.loads((attempt / "run/operator-plan.json").read_text())
+    envelope = Path(plan["execution_bindings_source"]).read_bytes()
+    digest = hashlib.sha256(envelope).hexdigest()
+    assert plan["execution_envelope_sha256"] == digest
+    assert f"execution envelope digest: sha256:{digest}" in preview.stdout
+    assert yaml.safe_load(envelope)["phase_bindings"] == plan["phase_bindings"]
+    audit = json.loads((attempt / "audit.json").read_text())
+    assert audit["governance"]["execution_envelope_sha256"] == digest
+    assert audit["governance"]["phase_bindings"] == plan["phase_bindings"]
+
+    expected = [
+        ("implement", "worker", "demo-model", "medium"),
+        ("broad_review", "independent_reviewer", "broad-model", "high"),
+        ("correct", "worker", "demo-model", "medium"),
+        ("focused_review", "independent_reviewer", "focused-model", "medium"),
+        ("broad_review", "independent_reviewer", "broad-model", "high"),
+    ]
+    assert [(h["phase"], h["role"], h["model"], h["reasoning"]) for h in audit["hops"]] == expected
+    raw_evidence, = (attempt / "run/checkouts").glob("*/execution-evidence.json")
+    attempts = json.loads(raw_evidence.read_text())["attempts"]
+    assert [(h["phase"], h["workflow_role"], h["model"], h["reasoning"]) for h in attempts] == expected
 
 
 def test_t3_scope_stop_and_probe_refusal_end_states_match_ac6(

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
+from types import MappingProxyType
 from typing import Mapping
 
 
@@ -178,10 +179,17 @@ class ExecutionBinding:
 
 @dataclass(frozen=True)
 class RunExecutionConfiguration:
-    """Immutable role-keyed MVP projection prepared once for one Run."""
+    """Pinned execution choices, keyed by role in v1 and by phase in v2."""
 
     schema_version: int
     bindings: Mapping[WorkflowRole, ExecutionBinding]
+    phase_bindings: Mapping[str, ExecutionBinding] = field(default_factory=lambda: MappingProxyType({}))
+    sha256: str = ""
+
+    def binding_for(self, phase: str, role: WorkflowRole) -> ExecutionBinding:
+        if self.schema_version == 2:
+            return self.phase_bindings[phase]
+        return self.bindings[role]
 
 
 @dataclass(frozen=True)
@@ -270,6 +278,23 @@ class WorkflowProfile:
     revision: str
     phases: Mapping[str, Phase]
     convergence: ConvergenceConfiguration | None = None
+
+    def executing_phase_roles(self, initial_phase: str) -> dict[str, WorkflowRole]:
+        """Project possible Hop phases from the entry and declared goto routes."""
+
+        roles: dict[str, WorkflowRole] = {}
+        pending = [initial_phase]
+        while pending:
+            key = pending.pop()
+            if key in roles:
+                continue
+            phase = self.phases[key]
+            roles[key] = phase.role
+            pending.extend(
+                route.target for route in phase.routes.values()
+                if route.effect is RouteEffect.GOTO and route.target is not None
+            )
+        return roles
 
 
 @dataclass(frozen=True)

@@ -724,7 +724,7 @@ def test_execution_binding_parser_rejects_unsupported_or_incomplete_bindings(
     ("schema_version", "message"),
     [
         ("0", "unsupported version: 0"),
-        ("2", "unsupported version: 2"),
+        ("2", "unknown fields: bindings"),
         ("99", "unsupported version: 99"),
         ("-1", "unsupported version: -1"),
         ("'1'", "must be an integer"),
@@ -732,7 +732,7 @@ def test_execution_binding_parser_rejects_unsupported_or_incomplete_bindings(
         ("true", "must be an integer"),
     ],
 )
-def test_execution_binding_parser_admits_only_binding_schema_version_one(
+def test_role_keyed_execution_binding_parser_requires_version_one(
     schema_version, message
 ):
     document = (

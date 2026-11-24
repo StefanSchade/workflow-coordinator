@@ -2,24 +2,24 @@
 
 ``ConsumerConfig`` is the durable, per-repository half of a BP2b compile
 input (governance target, scope ceiling, hop ceiling, and default execution
-bindings).  ``resolve_execution`` turns a config, an explicit per-role
-override mapping, and the role set a chosen program actually uses into one
+bindings). ``resolve_execution`` combines the config and per-role CLI
+overrides against the executing phases of the chosen program, producing one
 ``RunExecutionConfiguration`` with its own stable digest -- entirely outside
 the Commission's own immutable bytes, per C1.
 """
 
 from __future__ import annotations
 
-import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
 
 from ..commissioning import CommissionError, _mapping, _path, _text, _yaml_load
-from ..model import ExecutionBinding, RunExecutionConfiguration, WorkflowRole
+from ..model import RunExecutionConfiguration, WorkflowRole
+from ..serialization import run_execution_configuration_from_yaml
 
 _ADAPTERS = {"codex_cli", "claude_cli"}
 
@@ -84,6 +84,7 @@ class ConsumerConfig:
     default_execution: Mapping[str, ExecutionBindingValue]
     raw_text: str
     evidence: EvidenceConfigValue | None = None
+    phase_execution: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -118,16 +119,23 @@ def _evidence_config_value(value: Any, *, context: str) -> EvidenceConfigValue:
     return EvidenceConfigValue(repository=repository, raw=raw)
 
 
-def _execution_binding_value(value: Any, *, context: str) -> ExecutionBindingValue:
-    data = _mapping(value, context=context, required={"adapter", "model", "reasoning"})
-    adapter = _text(data["adapter"], context=f"{context}.adapter")
-    if adapter not in _ADAPTERS:
-        raise CommissionError(f"{context}.adapter must be one of: {', '.join(sorted(_ADAPTERS))}")
-    return ExecutionBindingValue(
-        adapter=adapter,
-        model=_execution_value(data["model"], context=f"{context}.model"),
-        reasoning=_execution_value(data["reasoning"], context=f"{context}.reasoning"),
+_EXECUTION_FIELDS = {"adapter", "model", "reasoning"}
+
+
+def _execution_fields(value: Any, *, context: str, partial: bool) -> dict[str, str]:
+    data = _mapping(
+        value, context=context,
+        required=set() if partial else _EXECUTION_FIELDS, optional=_EXECUTION_FIELDS,
     )
+    fields = {}
+    for key, value in sorted(data.items()):
+        selected = _execution_value(value, context=f"{context}.{key}")
+        if "\0" in selected:
+            raise CommissionError(f"{context}.{key} must not contain NUL")
+        if key == "adapter" and selected not in _ADAPTERS:
+            raise CommissionError(f"{context}.adapter must be one of: {', '.join(sorted(_ADAPTERS))}")
+        fields[key] = selected
+    return fields
 
 
 def consumer_config_from_yaml(text: str) -> ConsumerConfig:
@@ -141,7 +149,7 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
             "schema_version", "repository_name", "governance_dir", "work_item_scope_ceiling",
             "max_autonomous_hops", "default_execution",
         },
-        optional={"evidence"},
+        optional={"evidence", "phase_execution"},
     )
     if data["schema_version"] != 1:
         raise CommissionError("Consumer Config.schema_version must be 1")
@@ -165,9 +173,20 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
             WorkflowRole(role_name)
         except ValueError as error:
             raise CommissionError(f"Consumer Config.default_execution names an unknown role: {role_name}") from error
-        default_execution[role_name] = _execution_binding_value(
-            binding_value, context=f"Consumer Config.default_execution.{role_name}"
+        default_execution[role_name] = ExecutionBindingValue(
+            **_execution_fields(binding_value, context=f"Consumer Config.default_execution.{role_name}", partial=False)
         )
+    phase_execution_raw = data.get("phase_execution", {})
+    if not isinstance(phase_execution_raw, dict) or not all(isinstance(key, str) for key in phase_execution_raw):
+        raise CommissionError("Consumer Config.phase_execution must be a mapping with string keys")
+    phase_execution: dict[str, dict[str, str]] = {}
+    for key, binding_value in sorted(phase_execution_raw.items()):
+        phase = _execution_value(key, context="Consumer Config.phase_execution phase key")
+        context = f"Consumer Config.phase_execution.{phase}"
+        fields = _execution_fields(binding_value, context=context, partial=True)
+        if not fields:
+            raise CommissionError(f"{context} must specify at least one field")
+        phase_execution[phase] = fields
     evidence = None
     if "evidence" in data:
         evidence = _evidence_config_value(data["evidence"], context="Consumer Config.evidence")
@@ -180,34 +199,18 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
         default_execution=default_execution,
         raw_text=text,
         evidence=evidence,
+        phase_execution=phase_execution,
     )
-
-
-def _execution_yaml(bindings: Mapping[str, ExecutionBindingValue]) -> str:
-    payload = {
-        "schema_version": 1,
-        "bindings": {
-            role: {"adapter": binding.adapter, "model": binding.model, "reasoning": binding.reasoning}
-            for role, binding in sorted(bindings.items())
-        },
-    }
-    return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
 
 
 def resolve_execution(
     config: ConsumerConfig,
     overrides: Mapping[str, Mapping[str, str]],
-    roles: tuple[str, ...],
+    phase_roles: Mapping[str, WorkflowRole],
 ) -> ExecutionEnvelope:
-    """Resolve one explicit, authority-neutral execution envelope for ``roles``.
+    """Resolve role defaults, role CLI overrides, then phase overrides."""
 
-    ``overrides`` wins field-by-field over ``config.default_execution`` for the
-    same role; every field named by either source for an unselected role is a
-    refusal, never a silent ignore -- execution scope cannot be widened past
-    what the chosen program actually uses.
-    """
-
-    required_roles = set(roles)
+    required_roles = {role.value for role in phase_roles.values()}
     unknown_roles = sorted(set(overrides) - required_roles)
     if unknown_roles:
         raise CommissionError(
@@ -219,35 +222,44 @@ def resolve_execution(
             "execution config defaults name roles the selected program does not use: "
             + ", ".join(unknown_default_roles)
         )
-    bindings: dict[str, ExecutionBindingValue] = {}
-    for role in required_roles:
+    unknown_phases = sorted(set(config.phase_execution) - set(phase_roles))
+    if unknown_phases:
+        raise CommissionError(
+            "phase_execution names unknown or nonexecuting phases in the selected program: "
+            + ", ".join(unknown_phases)
+        )
+    role_defaults: dict[str, dict[str, str]] = {}
+    for role in sorted(required_roles):
         base = config.default_execution.get(role)
-        override = overrides.get(role)
-        merged = {
-            "adapter": (base.adapter if base else None),
-            "model": (base.model if base else None),
-            "reasoning": (base.reasoning if base else None),
+        role_defaults[role] = (asdict(base) if base is not None else {}) | _execution_fields(
+            dict(overrides.get(role, {})), context=f"execution override for role {role}", partial=True,
+        )
+
+    if config.phase_execution:
+        version, key, kind = 2, "phase_bindings", "phase"
+        resolved = {
+            phase: role_defaults[role.value] | config.phase_execution.get(phase, {})
+            for phase, role in phase_roles.items()
         }
-        if override is not None:
-            for key in ("adapter", "model", "reasoning"):
-                if key in override:
-                    merged[key] = override[key]
-        missing = sorted(key for key, value in merged.items() if value is None)
+    else:
+        version, key, kind = 1, "bindings", "role"
+        resolved = role_defaults
+
+    bindings = {}
+    for name, fields in sorted(resolved.items()):
+        missing = sorted(_EXECUTION_FIELDS - fields.keys())
         if missing:
             raise CommissionError(
-                f"execution binding for role {role} is missing: " + ", ".join(missing)
+                f"execution binding for {kind} {name} is missing: " + ", ".join(missing)
             )
-        bindings[role] = _execution_binding_value(merged, context=f"resolved execution binding for role {role}")
-    text = _execution_yaml(bindings)
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    configuration = RunExecutionConfiguration(
-        schema_version=1,
-        bindings={
-            WorkflowRole(role): ExecutionBinding(adapter=binding.adapter, model=binding.model, reasoning=binding.reasoning)
-            for role, binding in bindings.items()
-        },
+        bindings[name] = {field: fields[field] for field in ("adapter", "model", "reasoning")}
+    if len({binding["adapter"] for binding in bindings.values()}) != 1:
+        raise CommissionError("mixed execution adapters are incompatible with the single scalar executable")
+    text = yaml.safe_dump(
+        {"schema_version": version, key: bindings}, sort_keys=False, allow_unicode=True,
     )
-    return ExecutionEnvelope(configuration=configuration, text=text, digest=digest)
+    configuration = run_execution_configuration_from_yaml(text)
+    return ExecutionEnvelope(configuration=configuration, text=text, digest=configuration.sha256)
 
 
 def resolve_evidence(

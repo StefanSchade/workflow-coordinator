@@ -22,6 +22,7 @@ import yaml
 from yaml.constructor import ConstructorError
 
 from .implementation_identity import RESOURCE_DIGESTS as _PACKAGE_RESOURCE_DIGESTS, VERSION as _PACKAGE_VERSION
+from .model import WorkflowRole
 from .serialization import (
     ValidationError,
     a1_path_shape,
@@ -76,6 +77,8 @@ class TaskBinding:
 def _mapping(value: Any, *, context: str, required: set[str], optional: set[str] = set()) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise CommissionError(f"{context} must be a mapping")
+    if any(not isinstance(key, str) for key in value):
+        raise CommissionError(f"{context} keys must be strings")
     keys = set(value)
     unexpected = keys - required - optional
     missing = required - keys
@@ -83,8 +86,6 @@ def _mapping(value: Any, *, context: str, required: set[str], optional: set[str]
         raise CommissionError(f"{context} contains forbidden field(s): {', '.join(sorted(unexpected))}")
     if missing:
         raise CommissionError(f"{context} is missing required field(s): {', '.join(sorted(missing))}")
-    if any(not isinstance(key, str) for key in value):
-        raise CommissionError(f"{context} keys must be strings")
     return value
 
 
@@ -245,6 +246,7 @@ class CompiledCommission:
     paths: Mapping[str, str]
     texts: Mapping[str, str]
     manifest: Mapping[str, Any]
+    phase_roles: Mapping[str, WorkflowRole]
 
     def write_to(self, repository: Path, *, overwrite: bool = False) -> None:
         """Materialize ordinary files below ``repository``; refuse to overwrite."""
@@ -263,11 +265,8 @@ def compile_commission(
     """Compile one consumer-neutral Commission without any execution binding.
 
     ``repository`` is read only to pin ``request.guidance`` at its own
-    ``source_commit``; every other governing input is package-owned.  No
-    ``bindings``/``execution``/``provider``/``model``/``effort`` field is a
-    legal part of ``request`` or ``config`` -- their closed schemas (see
-    ``frontdoor.request``/``frontdoor.config``) already refuse any such key
-    before this function ever runs.
+    ``source_commit``. Execution settings in the config are resolved separately
+    against the compiled topology. The manifest still pins the raw config.
     """
 
     repository = Path(repository).resolve()
@@ -423,10 +422,13 @@ def compile_commission(
     texts[paths["manifest"]] = manifest_text
     # Exercise the unchanged schemas now, before callers ever commit a malformed projection.
     try:
-        work_item_from_yaml(texts[paths["work_item"]])
-        workflow_profile_from_yaml(texts[paths["profile"]])
+        work_item = work_item_from_yaml(texts[paths["work_item"]])
+        profile = workflow_profile_from_yaml(texts[paths["profile"]])
         repository_policy_from_yaml(texts[paths["policy"]])
         component_manifest_from_yaml(texts[paths["components"]])
     except ValidationError as error:
         raise CommissionError(f"internal compiled schema refusal: {error}") from error
-    return CompiledCommission(request, config, target_dir, paths, texts, manifest_data)
+    return CompiledCommission(
+        request, config, target_dir, paths, texts, manifest_data,
+        profile.executing_phase_roles(work_item.initial_phase),
+    )

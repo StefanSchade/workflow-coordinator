@@ -40,6 +40,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--components", required=True)
     parser.add_argument("--task", required=True)
     parser.add_argument("--execution-bindings", required=True)
+    parser.add_argument("--execution-bindings-sha256")
     parser.add_argument("--timeout-seconds", default="900")
     parser.add_argument("--executable", default="codex")
     return parser.parse_args()

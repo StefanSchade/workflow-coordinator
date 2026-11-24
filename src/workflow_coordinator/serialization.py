@@ -987,45 +987,44 @@ def workflow_profile_from_yaml(text: str) -> WorkflowProfile:
 
 
 def run_execution_configuration_from_yaml(text: str) -> RunExecutionConfiguration:
-    """Parse the strict closed-provider MVP binding grammar exactly once upstream."""
+    """Parse a complete role-keyed or phase-keyed execution envelope."""
 
-    data = _fields(
-        _yaml_mapping(text, context="Run execution configuration"),
-        context="Run execution configuration",
-        required={"schema_version", "bindings"},
-    )
-    raw_bindings = _mapping(
-        data["bindings"], context="Run execution configuration.bindings"
-    )
+    context = "Run execution configuration"
+    data = _yaml_mapping(text, context=context)
+    version = _integer(data.get("schema_version"), context=f"{context}.schema_version")
+    if version not in {1, 2}:
+        raise ValidationError(f"{context}.schema_version has unsupported version: {version}")
+    key = "phase_bindings" if version == 2 else "bindings"
+    _fields(data, context=context, required={"schema_version", key})
+    raw_bindings = _mapping(data[key], context=f"{context}.{key}")
     bindings: dict[WorkflowRole, ExecutionBinding] = {}
-    for raw_role, raw_binding in raw_bindings.items():
-        role = _enum(
-            WorkflowRole,
-            raw_role,
-            context="Run execution configuration.bindings role",
-        )
-        context = f"Run execution configuration.bindings.{role.value}"
+    phase_bindings: dict[str, ExecutionBinding] = {}
+    for name, raw_binding in raw_bindings.items():
+        binding_context = f"{context}.{key}.{name}"
         binding = _fields(
             raw_binding,
-            context=context,
+            context=binding_context,
             required={"adapter", "model", "reasoning"},
         )
-        adapter = _string(binding["adapter"], context=f"{context}.adapter")
+        adapter = _string(binding["adapter"], context=f"{binding_context}.adapter")
         if adapter not in {"codex_cli", "claude_cli"}:
-            raise ValidationError(f"{context}.adapter must be codex_cli or claude_cli")
-        bindings[role] = ExecutionBinding(
+            raise ValidationError(f"{binding_context}.adapter must be codex_cli or claude_cli")
+        resolved = ExecutionBinding(
             adapter=adapter,
-            model=_execution_value(binding["model"], context=f"{context}.model"),
+            model=_execution_value(binding["model"], context=f"{binding_context}.model"),
             reasoning=_execution_value(
-                binding["reasoning"], context=f"{context}.reasoning"
+                binding["reasoning"], context=f"{binding_context}.reasoning"
             ),
         )
+        if version == 2:
+            phase_bindings[_execution_value(name, context=f"{context}.{key} phase")] = resolved
+        else:
+            bindings[_enum(WorkflowRole, name, context=f"{context}.{key} role")] = resolved
     return RunExecutionConfiguration(
-        schema_version=_version(
-            data["schema_version"],
-            context="Run execution configuration.schema_version",
-        ),
+        schema_version=version,
         bindings=MappingProxyType(bindings),
+        phase_bindings=MappingProxyType(phase_bindings),
+        sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
     )
 
 
