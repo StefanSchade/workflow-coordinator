@@ -14,9 +14,9 @@ workflows with explicit Git, evidence, authority, and human-stop boundaries.
 
 ## Where to start
 
-- **Install / Quickstart** -- [consumer quickstart](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc): prerequisites, installation and the plan/run/status walkthrough.
-- **Run a small demo** -- [a first consumer example](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/operator_manual/ch09_consumer_quickstart/02_first_run_example.adoc): one verified, copy-pasteable Run on a tiny demo repository.
-- **Claude Code + WFC** -- [the Level-1 operating pattern](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/operator_manual/ch10_level1_orchestration/_chapter.adoc): using an external Claude Code session to decompose a goal into bounded Commissions that WFC executes.
+- **See what WFC does** -- [a first consumer example](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/operator_manual/ch09_consumer_quickstart/02_first_run_example.adoc): one verified, copy-pasteable Run on a tiny demo repository.
+- **Run it yourself** -- [consumer quickstart](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc): prerequisites, installation and the plan/run/status walkthrough.
+- **Let a coding agent operate it** -- [the Level-1 operating pattern](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/operator_manual/ch10_level1_orchestration/_chapter.adoc): using an external Claude Code session to decompose a goal into bounded Commissions that WFC executes.
 - **Operator Manual** -- [the full manual](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/operator_manual/operator_manual.adoc): all ten chapters, including failure modes and recovery.
 - **Limitations / Release Notes** -- this Beta's [honest limitations](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc#beta-limitations) and the [release notes](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/release_notes/release_notes.adoc).
 - **Developer Guide** -- [setup, test selection and code navigation](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/developer_guide/developer_guide.adoc).
