@@ -177,7 +177,9 @@ def test_only_cli_imports_skill_module() -> None:
         for node in ast.walk(tree):
             targets = _import_targets(path, node)
             if skill_module in targets:
-                assert path == cli_path, f"{path} imports frontdoor.skill; only frontdoor/cli.py may"
+                assert path == cli_path, (
+                    f"{path} imports frontdoor.skill; only frontdoor/cli.py may"
+                )
 
 
 def test_a3_resource_identity_and_provenance_are_exact() -> None:
