@@ -78,6 +78,7 @@ def test_clean_isolated_distribution_and_wheel_install(tmp_path):
         host_env['HOME'] = str(fake_home)
         host_env.pop('PYTHONPATH', None)
         host_env.pop('PYTHONSAFEPATH', None)
+        host_env.pop('CLAUDE_CONFIG_DIR', None)
         run(str(venv / 'bin/wfc'), 'skill', 'install', host, cwd=tmp_path, env=host_env)
         installed_skill_md = fake_home.joinpath(*skill_subpath, 'SKILL.md')
         assert installed_skill_md.is_file()
