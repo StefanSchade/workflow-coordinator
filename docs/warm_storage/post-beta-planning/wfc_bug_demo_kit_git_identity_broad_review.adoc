@@ -1,0 +1,289 @@
+= BUG-WFC-CONSUMER-DEMO-KIT-GIT-IDENTITY -- independent broad review
+:toc:
+:toclevels: 2
+
+This record holds the independent broad review of the correction candidate for
+WorkItem `WI-WFC-BUG-DEMO-KIT-GIT-IDENTITY-001`, commissioned as
+`wfc-bug-demo-kit-git-identity-001` against
+link:../../backlog/BUG-WFC-CONSUMER-DEMO-KIT-GIT-IDENTITY.adoc[the controlling
+BUG record]. It is a fresh pass: I reproduced the defect and verified every
+acceptance criterion by my own execution, and I did not take the
+implementation Hop's reported results on trust.
+
+== Pass H002 -- `RUN-e687c103bd334fa2bfc5b879f20e9590`
+
+WorkItem:: `WI-WFC-BUG-DEMO-KIT-GIT-IDENTITY-001`
+Hop:: `H002` (`broad_review`, gate, blocking-only, `finding_authority:
+[resolve]`)
+Reviewed product:: the candidate commit
+`1e3ee37f2c8dcfabb5d646045e26c4309b779938` on top of the commission commit
+`664896d`. `git show --numstat 1e3ee37` is exactly three leaves:
+`docs/backlog/BUG-WFC-CONSUMER-DEMO-KIT-GIT-IDENTITY.adoc` (136/1),
+`examples/consumer-demo/make_workspace.py` (45/3) and
+`tests/integration/test_consumer_demo_kit.py` (70/0 -- additions only).
+Governing acceptance:: the BUG record in full (`Observed failure`, `Verified
+cause`, `Where the correction belongs`), and the Commission task's DEFECT,
+WHAT TO DO, FIXED POINTS, RECORD, AC-1 to AC-8, withheld authority and commit
+mechanics.
+Finding state:: The projected authoritative Finding state for this Run is
+empty. This pass proposes no new Finding and disposes none; `O-n` below are
+review-internal observation labels, not Findings, and the `O-1`/`F001` labels
+that appear in the earlier S1/S2 review records are historical labels of other
+Runs, cited here only as provenance.
+Verdict:: *accept*, no blocking Finding. I reproduced the defect on this host
+with the pre-fix kit and then reproduced AC-1, AC-2, AC-3, AC-5 and AC-6 by my
+own execution against the candidate, under both an identity-free and an
+identity-bearing host configuration. Four non-blocking observations are in
+<<bug-git-identity-observations>>; two checks (`ruff`, the targeted `pytest`
+file) are not executable in this sandbox and are reported as such, not
+claimed.
+
+=== How I verified, and what I could not run here
+
+I read the BUG record, the Commission task, both changed kit/test files in
+full, `examples/consumer-demo/rehearse.py`, the kit `README.md`,
+`src/workflow_coordinator/frontdoor/init.py` (`ensure_evidence_repository`,
+`_create_evidence_repository`, `_run_bootstrap_git`),
+`frontdoor/config.evidence_gitignore_block`, `frontdoor/archive.py`'s
+retention comment, and the quickstart's `Git identity and filters` section.
+
+Because this sandbox has neither `pytest` nor `ruff` installed and no
+dependency may be downloaded for an exploratory check, I did not run the kit's
+test file through pytest. Instead I replayed the test file's own isolation by
+hand with my own driver (`tmp/rev-h002/harness.py`, in the git-ignored
+scratch directory, removed afterwards): `HOME` an empty throwaway directory,
+`XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME` unset, every inherited
+`GIT_*` variable stripped, a `wfc` wrapper around
+`tests/fixtures/bp9/wfc_entry.py` on `PATH` (the idiom the kit's tests and
+`test_beta_e2e_fake_provider.py` use, so the wrapper drives this working
+tree's own product: `wfc --version --json` reports `0.1.0b1`, implementation
+tree `f7ecc0cb20970e925c9e6629965d87b62002b549171b0136131dc39e142a69b1`), and
+Git's account-name fallback disabled with `user.useConfigOnly = true` in the
+throwaway `HOME`'s own `.gitconfig` -- a configuration file, never a `GIT_*`
+variable. This host's account *does* have a password-database name
+(`Stefan Schade`), so the fallback is live here unless disabled. Every
+workspace was created outside any Git work tree, under the sandbox scratch
+directory.
+
+Executed here, with results below: three full kit drives (one pre-fix, two
+post-fix) with four rehearsals in one of them, the two self-tests and the two
+quote assertions of `tests/architecture/test_tutorial_kit_quotes.py` (called
+directly -- that module imports only the standard library), a replica of
+`test_kit_modules_import_only_the_standard_library`, the strict `asciidoctor`
+render of the BUG record and of this file, and `wfc_doc_catalog.py generate`
+then `check`.
+
+Not establishable in this sandbox, and not claimed either way:
+
+* `python -m ruff check .` (AC-7). `ruff` is not installed and I did not
+  download it. Mitigating facts only: the repository's lint gate selects
+  Pyflakes rules alone (`[tool.ruff.lint] select = ["F"]`), so the long
+  printed layout line cannot trip `E501`; both changed files byte-compile; the
+  change adds no import, no unused name and no shadowing.
+* `python -m pytest -q --wfc-partial tests/integration/test_consumer_demo_kit.py`
+  (AC-7) and the full required suite. No `pytest` here. What the file asserts
+  is verified by execution below; whether the file and the suite are green as
+  pytest runs them is the Coordinator's trusted task-check, not this pass.
+
+=== The defect, reproduced by me against the pre-fix kit
+
+I materialized `make_workspace.py` as of the commission commit `664896d`
+beside an otherwise untouched copy of the kit (outside the repository) and ran
+it under the isolation above:
+
+[source,text]
+----
+python3 tmp/rev-h002/harness.py <scratch>/red-create <scratch>/oldkit none
+# -> make_workspace.py exit=1
+make_workspace.py: `wfc init` failed: wrote Consumer Config: .wfc/config.yaml
+...
+wfc init: failed to create the initial Evidence repository commit: Author identity unknown
+...
+fatal: no email was given and auto-detection is disabled
+the partial workspace was left in place: <scratch>/red-create/ws
+----
+
+This is the hosted failure of run `45345678011`, byte for byte, on a host
+whose account has a name -- so the BUG record's `Verified cause` and its
+Reproduction 1 are confirmed independently, and the password-database
+dependency is confirmed as the reason this host was green. The same run also
+proves AC-4's red half for *both* new tests: each of them (the creation test
+and all four parametrizations of the rehearsal test) asserts
+`_run_make_workspace(...).returncode == 0` under exactly this condition, which
+is the result reproduced above as `1`. The failure message also shows that no
+identity is obtainable from this host's system configuration once the fallback
+is disabled ("auto-detection is disabled" rather than a system identity being
+used), which is what AC-1 and AC-3 require of the environment.
+
+=== Acceptance criteria, verified against the candidate
+
+All of the following is one run of my driver against the candidate kit, with
+no identity obtainable from the host and, for the rehearsals, the fallback
+also disabled in the workspace's own `rehearsal-home/.gitconfig`:
+
+[cols="1,4",options="header"]
+|===
+|Criterion |What I observed
+
+|AC-1
+|`make_workspace.py` *exit 0*. Workspace entries exactly
+`WFC-DEMO-WORKSPACE`, `greeter`, `greeter-evidence`, `rehearsal-home`,
+`requests` -- the unchanged layout. `greeter-evidence` is a Git repository
+root with `archive/`, has exactly one commit (`chore: initialize WFC Evidence
+repository`), a clean `git status --porcelain`, and no remote. `greeter` has
+its two commits and a clean tree, and `make_workspace.py`'s own baseline
+`checks/check.sh` step passed inside the run.
+
+|AC-2
+|`git config --local` in `greeter-evidence` is `WFC Demo
+<wfc-demo@example.invalid>`, identical to `greeter`'s, and the initial
+Evidence commit carries that identity as both author and committer. Repeated
+with a host identity present (`Host Person <host@example.org>` in the
+throwaway `HOME`'s `.gitconfig`): the local config and every Evidence commit
+are still `WFC Demo`, never the host's -- local configuration wins, as the
+record states. See O-2 for the one case the record's wording overstates.
+
+|AC-3
+|All four scenarios return *0* from `rehearse.py`, which itself returns 0 only
+when WFC's own exit code equals the scenario's `expected_exit_code` and its
+`CLASSIFICATION:` line (when present) equals `expected_classification`
+(`rehearse.py` lines 209-221): `t1-hello-page` (0/`completed`), `t2-farewell`
+(0/`completed`), `t3-scope-stop` (10/`awaiting_human`), `t3-probe-refusal`
+(23/`refused_probe`). The three archiving scenarios each left a *committed*
+archive: `greeter-evidence` ends with four commits, all authored `WFC Demo
+<wfc-demo@example.invalid>`, a clean tree, and `git ls-files archive` showing
+`archive/.gitkeep` plus one `audit.json` per attempt -- so the managed
+raw-retention ignore block is in force exactly as in a `wfc init`-created
+repository. `t3-probe-refusal` archived nothing.
+
+|AC-4
+|Red half reproduced by me above; green half is this table. The result no
+longer depends on the password database: the new tests disable the fallback in
+the `HOME` they use, and the pre-fix kit fails here, where the account has a
+name, exactly as on a runner where it has none.
+
+|AC-5
+|The test diff is 70 insertions and *0 deletions*: no test deleted, skipped,
+xfail-marked or loosened, no existing assertion touched; the two
+`throwaway_home ... == []` containment tests are untouched and still run
+without a `.gitconfig`. Isolation held in my runs: the throwaway `HOME`
+contained nothing but the `.gitconfig` I wrote into it, through creation, all
+four rehearsals and the archive commits. The kit sets no `GIT_*` variable at
+all (no `GIT_` token occurs in any of its three modules) and points Git at no
+configuration file through the environment; it reads and writes no host Git
+configuration, and writes nothing outside the workspace.
+
+|AC-6
+|`git diff --name-only 81d00a9 1e3ee37 -- src .github
+examples/consumer-demo/requests tests/architecture docs/operator_manual` is
+empty: `src/`, `.github/`, the tutorial-quoted request files and every other
+test file are byte-identical. Both quote-guard assertions and both of its
+self-tests pass, and the standard-library-only check passes for all three kit
+modules (`make_workspace.py`, `rehearse.py`, `scripted_provider.py`).
+
+|AC-7
+|`ruff` and `pytest` are unavailable here; see above. Not claimed.
+
+|AC-8
+|The BUG record carries `== Implementation` at the end with what changed and
+where, the mechanism and its reason, whose identity the Evidence commits
+carry, the red-before-green demonstration with its commands, the checks run,
+and an explicit statement that independent acceptance, integration and hosted
+confirmation are outstanding. `asciidoctor --safe-mode=safe -a assembled -o
+/dev/null --failure-level=WARN` on it prints nothing. Its `Status::` line
+names the implementation as awaiting independent review and nothing more. The
+kit's `README.md` states no Git-identity prerequisite and nothing in it is now
+inaccurate.
+|===
+
+`wfc_doc_catalog.py check` reports `83 unresolved links; 4 Project Memory
+source_path misses` and `catalog current` -- the same baseline the task names,
+with no addition from this change.
+
+=== Mechanism: is it the smallest one that respects the contract?
+
+Yes, within the stated fixed points. `wfc init --evidence-repository` already
+has exactly two documented outcomes, and `ensure_evidence_repository`
+(`frontdoor/init.py` lines 93-123) returns `"reused"` for an existing
+directory that is a Git repository root with an `archive/` directory -- it
+writes nothing into it and makes no commit. The kit now creates precisely such
+a repository, with a repository-local identity set the same way
+`_create_greeter_repository` already sets `greeter`'s, so the bootstrap commit
+that needed a host identity never happens. Nothing in `src/`, in `wfc init`,
+in the Evidence initialization or in the trusted Git execution moves, and
+`rehearse.py` needs no change at all: `git -C <evidence repo>` reads that
+repository's own `.git/config` regardless of `HOME`, which my rehearsal runs
+confirm -- the archive commits are `WFC Demo` although `rehearsal-home` could
+supply no identity.
+
+The alternative that would avoid the duplicated ignore block -- letting `wfc
+init` create the repository and handing it an identity through a `.gitconfig`
+in a `HOME` the kit points the `wfc init` subprocess at -- is not available
+under AC-2, which requires the Evidence repository to carry a
+*repository-local* `user.name`/`user.email` as `greeter` does; and it would
+make the kit manage a `HOME` for a step that currently inherits the
+operator's. I see no materially simpler mechanism that keeps the fixed points
+and AC-2. The one lasting cost the chosen mechanism does carry is the
+duplicated constant, O-1.
+
+[[bug-git-identity-observations]]
+=== Non-blocking observations
+
+O-1 (maintainability; the only lasting cost I found):: `EVIDENCE_GITIGNORE_BLOCK`
+in `make_workspace.py` duplicates
+`frontdoor.config.evidence_gitignore_block()` with no guard, and nothing fails
+if the two diverge: the demo's Evidence repository would then retain raw files
+differently from a `wfc init`-created one, silently, and only in the demo. The
+duplication itself is justified (the kit imports only the standard library)
+and I verified the two are byte-identical at this HEAD. A one-line guard is
+feasible inside the already-authorized test file -- the test file may import
+`workflow_coordinator`, the stdlib-only rule binds the kit modules only -- for
+example asserting the created `greeter-evidence/.gitignore` equals
+`evidence_gitignore_block()`. I did exactly that assertion by hand and it
+holds; adding it is a judgement call for the maintainer, not a blocking defect.
+
+O-2 (record wording):: The `== Implementation` section says "Every commit the
+kit or a rehearsal makes into `greeter-evidence` carries the repository-local
+identity `WFC Demo`". That is true for host *configuration*, which is what the
+sentence then argues, but not for an operator environment that carries
+`GIT_AUTHOR_*`/`GIT_COMMITTER_*`: the kit's own `_git` helper does not strip
+inherited `GIT_*` variables, so with them set I observed the kit's Evidence
+commit (and, unchanged from before, `greeter`'s two commits) authored `Env
+Person <env@example.org>` while the repository-local configuration stayed
+`WFC Demo`. AC-2 asks for the configured identity and is unaffected; WFC's own
+trusted commits (the `wfc init` bootstrap and every archive commit) strip
+`GIT_*` and are unaffected too. This is pre-existing kit behaviour, not
+introduced here; only the record's blanket sentence is wider than the fact.
+
+O-3 (spec drift outside this scope):: `FTR-WFC-CONSUMER-DEMO-WORKSPACE.adoc`
+still describes the Evidence repository as "created by `wfc init`" (its
+workspace listing and its step-3 description), which the kit no longer
+prints. The FTR is explicitly withheld from this WorkItem, so leaving it
+untouched was correct; the `== Implementation` section does not mention the
+divergence. Realigning the FTR is a maintainer decision for the next upkeep
+pass.
+
+O-4 (determinism scope, examined and not objected to):: Only the two new tests
+disable Git's account-name fallback; the other 26 tests in the file still run
+with it live, so a future regression of the Evidence identity would stay green
+on a developer host there and show up only in the two new tests (and on a
+hosted runner). Moving `_disable_git_identity_fallback` into the
+`throwaway_home` fixture would make the whole file host-independent, but it
+would force the two `list(throwaway_home.iterdir()) == []` containment
+assertions to be rewritten -- which AC-5 forbids loosening. The per-test
+placement is therefore the right call under this task's constraints; recorded
+only so the trade-off is visible.
+
+=== Scope and authority
+
+Nothing outside the declared scope changed. No `src/`, `.github/`, tutorial,
+FTR, `_open.adoc`, release-note, version or governance file is touched; no
+dependency was added; no real `HOME`, host Git configuration or agent
+configuration was written; nothing was pushed, tagged or published. This pass
+changed no implementation file and no test, and added only this record. I ran
+no mutating Git command; the scratch drivers lived in the git-ignored `tmp/`
+and were removed.
+
+Independent acceptance, integration, the Coordinator's trusted full-suite
+task-check and confirmation by a subsequent hosted `release.yml` run remain
+outstanding and are not claimed by this review.
