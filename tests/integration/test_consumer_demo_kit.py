@@ -12,7 +12,9 @@ does with ``tests/fixtures/bp9/wfc_entry.py``. See
 from __future__ import annotations
 
 import ast
+import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +27,17 @@ FIXTURES = REPOSITORY_ROOT / "tests" / "fixtures" / "bp9"
 WFC_ENTRY = FIXTURES / "wfc_entry.py"
 KIT_DIR = REPOSITORY_ROOT / "examples" / "consumer-demo"
 MAKE_WORKSPACE = KIT_DIR / "make_workspace.py"
+REHEARSE = KIT_DIR / "rehearse.py"
+SCRIPTED_PROVIDER = KIT_DIR / "scripted_provider.py"
+SCENARIOS_DIR = KIT_DIR / "scenarios"
 TASK_REQUEST_NAMES = ("t1-hello-page", "t2-farewell", "t3-scope-stop")
+SCENARIO_NAMES = ("t1-hello-page", "t2-farewell", "t3-scope-stop", "t3-probe-refusal")
+REHEARSAL_BANNER = (
+    'REHEARSAL -- no model was called. A script played the worker and the '
+    'reviewer. This shows WFC\'s control flow, commits and evidence, not '
+    'what a model would do. The archived record names the model '
+    '"rehearsal-no-model".'
+)
 
 
 def _wfc_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,6 +65,13 @@ def throwaway_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _run_make_workspace(workspace: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(MAKE_WORKSPACE), str(workspace), *extra],
+        capture_output=True, text=True,
+    )
+
+
+def _run_rehearse(workspace: Path, scenario: str, *extra: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(REHEARSE), str(workspace), scenario, *extra],
         capture_output=True, text=True,
     )
 
@@ -129,6 +148,7 @@ def test_preflight_refuses_a_non_empty_target(
     result = _run_make_workspace(workspace)
 
     assert result.returncode == 2
+    assert "is not empty" in result.stderr
     assert [path.name for path in workspace.iterdir()] == ["already-here.txt"]
 
 
@@ -144,6 +164,7 @@ def test_preflight_refuses_a_target_inside_a_git_work_tree(
     result = _run_make_workspace(workspace)
 
     assert result.returncode == 2
+    assert "inside a Git work tree" in result.stderr
     assert not workspace.exists()
 
 
@@ -156,7 +177,24 @@ def test_preflight_refuses_when_wfc_is_not_found(tmp_path: Path, throwaway_home:
     result = _run_make_workspace(workspace, "--wfc", str(missing_bin))
 
     assert result.returncode == 2
+    assert "could not run" in result.stderr
     assert not workspace.exists()
+
+
+def test_preflight_refuses_a_target_whose_parent_directory_does_not_exist(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    # O-1 (A2/S1 broad review): a missing parent must end in a one-line
+    # message, not a traceback, and must create nothing outside the named
+    # workspace -- so the kit never creates the missing parent either.
+    _wfc_on_path(tmp_path, monkeypatch)
+    workspace = tmp_path / "does-not-exist-yet" / "ws"
+
+    result = _run_make_workspace(workspace)
+
+    assert result.returncode == 2
+    assert "parent directory does not exist" in result.stderr
+    assert not (tmp_path / "does-not-exist-yet").exists()
 
 
 # ==========================================================================
@@ -235,13 +273,12 @@ def test_throwaway_home_stays_empty_after_workspace_creation_and_every_plan(
 
 
 # ==========================================================================
-# Boundary: the kit's own module(s) import only the standard library, and
-# no slice-S2 file exists yet.
+# Boundary: every kit module present imports only the standard library.
 # ==========================================================================
 
 def test_kit_modules_import_only_the_standard_library():
     modules = sorted(KIT_DIR.glob("*.py"))
-    assert [path.name for path in modules] == ["make_workspace.py"]
+    assert modules  # the kit ships at least one module.
     stdlib_names = sys.stdlib_module_names
     for path in modules:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -256,7 +293,225 @@ def test_kit_modules_import_only_the_standard_library():
                 assert name in stdlib_names, f"{path.name} imports non-stdlib module: {name}"
 
 
-def test_slice_s2_files_do_not_exist_yet():
-    assert not (KIT_DIR / "scripted_provider.py").exists()
-    assert not (KIT_DIR / "rehearse.py").exists()
-    assert not (KIT_DIR / "scenarios").exists()
+# ==========================================================================
+# Scenarios (AC-4 to AC-7).
+# ==========================================================================
+
+@pytest.mark.parametrize("scenario", SCENARIO_NAMES)
+def test_rehearse_each_scenario_returns_zero_with_the_expected_classification_and_exit_code(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch, scenario: str,
+):
+    _wfc_on_path(tmp_path, monkeypatch)
+    workspace = tmp_path / "ws"
+    created = _run_make_workspace(workspace)
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    scenario_data = json.loads((SCENARIOS_DIR / f"{scenario}.json").read_text(encoding="utf-8"))
+    rehearsed = _run_rehearse(workspace, scenario)
+
+    # ``rehearse.py`` itself returns 0 only when WFC's own exit code equals
+    # ``expected_exit_code`` and (when present) its ``CLASSIFICATION:`` line
+    # equals ``expected_classification`` -- see the non-zero-exit assertion
+    # it would otherwise print to stderr.
+    assert rehearsed.returncode == 0, rehearsed.stdout + rehearsed.stderr
+    # The banner brackets WFC's own ``wfc run`` output; a later
+    # ``CLASSIFICATION:`` line from the trailing ``wfc status`` inspection
+    # command can legitimately differ (for example after a probe refusal,
+    # which never reaches a classified lifecycle state) and must not be
+    # mistaken for ``wfc run``'s own result.
+    banner_parts = rehearsed.stdout.split(REHEARSAL_BANNER)
+    assert len(banner_parts) >= 3
+    run_output = banner_parts[1]
+    classification = re.search(r"^CLASSIFICATION: (.+)$", run_output, re.MULTILINE)
+    if classification is not None:
+        assert classification.group(1) == scenario_data["expected_classification"]
+
+
+def _destination_relative_from(stdout: str) -> str | None:
+    # ``wfc run``'s own output carries the consolidated report's own
+    # "archive     <destination_relative>[@<commit>]" line on a successful
+    # archive -- never a bare ``destination_relative:`` key (that is ``wfc
+    # status``'s separate inspection-command output).
+    match = re.search(r"^archive\s+(\S+)$", stdout, re.MULTILINE)
+    return match.group(1).split("@", 1)[0] if match else None
+
+
+def test_t2_farewell_end_state_matches_ac5(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _wfc_on_path(tmp_path, monkeypatch)
+    workspace = tmp_path / "ws"
+    created = _run_make_workspace(workspace)
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    rehearsed = _run_rehearse(workspace, "t2-farewell")
+    assert rehearsed.returncode == 0, rehearsed.stdout + rehearsed.stderr
+
+    worktree = workspace / "greeter-run-t2-farewell"
+    commits = _git(worktree, "log", "--format=%H", "main..HEAD").strip().splitlines()
+    assert len(commits) == 6
+
+    changed = sorted(filter(None, _git(worktree, "diff", "--name-only", "main..HEAD").splitlines()))
+    request = yaml.safe_load((workspace / "requests" / "t2-farewell.request.yaml").read_text(encoding="utf-8"))
+    commission_prefix = f".wfc/governance/{request['commission_id']}/"
+    outside_commission = {path for path in changed if not path.startswith(commission_prefix)}
+    assert outside_commission == set(request["scope"])
+    assert any(path.startswith(commission_prefix) for path in changed)
+
+    greet = subprocess.run(
+        [sys.executable, "-m", "greeter", "Ada"], cwd=worktree, capture_output=True, text=True,
+    )
+    assert greet.returncode == 0, greet.stdout + greet.stderr
+    assert greet.stdout.strip() == "Hello, Ada!"
+
+    assert "(no archived Attempt to report)" not in rehearsed.stdout
+    assert "$ wfc report " in rehearsed.stdout
+    destination_relative = _destination_relative_from(rehearsed.stdout)
+    assert destination_relative is not None
+    attempt_dir = workspace / "greeter-evidence" / destination_relative
+    audit = json.loads((attempt_dir / "audit.json").read_text(encoding="utf-8"))
+    resolved_findings = [finding for finding in audit["findings"] if finding["state"] == "resolved"]
+    assert len(resolved_findings) == 1
+    assert len(audit["hops"]) == 5
+    assert all(hop["model"] == "rehearsal-no-model" for hop in audit["hops"])
+
+
+def test_t3_scope_stop_and_probe_refusal_end_states_match_ac6(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _wfc_on_path(tmp_path, monkeypatch)
+    workspace = tmp_path / "ws"
+    created = _run_make_workspace(workspace)
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    stop = _run_rehearse(workspace, "t3-scope-stop")
+    assert stop.returncode == 0, stop.stdout + stop.stderr
+    stop_worktree = workspace / "greeter-run-t3-scope-stop"
+    stop_request = yaml.safe_load((workspace / "requests" / "t3-scope-stop.request.yaml").read_text(encoding="utf-8"))
+    stop_commission_prefix = f".wfc/governance/{stop_request['commission_id']}/"
+    stop_changed = sorted(filter(None, _git(stop_worktree, "diff", "--name-only", "main..HEAD").splitlines()))
+    assert stop_changed  # the Commission commit itself changed something.
+    assert all(path.startswith(stop_commission_prefix) for path in stop_changed)
+
+    probe = _run_rehearse(workspace, "t3-probe-refusal")
+    assert probe.returncode == 0, probe.stdout + probe.stderr
+    probe_worktree = workspace / "greeter-run-t3-probe-refusal"
+    assert _git(probe_worktree, "rev-parse", "HEAD").strip() == _git(probe_worktree, "rev-parse", "main").strip()
+    assert _destination_relative_from(probe.stdout) is None
+
+
+def test_second_rehearsal_of_the_same_scenario_returns_2_and_changes_nothing(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _wfc_on_path(tmp_path, monkeypatch)
+    workspace = tmp_path / "ws"
+    created = _run_make_workspace(workspace)
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    first = _run_rehearse(workspace, "t1-hello-page")
+    assert first.returncode == 0, first.stdout + first.stderr
+    worktree = workspace / "greeter-run-t1-hello-page"
+    head_before = _git(worktree, "rev-parse", "HEAD").strip()
+
+    second = _run_rehearse(workspace, "t1-hello-page")
+    assert second.returncode == 2
+    assert _git(worktree, "rev-parse", "HEAD").strip() == head_before
+    worktrees_after = sorted(path.name for path in workspace.glob("greeter-run-*"))
+    assert worktrees_after == ["greeter-run-t1-hello-page"]
+
+
+def test_rehearse_refuses_when_wfc_is_not_found_and_a_retry_with_a_working_wfc_still_succeeds(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    # F001 (S2 broad review): an unresolvable `wfc` must be caught by a
+    # preflight check before the worktree and branch are created, so the
+    # scenario's single lifecycle survives for a retry with a working `wfc`.
+    _wfc_on_path(tmp_path, monkeypatch)
+    workspace = tmp_path / "ws"
+    created = _run_make_workspace(workspace)
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    missing_bin = tmp_path / "no-such-wfc"
+    failed = _run_rehearse(workspace, "t1-hello-page", "--wfc", str(missing_bin))
+    assert failed.returncode == 2
+    assert "could not run" in failed.stderr
+    assert not (workspace / "greeter-run-t1-hello-page").exists()
+    assert _git(workspace / "greeter", "branch", "--list", "demo/t1-hello-page").strip() == ""
+
+    retried = _run_rehearse(workspace, "t1-hello-page")
+    assert retried.returncode == 0, retried.stdout + retried.stderr
+
+
+def test_throwaway_home_stays_empty_through_a_full_rehearsal_sequence(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _wfc_on_path(tmp_path, monkeypatch)
+    workspace = tmp_path / "ws"
+    created = _run_make_workspace(workspace)
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    for scenario in SCENARIO_NAMES:
+        rehearsed = _run_rehearse(workspace, scenario)
+        assert rehearsed.returncode == 0, rehearsed.stdout + rehearsed.stderr
+
+    assert list(throwaway_home.iterdir()) == []
+
+
+# ==========================================================================
+# Containment: the scripted provider's safety refusals (unit, no WFC Run).
+# ==========================================================================
+
+def _write_provider_script(tmp_path: Path, steps: list[dict]) -> Path:
+    script = tmp_path / "script.json"
+    script.write_text(json.dumps({"steps": steps}), encoding="utf-8")
+    return script
+
+
+def _run_provider(cd: Path, output: Path, script: Path) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "WFC_DEMO_SCRIPT": str(script)}
+    return subprocess.run(
+        [sys.executable, str(SCRIPTED_PROVIDER), "--cd", str(cd), "--output-last-message", str(output)],
+        input="phase=implement\n\n", capture_output=True, text=True, env=env,
+    )
+
+
+def test_scripted_provider_refuses_an_absolute_write_path(tmp_path: Path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    script = _write_provider_script(tmp_path, [{"write": {str(tmp_path / "outside.txt"): "x"}}])
+    output = tmp_path / "output.json"
+
+    result = _run_provider(repository, output, script)
+
+    assert result.returncode != 0
+    assert "absolute" in result.stderr
+    assert not (tmp_path / "outside.txt").exists()
+
+
+def test_scripted_provider_refuses_a_dotdot_write_path(tmp_path: Path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    script = _write_provider_script(tmp_path, [{"write": {"../escape.txt": "x"}}])
+    output = tmp_path / "output.json"
+
+    result = _run_provider(repository, output, script)
+
+    assert result.returncode != 0
+    assert "'..'" in result.stderr
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_scripted_provider_refuses_a_write_path_resolving_outside_cd(tmp_path: Path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (repository / "link").symlink_to(outside)
+    script = _write_provider_script(tmp_path, [{"write": {"link/escape.txt": "x"}}])
+    output = tmp_path / "output.json"
+
+    result = _run_provider(repository, output, script)
+
+    assert result.returncode != 0
+    assert "outside --cd" in result.stderr
+    assert not (outside / "escape.txt").exists()
