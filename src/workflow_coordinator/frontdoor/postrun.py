@@ -101,11 +101,20 @@ def _attempt_identity(repository_name: str, run_id: str) -> str:
     return candidate
 
 
-def _preservation_fact(journal: Journal) -> dict | None:
-    """The latest BP4b fact, reshaped for ``frontdoor.audit``'s ``lifecycle.preservation``
-    allow-list (read-only; never mutates BP4b's own journal record)."""
+def _preservation_fact(journal: Journal, *, min_seq: int = 0) -> dict | None:
+    """This attempt's own BP4b fact (``min_seq`` scopes it to records after
+    this specific "classified" record), reshaped for ``frontdoor.audit``'s
+    ``lifecycle.preservation`` allow-list (read-only; never mutates BP4b's
+    own journal record). Scoped explicitly -- never left to rely on BP4b
+    having already run first -- so a recovery continuation's archived
+    Evidence always states its own preservation fact, never a predecessor
+    attempt's."""
 
-    record = journal.latest(_PRESERVATION_TERMINAL_KINDS)
+    candidates = [
+        record for record in journal.read_all()
+        if record.kind in _PRESERVATION_TERMINAL_KINDS and record.seq > min_seq
+    ]
+    record = candidates[-1] if candidates else None
     if record is None:
         return None
     kind = record.kind.rsplit(".", 1)[-1]
@@ -241,7 +250,9 @@ def run_pending_postrun(repository: Path, checkout_dir: Path, journal: Journal) 
         journal.append("ext.archive.skipped", fact)
         return PostrunStatus(kind="skipped", data=fact, notice=_skip_notice(settings.path))
 
-    lifecycle_facts = {"classification": classification, "preservation": _preservation_fact(journal)}
+    lifecycle_facts = {
+        "classification": classification, "preservation": _preservation_fact(journal, min_seq=classified.seq),
+    }
     journal.append("ext.archive.intent", {"run_id": run_id})
     try:
         attempt_identity = _attempt_identity(config.repository_name, run_id)

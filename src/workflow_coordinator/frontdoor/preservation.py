@@ -47,10 +47,13 @@ class PreservationStatus:
     data: Mapping[str, Any]
 
 
-def _latest_fact(journal: Journal) -> PreservationStatus:
-    record = journal.latest(_TERMINAL_KINDS)
-    if record is None:
+def _latest_fact(journal: Journal, *, min_seq: int = 0) -> PreservationStatus:
+    candidates = [
+        record for record in journal.read_all() if record.kind in _TERMINAL_KINDS and record.seq > min_seq
+    ]
+    if not candidates:
         return PreservationStatus(kind="absent", data={})
+    record = candidates[-1]
     return PreservationStatus(kind=record.kind.rsplit(".", 1)[-1], data=dict(record.data))
 
 
@@ -85,7 +88,15 @@ def run_pending_preservation(repository: Path, checkout_dir: Path, journal: Jour
     ):
         return PreservationStatus(kind="absent", data={})
 
-    existing = _latest_fact(journal)
+    # B, WI-WFC-RECOVERY-ROUTING-001: a mechanical-recovery continuation
+    # appends a *further* "classified" record for the identical checkout
+    # (the journal is append-only; a predecessor attempt's own terminal
+    # preservation fact is never rewritten). The "already captured, skip it"
+    # shortcut below must therefore be scoped to facts recorded *after* this
+    # specific "classified" record's own position -- otherwise the
+    # continuation would never get its own candidate-preservation step and
+    # would silently inherit the predecessor attempt's fact instead.
+    existing = _latest_fact(journal, min_seq=classified.seq)
     if existing.kind != "absent":
         return existing
 

@@ -196,6 +196,71 @@ forces the `failed_evidence_route` and is unaffected
 so is the ordinary `changes_required` use of that same route
 (`test_changes_required_requesting_the_failed_evidence_route_is_unaffected`).
 
+== Correction (H003): the two blocking Findings from H002's broad review
+
+H002's independent broad review (`wfc_recovery_routing_fix_broad_review.adoc`)
+opened two blocking Findings against the H001 candidate above. Both are
+addressed; nothing else in A/B/C/the predicate changed.
+
+=== F-A: a recovery continuation's own candidate-preservation step
+
+`preservation.run_pending_preservation`'s "already captured, skip it"
+shortcut (`_latest_fact`) consulted the latest `ext.preservation.*` record
+from anywhere in the journal, the same unscoped shape `postrun.py` had
+already been corrected away from. A continuation's own classified record
+therefore never got its own preservation attempt: it silently re-served the
+predecessor attempt's terminal fact. Fixed identically to `postrun.py`'s own
+`seq > classified.seq` scoping: `_latest_fact` now takes a `min_seq` keyword
+and `run_pending_preservation` passes its own `classified.seq`, so the
+"already done" check only ever sees facts recorded after *this* classified
+record. `postrun._preservation_fact` (which reshapes the latest preservation
+fact into the archived `audit.json`'s `lifecycle.preservation`) is given the
+same explicit `min_seq=classified.seq` scoping rather than relying on BP4b
+having already run first in the same call — the two facts must agree by
+construction, not by calling order.
+
+Test: `test_mechanical_recovery_lifecycle.py::test_recovery_continuation_gets_its_own_preservation_and_archive_facts`.
+A predecessor stops `awaiting_human` (one preservation fact, `not_needed`);
+the continuation stops `awaiting_human` again (the shape in which the defect
+was observable — a `completed` continuation never triggers preservation at
+all, in `_TRIGGER_CLASSIFICATIONS`, before or after this fix). Asserts two
+terminal `ext.preservation.*` records exist, the second has `seq` after the
+continuation's own `classified` record, and the continuation's own archived
+`audit.json` carries a `lifecycle.preservation` value. Confirmed to fail
+without the fix (reverted `preservation.py`/`postrun.py` only, test tree
+unchanged): the assertion `len(preservation_after) == 2` fails with `1`,
+reproducing F-A's observed journal shape exactly.
+
+=== F-B: the three predicate elements with no refusal test
+
+Added to `test_mechanical_recovery_lifecycle.py`, each asserting the named
+refusal and that `run.json` is byte-identical afterwards (the existing
+pattern):
+
+* `test_recovery_refuses_on_no_recorded_hop_outcome` — `run.hops = ()`
+  (`hop_used` adjusted to match, which `serialization.run_from_json`
+  requires); asserts `"no recorded Hop outcome"`.
+* `test_recovery_refuses_on_changed_commission_identity` — tampers the
+  cached `commission/request.yaml` after the mechanical stop (changes
+  `task.title`), which changes `_materials_digest` against the recorded
+  `commission_digest`; asserts `"Commission or execution envelope identity
+  changed since authorization"`. This is the trust-boundary check F-B named
+  as the one thing stopping a recovery from continuing under drifted
+  governing inputs.
+* `test_recovery_refuses_on_incomplete_launch_provenance` — calls
+  `L._attempt_mechanical_recovery` directly (the same direct-call pattern
+  `test_lifecycle_crash_matrix.py` already uses for `L._do_prelaunch`/
+  `L._do_probe`/`L._do_commit`) against a `Journal` whose `latest` is
+  monkeypatched to return `None` for `("authorized",)`/
+  `("prelaunch_passed",)`; asserts `"lifecycle authorization or launch
+  provenance is incomplete"`. Production code always writes both records
+  before any Run can reach a classified mechanical stop, so this
+  boundary can only be exercised directly against the predicate it guards,
+  not through the full `wfc resume` path.
+
+No production code changed for F-B; the three branches were already
+correctly written, only untested.
+
 == `robust@v1` left unchanged, and why
 
 Neither the `robust@v1` nor `simple@v1` program record, route set or
@@ -302,6 +367,52 @@ task-check: not run by me -- the Coordinator's task-check runs the full
 suite after this Hop with verified offline inputs my sandbox does not
 carry; I report only what I actually measured, above.
 
+=== H003 correction: measured checks
+
+Python: `/tmp/wfc-p1-recovery-venv/bin/python3` (3.13.5, pytest 9.2.0,
+PyYAML 6.0.3) -- another pre-existing venv on the machine, same kind of
+agent-local artifact as H001's; the installed `wfc` console script inside
+it is the same stale build (same `--execution-bindings-sha256` argparse
+mismatch), so the same 23 agent-local environmental failures recur
+unchanged: the 3 `test_lifecycle_controller.py` cases named above plus the
+20 `tests/unit/test_claude_adapter_conformance.py` cases H002's broad
+review additionally measured (its section 5 observation) -- confirmed
+identical before and after this correction, and present at the H002 base
+commit too, so this Hop introduces no new failure.
+
+[source,text]
+----
+tests/unit/test_mechanical_recovery_lifecycle.py (4 new, 17 total)  17 passed
+tests/unit/test_preservation_lifecycle.py                               pass
+tests/unit/test_postrun_lifecycle.py                                    pass
+tests/unit/test_lifecycle_crash_matrix.py                               pass
+tests/unit (whole directory)               23 pre-existing failures (above), rest pass
+----
+
+The new F-A regression test
+(`test_recovery_continuation_gets_its_own_preservation_and_archive_facts`)
+was confirmed to fail without the fix: reverting only
+`frontdoor/preservation.py` and `frontdoor/postrun.py` (via a tagged `git
+stash`, test tree left unchanged) reproduces F-A's own observed journal
+shape exactly -- `len(preservation_after) == 1` where the fix requires
+`2` -- then the stash was re-applied and dropped, restoring the fix.
+
+Lint: `/tmp/wfc-p1-recovery-venv/bin/python3 -m ruff check .` -- all
+checks passed.
+
+Doc render (strict): `asciidoctor --safe-mode=safe -a assembled -o
+/dev/null --failure-level=WARN` on this record (the only `.adoc` this
+correction touches) -- no output, exit 0.
+
+Doc catalog: `python3 -I scripts/wfc_doc_catalog.py generate` then
+`check`, run after this record was written -- 551 records; 83 unresolved
+links, 4 Project Memory source_path misses, identical to H002's own
+measured baseline (`wfc_recovery_routing_fix_broad_review.adoc` section
+2): no regression.
+
+Full required suite and the Coordinator's task-check: not run by me, for
+the same reason as H001.
+
 == Existing-test behaviour deliberately replaced (as instructed, named)
 
 * Four `tests/unit/test_slice5b.py` durable-artifact-anomaly cases
@@ -328,13 +439,22 @@ carry; I report only what I actually measured, above.
 
 == Scope
 
-Changed: `src/workflow_coordinator/{reducer,vertical,prompt,operator}.py`,
+Changed (H001): `src/workflow_coordinator/{reducer,vertical,prompt,operator}.py`,
 `src/workflow_coordinator/frontdoor/{lifecycle,postrun,report}.py`,
 `tests/fixtures/bp4/fake_engine.py`, five existing test files (noted
 above), three new test files, two Operator Manual sources, the semantic
 model's `awaiting_human`/`reconcile_required` state statements
 (`docs/semantic_model/ch01_current_semantics/02_states.adoc`),
-`docs/backlog/_open.adoc`, and this record. No change to
+`docs/backlog/_open.adoc`, and this record.
+
+Changed (H003, this correction): additionally
+`src/workflow_coordinator/frontdoor/preservation.py` (F-A's `min_seq`
+scoping fix) and `src/workflow_coordinator/frontdoor/postrun.py` (the same
+scoping applied to `_preservation_fact`, read-only beyond F-A's own
+file); no further production file. `tests/unit/test_mechanical_recovery_lifecycle.py`
+gained four tests (one F-A regression, three F-B refusal-element tests);
+no other test file changed. This record is the only `.adoc` touched by
+H003. No change to
 `src/workflow_coordinator/agent_skill/`, any program record or catalogue
 digest, trusted Git/sandbox/scope/admission rules, the release workflow,
 version literals, `governance/`, `.wfc/`, or `.github/`; no new

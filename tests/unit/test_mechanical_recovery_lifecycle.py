@@ -14,6 +14,7 @@ pattern as ``test_lifecycle_crash_matrix.py``/``test_postrun_lifecycle.py``.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -254,6 +255,46 @@ def test_predecessor_archived_attempt_is_byte_identical_after_recovery(
     assert second_destination.is_dir()
 
 
+def test_recovery_continuation_gets_its_own_preservation_and_archive_facts(
+    repository: Path, tmp_path: Path, state_home: Path, evidence_path: Path,
+):
+    """A recovery continuation's own classification must get its own
+    candidate-preservation step, and its archived Evidence must state its
+    own facts, never the predecessor attempt's (reused by inheritance)."""
+
+    terminal_kinds = ("ext.preservation.result", "ext.preservation.not_needed", "ext.preservation.refused")
+
+    result = _run_with_fake_engine(repository, tmp_path, "mechanical_awaiting_human")
+    assert result.classification == "awaiting_human"
+    _, journal = _checkout_dir_and_journal(repository)
+    preservation_before = [r for r in journal.read_all() if r.kind in terminal_kinds]
+    assert len(preservation_before) == 1
+
+    # The continuation stops again at a preservation-triggering
+    # classification, so the scoping bug (re-serving the predecessor's
+    # already-terminal fact without ever re-running BP4b) is observable.
+    os.environ["WFC_FAKE_ENGINE_CONTINUE_MODE"] = "awaiting_human_again"
+    recovered = L.resume_lifecycle(repository)
+    assert recovered.classification == "awaiting_human"
+
+    records = journal.read_all()
+    classified_records = [r for r in records if r.kind == "classified"]
+    assert len(classified_records) == 2
+    second_classified_seq = classified_records[1].seq
+
+    preservation_after = [r for r in records if r.kind in terminal_kinds]
+    # The continuation must get its own terminal preservation fact, not
+    # merely re-serve the predecessor attempt's.
+    assert len(preservation_after) == 2
+    assert preservation_after[1].seq > second_classified_seq
+
+    archive_records = [r for r in records if r.kind == "ext.archive.result"]
+    assert len(archive_records) == 2
+    second_destination = evidence_path / archive_records[1].data["destination_relative"]
+    audit_doc = json.loads((second_destination / "audit.json").read_text(encoding="utf-8"))
+    assert audit_doc["lifecycle"]["preservation"] is not None
+
+
 def test_recovery_refuses_a_collision_at_an_existing_destination(
     repository: Path, tmp_path: Path, state_home: Path, evidence_path: Path,
 ):
@@ -357,6 +398,68 @@ def test_recovery_refuses_on_moved_head(repository: Path, tmp_path: Path, state_
     recovered = L.resume_lifecycle(repository)
     assert recovered.classification == "refused_not_recoverable"
     assert "HEAD" in recovered.message
+
+
+def test_recovery_refuses_on_no_recorded_hop_outcome(repository: Path, tmp_path: Path, state_home: Path):
+    result = _run_with_fake_engine(repository, tmp_path, "mechanical_awaiting_human")
+    run_path = _run_json_path(result)
+    run = load_run(run_path)
+    run = replace(run, hops=(), hop_used=0)
+    write_run_snapshot(run_path, run)
+    before_bytes = run_path.read_bytes()
+
+    recovered = L.resume_lifecycle(repository)
+    assert recovered.classification == "refused_not_recoverable"
+    assert "no recorded Hop outcome" in recovered.message
+    assert run_path.read_bytes() == before_bytes
+
+
+def test_recovery_refuses_on_changed_commission_identity(repository: Path, tmp_path: Path, state_home: Path):
+    result = _run_with_fake_engine(repository, tmp_path, "mechanical_awaiting_human")
+    checkout_dir, _ = _checkout_dir_and_journal(repository)
+    request_path = checkout_dir / "commission" / "request.yaml"
+    document = yaml.safe_load(request_path.read_text(encoding="utf-8"))
+    document["task"]["title"] = document["task"]["title"] + " (tampered since authorization)"
+    request_path.write_text(yaml.safe_dump(document, sort_keys=True), encoding="utf-8")
+    run_path = _run_json_path(result)
+    before_bytes = run_path.read_bytes()
+
+    recovered = L.resume_lifecycle(repository)
+    assert recovered.classification == "refused_not_recoverable"
+    assert "Commission or execution envelope identity changed since authorization" in recovered.message
+    assert run_path.read_bytes() == before_bytes
+
+
+def test_recovery_refuses_on_incomplete_launch_provenance(
+    repository: Path, tmp_path: Path, state_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """Both ``authorized`` and ``prelaunch_passed`` are always written before
+    any Run can reach a classified mechanical stop in production; this
+    boundary check is exercised directly against the predicate it guards --
+    the one thing standing between a recovery and continuing under
+    incomplete lifecycle provenance."""
+
+    result = _run_with_fake_engine(repository, tmp_path, "mechanical_awaiting_human")
+    checkout_dir, journal = _checkout_dir_and_journal(repository)
+    classified = journal.latest(("classified",))
+    assert classified is not None
+
+    real_latest = J.Journal.latest
+
+    def _patched_latest(self, kinds=None):
+        if kinds in (("authorized",), ("prelaunch_passed",)):
+            return None
+        return real_latest(self, kinds)
+
+    monkeypatch.setattr(J.Journal, "latest", _patched_latest)
+    run_path = _run_json_path(result)
+    before_bytes = run_path.read_bytes()
+
+    recovered = L._attempt_mechanical_recovery(repository, checkout_dir, journal, classified)
+    assert recovered is not None
+    assert recovered.classification == "refused_not_recoverable"
+    assert "lifecycle authorization or launch provenance is incomplete" in recovered.message
+    assert run_path.read_bytes() == before_bytes
 
 
 # --------------------------------------------------------------------------
