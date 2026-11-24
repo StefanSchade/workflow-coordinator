@@ -7,6 +7,7 @@ import binascii
 import json
 import hashlib
 import re
+from collections.abc import Hashable
 from dataclasses import dataclass, fields
 from enum import Enum
 from pathlib import Path
@@ -182,6 +183,13 @@ def _construct_unique_mapping(loader: _StrictLoader, node: yaml.MappingNode, dee
     result = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, Hashable):
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found unhashable key",
+                key_node.start_mark,
+            )
         if key in result:
             raise ConstructorError(
                 "while constructing a mapping",

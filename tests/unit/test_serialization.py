@@ -560,6 +560,16 @@ def test_duplicate_yaml_key_fails_closed():
         work_item_from_yaml(WORK_ITEM_YAML + "work_item_id: WI-2\n")
 
 
+def test_unhashable_yaml_key_fails_closed_with_diagnostic():
+    with pytest.raises(ValidationError, match="unhashable key"):
+        work_item_from_yaml(WORK_ITEM_YAML + "? [unhashable]\n: true\n")
+    with pytest.raises(ValidationError, match="unhashable key"):
+        run_execution_configuration_from_yaml(
+            "schema_version: 2\nphase_bindings:\n"
+            "  ? [implement]\n  : {adapter: codex_cli, model: x, reasoning: medium}\n"
+        )
+
+
 def test_profile_unknown_target_and_nonfresh_context_fail_closed():
     with pytest.raises(ValidationError, match="unknown phase"):
         workflow_profile_from_yaml(PROFILE_YAML.replace("target: review", "target: absent"))

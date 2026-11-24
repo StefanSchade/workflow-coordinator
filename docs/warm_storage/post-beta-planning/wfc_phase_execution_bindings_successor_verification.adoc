@@ -1,0 +1,195 @@
+= Phase-specific execution bindings — review-first successor verification record
+
+WorkItem:: `WI-WFC-PHASE-EXECUTION-BINDINGS-003`
+Run and Hop:: `RUN-04d54f22d9bf430099d61408b53fe28f`, `H001` (implement, worker)
+Candidate reviewed:: HEAD `943791f56e8dc66f569e442ed38a85403c0e2ce9`, i.e.
+the H003 correction `728f5cb` with no content drift since.
+
+This Commission is a review-first successor of the stopped
+`RUN-3774f720417e491d9797fa46f3be8e36` (Commission
+`wfc-phase-execution-bindings-001`), itself ended `reconcile_required` after
+H002's independent broad review recorded four blocking Findings
+(`docs/warm_storage/post-beta-planning/wfc_phase_execution_bindings_broad_review.adoc`)
+and H003's correction (`728f5cb`). Neither record is treated as acceptance
+here; every result below was re-derived by my own execution against the
+candidate as it stands, not copied from either prior record. The governing
+specification read in full before this verification:
+`.wfc/governance/wfc-phase-execution-bindings-001/task.md` and
+`docs/backlog/FTR-WFC-PHASE-EXECUTION-BINDINGS.adoc`.
+
+== Environment
+
+`/usr/bin/python3` (3.13) has PyYAML installed but no `pytest` or `ruff`.
+Several venvs with `pytest`/`ruff`/PyYAML existed under `/tmp` from earlier
+sessions (e.g. `/tmp/wfc-p1-venv`), but invoking a binary from outside this
+worktree required an approval this session has no surface to grant, and was
+auto-denied; `python -m pytest -q` (the Coordinator's own trusted evidence)
+was therefore not reproduced agent-locally in this Hop. `ruff check` was
+likewise not run agent-locally. This is an agent-sandbox environmental
+limit, not a claim that the required suite or lint pass or fail — the
+Coordinator's task-check runs them separately with verified offline inputs.
+Every functional check below instead calls the committed public functions
+directly with `/usr/bin/python3`, exercising the exact code paths the
+existing regression tests already assert, plus one new regression test
+asserted by direct execution of its underlying behavior (the test itself
+needs real `pytest` to collect, for the reason above).
+
+`asciidoctor` 2.0.23 is installed system-wide and used directly for strict
+render checks. `scripts/wfc_doc_catalog.py` ran under `/usr/bin/python3`.
+Scratch scripts lived under the repository's gitignored `tmp/`
+(`.gitignore` line 15) and were removed before finishing. A temporary
+`git stash` (tag `wfc-phase-bindings-003-verify-baseline`, captured by SHA,
+applied with `apply` not `pop`, then dropped) isolated one baseline
+doc-catalog comparison; no other Git-state mutation was made, and none of
+it was a Git *write* by this Hop in the sense the operating contract
+withholds (no commit, no ref advanced on a shared branch).
+
+== Per-Finding verification (H002 record, re-checked against `728f5cb`)
+
+Preview vs authorization (one execution-flag parser):: Confirmed:
+`frontdoor/plan.py` and `frontdoor/lifecycle.py` both call the single
+`frontdoor.config.execution_overrides_from_flags` then
+`resolve_execution`. Calling `resolve_execution` twice with the identical
+flag `"independent_reviewer.model= broad-model "` (leading/trailing spaces
+preserved) produced byte-identical envelope digests both times. A
+trailing-newline multiline override is refused identically by both
+(`CommissionError: ... must be a single-line value`) rather than accepted
+by one and refused by the other, which was the exact H002 defect.
+Model and reasoning / invalid Unicode refused at config, envelope and
+operator boundaries:: Confirmed at three boundaries by direct call:
+(1) Consumer Config `phase_execution` field parsing
+(`frontdoor.config._execution_fields` via `consumer_config_from_yaml`)
+refuses `chr(0xD800)` with "must be valid UTF-8"; (2) the same CLI
+`--execution-override` flag path (`resolve_execution`) refuses it
+identically; (3) `run_execution_configuration_from_yaml` (the function
+`operator._preflight` calls on the pinned envelope source) refuses it in
+both schema-version-1 `bindings` and version-2 `phase_bindings` shapes
+(re-derived from the existing `test_operator_admit_parsed.py`
+parametrization by inspection and by direct call). A valid non-ASCII value
+(`"modèle"`) is admitted at every boundary, confirmed by direct call
+returning the exact value back.
+Packaged skill keeps the committed-default delegation exception:: Read
+`src/workflow_coordinator/agent_skill/wfc/SKILL.md` rule 1 and rule 3
+against `docs/backlog/FTR-WFC-AGENT-SKILL-DISTRIBUTION.adoc` AU-1/AU-3
+(`<<authorization>>`): the skill now states the human decides scope,
+program, Hop budget and "any binding ... that differs from the role's
+committed `default_execution`", and that an existing delegation covers a
+launch when "each binding as approved or matching its committed role
+default" — matching AU-1's "any execution binding that differs from the
+committed `default_execution`" and AU-3's "bindings as approved or as
+committed" without narrowing either. `setup.md` carries the same UTF-8
+wording consistently.
+Operator Manual states what the config digest identifies:: Reproduced the
+H002 probe directly: built one Consumer Config text with LF, CRLF and CR
+line endings; raw UTF-8 SHA-256 differs for the three byte sequences, but
+applying Python's universal-newline translation (what
+`Path.read_text(encoding="utf-8")` performs, with no `newline=` argument,
+at every config-reading call site in `frontdoor/lifecycle.py`,
+`frontdoor/plan.py` and `frontdoor/postrun.py`) to all three first yields
+one identical text and thus one identical manifest `config.sha256` across
+all three variants, and all three still parse. `01_preparation.adoc`'s
+wording ("hashes the UTF-8 Consumer Config text after newline
+normalization. When WFC reads the config file, it converts CRLF and CR
+line endings to LF") matches this exactly; the separate execution-envelope
+digest claim is unaffected and was not in question.
+
+== The YAML-collection-key observation — partly unresolved, now fixed
+
+H002's observation was general ("YAML collection keys... stops parsing
+before execution... uncaught `TypeError`"), and H003's fix
+(`commissioning._construct_unique_mapping`, used by Consumer Config and
+Consumer Request parsing) only covered that one loader. `serialization.py`
+has its own, separately defined `_StrictLoader`/`_construct_unique_mapping`
+with the identical duplicate-key logic and the identical missing
+hashability guard, used by `run_execution_configuration_from_yaml`,
+`work_item_from_yaml`, `workflow_profile_from_yaml`,
+`repository_policy_from_yaml` and `component_manifest_from_yaml`. Direct
+call confirmed the gap still live on `728f5cb`:
+`run_execution_configuration_from_yaml` on a version-2
+`phase_bindings: {[implement]: {...}}` fragment raised an uncaught
+`TypeError: unhashable type: 'list'` — reachable at the execution-envelope
+boundary (`operator._preflight`, the same boundary Finding 2 covers), not
+only through Consumer Config.
+
+Fix made in this Hop: added the same `isinstance(key, Hashable)` guard
+(raising `ConstructorError`, caught by the existing `yaml.YAMLError`
+handler and converted to `ValidationError`) to
+`serialization._construct_unique_mapping`. Verified by direct call after
+the fix: both `work_item_from_yaml` and
+`run_execution_configuration_from_yaml` now refuse a list-valued key with
+"found unhashable key" instead of raising `TypeError`, and the pre-existing
+duplicate-key diagnostic ("found duplicate key") is unchanged for both
+loaders. Added `test_unhashable_yaml_key_fails_closed_with_diagnostic` in
+`tests/unit/test_serialization.py`, next to the existing
+`test_duplicate_yaml_key_fails_closed`, covering both the work-item loader
+and the version-2 execution envelope loader. Its two assertions mirror the
+direct-call reproduction above: before this Hop's fix, the same two calls
+raised an uncaught `TypeError: unhashable type: 'list'` (shown above against
+`728f5cb` before editing `serialization.py`); after the fix, both raise
+`ValidationError` matching `"unhashable key"`, which is what the test
+asserts. `pytest` itself could not collect the test file in this sandbox
+(see Environment), so the test's own pass/fail was not reproduced by
+running `pytest`; its asserted behavior was reproduced by direct call
+instead, against both the pre-fix and post-fix code.
+
+== Remaining acceptance (documentation, `robust@v1` example, tests, backlog FTR)
+
+`robust@v1` example:: `examples/consumer-demo/README.md` "Phase-specific
+models for the live `t2-farewell` task" section keeps distinct
+`broad_review`/`focused_review` models on the shared `independent_reviewer`
+role, applied after role defaults — satisfies the original task's example
+requirement; no gap found.
+Tests:: `tests/integration/test_consumer_demo_kit.py` asserts the plan
+envelope's `phase_bindings`, the serialized envelope and the archived
+audit's `phase_bindings` all agree; `tests/unit/test_consumer_compiler.py`,
+`test_lifecycle_controller.py` and `test_operator_admit_parsed.py` cover
+field merge, missing fields, unknown/unreachable phases, malformed values,
+mixed adapters, the flag-parser unification and the UTF-8 boundary checks
+added in H003. The one demonstrated gap (YAML collection key at the
+envelope/work-item boundary) is corrected above with its own regression
+test; no other gap was demonstrated by direct execution.
+Backlog FTR:: Added a `Successor verification checks` subsection to
+`docs/backlog/FTR-WFC-PHASE-EXECUTION-BINDINGS.adoc` recording this Hop's
+finding and fix, with a link back to this record. No other content in the
+FTR was changed; its status line correctly still reads implementation
+submitted for independent review, since this Hop performed no acceptance.
+
+== Quality gates reproduced in this sandbox
+
+Strict Asciidoctor render (`asciidoctor --safe-mode=safe -a assembled -o
+/dev/null --failure-level=WARN`): empty output, exit 0, for
+`docs/operator_manual/operator_manual.adoc` (the assembled book, including
+the changed `ch03_running/01_preparation.adoc`),
+`docs/backlog/FTR-WFC-PHASE-EXECUTION-BINDINGS.adoc` (including this Hop's
+addition) and
+`docs/warm_storage/post-beta-planning/wfc_phase_execution_bindings_broad_review.adoc`.
+
+Doc catalog: `python3 scripts/wfc_doc_catalog.py generate` then `check`
+reports "83 unresolved links; 4 Project Memory source_path misses" and
+"catalog current" at HEAD with this Hop's changes applied. The same two
+commands against a temporarily stashed pre-change `serialization.py` /
+`test_serialization.py` (neither touches any `.adoc` or Project Memory
+source) reported the identical "83 unresolved links; 4 Project Memory
+source_path misses" — no additional unresolved link or Project Memory miss
+introduced by this Hop's change, matching the stated baseline exactly.
+
+`python -m pytest -q` (required suite) and `python -m ruff check .`: not
+run agent-locally in this sandbox (see Environment); this is the
+Coordinator's own separately executed trusted evidence.
+
+== Changes made in this Hop
+
+* `src/workflow_coordinator/serialization.py` — `_construct_unique_mapping`
+  now refuses a non-hashable YAML mapping key with a `ConstructorError`
+  ("found unhashable key"), matching `commissioning._construct_unique_mapping`;
+  no other behavior changed.
+* `tests/unit/test_serialization.py` —
+  `test_unhashable_yaml_key_fails_closed_with_diagnostic`, a regression test
+  for the fix above, covering both the work-item loader and the version-2
+  execution-envelope loader.
+* `docs/backlog/FTR-WFC-PHASE-EXECUTION-BINDINGS.adoc` — recorded this
+  Hop's finding and fix in a new subsection, linking to this record.
+
+No other file was edited. No mixed-adapter run, provider router, Runtime
+promotion, installation, push, tag, publication, or change to
+`governance/`, `.wfc/` state or Evidence was made or attempted.
