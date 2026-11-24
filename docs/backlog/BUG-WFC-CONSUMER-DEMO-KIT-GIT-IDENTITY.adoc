@@ -1,0 +1,103 @@
+= BUG-WFC-CONSUMER-DEMO-KIT-GIT-IDENTITY -- The Consumer Demo Kit Depends on a Host Git Identity for Its Evidence Repository
+
+Type:: bug -- consumer demo kit (`examples/consumer-demo/`), hermeticity of workspace creation and rehearsal
+Status:: open / cause verified; a bounded correction is commissioned (see <<commission>>)
+Current controlling source:: This record; see link:_open.adoc[the active-work manifest].
+Affected work:: link:FTR-WFC-CONSUMER-DEMO-WORKSPACE.adoc[Consumer demo workspace] slices S1 and S2, integrated as `4770a89` and `92b18f9`. Not part of the published `0.1.0b1`.
+Not authorized here:: Any change to WFC's trusted Git operations, to the sanitization of the Git environment, to `wfc init` or to the hosted workflow; skipping or weakening a test.
+Date:: 2026-11-24
+
+== Observed failure
+
+Hosted workflow `release.yml`, run `45345678011`, job `138279509647`, on the
+`main` push of `3379a03fe8db1663d5eb78e7a1cf2f2fddda65e3` (24 November 2026,
+07:08 UTC): the step `Required test suite` failed. The job log names 15
+failed tests, all in `tests/integration/test_consumer_demo_kit.py` and all
+with the same message from `make_workspace.py`:
+
+[source,text]
+----
+wfc init: failed to create the initial Evidence repository commit: Author identity unknown
+...
+fatal: empty ident name (for <runner@...>) not allowed
+----
+
+The log is external evidence, not part of this repository: the maintainer's
+copy `~/git_api_log.txt` (130,334 bytes, SHA-256
+`47eeaebff09fc05e50a6708ef471d22e1e1236889099bfd9a69f9290edd59b9f`). The
+same suite passes on the same commit on the development host.
+
+== Verified cause
+
+Verified by the Level-1 Operator on 24 November 2026 against the
+implementation, the job log and two local reproductions.
+
+. The hosted workflow provides the test identity only through
+  `$XDG_CONFIG_HOME/git/config` and sets `GIT_CONFIG_NOSYSTEM=1`. This is the
+  set-up the
+  link:../operator_manual/ch09_consumer_quickstart/01_quickstart.adoc[quickstart]
+  recommends for an environment whose `HOME` changes; it is not at fault.
+. The kit's tests use a `throwaway_home` fixture that points `HOME` at an
+  empty directory and removes `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and
+  `XDG_STATE_HOME`. This is intended: the tests exist to show that the kit
+  needs nothing from the host. It also hides the identity the workflow
+  provisioned.
+. `make_workspace.py` gives the demo repository `greeter` a repository-local
+  identity (`WFC Demo`). It gives none to the Evidence repository
+  `greeter-evidence`, which `wfc init` creates and commits to in the same
+  step. That first commit therefore needs an identity from outside the
+  workspace.
+. `rehearse.py` runs `wfc run` with `HOME` set to the workspace's
+  `rehearsal-home` and without `XDG_CONFIG_HOME`. The archive commit into the
+  Evidence repository then again finds no identity.
+. On the development host the tests pass only because Git falls back to the
+  account's name in the password database when no identity is configured.
+  The hosted runner's account has no such name, so Git refuses. The tests'
+  result thus depends on a host property they do not control.
+
+Reproduction 1 (workspace creation): an empty `HOME` containing only a
+`.gitconfig` with `user.useConfigOnly = true`, no `XDG_*` variables:
+`make_workspace.py` exits 1 with the message above (Git's wording then is
+`no email was given and auto-detection is disabled`).
+
+Reproduction 2 (rehearsal): a workspace created with an identity available,
+then `user.useConfigOnly = true` placed in `rehearsal-home/.gitconfig`:
+`rehearse.py <workspace> t1-hello-page` exits 1; `wfc run` reports
+`CLASSIFICATION: completed` and then `ARCHIVE FAILED (archive_refused):
+commit failed: ... Author identity unknown`, exit code 32.
+`t3-probe-refusal` still passes, because it archives nothing.
+
+The Operator's earlier attempt to imitate the runner (history chapter of
+`e9b120e`) did not reproduce the failure, because it kept the host account's
+name; it did not disable Git's fallback.
+
+== Where the correction belongs
+
+* *Not in WFC's Evidence repository initialization.* `wfc init` and the
+  archive commit use WFC's trusted Git execution, which removes inherited
+  `GIT_*` variables and takes the identity from Git configuration files. A
+  missing identity is refused with Git's own diagnostic. That is the
+  documented consumer prerequisite and part of the Trusted Git Boundary; it
+  stays as it is.
+* *Not in the hosted workflow.* Providing the kit's tests with the host's
+  identity would hide the defect and reduce the isolation the tests assert.
+* *In the kit.* The kit promises a self-contained workspace with its own
+  rehearsal home; it must provide, through Git configuration files it owns
+  inside the workspace, every identity that workspace creation and rehearsal
+  need.
+* *In the kit's tests.* They must make the absence of a host identity
+  deterministic, so that the defect also fails on a host whose account has a
+  name.
+
+An observation outside this defect, not pursued here: when the Evidence
+commit fails, `wfc init` has already written `.wfc/config.yaml`.
+
+[[commission]]
+== Correction
+
+Commissioned as `wfc-bug-demo-kit-git-identity-001` (WorkItem
+`WI-WFC-BUG-DEMO-KIT-GIT-IDENTITY-001`), `robust@v1`, scope: the kit
+directory, its integration test file, this record and the two review
+artifacts. The implementation record, the Run evidence and the confirmation
+by a subsequent hosted run are added below when they exist; local acceptance
+and hosted confirmation are recorded separately.
