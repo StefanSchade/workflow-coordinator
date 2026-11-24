@@ -1,0 +1,109 @@
+= Phase-specific execution bindings — independent broad review
+
+Work item:: `WI-WFC-PHASE-EXECUTION-BINDINGS-001`
+Run and Hop:: `RUN-3774f720417e491d9797fa46f3be8e36`, `H002`
+Candidate:: `eeb9280683ecd1ed123edc123bed8ef432e2d9b3..1bdc21f481f07fa3dfc52dd684a8d8484955d752`
+Verdict:: Changes required. Four findings block acceptance.
+
+[[preview]]
+== Preview and authorization can select different models
+
+Using the committed two-role Consumer Config, I added
+`phase_execution: {focused_review: {model: focused-model}}` in a scratch
+copy. I passed the same single argument
+`'independent_reviewer.model= broad-model '` to the plan and run flag parsers
+for the same `robust@v1` request. The spaces on either side of the value are
+part of the argument.
+
+[cols="1,1,3",options="header"]
+|===
+|Entry point |Broad-review model |Execution envelope SHA-256
+|Plan preview |«broad-model» |`38dd85648e6bd34edf1a3bd03670ce05d012b09317712c104f11efcf45b7ec4a`
+|Run authorization |« broad-model » |`8682833dffc64daf6e37e5e12ba1862657af29e8b10e4795c76c59bdc2f24f4c`
+|===
+
+The preview exited 0. The run confirmation callback captured its digest and
+declined the launch. In a second probe with a trailing newline, plan accepted
+the override and run refused it. `frontdoor/plan.py` strips the value in
+`_parse_key_value`. `frontdoor/lifecycle.py` preserves it. Use one execution
+flag parser in both commands, reject multiline input consistently and test
+that identical accepted flags produce the same effective fields and digest.
+
+[[values]]
+== Preflight admits a model that cannot be dispatched
+
+The following ASCII YAML fragment defines a Python string containing one
+unpaired surrogate after YAML decoding.
+
+[source,yaml]
+----
+phase_execution:
+  focused_review: {model: "\uD800"}
+----
+
+Consumer Config resolution, version-2 envelope parsing and the real
+`operator._preflight` all admitted this model against the committed robust
+profile and the matching envelope digest. `os.fsencode` raised
+`UnicodeEncodeError` for the resulting provider argument. Running the plan
+entry point with the same config also exited 1 with an uncaught
+`UnicodeEncodeError` while printing the preview. Validate that model and
+reasoning strings contain valid Unicode scalar values at the config and
+envelope boundaries. Cover both entry points with an escaped surrogate and
+a valid non-ASCII value.
+
+[[delegation]]
+== The packaged skill changes the existing delegation rule
+
+Consider a role-only config and a delegation that specifies scope, program
+and Hop budget and relies on the committed models. The existing skill
+contract explicitly covers this launch with bindings “as approved or as
+committed.” The candidate's `agent_skill/wfc/SKILL.md` makes every effective
+binding a human decision and directs the agent to ask about undecided facts.
+It drops the committed-default exception even for an existing configuration.
+Restore that distinction so an operator can rely on committed choices and
+still authorize any departure. The governing scenarios are AU-1 through
+AU-3 in
+link:../../backlog/FTR-WFC-AGENT-SKILL-DISTRIBUTION.adoc#authorization[the skill's authorization contract].
+
+[[identity]]
+== The Operator Manual overstates what the config digest identifies
+
+The new phase-bindings section says the manifest pins the authored config
+bytes. The Front Door reads the config with universal newline translation.
+With identical phase settings, my LF and CRLF files had different on-disk
+SHA-256 prefixes (`823812bf` and `3302d392`). Both produced the same
+manifest config digest beginning `823812bf`. Document the normalized UTF-8
+text used for the manifest digest. The separate execution-envelope digest
+correctly identified the serialized envelope bytes in both cases.
+
+== Coverage and checks
+
+I reviewed the 26 changed files from the baseline through the candidate.
+The phase traversal starts at the WorkItem entry and follows declared
+`goto` targets. The resolver merges by field, admission checks the complete
+set of reachable keys, and dispatch looks up the current phase while the
+profile supplies its role and authority. The scripted five-Hop regression
+compares provider arguments, the operator plan, attempt evidence and the
+archived audit across both review phases and a return to broad review.
+
+The lifecycle reuses the authorized envelope on resume, including adoption
+of a matching Commission commit, and passes its expected digest to engine
+preflight. The versioned envelope preserves the existing one-adapter,
+one-executable design. The backlog records which identities a future
+mixed-adapter design would have to address. The candidate leaves trusted
+Git, sandbox mechanics and reviewer authority with their existing owners.
+
+* Independent `make check` exited 0 using the verified
+  `cp313-linux-x86_64` offline inputs. Ruff lint and the five-file format
+  check passed. The full pytest run reached 100% with four skips.
+* Comparing the baseline resolver with the candidate on the two-role config
+  gave byte-identical version-1 envelopes and SHA-256 digests for the
+  defaults, a non-ASCII worker model override and a reviewer reasoning
+  override. Separate probes refused an unknown phase and mixed adapters.
+* One additional diagnostic observation concerns YAML collection keys.
+  A list used as a phase key stops parsing before execution, but the YAML
+  constructor exposes an uncaught `TypeError` in place of a configuration
+  diagnostic.
+
+These are reviewer-local checks. The Coordinator evaluates `task-check`
+separately. Integration remains an operator decision.
