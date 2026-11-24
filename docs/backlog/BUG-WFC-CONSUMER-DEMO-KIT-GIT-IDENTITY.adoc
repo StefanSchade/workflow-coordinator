@@ -1,7 +1,7 @@
 = BUG-WFC-CONSUMER-DEMO-KIT-GIT-IDENTITY -- The Consumer Demo Kit Depends on a Host Git Identity for Its Evidence Repository
 
 Type:: bug -- consumer demo kit (`examples/consumer-demo/`), hermeticity of workspace creation and rehearsal
-Status:: open / cause verified; a bounded correction is commissioned (see <<commission>>)
+Status:: open / cause verified; implementation complete, awaiting independent review (see <<commission>> and <<implementation>>)
 Current controlling source:: This record; see link:_open.adoc[the active-work manifest].
 Affected work:: link:FTR-WFC-CONSUMER-DEMO-WORKSPACE.adoc[Consumer demo workspace] slices S1 and S2, integrated as `4770a89` and `92b18f9`. Not part of the published `0.1.0b1`.
 Not authorized here:: Any change to WFC's trusted Git operations, to the sanitization of the Git environment, to `wfc init` or to the hosted workflow; skipping or weakening a test.
@@ -101,3 +101,138 @@ directory, its integration test file, this record and the two review
 artifacts. The implementation record, the Run evidence and the confirmation
 by a subsequent hosted run are added below when they exist; local acceptance
 and hosted confirmation are recorded separately.
+
+[[implementation]]
+== Implementation
+
+=== What changed
+
+* `examples/consumer-demo/make_workspace.py`: a new `_create_evidence_repository()`
+  step, called right after `_create_greeter_repository()` and before
+  `_run_wfc_init()`. It creates `greeter-evidence` itself -- `git init -b
+  main`, a repository-local `user.name`/`user.email` identical to
+  `greeter`'s, `archive/.gitkeep`, a root `.gitignore` carrying the exact
+  managed raw-retention block a freshly created Evidence repository
+  carries (a new module constant `EVIDENCE_GITIGNORE_BLOCK`, duplicated
+  from `workflow_coordinator.frontdoor.config.evidence_gitignore_block()`
+  because the kit imports only the standard library), and one commit
+  (`chore: initialize WFC Evidence repository`). The module docstring and
+  the printed workspace-layout line for `greeter-evidence/` were updated
+  to say the Evidence repository is seeded by the kit and adopted by
+  `wfc init`, not created by it.
+* `tests/integration/test_consumer_demo_kit.py`: a new helper
+  `_disable_git_identity_fallback(home)` (writes `home/.gitconfig` with
+  `user.useConfigOnly = true`, the configuration-file mechanism this record
+  verifies the cause with -- never a `GIT_*` environment variable); a new
+  test `test_workspace_creation_and_evidence_identity_do_not_depend_on_a_host_git_identity`
+  (AC-1, AC-2); a new parametrized test
+  `test_rehearsal_does_not_depend_on_a_host_git_identity` over all four
+  scenarios (AC-3), which additionally disables the fallback in the
+  workspace's own `rehearsal-home` before rehearsing.
+* No other file changed; `src/`, `.github/`, the tutorial-quoted kit files
+  and `examples/consumer-demo/requests/` are byte-identical (confirmed by
+  `git status --short -uall -- src .github examples/consumer-demo/requests`
+  printing nothing).
+
+=== Mechanism and reason
+
+`wfc init --evidence-repository` creates a new Evidence repository or
+*adopts an existing valid one* -- a Git repository root with an `archive/`
+directory -- and this is a documented outcome
+(`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc`:
+"creates or adopts"), not a new behaviour introduced here. The kit now pre-
+creates a repository that satisfies that check, with its own identity, so
+`ensure_evidence_repository()` takes the "reused" branch and `wfc init`
+never has to make a commit itself. The one commit the kit does make for
+`greeter-evidence` uses the same repository-local `git config user.name` /
+`user.email` mechanism `_create_greeter_repository()` already uses for
+`greeter` -- no `GIT_*` variable, no read or write of the host's real Git
+configuration, nothing outside the workspace.
+
+This is also why `rehearse.py` needed no change at all. `wfc run`'s archive
+commit (`bounded_path_commit`, `git_facts.py`) and `wfc init`'s own bootstrap
+commit both run `git -C <evidence repository> ...` under WFC's trusted
+execution policy, which strips every inherited `GIT_*` variable but leaves
+`HOME` (and the rest of the process environment) alone. A `git -C <path>`
+invocation reads that path's own repository-local `.git/config` regardless
+of `HOME`, so once `greeter-evidence` carries its own identity, every later
+commit into it -- made under `rehearsal-home` as `HOME`, with no `XDG_*`
+variable set, exactly as `rehearse.py` already runs it -- resolves identity
+from the Evidence repository itself, never from the rehearsal's `HOME`.
+
+This was the smallest mechanism available inside the stated boundary: it
+changes nothing in `wfc init`, the Evidence repository initialization, or
+the trusted Git execution (all fixed points), uses only an already-
+documented `wfc init` outcome, and supplies identity exactly the way
+`greeter` already does -- through a Git configuration file inside the
+workspace, never an environment variable.
+
+=== Whose identity, and when a host identity exists too
+
+Every commit the kit or a rehearsal makes into `greeter-evidence` carries
+the repository-local identity `WFC Demo <wfc-demo@example.invalid>` -- the
+same identity `greeter` carries, set the same way. Because Git's local
+repository configuration always takes precedence over global/system
+configuration, this holds even when the host (or `rehearsal-home`) also has
+an identity of its own; the kit's commits never depend on, and never read,
+any host-provided identity.
+
+=== Red-before-green demonstration
+
+Verified by hand first, against the unmodified kit, disabling Git's
+account-name fallback with a `.gitconfig` containing `[user]` /
+`useConfigOnly = true` in the relevant `HOME` (this host's account does
+have a password-database name, `Stefan Schade`, so without this the defect
+does not reproduce here):
+
+* Reproduction 1 (workspace creation), `HOME` an empty directory with only
+  that `.gitconfig`, no `XDG_*` variables: `make_workspace.py WORKSPACE`
+  exited `1` with `wfc init: failed to create the initial Evidence
+  repository commit: Author identity unknown` / `fatal: no email was given
+  and auto-detection is disabled` -- byte-for-byte the failure this record's
+  "Verified cause" section describes.
+* Reproduction 2 (rehearsal archiving), a workspace created with a host
+  identity available, then the same `.gitconfig` placed in
+  `rehearsal-home/.gitconfig`: `rehearse.py WORKSPACE t1-hello-page` exited
+  `1`, reporting `CLASSIFICATION: completed` and then `ARCHIVE FAILED
+  (archive_refused): commit failed: commit failed: Author identity
+  unknown`, with the underlying `wfc run` exit code `32` -- again matching
+  this record's reproduction exactly.
+
+Then the two new tests, run with `--wfc-partial
+tests/integration/test_consumer_demo_kit.py -k git_identity` (an agent-local
+scratch virtual environment supplied `pytest` and `PyYAML`, installed from
+`pypi.org`/`files.pythonhosted.org`; this sandbox has neither preinstalled):
+
+* Against the unmodified kit (`make_workspace.py` set aside with `git
+  stash`): 5 failed -- `test_workspace_creation_and_evidence_identity_do_not_depend_on_a_host_git_identity`
+  and all four parametrizations of
+  `test_rehearsal_does_not_depend_on_a_host_git_identity`, every one with
+  the same `Author identity unknown` failure as reproduction 1 (the
+  workspace-creation step the rehearsal test also depends on). Their result
+  no longer depends on the password database: it fails on this host, whose
+  account has a name, exactly as it fails on a hosted runner whose account
+  has none.
+* Against the corrected kit (`git stash apply` restored): all 5 passed.
+
+=== Checks run (agent-local; not the Coordinator's trusted evidence)
+
+* `pytest -q --wfc-partial tests/integration/test_consumer_demo_kit.py`:
+  28 passed (the full file, corrected kit).
+* `ruff check examples/consumer-demo/make_workspace.py
+  tests/integration/test_consumer_demo_kit.py` and `ruff check .`: all
+  checks passed.
+* `pytest -q --wfc-partial tests/architecture/test_tutorial_kit_quotes.py`:
+  4 passed (the quote guard; confirms the tutorial-quoted kit files are
+  untouched).
+* `test_kit_modules_import_only_the_standard_library` (inside the file
+  above) passed: the kit still imports only the standard library.
+* `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+  --failure-level=WARN docs/backlog/BUG-WFC-CONSUMER-DEMO-KIT-GIT-IDENTITY.adoc`
+  (this file, with this section added): printed nothing.
+* `examples/consumer-demo/README.md` describes no Git-identity prerequisite
+  to begin with, so it needed no change; nothing in it is now inaccurate.
+
+Independent acceptance, integration, the Coordinator's own full-suite
+task-check, and confirmation by a subsequent hosted `release.yml` run are
+all outstanding; none of them is claimed here.

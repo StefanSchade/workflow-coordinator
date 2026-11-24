@@ -62,6 +62,15 @@ def throwaway_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
+def _disable_git_identity_fallback(home: Path) -> None:
+    """BUG-WFC-CONSUMER-DEMO-KIT-GIT-IDENTITY: disable Git's account-name
+    fallback in ``home``'s own global configuration file, so a missing
+    identity fails the same way on every host and no longer depends on the
+    password database -- never a ``GIT_*`` environment variable, which
+    WFC's trusted Git execution strips before every commit it makes."""
+    (home / ".gitconfig").write_text("[user]\n\tuseConfigOnly = true\n", encoding="utf-8")
+
+
 def _run_make_workspace(workspace: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(MAKE_WORKSPACE), str(workspace), *extra],
@@ -131,6 +140,30 @@ def test_workspace_renders_every_request_template_with_the_guidance_commit_subst
         assert "{{GUIDANCE_COMMIT}}" not in text
         if name.endswith(".request.yaml"):
             assert guidance_commit in text
+
+
+def test_workspace_creation_and_evidence_identity_do_not_depend_on_a_host_git_identity(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    # BUG-WFC-CONSUMER-DEMO-KIT-GIT-IDENTITY (AC-1, AC-2): disabling Git's
+    # account-name fallback reproduces the hosted failure on every host, not
+    # only a runner whose account has no name in the password database.
+    _wfc_on_path(tmp_path, monkeypatch)
+    _disable_git_identity_fallback(throwaway_home)
+    workspace = tmp_path / "ws"
+
+    result = _run_make_workspace(workspace)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    greeter = workspace / "greeter"
+    evidence = workspace / "greeter-evidence"
+    assert evidence.is_dir()
+    assert (workspace / "requests").is_dir()
+    assert (workspace / "rehearsal-home").is_dir()
+    assert _git(evidence, "status", "--porcelain") == ""
+    assert len(_git(evidence, "log", "--format=%H").strip().splitlines()) == 1
+    assert _git(evidence, "config", "user.name").strip() == _git(greeter, "config", "user.name").strip()
+    assert _git(evidence, "config", "user.email").strip() == _git(greeter, "config", "user.email").strip()
 
 
 # ==========================================================================
@@ -325,6 +358,43 @@ def test_rehearse_each_scenario_returns_zero_with_the_expected_classification_an
     classification = re.search(r"^CLASSIFICATION: (.+)$", run_output, re.MULTILINE)
     if classification is not None:
         assert classification.group(1) == scenario_data["expected_classification"]
+
+
+@pytest.mark.parametrize("scenario", SCENARIO_NAMES)
+def test_rehearsal_does_not_depend_on_a_host_git_identity(
+    tmp_path: Path, throwaway_home: Path, monkeypatch: pytest.MonkeyPatch, scenario: str,
+):
+    # BUG-WFC-CONSUMER-DEMO-KIT-GIT-IDENTITY (AC-3): the fallback is disabled
+    # for *both* HOMEs in play -- the one `make_workspace.py` ran under, and
+    # the rehearsal's own `rehearsal-home`, which `rehearse.py` points `HOME`
+    # at for the `wfc run` it drives.
+    _wfc_on_path(tmp_path, monkeypatch)
+    _disable_git_identity_fallback(throwaway_home)
+    workspace = tmp_path / "ws"
+    created = _run_make_workspace(workspace)
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    _disable_git_identity_fallback(workspace / "rehearsal-home")
+
+    scenario_data = json.loads((SCENARIOS_DIR / f"{scenario}.json").read_text(encoding="utf-8"))
+    rehearsed = _run_rehearse(workspace, scenario)
+
+    assert rehearsed.returncode == 0, rehearsed.stdout + rehearsed.stderr
+    banner_parts = rehearsed.stdout.split(REHEARSAL_BANNER)
+    assert len(banner_parts) >= 3
+    run_output = banner_parts[1]
+    classification = re.search(r"^CLASSIFICATION: (.+)$", run_output, re.MULTILINE)
+    if classification is not None:
+        assert classification.group(1) == scenario_data["expected_classification"]
+
+    destination_relative = _destination_relative_from(rehearsed.stdout)
+    if scenario == "t3-probe-refusal":
+        assert destination_relative is None
+    else:
+        assert destination_relative is not None
+        evidence = workspace / "greeter-evidence"
+        commit = _git(evidence, "log", "-1", "--format=%H", "--", destination_relative).strip()
+        assert commit != ""
 
 
 def _destination_relative_from(stdout: str) -> str | None:

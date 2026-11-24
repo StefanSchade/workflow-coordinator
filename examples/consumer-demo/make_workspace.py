@@ -5,8 +5,13 @@ Standard library only. Writes exclusively inside the workspace directory
 named on the command line; never deletes or overwrites anything; refuses a
 target inside any Git work tree. Calls the installed ``wfc`` for every
 WFC-owned write (``wfc init``); this script never writes a Consumer Config
-or a Commission itself. See ``docs/backlog/FTR-WFC-CONSUMER-DEMO-WORKSPACE.adoc``
-for the specification this implements (slice S1).
+or a Commission itself. It does seed the Evidence repository itself, with a
+repository-local identity, before calling ``wfc init`` -- which then adopts
+it (a documented ``wfc init`` outcome) rather than creating it, so the one
+commit that step makes never depends on a host Git identity. See
+``docs/backlog/FTR-WFC-CONSUMER-DEMO-WORKSPACE.adoc`` for the specification
+this implements (slice S1) and
+``docs/backlog/BUG-WFC-CONSUMER-DEMO-KIT-GIT-IDENTITY.adoc`` for why.
 """
 
 from __future__ import annotations
@@ -26,6 +31,18 @@ MARKER_NAME = "WFC-DEMO-WORKSPACE"
 GUIDANCE_PATH = ".wfc/governance/repository-policy.md"
 DEMO_IDENTITY_NAME = "WFC Demo"
 DEMO_IDENTITY_EMAIL = "wfc-demo@example.invalid"
+# Duplicated from ``workflow_coordinator.frontdoor.config.evidence_gitignore_block``
+# (the kit imports only the standard library): the exact managed block a
+# freshly *created* Evidence repository carries, so the repository the kit
+# seeds and ``wfc init`` adopts is byte-identical to one ``wfc init`` would
+# have created itself.
+EVIDENCE_GITIGNORE_BLOCK = (
+    "# >>> wfc managed evidence raw-retention block (do not edit by hand) >>>\n"
+    "archive/**/manifest.json\n"
+    "archive/**/run/**\n"
+    "archive/**/ops/**\n"
+    "# <<< wfc managed evidence raw-retention block <<<\n"
+)
 
 
 class PreflightError(Exception):
@@ -124,6 +141,30 @@ def _create_greeter_repository(workspace: Path) -> Path:
     return greeter
 
 
+def _create_evidence_repository(workspace: Path) -> Path:
+    """Seed ``greeter-evidence`` with its own identity before ``wfc init`` runs.
+
+    ``wfc init --evidence-repository`` creates a new Evidence repository or
+    adopts an existing valid one (a Git repository root with an ``archive/``
+    directory); both are documented outcomes. Seeding it here, exactly as
+    ``_create_greeter_repository`` seeds ``greeter``, means the one commit
+    this makes carries a repository-local identity the kit controls, so the
+    later adopt step needs nothing from ``HOME`` or any ``XDG_*`` location.
+    """
+    evidence = workspace / "greeter-evidence"
+    evidence.mkdir()
+    archive_dir = evidence / "archive"
+    archive_dir.mkdir()
+    (archive_dir / ".gitkeep").write_text("", encoding="utf-8")
+    (evidence / ".gitignore").write_text(EVIDENCE_GITIGNORE_BLOCK, encoding="utf-8")
+    _git(evidence, "init", "-q", "-b", "main")
+    _git(evidence, "config", "user.name", DEMO_IDENTITY_NAME)
+    _git(evidence, "config", "user.email", DEMO_IDENTITY_EMAIL)
+    _git(evidence, "add", "--", "archive/.gitkeep", ".gitignore")
+    _git(evidence, "commit", "-q", "-m", "chore: initialize WFC Evidence repository")
+    return evidence
+
+
 def _run_wfc_init(wfc_bin: str, greeter: Path) -> None:
     result = subprocess.run(
         [
@@ -207,7 +248,7 @@ def _print_layout(workspace: Path, version_json: str) -> None:
     print(f"├── {MARKER_NAME}       marker: kit path, `wfc --version --json` output")
     print("├── greeter/                 consumer repository, branch main, no remote")
     print("│   └── .wfc/config.yaml     written by `wfc init`, committed by the kit")
-    print("├── greeter-evidence/        Evidence repository created by `wfc init`, no remote")
+    print("├── greeter-evidence/        Evidence repository, seeded by the kit, adopted by `wfc init`, no remote")
     print("├── requests/                rendered task documents and Consumer Requests")
     print("└── rehearsal-home/          HOME of rehearsals only; WFC lifecycle state lands here")
     print()
@@ -229,6 +270,7 @@ def create_workspace(workspace: Path, wfc_bin: str) -> int:
     workspace.mkdir(exist_ok=True)
     try:
         greeter = _create_greeter_repository(workspace)
+        _create_evidence_repository(workspace)
         _run_wfc_init(wfc_bin, greeter)
         _run_baseline_check(greeter)
         _render_requests(workspace)
