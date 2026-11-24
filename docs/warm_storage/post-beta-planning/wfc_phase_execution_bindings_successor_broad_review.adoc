@@ -1,0 +1,259 @@
+= Phase-specific execution bindings — independent broad review of the successor candidate
+
+Work item:: `WI-WFC-PHASE-EXECUTION-BINDINGS-003`
+Run and Hop:: `RUN-04d54f22d9bf430099d61408b53fe28f`, `H002`
+Candidate:: `eeb9280683ecd1ed123edc123bed8ef432e2d9b3..8ef8ffe231a865c5908b681dc9d8fa7fec0095ef`
+(the whole feature: `1bdc21f` implementation, `728f5cb` correction and the
+successor's `8ef8ffe`)
+Verdict:: Accept. No blocking Finding.
+
+This is a whole-candidate review, not a review of the last commit. I read the
+original task (`.wfc/governance/wfc-phase-execution-bindings-001/task.md`),
+link:../../backlog/FTR-WFC-PHASE-EXECUTION-BINDINGS.adoc[the feature record],
+the
+link:wfc_phase_execution_bindings_broad_review.adoc[earlier H002 review] and
+link:wfc_phase_execution_bindings_successor_verification.adoc[the successor
+verification record] as context only, and re-derived every result below by my
+own execution against the candidate as committed. The stopped Run's records
+established no acceptance and none of their measurements is carried over.
+
+== The four earlier blocking findings
+
+[[preview]]
+=== One execution-flag parser for preview and authorization
+
+Resolved. `frontdoor/plan.py` and `frontdoor/lifecycle.py` no longer define a
+parser; both import the single `frontdoor.config.execution_overrides_from_flags`
+and then `resolve_execution` (identity check against the module attribute:
+both `True`, neither module still carries `_execution_overrides_from_flags`).
+Passing the exact argument the earlier review used,
+`independent_reviewer.model= broad-model `, through each command's path over
+the same two-role config with `phase_execution: {focused_review: {model:
+focused-model}}` gave the same effective value `' broad-model '` — spaces
+preserved, not stripped on one side — and the same envelope digest
+`883a1403…` both times. The value is now carried verbatim by the parser and
+validated once in the resolver, so whitespace and multiline handling cannot
+diverge between the two commands by construction. A multiline value
+(`a\nb`), a trailing newline (`a\n`) and a CRLF value are each refused with
+`execution override for role … must be a single-line value`, from the one
+resolver both commands call.
+
+`tests/unit/test_lifecycle_controller.py::test_plan_and_run_agree_on_execution_flags_and_config`
+drives both CLI entry points for the accepted and the refused case and
+asserts the preview digest equals the digest the run's confirmation callback
+received; it fails if either command re-acquires its own parser.
+
+[[values]]
+=== Invalid Unicode refused at every boundary
+
+Resolved. `serialization.execution_binding_value` now rejects a string that
+is not UTF-8 encodable (and, separately, NUL and multiline), and it is the
+single value check used by the Consumer Config parser, the CLI override path
+and the envelope parser. Measured with `chr(0xD800)`:
+
+* Consumer Config — `Consumer Config.phase_execution.focused_review.model`
+  and `.reasoning`, and `Consumer Config.default_execution.worker.model`:
+  all refused with `must be valid UTF-8`.
+* CLI override — `execution override for role worker.model` / `.reasoning`:
+  refused.
+* Execution envelope — refused in the version-1 `bindings` shape, the
+  version-2 `phase_bindings` shape, and for a version-2 *phase key*
+  (`Run execution configuration.phase_bindings phase must be valid UTF-8`).
+  `operator._preflight` parses the pinned envelope through exactly this
+  function, so the engine boundary inherits the refusal.
+* A valid non-ASCII value (`modèle-é`) is admitted at every boundary and the
+  resulting envelope re-parses to the same digest.
+
+The diagnostics name the field, not the offending value, so no refusal path
+reproduces the earlier uncaught `UnicodeEncodeError`. I also checked the two
+diagnostics that do embed a key (an unknown phase key and an unknown role
+key): both print cleanly, because `sys.stderr` uses `backslashreplace`.
+
+[[delegation]]
+=== The packaged skill keeps the committed-default delegation rule
+
+Resolved for the scenario the task names. `agent_skill/wfc/SKILL.md` rule 1
+again limits authority facts to scope, program, Hop budget and a binding
+*differing* from the committed `default_execution`, and rule 3 again states
+that an existing delegation covers a launch when each binding is "as
+approved or matching its committed role default". For a role-only config
+launched on committed bindings nothing differs from the committed default,
+so the launch stays covered and needs no further approval turn — matching
+`FTR-WFC-AGENT-SKILL-DISTRIBUTION` AU-1 and AU-3. Any departure from the
+committed bindings remains a human decision. `references/setup.md` carries
+the same wording and adds the phase syntax. See <<observations>> for one
+non-blocking wording point.
+
+[[identity]]
+=== The Operator Manual states what each digest identifies
+
+Resolved. `ch03_running/01_preparation.adoc` now says the envelope digest
+covers the serialized envelope bytes, and that the manifest's
+`config.sha256` separately hashes the UTF-8 Consumer Config text *after*
+newline normalization, with the reason stated (WFC converts CRLF and CR to
+LF when it reads the file). Reproduced with one logical config written three
+ways: raw SHA-256 `175e7860…` (LF), `4aed5db6…` (CRLF), `c1f1430b…` (CR),
+but one single manifest config digest `175e7860…` for all three, and one
+identical envelope digest `2abced6d…`. `commissioning` hashes
+`config.raw_text`, and every Front Door call site obtains that text through
+`Path.read_text(encoding="utf-8")`, so the documented wording is exactly
+what the code does.
+
+== The YAML collection-key observation
+
+Resolved in both loaders, which is more than the earlier correction had
+done. There are exactly two strict YAML loaders in the product
+(`serialization._StrictLoader` and `commissioning._IntentLoader`; no other
+module registers a mapping constructor or calls `yaml.load`/`safe_load`), and
+both now raise a `ConstructorError` for a non-hashable key, surfacing as the
+normal `ValidationError`/`CommissionError` diagnostic. Measured refusals, all
+deterministic and none an uncaught `TypeError`: a list key and a mapping key
+in `phase_execution`, a top-level list key in the Consumer Config and the
+Consumer Request, a list phase key and a list role key in the execution
+envelope, a nested list key inside a phase binding, and list keys in the
+work item, profile, repository policy and component manifest. The
+pre-existing duplicate-key diagnostic is unchanged for both loaders.
+`tests/unit/test_serialization.py::test_unhashable_yaml_key_fails_closed_with_diagnostic`
+covers the work-item loader and the version-2 envelope loader;
+`tests/unit/test_consumer_compiler.py` covers the Consumer Config loader.
+
+== The rest of the original acceptance
+
+Topology, not hard-coded names:: `WorkflowProfile.executing_phase_roles`
+projects the reachable phases from the WorkItem entry through declared
+`goto` targets. I confirmed `goto` is the only effect that moves a Run's
+phase (`reducer.py` assigns `phase=route.target or run.phase` at its single
+transition), so the projected key set is exactly the set of phases a Hop can
+execute. `resolve_execution`, `admit_parsed` and `wfc plan` all derive their
+keys from that one projection; no review phase name appears in the code.
+Deterministic identity:: The envelope is serialized from a map sorted by
+name with the fields in a fixed order, so the text and digest do not depend
+on traversal order; `resolve_execution` with a reversed phase mapping
+produces byte-identical text (asserted in `test_consumer_compiler.py`).
+Version-1 compatibility:: With no `phase_execution` (and with an explicit
+empty one) the resolver emits the same `schema_version: 1` / `bindings`
+document the baseline `_execution_yaml` emitted, field for field, and its
+digest is the SHA-256 of those bytes. The role set now comes from the
+executing phases rather than from `request.personas`; for both closed
+consumer programs (`simple@v1`, `robust@v1` — every phase reachable from the
+hard-coded `implement` entry) those sets coincide, so no existing consumer
+configuration changes identity or admission.
+Refusals before provider execution:: Reproduced: unknown or nonexecuting
+phase key, role defaults or flags for roles the program does not use, an
+empty phase entry, an unknown field (`effort`), a non-`codex_cli`/
+`claude_cli` adapter, an empty or non-string value, a missing effective
+field (`execution binding for phase amend is missing: model, reasoning`) and
+mixed effective adapters. `operator.admit_parsed` repeats the key-set and
+single-adapter checks against the pinned profile for both envelope versions,
+and `frontdoor.verify.verify_commission` routes the preview-resolved
+envelope through that same admission before launch, so preview, admission
+and dispatch cannot disagree.
+Pinning, resume and reconciliation:: `_authorize` writes
+`commission/envelope.yaml` with raw bytes and journals its digest;
+`_do_commit`, `_do_verify` and `_engine_argv` all read it back through
+`_pinned_envelope_text`, which re-hashes the bytes and refuses
+`refused_drift` on any change — the earlier re-resolution from the config at
+commit time is gone. The engine is additionally handed
+`--execution-bindings-sha256` and refuses a mismatch in `_preflight` before
+the state root exists. Dispatch selects by `run.phase` through
+`RunExecutionConfiguration.binding_for`, and an absent phase is a
+deterministic `OperatorPreflightError`, not a `KeyError`.
+Evidence and audit:: The operator plan records
+`execution_envelope_sha256` and, for a phase envelope, `phase_bindings`; the
+audit projection carries both and resolves each Hop's adapter/model/
+reasoning by the Hop's phase, falling back to the attempt record for legacy
+Hop summaries that omit it. The governance key check is an allow-list, so
+recorded pre-phase-bindings plans still project unchanged (covered by
+`test_archive_equivalence.py`).
+`robust@v1` example:: Present in the Operator Manual's new
+`[[execution-bindings]]` section, in `agent_skill/.../setup.md`, and in
+`examples/consumer-demo/README.md`, each with distinct `broad_review` and
+`focused_review` models on the one `independent_reviewer` role and a note
+that role and authority are unchanged.
+Tests:: `test_consumer_demo_kit.py::test_robust_phase_choices_match_preview_provider_argv_and_archived_evidence`
+is the end-to-end check that matters: it commits a `phase_execution`
+fragment, asserts the two per-phase lines and the envelope digest in the
+`wfc plan` output, then runs the same flags through `wfc run` behind a
+provider wrapper that asserts the `--model` and reasoning argument it
+actually receives for each phase, and finally compares the envelope file,
+the operator plan, the archived audit's governance section and hop list, and
+the raw execution evidence across all five Hops including the return to
+`broad_review`. The unit tests add the field merge, the reversed-order
+identity, thirteen invalid-value cases, the adapter-mix and
+missing-field refusals, admission against the executing phase set, the
+envelope-digest refusal at engine preflight, the UTF-8 matrix over both
+envelope versions, and three lifecycle tests for drift at confirmation,
+adoption on resume and resume from the pinned envelope. Each of these fails
+without the behavior it covers; no existing test was weakened, and the one
+changed expectation
+(`test_role_keyed_execution_binding_parser_requires_version_one`) still
+asserts a closed refusal for the now-ambiguous `schema_version: 2` document.
+Backlog FTR:: `FTR-WFC-PHASE-EXECUTION-BINDINGS.adoc` records the decision,
+compatibility and limits, the acceptance and evidence, and the documentary
+assessment that mixed adapters would need an explicit future design binding
+executable identity per adapter — without implementing one. No provider
+router or registry appears in the code; the adapter set stays the closed
+pair and one scalar executable.
+Boundaries and dependencies:: No adapter, trusted-Git or sandbox module is
+touched by the candidate. Role, persona, review authority and phase scope
+still come from the profile; the phase→role projection is used only to pick
+a binding. No new runtime dependency, no `governance/`, `.wfc/` state or
+Evidence change.
+
+[[observations]]
+== Non-blocking observations
+
+* The skill's rule 3 says "matching its committed role default", while AU-3
+  says "bindings as approved or as committed". The two differ only for a
+  config that commits `phase_execution`: such a binding is committed, yet
+  does not match the role default, so a Level-1 agent reading the skill
+  would ask again instead of proceeding under an existing delegation. The
+  divergence is in the conservative direction, grants nothing, and does not
+  affect the role-only scenario the WorkItem requires; "as approved or as
+  committed" would state AU-3 exactly.
+* `wfc plan` prints the heading "resolved execution envelope (separate from
+  the Commission; not published):" and then, for a phase envelope, nothing
+  under it, because `configuration.bindings` is empty in version 2; the
+  content follows under "effective execution by phase". Nothing is missing
+  or wrong, but the empty heading reads like a defect on the operator's main
+  authorization surface.
+* `audit._build_governance_section` emits the two binding maps through
+  `for key in ("role_bindings", "phase_bindings"): if key == "role_bindings"
+  or key in plan_doc:`. The condition encodes "always the first, the second
+  only when present" in a way a reader has to decode; two plain statements
+  would say the same thing.
+* `frontdoor/config.py` imports `field` from `dataclasses` and then rebinds
+  `field` as a local in `execution_overrides_from_flags`, as a loop variable
+  in `resolve_execution`, and shadows the `value` parameter inside
+  `_execution_fields`. Harmless, but the names work against the reader.
+
+I found no simpler structure that would keep what the task requires. The two
+binding maps on `RunExecutionConfiguration` are the price of byte-identical
+version-1 envelopes for existing configurations, which the task demands; the
+merge, the refusals and the pinning each sit at one place, and the candidate
+removed a duplicated flag parser and a redundant re-resolution rather than
+adding mechanism.
+
+== Reviewer-local checks and their limits
+
+Measured here: the probes described above, executed against the committed
+public functions with `/usr/bin/python3` 3.13.5 and PyYAML 6.0.2; strict
+Asciidoctor renders (`--safe-mode=safe -a assembled -o /dev/null
+--failure-level=WARN`, 2.0.23) with empty output and exit 0 for the
+assembled Operator Manual, `FTR-WFC-PHASE-EXECUTION-BINDINGS.adoc`, the
+successor verification record and the earlier review record;
+`python3 scripts/wfc_doc_catalog.py generate` then `check`, reporting
+"548 records … unchanged", "83 unresolved links; 4 Project Memory
+source_path misses" and "catalog current" — the unchanged baseline, with no
+unresolved link or Project Memory miss attributable to this candidate; and
+`python3 -m py_compile` over every changed source and test file.
+
+Not measured here: `python -m pytest -q` and `python -m ruff check .`. This
+sandbox has neither `pytest` nor `ruff`, no network to obtain them, and
+invoking an interpreter outside this worktree needs an approval this session
+cannot obtain. That is an agent-local environment limit, not a statement
+about the suite or the lint gate; both are the Coordinator's separately
+executed trusted evidence. Every functional claim above was therefore
+established by direct execution of the committed code on the same paths the
+corresponding tests assert, and each named test was read for what it would
+catch. Integration and product closure remain operator decisions.
