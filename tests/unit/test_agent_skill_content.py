@@ -32,7 +32,7 @@ WORKER_REVIEWER_EXCLUSION = "Not for use inside a WFC Worker or Reviewer Hop."
 FORBIDDEN_SNIPPETS = ("$ARGUMENTS", "${CLAUDE_SKILL_DIR}", "allowed-tools")
 TOP_LEVEL_FLAG_COMBOS = ({"--version"}, {"--version", "--json"})
 
-# Level-1 autonomy contract phrases (WI-WFC-LEVEL1-AUTONOMY-001): the
+# Level-1 autonomy contract phrases (WI-WFC-LEVEL1-AUTONOMY-002): the
 # delegated-mandate principle and the preserved boundaries must both survive
 # in the skill text, not just in the Operator Manual it distils.
 DELEGATED_AUTHORITY_PHRASE = "Delegated task authority persists across execution attempts"
@@ -270,7 +270,7 @@ def test_drift_guard_wfc_commands_match_real_cli():
 
 
 def test_delegated_authority_persists_phrase_present():
-    """WI-WFC-LEVEL1-AUTONOMY-001: a technical failure or stopped attempt does
+    """WI-WFC-LEVEL1-AUTONOMY-002: a technical failure or stopped attempt does
     not end Level 1's delegated task authority; this must survive verbatim in
     the skill, not only in the Operator Manual it distils."""
     text = SKILL_FILE.read_text(encoding="utf-8")
