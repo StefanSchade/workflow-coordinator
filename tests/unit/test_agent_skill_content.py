@@ -290,6 +290,24 @@ def test_skill_preserves_every_always_ask_boundary():
         assert phrase in normalized, f"SKILL.md no longer states the boundary: {phrase!r}"
 
 
+def test_skill_qualifies_discard_boundary_and_states_own_worktree_cleanup_freedom():
+    """WI-WFC-LEVEL1-AUTONOMY-002 F001: the worktree/branch/stash/ref discard
+    boundary must be qualified to the operator's own, not-yet-dispositioned
+    work (never a blanket 'always ask'), and the skill must say, as plainly
+    as Operator Manual ch10 does, that removing its own already-integrated-
+    or-dispositioned worktree and scratch needs no further human decision."""
+    normalized = _normalized(SKILL_FILE.read_text(encoding="utf-8"))
+    assert (
+        "discarding a branch, worktree, stash or preserved ref this session "
+        "did not itself create for this task" in normalized
+    )
+    assert "Own-worktree cleanup" in normalized
+    assert (
+        "remove the worktree and scratch directory this session itself "
+        "created for it" in normalized
+    )
+
+
 def test_skill_never_section_still_withholds_finding_and_review_authority():
     text = SKILL_FILE.read_text(encoding="utf-8")
     assert "Open or resolve a Finding." in text
