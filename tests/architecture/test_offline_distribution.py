@@ -63,6 +63,25 @@ def test_clean_isolated_distribution_and_wheel_install(tmp_path):
     run(str(python), '-m', 'pip', 'install', str(next(dist.glob('*.whl'))), cwd=tmp_path)
     run(str(python), '-m', 'pip', 'check', cwd=tmp_path)
     run(str(venv / 'bin/wfc'), '--help', cwd=tmp_path)
+    # S2 (FTR-WFC-AGENT-SKILL-DISTRIBUTION, AC-2): from a clean environment, in a
+    # directory outside the checkout, `wfc skill show` prints the packaged SKILL.md
+    # and `wfc skill install` works for both hosts into a temporary home.
+    show = run(str(venv / 'bin/wfc'), 'skill', 'show', cwd=tmp_path)
+    assert show.stdout.startswith('---\nname: wfc\n')
+    for host, skill_subpath in (
+        ('claude', ('.claude', 'skills', 'wfc')),
+        ('codex', ('.agents', 'skills', 'wfc')),
+    ):
+        fake_home = tmp_path / f'home-{host}'
+        fake_home.mkdir()
+        host_env = os.environ.copy()
+        host_env['HOME'] = str(fake_home)
+        host_env.pop('PYTHONPATH', None)
+        host_env.pop('PYTHONSAFEPATH', None)
+        run(str(venv / 'bin/wfc'), 'skill', 'install', host, cwd=tmp_path, env=host_env)
+        installed_skill_md = fake_home.joinpath(*skill_subpath, 'SKILL.md')
+        assert installed_skill_md.is_file()
+        assert installed_skill_md.read_text() == show.stdout
     env = os.environ.copy()
     env.pop('PYTHONPATH', None)
     env.pop('PYTHONSAFEPATH', None)
