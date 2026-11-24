@@ -25,6 +25,7 @@ from workflow_coordinator.frontdoor import init as INIT
 from workflow_coordinator.frontdoor import lifecycle as LIFECYCLE
 from workflow_coordinator.frontdoor import plan as PLAN
 from workflow_coordinator.frontdoor import report as REPORT
+from workflow_coordinator.frontdoor import skill as SKILL
 
 QUICKSTART = (
     Path(__file__).resolve().parent.parent.parent
@@ -45,6 +46,7 @@ _PARSE_ARGS: dict[str, Callable[[list[str]], argparse.Namespace]] = {
     "audit": AUDIT._parse_args,
     "report": REPORT._parse_args,
     "archive": ARCHIVE._parse_args,
+    "skill": SKILL._parse_args,
 }
 
 

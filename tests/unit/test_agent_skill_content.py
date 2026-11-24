@@ -2,9 +2,7 @@
 
 Every check here is static: it reads the four packaged Markdown files and
 compares them against this tree's own real CLI, EXIT_CODES and VERSION --
-never against memory or a separately maintained copy. FTR-WFC-AGENT-SKILL-
-DISTRIBUTION's S1 carries one named exemption, ``PENDING_SUBCOMMANDS``,
-because ``wfc skill`` does not exist yet; S2 removes it.
+never against memory or a separately maintained copy.
 """
 
 from __future__ import annotations
@@ -32,7 +30,6 @@ ALL_SKILL_FILES = (SKILL_FILE, *REFERENCE_FILES)
 PORTABLE_FRONTMATTER_KEYS = {"name", "description", "license", "compatibility", "metadata"}
 WORKER_REVIEWER_EXCLUSION = "Not for use inside a WFC Worker or Reviewer Hop."
 FORBIDDEN_SNIPPETS = ("$ARGUMENTS", "${CLAUDE_SKILL_DIR}", "allowed-tools")
-PENDING_SUBCOMMANDS = {"skill"}
 TOP_LEVEL_FLAG_COMBOS = ({"--version"}, {"--version", "--json"})
 
 # One subcommand invoker per real CLI dispatch branch (``frontdoor/cli.py``),
@@ -46,6 +43,7 @@ SUBCOMMAND_MAIN = {
     "run": lambda argv: cli_main(["run", *argv]),
     "resume": lambda argv: cli_main(["resume", *argv]),
     "status": lambda argv: cli_main(["status", *argv]),
+    "skill": lambda argv: cli_main(["skill", *argv]),
 }
 
 GITHUB_BLOB_RE = re.compile(
@@ -240,8 +238,6 @@ def test_drift_guard_wfc_commands_match_real_cli():
                 )
                 continue
             subcommand = second
-            if subcommand in PENDING_SUBCOMMANDS:
-                continue
             assert subcommand in SUBCOMMAND_MAIN, (
                 f"{path.name}: {command!r} names a subcommand this CLI does not accept"
             )

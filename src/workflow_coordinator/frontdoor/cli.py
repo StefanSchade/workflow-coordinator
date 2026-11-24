@@ -38,5 +38,8 @@ def main(argv=None):
     ):
         from .lifecycle import main as lifecycle_main
         return lifecycle_main(args)
+    if args[:1] == ['skill']:
+        from .skill import main as skill_main
+        return skill_main(args[1:])
     from ..operator import main as operator_main
     return operator_main(args)
