@@ -1,0 +1,261 @@
+ifndef::assembled[]
+= WFC Operator Manual -- Tutorial 2: a program change with a test and an independent review
+:operator-docs: ../..
+
+Maturity::  stable
+Authority:: informative
+Updated::   2026-11-24
+Owns::      Tutorial 2 of three: a realistic check, a multi-path scope, two bound roles and the review loop that opens, corrects and resolves a Finding. The preceding link:{operator-docs}/operator_manual/ch09_consumer_quickstart/02_first_run_example.adoc#consumer-quickstart-first-run-example[Tutorial 1] owns the plan/authorization/run/archived-evidence basics this page assumes.
+endif::[]
+
+[[tutorial-program-change]]
+== Tutorial 2 -- a program change with a test and an independent review
+
+The second of
+link:{operator-docs}/operator_manual/ch09_consumer_quickstart/00_overview.adoc#consumer-overview-tutorials[three
+tutorials], using the same demo workspace Tutorial 1 built.
+
+[[tutorial-program-change-goal]]
+=== Goal
+
+Tutorial 1 used `simple@v1`: one Worker role, no review phase. This
+tutorial uses `robust@v1` and adds four things.
+
+[[tutorial-program-change-realistic-check]]
+==== A realistic check
+
+The check now runs the unit tests, and it must pass *before* the task (the
+new test does not exist yet, but the old ones do and pass) and *after* --
+see
+link:{operator-docs}/operator_manual/ch09_consumer_quickstart/02_first_run_example.adoc#first-run-why-before-and-after[why
+the check must pass before and after].
+
+[WARNING]
+====
+A check that leaves behind any new file Git does not ignore -- Python
+bytecode (`+__pycache__/+`) is the usual one -- makes the baseline probe
+refuse the Run before any provider starts (see
+link:{operator-docs}/operator_manual/ch09_consumer_quickstart/02_first_run_example.adoc#first-run-why-before-and-after[why
+the check must pass before and after]), and that refusal still consumes the
+checkout's one lifecycle. The demo repository's `.gitignore` excludes
+`+__pycache__/+` for exactly this reason; an equivalent ignore rule belongs
+in your own repository's check command too.
+====
+
+[[tutorial-program-change-scope]]
+==== Scope of several paths
+
+This task's scope lists four paths: the changed source file, its test, and
+the two review artefacts (`docs/reviews/t2-farewell_broad_review.md`,
+`docs/reviews/t2-farewell_focused_review.md`). `robust@v1` puts the review
+artefacts in scope because the independent reviewer's own commits must stay
+inside the same Commission's declared paths, exactly like the Worker's; see
+link:{operator-docs}/operator_manual/ch02_commissioning/01_authority.adoc#mutation-scope[Commission
+mutation-scope granularity].
+
+[[tutorial-program-change-roles]]
+==== Two roles
+
+`robust@v1` binds two personas separately: `worker` and
+`independent_reviewer`. Each gets its own `--execution-override`
+triple (`adapter`, `model`, `reasoning`) -- the two roles may even use
+different adapters or models, though this rehearsal uses the same scripted
+stand-in for both.
+
+[[tutorial-program-change-review-loop]]
+==== The review loop
+
+The rehearsal below shows a blocking Finding opened by the broad review,
+the Worker's correction, the focused review that resolves it, and the
+renewed broad review that accepts.
+
+[[tutorial-program-change-task]]
+=== The task
+
+// kit: requests/t2-farewell.task.md
+[source,markdown]
+----
+# Farewell function
+
+Add `farewell(name)` to `greeter/core.py` returning `Goodbye, <name>!` and a unit test for it in `tests/test_core.py`.
+
+## Acceptance
+
+The task-check passes and a test asserts `farewell("Ada") == "Goodbye, Ada!"`.
+
+## Withheld authority
+
+No change outside the authorized scope.
+
+## Default escalation
+
+Stop and ask if the task cannot be completed inside the authorized scope.
+----
+
+// kit: requests/t2-farewell.request.yaml
+[source,yaml]
+----
+schema_version: 1
+commission_id: t2-farewell-001
+work_item_id: WI-T2-FAREWELL-001
+authority_source: The workspace owner authorizes this bounded demo task.
+program:
+  id: robust
+  revision: v1
+task:
+  title: Farewell function
+  body: >-
+    Add `farewell(name)` to `greeter/core.py` returning `Goodbye, <name>!`
+    and a unit test for it in `tests/test_core.py`.
+  acceptance: >-
+    The task-check passes and a test asserts
+    `farewell("Ada") == "Goodbye, Ada!"`.
+  withheld_authority: No change outside the authorized scope.
+  escalation_default: Stop and ask if the task cannot be completed inside the authorized scope.
+scope:
+  - greeter/core.py
+  - tests/test_core.py
+  - docs/reviews/t2-farewell_broad_review.md
+  - docs/reviews/t2-farewell_focused_review.md
+personas:
+  worker: Implement exactly the authorized scope; stop and escalate rather than guess beyond it.
+  independent_reviewer: >-
+    Review the worker's change against the acceptance criteria and the
+    authorized scope; open a Finding for anything blocking.
+evidence:
+  argv: [sh, checks/check.sh]
+  timeout_seconds: 300
+max_autonomous_hops: 6
+durable_artifacts:
+  broad_review: [docs/reviews/t2-farewell_broad_review.md]
+  focused_review: [docs/reviews/t2-farewell_focused_review.md]
+guidance:
+  path: .wfc/governance/repository-policy.md
+  source_commit: '{{GUIDANCE_COMMIT}}'
+----
+
+`program.id: robust` is what adds the review phases; `durable_artifacts`
+names which review document belongs to which phase, distinct from `scope`
+(see
+link:{operator-docs}/operator_manual/ch02_commissioning/01_authority.adoc#mutation-scope[Commission
+mutation-scope granularity] again), the ceiling every commit stays inside.
+
+[[tutorial-program-change-rehearse]]
+=== Rehearse it
+
+[source,shell]
+----
+python3 examples/consumer-demo/rehearse.py ~/wfc-demo t2-farewell
+----
+
+This was executed against this exact working tree, on the installed `wfc`
+0.1.0b1, in a fresh worktree `greeter-run-t2-farewell/`. Abridged real
+output:
+
+[source,text]
+----
+REHEARSAL -- no model was called. A script played the worker and the
+reviewer. [... banner text as in Tutorial 1 ...]
+[... digests and state-root paths omitted ...]
+CLASSIFICATION: completed
+RUN STATUS: completed
+WFC RUN  greeter-run-<run-id>
+
+outcome     completed  t2-farewell-001-robust-v1@1  5 of 6 hops  run RUN-<id>
+commits     6c4ab5b  8d4e307  4cc17f8  9b9d6e5  33a1767
+evidence    task-check  pass  exit 0  (H002)
+evidence    task-check  pass  exit 0  (H004)
+evidence    task-check  pass  exit 0  (H005)
+findings    none open
+archive     archive/unclassified/greeter-run-<run-id>@<commit>
+not done    nothing was pushed
+not done    limits: preservation_not_recorded, usage_not_reported
+REHEARSAL -- no model was called. [... banner repeats ...]
+----
+
+[[tutorial-program-change-look-at]]
+=== What to look at
+
+* `git -C greeter-run-t2-farewell log --format='%h %an %s'` -- six commits
+  on top of the seeded tree: the Commission commit, then one payload commit
+  per Hop (`feat: ... H001 add farewell()`, `docs: ... H002 record broad
+  review`, `test: ... H003 add a farewell() test`, `docs: ... H004 record
+  focused review`, `docs: ... H005 record renewed broad review`). Proves
+  every Hop, Worker's or reviewer's, is its own commit.
+* The reviewer's Hops (H002, H004, H005) changed only
+  `docs/reviews/t2-farewell_*.md` -- `git show --stat <commit>` on any of
+  them shows exactly one changed file. Proves the independent reviewer
+  never touches the Worker's code.
+* `wfc report <archived attempt dir>` prints `5 of 6 hops` and `findings
+  none open`. Proves the Commission's six-Hop ceiling was not exhausted and
+  the Finding reached a resolved, non-blocking state.
+* In the archived `audit.json`, the one Finding (`F001`) carries
+  `introduced_by_hop: "H002"` and `changed_by_hop: "H004"` with
+  `state: "resolved"` -- the broad review that opened it and the focused
+  review that resolved it, exactly two Hops apart.
+
+[[tutorial-program-change-run]]
+=== Run it live
+
+[source,shell]
+----
+cd ~/wfc-demo
+git -C greeter worktree add ../greeter-live-t2 -b live/t2 main
+cd ../greeter-live-t2
+wfc plan ../requests/t2-farewell.task.md --repository . \
+  --scope greeter/core.py --scope tests/test_core.py \
+  --scope docs/reviews/t2-farewell_broad_review.md \
+  --scope docs/reviews/t2-farewell_focused_review.md \
+  --commission-id t2-farewell-001 --work-item-id WI-T2-FAREWELL-001 \
+  --authority-source "The workspace owner authorizes this bounded demo task." \
+  --program robust@v1 \
+  --persona worker="Implement exactly the authorized scope; stop and escalate rather than guess beyond it." \
+  --persona independent_reviewer="Review the worker's change against the acceptance criteria and the authorized scope; open a Finding for anything blocking." \
+  --evidence-argv sh --evidence-argv checks/check.sh --evidence-timeout 300 \
+  --max-autonomous-hops 6 \
+  --durable-artifact broad_review=docs/reviews/t2-farewell_broad_review.md \
+  --durable-artifact focused_review=docs/reviews/t2-farewell_focused_review.md \
+  --guidance-path .wfc/governance/repository-policy.md --guidance-commit <the kit's guidance commit>   # read-only preview
+wfc run --repository . --request ../requests/t2-farewell.request.yaml \
+  --executable claude \
+  --execution-override worker.adapter=claude_cli \
+  --execution-override worker.model=<your model> \
+  --execution-override worker.reasoning=medium \
+  --execution-override independent_reviewer.adapter=claude_cli \
+  --execution-override independent_reviewer.model=<your model> \
+  --execution-override independent_reviewer.reasoning=medium
+----
+
+The `wfc plan` command above was actually executed, read-only, against this
+kit workspace and exited `0`, with the same shape of output as Tutorial 1's
+(program `robust@v1`, both personas listed, both durable-artifact phases
+listed). The live `wfc run` was *not* executed for this page.
+
+*What may differ:* a live independent reviewer may accept at once -- two
+Hops, as both recorded consumer smoke Runs did (see the
+link:{operator-docs}/release_notes/release_notes.adoc[Release Notes]) --
+raise a different Finding, or stop with a question of its own; none of
+these is a malfunction. The scope enforcement and the Commission's Hop
+ceiling hold regardless of which path a live reviewer takes.
+
+[[tutorial-program-change-verified]]
+=== What was verified
+
+On the installed `wfc` 0.1.0b1: `rehearse.py t2-farewell` and the `wfc plan`
+preview above were executed against this exact working tree and succeeded;
+their commands and output are real, including the six commits, the `5 of 6
+hops` outcome and the resolved Finding shown above. The live `wfc run` with
+either adapter was not executed for this page; no claim is made about
+what a live Worker or reviewer would do.
+
+[[tutorial-program-change-next]]
+=== Next
+
+Continue to
+link:{operator-docs}/operator_manual/ch09_consumer_quickstart/04_tutorial_stops.adoc#tutorial-stops[Tutorial
+3 -- stops and the human decision]. For the review mechanics this tutorial
+exercised, see
+link:{operator-docs}/operator_manual/ch02_commissioning/03_review.adoc#review-breadth[review
+breadth] and
+link:{operator-docs}/operator_manual/ch04_evidence/01_acceptance.adoc#review-topology[review
+topology].

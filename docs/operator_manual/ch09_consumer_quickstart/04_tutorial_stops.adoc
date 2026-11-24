@@ -1,0 +1,234 @@
+ifndef::assembled[]
+= WFC Operator Manual -- Tutorial 3: stops and the human decision
+:operator-docs: ../..
+
+Maturity::  stable
+Authority:: informative
+Updated::   2026-11-24
+Owns::      Tutorial 3 of three: a refusal before launch, a stop that waits for a human, and what the human decides next. The preceding link:{operator-docs}/operator_manual/ch09_consumer_quickstart/03_tutorial_program_change.adoc#tutorial-program-change[Tutorial 2] owns the review loop this page does not repeat.
+endif::[]
+
+[[tutorial-stops]]
+== Tutorial 3 -- stops and the human decision
+
+The third of
+link:{operator-docs}/operator_manual/ch09_consumer_quickstart/00_overview.adoc#consumer-overview-tutorials[three
+tutorials], using the same demo workspace Tutorials 1 and 2 built. Both
+rehearsals here run without any model.
+
+[[tutorial-stops-goal]]
+=== Goal
+
+Tutorials 1 and 2 both ended `completed`. This tutorial shows two ways a
+Run does *not* reach that state, and how to read each one correctly: a
+refusal before launch, and a stop that waits for a human.
+
+[[tutorial-stops-task]]
+=== The task
+
+Scenario `t3-probe-refusal` reuses Tutorial 1's `t1-hello-page` task, but
+its request's `evidence.argv` names `checks/not-there.sh` -- a script that
+does not exist. Scenario `t3-scope-stop` uses its own task and request:
+
+// kit: requests/t3-scope-stop.task.md
+[source,markdown]
+----
+# Farewell page with a link
+
+Create `docs/farewell.adoc` and link it from `docs/notes.adoc`.
+
+## Acceptance
+
+The task-check passes, `docs/farewell.adoc` exists, and it is linked from `docs/notes.adoc`.
+
+## Withheld authority
+
+No change outside `docs/farewell.adoc`.
+
+## Default escalation
+
+Stop and ask if the task cannot be completed inside the authorized scope.
+----
+
+// kit: requests/t3-scope-stop.request.yaml
+[source,yaml]
+----
+schema_version: 1
+commission_id: t3-scope-stop-001
+work_item_id: WI-T3-SCOPE-STOP-001
+authority_source: The workspace owner authorizes this bounded demo task.
+program:
+  id: simple
+  revision: v1
+task:
+  title: Farewell page with a link
+  body: Create `docs/farewell.adoc` and link it from `docs/notes.adoc`.
+  acceptance: >-
+    The task-check passes, `docs/farewell.adoc` exists, and it is linked
+    from `docs/notes.adoc`.
+  withheld_authority: No change outside `docs/farewell.adoc`.
+  escalation_default: Stop and ask if the task cannot be completed inside the authorized scope.
+scope:
+  - docs/farewell.adoc
+personas:
+  worker: Implement exactly the authorized scope; stop and escalate rather than guess beyond it.
+evidence:
+  argv: [sh, checks/check.sh]
+  timeout_seconds: 300
+max_autonomous_hops: 3
+durable_artifacts: {}
+guidance:
+  path: .wfc/governance/repository-policy.md
+  source_commit: '{{GUIDANCE_COMMIT}}'
+----
+
+The task body itself asks for a change to `docs/notes.adoc` (a link), but
+`scope` names only `docs/farewell.adoc` -- the mismatch is deliberate.
+
+[[tutorial-stops-rehearse]]
+=== Rehearse it
+
+A refusal before launch:
+
+[source,shell]
+----
+python3 examples/consumer-demo/rehearse.py ~/wfc-demo t3-probe-refusal
+----
+
+Abridged real output:
+
+[source,text]
+----
+REHEARSAL -- no model was called. [... banner as in Tutorial 1 ...]
+Commission digest: sha256:5b6a9844e43cc42951d1adfad577ad8a4d034c168cc00131e063978029c4fa51
+Execution envelope digest: sha256:11b0007a5c9b603c6469492f53297b705f2c455c9002c345600d4c31d398f096
+wfc run: baseline probe failed with exit code 2; no provider ran
+REHEARSAL -- no model was called. [... banner repeats ...]
+$ git -C greeter-run-t3-probe-refusal log --format='%h %an %s'
+86cbda3 WFC Demo chore: add WFC Consumer Config
+28d3158 WFC Demo chore: seed demo repository
+(no archived Attempt to report)
+----
+
+`wfc run` exits `23` (classification `refused_probe`) and prints no
+`CLASSIFICATION:` line of its own -- the probe ran, and failed, before
+authorization reached anything a lifecycle could classify. The Git log
+above has only the two commits the kit seeded; no Commission was committed.
+
+A stop that waits for a human:
+
+[source,shell]
+----
+python3 examples/consumer-demo/rehearse.py ~/wfc-demo t3-scope-stop
+----
+
+Abridged real output:
+
+[source,text]
+----
+REHEARSAL -- no model was called. [... banner as in Tutorial 1 ...]
+[... digests and state-root paths omitted ...]
+CLASSIFICATION: awaiting_human
+MESSAGE: classified: awaiting_human
+RUN STATUS: awaiting_human
+WFC RUN  greeter-run-<run-id>
+
+outcome     awaiting_human  t3-scope-stop-001-simple-v1@1  1 of 3 hops  run RUN-<id>
+stop reason mechanical_preemption:human_authority:scope
+commits     none
+evidence    task-check  pass  exit 0  (H001)
+findings    none open
+archive     archive/unclassified/greeter-run-<run-id>@<commit>
+next        a human must answer the open question, then run `wfc resume`
+not done    nothing was pushed
+not done    the task is not complete
+REHEARSAL -- no model was called. [... banner repeats ...]
+----
+
+[[tutorial-stops-look-at]]
+=== What to look at
+
+* `wfc run`'s own exit code for `t3-probe-refusal` is `23`, and it printed
+  no `CLASSIFICATION:` line -- a probe refusal happens before launch, so
+  there is nothing yet to classify. A *later* `wfc status --repository
+  greeter-run-t3-probe-refusal` call does print `CLASSIFICATION:
+  not_launched`; that describes the checkout's own state at inspection
+  time, not a result the refused Run itself reached.
+* `git -C greeter-run-t3-probe-refusal log` shows only the kit's two seed
+  commits -- proves nothing was committed by the refused Run.
+* `t3-scope-stop`'s own exit code is `10`, `CLASSIFICATION: awaiting_human`,
+  `stop reason mechanical_preemption:human_authority:scope`. Read the
+  classification, not the exit code alone -- see
+  link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#terminal-states[terminal
+  states] for every classification this can print.
+* `commits none` for the payload, but `wfc status` still reports an
+  `ARCHIVE:` block -- the Commission commit exists (the Worker stopped
+  before writing anything), and the stop itself was still archived.
+
+[[tutorial-stops-human-decides]]
+=== What the human decides
+
+For `t3-scope-stop`, the correct decision is a new Commission whose scope
+includes `docs/notes.adoc`, prepared in a fresh worktree (a stopped
+checkout has spent its one lifecycle). This page states that one decision;
+it invents no further procedure. See
+link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc[recovery
+outcomes] for stops that leave work behind, and
+link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#terminal-states[terminal
+states] for every classification. For `t3-probe-refusal`, the decision is
+simpler: fix the missing check command, then retry in a fresh worktree --
+the refused checkout cannot be reused.
+
+[[tutorial-stops-run]]
+=== Run it live
+
+[source,shell]
+----
+cd ~/wfc-demo
+git -C greeter worktree add ../greeter-live-t3 -b live/t3 main
+cd ../greeter-live-t3
+wfc plan ../requests/t3-scope-stop.task.md --repository . --scope docs/farewell.adoc \
+  --commission-id t3-scope-stop-001 --work-item-id WI-T3-SCOPE-STOP-001 \
+  --authority-source "The workspace owner authorizes this bounded demo task." \
+  --program simple@v1 \
+  --persona worker="Implement exactly the authorized scope; stop and escalate rather than guess beyond it." \
+  --evidence-argv sh --evidence-argv checks/check.sh --evidence-timeout 300 \
+  --max-autonomous-hops 3 \
+  --guidance-path .wfc/governance/repository-policy.md --guidance-commit <the kit's guidance commit>   # read-only preview
+wfc run --repository . --request ../requests/t3-scope-stop.request.yaml \
+  --executable claude \
+  --execution-override worker.adapter=claude_cli \
+  --execution-override worker.model=<your model> \
+  --execution-override worker.reasoning=medium
+----
+
+Neither live command was executed for this page. A real Worker is expected
+to stop on this mismatched scope, but may instead complete only the
+in-scope part (creating `docs/farewell.adoc` without the link) and report
+`completed`; either way the
+link:{operator-docs}/operator_manual/ch02_commissioning/01_authority.adoc#mutation-scope[scope
+enforcement] holds. Check it yourself afterward with `git -C
+greeter-live-t3 diff --name-only main..HEAD` restricted to
+`.wfc/governance/<commission-id>/` plus, at most, `docs/farewell.adoc` --
+`docs/notes.adoc` should never appear.
+
+[[tutorial-stops-verified]]
+=== What was verified
+
+On the installed `wfc` 0.1.0b1: `rehearse.py t3-probe-refusal` and
+`rehearse.py t3-scope-stop` were executed against this exact working tree
+and succeeded, matching their scenario's expected exit code and
+classification; their output above is real. No live Run was performed for
+this page.
+
+[[tutorial-stops-next]]
+=== Next
+
+Back to the
+link:{operator-docs}/operator_manual/ch09_consumer_quickstart/00_overview.adoc#consumer-overview[overview],
+or into the full
+link:{operator-docs}/operator_manual/operator_manual.adoc[Operator Manual],
+starting from
+link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc[recovery
+outcomes] or
+link:{operator-docs}/operator_manual/ch07_diagnostics/01_troubleshooting.adoc#troubleshooting[troubleshooting].
