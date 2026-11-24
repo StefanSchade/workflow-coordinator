@@ -1,0 +1,385 @@
+= Recovery and routing bugfix — independent broad review
+
+Work item:: `WI-WFC-RECOVERY-ROUTING-001`
+Run and Hop:: `RUN-ff42615fa4cd4d35a95affd8a3e05585`, `H002` (`broad_review`,
+independent reviewer, gate, blocking-only, `finding_authority: [resolve]`)
+Invocation:: `INV-f778c655983f471baa8867c623616b61`
+Candidate:: `ca1f9019e7db423339e8bfd3665393322cac4429..ace5d5499fabab469aeff3ba523cd8ac09fcf44b`
+(the whole bugfix: the single implementation commit `ace5d54`)
+Date:: 2026-11-24
+Verdict:: *Changes required.* Two blocking findings; route `correction`.
+
+This is a whole-candidate review against the task text and the governing
+scope, not a review of a diff summary. I read the task, the Commission
+(`.wfc/governance/wfc-recovery-routing-001/`) and the Worker's verification
+record as context only, and re-derived every result below by my own
+execution against the candidate as committed.
+
+== 1. Disposition
+
+Verdict:: `changes_required`
+Route:: `correction`
+Finding disposition:: none carried over — the current Run's authoritative
+ledger holds no Finding at this Hop. This pass opens two new blocking
+Findings (F-A and F-B below, named locally in this record only; the
+Coordinator allocates their run-local IDs).
+
+== 2. What I verified, and how
+
+Environment: `/tmp/wfc-review-h002-venv/bin/python` (3.13.5, pytest 9.2.0,
+PyYAML 6.0.3), a venv already present on the machine. Everything below is
+`--wfc-partial`; I did not run and do not claim the full required suite.
+
+[cols="2,3",options="header"]
+|===
+| Check | Result
+
+| `python -m ruff check .`
+| `All checks passed!`
+
+| `asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN`
+on all five changed `.adoc` files
+| no output (clean) for each
+
+| `scripts/wfc_doc_catalog.py check` at the candidate
+| `catalog current`; 83 unresolved links, 4 Project Memory misses
+
+| the same `generate` + `check` pair on a clean extract of the base commit
+| identical: 83 unresolved links, 4 misses — no regression
+
+| the three new test files
+| 34 passed
+
+| `tests/unit` + `tests/architecture` at the candidate
+| 28 failures
+
+| the same selection on a clean extract of the base commit
+| 29 failures, a strict superset of the candidate's 28 — the candidate
+introduces no new failure
+|===
+
+The 28 failures are agent-local and environmental, as the Worker's
+verification record states: the installed `wfc` console script is a stale
+build (`wfc: error: unrecognized arguments: --execution-bindings-sha256`),
+and `test_offline_distribution` needs a real `pip` install. I confirmed the
+stale-script cause directly on
+`test_lifecycle_controller.py::test_resume_after_classified_is_a_no_op_and_ext_records_are_ignored`.
+I could not rebuild the script (no network, no `setuptools`), so I could not
+exercise the real engine binary; every finding below rests on the in-repo
+`tests/fixtures/bp4/fake_engine.py` stand-in, which does exercise the real
+`frontdoor.lifecycle` and `frontdoor.postrun` code paths, plus real Git and
+a real Evidence repository.
+
+Because inline `python -c` and heredoc execution were refused by this
+session's permission layer, and the file tools are confined to the
+repository (so I could not place a scratch probe outside it), two checks
+below are established by reading the code rather than by running it; each
+says so explicitly.
+
+Mutation testing of the new tests: forcing
+`_is_recoverable_mechanical_repository_anomaly` to reject every anomaly made
+six new assertions fail
+(`test_durable_artifact_anomaly_classifies_reconcile_required`, all five
+parameters, and `test_resume_after_reconcile_preserves_mechanical_anomaly_text`),
+so A's classification is genuinely pinned and not merely asserted against
+itself.
+
+== 3. Blocking findings
+
+[[f-a]]
+=== F-A (blocking). `frontdoor.preservation` was not scoped to the current classification, so a recovered continuation is never preserved
+
+`postrun.run_pending_postrun` was correctly changed so its "already
+archived, cache it" shortcut only consults `ext.archive.result` records with
+`seq >` the `classified` record being processed, because B makes a *second*
+`classified` record per checkout possible for the first time (before this
+change `_advance` short-circuited on any `classified` record, for both
+`wfc run` and `wfc resume`, so exactly one existed per journal).
+
+The structurally identical shortcut one file over was not changed.
+`preservation.run_pending_preservation` still returns
+`journal.latest(("ext.preservation.result", "ext.preservation.not_needed",
+"ext.preservation.refused"))` from anywhere in the journal
+(`preservation.py:50`, `preservation.py:88`), and `postrun._preservation_fact`
+still reads the same unscoped `journal.latest(...)` (`postrun.py:104`).
+
+Reproduced by execution. Running
+`test_recovery_run_still_needs_its_own_normal_accepting_route` (a Run that
+stops mechanically, recovers, and stops again at `awaiting_human`, which is
+in `preservation._TRIGGER_CLASSIFICATIONS`) and reading the journal it
+leaves behind:
+
+[source,text]
+----
+seq 14  ext.preservation.intent      run_id RUN-fake-engine
+seq 15  ext.preservation.not_needed  run_id RUN-fake-engine
+seq 16  ext.archive.intent
+seq 17  ext.archive.result           archive/unclassified/consumer-repo-run-fake-engine
+...
+seq 23  ext.archive.intent
+seq 24  ext.archive.result           archive/unclassified/consumer-repo-run-fake-engine-recovery-1
+----
+
+The continuation produced its own archive attempt, but *no*
+`ext.preservation.intent` at all: `_latest_fact` found the predecessor's
+terminal record and returned it as-is. Two consequences:
+
+. A recovery continuation that stops at `interrupted`, `awaiting_human`,
+  `awaiting_human_budget`, `reconcile_required` or `stopped` with its own
+  new candidate work has that candidate silently *not* preserved — the one
+  automatic capture step whose purpose is not losing an unaccepted
+  candidate. This is a new defect introduced by B, not a pre-existing one.
+. The continuation's archive carries the predecessor attempt's preservation
+  fact as its own `lifecycle.preservation`, so the new Attempt's Evidence
+  attests a preservation step that belongs to the earlier attempt.
+
+That second consequence contradicts two statements this candidate itself
+makes: `ch06_recovery/01_outcomes.adoc` ("`wfc status`/`wfc report` read ...
+the recovery history is visible, never hidden behind the predecessor's own
+facts") and the verification record's equivalent claim. The task's B
+requires `wfc status`/`wfc report` to "show the recovery history
+truthfully".
+
+Feasible, minimal fix, entirely inside the Worker's authorized scope
+(`src/workflow_coordinator/frontdoor` is listed in the Commission): apply
+the same `seq > classified.seq` scoping the author already wrote in
+`postrun.py` to `preservation.run_pending_preservation`/`_latest_fact` and
+to `postrun._preservation_fact`, with a test on both sides of the seam (the
+fixture already has the `awaiting_human_again` continuation mode this needs,
+so the test is a few lines). Nothing about the predicate, the archive
+destinations or the refusal paths needs to change.
+
+[[f-b]]
+=== F-B (blocking). Three predicate elements have no refusal test, against an explicit required-test criterion
+
+The task's TESTS section requires a fixture-driven test that `wfc resume`
+"refuses when each predicate element is violated one by one", and acceptance
+requires "every single violated predicate element is refused with a named
+reason". `test_mechanical_recovery_lifecycle.py` does this for six elements
+(open blocking Finding, semantic stop, human question, non-recoverable
+anomaly class, dirty worktree, moved HEAD) and
+`test_recovery_routing_reducer.py` covers the `mechanical_preemption:` scope
+gate. Three implemented refusal branches have no test at all — confirmed by
+searching the whole test tree for their messages, which appear nowhere:
+
+* `reducer.py`: `"the Run has no recorded Hop outcome"` (the predicate's
+  "the Hop outcome recorded" element);
+* `lifecycle.py`: `"Commission or execution envelope identity changed since
+  authorization"` (B's "no changed Commission/envelope identity");
+* `lifecycle.py`: `"lifecycle authorization or launch provenance is
+  incomplete"` (B's "lifecycle authorization still the original one").
+
+The first two are trust-boundary checks: the Commission-identity
+re-verification is the single thing that stops a recovery from continuing
+under drifted governing inputs, which is exactly the "resume widens
+nothing" boundary the task asks the reviewer to check by execution. By
+reading the code the branches look right (`_recovery_commission_identity_ok`
+reuses `_cached_commission`/`_materials_digest`, the same digest comparison
+`_do_commit` makes, and returns `False` on any exception), but I could not
+execute them — and the missing test is precisely why no execution path to
+them exists. Untested trust-boundary code on a new recovery path is not
+something this review can accept on inspection alone.
+
+These belong in the existing `test_mechanical_recovery_lifecycle.py` and
+`test_recovery_routing_reducer.py`; no new file or production change is
+needed.
+
+== 4. What I checked and found correct
+
+=== A — the predicate and the classification
+
+* The predicate (`reducer.diagnose_mechanical_recovery_eligibility`) is one
+  function, pure, and status-agnostic: it reads only `stop_reason`,
+  `semantic_stop`, `human_question`, `hops` and `findings`. The same
+  function therefore decides a freshly stopped Run and an already-archived
+  terminal one, which is what makes B(ii) work without a second predicate.
+* The "worktree clean / HEAD at this Hop's own end HEAD / no other anomaly"
+  elements are proven by exact-string membership rather than by separate
+  checks. I verified the argument holds rather than taking it on trust:
+  `vertical.run_one_hop` builds `repository_anomaly` as
+  `"; ".join((*delta.anomalies, *post_acceptance_anomalies,
+  *post_evidence_anomalies, trusted_commit...))` (`vertical.py:568`), and
+  `git_facts` puts `"dirty tracked state"`, `"non-ignored untracked
+  state"`, `"unresolved submodule identity"`, `"unexpected HEAD
+  movement"`, `"divergent or rewritten ancestry"`, `"forbidden merge
+  commit"`, `"commit safety-cap breach"`, out-of-scope paths and pinned
+  policy mutations into `delta.anomalies`. Any of those makes the joined
+  string differ from the five exact texts, so membership really does imply
+  "this and nothing else".
+* The five anomaly texts are now named constants imported by `vertical.py`,
+  so the observed text and the recognized text cannot drift. The texts
+  themselves are byte-identical to before; `_durable_artifact_anomalies` is
+  not weakened — the diff is a pure constant extraction.
+* The WFC-GIT-08 exclusion follows the task's default and is decided
+  explicitly in the verification record, with two tests pinning it.
+* `require_reconcile(reason="mechanical_recoverable")` is admitted only from
+  `RUNNING` and `AWAITING_HUMAN`, so no `AWAITING_SUPERVISOR`/`SUSPENDED`/
+  `COMPLETED` state can be reclassified this way, and a Run whose persisted
+  status contradicts its journalled classification raises `ReductionError`,
+  which `_attempt_mechanical_recovery` turns into a refusal.
+* `reconcile_required` is already in `postrun._ARCHIVABLE_CLASSIFICATIONS`
+  and `preservation._TRIGGER_CLASSIFICATIONS`, so A's reclassification does
+  not quietly stop archiving a stop shape that used to be archived.
+* Every other mechanical stop still reaches `_stop_for_human`; the
+  reclassification is confined to the `repository_anomaly` branch and does
+  not reorder the existing mechanical-error loop.
+
+=== B — the recovery path
+
+* `resume_lifecycle` only consults the recovery attempt when a `classified`
+  record exists and its classification is `reconcile_required` or
+  `awaiting_human`; everything else, and any `awaiting_human` whose
+  `stop_reason` lacks the prefix, falls through to the unchanged no-op.
+  Pinned by two tests, including the exact "lifecycle already classified
+  (no-op)" message.
+* A refusal returns before any mutation: the refusal branches all precede
+  the first `write_run_snapshot`, and `test_recovery_refuses_on_open_blocking_finding`
+  asserts `run.json` is byte-identical afterwards.
+* The journal is only appended to: `mechanical_recovery_intent`,
+  `_resumed`, `_launch_intent`, `_launch_spawned`, `_launch_failed`, and a
+  further `classified`. The new launch record family is deliberately
+  distinct from `launch_*`, so `MAX_LAUNCH_ATTEMPTS` and the crash-matrix
+  bookkeeping are untouched.
+* Hop charge and budget: `resume_after_reconcile` replaces only `status`,
+  `stop_reason` and `human_question` — `phase`, `hop_used`, `hop_limit` and
+  `findings` are carried through unchanged, and its `hop_used > hop_limit`
+  guard still applies.
+* No path turns a stopped Run into an accepted one. The Run lands in
+  `READY` at the same phase and the engine must run that phase again and
+  apply its own accepting route; `test_recovery_run_still_needs_its_own_normal_accepting_route`
+  shows a continuation that stops again simply stops again. Recovery never
+  touches `findings`, `semantic_stop` or `human_question`, and nothing in
+  A/B/C gives the operator, the Coordinator or a resume any Finding
+  operation.
+* `resume` widens nothing. `operator._continue_existing_run` goes through
+  the unchanged `_preflight` with the same `PRODUCTION_EVIDENCE_RUNNER`,
+  never calls `new_run`, never `mkdir`s a state root, never rewrites
+  `operator-plan.json`, and additionally requires `run.status is READY`,
+  matching `work_item_id`/`profile_id`, and `run.current_head ==
+  --expected-head`. `allow_existing_state_root` defaults to `False`, so the
+  one-shot refusal is unchanged for every other caller — and it inverts
+  into a positive requirement (`state_root.is_dir()`) rather than merely
+  skipping a check. Scope, program and budget come from the
+  digest-verified Commission and the unchanged Run record.
+* `durable_artifacts=()` at the continuation's `run_serial_hops` call is
+  behaviourally identical to the fresh path's `legacy_durable`, because the
+  legacy tuple is only consulted when `run.hop_used == 0`
+  (`operator.py:957`) and the predicate's "at least one recorded Hop"
+  element guarantees `hop_used >= 1`. Correct, but see the observation in
+  section 5.
+* Archive immutability: the predecessor destination is untouched and the
+  Evidence commit still resolves after recovery
+  (`test_predecessor_archived_attempt_is_byte_identical_after_recovery`
+  hashes every file under it), the continuation gets
+  `<identity>-recovery-<n>`, and an occupied destination is refused with
+  `ARCHIVE FAILED` and left byte-identical. I observed both destinations in
+  the journal of a real run (quoted in F-A). No state outside the Run's own
+  checkout state and the additive archive is written, and nothing under
+  `~/.local/state` or the Evidence repository was read or written by this
+  review.
+* `report.py`'s new text is live, not dead: `human_question_present` is a
+  real, pre-existing `wfc.audit/1` field (`audit.py:38`, `audit.py:177`).
+  For an `awaiting_human` Attempt with no recorded question it now names
+  `wfc resume`, which either recovers or refuses by name — both of which
+  exist. The `refused_not_recoverable` entry gives that classification its
+  own accurate text, and `_KNOWN_STATUSES` picks it up automatically.
+
+=== C — route semantics, the artifact obligation, and the contradiction
+
+* `_review_route_semantics_block` is generic: it iterates `sorted(phase.routes)`
+  and reads effect, `goto` target, target-phase role and
+  `phase.review.failed_evidence_route` from `phase`/`profile` only. No
+  route or phase name is hard-coded anywhere in the block or the rule text,
+  and two fixture profiles with unrelated route names exercise it.
+* The block is added for every gate-review phase and only for those; a
+  missing `profile` on such a phase raises rather than silently omitting the
+  block, and the single production call site passes it.
+* The route set the block lists matches `permitted_route_keys` exactly for a
+  running Run, including the evaluator escape-route exclusion.
+* The re-review artifact obligation is stated whenever
+  `phase.durable_artifact is REQUIRED`, and it names the CommitIntent.
+  `_durable_artifact_anomalies` is not weakened in any way.
+* C(iii) catches the real incident shape: `robust@v1`'s `focused_review`
+  declares `failed_evidence_route: correction` with routes
+  `{correction, renew_broad_review}` (`commissioning.py:145`), so H004's
+  "accepted, route `correction`" is exactly the combination now rejected.
+  The guard is correctly narrow — it requires `not
+  facts.required_evidence_failed`, `GATE` authority, `outcome ==
+  completed`, and no open blocking Finding after the deltas are applied —
+  and the three "legitimate" neighbours (`changes_required` on the same
+  route, a genuine evidence failure, an ordinary accept route) each have a
+  passing test. Rejecting rather than normalising is the right call for the
+  stated reason: the reducer never substitutes its own route for the
+  reviewer's.
+* `robust@v1`/`simple@v1` are untouched: `commissioning.py`,
+  `implementation_identity.py` and `src/workflow_coordinator/resources/**`
+  are absent from the diff, as are `agent_skill/`, `governance/`, `.wfc/`,
+  `.github/`, the release workflow and every version literal. No new
+  dependency. The worktree is clean and no stray file was left behind.
+* Docs: the predicate list in `ch06_recovery/01_outcomes.adoc` matches the
+  code element for element, the `#mechanical-recovery` anchor it is linked
+  to exists, the semantic-model entries for `awaiting_human` and
+  `reconcile_required` are updated consistently, and the `_open.adoc` entry
+  follows the surrounding form. The one inaccurate doc statement is the
+  preservation claim under F-A.
+
+== 5. Non-blocking observations
+
+. *C(iii) adds another terminal stop with no forward operator action.* The
+  new `mechanical_preemption:contradictory_route:...` stop is a terminal
+  `awaiting_human` with no `human_question` and no `semantic_stop`, so
+  `prepare-successor` refuses it and `wfc resume` refuses it by name. The
+  next-action text is accurate (it promises only a refusal), and the task
+  admits "reject" as an option, so this is not blocking — but it is one
+  more instance of the dead-end shape this WorkItem was written about. C(i)
+  should make it rare; it is worth naming in the backlog rather than
+  discovering it in an incident.
+. *A recovered Run carries its anomaly text forever.*
+  `resume_after_reconcile` deliberately preserves it for
+  `mechanical_recoverable`, and nothing clears it later. If such a Run is
+  afterwards interrupted, `resume_after_reconcile` with
+  `reason="interruption"` will raise "reconcile anomalies must be resolved
+  before resume" permanently. Not operator-reachable today (that path is
+  library-only), and the preservation is intentional and documented, so
+  this is a note, not a defect. `operator._summary` and
+  `proof_harness` will also report the historical anomaly on an otherwise
+  clean completion.
+. *Duplicated route filtering.* `_review_route_semantics_block` re-derives
+  the same "sorted routes minus the evaluator escape route" set that
+  `permitted_route_keys` already computes. Calling the existing function
+  would remove a second place to keep in step.
+. *The `durable_artifacts=()` equivalence is undocumented.* It is only
+  correct because the predicate guarantees `hop_used >= 1`; a comment at
+  the call site naming that coupling would be cheap insurance.
+. *The archive records the predecessor only through the destination name.*
+  B asks for a destination "that records its predecessor attempt and the
+  recovery step". `<identity>-recovery-<n>` does encode both, and
+  `lifecycle_facts` is only `{classification, preservation}`, so no
+  manifest field states it. Defensible as the minimal reading; an explicit
+  predecessor field would be more legible if this is ever automated against.
+. *The verification record's failure list is incomplete.* It names three
+  pre-existing `test_lifecycle_controller` failures and a set of
+  integration/architecture ones, but not the twenty
+  `tests/unit/test_claude_adapter_conformance.py` failures I also measured.
+  I confirmed all twenty fail identically at the base commit, so they are
+  environmental and not a regression — the record is honest about its
+  limits, just not exhaustive.
+
+== 6. Boundaries re-checked explicitly
+
+* Reviewer authority and Finding rules: unchanged. Nothing in A, B or C
+  resolves, opens, overrides or skips a Finding or a review; the only
+  Finding reads are predicate guards that *refuse* when one is open.
+* No accepted state is manufactured by recovery; the continuation needs its
+  own accepting route.
+* No historical Evidence, archived attempt or Run state outside the Run's
+  own checkout and the additive archive is modified.
+* No relaxation of trusted-Git, sandbox, scope, evidence or
+  durable-artifact checks. The one admission check that changes
+  (`state_root.exists()`) is replaced by a stricter positive requirement on
+  an explicitly opted-in path.
+* No existing assertion was weakened or deleted. Four `test_slice5b.py`
+  cases change their unasserted `Run.status` (they assert `stop_reason`
+  only); the verification record names them and the new tests cover the
+  status directly. The two `report.py` table behaviours were deliberately
+  replaced and are named.
