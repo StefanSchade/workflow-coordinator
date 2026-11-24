@@ -48,7 +48,12 @@ def test_clean_isolated_distribution_and_wheel_install(tmp_path):
     # kit lives in.
     wheel = next(dist.glob('*.whl'))
     with zipfile.ZipFile(wheel) as archive:
-        assert not [name for name in archive.namelist() if 'examples/' in name]
+        names = archive.namelist()
+        assert not [name for name in names if 'examples/' in name]
+        # S1 (FTR-WFC-AGENT-SKILL-DISTRIBUTION, AC-1): exactly the four packaged
+        # skill files appear under agent_skill/, by exact name, not by a glob.
+        skill_entries = {name for name in names if 'agent_skill/' in name}
+        assert skill_entries == set(dist_audit.WHEEL_SKILL_FILES)
     sdist = next(dist.glob('*.tar.gz'))
     with tarfile.open(sdist, 'r:gz') as archive:
         assert not [member.name for member in archive.getmembers() if 'examples/' in member.name]

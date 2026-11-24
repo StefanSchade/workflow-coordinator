@@ -218,6 +218,8 @@ def _conforming_wheel_entries() -> dict[str, str]:
     }
     for resource in dist_audit.WHEEL_RESOURCE_FILES:
         entries[resource] = "x"
+    for skill_file in dist_audit.WHEEL_SKILL_FILES:
+        entries[skill_file] = "x"
     return entries
 
 
@@ -362,3 +364,24 @@ def test_dist_audit_rejects_a_wheel_missing_a_required_resource(tmp_path):
     _write_wheel(wheel, entries)
     violations = dist_audit.audit(wheel)
     assert any("missing required resource file" in violation for violation in violations)
+
+
+def test_dist_audit_rejects_a_wheel_missing_a_required_skill_file(tmp_path):
+    entries = _conforming_wheel_entries()
+    del entries["workflow_coordinator/agent_skill/wfc/references/setup.md"]
+    wheel = tmp_path / WHEEL_NAME
+    _write_wheel(wheel, entries)
+    violations = dist_audit.audit(wheel)
+    assert any("missing required skill file" in violation for violation in violations)
+
+
+def test_dist_audit_rejects_a_fifth_file_under_agent_skill(tmp_path):
+    entries = _conforming_wheel_entries()
+    entries["workflow_coordinator/agent_skill/wfc/references/extra.md"] = "bad"
+    wheel = tmp_path / WHEEL_NAME
+    _write_wheel(wheel, entries)
+    violations = dist_audit.audit(wheel)
+    assert any(
+        "agent_skill/wfc/references/extra.md" in violation and "not in the C2 allow-list" in violation
+        for violation in violations
+    )
