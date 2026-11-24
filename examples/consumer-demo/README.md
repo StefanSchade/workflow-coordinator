@@ -35,6 +35,9 @@ quickstart below for the full walkthrough.
 
 ## Further reading
 
-See the consumer quickstart chapter,
-`docs/operator_manual/ch09_consumer_quickstart/_chapter.adoc`, for the full
-walkthrough this kit shortens.
+See the chapter overview,
+`docs/operator_manual/ch09_consumer_quickstart/00_overview.adoc`, for a map
+of the workspace this kit builds, and the three tutorials built on it --
+`02_first_run_example.adoc`, `03_tutorial_program_change.adoc` and
+`04_tutorial_stops.adoc` in the same directory -- for the full walkthroughs
+this kit shortens.
