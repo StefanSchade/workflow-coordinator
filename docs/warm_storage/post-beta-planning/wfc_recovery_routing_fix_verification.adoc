@@ -1,0 +1,343 @@
+= Recovery and routing bugfix: verification record
+
+WorkItem:: WI-WFC-RECOVERY-ROUTING-001
+Run:: RUN-ff42615fa4cd4d35a95affd8a3e05585
+Hop:: H001 (implement, worker)
+Base HEAD:: `ca1f9019e7db423339e8bfd3665393322cac4429`
+Incident evidence (read-only, unmodified):: Evidence commit `38debc0`,
+`archive/unclassified/workflow-coordinator-run-92112626ab9440c29a35f59dd12356e2`
+in the sibling evidence repository.
+
+This record covers the bugfix specified by the WorkItem task: a `robust@v1`
+Run whose independent focused review accepted could end in a terminal,
+unresumable `awaiting_human` that no documented path could recover (parts
+A, B and C below), reproduced structurally by new tests and fixed within
+the stated boundaries.
+
+== A. The recoverable-mechanical-stop predicate
+
+`reducer.diagnose_mechanical_recovery_eligibility(run)` is the one precise,
+status-agnostic predicate (`reducer.recoverable_mechanical_stop_anomaly`
+collapses its two "not eligible" outcomes for a caller that only needs a
+yes/no answer):
+
+* `stop_reason` begins with `mechanical_preemption:` (the scope gate: a
+  Run whose stop reason does not even carry this prefix was never a
+  candidate for this predicate at all, and nothing about its behaviour
+  changes);
+* no `semantic_stop`;
+* no `human_question`;
+* no open blocking Finding;
+* at least one recorded Hop;
+* the anomaly text is exactly one of the five
+  `vertical._durable_artifact_anomalies` strings (now named constants
+  shared between `reducer.py` and `vertical.py` so the text a boundary
+  observes and the text the predicate recognizes can never drift apart):
+  no declared path, no CommitIntent, not named by the CommitIntent, not
+  changed in the trusted commit, or absent/not a regular Git-tracked file
+  at end HEAD.
+
+Membership is checked against the exact, unjoined anomaly text. Because
+`vertical.run_one_hop` only ever joins more than one anomaly with `"; "`,
+a repository state with *any* other anomaly (dirty worktree, moved HEAD, a
+WFC-GIT-08 subject defect, a policy anomaly, a required-evidence error)
+can never equal one of the five strings verbatim -- so "worktree clean"
+and "current HEAD equal to the last recorded Hop's end HEAD" are proven by
+construction, not by a separate check, inside `reduce_result`.
+
+=== WFC-GIT-08 decision (explicit, as the task requires)
+
+Decision: *no*. `vertical._subject_anomalies` (the WFC-GIT-08 malformed
+commit-subject class) is a distinct, un-reviewed authorship defect, not a
+consistent, post-acceptance fact about an otherwise-accepted Hop -- it says
+something is wrong about how the Hop was attributed, not merely about an
+artifact bookkeeping omission. It is deliberately excluded from the
+recoverable class. `test_subject_anomaly_class_stays_terminal_awaiting_human`
+and `test_recovery_refuses_on_non_recoverable_anomaly_class` pin this.
+
+=== Classification
+
+`reduce_result`'s existing, unchanged-order mechanical-error loop now
+checks, only for the `repository_anomaly` branch, whether the anomaly is a
+member of the recoverable class and the other elements hold
+(`_is_recoverable_mechanical_repository_anomaly`); if so it calls
+`_stop_for_recoverable_mechanical`, which lands the Run in
+`RunStatus.RECONCILE_REQUIRED` via `reducer.require_reconcile`'s new
+`reason="mechanical_recoverable"` branch, with the Run's own
+`mechanical_preemption:` stop reason and anomaly text preserved verbatim
+(not the generic `reconcile_requires_explicit_resume` text the two
+pre-existing reconcile reasons use). Every other mechanical stop keeps
+`_stop_for_human`/terminal `awaiting_human` exactly as before.
+
+`reducer.resume_after_reconcile` is otherwise unchanged except that its
+pre-existing "anomalies must be resolved before resume" rule is skipped
+for `reconcile_reason == "mechanical_recoverable"` specifically: that
+anomaly text is the predicate's own historical diagnostic provenance, not
+an unresolved blocker, and B preserves rather than clears it.
+
+== B. The regular recovery path through `wfc resume`
+
+`frontdoor.lifecycle.resume_lifecycle` now inspects the checkout's cached
+`classified` journal record *before* `_advance`'s pre-existing "lifecycle
+already classified (no-op)" shortcut. When that classification is
+`reconcile_required` or `awaiting_human`,
+`_attempt_mechanical_recovery` loads the live `run.json` and calls
+`reducer.diagnose_mechanical_recovery_eligibility`:
+
+* scope gate fails (`(None, None)`) -- returns `None`; the caller falls
+  through to the unchanged no-op path. This is why every ordinary semantic
+  `awaiting_human` (a real open question) and every other classification
+  (`completed`, `stopped`, `interrupted`, `awaiting_human_budget`,
+  non-mechanical `reconcile_required` from `interruption`/
+  `prerequisite_return`, ...) is provably unaffected
+  (`test_ordinary_semantic_awaiting_human_keeps_the_old_no_op_behaviour`,
+  `test_completed_classification_is_unaffected`).
+* a named element fails (`(None, reason)`) -- a named refusal
+  (`refused_not_recoverable`), no mutation.
+* eligible -- B re-verifies live facts the predicate cannot see from the
+  Run record alone: exact current HEAD, a clean worktree with resolved
+  submodules, and unchanged Commission/execution-envelope identity (the
+  same digest check `_do_commit` makes at first launch, read-only here).
+  Any failure is also a named refusal with no mutation. On success: a
+  write-ahead `mechanical_recovery_intent` journal record; the identical
+  Run moved to `reconcile_required` (if it was not already, i.e. the
+  already-archived `awaiting_human` case) and then to `ready` via the
+  unchanged reducer functions; a `mechanical_recovery_resumed` record;
+  then a genuine engine relaunch under a new, distinct journal record
+  family (`mechanical_recovery_launch_intent`/`_spawned`/`_failed`, never
+  the original `launch_*` kinds, so the pre-existing crash-matrix retry
+  bookkeeping is untouched and unaware of it) that continues the identical
+  `run_id` at its unchanged Hop budget and already-charged Hop count. The
+  continuation's own terminal classification is recorded as a further
+  `classified` journal record (journal records are only ever appended,
+  never rewritten).
+
+`operator.py` gained one new, narrowly scoped admission path,
+`--continue-existing` (`_continue_existing_run`), reusing the unchanged
+`_preflight`/`admit_parsed` pipeline (full governing-input, component,
+evidence and execution-binding re-verification) at the live
+`current_head`; `_preflight` only accepts a pre-existing `--state-root`
+when explicitly told `allow_existing_state_root=True` (default `False`,
+so every other caller's one-shot refusal is unchanged). It loads the
+already-`READY` Run from the identical checkout (never `new_run`) and
+drives `run_serial_hops` exactly as the fresh-Run path does.
+
+A recovered continuation is still an ordinary Run: it still needs its own
+normal accepting route from a subsequent real Hop
+(`test_recovery_run_still_needs_its_own_normal_accepting_route`).
+Recovery itself never touches a Finding, never touches
+`semantic_stop`/`human_question`, and is reachable only from the two
+listed statuses with the predicate holding.
+
+=== Archive immutability and additive, collision-free destinations
+
+`frontdoor.postrun.run_pending_postrun`'s "already archived, cache it"
+shortcut is now scoped to facts recorded *after* the specific `classified`
+record currently being processed (by journal `seq`), not "any archive
+result ever for this checkout" -- otherwise a recovery continuation's
+genuinely new outcome would be wrongly served the predecessor attempt's
+cached result. A continuation's own archive attempt (when it is not the
+first `classified` record for this checkout) uses an ordinal
+`<identity>-recovery-<n>` suffix on the unchanged, Run-derived
+`_attempt_identity`, so it can never collide with the predecessor's own
+destination; `archive.archive_run`'s pre-existing refuse-rather-than-
+overwrite rule still applies if that derived destination is itself
+already (unexpectedly) occupied
+(`test_recovery_refuses_a_collision_at_an_existing_destination`). The
+predecessor's own archived manifest/`audit.json`/raw files/Evidence commit
+are never read for writing and never rewritten
+(`test_predecessor_archived_attempt_is_byte_identical_after_recovery`
+hashes every file under the predecessor's destination and re-reads the
+pre-recovery Evidence `HEAD` before and after). The `wfc.audit/1` schema
+and its allow-list are unchanged; recovery history is visible truthfully
+through the journal's further `classified`/`mechanical_recovery_*` records
+and the distinct archive destination, which `wfc status`/`wfc report`
+already read.
+
+== C. Reviewer route semantics and the missing-commit trap
+
+=== C(i)/(ii): prompt content
+
+`prompt.assemble_prompt` gained an optional `profile: WorkflowProfile |
+None` parameter (required, and only required, for a phase whose review is
+a gate review -- every other phase shape, the overwhelming majority of
+existing call sites, is unaffected and unchanged). For such a phase it
+appends a `[review_route_semantics]` block, built only from `phase`/
+`profile` facts (route effect, `goto` target phase and its role, whether
+the route is this phase's `failed_evidence_route`), never a hard-coded
+route name: the forward-route rule ("never a route with
+`hands_back_to_worker=true`"; `is_failed_evidence_route=true` is for a
+required-evidence failure or `changes_required`, never an ordinary accept
+choice), and, only when `phase.durable_artifact` is `required`, the
+re-review artifact obligation sentence naming the CommitIntent. Two
+profiles with different, arbitrary route/phase names in
+`test_review_route_semantics_prompt.py` prove nothing is hard-coded.
+`vertical.run_one_hop`'s one real call site passes `profile=profile`
+unconditionally.
+
+=== C(iii): the contradiction decision
+
+Decision: *reject outright* (the smallest option). `reduce_result` now
+checks, before the pre-existing required-evidence-failure override and
+only when evidence did not actually fail: gate review, `outcome ==
+completed`, no open blocking Finding remains, and
+`requested_route == phase.review.failed_evidence_route`. On that exact
+contradiction it stops `mechanical_preemption:contradictory_route:...`
+(a terminal `awaiting_human`, not the recoverable class -- it is not a
+consistent post-acceptance durable-artifact fact). Rejecting was chosen
+over silently normalising the route to the accept path, because this
+reducer never substitutes its own route choice for the reviewer's
+(exactly the authority the rest of the contract protects): normalising
+would manufacture a disposition the review never made and would be a
+second, quieter version of the same silent-accept risk this WorkItem
+closes. A genuine `required_evidence_failed` case still legitimately
+forces the `failed_evidence_route` and is unaffected
+(`test_required_evidence_failure_legitimately_overrides_the_requested_route`);
+so is the ordinary `changes_required` use of that same route
+(`test_changes_required_requesting_the_failed_evidence_route_is_unaffected`).
+
+== `robust@v1` left unchanged, and why
+
+Neither the `robust@v1` nor `simple@v1` program record, route set or
+catalogue digest was touched. The fix is entirely in the generic
+mechanics every profile shares (`reducer.py`, `vertical.py`, `prompt.py`,
+`operator.py`, `frontdoor/lifecycle.py`, `frontdoor/postrun.py`,
+`frontdoor/report.py`): A/B classify and recover a mechanical stop from
+facts already present on any profile's Run; C derives its prompt text
+from `phase`/`profile` at dispatch time, never from a profile literal.
+Verified by grepping the diff for `robust`/`simple` program identifiers
+(none) and by `test_review_route_semantics_prompt.py` exercising two
+profiles that are neither `robust@v1` nor `simple@v1`.
+
+== Design notes on reuse
+
+`RunStatus.RECONCILE_REQUIRED` and `reducer.require_reconcile`/
+`resume_after_reconcile` already existed for two unrelated reconcile
+reasons (`interruption`, `prerequisite_return`); `mechanical_recoverable`
+is a third, additive reason, reachable only from `RUNNING` (A) or
+`AWAITING_HUMAN` (B(ii), the retroactive reclassification of an
+already-terminal incident-shaped Run) and never from any other status, so
+a genuine human-authority stop can never be reclassified this way. The
+engine relaunch reuses the unchanged `_cached_commission`/
+`_pinned_envelope_text`/`_materials_digest` helpers `_do_commit` already
+uses, so the live Commission-identity re-check is literally the same
+check, not a parallel one that could drift.
+
+== Measured checks
+
+Python: `/tmp/wfc-p1-venv/bin/python3` (3.13.5, pytest 9.2.0, PyYAML
+6.0.3) -- a venv found on the machine, left by an earlier session; not a
+project artifact, nothing in the repository depends on it. The installed
+`wfc` console script inside that venv is a stale build of this package
+(predates this branch and several prior merged WorkItems: it rejects
+`--execution-bindings-sha256`), so any test that resolves the *real
+installed* `wfc` binary via `frontdoor.lifecycle._default_engine_command`
+(sibling-of-`sys.executable` or `PATH` lookup) fails on an argparse
+mismatch unrelated to this change; I could not install an editable build
+(no network, and `setuptools`/`wheel` are absent from every Python found
+on this machine, system or venv) to produce a fresh one. This is an
+agent-local environmental limitation, not a product defect: every test
+that exercises the real engine through `frontdoor.lifecycle.L._ENGINE_COMMAND`
+pointed at `tests/fixtures/bp4/fake_engine.py` (the documented, in-repo
+stand-in) passes, including the new ones. The three pre-existing failures
+below were present before any change in this Hop (confirmed: only
+`reducer.py`/`vertical.py` were modified when they first appeared) and are
+listed, not hidden:
+
+* `tests/unit/test_lifecycle_controller.py::test_resume_after_verification_checks_cached_envelope_and_uses_pinned_phase_binding`
+* `tests/unit/test_lifecycle_controller.py::test_scripted_yes_run_with_fake_provider_reaches_completed_classification`
+* `tests/unit/test_lifecycle_controller.py::test_resume_after_classified_is_a_no_op_and_ext_records_are_ignored`
+
+A broader `tests/integration`/`tests/architecture` run in this sandbox
+additionally shows pre-existing, unrelated failures that need a real
+`bwrap` nested-sandbox environment, a real `pip`/wheel install, or the
+same stale installed `wfc` script (`test_execution_boundary_bwrap.py`,
+`test_nested_claude_bwrap_qualification.py`, `test_bp1_identity.py`,
+`test_offline_distribution.py`, `test_beta_e2e_fake_provider.py`,
+`test_consumer_demo_kit.py`); none of those files import any module this
+WorkItem touches. I did not attempt to work around any of these by
+installing dependencies, relaxing the sandbox, or substituting a fake for
+a check whose entire point is the real boundary.
+
+Targeted (`--wfc-partial`, this venv):
+
+[source,text]
+----
+tests/unit/test_reducer.py                             72 passed
+tests/unit/test_slice3_vertical.py                      60 passed
+tests/unit/test_slice5b.py                              52 passed
+tests/unit/test_operator.py + test_operator_admit_parsed.py   72 passed
+tests/unit/test_lifecycle_controller.py          3 pre-existing failures (above), rest pass
+tests/unit/test_lifecycle_crash_matrix.py                    pass
+tests/unit/test_lifecycle_journal.py                         pass
+tests/unit/test_postrun_lifecycle.py                     30 passed
+tests/unit/test_preservation_lifecycle.py                    pass
+tests/unit/test_report.py + test_report_status_coverage.py   pass (2 tests revised, see below)
+tests/unit/test_mechanical_recovery_lifecycle.py (new)   13 passed
+tests/unit/test_recovery_routing_reducer.py (new)        13 passed
+tests/unit/test_review_route_semantics_prompt.py (new)    5 passed
+tests/unit (whole directory)             only the 3 pre-existing failures above
+----
+
+Lint: `/tmp/wfc-p1-venv/bin/python3 -m ruff check .` -- all checks passed.
+
+Doc render (strict): `asciidoctor --safe-mode=safe -a assembled -o
+/dev/null --failure-level=WARN` on each of the three changed `.adoc`
+sources (`docs/backlog/_open.adoc`,
+`docs/operator_manual/ch03_running/02_launch_status.adoc`,
+`docs/operator_manual/ch06_recovery/01_outcomes.adoc`) and this record --
+no output, exit 0, for each.
+
+Doc catalog: `python3 -I scripts/wfc_doc_catalog.py generate` then
+`check`, run immediately before writing this record (549 records; 84
+unresolved links, 4 Project Memory source_path misses -- the pre-existing
+baseline, confirmed unchanged by this WorkItem's non-doc edits) and again
+after it was written: the generate/check pair was re-run once this file
+existed, and neither the unresolved-link count nor the Project Memory
+source_path-miss count increased beyond the one new record this file
+itself adds to the total.
+
+Full required suite (`python -m pytest -q`) and the Coordinator's own
+task-check: not run by me -- the Coordinator's task-check runs the full
+suite after this Hop with verified offline inputs my sandbox does not
+carry; I report only what I actually measured, above.
+
+== Existing-test behaviour deliberately replaced (as instructed, named)
+
+* Four `tests/unit/test_slice5b.py` durable-artifact-anomaly cases
+  (`test_changes_required_commit_is_limited_to_declared_review_artifact`,
+  `test_commitintent_deletion_cannot_satisfy_required_artifact`,
+  `test_required_artifact_subset_does_not_satisfy_multiple_paths`,
+  `test_required_artifact_rejects_tracked_symlink_to_external_content`)
+  already asserted only `stop_reason` text, not `Run.status`; their Run
+  now lands in `reconcile_required` instead of `awaiting_human` for
+  exactly the anomaly class this WorkItem makes recoverable. No assertion
+  was weakened or deleted; the silent status change is now exercised
+  directly and explicitly by the new A tests above.
+* `tests/unit/test_report.py::TestStopStatusesNeverReportedAsSuccess::test_stop_status_reports_status_stop_reason_and_the_fixed_next_choice_line`
+  and both parametrized cases in
+  `tests/unit/test_report_status_coverage.py::TestNextChoiceTableCoverage`:
+  the `awaiting_human` case now supplies (or, in the coverage tests,
+  explicitly expects the override for) a recorded human question, since
+  the fixed table text ("answer the open question") is deliberately no
+  longer served for an `awaiting_human` Attempt with no recorded question
+  -- the exact false promise `frontdoor/report.py` made in the incident.
+  A new dedicated test,
+  `test_awaiting_human_without_a_recorded_question_never_promises_one`,
+  pins the no-question shape directly.
+
+== Scope
+
+Changed: `src/workflow_coordinator/{reducer,vertical,prompt,operator}.py`,
+`src/workflow_coordinator/frontdoor/{lifecycle,postrun,report}.py`,
+`tests/fixtures/bp4/fake_engine.py`, five existing test files (noted
+above), three new test files, two Operator Manual sources, the semantic
+model's `awaiting_human`/`reconcile_required` state statements
+(`docs/semantic_model/ch01_current_semantics/02_states.adoc`),
+`docs/backlog/_open.adoc`, and this record. No change to
+`src/workflow_coordinator/agent_skill/`, any program record or catalogue
+digest, trusted Git/sandbox/scope/admission rules, the release workflow,
+version literals, `governance/`, `.wfc/`, or `.github/`; no new
+dependency; no push, tag, release, publication, Runtime promotion,
+installation, or operation on the real incident Run or on
+`~/.local/state`.

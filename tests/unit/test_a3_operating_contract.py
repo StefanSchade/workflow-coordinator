@@ -445,6 +445,7 @@ def test_review_prompt_separates_current_hop_authority_from_correct_route_target
         agent_operating_contract=contract,
         invocation=Invocation("RUN-1", "H001", "INV-1"),
         persona="fixture persona", task_payload="review the bounded change",
+        profile=workflow,
     )
 
     assert "phase=rereview\n" in package.text

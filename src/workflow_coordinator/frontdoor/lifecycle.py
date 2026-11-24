@@ -48,8 +48,15 @@ from ..git_facts import (
     repository_identity,
 )
 from ..implementation_identity import implementation_identity
-from ..model import RunStatus
-from ..serialization import load_run, run_execution_configuration_from_yaml
+from ..model import Run, RunStatus
+from ..persistence import atomic_write_json, checkpoint_projection, write_run_snapshot
+from ..reducer import (
+    ReductionError,
+    diagnose_mechanical_recovery_eligibility,
+    require_reconcile,
+    resume_after_reconcile,
+)
+from ..serialization import load_run, run_execution_configuration_from_yaml, workflow_profile_from_yaml
 from .config import ExecutionEnvelope, consumer_config_from_yaml, execution_overrides_from_flags, resolve_execution
 from . import postrun, preservation
 from .journal import (
@@ -128,6 +135,12 @@ EXIT_CODES: dict[str, int] = {
     "not_launched": 29,
     "lifecycle_active": 30,
     "no_lifecycle": 31,
+    # B, WI-WFC-RECOVERY-ROUTING-001 (additive; every value above is frozen
+    # and unchanged): the regular mechanical-recovery predicate (re-verified
+    # against live Run and checkout facts) refused. Never mutates anything;
+    # the cached classification this `wfc resume` attempt started from is
+    # unaffected and remains the truthful record of the engine's own outcome.
+    "refused_not_recoverable": 33,
 }
 
 # BP6c (additive; every value in EXIT_CODES above is frozen and unchanged):
@@ -605,6 +618,36 @@ def _engine_argv(repository: Path, checkout_dir: Path, authorized: JournalRecord
     ]
 
 
+def _continuation_engine_argv(
+    repository: Path, checkout_dir: Path, authorized: JournalRecord, prelaunch: JournalRecord,
+    *, current_head: str,
+) -> list[str]:
+    """B, WI-WFC-RECOVERY-ROUTING-001: identical to ``_engine_argv`` except
+    ``--expected-head`` is the Run's own live current HEAD (never the
+    original baseline) and ``--continue-existing`` selects the engine's
+    continuation admission path, which never creates a new Run."""
+
+    _pinned_envelope_text(checkout_dir, authorized)
+    _, compiled = _cached_commission(repository, checkout_dir, authorized)
+    envelope_cache_path = checkout_dir / "commission" / "envelope.yaml"
+    return [
+        *_resolve_engine_command(),
+        "--repository", str(repository),
+        "--state-root", prelaunch.data["engine_state_root"],
+        "--expected-head", current_head,
+        "--work-item", compiled.paths["work_item"],
+        "--profile", compiled.paths["profile"],
+        "--policy", compiled.paths["policy"],
+        "--components", compiled.paths["components"],
+        "--task", compiled.paths["task"],
+        "--execution-bindings", str(envelope_cache_path),
+        "--execution-bindings-sha256", authorized.data["envelope_digest"],
+        "--timeout-seconds", str(authorized.data["hop_timeout_seconds"]),
+        "--executable", prelaunch.data["executable_path"],
+        "--continue-existing",
+    ]
+
+
 def _do_launch(
     repository: Path, checkout_dir: Path, journal: Journal, lock, authorized: JournalRecord,
     prelaunch: JournalRecord, commit_rec: JournalRecord,
@@ -736,6 +779,170 @@ def _record_classification_if_new(journal: Journal, result: LifecycleResult) -> 
         return result  # Already durably recorded; never append a second "classified" record.
     if result.classification not in _TERMINAL_CLASSIFICATIONS:
         return result
+    journal.append("classified", {
+        "classification": result.classification, "run_id": result.run_id, "run_status": result.run_status,
+        "end_head": result.end_head, "state_root": result.state_root, "checkout_state_root": result.checkout_state_root,
+    })
+    return result
+
+
+# --------------------------------------------------------------------------
+# B, WI-WFC-RECOVERY-ROUTING-001: the regular, authorized mechanical-
+# recovery path through ``wfc resume``. Reachable only from an already
+# ``classified`` checkout (otherwise ``_advance`` below is unaffected and
+# handles every other shape exactly as before); named refusals never mutate
+# anything, and a successful recovery only ever appends new journal records,
+# never rewrites or deletes one, and never touches the already-archived
+# attempt from a prior classification.
+# --------------------------------------------------------------------------
+
+def _refused_recovery(run: Run, reason: str) -> LifecycleResult:
+    return LifecycleResult(
+        classification="refused_not_recoverable",
+        message=f"mechanical recovery refused: {reason}",
+        run_id=run.run_id, run_status=run.status.value, end_head=run.current_head,
+    )
+
+
+def _recovery_commission_identity_ok(repository: Path, checkout_dir: Path, authorized: JournalRecord) -> bool:
+    """Re-verify the exact same Commission-digest check ``_do_commit`` makes
+    at first launch, read-only, against the cached request/config this
+    checkout authorized -- "no changed Commission/envelope identity"."""
+
+    try:
+        _pinned_envelope_text(checkout_dir, authorized)
+        request, compiled = _cached_commission(repository, checkout_dir, authorized)
+    except (LifecycleError, OSError, UnicodeError, CommissionError):
+        return False
+    request_file_path = f"{compiled.target_dir}/request.yaml"
+    digest = _materials_digest(compiled.texts, request_file_path, request.raw_text)
+    return digest == authorized.data["commission_digest"]
+
+
+def _do_continuation_launch(
+    repository: Path, checkout_dir: Path, journal: Journal, lock, authorized: JournalRecord,
+    prelaunch: JournalRecord, *, current_head: str,
+) -> tuple[JournalRecord, subprocess.Popen]:
+    """Distinct record kinds from ``_do_launch``'s own ``launch_*`` family:
+    a recovery launch must never be mistaken for, or retried by, the
+    original launch's own crash-matrix bookkeeping (``MAX_LAUNCH_ATTEMPTS``,
+    ``_continue_after_launch``), which stays unchanged and unaware of it."""
+
+    argv = _continuation_engine_argv(repository, checkout_dir, authorized, prelaunch, current_head=current_head)
+    journal.append("mechanical_recovery_launch_intent", {"argv": argv})
+    try:
+        process = subprocess.Popen(argv, pass_fds=(lock.fd,), close_fds=True, cwd=str(repository))
+    except OSError as error:
+        journal.append("mechanical_recovery_launch_failed", {"error": str(error)})
+        raise LifecycleError(
+            f"recovery continuation engine failed to launch: {error}", classification="refused_not_recoverable",
+        ) from error
+    record = journal.append("mechanical_recovery_launch_spawned", {"pid": process.pid, "start_time": time.time()})
+    return record, process
+
+
+def _attempt_mechanical_recovery(
+    repository: Path, checkout_dir: Path, journal: Journal, classified: JournalRecord,
+) -> LifecycleResult | None:
+    """Return ``None`` when this checkout's cached classification was never
+    in scope for mechanical recovery at all (the caller then falls through
+    to the unchanged "lifecycle already classified (no-op)" behaviour for
+    every other classification, and for an "awaiting_human"/
+    "reconcile_required" Run whose ``stop_reason`` does not even carry the
+    ``mechanical_preemption:`` prefix). Otherwise always returns a
+    ``LifecycleResult``: a named refusal (no mutation at all) or a completed
+    continuation (new journal records only, Run moved to ``READY`` and the
+    engine re-driven to a further ``classified`` record)."""
+
+    classification = classified.data.get("classification")
+    if classification not in ("reconcile_required", "awaiting_human"):
+        return None
+    checkout_state_root_value = classified.data.get("checkout_state_root")
+    if not checkout_state_root_value:
+        return None
+    run_path = Path(checkout_state_root_value) / "run.json"
+    if not run_path.is_file():
+        return None
+    try:
+        run = load_run(run_path)
+    except Exception:
+        return None
+
+    anomaly, refusal = diagnose_mechanical_recovery_eligibility(run)
+    if anomaly is None and refusal is None:
+        return None  # Scope gate: never a mechanical_preemption stop at all.
+    if anomaly is None:
+        return _refused_recovery(run, refusal)
+
+    authorized = journal.latest(("authorized",))
+    prelaunch = journal.latest(("prelaunch_passed",))
+    if authorized is None or prelaunch is None:
+        return _refused_recovery(run, "lifecycle authorization or launch provenance is incomplete")
+
+    facts = observe_repository(repository)
+    if facts.head != run.current_head:
+        return _refused_recovery(run, "current HEAD differs from the Run's recorded end HEAD")
+    if not facts.clean or facts.unresolved_submodules:
+        return _refused_recovery(run, "worktree is not clean with resolved submodules")
+    if not _recovery_commission_identity_ok(repository, checkout_dir, authorized):
+        return _refused_recovery(run, "Commission or execution envelope identity changed since authorization")
+    try:
+        # Re-verify the provider executable is still present and unchanged
+        # *before* any mutation below, so the one ordinary cause of a launch
+        # failure here (a since-removed/changed executable) is a refusal
+        # with no side effect, not a mutated Run with no process to drive it.
+        _verify_identities_unchanged(prelaunch)
+    except LifecycleError as error:
+        return _refused_recovery(run, str(error))
+
+    try:
+        _, compiled = _cached_commission(repository, checkout_dir, authorized)
+        profile = workflow_profile_from_yaml(compiled.texts[compiled.paths["profile"]])
+    except Exception as error:
+        return _refused_recovery(run, f"governing profile could not be re-derived: {error}")
+
+    journal.append("mechanical_recovery_intent", {
+        "run_id": run.run_id, "checkout_state_root": checkout_state_root_value,
+        "anomaly": anomaly, "from_status": run.status.value,
+    })
+    try:
+        reconciled = run if run.status is RunStatus.RECONCILE_REQUIRED else require_reconcile(
+            run, reason="mechanical_recoverable", current_head=run.current_head,
+        )
+        resumed = resume_after_reconcile(reconciled, profile, current_head=facts.head)
+    except ReductionError as error:
+        return _refused_recovery(run, f"recovery predicate re-verification failed: {error}")
+    write_run_snapshot(run_path, resumed)
+    atomic_write_json(Path(checkout_state_root_value) / "checkpoint.json", checkpoint_projection(resumed, profile))
+    journal.append("mechanical_recovery_resumed", {"run_id": resumed.run_id, "to_status": resumed.status.value})
+
+    lock = try_acquire_lock(checkout_dir)
+    if lock is None:
+        return _refused_recovery(run, "active lifecycle already running for this checkout")
+    try:
+        _, process = _do_continuation_launch(
+            repository, checkout_dir, journal, lock, authorized, prelaunch, current_head=facts.head,
+        )
+    except LifecycleError:
+        release_lock(lock)
+        raise
+    process.wait()
+    release_lock(lock)
+
+    engine_state_root = Path(prelaunch.data["engine_state_root"])
+    continuation_classification, continued_run = _classify_from_state_root(repository, engine_state_root)
+    if continuation_classification == "inconsistent":
+        raise LifecycleError(
+            "engine/journal facts are contradictory after a recovery continuation", classification="inconsistent",
+        )
+    association = json.loads((engine_state_root / "checkout-association.json").read_text(encoding="utf-8"))
+    run_root = engine_state_root / "checkouts" / association["checkout_id"]
+    result = LifecycleResult(
+        classification=continuation_classification,
+        message=f"mechanically recovered; classified: {continuation_classification}",
+        run_id=continued_run.run_id, run_status=continued_run.status.value, end_head=continued_run.current_head,
+        state_root=str(engine_state_root), checkout_state_root=str(run_root),
+    )
     journal.append("classified", {
         "classification": result.classification, "run_id": result.run_id, "run_status": result.run_status,
         "end_head": result.end_head, "state_root": result.state_root, "checkout_state_root": result.checkout_state_root,
@@ -914,6 +1121,26 @@ def run_lifecycle(inputs: RunInputs) -> LifecycleResult:
 
 def resume_lifecycle(repository: Path) -> LifecycleResult:
     checkout, checkout_dir, journal = _prepare_checkout(repository)
+    classified = journal.latest(("classified",))
+    if classified is not None:
+        # B, WI-WFC-RECOVERY-ROUTING-001: attempt mechanical recovery before
+        # ``_advance``'s own unconditional "lifecycle already classified
+        # (no-op)" shortcut would otherwise apply. ``None`` means this
+        # checkout's classification was never in scope (every other
+        # classification, and an "awaiting_human"/"reconcile_required" Run
+        # that is not the honest mechanical-recoverable class): fall through
+        # to the unchanged no-op path below, exactly as before this
+        # WorkItem. A named refusal changes nothing, so preservation/postrun
+        # (which key off the *cached* classification, unaffected by a
+        # refusal) are skipped; a successful recovery's own further
+        # ``classified`` record is handled identically to any other.
+        recovered = _attempt_mechanical_recovery(repository, checkout_dir, journal, classified)
+        if recovered is not None:
+            if recovered.classification == "refused_not_recoverable":
+                return recovered
+            preservation.run_pending_preservation(repository, checkout_dir, journal)
+            postrun_status = postrun.run_pending_postrun(repository, checkout_dir, journal)
+            return _apply_postrun(recovered, postrun_status)
     result = _advance(repository, checkout_dir, journal, authorize=None)
     preservation.run_pending_preservation(repository, checkout_dir, journal)
     postrun_status = postrun.run_pending_postrun(repository, checkout_dir, journal)

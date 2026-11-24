@@ -11,9 +11,13 @@ from typing import Mapping
 from .adapter import Invocation
 from .model import (
     ConvergenceRole,
+    DurableArtifact,
     Phase,
     ResultContractKind,
+    ReviewAuthority,
+    RouteEffect,
     Run,
+    WorkflowProfile,
     admits_result_contract_version,
 )
 
@@ -157,6 +161,57 @@ def _header(
     )
 
 
+def _review_route_semantics_block(phase: Phase, profile: WorkflowProfile) -> str:
+    """C(i)/(ii), WI-WFC-RECOVERY-ROUTING-001: a generic, profile-derived
+    statement of what each permitted route means and the forward-route rule,
+    for every phase with a gate review.
+
+    Route names, target phases and roles are read from ``profile``/``phase``
+    only -- never hard-coded -- so this is identical in shape for any
+    profile's route vocabulary. The incident this WorkItem fixes was exactly
+    a reviewer choosing a hand-back-to-Worker route (``correction``) despite
+    finding nothing to correct, immediately followed by a required-evidence
+    re-review that forgot the durable-artifact CommitIntent; both rules
+    below name that pair of mistakes directly.
+    """
+
+    assert phase.review is not None
+    lines: list[str] = []
+    for key in sorted(phase.routes):
+        if phase.convergence_role is ConvergenceRole.EVALUATOR and key == phase.escape_route:
+            continue
+        route = phase.routes[key]
+        parts = [f"effect={route.effect.value}"]
+        hands_back_to_worker = False
+        if route.effect is RouteEffect.GOTO and route.target is not None:
+            target_phase = profile.phases.get(route.target)
+            target_role = target_phase.role.value if target_phase is not None else "unknown"
+            parts.append(f"target_phase={route.target}")
+            parts.append(f"target_phase_role={target_role}")
+            hands_back_to_worker = target_role == "worker"
+        parts.append(f"hands_back_to_worker={'true' if hands_back_to_worker else 'false'}")
+        parts.append(
+            f"is_failed_evidence_route={'true' if key == phase.review.failed_evidence_route else 'false'}"
+        )
+        lines.append(f"{key}: " + "; ".join(parts))
+    rule = (
+        "A review Hop that finds no blocking issue must choose the forward route that "
+        "continues toward acceptance, never a route with hands_back_to_worker=true. "
+        "The route named is_failed_evidence_route=true exists only for a required-"
+        "evidence failure or an outcome=changes_required disposition, never as an "
+        "ordinary choice when nothing needs correcting."
+    )
+    blocks = ["[review_route_semantics]\n" + rule]
+    if phase.durable_artifact is DurableArtifact.REQUIRED:
+        blocks.append(
+            "In every review Hop of this phase, including a re-review with no new "
+            "Finding, update the required durable artifact with this Hop's verdict "
+            "and name that artifact's path in the CommitIntent."
+        )
+    blocks.append("routes:\n" + "\n".join(f"  {line}" for line in lines))
+    return "\n".join(blocks) + "\n"
+
+
 def assemble_prompt(
     run: Run,
     phase: Phase,
@@ -166,6 +221,7 @@ def assemble_prompt(
     invocation: Invocation,
     persona: str,
     task_payload: str,
+    profile: WorkflowProfile | None = None,
     context: tuple[ContextItem, ...] = (),
     diff: str | None = None,
     diff_base: str | None = None,
@@ -174,7 +230,12 @@ def assemble_prompt(
     contract_version: int | None = None,
     result_contract_kind: ResultContractKind = ResultContractKind.GENERIC_ROUTING_RESULT,
 ) -> PromptPackage:
-    """Compose one fresh prompt; all optional content is included or referenced."""
+    """Compose one fresh prompt; all optional content is included or referenced.
+
+    ``profile`` is required only for a phase with a gate review (C(i)/(ii),
+    WI-WFC-RECOVERY-ROUTING-001): resolving a ``goto`` route's target phase
+    role needs it. Every other phase shape is unaffected and may omit it.
+    """
 
     try:
         digest = hashlib.sha256(agent_operating_contract.text.encode("utf-8")).hexdigest()
@@ -226,6 +287,12 @@ def assemble_prompt(
         f"persona_json={json.dumps(persona, ensure_ascii=True)}"
     )
     blocks.append("[workflow_policy]\n" + f"durable_artifact={phase.durable_artifact.value}\n")
+    if phase.review is not None and phase.review.authority is ReviewAuthority.GATE:
+        if profile is None:
+            raise ValueError(
+                "gate-review prompt assembly requires the profile to derive route semantics"
+            )
+        blocks.append(_review_route_semantics_block(phase, profile))
     blocks.append("[task]\n" + task_payload)
     for item in context:
         reference = {"reference": item.reference, "bytes": item.byte_size, "retrieval": item.reference}

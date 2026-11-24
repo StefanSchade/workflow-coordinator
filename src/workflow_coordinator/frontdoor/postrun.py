@@ -191,8 +191,31 @@ def run_pending_postrun(repository: Path, checkout_dir: Path, journal: Journal) 
     if classification not in _ARCHIVABLE_CLASSIFICATIONS or not run_id or not state_root:
         return PostrunStatus(kind="absent", data={})
 
+    # B, WI-WFC-RECOVERY-ROUTING-001: a mechanical-recovery continuation
+    # appends a *further* "classified" record for the identical ``run_id``
+    # (the journal is append-only; the predecessor "classified" record and
+    # its own already-committed archive are never rewritten). The "already
+    # archived, cache it" shortcut below must therefore be scoped to facts
+    # recorded *after* this specific "classified" record's own position --
+    # otherwise the predecessor attempt's result would be wrongly served for
+    # a genuinely new, later outcome of the same Run. A later attempt gets
+    # its own, distinct, collision-free destination via an ordinal suffix:
+    # the two attempts' archives can never collide, and the predecessor's is
+    # never overwritten.
+    all_classified = [record for record in journal.read_all() if record.kind == "classified"]
+    classified_ordinal = next(
+        (index for index, record in enumerate(all_classified, start=1) if record.seq == classified.seq), 1,
+    )
+    is_recovery_continuation = classified_ordinal > 1
+
+    def _own_postrun_fact(kinds: tuple[str, ...]):
+        candidates = [
+            record for record in journal.read_all() if record.kind in kinds and record.seq > classified.seq
+        ]
+        return candidates[-1] if candidates else None
+
     config = _cached_config(checkout_dir)
-    result_record = journal.latest(("ext.archive.result",))
+    result_record = _own_postrun_fact(("ext.archive.result",))
     try:
         settings = resolve_evidence(config, repository)
     except CommissionError as error:
@@ -222,6 +245,8 @@ def run_pending_postrun(repository: Path, checkout_dir: Path, journal: Journal) 
     journal.append("ext.archive.intent", {"run_id": run_id})
     try:
         attempt_identity = _attempt_identity(config.repository_name, run_id)
+        if is_recovery_continuation:
+            attempt_identity = f"{attempt_identity}-recovery-{classified_ordinal - 1}"
         archived = archive.archive_run(
             state_root=Path(state_root), evidence_repo=settings.path,
             raw_retention=settings.raw, lifecycle=lifecycle_facts, attempt_identity=attempt_identity,

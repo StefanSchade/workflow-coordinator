@@ -39,6 +39,11 @@ _NEXT_HUMAN_CHOICE = {
     "awaiting_supervisor": "a human must inspect the pending supervisor step and advance it",
     "suspended": "a human must resolve the suspending prerequisite, then run `wfc resume`",
     # model.RunStatus / frontdoor.lifecycle.EXIT_CODES: shared terminal/stop names.
+    # "awaiting_human" has two distinct shapes (WI-WFC-RECOVERY-ROUTING-001):
+    # see the ``human_question_present``-conditional override in
+    # ``build_report`` below -- this default applies only when that signal is
+    # unavailable (a legacy or malformed audit), so it never regresses to
+    # promising a question that provably does not exist.
     "awaiting_human": "a human must answer the open question, then run `wfc resume`",
     "awaiting_human_budget": "a human must authorize additional hop budget, then run `wfc resume`",
     "reconcile_required": "a human must reconcile the Run's conflicting state before resuming",
@@ -62,6 +67,7 @@ _NEXT_HUMAN_CHOICE = {
     "not_launched": "the Run has not been launched yet; launch it, or inspect why it has not",
     "lifecycle_active": "the lifecycle is still active; wait, then re-check with `wfc report`",
     "no_lifecycle": "a human must inspect why no lifecycle journal exists for this Run",
+    "refused_not_recoverable": "a human must inspect the named refusal reason; nothing was changed by the attempt",
 }
 _UNKNOWN_NEXT_ACTION = "status is unknown; a human must inspect this Run directly"
 _KNOWN_STATUSES = frozenset({"completed", *_NEXT_HUMAN_CHOICE})
@@ -113,7 +119,20 @@ def build_report(audit: Mapping[str, Any], *, archive_ref: str | None = None) ->
 
     next_action = None
     if not success:
-        next_action = _NEXT_HUMAN_CHOICE.get(status, _UNKNOWN_NEXT_ACTION)
+        if status == "awaiting_human" and run.get("human_question_present") is False:
+            # No open human question is recorded: "answer the open question"
+            # would name a path that does not exist (the exact incident this
+            # WorkItem fixes). `wfc resume` itself now decides, from the
+            # Run's own recorded facts, whether this is automatically
+            # recoverable or must refuse with a named reason -- this text
+            # promises only that real, existing path.
+            next_action = (
+                "a human must inspect the recorded mechanical stop facts; "
+                "run `wfc resume`, which recovers it automatically if it is "
+                "eligible, or refuses with a named reason if it is not"
+            )
+        else:
+            next_action = _NEXT_HUMAN_CHOICE.get(status, _UNKNOWN_NEXT_ACTION)
 
     return {
         "schema": REPORT_SCHEMA,

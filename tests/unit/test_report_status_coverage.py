@@ -33,11 +33,20 @@ class TestNextChoiceTableCoverage:
 
     @pytest.mark.parametrize("status", sorted({s.value for s in RunStatus} - {"completed"}))
     def test_every_run_status_produces_a_fixed_truthful_line_not_unknown(self, tmp_path, status):
+        # "awaiting_human" without a recorded human question is its own
+        # distinct, deliberately-overridden shape (WI-WFC-RECOVERY-ROUTING-
+        # 001): the fixed table text names a question that provably does not
+        # exist for a mechanical (not semantic) stop, so this fixture-default
+        # (no recorded question) exercises that override, not the raw table.
         audit = _audit_for(tmp_path, status=status, stop_reason="fixture-stop-reason")
         report = rp.build_report(audit)
         assert report["status"] == status
         assert report["status_known"] is True
-        assert report["next_action"] == rp._NEXT_HUMAN_CHOICE[status]
+        if status == "awaiting_human":
+            assert report["next_action"] != rp._NEXT_HUMAN_CHOICE[status]
+            assert "wfc resume" in report["next_action"]
+        else:
+            assert report["next_action"] == rp._NEXT_HUMAN_CHOICE[status]
         assert report["next_action"] != rp._UNKNOWN_NEXT_ACTION
 
     @pytest.mark.parametrize("classification", sorted(set(EXIT_CODES) - {"completed"}))
@@ -47,7 +56,11 @@ class TestNextChoiceTableCoverage:
         report = rp.build_report(audit)
         assert report["status"] == classification
         assert report["status_known"] is True
-        assert report["next_action"] == rp._NEXT_HUMAN_CHOICE[classification]
+        if classification == "awaiting_human":
+            assert report["next_action"] != rp._NEXT_HUMAN_CHOICE[classification]
+            assert "wfc resume" in report["next_action"]
+        else:
+            assert report["next_action"] == rp._NEXT_HUMAN_CHOICE[classification]
         assert report["next_action"] != rp._UNKNOWN_NEXT_ACTION
 
     def test_a_genuinely_unknown_value_is_still_reported_as_unknown(self, tmp_path):

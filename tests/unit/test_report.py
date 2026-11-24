@@ -69,7 +69,13 @@ class TestStopStatusesNeverReportedAsSuccess:
         ("stopped", "max_hops_reached"),
     ])
     def test_stop_status_reports_status_stop_reason_and_the_fixed_next_choice_line(self, tmp_path, status, stop_reason):
-        audit = _audit_for(tmp_path, status=status, stop_reason=stop_reason)
+        # An "awaiting_human" Attempt with a recorded human question is the
+        # shape the fixed table's text actually describes (WI-WFC-RECOVERY-
+        # ROUTING-001); the no-question shape has its own dedicated test
+        # below, since promising to "answer the open question" when none
+        # exists is exactly the incident this WorkItem fixes.
+        extra = {"human_question": "Which branch should be authoritative?"} if status == "awaiting_human" else {}
+        audit = _audit_for(tmp_path, status=status, stop_reason=stop_reason, **extra)
         report = rp.build_report(audit)
         assert report["status"] == status
         assert report["status"] != "completed"
@@ -79,6 +85,18 @@ class TestStopStatusesNeverReportedAsSuccess:
         assert status in text
         assert stop_reason in text
         assert "completed" not in text.split("\n")[2]  # the outcome line itself
+
+    def test_awaiting_human_without_a_recorded_question_never_promises_one(self, tmp_path):
+        """A mechanical (not semantic) awaiting_human stop names only a real path."""
+
+        audit = _audit_for(
+            tmp_path, status="awaiting_human",
+            stop_reason="mechanical_preemption:required durable artifact has no CommitIntent",
+        )
+        report = rp.build_report(audit)
+        assert report["next_action"] != rp._NEXT_HUMAN_CHOICE["awaiting_human"]
+        assert "answer the open question" not in report["next_action"]
+        assert "wfc resume" in report["next_action"]
 
     @pytest.mark.parametrize("classification", ["interrupted", "uncertain_launch"])
     def test_lifecycle_supplied_classification_drives_the_report_status(self, tmp_path, classification):

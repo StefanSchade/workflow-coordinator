@@ -67,6 +67,11 @@ from .prompt import (
     assemble_prompt,
 )
 from .reducer import (
+    DURABLE_ARTIFACT_ANOMALY_NO_COMMIT_INTENT,
+    DURABLE_ARTIFACT_ANOMALY_NO_DECLARED_PATH,
+    DURABLE_ARTIFACT_ANOMALY_NOT_IN_TRUSTED_COMMIT,
+    DURABLE_ARTIFACT_ANOMALY_NOT_NAMED_BY_INTENT,
+    DURABLE_ARTIFACT_ANOMALY_NOT_REGULAR_TRACKED_FILE,
     Reduction,
     derive_convergence_facts,
     permitted_route_keys,
@@ -244,13 +249,13 @@ def _durable_artifact_anomalies(
     ):
         return ()
     if not durable_artifacts:
-        return ("required durable artifact has no declared path",)
+        return (DURABLE_ARTIFACT_ANOMALY_NO_DECLARED_PATH,)
     if result.commit_intent is None:
-        return ("required durable artifact has no CommitIntent",)
+        return (DURABLE_ARTIFACT_ANOMALY_NO_COMMIT_INTENT,)
     if any(path not in result.commit_intent.paths for path in durable_artifacts):
-        return ("required durable artifact is not named by the CommitIntent",)
+        return (DURABLE_ARTIFACT_ANOMALY_NOT_NAMED_BY_INTENT,)
     if not delta.actual_commits or any(path not in delta.changed_paths for path in durable_artifacts):
-        return ("required durable artifact was not changed in the trusted commit",)
+        return (DURABLE_ARTIFACT_ANOMALY_NOT_IN_TRUSTED_COMMIT,)
     for path in durable_artifacts:
         completed = subprocess.run(
             ("git", "-C", str(repository), "ls-tree", "-z", delta.end_head, "--", path),
@@ -275,9 +280,7 @@ def _durable_artifact_anomalies(
             and (repository / path).is_file()
         )
         if not regular_versioned_file:
-            return (
-                "required durable artifact is absent or not a regular Git-tracked file at end HEAD",
-            )
+            return (DURABLE_ARTIFACT_ANOMALY_NOT_REGULAR_TRACKED_FILE,)
     return ()
 
 
@@ -312,6 +315,7 @@ def run_one_hop(
         prompt = assemble_prompt(
             run, phase, components, agent_operating_contract=agent_operating_contract,
             invocation=invocation, persona=persona, task_payload=task_payload,
+            profile=profile,
             context=context_items,
             contract_version=selected_result_contract_version,
             result_contract_kind=selected_result_contract,

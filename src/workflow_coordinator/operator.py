@@ -296,6 +296,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--executable", default="codex")
     parser.add_argument("--successor-continuation", help="validated successor descriptor; it grants no authority")
     parser.add_argument("--successor-continuation-sha256", help="exact descriptor digest printed by explicit preparation")
+    parser.add_argument(
+        "--continue-existing", action="store_true",
+        help=(
+            "continue the identical, already-registered Run at --state-root from "
+            "its own persisted READY state (B, WI-WFC-RECOVERY-ROUTING-001); "
+            "never creates a new Run, never usable on a fresh state root"
+        ),
+    )
     return parser.parse_args(supplied)
 
 
@@ -303,6 +311,7 @@ def _preflight(
     args: argparse.Namespace,
     *,
     evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
+    allow_existing_state_root: bool = False,
 ):
     agent_operating_contract = load_agent_operating_contract()
     repository = Path(args.repository).resolve()
@@ -321,7 +330,15 @@ def _preflight(
     if not facts.clean or facts.unresolved_submodules:
         raise OperatorPreflightError("worktree preconditions fail: repository must be clean with resolved submodules")
     state_root = Path(args.state_root).resolve()
-    if state_root.exists():
+    # A continuation (B, WI-WFC-RECOVERY-ROUTING-001) re-admits at the exact
+    # same, already-registered state root: the opposite of the one-shot rule
+    # below, which exists to stop a fresh Run from ever overwriting prior
+    # state. ``_continue_existing_run`` alone sets this; every other caller
+    # keeps the original one-shot refusal unchanged.
+    if allow_existing_state_root:
+        if not state_root.is_dir():
+            raise OperatorPreflightError("continuation requires an existing engine state root")
+    elif state_root.exists():
         raise OperatorPreflightError("state root already exists; one-shot operator roots are never overwritten")
     binding_source = Path(args.execution_bindings).resolve()
     try:
@@ -1770,6 +1787,129 @@ def _successor_context(descriptor_path: Path, repository: Path, expected_head: s
     return context, provenance
 
 
+def _continue_existing_run(args: argparse.Namespace) -> int:
+    """B, WI-WFC-RECOVERY-ROUTING-001: continue the identical, already-
+    persisted Run at ``--state-root`` from its own ``READY`` state.
+
+    Reuses the unchanged ``_preflight``/``admit_parsed`` admission pipeline
+    exactly (full governing-input, component, evidence and execution-binding
+    re-verification) at the caller-supplied ``--expected-head`` -- which a
+    caller (``frontdoor.lifecycle``) sets to the Run's own recorded
+    ``current_head``, never the original baseline -- so a continuation can
+    never proceed on inputs that silently drifted. It never creates a new
+    Run, never mkdirs a state root, and never rewrites ``operator-plan.json``;
+    the one fresh effect is ``run_serial_hops`` continuing the identical
+    ``run_id`` at its already-charged Hop count and unchanged Hop budget.
+    """
+
+    try:
+        (
+            agent_operating_contract, repository, state_root, paths, texts, item, profile, policy,
+            components, durable, legacy_durable, governing, active_evidence_runner,
+            prepared_evidence, evidence_environment,
+            binding_source, execution_configuration,
+        ) = _preflight(args, evidence_runner=PRODUCTION_EVIDENCE_RUNNER, allow_existing_state_root=True)
+        association = register_checkout(state_root, repository)
+        run_path = checkout_state_root(state_root, association) / "run.json"
+        if not run_path.is_file():
+            raise OperatorPreflightError("no existing Run to continue at this state root")
+        run = load_run(run_path)
+        if run.status is not RunStatus.READY:
+            raise OperatorPreflightError(
+                f"Run at this state root is not ready for continuation: {run.status.value}"
+            )
+        if run.work_item_id != item.work_item_id or run.profile_id != profile.profile_id:
+            raise OperatorPreflightError("continuation inputs do not match the existing Run identity")
+        if run.current_head != args.expected_head:
+            raise OperatorPreflightError(
+                "continuation expected HEAD does not match the Run's own current HEAD"
+            )
+    except SystemExit as error:
+        return 0 if error.code == 0 else 2
+    except Exception as error:
+        print(f"OPERATOR ERROR: {error}", file=sys.stderr)
+        return 2
+
+    latest_run = run
+    latest_invocation_id: str | None = None
+    latest_outcome = None
+    latest_outcome_error: str | None = None
+
+    def remember_progress(observed_run, invocation_id: str, outcome, outcome_error) -> None:
+        nonlocal latest_run, latest_invocation_id, latest_outcome, latest_outcome_error
+        latest_run = observed_run
+        latest_invocation_id = invocation_id
+        latest_outcome = outcome
+        latest_outcome_error = outcome_error
+
+    try:
+        final_run, execution_evidence = run_serial_hops(
+            run, profile, repository, components, state_root=state_root, association=association,
+            agent_operating_contract=agent_operating_contract,
+            task_payload=texts["task"], governing=governing, timeout_seconds=args.timeout_seconds,
+            personas=item.personas,
+            execution_configuration=execution_configuration,
+            executable=args.executable, durable_artifacts=(),
+            durable_artifacts_by_phase=durable,
+            evidence_runner=active_evidence_runner,
+            evidence_commands=prepared_evidence,
+            progress=remember_progress,
+        )
+        latest_run = final_run
+        checkpoint_data = json.loads(
+            (
+                checkout_state_root(state_root, association) / "checkpoint.json"
+            ).read_text(encoding="utf-8")
+        )
+        diagnostics_artifact = _diagnostics_artifact_if_present(
+            checkout_state_root(state_root, association),
+            invocation_id=latest_invocation_id,
+            outcome=latest_outcome,
+            run=latest_run,
+        )
+        summary = _summary(
+            repository,
+            final_run,
+            latest_outcome,
+            execution_evidence=execution_evidence,
+            convergence_projection=checkpoint_data.get("convergence"),
+            outcome_error=latest_outcome_error,
+            diagnostics_artifact=diagnostics_artifact,
+        )
+        summary["invocation_id"] = (
+            execution_evidence[-1]["invocation_id"]
+            if execution_evidence else latest_invocation_id
+        )
+        summary["checkout_id"] = association.checkout_id
+        atomic_write_json(state_root / "operator-summary.json", summary)
+        print(f"STATE ROOT: {state_root}\nRUN ROOT: {state_root / 'checkouts' / association.checkout_id}\nSUMMARY: {state_root / 'operator-summary.json'}")
+        last_run_commit = next((commit for hop in reversed(final_run.hops) for commit in reversed(hop.actual_commits)), "none")
+        print(f"RUN STATUS: {final_run.status.value}\nHOP USED: {final_run.hop_used}\nLAST RUN COMMIT: {last_run_commit}")
+        facts = observe_repository(repository)
+        print(
+            f"CURRENT HEAD: {facts.head}\nWORKTREE CLEAN: {facts.clean and not facts.unresolved_submodules}\n"
+            f"NEXT EXPLICIT ACTION: {_next_explicit_action(final_run)}"
+        )
+        return 0 if final_run.status.value == "completed" and facts.clean and not facts.unresolved_submodules else 1
+    except Exception as error:
+        diagnostics_artifact = _diagnostics_artifact_if_present(
+            checkout_state_root(state_root, association),
+            invocation_id=latest_invocation_id,
+            outcome=latest_outcome,
+            run=latest_run,
+        )
+        _write_failure_summary(
+            state_root, repository, latest_run,
+            invocation_id=latest_invocation_id or "not_dispatched",
+            checkout_id=association.checkout_id,
+            outcome=latest_outcome, error=error,
+            outcome_error=latest_outcome_error,
+            diagnostics_artifact=diagnostics_artifact,
+        )
+        print(f"OPERATOR ERROR: {error}", file=sys.stderr)
+        return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parse_args(argv)
@@ -1782,6 +1922,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             run = load_run(run_path)
             print(json.dumps(_summary(repository, run, None), sort_keys=True))
             return 0
+        if getattr(args, "continue_existing", False):
+            return _continue_existing_run(args)
         (
             agent_operating_contract, repository, state_root, paths, texts, item, profile, policy,
             components, durable, legacy_durable, governing, active_evidence_runner,

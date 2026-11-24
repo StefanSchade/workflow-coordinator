@@ -52,6 +52,33 @@ class ReductionError(ValueError):
     """State and profile cannot be reduced without guessing."""
 
 
+MECHANICAL_PREEMPTION_PREFIX = "mechanical_preemption:"
+
+# The exact, closed vocabulary of ``vertical._durable_artifact_anomalies``
+# anomaly texts -- the one class of post-acceptance mechanical stop that is
+# honestly recoverable without any human decision (A, WI-WFC-RECOVERY-
+# ROUTING-001). ``vertical.py`` imports these names so the anomaly text a
+# boundary observes and the text this reducer recognizes can never drift
+# apart. The separate ``vertical._subject_anomalies`` (WFC-GIT-08 commit
+# subject) class is deliberately excluded: a malformed commit subject is a
+# distinct, un-reviewed authorship defect, not a consistent post-acceptance
+# fact about an otherwise-accepted Hop.
+DURABLE_ARTIFACT_ANOMALY_NO_DECLARED_PATH = "required durable artifact has no declared path"
+DURABLE_ARTIFACT_ANOMALY_NO_COMMIT_INTENT = "required durable artifact has no CommitIntent"
+DURABLE_ARTIFACT_ANOMALY_NOT_NAMED_BY_INTENT = "required durable artifact is not named by the CommitIntent"
+DURABLE_ARTIFACT_ANOMALY_NOT_IN_TRUSTED_COMMIT = "required durable artifact was not changed in the trusted commit"
+DURABLE_ARTIFACT_ANOMALY_NOT_REGULAR_TRACKED_FILE = (
+    "required durable artifact is absent or not a regular Git-tracked file at end HEAD"
+)
+RECOVERABLE_DURABLE_ARTIFACT_ANOMALIES = frozenset({
+    DURABLE_ARTIFACT_ANOMALY_NO_DECLARED_PATH,
+    DURABLE_ARTIFACT_ANOMALY_NO_COMMIT_INTENT,
+    DURABLE_ARTIFACT_ANOMALY_NOT_NAMED_BY_INTENT,
+    DURABLE_ARTIFACT_ANOMALY_NOT_IN_TRUSTED_COMMIT,
+    DURABLE_ARTIFACT_ANOMALY_NOT_REGULAR_TRACKED_FILE,
+})
+
+
 def trusted_evaluator_qualification(
     index: TrustedQualificationIndex,
     evaluator_hop_id: str,
@@ -404,6 +431,107 @@ def validate_convergence_route_history(
             raise ReductionError(
                 f"convergence escape Hop {hop.hop_id} trigger set is not replayable"
             )
+
+
+def _is_recoverable_mechanical_repository_anomaly(
+    run: Run, result: ResultValue, facts: MechanicalFacts, error: str,
+) -> bool:
+    """Decide eligibility for A's reconcile-required reclassification.
+
+    Called only where the existing mechanical-error ordering has already
+    established that ``error`` (``facts.repository_anomaly``) is the single
+    controlling mechanical fact for this Hop. ``error`` is the exact,
+    unjoined anomaly text: a concatenation of more than one anomaly (worktree
+    dirty, moved HEAD, a WFC-GIT-08 subject defect, ...) can never equal one
+    of ``RECOVERABLE_DURABLE_ARTIFACT_ANOMALIES`` verbatim, so membership
+    alone proves "worktree clean, HEAD at this Hop's own end HEAD, no other
+    anomaly".
+    """
+
+    if error not in RECOVERABLE_DURABLE_ARTIFACT_ANOMALIES:
+        return False
+    if facts.policy_anomaly or facts.required_evidence_error:
+        return False
+    if result.requires_human or result.escalation is not None:
+        return False
+    return not any(
+        finding.state is FindingState.OPEN and finding.blocking
+        for finding in run.findings
+    )
+
+
+def diagnose_mechanical_recovery_eligibility(run: Run) -> tuple[str | None, str | None]:
+    """Decide B's recovery-predicate eligibility and, where relevant, name
+    exactly which element is violated.
+
+    Returns ``(anomaly, None)`` when every predicate element holds (B may
+    proceed to its own live-fact re-verification), or ``(None, reason)``
+    once a named reason is known. The one case that returns ``(None, None)``
+    -- ``stop_reason`` does not even carry the ``mechanical_preemption:``
+    prefix -- is the scope gate: that Run was never a candidate for this
+    predicate at all (an ordinary semantic ``awaiting_human`` stop, or any
+    other classification), so its caller must fall back to its own
+    unrelated, pre-existing behaviour rather than naming a refusal for a
+    predicate that was never in play.
+
+    Pure and status-agnostic by design: it inspects only ``stop_reason``,
+    ``semantic_stop``, ``human_question``, ``hops`` and ``findings``, so the
+    identical predicate decides eligibility both for a *new* Run A classifies
+    as ``reconcile_required`` and for an *already archived*, terminal
+    ``awaiting_human`` Run stopped before this predicate existed (B). Any
+    live-fact re-verification (current HEAD, clean worktree, lifecycle/
+    Commission identity) is a separate boundary concern layered on top of
+    this result, never folded into it.
+    """
+
+    if run.stop_reason is None or not run.stop_reason.startswith(MECHANICAL_PREEMPTION_PREFIX):
+        return None, None
+    anomaly = run.stop_reason[len(MECHANICAL_PREEMPTION_PREFIX):]
+    if not run.hops:
+        return None, "the Run has no recorded Hop outcome"
+    if run.semantic_stop is not None:
+        return None, "the Run has an open semantic stop"
+    if run.human_question is not None:
+        return None, "the Run has an open human question"
+    if any(finding.state is FindingState.OPEN and finding.blocking for finding in run.findings):
+        return None, "the Run has an open blocking Finding"
+    if anomaly not in RECOVERABLE_DURABLE_ARTIFACT_ANOMALIES:
+        return None, f"the stop reason is not the recoverable durable-artifact anomaly class: {anomaly}"
+    return anomaly, None
+
+
+def recoverable_mechanical_stop_anomaly(run: Run) -> str | None:
+    """Return the durable-artifact anomaly text if ``run``'s recorded stop is
+    eligible for mechanical recovery, else ``None`` (collapsing both
+    ``diagnose_mechanical_recovery_eligibility`` outcomes that mean "not
+    eligible" -- callers that need to distinguish "never in scope" from "in
+    scope but a named element is violated" use that function directly).
+    """
+
+    anomaly, _ = diagnose_mechanical_recovery_eligibility(run)
+    return anomaly
+
+
+def _stop_for_recoverable_mechanical(run: Run, reason: str) -> Reduction:
+    """A's honest non-terminal classification for the durable-artifact class.
+
+    Mirrors ``_stop_for_human`` except the Run lands in ``reconcile_required``
+    (not the terminal ``awaiting_human``) with its ``mechanical_preemption:``
+    stop reason and anomaly text preserved verbatim -- recoverable through
+    the ordinary ``wfc resume`` predicate re-verification in B, never through
+    a human decision.
+    """
+
+    return Reduction(
+        run=require_reconcile(
+            replace(run, stop_reason=reason),
+            reason="mechanical_recoverable",
+            current_head=run.current_head,
+        ),
+        route_key=None,
+        autonomous_route=False,
+        supervisor_required=False,
+    )
 
 
 def _stop_for_human(run: Run, reason: str, question: str | None = None) -> Reduction:
@@ -1630,14 +1758,14 @@ def reduce_result(
             semantic_stop=SemanticStop(kind=kind, question=question, source_hop_id=hop_id),
         )
     mechanical_errors = (
-        profile_error,
-        result_state_error,
-        facts.state_error,
-        facts.repository_anomaly,
-        facts.policy_anomaly,
-        facts.required_evidence_error,
+        ("profile_error", profile_error),
+        ("result_state_error", result_state_error),
+        ("state_error", facts.state_error),
+        ("repository_anomaly", facts.repository_anomaly),
+        ("policy_anomaly", facts.policy_anomaly),
+        ("required_evidence_error", facts.required_evidence_error),
     )
-    for error in mechanical_errors:
+    for name, error in mechanical_errors:
         if error:
             # A controlling mechanical fact is not merely an explanatory stop
             # string.  It is durable diagnostic state too, so a semantic stop
@@ -1647,6 +1775,12 @@ def reduce_result(
                 observed_run,
                 anomalies=tuple(dict.fromkeys((*observed_run.anomalies, error))),
             )
+            if name == "repository_anomaly" and _is_recoverable_mechanical_repository_anomaly(
+                run, result, facts, error,
+            ):
+                return finish(
+                    _stop_for_recoverable_mechanical(diagnosed, f"{MECHANICAL_PREEMPTION_PREFIX}{error}")
+                )
             return finish(_stop_for_human(diagnosed, f"mechanical_preemption:{error}"))
     if result.requires_human or result.escalation is not None:
         question = (
@@ -1740,6 +1874,33 @@ def reduce_result(
         return finish(_with_finding_delta_ids(reduction, hop_id, finding_delta_ids))
 
     route_key = result.requested_route
+    if (
+        not facts.required_evidence_failed
+        and result.outcome is Outcome.COMPLETED
+        and phase.review is not None
+        and phase.review.authority is ReviewAuthority.GATE
+        and phase.review.failed_evidence_route is not None
+        and route_key == phase.review.failed_evidence_route
+        and not any(
+            finding.state is FindingState.OPEN and finding.blocking
+            for finding in updated.findings
+        )
+    ):
+        # C(iii): a gate review that found nothing to correct (``completed``,
+        # no open blocking Finding) but requested exactly the phase's
+        # ``failed_evidence_route`` is contradictory -- that route exists
+        # only for a required-evidence *failure*, never as an ordinary
+        # accept-or-correct choice. Reject outright (the smallest option):
+        # this reducer never substitutes its own route choice for the
+        # reviewer's, so it cannot silently normalise the request into the
+        # accepting route without manufacturing a disposition the review
+        # never made, and it cannot let the request stand without creating
+        # exactly the silent hand-back-to-Worker defect this WorkItem fixes.
+        reduction = _stop_for_human(
+            updated,
+            "mechanical_preemption:contradictory_route:outcome_completed_requests_failed_evidence_route",
+        )
+        return finish(_with_finding_delta_ids(reduction, hop_id, finding_delta_ids))
     if facts.required_evidence_failed:
         failure_key = phase.review.failed_evidence_route if phase.review else None
         failure_route = phase.routes.get(failure_key) if failure_key else None
@@ -1922,9 +2083,22 @@ def require_reconcile(
     current_head: str,
     reality_error: str | None = None,
 ) -> Run:
-    """Use the same current-reality boundary for interruption and child return."""
+    """Use the same current-reality boundary for interruption and child return.
 
-    if reason not in {"interruption", "prerequisite_return"}:
+    ``reason="mechanical_recoverable"`` (A/B, WI-WFC-RECOVERY-ROUTING-001) is
+    the one case that preserves rather than overwrites ``stop_reason`` and
+    ``human_question``: its caller has already established (via
+    ``recoverable_mechanical_stop_anomaly``) that the Run's own
+    ``mechanical_preemption:`` text *is* the honest, precise diagnosis, and
+    that no human question is open. It is reachable both from ``RUNNING``
+    (A, the moment the mechanical anomaly is first observed) and from
+    ``AWAITING_HUMAN`` (B, retroactively reclassifying an already-terminal
+    Run stopped before this predicate existed -- never from any other
+    status, so a genuine human-authority stop can never be reclassified this
+    way).
+    """
+
+    if reason not in {"interruption", "prerequisite_return", "mechanical_recoverable"}:
         raise ReductionError(f"unknown reconcile reason: {reason}")
     allowed_statuses = {
         "interruption": {
@@ -1933,6 +2107,7 @@ def require_reconcile(
             RunStatus.AWAITING_SUPERVISOR,
         },
         "prerequisite_return": {RunStatus.SUSPENDED},
+        "mechanical_recoverable": {RunStatus.RUNNING, RunStatus.AWAITING_HUMAN},
     }
     idempotent_reentry = (
         run.status is RunStatus.RECONCILE_REQUIRED and run.reconcile_reason == reason
@@ -1945,27 +2120,41 @@ def require_reconcile(
     if reality_error:
         anomalies = (*anomalies, reality_error)
     anchor = run.suspension_head if reason == "prerequisite_return" else run.current_head
+    stop_reason = (
+        run.stop_reason if reason == "mechanical_recoverable" else "reconcile_requires_explicit_resume"
+    )
+    human_question = (
+        None if reason == "mechanical_recoverable"
+        else run.human_question or "Validate current reality and explicitly authorize resume."
+    )
     return replace(
         run,
         current_head=current_head,
         status=RunStatus.RECONCILE_REQUIRED,
         reconcile_reason=reason,
         reconcile_anchor=anchor,
-        stop_reason="reconcile_requires_explicit_resume",
-        human_question=(
-            run.human_question or "Validate current reality and explicitly authorize resume."
-        ),
+        stop_reason=stop_reason,
+        human_question=human_question,
         anomalies=anomalies,
     )
 
 
 def resume_after_reconcile(run: Run, profile: WorkflowProfile, *, current_head: str) -> Run:
+    """Move a reconciled Run back to ``READY`` at its unchanged phase and Hop budget.
+
+    ``mechanical_recoverable`` deliberately keeps its anomaly text: B
+    preserves it in the Run record rather than requiring (or performing) any
+    clearing, since it is historical diagnostic provenance of the recovered
+    stop, not an unresolved blocker; every other reconcile reason keeps the
+    pre-existing "anomalies must be resolved before resume" rule unchanged.
+    """
+
     if run.status is not RunStatus.RECONCILE_REQUIRED:
         raise ReductionError("Run does not require reconciliation")
     _, error = _profile_phase(run, profile)
     if error:
         raise ReductionError(error)
-    if run.anomalies:
+    if run.anomalies and run.reconcile_reason != "mechanical_recoverable":
         raise ReductionError("reconcile anomalies must be resolved before resume")
     if current_head != run.current_head:
         raise ReductionError("current HEAD changed after reconciliation")

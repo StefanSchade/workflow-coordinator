@@ -23,9 +23,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
 
-from workflow_coordinator.model import Run, RunStatus  # noqa: E402
+from workflow_coordinator.model import HopSummary, Run, RunStatus  # noqa: E402
 from workflow_coordinator.persistence import atomic_write_json, write_run_snapshot, write_dispatch_marker  # noqa: E402
 from workflow_coordinator.model import DispatchMarker  # noqa: E402
+from workflow_coordinator.serialization import load_run, work_item_from_yaml, workflow_profile_from_yaml  # noqa: E402
 from workflow_coordinator.slice4 import register_checkout, checkout_state_root  # noqa: E402
 
 
@@ -43,6 +44,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--execution-bindings-sha256")
     parser.add_argument("--timeout-seconds", default="900")
     parser.add_argument("--executable", default="codex")
+    parser.add_argument("--continue-existing", action="store_true")
     return parser.parse_args()
 
 
@@ -62,11 +64,56 @@ def _leave_dirty_worktree_content(repository: Path) -> None:
     target.write_text("fake engine: unadopted worktree work\n", encoding="utf-8")
 
 
+def _continue_existing(args: argparse.Namespace, repository: Path, state_root: Path) -> int:
+    """Stand-in for ``operator.py``'s ``--continue-existing`` admission path
+    (B, WI-WFC-RECOVERY-ROUTING-001): the state root and Run already exist;
+    this never mkdirs or writes a fresh ``operator-plan.json``. The outcome
+    is selected by ``WFC_FAKE_ENGINE_CONTINUE_MODE`` so lifecycle recovery
+    tests can pin an exact, repeatable continuation result."""
+
+    mode = os.environ.get("WFC_FAKE_ENGINE_CONTINUE_MODE", "completed_consistent")
+    association = register_checkout(state_root, repository)
+    run_root = checkout_state_root(state_root, association)
+    run = load_run(run_root / "run.json")
+    if run.status is not RunStatus.READY:
+        return 9
+
+    from dataclasses import replace
+
+    terminal_status = {
+        "completed_consistent": RunStatus.COMPLETED,
+        "awaiting_human_again": RunStatus.AWAITING_HUMAN,
+        "reconcile_required_again": RunStatus.RECONCILE_REQUIRED,
+    }.get(mode)
+    if terminal_status is None:
+        return 9
+    next_sequence = run.hop_used + 1
+    run = replace(
+        run, status=terminal_status, current_head=args.expected_head, hop_used=next_sequence,
+        stop_reason=None if terminal_status is RunStatus.COMPLETED else "second_fixture_stop",
+        hops=(*run.hops, HopSummary(
+            hop_id=f"H{next_sequence:03d}", sequence=next_sequence, role="independent_reviewer",
+            outcome="completed", base_head=run.current_head, end_head=args.expected_head, actual_commits=(),
+            finding_delta_ids=(), evidence_refs=(), applied_route=None, stop_reason=None,
+            summary="fixture continuation Hop", attribution="agent",
+        )),
+    )
+    write_run_snapshot(run_root / "run.json", run)
+    if mode == "completed_consistent":
+        atomic_write_json(state_root / "operator-summary.json", {
+            "run_status": "completed", "worktree_clean": True, "final_head": args.expected_head,
+        })
+    return 0
+
+
 def main() -> int:
     mode = os.environ.get("WFC_FAKE_ENGINE_MODE", "exit_immediately")
     args = _parse_args()
     repository = Path(args.repository).resolve()
     state_root = Path(args.state_root).resolve()
+
+    if args.continue_existing:
+        return _continue_existing(args, repository, state_root)
 
     if mode == "exit_immediately":
         return 9
@@ -90,9 +137,26 @@ def main() -> int:
     run_root = checkout_state_root(state_root, association)
 
     run_id = os.environ.get("WFC_FAKE_ENGINE_RUN_ID", "RUN-fake-engine")
+    work_item_id = "WI-FAKE"
+    profile_id = "fake-profile"
+    profile_revision = "1"
+    if mode in ("mechanical_reconcile_required", "mechanical_awaiting_human"):
+        # B, WI-WFC-RECOVERY-ROUTING-001: a mechanical-recovery continuation
+        # re-admits through the real ``operator.py`` pipeline, which requires
+        # the Run's own ``profile_id``/``profile_revision``/``work_item_id``
+        # to match the *real* compiled profile/work-item exactly -- read
+        # them for real only for the modes that exercise that continuation;
+        # every other (legacy) caller may still pass a non-existent
+        # ``--profile``/``--work-item`` placeholder path unchanged.
+        real_profile = workflow_profile_from_yaml((repository / args.profile).read_text(encoding="utf-8"))
+        real_work_item = work_item_from_yaml((repository / args.work_item).read_text(encoding="utf-8"))
+        work_item_id = real_work_item.work_item_id
+        profile_id = real_profile.profile_id
+        profile_revision = real_profile.revision
     run = Run(
-        schema_version=2, run_id=run_id, work_item_id="WI-FAKE", profile_id="fake-profile",
-        profile_revision="1", policy_id="fake-policy", policy_revision="1", repository=str(repository),
+        schema_version=2, run_id=run_id, work_item_id=work_item_id,
+        profile_id=profile_id, profile_revision=profile_revision,
+        policy_id="fake-policy", policy_revision="1", repository=str(repository),
         baseline_head=args.expected_head, current_head=args.expected_head, phase="implement",
         status=RunStatus.RUNNING, hop_limit=5, hop_used=0,
     )
@@ -120,12 +184,35 @@ def main() -> int:
         "completed_consistent": RunStatus.COMPLETED,
         "completed_missing_summary": RunStatus.COMPLETED,
         "completed_inconsistent_summary": RunStatus.COMPLETED,
+        # B, WI-WFC-RECOVERY-ROUTING-001: reproduce the honest recoverable
+        # mechanical stop shape -- a real recorded Hop and a
+        # ``mechanical_preemption:`` stop reason naming a durable-artifact
+        # anomaly -- for both the "new Run" (A) and "already-archived
+        # terminal awaiting_human" (B(ii), the incident shape) cases.
+        "mechanical_reconcile_required": RunStatus.RECONCILE_REQUIRED,
+        "mechanical_awaiting_human": RunStatus.AWAITING_HUMAN,
     }.get(mode)
     if terminal_status is None:
         return 9
 
     from dataclasses import replace
 
+    mechanical_stop_reason = os.environ.get(
+        "WFC_FAKE_ENGINE_MECHANICAL_STOP_REASON",
+        "mechanical_preemption:required durable artifact has no CommitIntent",
+    )
+    if mode in ("mechanical_reconcile_required", "mechanical_awaiting_human"):
+        run = replace(
+            run,
+            hops=(HopSummary(
+                hop_id="H006", sequence=1, role="independent_reviewer", outcome="completed",
+                base_head=args.expected_head, end_head=args.expected_head, actual_commits=(),
+                finding_delta_ids=(), evidence_refs=(), applied_route=None, stop_reason=None,
+                summary="fixture Hop", attribution="agent",
+            ),),
+            hop_used=1,
+            stop_reason=mechanical_stop_reason,
+        )
     run = replace(run, status=terminal_status)
     _leave_dirty_worktree_content(repository)
     write_run_snapshot(run_root / "run.json", run)

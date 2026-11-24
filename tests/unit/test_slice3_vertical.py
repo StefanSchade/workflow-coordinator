@@ -198,6 +198,7 @@ def test_convergence_prompt_hides_reserved_escape_and_selects_result_v2():
         agent_operating_contract=load_agent_operating_contract(),
         persona="fixture evaluator",
         task_payload="task",
+        profile=workflow,
     )
     header = package.text.split("\n\n", 1)[0]
     assert "permitted_routes=accept, correct" in header
@@ -277,6 +278,7 @@ def test_prompt_projects_configured_finding_authority_independent_of_phase_name(
         invocation=invocation(),
         agent_operating_contract=load_agent_operating_contract(),
         persona="fixture persona", task_payload="task",
+        profile=workflow,
     )
     header = package.text.split("\n\n", 1)[0]
 
@@ -301,6 +303,7 @@ def test_prompt_preserves_admitted_finding_authority_operation_order():
         invocation=invocation(),
         agent_operating_contract=load_agent_operating_contract(),
         persona="fixture persona", task_payload="task",
+        profile=workflow,
     )
     header = package.text.split("\n\n", 1)[0]
 
@@ -421,6 +424,7 @@ def test_v3_work_result_admission_is_kind_aware_in_adapter_and_prompt():
         task_payload="task",
         result_contract_kind=ResultContractKind.REVIEW_VERDICT,
         contract_version=3,
+        profile=review_workflow,
     )
     assert "output_contract=review-verdict_v3" in review_package.text
     with pytest.raises(ValueError, match="unsupported structured-result contract version"):
