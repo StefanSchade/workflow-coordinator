@@ -58,6 +58,24 @@ mechanical refusal does.
   either `wfc resume` the same checkout or prepare a fresh one, per the
   printed message.
 
+## What the mandate already covers, before asking
+
+Delegated task authority persists across a stop: a technical failure does
+not by itself end it, and uncertainty about why a Hop or Run stopped is not
+itself a reason to ask -- diagnose it, and where the table below says the
+mandate already covers the next step, take it and report what you did.
+
+| Classification(s) | You may, on your own | A human decides |
+| --- | --- | --- |
+| `completed` | Verify against the declared scope, then integrate. | -- |
+| `refused_unauthorized` / `refused_drift` / `refused_journal_root` | Correct the input and `wfc run` again in the same checkout -- the lifecycle was never consumed. | -- |
+| `refused_prelaunch` / `refused_probe` / `refused_identity_changed` / `refused_launch_exhausted` | Diagnose the reported fact -- including preparing or correcting the declared evidence command's own environment -- and either `wfc resume` the same checkout or prepare a fresh one and retry, per the printed message; repeating a probe that just failed, once corrected, is ordinary preparation. | Widening scope, authority, program or Hop budget to make the probe pass. |
+| `refused_no_lifecycle` / `refused_active_lifecycle` | Prepare a fresh checkout and launch there. | -- |
+| `awaiting_human_budget` | Prepare a successor Commission at the same scope, program and an unwidened Hop budget. | Raising the Hop budget. |
+| `reconcile_required` / `stopped` / `interrupted` | Investigate the stop; where the preserved candidate is unambiguous and in-scope, prepare a successor Commission carrying the same already-decided scope, program and Hop budget forward. | Judging whether the candidate is worth salvaging, needs only forensic preservation, or should be discarded; any widened authority. |
+| `uncertain_launch` | Report the fact. | Any relaunch -- never treated as safe. |
+| `awaiting_human` | Report `stop_reason`, `human_question_present`, open Findings and the last recorded phase. | Resolving the stop itself; a Finding is only ever opened or resolved by the independent reviewer. |
+
 ## What counts as accepted
 
 Treat the archived Evidence -- the Evidence-repository commit holding
@@ -85,9 +103,11 @@ not a passing self-check alone.
 
 ## The four recovery outcomes
 
-A Run or Hop that does not cleanly complete resolves into exactly one
-maintainer-chosen outcome; none is automatic and this skill never chooses
-one on its own:
+A Run or Hop that does not cleanly complete resolves into exactly one of
+four outcomes. Same-Run resume (where the accepted predicates allow it) and
+a successor Commission at an unchanged scope/program/Hop budget are not
+decisions this skill withholds -- they continue an already-decided mandate,
+per the table above. The four outcomes:
 
 1. **Same-Run reconcile/resume** -- only when the accepted predicates allow
    it; the stopped Hop still stays charged.
@@ -98,14 +118,16 @@ one on its own:
    preserved externally, never as an ordinary salvage commit.
 4. **Discard** -- the candidate has no preservation value.
 
-A stopped Run is never edited in place, and nothing is discarded without the
-human.
+Choosing among outcomes 2, 3 and 4 needs a human judgment about what the
+work actually is and is worth; a stopped Run is never edited in place, and
+nothing is discarded without that judgment.
 
 ## What to bring to the human
 
 The printed `CLASSIFICATION` and `MESSAGE`; for `awaiting_human`, the
 `stop_reason` and whether `human_question_present`; any open Finding and
 which phase holds authority over it; the Evidence location once archived;
-and, for anything that is not `completed`, which of the four recovery
-outcomes applies and why -- never resolve the stop, widen scope, or discard
-anything without an explicit answer.
+and, for a stop whose disposition needs judgment (outcomes 2 to 4 above),
+why -- bring that judgment to the human, and never widen scope, promote a
+Runtime, publish, or discard anything without an explicit answer. Technical
+continuation already covered by the table above is not itself one of these.
