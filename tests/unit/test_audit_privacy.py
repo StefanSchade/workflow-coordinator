@@ -29,6 +29,11 @@ def _canary_attempt(tmp_path):
             hop_id="H001", sequence=1, role="worker", phase="implement",
             persona=ab.PERSONA_CANARY, summary_prose=ab.PROVIDER_PROSE_CANARY,
             observations=(ab.ObservationSpec(summary_prose=ab.PROVIDER_PROSE_CANARY),),
+            usage=ab.usage_record(
+                role="worker", input_tokens=19, output_tokens=9,
+                per_model=({"model": "claude-sonnet-5-5", "input_tokens": 19, "output_tokens": 9,
+                            "cache_read_tokens": None, "cache_creation_tokens": None},),
+            ),
         ),
         ab.HopSpec(
             hop_id="H002", sequence=2, role="independent_reviewer", phase="broad_review",
@@ -100,6 +105,28 @@ class TestPrivacyGuardRefusesRatherThanSilentlyDropping:
     def test_a_git_remote_url_is_refused(self):
         with pytest.raises(au.ProjectionError):
             au._guard_privacy({"raw": {"files": [{"path": ab.REMOTE_URL_CANARY}]}}, "", ())
+
+    def test_a_private_string_in_a_hop_usage_figure_is_refused(self):
+        with pytest.raises(au.ProjectionError) as excinfo:
+            au._guard_privacy(
+                {"hops": [{"usage": {"input_tokens": ab.DEFAULT_HOME}}]}, "", (ab.DEFAULT_HOME,),
+            )
+        assert "hops[0].usage.input_tokens" in str(excinfo.value)
+
+    def test_a_private_string_in_a_per_model_entry_is_refused(self):
+        with pytest.raises(au.ProjectionError) as excinfo:
+            au._guard_privacy(
+                {"hops": [{"usage": {"per_model": [{"model": ab.DEFAULT_HOME}]}}]},
+                "", (ab.DEFAULT_HOME,),
+            )
+        assert "hops[0].usage.per_model[0].model" in str(excinfo.value)
+
+    def test_a_private_string_as_a_by_model_aggregate_key_is_refused(self):
+        with pytest.raises(au.ProjectionError):
+            au._guard_privacy(
+                {"usage": {"by_model": {ab.DEFAULT_HOME: {"input_tokens": {"value": 1, "lower_bound": False}}}}},
+                "", (ab.DEFAULT_HOME,),
+            )
 
     def test_project_audit_refuses_when_supplied_lifecycle_facts_leak_a_private_string(self, tmp_path):
         attempt_dir = ab.build_attempt(tmp_path)

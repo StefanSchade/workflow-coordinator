@@ -151,13 +151,20 @@ def build_report(audit: Mapping[str, Any], *, archive_ref: str | None = None) ->
         not_done.append("limits: " + ", ".join(sorted(limits)))
 
     usage = audit.get("usage")
+    usage_reported = (
+        isinstance(usage, Mapping)
+        and (usage["coverage_counts"]["complete"] + usage["coverage_counts"]["partial"]) > 0
+    )
+    # Nothing was actually reported by any invocation (every record, if any,
+    # carries coverage "none"): keep the pre-usage report wording and
+    # behavior exactly as before, per the task's explicit requirement.
     usage_report = (
         {
             "coverage_counts": dict(usage["coverage_counts"]),
             "totals": usage["totals"],
             "by_role": usage["by_role"],
         }
-        if isinstance(usage, Mapping)
+        if usage_reported
         else None
     )
 

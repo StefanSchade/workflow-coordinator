@@ -294,8 +294,11 @@ unreleased section)
 `usage_not_reported`; token usage is not measured."
 |Edited
 |Same inaccuracy; rewrote to describe the capability and both limit codes.
-Only the planned (unreleased) section was touched; no released section was
-edited.
+Corrected by H003 (F001): the original H001 edit landed inside the frozen
+`0.1.0b1 -- (released)` section, which this file's own Standing rule and the
+task forbid editing after the tag. H003 reverted that bullet verbatim in the
+released section and added the equivalent paragraph only to the `0.1.0b2 --
+planned` section instead; only the planned section is touched now.
 
 |`docs/developer_guide/ch04_release_management.adoc` (Q1 consumer-smoke
 historical table row: "Audit" cell, `anomaly_count` 0, limits
@@ -474,3 +477,95 @@ both new keys are additive and conditionally present/absent exactly as
 needed for byte-identical reprojection of a pre-this-change archive. No
 change to `robust@v1`/`simple@v1` program records or
 `src/workflow_coordinator/resources/**`.
+
+== H003 correction addendum
+
+Written by `WI-WFC-TOKEN-USAGE-S1-001` H003 (Worker, correction phase) against
+the independent broad review recorded at
+`docs/warm_storage/post-beta-planning/wfc_token_usage_broad_review.adoc`
+(verdict `changes_required`, three blocking Findings). Same authority limits
+as above: informative only, no Finding disposition performed or proposed
+here.
+
+F001 (release-notes frozen-section edit):: Confirmed by `git show a457c32 --
+docs/release_notes/release_notes.adoc`: the only hunk landed inside `==
+0.1.0b1 -- (released)` (the beta-limitations bullet list), not the `==
+0.1.0b2 -- planned` section the docs-sync table claimed. Fixed by reverting
+that bullet in the released section back to its original wording ("The
+archived `audit.json` always reports `usage_not_reported`; token usage is
+not measured.") and adding the equivalent, accurate paragraph only to the
+planned section instead. The docs-sync table row above is corrected to
+match. `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+--failure-level=WARN docs/release_notes/release_notes.adoc` prints nothing
+after the fix.
+
+F002 (report wording changes when nothing was reported):: Confirmed by
+reproduction: a one-Hop Run whose only persisted `usage.json` record has
+`coverage: "none"` (e.g. the demo-kit's scripted, no-output provider) built
+an `audit.json` with a top-level `usage` summary (because at least one
+record existed at all), and `wfc report` rendered three new "usage ..."
+lines even though nothing was actually reported -- changing both the
+report's wording and silently falsifying the two guarded consumer-tutorial
+listings the docs-sync table declared unchanged. Fixed in
+`frontdoor/report.py::build_report`: the report now treats a Run's usage as
+"reported" only when the audit's `usage.coverage_counts` shows at least one
+`complete` or `partial` invocation; when every record (or no record) carries
+`none`, `report["usage"]` is `None` and the rendering is byte-for-byte what
+it was before this WorkItem, exactly as the task requires. `audit.json`
+itself is unchanged by this fix (the per-hop `hops[].usage` record and the
+top-level summary, with its all-`none` coverage counts, are still projected,
+per DO item 3); only the report's decision to surface a usage section
+changed. New regression test:
+`tests/unit/test_report.py::TestUsageReport::
+test_a_persisted_but_wholly_unreported_record_keeps_prior_wording` builds a
+coverage-`none` record and asserts no `"usage "`-prefixed line appears and
+the prior `usage_not_reported` wording is intact; it fails without the fix
+and passes with it.
+
+F003 (privacy-guard test gap over usage fields):: Confirmed: the existing
+`_canary_attempt` fixture built every `HopSpec` with the default
+`usage=None`, so the comprehensive "every source field carries a known
+canary" test never exercised the usage code path, and no test drove
+`ProjectionError` from a usage-shaped value. Fixed in
+`tests/unit/test_audit_privacy.py`: `_canary_attempt` now gives Hop `H001` a
+real usage record (with a `per_model` entry) so the full-canary success path
+exercises per-hop and per-model usage projection without leaking; three new
+direct `au._guard_privacy` tests assert refusal for a private string at a
+per-hop usage figure (`hops[0].usage.input_tokens`), at a per-model entry's
+model identifier (`hops[0].usage.per_model[0].model`), and as a
+`usage.by_model` aggregate dict key -- mirroring the existing
+direct-refusal tests' pattern for the pre-existing fields.
+
+Measured checks run for this correction (same sandbox limits as above:
+`WFC_TEST_INPUTS`/`WFC_TEST_PROFILE` unavailable, so `--wfc-partial` with
+explicit paths; `/tmp/wfc-review-h002-venv`, a pre-existing venv in this
+sandbox with `pytest`/`ruff`/PyYAML already installed, since this sandbox's
+own `python3` has neither):
+
+* `python -m pytest -q --wfc-partial tests/unit/test_report.py
+  tests/unit/test_audit_projection.py tests/unit/test_audit_privacy.py
+  tests/unit/test_usage_model.py tests/unit/test_usage_persistence.py
+  tests/unit/test_claude_adapter_usage.py tests/unit/test_codex_adapter_usage.py
+  tests/unit/test_postrun_archive.py` -- 96 passed.
+* `python -m ruff check src/workflow_coordinator/frontdoor/report.py
+  tests/unit/test_report.py tests/unit/test_audit_privacy.py` -- all checks
+  passed.
+* `asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN
+  docs/release_notes/release_notes.adoc` -- no output (clean).
+* `python3 scripts/wfc_doc_catalog.py check` -- 83 unresolved links, 4
+  Project Memory source_path misses, "catalog current"; identical to the
+  baseline this same record already established before H003, so no
+  regression.
+* Not run here: `tests/integration/test_beta_e2e_fake_provider.py` --
+  reproduces the same stale-installed-package subprocess shadowing already
+  recorded above (`wfc: error: unrecognized arguments:
+  --execution-bindings-sha256`) in this sandbox's venv, unrelated to the
+  F001-F003 fixes; not re-diagnosed further since it predates and is
+  independent of this correction. The full required suite was not run here
+  for the same `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE` reason as before; the
+  Coordinator's task-check runs it separately.
+
+No existing assertion anywhere was weakened or deleted by this correction;
+the three new tests above are additive, and the existing usage-report tests
+for genuinely-reported (`coverage: "complete"`/mixed) records were left
+untouched because this correction does not change that path.

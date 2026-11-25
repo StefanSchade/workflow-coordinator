@@ -176,6 +176,23 @@ class TestUsageReport:
         assert "not done    nothing was pushed" in text
         assert "usage_not_reported" in text
 
+    def test_a_persisted_but_wholly_unreported_record_keeps_prior_wording(self, tmp_path):
+        """A persisted record exists (e.g. a provider that printed nothing),
+        but its own coverage is "none": nothing was actually reported, so the
+        report's wording and behavior stay exactly as before this change."""
+        hops = [
+            ab.HopSpec(
+                hop_id="H001", sequence=1, role="worker",
+                usage=ab.usage_record(coverage="none", input_tokens=None, output_tokens=None),
+            ),
+        ]
+        audit = _audit_for(tmp_path, hops=hops, hop_used=1)
+        report = rp.build_report(audit)
+        assert report["usage"] is None
+        text = rp.render_report_text(report)
+        assert not any(line.startswith("usage ") for line in text.splitlines())
+        assert "usage_not_reported" in text
+
     def test_a_recorded_usage_section_is_carried_into_the_report(self, tmp_path):
         hops = [
             ab.HopSpec(hop_id="H001", sequence=1, role="worker",
