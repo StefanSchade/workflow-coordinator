@@ -96,9 +96,14 @@ already classified (no-op)" shortcut. When that classification is
   (`refused_not_recoverable`), no mutation.
 * eligible -- B re-verifies live facts the predicate cannot see from the
   Run record alone: exact current HEAD, a clean worktree with resolved
-  submodules, and unchanged Commission/execution-envelope identity (the
-  same digest check `_do_commit` makes at first launch, read-only here).
-  Any failure is also a named refusal with no mutation. On success: a
+  submodules, at least one unused autonomous Hop remaining
+  (`run.hop_used < run.hop_limit`), and unchanged Commission/execution-
+  envelope identity (the same digest check `_do_commit` makes at first
+  launch, read-only here). Any failure is also a named refusal with no
+  mutation -- in particular, a mechanical stop recorded on the Run's last
+  authorized Hop refuses by name (`"no autonomous Hop budget remains for a
+  continuation"`) rather than rewriting the Run to `ready` with no Hop left
+  to drive it (see <<f-c>>). On success: a
   write-ahead `mechanical_recovery_intent` journal record; the identical
   Run moved to `reconcile_required` (if it was not already, i.e. the
   already-archived `awaiting_human` case) and then to `ready` via the
@@ -261,6 +266,51 @@ pattern):
 No production code changed for F-B; the three branches were already
 correctly written, only untested.
 
+[[f-c]]
+=== F-C: the predicate had no Hop-budget element
+
+H005's renewed broad review found, by driving the real engine, that a
+mechanical durable-artifact stop recorded on a Run's *last* authorized Hop
+passed the predicate as it stood (it had no Hop-budget element) and
+`resume_after_reconcile`'s pre-existing guard admits `hop_used ==
+hop_limit`. Recovery then wrote `run.json` to `status=ready`,
+`stop_reason=None`, and relaunched the engine, whose own
+`run_serial_hops` loop opens with `if run.hop_used >= run.hop_limit:
+break` (`operator.py:904`, previously unreachable because the reducer
+normally stops at `AWAITING_HUMAN_BUDGET` before the budget is ever spent
+with a further invocation needed) -- so the engine charged no Hop and
+returned the Run still `READY`, classified `interrupted`. The honest
+`reconcile_required`/`stop_reason` diagnosis was gone, and a second `wfc
+resume` answered "lifecycle already classified (no-op)" with no
+`semantic_stop` to let `prepare-successor` take over either: the Run was
+terminally unresumable, the exact defect this WorkItem removes, newly
+reachable through the fix for it.
+
+Fixed by adding exactly one more live re-verification in
+`_attempt_mechanical_recovery`, next to the HEAD/clean-worktree checks and
+before the Commission-identity check: refuse by name (`"no autonomous Hop
+budget remains for a continuation"`) when `run.hop_used >= run.hop_limit`,
+changing nothing. `resume_after_reconcile`'s own guard, `diagnose_
+mechanical_recovery_eligibility` and every other predicate element are
+unchanged; a Run on its last Hop still classifies honestly as
+`reconcile_required`/`awaiting_human` under A, it simply cannot be
+recovered through `wfc resume` until a maintainer separately authorizes
+additional Hop budget through the existing documented path (outcome 1/2 in
+`docs/operator_manual/ch06_recovery/01_outcomes.adoc`). I deliberately did
+not pursue the alternative of letting recovery proceed and classify
+`awaiting_human_budget`: `run_serial_hops`'s `break` does not produce that
+status, so making it do so would be a second, wider behaviour change to
+the engine's own Hop loop for a case B's rule already covers ("if any
+predicate fails it refuses with a named classification and message and
+changes nothing").
+
+Test: `test_recovery_refuses_on_no_hop_budget_remaining`
+(`test_mechanical_recovery_lifecycle.py`), modeled on the other refusal
+tests -- `hop_limit` reduced to the already-recorded `hop_used` (not
+`hop_used` raised past the recorded Hop summaries, which
+`serialization.run_from_json` rejects) so the fixture stays a valid Run;
+asserts the named refusal and a byte-identical `run.json`.
+
 == `robust@v1` left unchanged, and why
 
 Neither the `robust@v1` nor `simple@v1` program record, route set or
@@ -412,6 +462,52 @@ measured baseline (`wfc_recovery_routing_fix_broad_review.adoc` section
 
 Full required suite and the Coordinator's task-check: not run by me, for
 the same reason as H001.
+
+=== H006 correction: measured checks (F-C)
+
+Python: `/tmp/wfc-p1-venv/bin/python3` (3.13.5, pytest 9.2.0, PyYAML
+6.0.4) -- another pre-existing venv on the machine, same `wfc` console
+script build as H001's, so the same agent-local environmental failures
+recur unchanged (`test_lifecycle_controller.py`'s 3
+`--execution-bindings-sha256` argparse-mismatch cases; not re-enumerated
+here, unaffected by this correction).
+
+[source,text]
+----
+tests/unit/test_mechanical_recovery_lifecycle.py (1 new, 19 total)  19 passed
+tests/unit/test_recovery_routing_reducer.py                         pass
+tests/unit/test_review_route_semantics_prompt.py                    pass
+tests/unit/test_reducer.py                                          pass
+tests/unit/test_operator.py                                         pass
+----
+
+The new F-C refusal test
+(`test_recovery_refuses_on_no_hop_budget_remaining`) was confirmed to fail
+without the fix: removing only the two added lines in
+`_attempt_mechanical_recovery` (`frontdoor/lifecycle.py`) in place,
+re-running the single test, then restoring them reproduces F-C's own
+observed shape exactly -- the fake engine's `_continue_existing` relaunch
+raises `serialization.ValidationError: Run.hop_used exceeds Run.hop_limit`
+instead of refusing by name, because the Run was rewritten to `ready`
+before the relaunch attempted a Hop its own recorded `hop_limit` no longer
+allows.
+
+Lint: `/tmp/wfc-p1-venv/bin/python3 -m ruff check .` -- all checks passed.
+
+Doc render (strict): `asciidoctor --safe-mode=safe -a assembled -o
+/dev/null --failure-level=WARN` on both `.adoc` files this correction
+touches (`docs/operator_manual/ch06_recovery/01_outcomes.adoc` and this
+record) -- no output, exit 0, for each.
+
+Doc catalog: `python3 -I scripts/wfc_doc_catalog.py generate` then
+`check`, run after this record was written -- `552 records, 415162 bytes;
+unchanged`; `catalog current`; 83 unresolved links, 4 Project Memory
+source_path misses, identical to H005's own measured baseline: no
+regression.
+
+Full required suite and the Coordinator's task-check: not run by me, for
+the same reason as H001; the Coordinator's task-check runs it after this
+Hop with verified offline inputs my sandbox does not carry.
 
 == Existing-test behaviour deliberately replaced (as instructed, named)
 

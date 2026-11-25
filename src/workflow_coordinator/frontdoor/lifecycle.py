@@ -884,6 +884,8 @@ def _attempt_mechanical_recovery(
         return _refused_recovery(run, "current HEAD differs from the Run's recorded end HEAD")
     if not facts.clean or facts.unresolved_submodules:
         return _refused_recovery(run, "worktree is not clean with resolved submodules")
+    if run.hop_used >= run.hop_limit:
+        return _refused_recovery(run, "no autonomous Hop budget remains for a continuation")
     if not _recovery_commission_identity_ok(repository, checkout_dir, authorized):
         return _refused_recovery(run, "Commission or execution envelope identity changed since authorization")
     try:

@@ -400,6 +400,24 @@ def test_recovery_refuses_on_moved_head(repository: Path, tmp_path: Path, state_
     assert "HEAD" in recovered.message
 
 
+def test_recovery_refuses_on_no_hop_budget_remaining(repository: Path, tmp_path: Path, state_home: Path):
+    """F-C: a mechanical stop on the Run's last authorized Hop must refuse
+    the continuation by name, not erase the honest stop reason by writing
+    the Run to ``ready`` with no Hop left to drive it."""
+
+    result = _run_with_fake_engine(repository, tmp_path, "mechanical_awaiting_human")
+    run_path = _run_json_path(result)
+    run = load_run(run_path)
+    run = replace(run, hop_limit=run.hop_used)
+    write_run_snapshot(run_path, run)
+    before_bytes = run_path.read_bytes()
+
+    recovered = L.resume_lifecycle(repository)
+    assert recovered.classification == "refused_not_recoverable"
+    assert "no autonomous Hop budget remains" in recovered.message
+    assert run_path.read_bytes() == before_bytes
+
+
 def test_recovery_refuses_on_no_recorded_hop_outcome(repository: Path, tmp_path: Path, state_home: Path):
     result = _run_with_fake_engine(repository, tmp_path, "mechanical_awaiting_human")
     run_path = _run_json_path(result)

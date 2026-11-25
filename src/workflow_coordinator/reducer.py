@@ -479,9 +479,9 @@ def diagnose_mechanical_recovery_eligibility(run: Run) -> tuple[str | None, str 
     identical predicate decides eligibility both for a *new* Run A classifies
     as ``reconcile_required`` and for an *already archived*, terminal
     ``awaiting_human`` Run stopped before this predicate existed (B). Any
-    live-fact re-verification (current HEAD, clean worktree, lifecycle/
-    Commission identity) is a separate boundary concern layered on top of
-    this result, never folded into it.
+    live-fact re-verification (current HEAD, clean worktree, remaining Hop
+    budget, lifecycle/Commission identity) is a separate boundary concern
+    layered on top of this result, never folded into it.
     """
 
     if run.stop_reason is None or not run.stop_reason.startswith(MECHANICAL_PREEMPTION_PREFIX):
