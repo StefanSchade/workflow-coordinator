@@ -1,0 +1,267 @@
+= FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS -- Re-runnable Publication, Attached Checksums, Decision Facts And A Real Compatibility Gate
+
+Type:: future technical record -- release-engineering slice R3 of
+link:beta2_release_streamlining_plan.adoc[the Beta-2 release-streamlining
+plan]
+Status:: planned. Nothing here is authorized, commissioned or accepted. No
+Run has been executed against this record.
+Current controlling source:: This record; see link:_open.adoc[the active-work
+manifest] for its current card.
+Authorized here:: Nothing. Commissioning this slice is a separate maintainer
+action, *and it additionally needs a maintainer-decided temporary scope-ceiling
+entry* -- see <<ceiling>>.
+Not authorized here:: Any push, tag, release or publication; any TestPyPI or
+PyPI action, including re-running a publishing job; any GitHub Environment,
+Trusted Publisher, secret or protection setting; any repository secret
+anywhere in the workflow; any new third-party action or any change to a
+pinned action SHA; any change to the offline-input profile or its digests;
+any product code, test, `pyproject.toml` or version change; any `.wfc/` or
+`governance/` change beyond the temporary ceiling entry the maintainer grants.
+Depends on:: link:FTR-WFC-RELEASE-CONTRACT-STEADY-STATE.adoc[R2] accepted
+(its chapter states these facts as planned) and the temporary ceiling entry.
+Independent of link:FTR-WFC-RELEASE-PREPARATION.adoc[R1]: the two share no
+file and may run in parallel.
+Date:: 2026-11-25.
+Supporting analysis::
+link:../warm_storage/post-beta-planning/wfc_release_streamlining_planning_record.adoc[the
+release-streamlining planning record] holds the claim-by-claim disposition of
+the independent basis and the rejected alternatives. This record is complete
+without it.
+
+[[problem]]
+== Problem
+
+Four small, independent defects in `.github/workflows/release.yml`, each
+verified against the file at `0f50ad2`. The file is byte-identical to the
+version the independent basis of 2026-11-23 read.
+
+W1 -- `release` is not re-runnable:: `:371` calls `gh release create`, which
+fails when the release already exists. After a partial success -- the release
+created but an asset upload interrupted -- the job cannot be re-run, and the
+corrected recovery rule R2 writes ("re-run the failed jobs") would not hold
+for this one job.
+W4 -- the checksum file is built and then not attached:: `:169-178` writes
+`dist/SHA256SUMS.txt` and echoes it into the job summary. `publish-testpypi`
+and `publish-pypi` verify it and then `rm` it (`:307-312`, `:341-346`). The
+`release` job attaches only `dist/*.whl dist/*.tar.gz` (`:371-374`), so the
+one place a downloader could use the checksums -- the GitHub Release -- does
+not get them. Inside the artifact it describes, the file detects corruption,
+not tampering; attached to the Release, it is a usable record.
+W5 -- the facts the maintainer approves on were inferred, not read:: Chapter
+4's hosted-run record states for four of five open items that they are
+*Operator inferences*, because job logs were not retrievable
+(`ch04_release_management.adoc:485-495`, `:518-529`): the runner's seed pip
+version, whether the `sysctl` for `bwrap` was needed, the pytest pass and
+skip counts, and whether the offline-input fetch reached its index. Each is a
+single line the job already has and does not print. Today's summary carries
+only the artifact SHA-256 (`:169-178`) and `python-compat`'s coverage note
+(`:284-291`).
+W7 -- a stated invariant the workflow contradicts:: Chapter 4 `:243`: "Every
+gate is release-blocking; there is no advisory class." `publish-testpypi`
+needs only `check` (`:293-295`), so a red `python-compat` publishes anyway,
+while `pyproject.toml:17-19` advertises CPython 3.10, 3.11 and 3.12. Either
+the job gates or the classifiers go; gating costs nothing at run time,
+because the job already runs on every trigger and has to finish before the
+tag path reaches TestPyPI in practice.
+
+[[ceiling]]
+== The scope-ceiling constraint
+
+`.wfc/config.yaml`'s `work_item_scope_ceiling` is `src`, `tests`, `scripts`,
+`docs`, `README.md`, `pyproject.toml`, `Makefile`,
+`examples/consumer-demo`. `.github/` is *not* in it.
+
+This slice therefore cannot be commissioned until the maintainer adds a
+*temporary, file-exact* entry for `.github/workflows/release.yml` to
+`.wfc/config.yaml`, exactly as was done for the earlier E3 slice and removed
+again after integration (`_open.adoc`'s E3 card: the temporary entry
+`f4d575b`).
+Changing `.wfc/config.yaml` is a maintainer action; no Worker, Commission or
+Level-1 operator may make it, and this record does not request it as part of
+the slice.
+
+[[scope]]
+== Scope
+
+`.github/workflows/release.yml` only, subject to <<ceiling>>.
+
+Chapter 4 is deliberately *not* in scope: R2 states these facts as planned,
+and a second slice editing that chapter would serialise it against R1.
+
+== Non-goals
+
+* No new job, no new third-party action, no new permission, no secret, no
+  change to any pinned action SHA. The pinned SHAs stay as resolved on
+  2026-11-23; resolving a new one needs `git ls-remote` and is an Operator or
+  maintainer step (see
+  link:beta2_release_streamlining_plan.adoc#d3[the plan's decision D3]).
+* No post-publication verification job. Deliberately not done; see
+  link:beta2_release_streamlining_plan.adoc#not-done[the plan].
+* No `dependabot.yml` and no workflow dependency lockfile. Deliberately not
+  done; the plan's D3 holds the reasoning.
+* No change to the TestPyPI stage, the two Environments, the artifact
+  hand-over or the build-once rule.
+* No `skip-existing` on either upload. It would let the TestPyPI rehearsal
+  silently keep the old file, defeating G6's reason for being a real upload.
+* No change to the offline bundle, the qualified profile, the required suite
+  or the C2 allow-list.
+* No change to where the consumer smoke runs. That is
+  link:FTR-WFC-RELEASE-CONSUMER-SMOKE-PLACEMENT.adoc[R4] and its own open
+  decision.
+
+[[design]]
+== Design
+
+=== W1 -- an idempotent `release` job
+
+Replace the single `gh release create` with: `gh release view "$tag"` to
+decide, then `gh release create` when it is absent or `gh release upload
+--clobber` when it is present. The job keeps `contents: write` as its only
+elevated permission and keeps reading the already-published tag and the
+downloaded artifact; it creates nothing else.
+
+An absent release and a failed `gh release view` for another reason (network,
+authentication) must be distinguished -- a non-zero exit is not by itself
+"absent". The step inspects the failure rather than assuming.
+
+=== W4 -- attach the checksums
+
+`release` attaches `dist/SHA256SUMS.txt` beside the wheel and the sdist. The
+two publishing jobs continue to `rm` it before uploading to an index --
+nothing about the upload payload changes.
+
+=== W5 -- decision facts in the job summary
+
+The `check` job writes one block to `$GITHUB_STEP_SUMMARY`:
+
+* interpreter version and the seed pip version
+  (`python3 -c "import ensurepip; print(ensurepip.version())"`), which is the
+  exact field `check_host` compares and the one unknown (a) of the chapter's
+  hosted-run record;
+* `bwrap --version` -- unknown (b);
+* the pytest pass and skip counts, from the summary line the suite already
+  prints;
+* artifact names, byte sizes and SHA-256 -- extending the block that exists;
+* `implementation_tree_sha256`, read from `wfc --version --json` in the
+  existing C3 clean-venv step (`:130-144`), so the candidate's identity is
+  printed rather than reconstructed;
+* the `dist-audit` result line.
+
+Every value is already produced inside the job. Nothing new is computed and
+no step's exit status changes. This block is what the maintainer reads at the
+`pypi` pause.
+
+=== W7 -- `python-compat` gates
+
+Add `python-compat` to `publish-testpypi`'s `needs`. The chapter's statement
+then matches the workflow, and the classifiers are backed by something that
+can stop a publication.
+
+A red `python-compat` becomes a release blocker. That is the intent: the
+alternative -- dropping the 3.10-3.12 classifiers -- is a one-line
+`pyproject.toml` change the maintainer has already noted as available
+(`_open.adoc`'s E1 card) and is *not* in this slice's scope.
+
+== Acceptance criteria
+
+AC-1:: The `release` job completes successfully whether or not a release for
+the tag already exists, and in the existing case replaces the assets rather
+than failing. Verified by reading the step against the two branches and by a
+local `gh`-free dry reading of the script's control flow; the hosted proof is
+a maintainer action (AC-8).
+AC-2:: `dist/SHA256SUMS.txt` is among the files `release` attaches.
+AC-3:: `publish-testpypi` and `publish-pypi` still upload exactly the wheel
+and the sdist, with `SHA256SUMS.txt` removed before the upload, and still
+re-verify the checksums first.
+AC-4:: The `check` job's summary block contains all six items of
+<<design>>, each as a labelled line, and the block is written whether the
+job succeeds or fails where that is meaningful.
+AC-5:: `publish-testpypi` lists both `check` and `python-compat` in `needs`.
+AC-6:: The file still contains no repository secret, no new third-party
+action, no changed action SHA, and no permission beyond the existing
+top-level `contents: read` plus `id-token: write` on the two publishing jobs
+and `contents: write` on `release`.
+AC-7:: The file parses as YAML
+(`python3 -c "import pathlib, yaml; yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text())"`)
+and `python -m pytest -q` is green and unchanged -- no Python, test or
+packaging file is touched.
+AC-8:: *Not an acceptance criterion, recorded afterwards:* a hosted
+branch-push run showing the new summary block and a green gated
+`python-compat`. Pushing is a maintainer action (ES-3's shape); the slice is
+accepted on review against chapter 4, and the hosted result is recorded in
+the chapter and `_open.adoc` when it exists.
+
+[[tests]]
+== Required tests
+
+No new automated test, and this is a deliberate choice rather than an
+omission. P3 explicitly rejected "a test asserting the workflow matches the
+documented gates" because it "would parse YAML to restate prose, missing a
+gate that passes while proving nothing"
+(`postbeta_plan_p3_release_engineering.adoc:619-622`). That reasoning applies
+to all four changes here.
+
+What stands in for tests:
+
+* the YAML parse of AC-7, which catches the one mechanical failure mode;
+* `python -m pytest -q`, unchanged and green, which proves the slice touched
+  nothing it should not have;
+* the independent review, reading the file against chapter 4's CI section;
+* the hosted branch-push run of AC-8, which is the only real evidence and is
+  a maintainer action.
+
+== Risks
+
+R-1 This is the publication chain:: the highest-consequence file in the
+repository, and *[X]* the tag-mode path has never run on a hosted runner
+(`ch04_release_management.adoc:570`). _Mitigation:_ every change is either
+additive (summary lines, one attached file) or a one-line `needs:` edit; none
+alters the artifact, the upload payload, the Environments or the OIDC path. A
+branch-push run exercises `check`, `python-compat` and the whole summary block
+without touching publication.
+R-2 Gating `python-compat` can block a release for a compatibility smoke::
+by design. _Mitigation:_ the job has run green (run #9, three matrix jobs)
+*[X]*, and the alternative -- narrowing the classifiers -- stays available to
+the maintainer as a separate one-line change.
+R-3 `gh release view` masking a real error:: treating any non-zero exit as
+"absent" would turn an authentication failure into a `create` attempt.
+_Mitigation:_ AC-1's explicit two-branch requirement.
+R-4 A summary step that fails the job:: a diagnostic must never be the reason
+a release stops. _Mitigation:_ the block is assembled from values the job
+already has; any step that could fail on a missing value is written so that
+it reports the absence instead of exiting non-zero.
+
+== Execution notes for commissioning
+
+* One Commission, after R2 is integrated and after the maintainer has granted
+  the temporary ceiling entry of <<ceiling>>. `robust@v1`, Sonnet worker and
+  Opus reviewer -- the repository's default binding, and the binding the
+  comparable E3 slice used, where the first independent broad review opened a
+  blocking Finding (`_open.adoc`'s E3 card).
+* Hop budget upper limit 8. E3 used 5 of 14 for a whole new workflow; this is
+  four bounded edits to an existing one, with one correction cycle budgeted.
+* Scope is `.github/workflows/release.yml` only. A further file that proves
+  necessary is a scope question for the maintainer, not a reason to widen --
+  and in particular chapter 4 belongs to R2.
+* The temporary ceiling entry is removed again after integration, as it was
+  for E3. Removing it is also a maintainer action.
+* link:../developer_guide/ch03_engineering_conventions.adoc#frontdoor-docs-sync[The
+  Front Door docs-sync check] is asked: no Front Door command, argument,
+  default, classification, report, diagnostic, admission, binding or
+  recovery behaviour changes -- this is CI configuration -- so no Agent Skill
+  or tutorial edit is needed.
+* After acceptance, record implementation, acceptance and Run evidence here
+  and in `_open.adoc`, as link:README.adoc[backlog upkeep] describes, and add
+  the hosted-run result of AC-8 when the maintainer has it.
+
+== Withheld authority
+
+No push, tag, release or publication; no TestPyPI or PyPI action and no
+re-run of a publishing job; no GitHub Environment, Trusted Publisher, secret
+or protection setting; no new or upgraded third-party action; no repository
+secret; no product code, test, `pyproject.toml` or version change; no
+`.wfc/config.yaml` change (the temporary ceiling entry is granted and removed
+by the maintainer); no Runtime promotion; no new governance layer, gate class,
+program, role or Phase Execution Binding; no weakened or deleted test; no
+edit of an existing historical record; no self-acceptance of this slice.
+</content>

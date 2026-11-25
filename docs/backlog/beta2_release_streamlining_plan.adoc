@@ -1,0 +1,601 @@
+= Beta-2 release streamlining — release architecture and executable plan
+:toc:
+:toclevels: 2
+:backlog-docs: ..
+
+Status:: planning candidate; no slice is commissioned or authorized here. This
+plan builds, tags and publishes nothing, creates no credential, changes no
+workflow, script, `Makefile`, test, `pyproject.toml`, version literal,
+`.wfc/` or `governance/` file, and takes no decision the P3 plan or the
+maintainer already took.
+Standing:: Planning evidence. It continues
+link:postbeta_plan_p3_release_engineering.adoc[the Post-Beta P3
+release-engineering plan], whose decisions C1–C7, MD-1 to MD-6, the gates
+G1–G8 and the external package ES-1 to ES-6 stay in force and are *not*
+restated here. The release contract itself is owned by
+link:{backlog-docs}/developer_guide/ch04_release_management.adoc[developer
+guide chapter 4].
+Working basis:: link:{backlog-docs}/warm_storage/post-beta-planning/wfc_release_process_comparison_fable_2026-11-23.adoc[an
+independent, non-authorizing release-engineering comparison of `core` and WFC
+(2026-11-23)], read in full. Its WFC recommendations W1–W10 are dispositioned
+one by one in
+link:{backlog-docs}/warm_storage/post-beta-planning/wfc_release_streamlining_planning_record.adoc[the
+planning record], which also carries the staleness analysis, the rejected
+alternatives and the checks that were and were not run. Everything the basis
+says about `core` (`spreadsheet-handling`) is comparison context only; no
+`core` work is proposed.
+Verified against:: this repository at base HEAD `0f50ad2`, 109 commits after
+`baab49e` (the commit carrying the local tag `v0.1.0b1`, on which the basis
+was written). Re-read for this plan: `.github/workflows/release.yml`,
+`Makefile`, `pyproject.toml`, `scripts/wfc_release_check.py`,
+`scripts/wfc_dist_audit.py`, `.wfc/config.yaml`, chapter 4,
+`docs/release_notes/release_notes.adoc`, the P3 plan, `_open.adoc`, the
+post-Beta brief §6, the Agent Skill sources, `README.md`, the chapter 9
+tutorial pages, and the tests that pin release behaviour
+(`tests/unit/test_release_tooling.py`,
+`tests/architecture/test_bp1_identity.py`,
+`tests/unit/test_agent_skill_content.py`,
+`tests/architecture/test_consumer_tutorial_pages.py`,
+`tests/architecture/test_offline_distribution.py`).
+
+[[external-state]]
+== What this plan cannot know
+
+Nothing about GitHub, PyPI or TestPyPI is verifiable from this repository.
+Every statement below that depends on remote or web-interface state is marked
+*[X]* and is an *external assumption*, never a fact:
+
+* *[X]* Whether the local tag `v0.1.0b1` was pushed. The repository shows the
+  tag locally (`git tag -l`) and shows that its commit `baab49e` is an
+  ancestor of the last-fetched `refs/remotes/origin/main`; neither tells
+  whether the tag *ref* reached the remote.
+* *[X]* Whether the tag-mode run of the workflow ever executed, and how it
+  ended. Chapter 4 records that it had not
+  (`ch04_release_management.adoc:570`) and nothing later contradicts that in
+  the repository.
+* *[X]* Whether `0.1.0b1` is on PyPI or TestPyPI, and whether either upload
+  carries attestations.
+* *[X]* Whether the Trusted Publisher entries, the `testpypi` and `pypi`
+  Environments and the `pypi` required-reviewer rule exist as ES-1 and ES-2
+  describe them.
+* *[X]* The availability and shape of GitHub's workflow dependency lockfile,
+  and the deprecation timeline of the Node runtime the pinned artifact
+  actions use. The repository records only that run #9 warned about it
+  (`ch04_release_management.adoc:515`).
+
+Every slice below is written so that it can be prepared, implemented and
+integrated *locally* without resolving any of these. Where a step depends on
+one, the dependency is named and the step is conditional.
+
+[[architecture]]
+== The target release architecture for WFC
+
+The architecture does not change. WFC already implements the shape the basis
+proposes — one `release.yml`, build once, audited artifact, clean-venv
+install, an Environment approval before the irreversible step, release notes
+frozen before the tag, zero repository secrets, every action SHA-pinned. This
+plan closes three gaps in it and removes recurring manual work; it adds no
+stage, no gate class, no agent role, no program and no governance layer.
+
+[cols="1,3,2",options="header"]
+|===
+|State |What it is |Where it lives
+
+|*1 Prepare* (human-triggered, mechanical)
+|One release-preparation commit on `main`: the version set everywhere it is
+version-bearing, the documentation links re-pinned to the new tag, the
+release-notes heading frozen. Today this is hand editing across eleven files;
+<<r1,R1>> makes it one command and one commit.
+|`make release-prepare` (<<r1,R1>>, new), `make release-check`
+(`scripts/wfc_release_check.py`, exists)
+
+|*2 Preflight* (automatic, seconds)
+|Tag on `origin/main`; tag equals version; notes section present and frozen;
+README documentation links absolute *and pinned to the tag being released*
+(the tag part is the gap <<r1,R1>> closes).
+|`check` job, `Release preflight (G1, tag events only)`
+(`release.yml:163-167`)
+
+|*3 Qualify* (automatic)
+|Lint, format check, the whole required suite on the one qualified profile
+with the hash-verified offline bundle, one build, the exact allow-list audit,
+clean-venv install and CLI identity, strict documentation render. Unchanged.
+|`check` job (`release.yml:32-186`)
+
+|*4 Candidate* (automatic)
+|The two built files plus `SHA256SUMS.txt`, uploaded once as `release-dist`.
+Nothing downstream rebuilds. Unchanged, except that the decision facts the
+maintainer needs are written to the job summary (<<r3,R3>>, W5).
+|`release.yml:169-186`
+
+|*5 Decide* (human, one click)
+|The run pauses at the `pypi` Environment. This single approval is the
+release authorization (<<r2,R2>>, W4). Whether the real-provider consumer
+smoke moves into this pause is the open decision <<d1,D1>> (<<r4,R4>>).
+|`publish-pypi`, `environment: pypi` (`release.yml:322-334`) *[X]*
+
+|*6 Publish* (automatic)
+|TestPyPI rehearsal, then PyPI, then a GitHub Release carrying wheel, sdist
+*and `SHA256SUMS.txt`* (the checksum file is built today and then not
+attached — <<r3,R3>>). The `release` job becomes re-runnable (<<r3,R3>>, W1).
+|`release.yml:293-374`
+
+|*7 Verify* (human, two pages)
+|The PyPI project page and the GitHub Release. Automating this is
+*deliberately not done*; see <<not-done>>.
+|chapter 4, runbook
+|===
+
+Recovery rules, correcting the one state chapter 4 currently gets wrong
+(<<r2,R2>>, W1):
+
+[cols="2,3",options="header"]
+|===
+|State |Action
+
+|Failed before any upload |Fix on `main`, delete the tag, tag again.
+|TestPyPI upload succeeded, a later step failed |Transient failure: re-run
+the failed jobs. Content change: the next version. *Never* delete and re-tag
+— TestPyPI refuses a second upload of the version and `publish-pypi` needs
+`publish-testpypi`, so a corrected tag cannot pass.
+|PyPI upload succeeded, a later job failed |Re-run the failed jobs. Never
+re-tag.
+|Wrong content on PyPI |Yank; release the next version.
+|===
+
+Because publication uses stored bytes, "re-run the failed jobs" is safe in
+every state and no state needs a rebuild. This is already true of the
+implementation; only the documented rule is wrong.
+
+[[beta2]]
+== What Beta 2 needs from the release process
+
+Read from `_open.adoc`, the post-Beta brief §6 and the release notes; nothing
+is reordered or decided here.
+
+. *A version bump across a surface that is now much larger than the basis
+  lists.* `pyproject.toml`, `implementation_identity.py`, one deliberate test
+  literal, twelve README lines — and, added after `baab49e`, twelve
+  version-bearing lines in the four Agent Skill files (mechanically pinned to
+  `implementation_identity.VERSION` by
+  `tests/unit/test_agent_skill_content.py:237`), four lines in the chapter 9
+  quickstart and five "What was verified" lines across the three tutorial
+  pages. See the planning record for the enumerated surface and for two
+  claims about it that do not hold.
+. *The `0.1.0b2` release-notes heading frozen at the tag.* The section
+  already exists with content (`docs/release_notes/release_notes.adoc:9`),
+  which is the state C4 wants; freezing is the one edit.
+. *A tag-mode run.* Chapter 4 records that the tag-mode path has never run on
+  a hosted runner (`:570`). Beta 2 is the first release where the tag path is
+  exercised with the publication chain live. *[X]* for everything after the
+  tag push.
+. *A decision on where the real-provider consumer smoke runs* (<<d1,D1>>).
+  Beta 1 paid for it with an authenticated artifact download, a manual
+  transfer and a member-by-member rebuild comparison
+  (`ch04_release_management.adoc:531-556`), and with tooling that is not in
+  the repository -- `q1_postrun_verify.py`, which `:315` reports as having
+  run, is not among the seven files `git ls-files scripts/` lists.
+
+Not release-process work, named so it is not mistaken for it: the unfinished
+product slices `0.1.0b2` depends on — S3 of
+link:FTR-WFC-AGENT-SKILL-DISTRIBUTION.adoc[the Agent Skill record] (host
+probe and the fresh-agent qualification Q2-A/Q2-B) and S3 of
+link:FTR-WFC-CONSUMER-DEMO-WORKSPACE.adoc[the consumer demo workspace] (the
+installed-wheel rehearsal in `check`, pending its decision D2). Both keep
+their own records, priority and authorization. <<r4,R4>> must not duplicate
+the second one.
+
+[[ceiling]]
+== The scope-ceiling constraint
+
+`.wfc/config.yaml`'s `work_item_scope_ceiling` is `src`, `tests`, `scripts`,
+`docs`, `README.md`, `pyproject.toml`, `Makefile`, `examples/consumer-demo`.
+`.github/` is *not* in it, and `.wfc/config.yaml` is itself outside every
+WorkItem scope.
+
+* <<r1,R1>> and <<r2,R2>> are entirely inside the ceiling and need no change
+  to it.
+* <<r3,R3>> and <<r4,R4>> change `.github/workflows/release.yml` and
+  therefore need a *maintainer-decided temporary, file-exact ceiling entry*,
+  exactly as the earlier E3 slice had (`_open.adoc`'s E3 card: the temporary
+  entry `f4d575b` was added for E3 and removed again after integration).
+  Granting
+  it is a maintainer action; neither this plan nor a Worker may make it.
+
+[[slices]]
+== The slices
+
+Four slices. W1–W10 group into these and not into ten, because the recurring
+cost they remove falls into four places: the preparation commit, the release
+chapter, the pipeline's own robustness, and the placement of the consumer
+smoke. Each slice is independently commissionable, independently useful, and
+sized for one Run. <<r4,R4>> is conditional on <<d1,D1>>.
+
+The repository's own default execution binding (`.wfc/config.yaml`) is
+already Sonnet worker and Opus reviewer — the *demanding* profile. Where a
+slice says "demanding", it is asking for the default, not for an exception.
+
+[[r1]]
+=== R1 — One scripted release-preparation commit
+
+Record:: link:FTR-WFC-RELEASE-PREPARATION.adoc[FTR-WFC-RELEASE-PREPARATION]
+(W2).
+Purpose:: Turn the version bump from an eleven-file hand edit, two steps of
+which no local check can catch, into one command, one commit and one
+mechanical guard.
+Exact scope:: `scripts/wfc_release_prepare.py` (new),
+`scripts/wfc_release_check.py`, `Makefile`, `tests/unit/test_release_tooling.py`,
+`tests/unit/test_release_version_surface.py` (new),
+`docs/developer_guide/ch04_release_management.adoc` is *not* in scope — R2
+writes the contract this slice implements, exactly as E1 wrote the contract
+E2 implemented. All paths are inside the ceiling.
+Dependencies:: <<r2,R2>> accepted (its chapter is the specification). No
+external dependency; no *[X]* assumption.
+Risks:: (a) The surface list is the whole value; a missed site ships a stale
+link. Mitigated by the new guard test, which derives the expected version
+from `pyproject.toml` and fails on any disagreement. (b) A tool that *writes*
+to the tree is a new kind of release tooling in this repository — every other
+release tool is read-only. Mitigated by making the write a single explicit
+invocation that touches only enumerated files and by leaving `release-check`
+read-only. (c) The ch09 "What was verified" literals may be historical
+records rather than current pins (<<d4,D4>>); the slice must not re-pin them
+before that is decided.
+Test strategy:: `python -m pytest -q` with the offline bundle; the new
+version-surface guard must fail before the slice and pass after;
+`tests/unit/test_release_tooling.py` extended for the tool's refusals;
+`tests/unit/test_agent_skill_content.py` and
+`tests/architecture/test_bp1_identity.py` must stay green unchanged; strict
+render of no `.adoc` (none changed); `wfc_doc_catalog.py check` unchanged.
+Acceptance (verifiable):: `make release-prepare VERSION=<v>` run on a scratch
+copy sets the version in every enumerated site and nowhere else, and is
+idempotent. `scripts/wfc_release_check.py` additionally fails when a
+`blob/v<x>/` link in `README.md` names a version other than the one being
+released, and passes on the tree as it is today. The new guard test fails if
+`pyproject.toml` and `implementation_identity.VERSION` disagree, or if a
+`README.md` tag-pinned link names another version. No version literal is
+changed by the slice itself.
+Profile and binding:: *demanding* — `robust@v1`, Sonnet worker, Opus
+reviewer. A tool that edits the tree at release time, whose correctness is a
+completeness argument over a list, is exactly where an independent reviewer
+earns its cost; authoring it is routine.
+Hop budget (upper limit):: 10.
+Front Door docs-sync:: No Front Door command, argument, classification,
+report, diagnostic or recovery behaviour changes, so the
+link:{backlog-docs}/developer_guide/ch03_engineering_conventions.adoc#frontdoor-docs-sync[docs-sync
+check] is asked and answered *no edit needed*. The Agent Skill texts are
+nevertheless *subjects* of this slice's surface list: `references/setup.md`
+carries the `==0.1.0b1` install pin and all four files carry tag-pinned URLs,
+so the preparation command must own them and the guard must cover them.
+
+[[r2]]
+=== R2 — The release chapter reduced to its steady state
+
+Record::
+link:FTR-WFC-RELEASE-CONTRACT-STEADY-STATE.adoc[FTR-WFC-RELEASE-CONTRACT-STEADY-STATE]
+(W1 documentation part, W4, W8).
+Purpose:: Chapter 4 is 615 lines, of which roughly 340 (`:277-615`) are the
+record of one release; its recovery text is wrong for one real state; one
+gate's wording is stale after its own acceptance. Agents and the maintainer
+load it for every release task.
+Exact scope:: `docs/developer_guide/ch04_release_management.adoc`; new files
+under `docs/cold_storage/backlog/pre-0.1.0b1/release-engineering/` (the
+records moved verbatim, plus the group `README.adoc` the cold-storage
+convention asks for); `docs/backlog/_open.adoc` (its own card);
+`docs/README.adoc` and `docs/ai_info/_ai_info.adoc` only if a link target
+moves. All inside the ceiling.
+Dependencies:: None. This slice is first.
+Risks:: (a) Moving acceptance records out of the active chapter could read as
+discarding them; the maintainer's two acceptance statements (MD-5, G7) are
+recorded evidence the backlog convention requires. Mitigated by moving them
+*verbatim* to cold storage, linking them from the chapter, and changing no
+word of them. (b) Rewriting a chapter that states a decided contract risks
+silently changing a decision. Mitigated by the acceptance criterion that
+C1–C7, MD-1, G1–G8 keep their meaning, with a before/after statement per
+item in the Run record.
+Test strategy:: strict render of every changed `.adoc` prints nothing;
+`wfc_doc_catalog.py generate` then `check` reports no additional unresolved
+link or Project Memory miss against the baseline (today: 83 unresolved links,
+4 misses); `python -m pytest -q` green —
+`tests/architecture/test_manual_standalone_links.py` and the doc tests must
+not regress. Verbatim moves verified by content comparison, not by eye.
+Acceptance (verifiable):: The chapter keeps the contract, the job
+description, a one-page runbook and the corrected recovery table, and names
+the single `pypi` approval as the release authorization. The recovery
+paragraph no longer prescribes delete-and-retag for a TestPyPI-spent state.
+Gate G2's wording matches its accepted state. The MD-5 investigation, the
+hosted-run record, the run-#9 primary evidence, the Q1 result record, both
+acceptance statements and the superseded template exist in cold storage,
+byte-identical, and are linked from the chapter. The chapter also states, as
+*planned*, the preparation command <<r1,R1>> implements and the pipeline
+facts <<r3,R3>> implements — named as planned, not as existing, the way E1
+did it.
+Profile and binding:: *demanding* — `robust@v1`, Sonnet worker, Opus
+reviewer. Same shape as the accepted E1 slice: a contract document whose risk
+is a quietly changed decision.
+Hop budget (upper limit):: 10.
+Front Door docs-sync:: No behaviour change; check asked and answered *no
+edit needed*.
+
+[[r3]]
+=== R3 — Pipeline robustness and decision facts
+
+Record::
+link:FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc[FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS]
+(W1 workflow part, W4 checksum asset, W5, W7).
+Purpose:: Four small, independent defects in one file: the `release` job
+cannot be re-run after a partial success; the checksum file travels inside
+the artifact it describes and is never attached where a downloader could use
+it; the facts the maintainer is asked to approve on were *inferred* for Beta
+1 because the Operator could not read job logs; and `python-compat` gates
+nothing while the chapter says every gate is release-blocking.
+Exact scope:: `.github/workflows/release.yml` only. *Needs the temporary,
+file-exact scope-ceiling entry of <<ceiling>>.*
+Dependencies:: <<r2,R2>> accepted (the chapter states these facts as
+planned). Independent of <<r1,R1>> — the two share no file and may run in
+parallel.
+Risks:: (a) A change to the publication chain is the highest-consequence
+change in this plan; the tag path has never run *[X]*. Mitigated by keeping
+every change additive or a one-line `needs:` edit, and by the fact that a
+branch-push run exercises `check`, `python-compat` and the summary steps
+without touching publication. (b) Gating `python-compat` turns a red
+compatibility job into a release blocker; that is the intent, and the job has
+run green three times (run #9) *[X]*. (c) `gh release view` before `create`
+must not mask a genuinely absent release.
+Test strategy:: this repository's suite is unaffected (no Python, test or
+packaging file changes), so the honest statement is: `python -m pytest -q`
+green and unchanged; `yamllint`-style validity by parsing the file with
+`python3 -c "import yaml, pathlib; yaml.safe_load(...)"`; the real evidence
+is a hosted branch-push run, which is a *maintainer* action (ES-3's shape) and
+is therefore *not* part of the slice's acceptance. The slice is accepted on
+review of the file against the chapter, and the hosted run is recorded
+afterwards.
+Acceptance (verifiable):: `release` is idempotent (`gh release view` before
+`create`, `upload --clobber`) and attaches `SHA256SUMS.txt` beside the wheel
+and sdist. The `check` job writes to `$GITHUB_STEP_SUMMARY`: interpreter and
+seed pip version, `bwrap --version`, the pytest pass/skip counts, artifact
+names, sizes and SHA-256, `implementation_tree_sha256`, and the `dist-audit`
+result. `publish-testpypi` lists `python-compat` in `needs`. No secret, no
+new third-party action, no new permission, no change to the offline bundle or
+the pinned action SHAs.
+Profile and binding:: *demanding* — `robust@v1`, Sonnet worker, Opus
+reviewer. Same shape as the accepted E3 slice, which needed one correction
+cycle after an independent blocking Finding.
+Hop budget (upper limit):: 8.
+Front Door docs-sync:: No behaviour change; check asked and answered *no edit
+needed*.
+
+[[r4]]
+=== R4 — Where the real-provider consumer smoke runs (conditional)
+
+Record::
+link:FTR-WFC-RELEASE-CONSUMER-SMOKE-PLACEMENT.adoc[FTR-WFC-RELEASE-CONSUMER-SMOKE-PLACEMENT]
+(W3, W10).
+Purpose:: Beta 1's Q1 cost an authenticated artifact download, a manual
+transfer to the Operator's machine, a member-by-member rebuild comparison and
+tooling that is not in the repository; the basis adds that recording the
+results took commits between the green run and the tag, which is its account
+rather than a repository fact. The basis proposes moving the smoke into
+the `pypi` approval pause, which tests the bytes PyPI will receive and
+removes the shuttle — and reverses a recorded maintainer decision.
+Conditional:: *Not commissionable until <<d1,D1>> is decided.* The record
+holds two mutually exclusive variants and implements exactly the one the
+maintainer picks.
+Exact scope (variant A, smoke after the tag):: a smoke script under
+`scripts/` or `examples/consumer-demo/`, `.github/workflows/release.yml`,
+`docs/developer_guide/ch04_release_management.adoc`. *Needs the temporary
+ceiling entry.*
+Exact scope (variant B, smoke stays before the tag):: `.github/workflows/release.yml`
+and `docs/developer_guide/ch04_release_management.adoc` only — print
+`implementation_tree_sha256` in both runs' summaries and let the tag run
+assert equality with the candidate's value, replacing the manual
+member-by-member comparison. *Needs the temporary ceiling entry.* Variant B
+is largely covered by <<r3,R3>>'s summary work and shrinks to one assertion.
+Dependencies:: <<d1,D1>> decided; <<r3,R3>> accepted (same file);
+link:FTR-WFC-CONSUMER-DEMO-WORKSPACE.adoc[the consumer demo workspace
+record]'s own decision D2 and slice S3, which already own an installed-wheel
+rehearsal step in `check` — this slice must *reuse* that kit and must not add
+a second disposable-repository mechanism. Variant A depends on *[X]* TestPyPI
+being reachable and installable at approval time.
+Risks:: (a) Variant A spends a beta number on a failed smoke — cheap for a
+`bN` line, not cheap later. (b) Variant A needs a provider-authenticated step
+inside a hosted run, or an Operator step during the pause; the second is the
+only one this plan considers feasible, because WFC stores no provider
+credential in CI. (c) Overlap with the demo-workspace S3 slice is real; the
+records must be reconciled before either is commissioned.
+Test strategy:: the smoke script's own refusals unit-tested;
+`python -m pytest -q` green; strict render of the changed chapter; the live
+smoke itself is a maintainer-released activity, never slice acceptance.
+Acceptance (verifiable):: Per the chosen variant, stated in the record. In
+both variants: the manual member-by-member artifact comparison is no longer
+required, and nothing in the slice performs or authorizes a push, tag,
+publication or provider call.
+Profile and binding:: *architectural* — `robust@v1`, Opus worker and Opus
+reviewer. This slice moves a qualification boundary and, in variant A,
+implements a reversal of a recorded decision; the reasoning, not the typing,
+is the work.
+Hop budget (upper limit):: 10.
+Front Door docs-sync:: Variant A's smoke script drives the installed `wfc`
+CLI, so the check applies in full: if the script documents a command, flag or
+classification, the Agent Skill and the chapter 9 tutorials are checked
+against it in the same slice.
+
+[[order]]
+== Dependency graph, order and parallel lanes
+
+----
+R2 (chapter: contract, recovery table, one approval, records to cold storage)
+ |
+ +--> R1 (release-prepare command, surface guard)        [lane 1]
+ |
+ +--> R3 (release.yml: idempotent release, checksums,    [lane 2]
+ |        summary facts, python-compat gating)
+ |      |
+ |      +--> R4 (consumer-smoke placement, conditional on D1)
+ |
+ (no slice depends on R1)
+----
+
+Prioritized order: *R2, then R1 and R3 in parallel, then R4 if and when D1 is
+decided.*
+
+Two lanes, not three, and the reason is structural: chapter 4 is the single
+owning document for the release contract, so any slice that edits it
+serialises against every other slice that edits it. R2 is placed first
+precisely to take that file out of R1's and R3's scope, which is what makes
+the two lanes possible at all.
+
+[cols="1,2,3",options="header"]
+|===
+|Lane |Slice |Files it touches — disjoint from the other lane
+
+|1 |<<r1,R1>> |`scripts/wfc_release_prepare.py`,
+`scripts/wfc_release_check.py`, `Makefile`,
+`tests/unit/test_release_tooling.py`,
+`tests/unit/test_release_version_surface.py`
+|2 |<<r3,R3>> then <<r4,R4>> |`.github/workflows/release.yml`; R4 adds a
+smoke script and chapter 4
+|===
+
+R4 re-enters chapter 4, so it cannot run beside a later chapter-4 slice; by
+then R2 is long integrated and R1 has no claim on that file.
+
+If only one slice is ever commissioned, commission R2: it corrects a recovery
+rule that would make the first real failure start at a dead end, and it costs
+no behaviour change at all.
+
+[[autonomy]]
+== What an autonomous Level-1 operator may do, and what it may not
+
+May, autonomously — prepare, implement and integrate locally on `main`::
+Author and launch the Commissions for R1, R2 and R3 within their stated
+scopes; run the required suite, the strict render, the doc-catalog check,
+`make release-check` (read-only), `make build` and `make dist-audit` locally;
+integrate accepted candidates into local `main`; record implementation,
+acceptance and Run evidence in the controlling records and `_open.adoc` as
+link:README.adoc[backlog upkeep] describes; run `make release-prepare` once
+R1 exists, on the maintainer's instruction, producing an ordinary local
+commit.
+
+Needs a human decision, always::
+* Any `git push`, of a branch or of `main`.
+* Creating or pushing any tag.
+* Any TestPyPI or PyPI action, including a re-run of a publishing job.
+* Any GitHub web-interface setting: Environments, required reviewers, Trusted
+  Publisher entries, secrets, branch or tag protection, Actions enablement.
+* Changing `.wfc/config.yaml`, including the temporary scope-ceiling entry
+  R3 and R4 need.
+* Runtime promotion or installation of any WFC version.
+* Accepting <<d1,D1>> (W3), and any other decision in <<decisions>>.
+* The release approval itself (G8) and the release decision.
+* Resolving a new action pin, which needs network access the agent
+  environment may not have, and must never be an invented SHA.
+
+The separation is not new; it is ES-1 to ES-6 and G7/G8 of the P3 plan,
+restated here only so that each slice can be read on its own.
+
+[[decisions]]
+== Open maintainer decisions
+
+[[d1]]
+D1 — Does the real-provider consumer smoke move after the tag? (W3):: The P3
+plan records, at its §(c), that "Q1 stays before the tag; confirmed again and
+finally". The basis proposes the opposite.
++
+*Option A — move it into the `pypi` approval pause.* The smoke runs on the
+version installed from TestPyPI, i.e. on the bytes PyPI will receive. Removes
+the authenticated artifact download, the manual transfer, the rebuild
+comparison and the pre-tag evidence commits; gives TestPyPI a recurring
+purpose. Cost: a failed smoke spends a beta number, and the Operator must be
+able to run a provider-authenticated script while a hosted run waits.
++
+*Option B — keep it before the tag.* Nothing about the recorded decision
+changes. The manual comparison is replaced by printing
+`implementation_tree_sha256` in both runs' summaries and asserting equality
+in the tag run, which <<r3,R3>> already makes available. Cost: the artifact
+shuttle and the pre-tag evidence commits remain, in a reduced form.
++
+*Recommendation: Option B for Beta 2, Option A considered again for the first
+non-beta release.* Option A's benefit is real but its cost lands exactly
+where Beta 2 is weakest — the tag-mode path has never run *[X]*, so Beta 2
+would exercise an untested publication chain *and* a relocated qualification
+in the same release. Option B takes most of Option A's value (the identity
+argument becomes mechanical) for one assertion, and reverses no decision.
+
+[[d2]]
+D2 — Is the TestPyPI stage permanent?:: Its Beta-1 value — proving the OIDC
+wiring and metadata acceptance — is spent once. Under <<d1,D1>> Option A it
+gains a recurring purpose; under Option B it does not, and it still burns a
+version number on any later failure. *Recommendation: keep it for Beta 2 and
+revisit after two clean releases.* It is one job, it has never cost anything
+observable *[X]*, and removing it while the tag path is unproven removes a
+rehearsal exactly when a rehearsal is worth most.
+
+[[d3]]
+D3 — Lockfile, Dependabot, or manual SHA pins? (W6):: *Recommendation: keep
+manual SHA pins; add neither mechanism now.* WFC pins five actions. The
+documented resolution procedure already exists
+(`ch04_release_management.adoc:216-218`). A Dependabot stream is a recurring
+triage obligation for a single maintainer that plausibly exceeds the two or
+three manual resolutions a year it would replace, and the lockfile's
+availability is *[X]*. The one concrete pending item — the Node-runtime
+deprecation warning of the two artifact actions (`:515`) — is a single
+one-time pin bump, and it needs `git ls-remote`, so it is an Operator or
+maintainer step, not an FTR slice. Revisit if a security advisory against a
+pinned action ever arrives.
+
+[[d4]]
+D4 — Are the chapter 9 "What was verified" version literals records or pins?::
+`tests/architecture/test_consumer_tutorial_pages.py:180` requires the literal
+`0.1.0b1` in each tutorial's "What was verified" section, and the pages say
+"On the installed `wfc` 0.1.0b1". Either reading is defensible: the sentence
+records the version a rehearsal was verified against (historical, stays), or
+it tells a reader which version the page describes (a pin, re-pinned every
+release). The answer decides whether five tutorial lines and one test literal
+belong in <<r1,R1>>'s surface list. *Recommendation: treat them as records
+and leave them.* Re-pinning them would claim a verification that was not
+repeated. The test literal should then be changed to assert *a* version is
+named, not that it is the current one — a one-line change inside <<r1,R1>>.
+
+[[d5]]
+D5 — The consumer for the smoke (W10):: `core` (as Beta 1 used, leaving two
+branches and worktrees there) or a disposable repository.
+*Recommendation: the disposable repository, reusing
+`examples/consumer-demo/make_workspace.py`, which already creates one with
+its own Evidence repository and four ready requests.* This is not new work;
+it is an accepted, integrated kit. The decision overlaps the demo-workspace
+record's own D2 and should be taken once, there or here, not twice.
+
+[[not-done]]
+== Deliberately not done, and why
+
+Keep unchanged what the product justifies. The following are *not* proposed,
+each with the recurring cost it does not remove:
+
+* *A post-publication verification job (W9).* It would replace two cheap
+  manual page checks and add a job after the irreversible step whose natural
+  failure mode — index propagation delay — produces an alarming red run that
+  means nothing. Revisit if releases become frequent.
+* *A `MANIFEST.in` (the basis's C6, for `core`).* WFC's sdist is already
+  exactly scoped and the exact allow-list audit enforces it mechanically
+  (`ch04_release_management.adoc:68-72`, `scripts/wfc_dist_audit.py`). A
+  second control against the same failure buys nothing.
+* *Removing the TestPyPI stage*, *published HTML or a Pages repository*, *a
+  Python or architecture matrix as a gate*, *signing or provenance beyond the
+  publish action's defaults*, *a second qualified profile*. All are P3
+  decisions or P3 non-goals; none is reopened here.
+* *Any new governance layer, gate class, label namespace, agent role,
+  program or Phase Execution Binding.* The existing programs `robust@v1` and
+  `simple@v1` and the existing bindings carry every slice.
+* *A test that asserts the workflow matches the documented gates.* P3
+  rejected it, for the reason that it would parse YAML to restate prose; that
+  reason still holds.
+* *Making tests read the version from `pyproject.toml` (part of W2).* C1
+  names the literal at `tests/architecture/test_bp1_identity.py:41`
+  deliberately, "so a future bump touches it knowingly". <<r1,R1>> keeps the
+  literal and adds a consistency guard instead, which closes the real gap
+  (nothing local today compares `pyproject.toml` with
+  `implementation_identity.VERSION`) without reversing a decided contract.
+* *Any version bump, push, tag, publication or external setting.* Not in any
+  slice, by construction.
+</content>
+</invoke>

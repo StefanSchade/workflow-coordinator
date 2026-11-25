@@ -1,0 +1,336 @@
+= FTR-WFC-RELEASE-PREPARATION -- One Scripted Release-Preparation Commit
+
+Type:: future technical record -- release-engineering slice R1 of
+link:beta2_release_streamlining_plan.adoc[the Beta-2 release-streamlining
+plan]
+Status:: planned. Nothing here is authorized, commissioned or accepted. No
+Run has been executed against this record.
+Current controlling source:: This record; see link:_open.adoc[the active-work
+manifest] for its current card.
+Authorized here:: Nothing. Commissioning this slice is a separate maintainer
+action.
+Not authorized here:: Any version-literal change (this slice adds the tool,
+it does not bump the version); any push, tag, release, publication or
+TestPyPI/PyPI action; any GitHub setting or credential; any change to
+`.github/`, `.wfc/`, `governance/`, `pyproject.toml` or
+`src/workflow_coordinator/`; any weakening or deletion of a test; any edit to
+a historical record; reversing C1's deliberate test literal.
+Depends on:: link:FTR-WFC-RELEASE-CONTRACT-STEADY-STATE.adoc[R2] accepted --
+its chapter is the specification this slice implements, the way E1's chapter
+specified E2.
+Date:: 2026-11-25.
+Supporting analysis::
+link:../warm_storage/post-beta-planning/wfc_release_streamlining_planning_record.adoc[the
+release-streamlining planning record] holds the claim-by-claim disposition of
+the independent basis, the enumerated version surface and the rejected
+alternatives. This record is complete without it.
+
+[[problem]]
+== Problem
+
+The version is static in `pyproject.toml:7` (C1, MD-2). Bumping it means
+editing every place that names the version, and the places are not where the
+independent basis of 2026-11-23 said they were: the Agent Skill, the chapter 9
+quickstart and the three tutorial pages were all added after that analysis was
+written.
+
+Verified against the tree at `0f50ad2`, the sites that must change at a
+version bump:
+
+[cols="3,1,3",options="header"]
+|===
+|Site |Lines |Enforced by
+
+|`pyproject.toml:7`
+|1
+|`scripts/wfc_release_check.py` (tag equals version), G1
+
+|`src/workflow_coordinator/implementation_identity.py:9` (`VERSION`)
+|1
+|CI only -- the C3 step compares it with `pyproject.toml`
+(`release.yml:122`, `:139-140`) and `python-compat` repeats that
+(`:230`, `:246`). *No test in the required suite compares the two.*
+
+|`tests/architecture/test_bp1_identity.py:41`
+|1
+|itself; named deliberately by C1 so a bump touches it knowingly
+
+|`README.md:17-22`, `:24`, `:26`, `:34`, `:46`, `:56`, `:59`
+|12 (10 tag-pinned URLs, 2 install/version pins)
+|`release-check` asserts only that the links are *absolute*; it does
+not assert that `blob/v<x>/` names the tag being released
+
+|`src/workflow_coordinator/agent_skill/wfc/SKILL.md:140-145`
+|6
+|`tests/unit/test_agent_skill_content.py:237` -- compares every
+`blob/v<x>/` URL with `implementation_identity.VERSION` and resolves the
+path in-tree
+
+|`.../references/commission.md:4`, `.../references/setup.md:4`, `:30`,
+`.../references/stops-and-evidence.md:4`, `:6`, `:8`
+|6
+|the same test for the five URLs; `setup.md:30` (`==0.1.0b1`) is
+unenforced
+
+|`docs/release_notes/release_notes.adoc:9` (heading frozen)
+|1
+|`release-check` (C4): fails on a missing or still-`planned` section
+
+|`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc:120`,
+`:126`, `:130`, `:133`
+|4
+|nothing
+
+|`.../02_first_run_example.adoc:138`, `:319`,
+`.../03_tutorial_program_change.adoc:155`, `:253`,
+`.../04_tutorial_stops.adoc:221`
+|5
+|`tests/architecture/test_consumer_tutorial_pages.py:180` requires the
+literal `0.1.0b1` in "What was verified"; see <<d2>>
+|===
+
+About 37 edit sites in eleven files, against the four sites in four files the
+basis lists. Two gaps matter more than the count:
+
+. *`pyproject.toml` and `implementation_identity.VERSION` can disagree and
+  the whole required suite stays green.* Only a hosted CI run catches it.
+. *`README.md` can keep links to the previous tag and `release-check`
+  passes.* Beta 2 would publish a README pointing at `v0.1.0b1`.
+
+Two claims about this surface do *not* hold and are deliberately excluded:
+
+* `tests/unit/test_release_tooling.py` contains ten `0.1.0b1` literals, but
+  its module docstring and `_write_baseline` show them to be a *synthetic*
+  fixture version used to build throwaway repositories and in-memory
+  archives. The constant is internally consistent and must *not* be bumped.
+* `scripts/wfc_doc_catalog.py:762`, `:875` and roughly forty `.adoc`
+  references name the cold-storage path prefix `pre-0.1.0b1`, which is a
+  directory name, not a version pin.
+
+== Chosen direction
+
+One new read-write script, `scripts/wfc_release_prepare.py`, behind
+`make release-prepare VERSION=<v>`, that owns the enumerated surface; plus two
+cheap mechanical guards so the surface cannot drift silently.
+
+* *A script, not a documented procedure*, because the recurring cost is the
+  completeness of a list of eleven files, which is exactly what a human
+  forgets and a list in code does not.
+* *The only writing release tool.* `release-check` and `dist-audit` stay
+  read-only and network-free; this tool writes, once, explicitly, to
+  enumerated paths only, and commits nothing.
+* *The surface list is data, not prose*, so the guard test and the script
+  read the same list.
+* *No version bump in this slice.* The tool is added and proven on a scratch
+  copy; the real bump is a separate, maintainer-instructed invocation.
+
+[[scope]]
+== Scope
+
+. `scripts/wfc_release_prepare.py` (new): the surface list, the rewrite, the
+  idempotence, the refusals.
+. `scripts/wfc_release_check.py`: extend `check_readme_links` so a
+  `blob/v<x>/` link into this repository must name the version being
+  released. Nothing else about the tool changes.
+. `Makefile`: one `release-prepare` target beside `release-check` and
+  `dist-audit`.
+. `tests/unit/test_release_tooling.py`: the new tool's refusals and
+  idempotence, on synthetic trees, in the existing style.
+. `tests/unit/test_release_version_surface.py` (new): the two consistency
+  guards against *this* checkout.
+. `tests/architecture/test_consumer_tutorial_pages.py`: one line, only if
+  <<d2>> is decided as recommended.
+
+Every path is inside `.wfc/config.yaml`'s `work_item_scope_ceiling`. No
+temporary ceiling entry is needed.
+
+Chapter 4 is deliberately *not* in scope: R2 states this tool as planned, and
+a second slice editing the same chapter would serialise the two lanes the
+plan depends on.
+
+== Non-goals
+
+* No version bump, tag, push, release or publication.
+* No change to `pyproject.toml`, `implementation_identity.py`, `README.md`,
+  the Agent Skill texts or the chapter 9 pages. The tool *can* write them; the
+  slice does not.
+* No Git operation of any kind inside the tool: no `add`, no `commit`, no
+  branch. It leaves ordinary working-tree changes for review with `git diff`,
+  the way `make memory-import` already does.
+* No network access, no subprocess other than none at all.
+* No new dependency; standard library only, like both existing release tools.
+* No change to the C2 allow-list, the offline-input profile or its digests.
+* No reversal of C1's deliberate test literal at
+  `test_bp1_identity.py:41` -- see <<d1>>.
+* No release-notes *authoring*: the tool freezes the heading of an existing
+  section and refuses when the section is missing.
+
+[[design]]
+== Design
+
+=== The surface list
+
+One module-level table, each entry a path plus the rule by which the version
+appears in it. Three rules suffice for the eleven files:
+
+[cols="1,3",options="header"]
+|===
+|Rule |Meaning
+
+|`version_literal`
+|An exact assignment: `version = "<v>"` in `pyproject.toml`,
+`VERSION = "<v>"` in `implementation_identity.py`, the quoted literal in
+`test_bp1_identity.py`.
+|`tag_pinned_url`
+|Every `https://github.com/StefanSchade/workflow-coordinator/blob/v<x>/`
+occurrence, rewritten to the new tag. The path after the tag is not touched.
+|`install_pin`
+|`workflow-coordinator==<v>` and the prose version mentions beside it, in
+`README.md:24`, `:26`, `references/setup.md:30` and
+`01_quickstart.adoc:120`, `:126`, `:130`, `:133`.
+|===
+
+`release_notes.adoc` is handled separately: the heading
+`== <new> -- planned` becomes `== <new> -- (released)`.
+
+=== Refusals
+
+The tool exits non-zero and writes nothing when: the given version is not a
+valid PEP 440 version; the release-notes file has no section for it; that
+section is already `(released)`; a file in the list is missing; or a
+`version_literal` site does not match its expected pattern exactly once. A
+partial write is never left behind -- every file is rewritten only after all
+of them parse.
+
+=== Idempotence
+
+Running the tool twice with the same version produces no second change. This
+is the property the guard test can check cheaply and the one a release
+operator relies on after an interrupted preparation.
+
+=== The two guards
+
+`tests/unit/test_release_version_surface.py`, against this checkout:
+
+. `pyproject.toml`'s `project.version` equals
+  `implementation_identity.VERSION`. This is the gap the required suite
+  cannot see today.
+. Every `blob/v<x>/` URL in `README.md` names that same version. The Agent
+  Skill files already have this guard
+  (`tests/unit/test_agent_skill_content.py:237`); `README.md` does not.
+
+Both must *fail* if a single site is left behind -- demonstrated by a
+negative case on a copied tree, not asserted.
+
+[[decisions]]
+== Decisions requiring maintainer approval
+
+[horizontal]
+[[d1]]
+D1 -- C1's deliberate test literal:: The basis proposes letting tests read the
+version from `pyproject.toml`. C1 names
+`tests/architecture/test_bp1_identity.py:41` deliberately, "so a future bump
+touches it knowingly" (`ch04_release_management.adoc:42-45`). _Recommended:
+keep the literal; the tool owns it as a `version_literal` site and guard 1
+closes the real gap. Reading the version dynamically would remove the
+knowing touch C1 asked for and would not have caught the
+`pyproject`/`VERSION` divergence either._
+[[d2]]
+D2 -- The chapter 9 "What was verified" literals:: Records of the version a
+rehearsal was verified against, or pins that name the version the page
+describes? _Recommended: records. Leave the five tutorial lines unchanged and
+relax `test_consumer_tutorial_pages.py:180` to assert that a version is
+named, not that it is the current one. Re-pinning them would claim a
+verification that was not repeated._ This is the one decision that changes
+this slice's scope; until it is taken, implement the other ten files and
+leave the five lines and the test as they are.
+[[d3]]
+D3 -- Target name:: `make release-prepare`, beside `release-check` and
+`dist-audit`. _Recommended as named._
+
+== Acceptance criteria
+
+AC-1:: `make release-prepare VERSION=<v>` run on a scratch copy of the
+checkout changes exactly the enumerated sites and no other byte, verified by
+`git diff --stat` against the expected file list.
+AC-2:: A second invocation with the same version changes nothing.
+AC-3:: The tool refuses, with a named reason and exit 1, for each case in
+<<design>>'s refusal list, and leaves the tree untouched in each.
+AC-4:: `scripts/wfc_release_check.py` fails when a `README.md`
+`blob/v<x>/` link names a version other than the released one, and passes
+unchanged on the tree as it is today (`0.1.0b1` everywhere).
+AC-5:: `tests/unit/test_release_version_surface.py`'s two guards pass on this
+checkout and are each shown to fail on a copied tree with one site reverted.
+AC-6:: No version literal anywhere in the repository changes as part of the
+slice; `git diff` touches only the files in <<scope>>.
+AC-7:: The tool makes no network call and runs no subprocess; standard
+library only.
+AC-8:: `python -m pytest -q` is green with the offline bundle, `make lint`
+and `make format-check` pass.
+
+[[tests]]
+== Required tests
+
+In `tests/unit/test_release_tooling.py`, synthetic trees in the module's
+existing style:
+
+* each refusal of <<design>>, asserting the message and that no file changed;
+* a full happy-path rewrite over a miniature surface, asserting the exact
+  resulting bytes;
+* idempotence;
+* the extended `check_readme_links`: passes on a matching tag, fails on a
+  stale one, still fails on a repository-relative link.
+
+In `tests/unit/test_release_version_surface.py`, against this checkout:
+
+* `pyproject.toml` version equals `implementation_identity.VERSION`;
+* every `README.md` `blob/v<x>/` URL names that version;
+* a negative case per guard on a copied tree.
+
+Unchanged and expected to stay green: `test_agent_skill_content.py`,
+`test_bp1_identity.py`, `test_offline_distribution.py`,
+`test_consumer_tutorial_pages.py` (modulo <<d2>>).
+
+== Risks
+
+R-1 An incomplete surface list ships a stale link:: the whole value of the
+slice is the list. _Mitigation:_ the two guards, which fail on exactly that;
+and the enumerated table under <<problem>>, derived by search and
+cross-checked against each test that pins a version.
+R-2 A writing release tool is new in this repository:: every other release
+tool is read-only and network-free. _Mitigation:_ one explicit invocation, an
+enumerated path list, all-or-nothing writing, no Git operation, and
+`release-check` left read-only.
+R-3 A re-pin that claims an unrepeated verification:: the chapter 9 tutorial
+lines. _Mitigation:_ <<d2>>, left undecided rather than assumed.
+
+== Execution notes for commissioning
+
+* One Commission, after R2 is integrated. `robust@v1`, Sonnet worker and Opus
+  reviewer -- the repository's default binding; the risk is a completeness
+  argument over a list, which is reviewer work.
+* Hop budget upper limit 10; one correction cycle is the norm in this
+  repository.
+* Scope is file-exact from <<scope>>. A further file that proves necessary is
+  a scope question for the maintainer, not a reason to widen.
+* Checks: `python -m pytest -q` with the offline bundle; `make lint`;
+  `make format-check`; `make release-check` (expected to refuse on a feature
+  branch, as it does today, for topology reasons only). No `.adoc` changes,
+  so no render or catalog check is implied.
+* link:../developer_guide/ch03_engineering_conventions.adoc#frontdoor-docs-sync[The
+  Front Door docs-sync check] is asked: no Front Door command, argument,
+  classification, report, diagnostic or recovery behaviour changes, so no
+  Agent Skill or tutorial edit is needed. The skill texts are nevertheless
+  *subjects* of the surface list and must appear in it.
+* After acceptance, record implementation, acceptance and Run evidence here
+  and in `_open.adoc`, as link:README.adoc[backlog upkeep] describes.
+
+== Withheld authority
+
+No version bump; no push, tag, release or publication; no TestPyPI or PyPI
+action; no GitHub Environment, Trusted Publisher, secret or protection
+setting; no `.wfc/config.yaml` or `governance/` change; no Runtime promotion;
+no new governance layer, program, role or Phase Execution Binding; no
+weakened or deleted test; no edit of an existing historical record; no
+self-acceptance of this slice.
+</content>
