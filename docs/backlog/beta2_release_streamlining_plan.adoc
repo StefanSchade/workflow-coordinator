@@ -143,9 +143,18 @@ re-tag.
 |Wrong content on PyPI |Yank; release the next version.
 |===
 
-Because publication uses stored bytes, "re-run the failed jobs" is safe in
-every state and no state needs a rebuild. This is already true of the
-implementation; only the documented rule is wrong.
+*Exception, for as long as <<r3,R3>> is only planned:* "re-run the failed
+jobs" holds for every job *except* `release`. If that job already created the
+GitHub Release, a re-run fails — `release.yml:371-374` calls `gh release
+create` with no pre-check and no `--clobber`. Until R3 integrates, attach the
+missing assets by hand. Two different things are therefore wrong today and
+are corrected in different slices: the documented rule for the TestPyPI-spent
+state (<<r2,R2>>, documentation only) and the `release` job's non-idempotence
+(<<r3,R3>>, workflow). R2 writes the exception above into the chapter rather
+than claiming the pipeline is already re-runnable, and R3 strikes it when the
+behaviour changes. Because publication uses stored bytes, no state needs a
+rebuild — that part *is* already true of the implementation
+(`release.yml:180-186`, `:302-312`, `:336-346`).
 
 [[beta2]]
 == What Beta 2 needs from the release process
@@ -209,7 +218,9 @@ Four slices. W1–W10 group into these and not into ten, because the recurring
 cost they remove falls into four places: the preparation commit, the release
 chapter, the pipeline's own robustness, and the placement of the consumer
 smoke. Each slice is independently commissionable, independently useful, and
-sized for one Run. <<r4,R4>> is conditional on <<d1,D1>>.
+sized for one Run. <<r4,R4>> is conditional on <<d1,D1>>; one *part* of
+<<r3,R3>> (the `python-compat` `needs:` line) is conditional on <<d6,D6>>,
+while the rest of that slice stands on its own.
 
 The repository's own default execution binding (`.wfc/config.yaml`) is
 already Sonnet worker and Opus reviewer — the *demanding* profile. Where a
@@ -302,7 +313,10 @@ Acceptance (verifiable):: The chapter keeps the contract, the job
 description, a one-page runbook and the corrected recovery table, and names
 the single `pypi` approval as the release authorization. The recovery
 paragraph no longer prescribes delete-and-retag for a TestPyPI-spent state.
-Gate G2's wording matches its accepted state. The MD-5 investigation, the
+Gate G2's wording matches its accepted state. The recovery table carries the
+`release` job's non-idempotence as an explicit exception *while <<r3,R3>> is
+planned*, so no recovery instruction in the chapter is false for the pipeline
+as integrated. The MD-5 investigation, the
 hosted-run record, the run-#9 primary evidence, the Q1 result record, both
 acceptance statements and the superseded template exist in cold storage,
 byte-identical, and are linked from the chapter. The chapter also states, as
@@ -321,29 +335,41 @@ edit needed*.
 
 Record::
 link:FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc[FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS]
-(W1 workflow part, W4 checksum asset, W5, W7).
+(W1 workflow part, W4 checksum asset, W5; W7 only if <<d6,D6>> is decided as
+Option A).
 Purpose:: Four small, independent defects in one file: the `release` job
 cannot be re-run after a partial success; the checksum file travels inside
 the artifact it describes and is never attached where a downloader could use
 it; the facts the maintainer is asked to approve on were *inferred* for Beta
-1 because the Operator could not read job logs; and `python-compat` gates
-nothing while the chapter says every gate is release-blocking.
-Exact scope:: `.github/workflows/release.yml` only. *Needs the temporary,
-file-exact scope-ceiling entry of <<ceiling>>.*
-Dependencies:: <<r2,R2>> accepted (the chapter states these facts as
-planned). Independent of <<r1,R1>> — the two share no file and may run in
-parallel.
+1 because the Operator could not read job logs; and — *only if the maintainer
+decides <<d6,D6>> Option A* — `python-compat` becomes a prerequisite of
+`publish-testpypi`. The first three are defects; the fourth is a decision
+this plan does not take.
+Exact scope:: `.github/workflows/release.yml`, plus
+`docs/developer_guide/ch04_release_management.adoc` for *one* edit only —
+striking the recovery-table exception <<r2,R2>> wrote for the `release` job,
+whose behaviour this slice changes. Nothing else in chapter 4 is R3's; the
+contract stays R2's. The workflow file *needs the temporary, file-exact
+scope-ceiling entry of <<ceiling>>*; the chapter is inside the ceiling
+already.
+Dependencies:: <<r2,R2>> accepted *and integrated* (its chapter states these
+facts as planned and carries the exception this slice strikes). Independent of
+<<r1,R1>> — the two share no file and may run in parallel.
 Risks:: (a) A change to the publication chain is the highest-consequence
 change in this plan; the tag path has never run *[X]*. Mitigated by keeping
 every change additive or a one-line `needs:` edit, and by the fact that a
 branch-push run exercises `check`, `python-compat` and the summary steps
-without touching publication. (b) Gating `python-compat` turns a red
-compatibility job into a release blocker; that is the intent, and the job has
-run green three times (run #9) *[X]*. (c) `gh release view` before `create`
-must not mask a genuinely absent release.
+without touching publication. (b) Under <<d6,D6>> Option A, gating
+`python-compat` turns a red compatibility job into a release blocker, and
+those jobs install from the ordinary index rather than the offline bundle;
+that is the point of the decision and why it is the maintainer's, not this
+plan's. (c) `gh release view` before `create` must not mask a genuinely
+absent release.
 Test strategy:: this repository's suite is unaffected (no Python, test or
 packaging file changes), so the honest statement is: `python -m pytest -q`
-green and unchanged; `yamllint`-style validity by parsing the file with
+green and unchanged; for the one chapter-4 line, strict render printing
+nothing and the catalog check reporting no additional unresolved link;
+`yamllint`-style validity by parsing the workflow file with
 `python3 -c "import yaml, pathlib; yaml.safe_load(...)"`; the real evidence
 is a hosted branch-push run, which is a *maintainer* action (ES-3's shape) and
 is therefore *not* part of the slice's acceptance. The slice is accepted on
@@ -354,9 +380,12 @@ Acceptance (verifiable):: `release` is idempotent (`gh release view` before
 and sdist. The `check` job writes to `$GITHUB_STEP_SUMMARY`: interpreter and
 seed pip version, `bwrap --version`, the pytest pass/skip counts, artifact
 names, sizes and SHA-256, `implementation_tree_sha256`, and the `dist-audit`
-result. `publish-testpypi` lists `python-compat` in `needs`. No secret, no
-new third-party action, no new permission, no change to the offline bundle or
-the pinned action SHAs.
+result. If and only if <<d6,D6>> resolved to Option A, `publish-testpypi`
+lists `python-compat` in `needs`; if D6 is undecided or resolved otherwise,
+the workflow's `needs:` graph is unchanged and the slice is accepted without
+that line. Chapter 4's recovery table no longer carries the `release`-job
+exception. No secret, no new third-party action, no new permission, no change
+to the offline bundle or the pinned action SHAs.
 Profile and binding:: *demanding* — `robust@v1`, Sonnet worker, Opus
 reviewer. Same shape as the accepted E3 slice, which needed one correction
 cycle after an independent blocking Finding.
@@ -428,7 +457,8 @@ R2 (chapter: contract, recovery table, one approval, records to cold storage)
  +--> R1 (release-prepare command, surface guard)        [lane 1]
  |
  +--> R3 (release.yml: idempotent release, checksums,    [lane 2]
- |        summary facts, python-compat gating)
+ |        summary facts; python-compat needs: only if
+ |        D6 Option A)
  |      |
  |      +--> R4 (consumer-smoke placement, conditional on D1)
  |
@@ -452,12 +482,26 @@ the two lanes possible at all.
 `scripts/wfc_release_check.py`, `Makefile`,
 `tests/unit/test_release_tooling.py`,
 `tests/unit/test_release_version_surface.py`
-|2 |<<r3,R3>> then <<r4,R4>> |`.github/workflows/release.yml`; R4 adds a
-smoke script and chapter 4
+|2 |<<r3,R3>> then <<r4,R4>> |`.github/workflows/release.yml` and one
+recovery row of `docs/developer_guide/ch04_release_management.adoc`; R4 adds a
+smoke script and chapter 4. Lane 1 touches neither file.
 |===
 
 R4 re-enters chapter 4, so it cannot run beside a later chapter-4 slice; by
 then R2 is long integrated and R1 has no claim on that file.
+
+The one *semantic* coupling between the lanes, stated so it is not
+rediscovered: <<r3,R3>> depends on <<r2,R2>> for its specification, and one
+row of R2's recovery table only becomes unconditionally true once R3
+integrates (the `release` job's non-idempotence). R2 therefore writes that row
+with an explicit "while R3 is planned" exception, and R3 — which *changes that
+behaviour* and so, by
+link:{backlog-docs}/developer_guide/ch03_engineering_conventions.adoc[the
+repository's own rule that the owning documentation is maintained when
+behaviour changes] — removes the exception in the same slice. That is why
+chapter 4 appears in R3's scope for exactly that one row, and for nothing
+else. The lanes stay parallel regardless: <<r1,R1>> never touches chapter 4,
+and by the time R3 runs, R2 is integrated.
 
 If only one slice is ever commissioned, commission R2: it corrects a recovery
 rule that would make the first real failure start at a dead end, and it costs
@@ -485,7 +529,8 @@ Needs a human decision, always::
 * Changing `.wfc/config.yaml`, including the temporary scope-ceiling entry
   R3 and R4 need.
 * Runtime promotion or installation of any WFC version.
-* Accepting <<d1,D1>> (W3), and any other decision in <<decisions>>.
+* Accepting <<d1,D1>> (W3) or <<d6,D6>> (W7) — both would reverse a recorded
+  maintainer decision — and any other decision in <<decisions>>.
 * The release approval itself (G8) and the release decision.
 * Resolving a new action pin, which needs network access the agent
   environment may not have, and must never be an invented SHA.
@@ -565,6 +610,54 @@ its own Evidence repository and four ready requests.* This is not new work;
 it is an accepted, integrated kit. The decision overlaps the demo-workspace
 record's own D2 and should be taken once, there or here, not twice.
 
+[[d6]]
+D6 — Does `python-compat` become a gate, or do the classifiers go? (W7):: The
+job is informational *by decision*, not by oversight: `release.yml:188-195`
+records "maintainer decision of 2026-11-23 ... no release gate (no job waits
+for it; it reports the compatibility facts for the maintainer)",
+`ch04_release_management.adoc:164-168` that it is "not a prerequisite of any
+publishing job", and `:566` calls it "the informational `python-compat`
+matrix". (`ch04:243`'s "every gate is release-blocking" is scoped to the
+enumerated gates G1-G8 at `:267-274`, which do not list it, so the chapter
+does not contradict itself.) What remains true is the gap the basis names:
+`pyproject.toml:17-20` advertises CPython 3.10-3.13 while only CPython 3.13
+on Linux x86-64 is qualified, and a red compatibility job stops nothing.
+Changing either side reverses or completes a maintainer decision, so the
+choice is the maintainer's.
++
+*Option A — gate it.* Add `python-compat` to the `needs:` of
+`publish-testpypi` (one line, no run-time cost: the job already runs on every
+trigger, after `check`). The advertised interpreters then cannot regress
+unnoticed. Cost: a compatibility failure on an interpreter that is *not* the
+qualified profile blocks a release, and the 3.10-3.12 jobs install from the
+ordinary index rather than the offline bundle, so an upstream dependency can
+turn the release red for a reason outside the repository.
++
+*Option B — drop the 3.10-3.12 classifiers.* The one-line change the E1 card
+already names as available (`_open.adoc:158`); `requires-python = ">=3.10"`
+stays, so nothing about installability changes. The advertised surface then
+matches the qualified profile and the informational job keeps its decided
+role. Cost: the package stops advertising interpreters it very likely
+supports, and the job's results become purely informational with nothing
+depending on them.
++
+*Option C — leave both as they are* and record the gap as accepted, as the
+2026-11-23 decision already does.
++
+*Recommendation: Option A, with a `continue-on-error`-free plain `needs:`
+line, and Option C as the acceptable fallback.* Option A is the cheapest of
+the three to execute and is the only one that makes the advertisement
+self-defending; Option B trades a true claim away to silence a check. But the
+recommendation is weak, because the 2026-11-23 decision was taken with the
+same facts in view, and Option A's failure mode (an index-side dependency
+change reddening a release) lands in Beta 2, where the tag path is untested
+*[X]*. If the maintainer takes no decision, Option C holds and <<r3,R3>>
+drops that one line without any other change.
++
+*Until D6 is decided, <<r3,R3>>'s `needs:` edit is conditional and <<r2,R2>>
+describes `python-compat` exactly as the files describe it today: an
+informational job that gates nothing.*
+
 [[not-done]]
 == Deliberately not done, and why
 
@@ -597,5 +690,3 @@ each with the recurring cost it does not remove:
   `implementation_identity.VERSION`) without reversing a decided contract.
 * *Any version bump, push, tag, publication or external setting.* Not in any
   slice, by construction.
-</content>
-</invoke>
