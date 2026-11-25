@@ -98,6 +98,22 @@ class TestStopStatusesNeverReportedAsSuccess:
         assert "answer the open question" not in report["next_action"]
         assert "wfc resume" in report["next_action"]
 
+    def test_awaiting_human_without_a_recorded_question_and_not_mechanical_promises_neither_a_question_nor_a_recovery(self, tmp_path):
+        """A question-less awaiting_human stop that is NOT a recoverable mechanical
+        one (e.g. an open blocking Finding) must not promise `wfc resume` either --
+        its own eligibility check requires the `mechanical_preemption:` prefix, so
+        for this shape it silently no-ops rather than recovering or refusing by
+        name. Naming it here would repeat the incident under a different trigger."""
+
+        audit = _audit_for(
+            tmp_path, status="awaiting_human",
+            stop_reason="completion_blocked_by_open_blocking_findings",
+        )
+        report = rp.build_report(audit)
+        assert report["next_action"] != rp._NEXT_HUMAN_CHOICE["awaiting_human"]
+        assert "answer the open question" not in report["next_action"]
+        assert "wfc resume" not in report["next_action"]
+
     def test_reconcile_required_from_a_mechanical_stop_names_wfc_resume_not_manual_reconciliation(self, tmp_path):
         """A recoverable mechanical stop classified reconcile_required (Part A) is given
         the same honest `wfc resume` text as the awaiting_human shape, not the fixed

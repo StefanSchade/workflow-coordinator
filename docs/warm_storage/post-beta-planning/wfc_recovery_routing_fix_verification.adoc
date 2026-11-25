@@ -819,6 +819,102 @@ Full required suite and the Coordinator's task-check: not run by me, for
 the same reason as H001; the Coordinator's task-check runs it after this
 Hop with verified offline inputs my sandbox does not carry.
 
+=== H016 correction: measured checks (F007)
+
+H015's independent focused review found one new blocking Finding:
+`frontdoor/report.py`'s question-less `awaiting_human` override
+(`status == "awaiting_human" and human_question_present is False`) fired
+unconditionally, with no `mechanical_stop` requirement, while its sibling
+`reconcile_required` branch two lines below required the
+`mechanical_preemption:` prefix. A question-less `awaiting_human` stop is
+reachable for non-mechanical reasons too -- `completion_blocked_by_open_
+blocking_findings` (an open blocking Finding), `changes_required_cannot_
+complete`, and four further single-argument `_stop_for_human` call sites
+all default `human_question=None` -- and for those shapes `wfc resume`'s
+own eligibility check (`reducer.diagnose_mechanical_recovery_eligibility`,
+gated on the same prefix) returns `(None, None)`, so the override's promise
+("run `wfc resume`, which recovers it automatically if it is eligible, or
+refuses with a named reason if it is not") is false: the real command
+neither recovers nor refuses by name, it silently no-ops -- root cause (3)
+of the original incident, reproduced for a reachable shape of the very
+classification this WorkItem exists to make honest.
+
+Fixed in `frontdoor/report.py`'s `build_report`: the question-less
+`awaiting_human` branch now additionally requires `mechanical_stop` (the
+same `MECHANICAL_PREEMPTION_PREFIX` test the `reconcile_required` branch
+already used), and a new branch covers the remaining question-less,
+non-mechanical shape with a new constant, `_NO_RECOVERY_NEXT_ACTION`,
+which promises neither an open question (there is none) nor a recovery
+(`wfc resume` does not apply to it, and the text does not name the command
+at all, so it cannot be read as promising one). No new field, no new
+plumbing, no change to `_durable_artifact_anomalies`, the predicate, or any
+Finding/review authority.
+
+Tests: one new case added to `tests/unit/test_report.py` --
+`test_awaiting_human_without_a_recorded_question_and_not_mechanical_
+promises_neither_a_question_nor_a_recovery`, an `awaiting_human` Attempt
+with `stop_reason="completion_blocked_by_open_blocking_findings"` and no
+recorded question; asserts `next_action` is neither the fixed table's
+"answer the open question" line nor mentions `wfc resume`. The two
+pre-existing parametrized coverage assertions this WorkItem already
+replaced once in H001 --
+`test_report_status_coverage.py::TestNextChoiceTableCoverage::test_every_
+run_status_produces_a_fixed_truthful_line_not_unknown[awaiting_human]` and
+`...::test_every_lifecycle_classification_produces_a_fixed_truthful_line_
+not_unknown[awaiting_human]` -- are replaced a second time: both drive the
+`awaiting_human` case with a non-mechanical `stop_reason`
+(`"fixture-stop-reason"`), so after this fix they must no longer find `wfc
+resume` in `next_action`; the misdescribing comment above the first
+(claiming that fixture exercises "a mechanical (not semantic) stop", which
+it provably does not) is corrected in the same edit. No other assertion in
+either file changed.
+
+Confirmed to fail without the fix: copied `src/`, `tests/` and
+`pyproject.toml` into a scratch copy under `$TMPDIR`, reverted only the
+`report.py` hunk (the `no_question`/`mechanical_stop`-gated branches, back
+to H012's unconditional `awaiting_human`-without-a-question override),
+copied in the new `test_report.py` and
+`test_report_status_coverage.py`, and ran the three affected files against
+it: exactly the three node IDs this correction touches failed (the one new
+`test_report.py` case and the two coverage parametrizations above) with
+`AssertionError: assert 'wfc resume' not in ...` in each case, and no other
+test in any of the three files failed. The scratch copy was then deleted.
+
+Python: `/tmp/wfc-review-h002-venv/bin/python` (3.13.5, pytest 9.2.0,
+PyYAML 6.0.3) -- the same pre-existing venv used by H006-H012.
+
+[source,text]
+----
+tests/unit/test_report.py                       24 passed (1 new)
+tests/unit/test_report_status_coverage.py        37 passed
+tests/unit/test_mechanical_recovery_lifecycle.py 21 passed
+tests/unit/test_audit_projection.py              pass
+----
+
+Full `tests/unit` (not the required suite; informational): `26 failed`,
+all of them the same pre-existing agent-local environmental cases H006-H015
+already identified and re-confirmed by their own execution (23 ×
+`test_claude_adapter_conformance.py` on the read-only-`/tmp` symlink
+failure, 3 × `test_lifecycle_controller.py` on the stale installed `wfc`
+console script); none of them touches `frontdoor/report.py` or either
+changed test file, and none is new.
+
+Lint: `/tmp/wfc-review-h002-venv/bin/python -m ruff check .` -- all checks
+passed.
+
+Doc render (strict): `asciidoctor --safe-mode=safe -a assembled -o
+/dev/null --failure-level=WARN` on this record -- no output, exit 0. No
+other `.adoc` file needed a change: the fix is confined to
+`frontdoor/report.py`, the two test files, and this record.
+
+Doc catalog: `python3 -I scripts/wfc_doc_catalog.py generate` then
+`check`, run after this record was written -- no additional unresolved
+links or Project Memory misses versus H010's own measured baseline.
+
+Full required suite and the Coordinator's task-check: not run by me, for
+the same reason as H001; the Coordinator's task-check runs it after this
+Hop with verified offline inputs my sandbox does not carry.
+
 == Existing-test behaviour deliberately replaced (as instructed, named)
 
 * Four `tests/unit/test_slice5b.py` durable-artifact-anomaly cases
@@ -842,6 +938,17 @@ Hop with verified offline inputs my sandbox does not carry.
   A new dedicated test,
   `test_awaiting_human_without_a_recorded_question_never_promises_one`,
   pins the no-question shape directly.
+* H016, F007: the two parametrized coverage assertions above are replaced a
+  second time -- they drive the question-less `awaiting_human` case with a
+  non-mechanical `stop_reason` (`"fixture-stop-reason"`), which is exactly
+  the shape where the H012-era override's unconditional "run `wfc resume`"
+  promise is false (`wfc resume` no-ops for it). Both now assert `"wfc
+  resume" not in next_action` instead of `"wfc resume" in next_action`. The
+  misdescribing comment directly above the first assertion, which called
+  that non-mechanical fixture "a mechanical (not semantic) stop", is
+  corrected in the same edit. No other assertion in either file changed;
+  see the H016 measured-checks section above for the revert experiment
+  that isolates exactly these three node IDs.
 
 == Scope
 
@@ -889,6 +996,23 @@ record is the only `.adoc` touched by H012. No change to
 `src/workflow_coordinator/agent_skill/`, any program record or catalogue
 digest, trusted Git/sandbox/scope/admission rules, the release workflow,
 version literals, `governance/`, `.wfc/`, or `.github/`; no new
+dependency; no push, tag, release, publication, Runtime promotion,
+installation, or operation on the real incident Run or on
+`~/.local/state`.
+
+Changed (H016, this correction, F007): `src/workflow_coordinator/frontdoor/report.py`
+(the question-less `awaiting_human` override now additionally requires
+`mechanical_stop`; a new constant, `_NO_RECOVERY_NEXT_ACTION`, and a new
+branch cover the remaining question-less, non-mechanical shape; no other
+function changed); `tests/unit/test_report.py` gained one test (no
+existing assertion changed, none deleted); `tests/unit/test_report_status_
+coverage.py` had its two `awaiting_human` parametrized assertions replaced
+a second time (named above, in "Existing-test behaviour deliberately
+replaced") plus one misdescribing comment corrected -- no other assertion
+in that file changed; this record is the only `.adoc` touched by H016. No
+change to `src/workflow_coordinator/agent_skill/`, any program record or
+catalogue digest, trusted Git/sandbox/scope/admission rules, the release
+workflow, version literals, `governance/`, `.wfc/`, or `.github/`; no new
 dependency; no push, tag, release, publication, Runtime promotion,
 installation, or operation on the real incident Run or on
 `~/.local/state`.

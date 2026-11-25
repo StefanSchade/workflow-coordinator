@@ -27,11 +27,27 @@ REPORT_SCHEMA = "wfc.report/1"
 # Shared by both shapes a recoverable mechanical stop can be reported under:
 # a legacy-classified "awaiting_human" Attempt with no recorded human
 # question, and the new "reconcile_required" classification Part A gives a
-# recoverable mechanical stop going forward.
+# recoverable mechanical stop going forward. Both uses require the
+# `mechanical_preemption:` stop-reason prefix below -- a question-less
+# "awaiting_human" stop that is NOT a recoverable mechanical one (e.g. an
+# open blocking Finding) gets its own, separate text instead; see
+# `_NO_RECOVERY_NEXT_ACTION`.
 _MECHANICAL_RECOVERY_NEXT_ACTION = (
     "a human must inspect the recorded mechanical stop facts; "
     "run `wfc resume`, which recovers it automatically if it is "
     "eligible, or refuses with a named reason if it is not"
+)
+
+# A question-less "awaiting_human" stop that is also not a recoverable
+# mechanical one: `wfc resume`'s own eligibility check requires the
+# `mechanical_preemption:` prefix, so for this shape it silently no-ops
+# rather than recovering or refusing by name. Naming `wfc resume` here would
+# repeat the incident this WorkItem fixes; this text promises neither an
+# open question (there is none) nor a recovery (there is none).
+_NO_RECOVERY_NEXT_ACTION = (
+    "a human must inspect the recorded stop facts directly; no open "
+    "question is recorded, this is not a recoverable mechanical stop, "
+    "and no automated recovery exists for it"
 )
 
 # Fixed table: the one line naming the next human choice, keyed by the
@@ -54,11 +70,13 @@ _NEXT_HUMAN_CHOICE = {
     "awaiting_supervisor": "a human must inspect the pending supervisor step and advance it",
     "suspended": "a human must resolve the suspending prerequisite, then run `wfc resume`",
     # model.RunStatus / frontdoor.lifecycle.EXIT_CODES: shared terminal/stop names.
-    # "awaiting_human" has two distinct shapes (WI-WFC-RECOVERY-ROUTING-001):
-    # see the ``human_question_present``-conditional override in
-    # ``build_report`` below -- this default applies only when that signal is
-    # unavailable (a legacy or malformed audit), so it never regresses to
-    # promising a question that provably does not exist.
+    # "awaiting_human" has three distinct shapes (WI-WFC-RECOVERY-ROUTING-001):
+    # see the ``human_question_present``/``mechanical_stop``-conditional
+    # overrides in ``build_report`` below -- this default applies only when
+    # a human question is actually recorded (or that signal is unavailable,
+    # a legacy or malformed audit), so it never regresses to promising a
+    # question that provably does not exist, nor a recovery that provably
+    # does not happen.
     "awaiting_human": "a human must answer the open question, then run `wfc resume`",
     "awaiting_human_budget": "a human must authorize additional hop budget, then run `wfc resume`",
     "reconcile_required": "a human must reconcile the Run's conflicting state before resuming",
@@ -137,12 +155,15 @@ def build_report(audit: Mapping[str, Any], *, archive_ref: str | None = None) ->
         MECHANICAL_PREEMPTION_PREFIX
     )
 
+    no_question = status == "awaiting_human" and run.get("human_question_present") is False
+
     next_action = None
     if not success:
-        if status == "awaiting_human" and run.get("human_question_present") is False:
-            # No open human question is recorded: "answer the open question"
-            # would name a path that does not exist (the exact incident this
-            # WorkItem fixes).
+        if no_question and mechanical_stop:
+            # No open human question is recorded, and the stop is a
+            # recoverable mechanical one: "answer the open question" would
+            # name a path that does not exist (the exact incident this
+            # WorkItem fixes), but `wfc resume` genuinely does.
             next_action = _MECHANICAL_RECOVERY_NEXT_ACTION
         elif status == "reconcile_required" and mechanical_stop:
             # Part A's whole point: a recoverable mechanical stop now
@@ -152,6 +173,14 @@ def build_report(audit: Mapping[str, Any], *, archive_ref: str | None = None) ->
             # conflicting state the recovery predicate guarantees is absent,
             # and withholds the one path that actually exists for it.
             next_action = _MECHANICAL_RECOVERY_NEXT_ACTION
+        elif no_question:
+            # No open human question is recorded, but the stop is NOT a
+            # recoverable mechanical one (e.g. an open blocking Finding):
+            # `wfc resume`'s own eligibility check requires the
+            # `mechanical_preemption:` prefix, so for this shape it silently
+            # no-ops rather than recovering or refusing by name. Naming it
+            # here would repeat the incident under a different trigger.
+            next_action = _NO_RECOVERY_NEXT_ACTION
         else:
             next_action = _NEXT_HUMAN_CHOICE.get(status, _UNKNOWN_NEXT_ACTION)
 

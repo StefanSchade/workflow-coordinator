@@ -36,15 +36,18 @@ class TestNextChoiceTableCoverage:
         # "awaiting_human" without a recorded human question is its own
         # distinct, deliberately-overridden shape (WI-WFC-RECOVERY-ROUTING-
         # 001): the fixed table text names a question that provably does not
-        # exist for a mechanical (not semantic) stop, so this fixture-default
-        # (no recorded question) exercises that override, not the raw table.
+        # exist. This fixture uses a non-mechanical stop_reason, so `wfc
+        # resume` would also no-op for it (it is not a recoverable mechanical
+        # stop either) -- the override must promise neither a question nor a
+        # recovery for this shape; see test_report.py for the mechanical
+        # shape, which does promise `wfc resume`.
         audit = _audit_for(tmp_path, status=status, stop_reason="fixture-stop-reason")
         report = rp.build_report(audit)
         assert report["status"] == status
         assert report["status_known"] is True
         if status == "awaiting_human":
             assert report["next_action"] != rp._NEXT_HUMAN_CHOICE[status]
-            assert "wfc resume" in report["next_action"]
+            assert "wfc resume" not in report["next_action"]
         else:
             assert report["next_action"] == rp._NEXT_HUMAN_CHOICE[status]
         assert report["next_action"] != rp._UNKNOWN_NEXT_ACTION
@@ -57,8 +60,10 @@ class TestNextChoiceTableCoverage:
         assert report["status"] == classification
         assert report["status_known"] is True
         if classification == "awaiting_human":
+            # Same non-mechanical, question-less shape as above (the fixture
+            # default carries no human_question and no mechanical stop_reason).
             assert report["next_action"] != rp._NEXT_HUMAN_CHOICE[classification]
-            assert "wfc resume" in report["next_action"]
+            assert "wfc resume" not in report["next_action"]
         else:
             assert report["next_action"] == rp._NEXT_HUMAN_CHOICE[classification]
         assert report["next_action"] != rp._UNKNOWN_NEXT_ACTION
