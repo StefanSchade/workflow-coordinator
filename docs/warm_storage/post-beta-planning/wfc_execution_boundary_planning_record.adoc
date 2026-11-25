@@ -36,20 +36,25 @@ any kind.
 . The integration seam is narrow and already provider-neutral in shape: one
   `subprocess.Popen` call per adapter, plus the Coordinator-owned result
   directory each adapter reads from or writes to *[I]*.
-. An effective boundary needs four things the present primitive does not have:
+. An effective boundary needs five things the present primitive does not have:
   a worktree-aware `.git` view, a narrow bidirectional channel to the
-  Coordinator's result directory, a `/proc` and process model the provider
-  runtimes require, and process/timeout/environment control that today lives
-  in the adapters *[I]*, *[D]*.
+  Coordinator's result directory, a narrowly bound path for the provider's own
+  authentication together with a small enumerated `/etc` set, a `/proc` and
+  process model the provider runtimes require, and process/timeout/environment
+  control that today lives in the adapters *[I]*, *[D]*. The third item widens
+  the one designated bind-source exception the 2026-11-08 authorization drew,
+  which is why <<m7,M7>> exists.
 . Provider permissiveness inside the boundary must be bound to the boundary
   actually being in force for that invocation, because the provider's own
   `failIfUnavailable: true` turns a failed nested sandbox into a refusal
   rather than a silent downgrade *[I]*, *[D]*.
 . Slice A can state integrity (write prevention) honestly. It cannot state
   confidentiality or phase isolation honestly, because the scope data it would
-  enforce is Commission-wide for worker phases *[I]*, and because hiding
-  content from an agent requires solving the Git object database, which Slice
-  A deliberately does not do.
+  enforce is Commission-wide for worker phases *[I]*, because a reviewer phase
+  can only be confined to the directory holding its not-yet-existing artifact
+  rather than to the artifact itself (<<d5>>), and because hiding content from
+  an agent requires solving the Git object database, which Slice A deliberately
+  does not do.
 
 [[current-state]]
 == Verified current state
@@ -488,27 +493,65 @@ case -- the current primitive already refuses that, correctly. (c) A
 synthesized minimal gitdir -- new surface, no established need.
 
 [[d4]]
-=== D4. A second designated external mount kind for the result channel
+=== D4. The outside-repository sources, classified per category
 
-Decision:: Add exactly one further validated external mount kind: the
-Coordinator's per-checkout result directory, read-only for Claude, read-write
-for Codex, bound at its own absolute path, never an arbitrary host path.
+Decision:: Slice A needs three categories of path outside the repository, and
+each is carried by a stated mechanism rather than by a general relaxation of
+`validate()`'s `source.relative_to(repository)` check
+(`execution_boundary.py:124-127`) *[I]*:
++
+--
+. *Two further designated, individually validated external mount kinds* beyond
+  today's external scratch root -- the Coordinator's per-checkout result
+  directory (read-only for Claude, read-write for Codex) and the provider's own
+  authentication location (read-only). Each is a dedicated named parameter with
+  its own checks modelled on the external-scratch rules
+  (`execution_boundary.py:139-156`) *[I]*, never an arbitrary host path and
+  never a shared external-mounts list.
+. *A narrow, individually enumerated, read-only set of fixed `/etc` entries*
+  added to the system view that `build_argv` generates
+  (`execution_boundary.py:166-172`) *[I]*, in the same place and form as
+  `/usr`. These are not caller-supplied `Mount` values and therefore never
+  passed through the fenced rule at all.
+. *Nothing else.* The generic rule for undesignated caller-supplied mounts is
+  unchanged, and no configuration may add a path kind.
+--
++
+This corrects the earlier form of this decision, which said "exactly one
+further validated external mount kind" and counted only the result channel.
+The authentication path cannot be a generated system-view entry -- it is
+provider- and operator-specific, varies per invocation and is a
+live-qualification output -- so it must be the validated-kind form, and the
+count is therefore three designated kinds rather than two.
 Reason:: Claude must read `<run_root>/claude-closed-settings.json`
 (`claude_adapter.py:308`) and Codex must write
-`<run_root>/result-message.json` (`codex_adapter.py:434`, `:461`) *[I]*. Both
-are outside the repository, and `validate()` currently allows exactly one such
-exception, the external scratch root (`execution_boundary.py:139-156`) *[I]*.
-Without this the Codex path cannot work at all.
+`<run_root>/result-message.json` (`codex_adapter.py:434`, `:461`) *[I]*; both
+are outside the repository. Name resolution, TLS trust and user lookup are
+unavailable in today's view, which would break provider authentication: the
+generated argv mounts no `/etc` at all *[I]* (E5) while all five candidate
+entries exist on the host *[O]* (E6).
+And the boundary must expose the provider's own authentication to the provider
+process, which is impossible without a path for it *[D]*. Without the result
+channel the Codex path cannot work at all.
 Rejected:: (a) Moving the result directory into the repository -- forbidden by
 `_require_external_state_root` (`slice4.py:87-92`) and wrong: it would put
 Coordinator state inside the agent's write surface. (b) Granting the whole
 state root -- it holds `run.json`, `checkpoint.json` and the checkout
 association. (c) Passing the result on stdout for Codex too -- that is a
-provider-transport change, not a boundary change.
+provider-transport change, not a boundary change. (d) A single generic
+"external mounts" list with an allowlist -- it is exactly the general loosening
+the 2026-11-08 authorization forbids, and it makes every future addition
+invisible. (e) `--ro-bind /etc /etc` -- wholesale, and explicitly excluded.
+(f) Treating the `/etc` entries as validated mount kinds -- possible, but it
+would route constants through a caller-designated path for no gain.
 Residual:: Codex can overwrite its own result file arbitrarily. That is
 already true today and is why `validated_result` correlates the envelope's
 identity against the dispatch (`adapter.py:138-145`) *[I]*; the boundary
-neither improves nor worsens it.
+neither improves nor worsens it. More importantly, this widening *exceeds* the
+2026-11-08 authorization's own fence of one designated exception *[D]*, which
+is why it is raised as open maintainer decision <<m7,M7>> rather than taken
+here, and why the umbrella record's supersession marker now names all three
+categories.
 
 [[d5]]
 === D5. Writable grants from `phase.authorized_scope`, with pre-created directories
@@ -534,7 +577,19 @@ records. (c) A writable overlay over the whole repository with later
 reconciliation -- a new mechanism, and the post-Hop check already reconciles.
 Residual:: The file-shaped-entry case overgrants to the parent directory. The
 post-Hop scope check still refuses anything outside scope, so this is a
-prevention gap, not an acceptance gap. Slice A must state it.
+prevention gap, not an acceptance gap. Slice A must state it -- and must state
+it in the *reviewer* case specifically, because that is where it bites: a
+durable review artifact never exists when its phase starts, so a reviewer
+phase's grant is always a directory grant. This Commission's own
+`broad_review` phase is the example: its single scope entry was the then-absent
+`docs/warm_storage/post-beta-planning/wfc_execution_boundary_broad_review.adoc`
+(`.wfc/governance/wfc-exec-boundary-ftr-001/profile.yaml:60-61`) *[I]*, whose
+nearest existing ancestor is the directory holding this very record. A reviewer
+is therefore confined to the directory containing its artifacts, not to the
+artifacts, and Slice A may not claim otherwise. Narrowing it means changing the
+artifact layout or the scope data, which belongs to
+link:../../backlog/FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc[the phase
+write-scope record] and Slice B, not to Slice A.
 
 [[d6]]
 === D6. `/proc` and the process model: minimal, and a decided default
@@ -636,10 +691,23 @@ claimed *[I]*
 |Becomes partly stale when Slice A lands, for the filesystem dimension only.
 Outside this Commission's scope; listed for the implementation Commission.
 
+|2026-11-08 external-scratch authorization: no general loosening of the
+repository-only bind-source rule "beyond this one designated exception" *[D]*
+|*Changed, explicitly and with the maintainer asked.* Slice A requires three
+designated kinds plus the enumerated `/etc` system-view entries (<<d4>>). The
+umbrella record's supersession marker now names all three categories instead of
+one, the prohibitions on a general loosening, a blanket `$HOME` and a wholesale
+`/etc` are restated unchanged, and the widening itself is raised as open
+maintainer decision <<m7,M7>> rather than taken by this Hop or by the
+implementation Commission.
+
 |link:../../backlog/FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc[Phase
 write scope]: worker-phase scope includes reviewer-artifact paths *[D]*
 |Confirmed at `commissioning.py:343-350` *[I]*. Slice A inherits the limit and
-says so; it does not narrow the scope data and does not claim phase isolation.
+says so; it does not narrow the scope data and does not claim phase isolation
+*in either direction*: the reviewer side is narrower but, because a durable
+artifact is always absent at phase start, it is confined to the artifact's
+directory rather than to the artifact (<<d5>>).
 
 |link:../claude-adapter-and-sandbox/workflow_coordinator_nested_claude_bwrap_qualification_2026-11-08.adoc[Nested
 qualification] items 1 and 3: no `/proc` stops an inner `bwrap`; an
@@ -702,6 +770,26 @@ even start `bwrap` (<<limits>>).
 |Not as part of the Commission. `.wfc/` is outside the scope ceiling *[I]*;
 the Commission adds the optional schema and documents it, and the maintainer
 edits the file if and when they want the boundary on here.
+
+|[[m7]]M7
+|The 2026-11-08 authorization permits *one* designated exception to the
+repository-only bind-source rule, today's external scratch root. Slice A needs
+three designated kinds (scratch, result channel, provider authentication) plus
+a narrow enumerated read-only `/etc` set in the generated system view
+(<<d4>>). Does the maintainer extend the fence to exactly those, and no
+further?
+|*Extend it to exactly those four enumerated items, and keep every other
+prohibition.* The alternatives are worse: (a) refusing the result channel makes
+the Codex path unimplementable and leaves Claude unable to read its own closed
+settings; (b) refusing the authentication mount makes every isolated Run an
+authentication failure, which in practice means nobody turns the boundary on;
+(c) a generic external-mount allowlist is the general loosening the
+authorization forbids and would hide every later addition. The recommended form
+keeps each addition a separately named, separately validated parameter, so a
+fourth one would again be visible as a code and record change rather than
+configuration. This decision is a *precondition for commissioning Slice A*,
+not something the implementation Commission may take: if it is not taken, Slice
+A's stop rule applies.
 |===
 
 == Provenance

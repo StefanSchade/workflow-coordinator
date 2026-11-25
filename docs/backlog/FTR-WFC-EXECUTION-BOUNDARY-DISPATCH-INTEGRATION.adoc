@@ -27,9 +27,12 @@ with `file:line` references, the rejected alternatives and the open maintainer
 decisions. Every design statement below is traceable to it; it is not repeated
 here.
 Depends on:: Nothing in the repository. It depends on one maintainer act:
-commissioning it. The live part of <<qualification>> additionally depends on
-the maintainer's own authenticated provider access and is explicitly *not* a
-Commission deliverable.
+commissioning it -- which must also record the one decision this slice may not
+take for itself, the extension of the 2026-11-08 single designated
+bind-source exception to the external mount kinds enumerated in
+<<outside-sources>> (planning record, M7). The live part of <<qualification>>
+additionally depends on the maintainer's own authenticated provider access and
+is explicitly *not* a Commission deliverable.
 
 [[what]]
 == What Slice A is
@@ -89,12 +92,17 @@ readable.
 Coordinator's state root are prevented
 |Guaranteed
 |Except the one result-channel path and the provider's own authentication
-location, both narrowly bound (<<mounts>>).
+location, both narrowly bound (<<mounts>>). `$HOME` itself exists inside the
+view as an *empty* directory rather than being absent; no host content under it
+is reachable.
 
 |Per-phase write separation between a worker's own deliverables and a
 reviewer's durable artifacts
-|*Not* guaranteed
-|A worker phase's `authorized_scope` *is* the whole Commission scope; see
+|*Not* guaranteed, in *either* direction
+|A worker phase's `authorized_scope` *is* the whole Commission scope. A
+reviewer phase's is narrower, but a not-yet-existing artifact is granted at
+directory granularity, so a reviewer is confined to the directory holding its
+artifact and not to the artifact (<<mounts>>, residual risk 3). See
 link:FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc[the phase write-scope
 record]. Slice A enforces the scope data that exists; it does not improve it.
 
@@ -335,10 +343,10 @@ reviewer-artifact paths. Slice A mounts exactly that and claims exactly that.
 
 |Reviewer phase (`broad_review`, `focused_review`)
 |Only that phase's own `durable_artifacts[artifact_key]` paths, because that
-is what its `authorized_scope` resolves to. A reviewer therefore *is*
-mechanically prevented from writing the worker's deliverables -- a real,
-honest asymmetry that follows from the existing program data, not from a new
-Slice A mechanism.
+is what its `authorized_scope` resolves to -- but at *directory* granularity
+whenever the artifact does not yet exist, which is the normal case. See the
+qualification immediately below; do not read this row as a phase-isolation
+guarantee.
 
 |Any phase
 |Nothing else. No write outside the repository except the private `/tmp`, the
@@ -349,6 +357,33 @@ What this is *not*: it is not phase-specific isolation of worker deliverables
 from reviewer artifacts, and Slice A must never be described that way. The
 guarantee is "no write outside the Commission scope for this phase", which for
 a worker phase equals "no write outside the Commission scope".
+
+The reviewer side needs the same care, because the narrower scope slot invites
+a stronger claim than the mechanism supports. A reviewer phase's grant is
+narrower than a worker phase's, and that asymmetry is real; but it is *not* a
+guarantee that a reviewer cannot write a worker deliverable, for a reason that
+follows from Slice A's own rule below: a durable review artifact does not
+exist when the phase that must create it starts -- that is what makes it the
+phase's deliverable -- so the file-shaped not-yet-existing case applies, and
+the grant becomes the artifact's nearest existing ancestor *directory*. Where
+that directory also holds other records, the reviewer can write them.
+
+This Commission's own data is the illustration rather than an edge case: the
+`broad_review` phase's single scope entry is the then-nonexistent
+`docs/warm_storage/post-beta-planning/wfc_execution_boundary_broad_review.adoc`
+(`.wfc/governance/wfc-exec-boundary-ftr-001/profile.yaml:60-61`), so the grant
+would have been the whole `docs/warm_storage/post-beta-planning/` directory --
+which holds this slice's own planning record. The honest statement is
+therefore: *a reviewer phase is confined to the directories containing its own
+authorized artifacts, not to those artifacts.* This is residual risk 3 in
+<<residual>>, reached through the reviewer path; Slice A states it rather than
+fixing it, because narrowing it is a change to the scope data or to the
+artifact layout, and both belong to
+link:FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc[the phase write-scope
+record] and
+link:FTR-WFC-EXECUTION-BOUNDARY-PHASE-PROFILES.adoc[Slice B]. The post-Hop
+candidate-scope check remains the control that catches an actual out-of-scope
+write, exactly as today.
 
 Normalization, required before mounting: `authorized_scope` entries are
 canonical relative paths with no globs and no `..`, but nothing deduplicates
@@ -430,7 +465,7 @@ short-path bind there was observed to fail with `EPERM` in the 2026-11-08
 investigation, and whether the real CLI's own socket path works is not known.
 
 |`/etc`
-|*no mount in Slice A*
+|*no mount today; a narrow enumerated read-only set in Slice A*
 |`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/passwd` and
 `/etc/ssl/certs` all exist on the host and none is in the view today. Name
 resolution, TLS trust and user lookup are therefore unavailable, which would
@@ -439,29 +474,124 @@ live qualification proves necessary*, each as a read-only bind of the
 individual file or directory, never `--ro-bind /etc /etc`. The expected set is
 `/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/ssl/certs` and
 `/etc/passwd`; it is an *assumption* until the live qualification observes
-which are actually required, and the implementation must add only the observed
-ones.
+which are actually required (L6), and the implementation must add only the
+observed ones. Classification: generated system-view entries, see
+<<outside-sources>>.
 
 |The Coordinator result directory
 |read-only for Claude, read-write for Codex, bound at its own absolute path
 |*New in Slice A, and required.* Claude must read
 `<run_root>/claude-closed-settings.json`; Codex must write
 `<run_root>/result-message.json` and read
-`<run_root>/structured-result.schema.json`. This is one further designated
-external mount kind, validated the same way as the external scratch root:
-exactly the caller-designated per-checkout result directory, never an
-arbitrary host path, never the state root above it.
+`<run_root>/structured-result.schema.json`. Classification: a *designated,
+individually validated external mount kind*, validated the same way as the
+external scratch root -- exactly the caller-designated per-checkout result
+directory, never an arbitrary host path, never the state root above it. See
+<<outside-sources>>.
 
 |Provider configuration and authentication
 |exactly what the live qualification proves the provider needs, read-only,
 narrowly bound
-|See below. No blanket `$HOME` grant, under any circumstances.
+|See <<outside-sources>> for its classification -- also a designated,
+individually validated external mount kind -- and the credential rules below.
+No blanket `$HOME` grant, under any circumstances.
 
-|Everything else, including `$HOME`, other repositories, other checkouts, the
+|Everything else, including other repositories, other checkouts, the
 Coordinator state root above the result directory, the Evidence repository
 |absent
 |Not mounted means not reachable.
+
+|`$HOME`
+|present as an *empty* directory, not absent
+|bwrap materialises the parent chain of every bind destination, so with
+path-identity mounting `/home/<user>` exists while `HOME` still points at it
+(`claude_adapter.py:41`, `:316-320`). No host content under it is reachable,
+which is what the guarantee in <<guarantees>> states; but the distinction
+matters for any provider that probes for its own state directory, which is a
+live-qualification question (L6).
 |===
+
+Process flags in the generated view, for completeness, since they belong to
+the same decision: `--die-with-parent` (unchanged), `--unshare-pid` with
+`--proc /proc` (above), and `--new-session`, which detaches the sandbox from
+the operator's controlling terminal so a child cannot push input back into it.
+All three are part of the view Slice A establishes, not optional extras.
+
+[[outside-sources]]
+=== Outside-repository sources: which rule each category passes through
+
+The 2026-11-08 authorization fences `validate()`'s repository-only bind-source
+rule (`source.relative_to(repository)`, `execution_boundary.py:124-127`) and
+permits exactly *one* designated exception, today's external scratch root
+(`:139-156`). Slice A requires more than one outside-repository path, so it
+must say per category which mechanism carries it and how far the fence moves.
+Nothing here is left to the implementation Run's judgement.
+
+[cols="3,2,5",options="header"]
+|===
+|Category |Mechanism |Consequence for the fence
+
+|`/usr`, the `/bin`-family links, `--dev /dev`, `--proc /proc`
+|Generated inside `build_argv` (`execution_boundary.py:166-172`); not `Mount`
+values at all
+|None. These never reach the `Mount` loop and are unaffected by the
+bind-source rule, today or in Slice A.
+
+|The private `--tmpfs /tmp`
+|A caller-supplied `Mount` of mode `SCRATCH` with *no source*, handled by its
+own branch (`execution_boundary.py:117-119`) before the bind-source branch is
+reached
+|None, and unchanged: it has no source to check. Slice A adds only a `--size`
+cap to it.
+
+|The narrow `/etc` set
+|*Generated system-view entries,* in the same place and the same form as
+`/usr`: fixed absolute host paths, identical for every invocation on a host,
+read-only, individually enumerated in code, never caller-supplied
+|Formally outside the fenced rule, because they are not caller-designated
+`Mount` values. Slice A does *not* rely on that technicality: it is a real
+widening of the generated view and the umbrella record names it as such.
+
+|The Coordinator result directory
+|*A designated, individually validated external mount kind:* a new named
+parameter beside `external_scratch`, with its own checks modelled on
+`:139-156` -- must exist, must be a directory, must be disjoint from the
+repository, from every system root and from every other mount source, its
+destination must not overlap another, and a writable grant still runs the
+hardlink-alias walk
+|*Second* designated exception. The generic rule for undesignated
+caller-supplied mounts is unchanged.
+
+|The provider authentication location
+|*A designated, individually validated external mount kind* of the same form,
+read-only, narrowed to the single file or directory the live qualification
+proves necessary
+|*Third* designated exception. It cannot be a generated system-view entry: its
+path is provider- and operator-specific, varies per invocation, and is a
+live-qualification output rather than a constant.
+
+|Anything else outside the repository
+|None
+|Refused by the unchanged generic rule. No new caller-supplied path kind, no
+pattern, no allowlist, no configuration that could add one.
+|===
+
+Three consequences the implementation Run must act on:
+
+. Each designated kind is a *separate named parameter with its own validation*,
+  never a general relaxation of `source.relative_to(repository)` and never a
+  shared "external mounts" list. Negative case N16 proves that an arbitrary
+  host path is still refused through every one of them.
+. The widening from one designated exception to three, plus the enumerated
+  `/etc` entries, *exceeds the 2026-11-08 authorization's own fence*. It is
+  recorded as an open maintainer decision (planning record, M7) and the
+  umbrella record's supersession marker names all three categories. The
+  implementation Commission does not take this widening on its own judgement;
+  the maintainer takes it when commissioning. If it is not taken, the stop rule
+  (<<stop>>) applies rather than a quietly reduced boundary.
+. The `/etc` set and the authentication path are both *live-qualification
+  outputs* (L6). Until L6 has run, the sets written in this record are
+  assumptions, and the implementation must add only what L6 observed.
 
 === The credential-exposure consequence, stated explicitly
 
@@ -515,12 +645,18 @@ actually enforces. If the nested sandbox cannot initialize, that is a Finding
 with options (<<stop>>), not a reason to disable it.
 
 |Claude `sandbox.filesystem.allowRead` / `allowWrite`
-|May be stated in terms of the in-view paths, since the view already enforces
-them
-|Only when the view is in force. The entries must still name the repository
-and the scratch, never widen beyond them. `denyRead: ["~/"]` is retained;
-inside the view `$HOME` is absent anyway, so the rule becomes redundant rather
-than wrong.
+|*Must* be stated in terms of the in-view paths. This is a correction, not a
+relaxation.
+|Only when the view is in force, and then mandatory. `claude_adapter.py:231-232`
+writes the *host* external-scratch path into `allowRead` and `allowWrite`,
+while the boundary binds that directory at `/tmp/s`
+(`execution_boundary.py:32`, `:180-181`). Inside the view the host path does
+not exist, so leaving the settings unchanged would make the nested sandbox deny
+every scratch write and L1/L2 could not pass. The repository path is unchanged
+by path-identity mounting and stays as it is. The entries must still name the
+repository and the scratch and never widen beyond them. `denyRead: ["~/"]` is
+retained; inside the view `$HOME` exists but is empty (<<mounts>>), so the rule
+becomes redundant rather than wrong.
 
 |Claude `--permission-mode` / `--permission-prompts`
 |`acceptEdits` plus `--permission-prompts none` are *retained*
@@ -643,6 +779,12 @@ selected.
   exists.
 . The normalized writable grant set is disjoint and every entry is inside the
   repository.
+. Every path the adapter writes into a provider's own generated configuration
+  names a location that exists *inside the view*. For Claude this is
+  `sandbox.filesystem.allowRead`/`allowWrite`
+  (`claude_adapter.py:231-232`) and `TMPDIR`; a settings file that describes a
+  filesystem the child cannot see is a silent denial, which is the failure
+  mode this check exists to turn into a named refusal.
 
 === Error classification
 
@@ -719,9 +861,11 @@ this slice. Recorded as open decision M4 in the planning record.
 
 |Reviewer read access
 |Unchanged in substance: a reviewer phase sees the whole working tree
-read-only, which is what reviewing the whole candidate requires, plus its own
-writable artifact path. Slice A must not narrow reviewer *read* access; a
-reviewer that cannot read the product cannot review it.
+read-only, which is what reviewing the whole candidate requires, plus the
+writable grant derived from its own artifact path -- at directory granularity
+while that artifact does not yet exist (<<mounts>>). Slice A must not narrow
+reviewer *read* access; a reviewer that cannot read the product cannot review
+it.
 
 |Per-Hop usage capture
 |Unchanged. Usage comes from the provider's own transport output.
@@ -756,8 +900,13 @@ Positive cases:
   boundary selected, writes a file inside the authorized scope and the
   Coordinator accepts the candidate.
 . The same for an authorized target *directory that did not exist* at launch.
-. A reviewer-shaped invocation writes its own durable artifact and nothing
-  else.
+. A reviewer-shaped invocation writes its own durable artifact, and writes
+  nothing *outside the directory that artifact lives in*. The assertion must be
+  phrased that way and not as "nothing else": a reviewer artifact does not
+  exist when its phase starts, so its grant is the artifact's parent directory
+  (<<mounts>>, residual risk 3). A test asserting artifact-level confinement
+  would assert a property the boundary does not have. The companion assertion
+  is that a write *outside* that directory is prevented.
 . The result channel works in both directions: the fake Claude-shaped provider
   reads the generated settings file, and the fake Codex-shaped provider writes
   the result file that the Coordinator then reads back.
@@ -831,6 +980,14 @@ assert that no provider process was started at all -- no silent fallback.
 |N15
 |A scope list that cannot be normalized to a disjoint set is refused before
 dispatch.
+
+|N16
+|Pass an arbitrary host path through *each* of the designated external mount
+parameters -- external scratch, result directory, provider authentication --
+and assert that each is refused by its own named check, so that adding the new
+kinds did not become a general loosening of the repository-only bind-source
+rule (<<outside-sources>>). The same case asserts that an undesignated
+caller-supplied `Mount` with an outside-repository source is still refused.
 |===
 
 === Layer 2: live qualification with real authenticated providers
@@ -881,8 +1038,13 @@ the earlier attempt could not construct.
 
 |L6
 |The minimal `/etc` and authentication mount set is *observed*, by starting
-from none and adding only what a failure actually requires.
-|That the exposed set is the necessary set rather than a guess.
+from none and adding only what a failure actually requires. The same run
+records whether either CLI needs a *writable* state directory under its empty
+in-view `$HOME`, and if so which path.
+|That the exposed set is the necessary set rather than a guess. The `$HOME`
+part is the one place where a further writable external mount could turn out to
+be necessary; if it is, that is a Finding with options under <<stop>> and a
+further open maintainer decision, never a quiet addition.
 
 |L7
 |The boundary mode appears in the Run's audit projection and report.
@@ -947,10 +1109,13 @@ already provides an independent review at every cycle. The ordered steps below
 are review checkpoints inside that Run, not separate Commissions:
 
 . *Boundary view.* `execution_boundary.py`: the `.git`-file worktree case,
-  path-identity mounting, the result-channel mount kind, `--proc` /
-  `--unshare-pid` / `--new-session`, the `/tmp` size cap, and the `/etc` and
-  authentication mount kinds. Unit and integration tests, including every
-  negative case reachable at this level.
+  path-identity mounting, the two new designated external mount kinds (result
+  channel and provider authentication, each a separate validated parameter),
+  the enumerated `/etc` entries in the generated system view, `--proc` /
+  `--unshare-pid` / `--new-session`, and the `/tmp` size cap -- classified
+  exactly as <<outside-sources>> requires, and subject to the open maintainer
+  decision named there. Unit and integration tests, including every negative
+  case reachable at this level.
 . *Launcher seam.* `execution_launcher.py` with `prepare_direct` and
   `prepare_bubblewrap`; both adapters call it instead of building `Popen`
   arguments inline. Byte-identity tests for the direct path.
@@ -973,8 +1138,9 @@ carried by a successor Commission: it changes no security property.
 |`robust@v1`, unchanged.
 
 |Hop upper limit
-|*12* as an upper limit (worker, broad review, and up to four
-correct/focused-review cycles). This is an upper bound, not a target.
+|*12* as an upper limit (one worker Hop, one broad review, and up to five
+correct/focused-review cycles of two Hops each). This is an upper bound, not a
+target.
 
 |Scope, exactly
 |`src`, `tests`, `docs/architecture.md`,
@@ -1136,7 +1302,16 @@ slice does not edit a released section.
   grows with the grant.
 . *File-shaped not-yet-existing scope entries overgrant* to the nearest
   existing ancestor directory (<<mounts>>). Prevention gap, not acceptance
-  gap.
+  gap. Its most important instance is the *reviewer* phase: a durable review
+  artifact never exists when its phase starts, so every reviewer grant is a
+  directory grant, and this is exactly why the reviewer-side asymmetry in
+  <<mounts>> is stated as confinement to a directory rather than to an
+  artifact. A cheaper mitigation exists -- one directory per artifact, or
+  pre-created placeholder files that the post-Hop observation tolerates -- but
+  choosing one is a change to the artifact layout or to the scope data, and
+  Slice A deliberately leaves it to
+  link:FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc[the phase write-scope
+  record] rather than inventing a mechanism here.
 . *Worker-phase grants are Commission-wide.* Stated in <<guarantees>>; the
   cause is the program's scope slot, not the boundary.
 . *`/proc` exposure.* `--unshare-pid --proc /proc` still exposes host-global
