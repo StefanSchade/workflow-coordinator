@@ -135,7 +135,7 @@ exercised when the maintainer approves the pending deployment. Approval is
 `.github/workflows/release.yml` exists and implements the contract above. It
 has two triggers -- `push` to `main` and `push` of tags matching `v*` -- and a
 top-level `permissions: contents: read`; no step references a repository
-secret anywhere in the file. Five jobs (one informational):
+secret anywhere in the file. Five jobs:
 
 * `check` (both triggers, no elevated permissions beyond the top-level
   `contents: read`): checks out full history (`fetch-depth: 0`) and
@@ -173,9 +173,24 @@ secret anywhere in the file. Five jobs (one informational):
   `bwrap --version`, the pytest pass/skip counts, artifact names, sizes and
   SHA-256, `implementation_tree_sha256`, and the `dist-audit` result -- in
   both branch-push and tag-push runs, since `check` runs on both triggers.
-* `python-compat` (both triggers, `needs: check`, no elevated permissions, not
-  a prerequisite of any publishing job, matrix CPython 3.10, 3.11 and 3.12 on
-  `ubuntu-24.04`): the maintainer's small compatibility job of 2026-11-23.
+* `python-compat` (both triggers, `needs: check`, no elevated permissions,
+  matrix CPython 3.10, 3.11 and 3.12 on `ubuntu-24.04`): the maintainer's
+  small compatibility job of 2026-11-23, made release gate *G9* by
+  maintainer decision D6 (2026-11-25, Option A,
+  link:../backlog/beta2_release_streamlining_plan.adoc#d6[the Beta-2
+  release-streamlining plan]): `publish-testpypi`'s `needs:` now includes
+  this job (the workflow's own comment above the job records the same
+  fact), so a red `python-compat` blocks publication the same way G1-G8
+  block their own step. The advertised CPython 3.10-3.13 interpreters stay
+  unchanged. Accepted risk (maintainer, 2026-11-25): the 3.10-3.12 jobs
+  below install from the ordinary index, not the offline bundle `check`
+  uses, so an index-side or upstream change on one of them can turn a
+  release red for a reason outside this repository; the response is a
+  re-run of the failed jobs (<<recovery>>'s "Failed before any upload" row
+  -- nothing has been uploaded yet), never a re-tag. Dropping the 3.10-3.12
+  classifiers later, to remove the gap instead of accepting it, is a
+  separate maintainer-level change (the classifier, the matrix entry and,
+  if wanted, `requires-python`).
   `requires-python = ">=3.10"` and the classifiers are unchanged; the only
   fully qualified profile stays CPython 3.13 on Linux x86-64 in `check`.
   This job downloads the `release-dist` artifact that `check` built once,
@@ -188,16 +203,18 @@ secret anywhere in the file. Five jobs (one informational):
   test modules against the *installed* wheel (`-o pythonpath=.` replaces the
   repository's `src` entry; `--wfc-partial`, the repository's explicit marker
   for a deliberately partial run). It does *not* cover the full required
-  suite, bubblewrap, build isolation, real providers or any release gate, and
-  is neither qualification of those interpreters nor a statement about
-  upstream security support (CPython 3.10 has reached upstream end of life).
+  suite, bubblewrap, build isolation or real providers, and is neither
+  qualification of those interpreters -- it is gate G9, not qualification --
+  nor a statement about upstream security support (CPython 3.10 has reached
+  upstream end of life).
   The development tooling is not part of this contract: for example
   `scripts/wfc_release_check.py` and some test modules import `tomllib`
   (CPython 3.11 and newer), so the *full* development suite does not run
   unmodified on 3.10. Debian 12 with CPython 3.11 on ARM64 is a future
   qualification target, not a Beta-1 requirement.
-* `publish-testpypi` (tags only, `needs: check`, environment `testpypi`, job
-  permissions `contents: read` and `id-token: write`): downloads the checked
+* `publish-testpypi` (tags only, `needs: check` and `python-compat` (G9),
+  environment `testpypi`, job permissions `contents: read` and `id-token:
+  write`): downloads the checked
   artifact unchanged, re-verifies its recorded SHA-256, then uploads it to
   TestPyPI through OIDC (`pypa/gh-action-pypi-publish`) -- a real upload
   (G6), not `--dry-run`.
@@ -233,6 +250,31 @@ used mutable reference pointed to, so nothing was upgraded):
 deliberately not adopted. To change a version, resolve the new tag to its
 commit (`git ls-remote --tags <repo> <tag> <tag>^{}`, using the peeled commit
 for an annotated tag) and change SHA and comment together.
+
+[[dependabot]]
+`.github/dependabot.yml` (maintainer decision D3, 2026-11-25) opens pull
+requests for new versions of the pinned actions above. It is scoped to the
+`github-actions` ecosystem only, directory `/`, with a weekly schedule and a
+seven-day cooldown so a newly released version is not proposed immediately.
+It groups the actions that run *only* in the unprivileged `check` and
+`python-compat` jobs (today `actions/checkout`, `actions/setup-python`,
+`actions/upload-artifact`) into one named group, restricted to minor and
+patch updates, separately from a second named group covering every action
+that runs in `publish-testpypi`, `publish-pypi` or `release` (today
+`actions/download-artifact` -- which also runs inside `python-compat`, and is
+therefore *not* in the check-only group -- and `pypa/gh-action-pypi-publish`).
+The group name is the identifiable mechanism: it appears in each pull
+request's title and branch name, and a repository rule or workflow the
+maintainer owns can match on it. Grouping by itself enables nothing --
+*auto-merge is a GitHub repository setting the maintainer configures
+separately, and no file in this repository enables it*; it is recommended
+only after the first manually reviewed Dependabot run, and then only for the
+check-only group. Publish-path action updates are always reviewed by hand.
+Residual risk (maintainer-stated, D3): an action in the `check` job still
+influences the bytes later published (it builds and uploads the release
+candidate), so auto-merge there is *lower* risk, not none; the human `pypi`
+approval (G8) and the audited, hash-listed artifact bound it.
+
 *Maintainer follow-up:*
 link:../backlog/postbeta_plan_p3_release_engineering.adoc#ext[ES-1 through
 ES-6] (the Trusted Publisher registration, repository and Environment
@@ -258,19 +300,20 @@ maintainer decisions of 2026-11-23].
 === Release sequence and gates
 
 Every gate is release-blocking; there is no advisory class, *scoped to the
-enumerated gates G1-G8 below*. The informational `python-compat` job
-(<<release-ci>>) is not one of them, is not a prerequisite of any publishing
-job, and gates nothing; whether it should become one is open maintainer
-decision D6 in
+enumerated gates G1-G9 below*. `python-compat` (<<release-ci>>) is gate *G9*
+(maintainer decision D6, 2026-11-25, Option A,
 link:../backlog/beta2_release_streamlining_plan.adoc#d6[the Beta-2
-release-streamlining plan], and no slice of that plan executes it. Each step
-below names the gate(s) guarding it.
+release-streamlining plan]): it blocks `publish-testpypi` the same way
+G1-G8 block their own step. Each step below names the gate(s) guarding it.
 
 . Push the release commit to `main`; the `check` job (<<release-ci>>) runs --
   *G1* preflight clean (topology, tag-equals-version, notes frozen, README
   links absolute and tag-pinned), *G2* required suite green, *G3* both artifacts contain
   exactly the C2 allow-list, *G4* clean-environment install and CLI identity
-  (C3), *G5* documentation renders strictly.
+  (C3), *G5* documentation renders strictly. Once `check` is green,
+  `python-compat` runs against the same artifact -- *G9* every advertised
+  3.10-3.12 interpreter installs the built wheel and passes the
+  provider-free smoke.
 . With `check` green, the maintainer gives the Q1 consumer *smoke*
   qualification Runs (Q1-A and Q1-B) the downloaded `check` artifact unchanged (a rebuild's
   byte-identity is unverified) and authorizes them -- *G7* consumer
@@ -278,7 +321,8 @@ below names the gate(s) guarding it.
 . Only once Q1 is accepted *and* the `pypi` environment's pre-tag
   confirmation is in hand does the maintainer push the tag; `check` re-runs
   in tag mode, re-proving everything against the tagged commit.
-. `publish-testpypi` runs unattended -- *G6* TestPyPI rehearsal.
+. `publish-testpypi` runs unattended, now only once both `check` and
+  `python-compat` are green (*G1*-*G5* and *G9*) -- *G6* TestPyPI rehearsal.
 . The pipeline waits at the `pypi` environment's required-reviewer gate --
   *G8*, above.
 . `publish-pypi`, then `release`, run after approval; the maintainer verifies
@@ -295,6 +339,9 @@ below names the gate(s) guarding it.
 |G6 |`publish-testpypi` uploads the real checked artifact via OIDC. |CI and Operator
 |G7 |The Q1-A and Q1-B archives and their independent review dispositions, reported separately; a truthful stop is itself a valid outcome. |Maintainer
 |G8 |The `pypi` environment's required-reviewer approval. |Maintainer
+|G9 |`python-compat` installs the built wheel into each advertised 3.10-3.12
+interpreter and passes the provider-free smoke; required by
+`publish-testpypi`'s `needs:` (D6, 2026-11-25). |CI
 |===
 
 [[release-runbook]]

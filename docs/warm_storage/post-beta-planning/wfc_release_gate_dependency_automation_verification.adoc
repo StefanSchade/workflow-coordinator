@@ -1,0 +1,223 @@
+= R5 verification: `python-compat` as gate G9 and Dependabot for the workflow actions
+
+Standing:: Implementation verification record for
+link:../../backlog/FTR-WFC-RELEASE-GATE-AND-DEPENDENCY-AUTOMATION.adoc[FTR-WFC-RELEASE-GATE-AND-DEPENDENCY-AUTOMATION]
+(slice R5 of link:../../backlog/beta2_release_streamlining_plan.adoc[the
+Beta-2 release-streamlining plan], carrying maintainer decisions D3 and D6).
+Written by the implementer; independent review and acceptance are recorded
+separately and are outstanding as of this writing. Verified against this
+repository at base HEAD `328f94458ba0d33b15c4c4e45c61a91665f6439a`.
+
+== What changed
+
+`.github/workflows/release.yml`: one job-graph edit -- `publish-testpypi`'s
+`needs:` gained `python-compat` (now `[check, python-compat]`) -- and the
+comment above the `python-compat` job, which previously said this job has
+"no release gate (no job waits for it; it reports the compatibility facts
+for the maintainer)", now states that it is release gate G9 and that
+`publish-testpypi` depends on it. Nothing else in the file changed (see
+<<job-graph>>).
+
+`.github/dependabot.yml` (new): `version: 2`, one `updates` entry for the
+`github-actions` ecosystem, directory `/`, a weekly `schedule`, a
+`cooldown` of `default-days: 7`, and two named `groups` that partition the
+five actions the workflow pins (see <<dependabot-keys>>).
+
+`docs/developer_guide/ch04_release_management.adoc`: the statements the
+change makes false or incomplete are updated -- the CI section's
+`python-compat` bullet (drops "not a prerequisite of any publishing job" and
+"or any release gate", states G9, the accepted risk and the maintainer
+follow-up on dropping 3.10-3.12 later), the "Five jobs (one informational)"
+lead-in (now "Five jobs"), the `publish-testpypi` bullet's `needs:`
+parenthetical (was `needs: check`, now also names `python-compat` (G9)), the
+release-gates section's scoping sentence (now G1-G9, D6 recorded as decided
+rather than open), the sequence steps (the `check`-job step now also names
+`python-compat`'s G9 run; the `publish-testpypi` step now says it needs both
+`check` and `python-compat` green), the gate table (new G9 row), and a new
+paragraph in the CI section documenting `.github/dependabot.yml` (what it
+does, the group-name identification mechanism and its limit, that
+auto-merge is a GitHub repository setting this file does not enable, that
+publish-path action updates are always reviewed by hand, and the residual
+risk). No other chapter line changed (see <<ch04-diff>>). Decisions D1, D2,
+D4 and D5 are not referenced and were not touched.
+
+Changed or added leaves:
+
+* `.github/workflows/release.yml` (edited)
+* `.github/dependabot.yml` (new)
+* `docs/developer_guide/ch04_release_management.adoc` (edited)
+* `docs/warm_storage/post-beta-planning/wfc_release_gate_dependency_automation_verification.adoc`
+  (this file, new)
+
+`docs/backlog/_open.adoc` was not touched: it is not inside this Hop's
+authorized scope (`.github/workflows/release.yml`, `.github/dependabot.yml`,
+the named chapter-4 statements, and this verification record only); recording
+acceptance there is post-acceptance backlog upkeep for a later phase.
+
+[[job-graph]]
+== Job-graph, permissions and action-pin comparison (before/after, programmatic)
+
+A scratch script (`python3`, using `yaml.safe_load`, written at the
+repository root and removed again after use -- not committed) loaded
+`git show 328f944:.github/workflows/release.yml` (before) and the edited
+working-tree file (after) and compared, per job: `needs:` (normalized to a
+list), `permissions:`, `if:`, `environment:`, `runs-on:` and `strategy:`,
+plus the top-level `permissions:` and the `on:` trigger block.
+
+Result:
+
+* Top-level `permissions:` identical; top-level `on:` (two triggers: `push`
+  to `main`, `push` of tags matching `v*`) identical.
+* Job set unchanged: `{check, python-compat, publish-testpypi, publish-pypi,
+  release}`.
+* The *only* difference in any job: `publish-testpypi`'s `needs:` changed
+  from `[check]` to `[check, python-compat]`. Every job's `permissions:`,
+  `if:`, `environment:`, `runs-on:` and `strategy:` compared identical,
+  including `publish-testpypi`'s own `permissions: {contents: read,
+  id-token: write}` and `environment: testpypi`, both unchanged. No cycle is
+  introduced: `python-compat` itself depends only on `check`, so the
+  extended `needs:` adds one edge (`publish-testpypi` -> `python-compat`)
+  to an already-acyclic graph.
+* A separate regex scan (`uses:\s*(\S+@[0-9a-f]{40})`) over the full file
+  text found the same five `<owner>/<repo>@<40-hex-sha>` references before
+  and after, byte-for-byte: `actions/checkout@d23441a...`,
+  `actions/setup-python@ece7cb0...`, `actions/upload-artifact@ea165f8...`,
+  `actions/download-artifact@d3f86a1...`,
+  `pypa/gh-action-pypi-publish@7245906...`. No action added, removed or
+  re-pinned.
+* `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml'))"`
+  succeeds on the edited file.
+
+[[dependabot-keys]]
+== Dependabot keys verified against documented options
+
+Web access was available this Hop. The documented options reference
+(`docs.github.com`, Dependabot options reference) was fetched and read.
+Every key used is confirmed, not an external assumption:
+
+* `version: 2` -- required top-level key, confirmed.
+* `updates` (list), `package-ecosystem: "github-actions"`, `directory: "/"`
+  -- confirmed per-update keys; `github-actions` is a documented ecosystem
+  value and `directory` (singular) is correct for one path.
+* `schedule.interval: "weekly"` -- confirmed; one of the documented interval
+  values (`daily`, `weekly`, `monthly`, `quarterly`, `semiannually`,
+  `yearly`, `cron`).
+* `cooldown.default-days: 7` -- confirmed; `cooldown` and its sub-key
+  `default-days` are documented (cooldown delays *version* updates, not
+  security updates; a 3-day default applies if omitted, so this file's
+  explicit 7-day value is a deliberate, verified choice, not the default).
+* `groups.<name>.patterns` and `groups.<name>.update-types` -- confirmed
+  documented sub-keys of `groups` (`patterns` matches dependency names with
+  `*` as wildcard; `update-types` is `minor`, `patch` or `major`). The
+  reference also documents that a dependency matching more than one group
+  goes into the *first* one it matches, and that `labels` is an
+  update-entry-level key only -- there is no documented per-group `labels`
+  key. This is why this file separates the two sets by *group name*
+  (`check-only-actions` / `publish-path-actions`) rather than by label: a
+  label would apply uniformly to every PR from this single `updates` entry
+  and could not, by itself, distinguish the two sets.
+* Two separate `updates` entries for the same `package-ecosystem` and the
+  same `directory` were considered and rejected: the reference states that
+  multiple blocks for one ecosystem on a target branch must have no overlap
+  in the directories defined, which a second entry for `/` would violate.
+  One entry with two `groups` is the structurally valid way to express the
+  separation.
+
+[[groups-derivation]]
+== Automerge-eligible set re-derived from the workflow (not copied blindly)
+
+A second scratch script parsed `.github/workflows/release.yml` with
+`yaml.safe_load` and collected, per job, every `uses:` action name (the part
+before `@`). Defining "check-only" as the jobs `{check, python-compat}` and
+"publish-path" as `{publish-testpypi, publish-pypi, release}`:
+
+* Actions appearing anywhere in `{check, python-compat}`:
+  `actions/checkout`, `actions/setup-python`, `actions/upload-artifact`,
+  `actions/download-artifact`.
+* Actions appearing anywhere in `{publish-testpypi, publish-pypi, release}`:
+  `actions/download-artifact`, `pypa/gh-action-pypi-publish`.
+* `actions/download-artifact` is in *both* raw sets: `python-compat`
+  downloads the `release-dist` artifact to run its installed-wheel checks,
+  exactly as the three publish-path jobs do. The set of actions that run
+  *only* in `{check, python-compat}` and *never* in a publish-path job is
+  therefore `{actions/checkout, actions/setup-python,
+  actions/upload-artifact}` -- matching the task's stated "today" set
+  exactly, but derived, not assumed, and the derivation surfaces the reason
+  `actions/download-artifact` is correctly excluded from the check-only
+  group and placed only in the publish-path group (where it belongs because
+  it runs in every one of `publish-testpypi`, `publish-pypi` and
+  `release`). `.github/dependabot.yml`'s two `groups.*.patterns` lists were
+  compared programmatically to these two derived sets: both match exactly,
+  and their union covers every action the workflow pins with no overlap.
+
+Both scratch scripts were deleted after use; `git status --short -uall`
+shows only the four leaves listed above as changed or new.
+
+[[ch04-diff]]
+== Chapter-4 diff is exactly the named statements
+
+`git diff docs/developer_guide/ch04_release_management.adoc` touches only:
+the "Five jobs (one informational)" lead-in; the `python-compat` CI-section
+bullet (the "not a prerequisite"/"no release gate" phrasing, the gate-G9
+statement, the accepted risk, the maintainer follow-up on dropping
+3.10-3.12, and the "or any release gate" phrase in its closing sentence);
+the `publish-testpypi` CI-section bullet's `needs:` parenthetical (was
+`needs: check` only); a new paragraph documenting
+`.github/dependabot.yml`; the release-gates section's scoping sentence
+(G1-G8 to G1-G9, D6 "open" to "decided"); the `check`-job sequence step
+(adds the G9 sentence); the `publish-testpypi` sequence step (names both
+prerequisites); and the gate table (new G9 row). No line about D1, D2, D4
+or D5 changed. No line outside these locations differs.
+
+== Front Door docs-sync
+
+Asked and answered *no edit needed*: no Front Door command, argument,
+classification, report, diagnostic, admission, binding or recovery
+behaviour changes. This is CI configuration and Dependabot configuration
+only.
+
+[[checks]]
+== Checks run
+
+* YAML parse: `python3 -c "import yaml; yaml.safe_load(open(...))"` against
+  both the edited `.github/workflows/release.yml` and the new
+  `.github/dependabot.yml` -- both succeed.
+* Strict render: `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+  --failure-level=WARN docs/developer_guide/ch04_release_management.adoc` --
+  printed nothing.
+* Doc catalog (`python3 scripts/wfc_doc_catalog.py generate` then `check`):
+  baseline confirmed as *83 unresolved links, 4 Project Memory
+  source_path misses* by running the same check before editing any file in
+  this Hop; unchanged after this Hop's edits (same 83 and 4, same list of
+  files). The generated catalog file is git-ignored and was left in place;
+  no scratch comparison file remains in the repository.
+* `python -m pytest -q`: **not executed** -- `pytest` is not installed in
+  this agent sandbox (`python3 -m pytest` reports "No module named
+  pytest"). No Python, test, script, Makefile, pyproject or version file is
+  touched by this slice, so no regression in the suite is expected; this is
+  reported truthfully as an agent-local environmental limitation, not a
+  claim that the suite passed. The Coordinator's task-check runs the full
+  required suite separately with verified offline inputs.
+* `tests/unit/test_release_tooling.py` does not contain a workflow-structure
+  test (it exercises `scripts/wfc_release_check.py` and
+  `scripts/wfc_release_prepare.py` only, never parses
+  `.github/workflows/release.yml`); per the FTR's test strategy, this Hop
+  therefore used the documented programmatic before/after comparison
+  (<<job-graph>>) instead of adding a check there, which is outside this
+  Hop's authorized scope in any case (no test file is in the authorized
+  scope for this Hop).
+* Hosted-run steps **not executed**, and not claimed to have run: no push,
+  tag, workflow dispatch or GitHub Actions run of any kind; no Dependabot
+  scan, pull request or auto-merge; no GitHub repository setting was read
+  or changed.
+
+== Scope note
+
+No file outside `.github/workflows/release.yml`, `.github/dependabot.yml`,
+the named chapter-4 statements and this verification record proved
+necessary. The `needs:` graph (beyond the one authorized edge), every job's
+`permissions:`, every trigger, and every pinned action SHA are untouched, as
+required. No secret, network access, new action, GitHub setting or
+credential was added, read or changed. Auto-merge, branch protection and
+every other GitHub repository setting remain exclusively the maintainer's
+own action.
