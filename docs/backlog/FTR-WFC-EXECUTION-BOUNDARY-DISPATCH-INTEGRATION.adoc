@@ -31,8 +31,9 @@ commissioning it -- which must also record the one decision this slice may not
 take for itself, the extension of the 2026-11-08 single designated
 bind-source exception to the external mount kinds enumerated in
 <<outside-sources>> (planning record, M7). The live part of <<qualification>>
-additionally depends on the maintainer's own authenticated provider access and
-is explicitly *not* a Commission deliverable.
+additionally depends on the maintainer's own authenticated provider access, on
+a host prepared as <<provider-reachability>> requires, and is explicitly *not*
+a Commission deliverable.
 
 [[what]]
 == What Slice A is
@@ -84,17 +85,24 @@ readable.
 
 |Writes anywhere else on the host filesystem are prevented
 |Guaranteed
-|Only the repository view, the authorized writable subpaths, the private
-`/tmp`, the external scratch and the one result-channel path exist in the view
+|The only writable destinations in the view are the authorized writable
+subpaths inside the repository, the private `/tmp`, the external scratch and
+-- for the Codex path only -- the per-invocation provider channel directory
+(<<channel>>). The Coordinator's own Run state and audit records
+(`run.json`, `checkpoint.json`, `dispatch.json`, `execution-evidence.json`,
+`usage.json`) are *not* in the view at all, in either direction
 (<<mounts>>).
 
 |Reads of the operator's `$HOME`, other repositories, other checkouts and the
-Coordinator's state root are prevented
+Coordinator's Run state and audit records are prevented
 |Guaranteed
-|Except the one result-channel path and the provider's own authentication
-location, both narrowly bound (<<mounts>>). `$HOME` itself exists inside the
-view as an *empty* directory rather than being absent; no host content under it
-is reachable.
+|Except the per-invocation provider channel directory and the provider's own
+authentication location, both narrowly bound (<<channel>>, <<mounts>>).
+`$HOME` is not absent from the view: bwrap materialises the parent chain of
+every bind destination, so `/home/<user>` exists as an otherwise empty
+directory containing only the ancestor chains of the designated mounts. What
+is guaranteed is that no host content under it is reachable other than those
+mounts themselves.
 
 |Per-phase write separation between a worker's own deliverables and a
 reviewer's durable artifacts
@@ -210,10 +218,11 @@ and needs no cwd either way.
 
 |environment
 |Passed through unchanged. Bubblewrap does not clear the environment unless
-asked, and Slice A does not ask: the Claude adapter's four-name allowlist plus
-its `TMPDIR` override, and the Codex adapter's inherited environment, both
-keep exactly today's meaning. This is a deliberate non-change; see
-<<residual>>.
+asked, and Slice A does not ask: the Claude adapter's allowlist -- four fixed
+names plus any name the operator lists in `WFC_CLAUDE_EXTRA_ENV_NAMES`
+(`claude_adapter.py:39`, `:42-46`, `:316-319`) -- plus its `TMPDIR` override, and the
+Codex adapter's inherited environment, both keep exactly today's meaning. This
+is a deliberate non-change; see <<residual>>.
 
 |stdin, stdout, stderr
 |Unchanged. `bwrap` passes its own standard streams to the child, so Codex's
@@ -228,10 +237,12 @@ rather than surviving as an orphan. The adapters' group signals reach `bwrap`,
 which is the process they started.
 
 |result and candidate
-|Unchanged. Claude's candidate is still parsed from the wrapper JSON on
-stdout; Codex's is still read from the result file in the Coordinator's result
-directory, which is why that directory needs a narrow writable bind
-(<<mounts>>).
+|Unchanged in contract. Claude's candidate is still parsed from the wrapper
+JSON on stdout; Codex's is still read from the result file the provider wrote.
+What changes is only *where* that file lives: in the per-invocation provider
+channel directory rather than in the Coordinator's Run state directory, so
+that the narrow writable bind the Codex path needs cannot reach Run state or
+audit records (<<channel>>).
 
 |scratch
 |Unchanged in the Claude adapter: it still creates the invocation-scoped real
@@ -350,7 +361,8 @@ guarantee.
 
 |Any phase
 |Nothing else. No write outside the repository except the private `/tmp`, the
-external scratch and the result channel below.
+external scratch and -- on the Codex path -- the per-invocation provider
+channel directory (<<channel>>).
 |===
 
 What this is *not*: it is not phase-specific isolation of worker deliverables
@@ -434,8 +446,10 @@ existing integration tests already exercise the hardlink, symlink-metadata and
 
 |`/usr`, and `/bin`, `/sbin`, `/lib`, `/lib64` as symlinks or binds
 |read-only
-|Unchanged. The provider binary and its interpreter must resolve here; see the
-preflight requirement in <<enablement>>.
+|Unchanged. The provider executable *and everything it loads at runtime* must
+resolve here. This is a stated precondition with an operator-side remedy, not
+only a preflight refusal: see <<provider-reachability>> and the preflight
+requirement in <<enablement>>.
 
 |`/dev`
 |`--dev` (bubblewrap's minimal device set)
@@ -478,16 +492,18 @@ which are actually required (L6), and the implementation must add only the
 observed ones. Classification: generated system-view entries, see
 <<outside-sources>>.
 
-|The Coordinator result directory
+|The per-invocation provider channel directory
 |read-only for Claude, read-write for Codex, bound at its own absolute path
-|*New in Slice A, and required.* Claude must read
-`<run_root>/claude-closed-settings.json`; Codex must write
-`<run_root>/result-message.json` and read
-`<run_root>/structured-result.schema.json`. Classification: a *designated,
-individually validated external mount kind*, validated the same way as the
-external scratch root -- exactly the caller-designated per-checkout result
-directory, never an arbitrary host path, never the state root above it. See
-<<outside-sources>>.
+|*New in Slice A, and required.* Claude must read its generated closed
+settings file; Codex must write the result file and read the result schema.
+These three files move out of the Coordinator's Run state directory into a
+dedicated channel directory, which is what is mounted -- the Run state
+directory itself is never mounted. The decision, its mechanism and its
+consequences are <<channel>>. Classification: a *designated, individually
+validated external mount kind*, validated the same way as the external scratch
+root -- exactly the caller-designated channel directory for this invocation,
+never an arbitrary host path, never the Run state directory that contains it.
+See <<outside-sources>>.
 
 |Provider configuration and authentication
 |exactly what the live qualification proves the provider needs, read-only,
@@ -497,18 +513,23 @@ individually validated external mount kind -- and the credential rules below.
 No blanket `$HOME` grant, under any circumstances.
 
 |Everything else, including other repositories, other checkouts, the
-Coordinator state root above the result directory, the Evidence repository
+Coordinator's Run state directory outside the provider channel, the Evidence
+repository
 |absent
 |Not mounted means not reachable.
 
 |`$HOME`
-|present as an *empty* directory, not absent
+|present only as the materialised parent chain of the designated bind
+destinations, not absent and not a copy of anything
 |bwrap materialises the parent chain of every bind destination, so with
 path-identity mounting `/home/<user>` exists while `HOME` still points at it
-(`claude_adapter.py:41`, `:316-320`). No host content under it is reachable,
-which is what the guarantee in <<guarantees>> states; but the distinction
-matters for any provider that probes for its own state directory, which is a
-live-qualification question (L6).
+(`claude_adapter.py:39`, `:316-319`). It is *not* literally empty: on a host
+where the repository, the state root or the scratch root lie under `$HOME`, the
+ancestor directories of those mounts exist inside it. What holds is that no
+host content under `$HOME` is reachable other than the designated mounts
+themselves, which is what the guarantee in <<guarantees>> states. The
+distinction matters for any provider that probes for its own state directory,
+which is a live-qualification question (L6).
 |===
 
 Process flags in the generated view, for completeness, since they belong to
@@ -516,6 +537,182 @@ the same decision: `--die-with-parent` (unchanged), `--unshare-pid` with
 `--proc /proc` (above), and `--new-session`, which detaches the sandbox from
 the operator's controlling terminal so a child cannot push input back into it.
 All three are part of the view Slice A establishes, not optional extras.
+`--as-pid-1` must *not* be used: the die-with-parent and
+no-leftover-descendant properties depend on bwrap itself remaining PID 1 of
+the new PID namespace and reaping orphans there.
+
+[[channel]]
+=== The provider channel is separated from the Run state directory
+
+*The fact that forces this decision.* Both adapters are handed one directory
+as `result_directory`, and that directory is the Coordinator's own Run state
+directory, not a channel: `operator.py:977-980` constructs the adapter with
+`result_directory=run_root`, where `run_root =
+checkout_state_root(state_root, association)` is `<state_root>/checkouts/<checkout_id>`
+(`slice4.py:135-136`). That same directory holds the Coordinator's
+authoritative Run state and audit records -- `run.json` (`operator.py:919`,
+`slice4.py:319`), `checkpoint.json` (`operator.py:926`), the dispatch marker
+`dispatch.json` (`slice4.py:182`, `:320`), `execution-evidence.json`
+(`operator.py:885`, `slice4.py:183`) and `usage.json` (`operator.py:841`) --
+and they are already present *during* dispatch, because `slice4.py:319-325`
+writes the run snapshot and the dispatch marker immediately before
+constructing the adapter. They are read back as trusted state afterwards
+(`frontdoor/lifecycle.py:709`, `:716`; `frontdoor/archive.py:487-495`). Only
+`checkout-association.json` lies one level up (`slice4.py:100`).
+
+Mounting that directory would therefore hand the agent read access to the Run
+snapshot and every prior Hop's evidence, and -- on the Codex path, which needs
+a writable mount -- write access to the dispatch marker on which this slice's
+own not-started/started classification depends, and to the very
+`execution-evidence.json` that is supposed to record whether the agent was
+isolated (<<provider>>). An agent-writable record of the agent's own
+confinement is not an audit trail, and it would contradict the guarantees in
+<<guarantees>>. Today only Codex's own `--sandbox workspace-write` keeps that
+directory out of reach; since this slice's premise is that the provider
+sandbox is not the authoritative boundary, the WFC boundary must not be the
+weaker of the two.
+
+*Decision.* The three provider channel files move into a dedicated
+per-invocation channel directory under the Run state directory -- for example
+`<run_root>/provider-channel/` -- and it is the *channel directory*, never the
+Run state directory, that is passed to the adapter and mounted:
+
+[cols="3,2,4",options="header"]
+|===
+|File |Direction |Mount consequence
+
+|`claude-closed-settings.json` (`claude_adapter.py:308`)
+|Coordinator writes before launch; the Claude child reads it by the path in
+`--settings` (`claude_adapter.py:217`)
+|The Claude path needs the channel directory *read-only* and nothing more. The
+result schema is passed to Claude inline as a serialized string
+(`claude_adapter.py:214`, `:325`), so Claude never reads a schema file.
+
+|`structured-result.schema.json` (`claude_adapter.py:307`, `:314`;
+`codex_adapter.py:433`)
+|Both adapters write it before launch; only the Codex child reads it, via
+`--output-schema` (`codex_adapter.py:414`)
+|Read access on the Codex path; on the Claude path the file lives in the
+channel but is never read by the child.
+
+|`result-message.json` (`codex_adapter.py:434`, pre-created empty at `:443`)
+|The Codex child writes it via `--output-last-message`
+(`codex_adapter.py:414`); the Coordinator reads it back at `:461`
+|The Codex path needs the channel directory *read-write*. Because the mount
+point is the directory and not the file, a provider that replaces the file by
+rename still works.
+|===
+
+All three are Coordinator-written before launch, so a bind source always
+exists and no pre-creation mechanism beyond the existing writes is needed.
+
+*Rejected alternative:* binding the three files individually at their present
+paths inside the Run state directory. It is equally narrow in what it exposes
+(bind destinations materialise only their parent chain, so the Run state
+directory would appear in the view containing nothing but the three bound
+files) and it would require no relocation. It is rejected because a file bind
+mount cannot be replaced by `rename()` -- an in-place replacement of the
+result file by the Codex CLI would fail with `EBUSY` -- and whether
+`--output-last-message` writes in place or renames over the target is an
+unverified property of a third-party CLI. The directory form does not depend
+on it. Should the relocation turn out to be the more expensive change, this
+alternative may be revisited, but then only together with a Layer-1 test that
+actually exercises a rename over the bound path.
+
+*Consequences the implementation Commission must carry, and must not
+discover late:*
+
+. `operator.py:979` and `slice4.py:321-322` pass the channel directory, which
+  the Coordinator creates before dispatch; `claude_adapter.py:191` and
+  `codex_adapter.py:393` keep one directory field, now a channel rather than
+  the Run state root.
+. The archive plan copies allowlisted checkout files at *one* level only
+  (`CHECKOUT_ALLOW` globbed against `checkout_dir`,
+  `frontdoor/archive.py:96-103`, `:377`, `:402`). Moving
+  `result-message.json` and `structured-result.schema.json` into a
+  subdirectory removes them from the archive unless the archive is extended to
+  the channel subdirectory. The existing depth-one patterns must be kept so
+  that recorded historical runs (`tests/fixtures/bp5`, `tests/fixtures/bp7`)
+  still archive unchanged, and a test must cover both shapes.
+. Tests that assert the present location move with it:
+  `tests/unit/test_slice4.py:218`, `:440`, `:496`,
+  `tests/unit/test_codex_adapter_smoke.py:83-84`, and the adapter conformance
+  tests that build the paths from their own `tmp_path`
+  (`tests/unit/test_claude_adapter_conformance.py:66`, `:188`, `:335`, `:448`;
+  `tests/unit/test_codex_adapter_conformance.py:141`, `:212`, `:281`, `:425`,
+  `:441`, `:515`, `:562`). `codex_adapter_smoke.py:121-175` already uses a
+  dedicated `result` directory and shows the shape is workable.
+. The relocation is a change to Coordinator-owned state layout and belongs to
+  step 1 of <<decomposition>>, before the seam. It changes no result contract
+  and no envelope.
+. Residual, stated plainly: on the Codex path the agent can still overwrite
+  its own schema and result file inside the channel. That is already true
+  today and is why `validated_result` correlates the envelope's identity
+  against the dispatch (`adapter.py:142-145`). What the separation buys is
+  that the Run snapshot, the dispatch marker, the usage record and the
+  execution evidence are outside the mount entirely.
+
+[[provider-reachability]]
+=== The provider executable must be reachable inside the view
+
+*Precondition, stated positively:* for an invocation with the boundary
+selected, the provider executable and everything it loads at runtime -- its
+own install tree, its bundled JavaScript or runtime files, and the interpreter
+named in its shebang -- must resolve to paths that exist inside the view, which
+in Slice A means under `/usr` or the four `/bin`-family links.
+
+*Why this must be decided here and not left to the implementation Run.* On the
+host designated for the live qualification this precondition does not hold
+today: neither CLI is present at a view-visible path (`/usr/bin/claude`,
+`/usr/local/bin/claude`, `/usr/bin/codex` and `/usr/local/bin/codex` do not
+exist, while `/usr/bin/bwrap`, `/usr/bin/node`, `/usr/bin/env`, `/usr/bin/sh`
+and `/usr/bin/python3` do), and `PATH` resolves provider tooling through two
+`$HOME`-local entries that are deliberately not mounted (planning record, E6).
+Preflight check 5 would therefore refuse *every* isolated invocation on that
+host. The refusal is the correct direction, but without a stated remedy the
+whole Layer-2 qualification -- which gates every preventive-isolation claim in
+every document (<<qualification>>) -- would have no performable precondition.
+
+*Decision: option (a), an operator-side prerequisite.* The provider CLI is
+installed, by the operator, at a view-visible path (for example under
+`/usr/local/bin` with its runtime likewise under `/usr`), and that is recorded
+as a precondition of enablement (<<enablement>>) and of the live layer
+(<<qualification>>). This adds no mount kind, no code path and nothing to
+<<outside-sources>>.
+
+*Option (b), considered and not taken:* a fourth designated, individually
+validated read-only external mount kind for the provider install tree. It
+would make a `$HOME`-local or version-manager-managed install usable, which is
+a real operational convenience, but it extends the enumeration the maintainer
+is being asked to authorize (planning record, M7) and it binds a directory
+whose contents the operator did not enumerate. It is therefore *not* taken by
+this record and *not* available to the implementation Commission on its own
+judgement: if the maintainer prefers it, that is an addition to M7 and the
+mount kind is implemented with the same separate-named-parameter discipline as
+the other three. If neither option is in place when the Commission reaches
+Layer 1 or the maintainer reaches Layer 2, the stop rule (<<stop>>) applies --
+an unreachable provider is never a reason to widen the view ad hoc.
+
+*Where the Layer-1 fake provider lives.* Layer 1 dispatches a fake provider
+through the real path, so the same precondition applies to it. The fake
+provider executable is placed *inside the synthetic repository the test builds
+under its own `tmp_path`*, which the boundary mounts read-only at its own
+absolute path, and its shebang names `/usr/bin/env python3` or `/bin/sh` --
+both view-visible. This keeps Layer 1 independent of any host provider install
+and offline, and it places no artifact in the WFC repository itself. Three
+consequences for the ported fixtures, all cheap but none automatic:
+
+* The executable must be *committed in the synthetic repository's baseline
+  commit*, as `PROOF.md` already is (`tests/unit/test_slice4.py:54-63`),
+  because an untracked executable would show up in the Coordinator's post-Hop
+  observation of that repository as an unauthorized change.
+* Today's fake providers are written into `tmp_path` *outside* the repository
+  (`tests/unit/test_slice4.py:73`), which the boundary does not mount. Those
+  fixtures stay valid for the unisolated path; the boundary-selected variants
+  need the in-repository placement.
+* Some fixtures write side files into `tmp_path` as well (`:1059`, `:1112`).
+  Under the boundary those paths are not writable, so such a fixture must
+  write into the channel directory or the scratch instead.
 
 [[outside-sources]]
 === Outside-repository sources: which rule each category passes through
@@ -552,13 +749,17 @@ read-only, individually enumerated in code, never caller-supplied
 `Mount` values. Slice A does *not* rely on that technicality: it is a real
 widening of the generated view and the umbrella record names it as such.
 
-|The Coordinator result directory
+|The per-invocation provider channel directory (<<channel>>) -- *not* the Run
+state directory that contains it
 |*A designated, individually validated external mount kind:* a new named
 parameter beside `external_scratch`, with its own checks modelled on
 `:139-156` -- must exist, must be a directory, must be disjoint from the
 repository, from every system root and from every other mount source, its
 destination must not overlap another, and a writable grant still runs the
-hardlink-alias walk
+hardlink-alias walk. One additional check belongs to this kind so that passing
+`run_root` by mistake cannot satisfy it: the source directory must contain no
+entry named `run.json`, `checkpoint.json`, `dispatch.json`,
+`execution-evidence.json` or `usage.json` (<<channel>>)
 |*Second* designated exception. The generic rule for undesignated
 caller-supplied mounts is unchanged.
 
@@ -576,12 +777,20 @@ live-qualification output rather than a constant.
 pattern, no allowlist, no configuration that could add one.
 |===
 
-Three consequences the implementation Run must act on:
+Four consequences the implementation Run must act on:
 
 . Each designated kind is a *separate named parameter with its own validation*,
   never a general relaxation of `source.relative_to(repository)` and never a
   shared "external mounts" list. Negative case N16 proves that an arbitrary
   host path is still refused through every one of them.
+. Every designated destination must be rejected if it lands *inside the
+  generated system view*. Today's overlapping-destination check compares
+  caller-supplied destinations only with one another
+  (`execution_boundary.py:114-116`) and never with `/usr` or the
+  `/bin`-family paths, so overmounting a system path is not currently refused
+  by anything. Slice A adds that check rather than assuming it exists; see
+  also <<provider-reachability>>, where this is the reason an install cannot
+  simply be bound into `/usr/local/bin`.
 . The widening from one designated exception to three, plus the enumerated
   `/etc` entries, *exceeds the 2026-11-08 authorization's own fence*. It is
   recorded as an open maintainer decision (planning record, M7) and the
@@ -655,8 +864,11 @@ not exist, so leaving the settings unchanged would make the nested sandbox deny
 every scratch write and L1/L2 could not pass. The repository path is unchanged
 by path-identity mounting and stays as it is. The entries must still name the
 repository and the scratch and never widen beyond them. `denyRead: ["~/"]` is
-retained; inside the view `$HOME` exists but is empty (<<mounts>>), so the rule
-becomes redundant rather than wrong.
+retained unchanged. It must *not* be dropped on the argument that the boundary
+makes it unnecessary: inside the view `$HOME` still contains the materialised
+ancestor chain of whichever designated mounts lie under it (<<mounts>>), and on
+this host the repository itself is one of them, so the deny rule keeps exactly
+the meaning it has today.
 
 |Claude `--permission-mode` / `--permission-prompts`
 |`acceptEdits` plus `--permission-prompts none` are *retained*
@@ -718,9 +930,12 @@ Three places, all already existing surfaces:
 
 A provider profile that differs because the boundary was in force must be
 derivable from that field plus the committed adapter code. The generated
-Claude settings file already persists under the result directory for the
-invocation's lifetime; Slice A does not add a second copy of it to the
-evidence.
+Claude settings file already persists in the provider channel directory
+(<<channel>>) for the invocation's lifetime; Slice A does not add a second
+copy of it to the evidence. Note that `execution-evidence.json`, which carries
+the new `boundary` field, stays in the Run state directory and is therefore
+outside the view -- an agent cannot read or alter the record of its own
+confinement.
 
 [[enablement]]
 == (e) Enablement, preflight, error classification and fail-closed semantics
@@ -754,6 +969,14 @@ working" rather than "my Run is isolated". Migration path: opt-in, then the
 maintainer's own use on this repository, then the qualification record, then a
 separate maintainer decision about the default.
 
+Host prerequisites for selecting `bubblewrap`, which the operator must satisfy
+and which the documentation step of <<decomposition>> must state in the
+Operator Manual: `bwrap` installed, unprivileged user namespaces usable, a
+configured provider authentication location, and the provider CLI with its
+runtime installed at a view-visible path (<<provider-reachability>>). None of
+them is satisfied silently and none is worked around by the implementation;
+each unmet prerequisite is a named preflight refusal.
+
 === Preflight, before any provider dispatch
 
 Each check fails with a named `OperatorPreflightError`-class refusal that
@@ -768,13 +991,21 @@ selected.
   binary is present.
 . The repository is a canonical, symlink-free, existing directory whose `.git`
   is a directory or a regular file, not a symlink.
-. The result directory and the external scratch root exist, are directories,
-  and are disjoint from the repository and from each other.
+. The provider channel directory and the external scratch root exist, are
+  directories, and are disjoint from the repository and from each other; and
+  the channel directory contains none of the Coordinator state file names
+  listed in <<channel>>, so that a Run state directory passed by mistake is
+  refused rather than mounted.
 . The provider executable resolves to a path that exists *inside the view*.
   A provider installed under `$HOME` -- and this host's `PATH` contains two
   such entries -- is not reachable from a view that mounts only `/usr` and the
   four `/bin`-family links, and must be refused by name before dispatch
-  rather than discovered as a confusing exec failure.
+  rather than discovered as a confusing exec failure. The refusal must name
+  the operator-side remedy stated in <<provider-reachability>>: install the
+  CLI and its runtime at a view-visible path. Note that the check can only
+  establish that the executable *itself* resolves inside the view; whether
+  everything it loads at runtime does is a Layer-2 observation (L1, L6), not a
+  preflight property.
 . The authentication mount required for the selected adapter is configured and
   exists.
 . The normalized writable grant set is disjoint and every entry is inside the
@@ -892,6 +1123,10 @@ claim may never stand in for a missing layer.
 
 Offline, network-free, no provider credentials, fake providers. These are the
 implementation Commission's own deliverable and part of the required suite.
+The fake provider executable lives inside the synthetic repository each test
+builds, for the reason and with the consequences stated in
+<<provider-reachability>>; no Layer-1 case depends on a provider CLI being
+installed on the host.
 
 Positive cases:
 
@@ -907,9 +1142,12 @@ Positive cases:
   (<<mounts>>, residual risk 3). A test asserting artifact-level confinement
   would assert a property the boundary does not have. The companion assertion
   is that a write *outside* that directory is prevented.
-. The result channel works in both directions: the fake Claude-shaped provider
-  reads the generated settings file, and the fake Codex-shaped provider writes
-  the result file that the Coordinator then reads back.
+. The provider channel works in both directions: the fake Claude-shaped
+  provider reads the generated settings file from a read-only channel mount,
+  and the fake Codex-shaped provider writes the result file -- in place and,
+  separately, by rename over it -- that the Coordinator then reads back
+  (<<channel>>). The rename variant is what justifies the directory-level
+  mount over per-file binds.
 . A linked Git worktree validates and dispatches successfully.
 . An unisolated invocation produces a byte-identical argv, cwd and environment
   to today's, proving `prepare_direct` is a true identity.
@@ -958,12 +1196,17 @@ inside the sandbox.
 that path's parent *is* authorized and when it is not.
 
 |N10
-|Read the operator's `$HOME`, another checkout, the Coordinator state root
-above the result directory, and the Evidence repository.
+|Read the operator's `$HOME` beyond the materialised ancestor chain of the
+designated mounts, another checkout, the Run state directory outside the
+provider channel, and the Evidence repository.
 
 |N11
-|Write anywhere in the Coordinator result directory other than the one
-designated result file, from the Codex-shaped path.
+|From the Codex-shaped path, with the provider channel directory bound
+read-write: assert that `run.json`, `checkpoint.json`, `dispatch.json`,
+`execution-evidence.json` and `usage.json` are *absent* from the view, that a
+write attempt at each of their host paths fails, and that each host-side file
+is byte-identical afterwards (<<channel>>). The companion case asserts that
+on the Claude-shaped path the channel directory itself is not writable.
 
 |N12
 |Exhaust the private `/tmp` beyond its size cap, and the external scratch
@@ -972,6 +1215,9 @@ root, and show that the host's own `/tmp` is unaffected.
 |N13
 |Leave a process behind: double-fork a long sleeper, let the invocation time
 out, and assert that after the adapter's kill sequence no descendant survives.
+The same case asserts that the generated argv contains `--unshare-pid` and
+`--die-with-parent` and *not* `--as-pid-1`: the property depends on bwrap
+remaining the namespace's PID 1 and reaping orphans there (<<mounts>>).
 
 |N14
 |Boundary selected but unestablishable: assert a named not-started refusal and
@@ -983,8 +1229,9 @@ dispatch.
 
 |N16
 |Pass an arbitrary host path through *each* of the designated external mount
-parameters -- external scratch, result directory, provider authentication --
-and assert that each is refused by its own named check, so that adding the new
+parameters -- external scratch, provider channel, provider authentication --
+and assert that each is refused by its own named check, including that a Run
+state directory passed as the channel is refused (<<channel>>), so that adding the new
 kinds did not become a general loosening of the repository-only bind-source
 rule (<<outside-sources>>). The same case asserts that an undesignated
 caller-supplied `Mount` with an outside-repository source is still refused.
@@ -997,6 +1244,17 @@ Required before any preventive-isolation claim is made in any document. It is
 at all (planning record, limits). The maintainer or Level-1 operator performs
 it outside a Commission, against a disposable repository, with a stated
 minimal invocation budget.
+
+*Stated precondition, which does not hold on the qualification host today.*
+L1 to L6 all begin by starting a real provider CLI inside the boundary, so
+each of them requires the provider executable and its runtime to be reachable
+in the view (<<provider-reachability>>). On the host designated for this
+qualification neither CLI is at a view-visible path at the time of writing, so
+preflight check 5 would refuse every isolated invocation and none of L1 to L6
+could start. Preparing the host -- installing the CLI and its runtime
+view-visibly -- is therefore the first step of the live layer, and if it is not
+done the honest outcome is "L1 to L6 not performed, precondition unmet", never
+a substitute claim.
 
 [cols="1,4,4",options="header"]
 |===
@@ -1020,7 +1278,8 @@ success, and the two must be reported separately.
 |L3
 |`codex` completes one minimal authenticated `exec` invocation inside the
 boundary and its result file reaches the Coordinator.
-|The Codex path and the result-channel write mount end to end.
+|The Codex path and the provider channel's writable mount end to end, with the
+real CLI's own write strategy for `--output-last-message` (<<channel>>).
 
 |L4
 |For each provider: a write inside the authorized scope succeeds, including
@@ -1083,6 +1342,11 @@ Specifically, the Run must stop or open a Finding rather than:
   make a provider or a convenience work;
 * mount `$HOME`, a whole provider configuration directory, or `/etc`
   wholesale;
+* mount the Coordinator's Run state directory, or any directory containing
+  `run.json`, `checkpoint.json`, `dispatch.json`, `execution-evidence.json` or
+  `usage.json`, in place of the provider channel (<<channel>>);
+* widen the view in order to reach a provider installed outside it, instead of
+  refusing and naming the prerequisite (<<provider-reachability>>);
 * disable, weaken or default-away a provider sandbox or permission mechanism,
   including `enableWeakerNestedSandbox` and `failIfUnavailable: false`;
 * make the repository view writable beyond the normalized authorized grant;
@@ -1100,7 +1364,7 @@ decision with options and a recommendation, for the maintainer.
 [[decomposition]]
 == (j) Decomposition, scope, budget and documentation impact
 
-=== One Commission, four ordered internal steps
+=== One Commission, five ordered internal steps
 
 Recommendation: *one* implementation Commission, not two. Splitting would
 leave an intermediate integrated state in which the boundary is half-wired,
@@ -1108,14 +1372,22 @@ which is the condition the maintainer's intent exists to end, and `robust@v1`
 already provides an independent review at every cycle. The ordered steps below
 are review checkpoints inside that Run, not separate Commissions:
 
+. *Provider channel separation.* Move the three provider channel files out of
+  the Run state directory into the per-invocation channel directory, adjust
+  `operator.py`, `slice4.py` and both adapters' directory field, extend the
+  archive plan to the channel subdirectory while keeping its existing
+  depth-one patterns, and move the tests that assert the old location --
+  exactly as <<channel>> specifies. This comes *first*: it changes no boundary
+  behaviour, is independently reviewable, and the mount model depends on it.
 . *Boundary view.* `execution_boundary.py`: the `.git`-file worktree case,
-  path-identity mounting, the two new designated external mount kinds (result
-  channel and provider authentication, each a separate validated parameter),
+  path-identity mounting, the two new designated external mount kinds (the
+  provider channel and the provider authentication location, each a separate
+  validated parameter with its own checks),
   the enumerated `/etc` entries in the generated system view, `--proc` /
-  `--unshare-pid` / `--new-session`, and the `/tmp` size cap -- classified
-  exactly as <<outside-sources>> requires, and subject to the open maintainer
-  decision named there. Unit and integration tests, including every negative
-  case reachable at this level.
+  `--unshare-pid` / `--new-session` (and not `--as-pid-1`), and the `/tmp`
+  size cap -- classified exactly as <<outside-sources>> requires, and subject
+  to the open maintainer decision named there. Unit and integration tests,
+  including every negative case reachable at this level.
 . *Launcher seam.* `execution_launcher.py` with `prepare_direct` and
   `prepare_bubblewrap`; both adapters call it instead of building `Popen`
   arguments inline. Byte-identity tests for the direct path.
@@ -1125,8 +1397,10 @@ are review checkpoints inside that Run, not separate Commissions:
   Negative cases N14 and N15.
 . *Documentation reconciliation.* The stale-statement list below.
 
-If the Run exhausts its Hop budget, step 4 is the only step that may be
-carried by a successor Commission: it changes no security property.
+If the Run exhausts its Hop budget, step 5 is the only step that may be
+carried by a successor Commission: it changes no security property. Step 1 is
+mechanical -- a relocation plus an archive-plan extension plus test moves --
+and is costed inside the budget below rather than as a Hop of its own.
 
 === Proposed Commission shape
 
@@ -1334,6 +1608,20 @@ slice does not edit a released section.
   initialize and `failIfUnavailable` is `true`, the invocation refuses. That
   is the correct failure direction, and it is a usability risk the
   qualification must measure rather than a security risk.
+. *The provider channel stays writable on the Codex path.* The agent can
+  overwrite its own result file and its own schema inside the channel
+  directory, exactly as today; `validated_result`'s identity correlation
+  (`adapter.py:142-145`) is what makes that harmless. What the separation in
+  <<channel>> buys is that the Run snapshot, the dispatch marker, the usage
+  record and the execution evidence are outside the view altogether. A
+  narrower per-file grant was rejected for a stated mechanical reason, not
+  overlooked.
+. *The boundary depends on an operator-prepared host.* A view-visible provider
+  install (<<provider-reachability>>) is a prerequisite the operator must
+  satisfy, and on the current qualification host it is not satisfied. The
+  failure direction is a refusal, so this is an availability cost rather than
+  a security gap -- but it is the reason an unprepared host cannot produce any
+  isolation claim at all.
 . *The boundary can be off.* Opt-in means most Runs will not have it until the
   maintainer changes the default. Every claim is conditional on the recorded
   boundary mode for that Run.

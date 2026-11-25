@@ -15,8 +15,11 @@ an authorization. Nothing outside `docs/backlog/` and
 code, test, script, workflow, `.wfc/` or `governance/` file.
 Repository state:: base HEAD `f492274`, branch `wfc/exec-boundary-ftr-001b`,
 Run `RUN-cdb3068d18134ae3babd479e1bd23faa`, WorkItem
-`WI-WFC-EXEC-BOUNDARY-FTR-001`. Every line reference below was read at that
-commit.
+`WI-WFC-EXEC-BOUNDARY-FTR-001`. Every line reference was read at that commit,
+except those added by the correction Hops `H003` and `H006`, which were read at
+the then-current head (`ec79853` for `H006`) against unchanged product code.
+Where a correction superseded an earlier statement of this record, the earlier
+form is named rather than deleted.
 Evidence classes:: *[I]* read from code, test or configuration in this
 repository at `f492274`. *[O]* observed by executing a read-only or
 scratch-only command in this Hop (recorded in <<experiments>>). *[D]* stated
@@ -34,16 +37,24 @@ any kind.
   in, because that checkout is a linked Git worktree whose `.git` is a file
   *[O]*.
 . The integration seam is narrow and already provider-neutral in shape: one
-  `subprocess.Popen` call per adapter, plus the Coordinator-owned result
-  directory each adapter reads from or writes to *[I]*.
+  `subprocess.Popen` call per adapter, plus the Coordinator-owned directory
+  each adapter reads from or writes to *[I]* -- which, as H006 established, is
+  the Run state directory itself and therefore has to be split before it can
+  be mounted (<<d4>>).
 . An effective boundary needs five things the present primitive does not have:
   a worktree-aware `.git` view, a narrow bidirectional channel to the
-  Coordinator's result directory, a narrowly bound path for the provider's own
+  Coordinator -- separated from the Run state directory, not the Run state
+  directory itself -- a narrowly bound path for the provider's own
   authentication together with a small enumerated `/etc` set, a `/proc` and
   process model the provider runtimes require, and process/timeout/environment
   control that today lives in the adapters *[I]*, *[D]*. The third item widens
   the one designated bind-source exception the 2026-11-08 authorization drew,
   which is why <<m7,M7>> exists.
+. The boundary also needs a *reachable provider*: the view mounts only `/usr`
+  and the four `/bin`-family links, and on this host neither provider CLI
+  resolves there *[O]*, so the whole qualification plan has a precondition
+  that must be stated and satisfied rather than discovered (<<d9>>,
+  <<m8,M8>>).
 . Provider permissiveness inside the boundary must be bound to the boundary
   actually being in force for that invocation, because the provider's own
   `failIfUnavailable: true` turns a failed nested sandbox into a refusal
@@ -196,6 +207,41 @@ reasoning)` (`operator.py:86-98`). `result_directory` is
 `slice4._require_external_state_root` forces to be disjoint from the checkout
 in both directions (`slice4.py:87-92`) *[I]*.
 
+|What that directory actually holds
+|*Corrected at H006 after a Finding; the earlier form of this record treated
+the sensitive state as lying above it.* The adapters' `result_directory`
+*is* the Coordinator's Run state directory. The same directory holds
+`run.json` (`operator.py:919`, `slice4.py:319`), `checkpoint.json`
+(`operator.py:926`), the dispatch marker `dispatch.json` (`slice4.py:182`,
+`:320`), `execution-evidence.json` (`operator.py:885`, `slice4.py:183`) and
+`usage.json` (`operator.py:841`) *[I]*. They are present *during* dispatch:
+`slice4.py:319-325` writes the run snapshot and the dispatch marker and then
+constructs the adapter with that directory *[I]*. They are read back as
+trusted state afterwards (`frontdoor/lifecycle.py:708-716`,
+`frontdoor/archive.py:487-495`) *[I]*. Only `checkout-association.json` lies
+one level up (`slice4.py:100`) *[I]*. Consequence: a directory-level mount of
+`result_directory` would expose Coordinator Run state and audit records to the
+agent, which is why <<d4>> now separates the provider channel from it.
+
+|What the two providers actually need from it
+|Claude's child only *reads* the generated settings file named in `--settings`
+(`claude_adapter.py:217`, `:308`); its result schema is passed inline as a
+serialized string (`:214`, `:325`), although the schema file is still written
+(`:307`, `:314`). Codex's child *reads* `structured-result.schema.json` via
+`--output-schema` and *writes* `result-message.json` via
+`--output-last-message` (`codex_adapter.py:414`, `:433-434`, `:443`, `:461`)
+*[I]*. So the write requirement is one file on one provider path.
+
+|How the archive treats that directory
+|`CHECKOUT_ALLOW` names `checkpoint.json`, `result-message.json`, `run.json`,
+`dispatch.json`, `structured-result.schema.json`, `execution-evidence.json`
+and `usage.json`, and both the plan and the copy loop glob those patterns
+against the checkout directory itself -- one level, no recursion
+(`frontdoor/archive.py:96-103`, `:377`, `:402`) *[I]*. Moving two of those
+names into a subdirectory therefore silently drops them from the archive
+unless the archive is extended, which is why <<d4>> carries that as a stated
+consequence rather than a discovery for the implementation Run.
+
 |Dispatch
 |`vertical.run_one_hop` assembles the prompt and calls
 `adapter.execute(...)` once (`vertical.py:332-339`) *[I]*.
@@ -248,7 +294,8 @@ sandbox_workspace_write.network_access=true --cd <resolved repository>
 entire environment (`codex_adapter.py:444-447`). Same timeout and kill
 sequence (`:451-460`). The candidate is read back from
 `<run_root>/result-message.json` (`:434`, `:443`, `:461`), so the child must
-*write* into the Coordinator's result directory *[I]*.
+*write* into the directory the adapter was given -- today the Run state
+directory, which is why <<d4>> separates the channel from it *[I]*.
 
 |Not-started versus started
 |`ExecutionNotStartedError` "proves the execution port was not entered"
@@ -378,6 +425,19 @@ E6 -- host facts::
 exist. `PATH` contains two `$HOME`-local entries that the generated view does
 not mount.
 
+E7 -- what resolves at a view-visible path (observed at H006)::
+A plain `ls` of the paths the generated view would contain shows
+`/usr/bin/bwrap`, `/usr/bin/node`, `/usr/bin/env`, `/usr/bin/sh` (a symlink to
+`dash`) and `/usr/bin/python3` (a symlink to `python3.13`) present, and
+`/usr/bin/claude`, `/usr/local/bin/claude`, `/usr/bin/codex` and
+`/usr/local/bin/codex` *absent*. `PATH` resolves provider tooling through
+`$HOME`-local entries that the view does not mount (E6). No provider CLI was
+invoked, read or located outside those four fixed paths, and no credential
+path was touched: the observation rests on the *absence* of a name at a fixed
+path. This is the evidence behind <<d9>> and <<m8,M8>>: with the host in this
+state, preflight would refuse every isolated invocation and qualification
+layers L1 to L6 could not start.
+
 [[limits]]
 == What could not be run, and why
 
@@ -405,10 +465,13 @@ executes the required suite there. Three consequences:
   decide: an unprivileged user namespace is not always available one level
   down, and Claude's `failIfUnavailable: true` turns that into a refusal.
 
-No provider CLI was invoked, inspected or located; `/home/stefan` is not
-readable in this sandbox apart from two session-specific subpaths. All
-statements about the installed Claude and Codex binaries are cited from the
-existing records *[D]*, never claimed as this Hop's observation.
+No provider CLI was invoked or inspected, and the operator's home directory is
+not readable in this sandbox apart from two session-specific subpaths. Every
+statement about what the installed Claude and Codex binaries *do* is cited
+from the existing records *[D]*, never claimed as an observation here. The one
+exception, added at H006, is E7: that no `claude` or `codex` name exists at the
+four fixed view-visible paths, which `ls` establishes without invoking or
+reading anything.
 
 One further observation, relevant to Slice A rather than to this Hop: inside
 this agent's sandbox, `git status --short -uall` reports roughly twenty
@@ -502,12 +565,16 @@ each is carried by a stated mechanism rather than by a general relaxation of
 +
 --
 . *Two further designated, individually validated external mount kinds* beyond
-  today's external scratch root -- the Coordinator's per-checkout result
-  directory (read-only for Claude, read-write for Codex) and the provider's own
+  today's external scratch root -- the *per-invocation provider channel
+  directory* (read-only for Claude, read-write for Codex) and the provider's own
   authentication location (read-only). Each is a dedicated named parameter with
   its own checks modelled on the external-scratch rules
   (`execution_boundary.py:139-156`) *[I]*, never an arbitrary host path and
-  never a shared external-mounts list.
+  never a shared external-mounts list. The channel directory is *not* the
+  Coordinator's Run state directory: the three provider channel files move into
+  a dedicated subdirectory under it, and the channel kind's own check refuses a
+  source containing any Coordinator state file name, so that passing
+  `run_root` by mistake cannot satisfy it.
 . *A narrow, individually enumerated, read-only set of fixed `/etc` entries*
   added to the system view that `build_argv` generates
   (`execution_boundary.py:166-172`) *[I]*, in the same place and form as
@@ -517,37 +584,61 @@ each is carried by a stated mechanism rather than by a general relaxation of
   unchanged, and no configuration may add a path kind.
 --
 +
-This corrects the earlier form of this decision, which said "exactly one
-further validated external mount kind" and counted only the result channel.
-The authentication path cannot be a generated system-view entry -- it is
-provider- and operator-specific, varies per invocation and is a
+This corrects the earlier form of this decision twice over, and both earlier
+forms are superseded rather than deleted. First (at H003): it said "exactly
+one further validated external mount kind" and counted only the result
+channel; the authentication path cannot be a generated system-view entry -- it
+is provider- and operator-specific, varies per invocation and is a
 live-qualification output -- so it must be the validated-kind form, and the
-count is therefore three designated kinds rather than two.
-Reason:: Claude must read `<run_root>/claude-closed-settings.json`
-(`claude_adapter.py:308`) and Codex must write
-`<run_root>/result-message.json` (`codex_adapter.py:434`, `:461`) *[I]*; both
-are outside the repository. Name resolution, TLS trust and user lookup are
+count is therefore three designated kinds rather than two. Second (at H006):
+it named the *Coordinator's per-checkout result directory* as the mount, and
+its rejected option (b) described the state root above that directory as the
+thing being avoided. That premise was false -- the result directory *is* the
+Run state directory (see the current-state rows above) -- so the mount is now
+the separated per-invocation channel directory, and the rejected options
+below are restated accordingly.
+Reason:: Claude must read `claude-closed-settings.json`
+(`claude_adapter.py:308`) and Codex must write `result-message.json`
+(`codex_adapter.py:434`, `:461`) *[I]*; both live under `<run_root>` today and
+under the separated channel directory in Slice A, and both are outside the
+repository either way. Name resolution, TLS trust and user lookup are
 unavailable in today's view, which would break provider authentication: the
 generated argv mounts no `/etc` at all *[I]* (E5) while all five candidate
 entries exist on the host *[O]* (E6).
 And the boundary must expose the provider's own authentication to the provider
 process, which is impossible without a path for it *[D]*. Without the result
 channel the Codex path cannot work at all.
-Rejected:: (a) Moving the result directory into the repository -- forbidden by
+Rejected:: (a) Moving the channel into the repository -- forbidden by
 `_require_external_state_root` (`slice4.py:87-92`) and wrong: it would put
-Coordinator state inside the agent's write surface. (b) Granting the whole
-state root -- it holds `run.json`, `checkpoint.json` and the checkout
-association. (c) Passing the result on stdout for Codex too -- that is a
+Coordinator-written state inside the agent's write surface. (b) *Mounting the
+Run state directory itself, which is what today's `result_directory` is* -- it
+holds `run.json`, `checkpoint.json`, the dispatch marker, the execution
+evidence and the usage record, all present during dispatch, so a read-only
+mount would expose the Run snapshot and every prior Hop's evidence and the
+read-write mount the Codex path needs would let the agent rewrite the dispatch
+marker and the very evidence file that records whether it was isolated.
+(b2) Binding the three channel files *individually* at their present paths --
+equally narrow in what it exposes, and it would avoid the relocation, but a
+file bind mount cannot be replaced by `rename()` (`EBUSY`), and whether the
+Codex CLI writes `--output-last-message` in place or renames over it is an
+unverified property of a third-party CLI; the directory-level mount does not
+depend on it. (c) Passing the result on stdout for Codex too -- that is a
 provider-transport change, not a boundary change. (d) A single generic
 "external mounts" list with an allowlist -- it is exactly the general loosening
 the 2026-11-08 authorization forbids, and it makes every future addition
 invisible. (e) `--ro-bind /etc /etc` -- wholesale, and explicitly excluded.
 (f) Treating the `/etc` entries as validated mount kinds -- possible, but it
 would route constants through a caller-designated path for no gain.
-Residual:: Codex can overwrite its own result file arbitrarily. That is
-already true today and is why `validated_result` correlates the envelope's
-identity against the dispatch (`adapter.py:138-145`) *[I]*; the boundary
-neither improves nor worsens it. More importantly, this widening *exceeds* the
+Residual:: Codex can overwrite its own result file and schema arbitrarily
+inside the channel. That is already true today and is why `validated_result`
+correlates the envelope's identity against the dispatch
+(`adapter.py:142-145`) *[I]*; the boundary neither improves nor worsens it.
+What the separation buys is that the Run snapshot, the dispatch marker, the
+usage record and the execution evidence are outside the view altogether. The
+relocation also carries a non-security cost the implementation must pay: the
+archive's one-level glob (`frontdoor/archive.py:377`, `:402`) must be extended
+to the channel subdirectory while keeping the existing depth-one patterns for
+recorded historical runs. More importantly, this widening *exceeds* the
 2026-11-08 authorization's own fence of one designated exception *[D]*, which
 is why it is raised as open maintainer decision <<m7,M7>> rather than taken
 here, and why the umbrella record's supersession marker now names all three
@@ -659,6 +750,62 @@ Rejected:: (a) Default-on -- see above. (b) Per-adapter default -- makes the
 security property depend on a model binding. (c) An environment variable --
 not auditable in the Run's own evidence.
 
+[[d9]]
+=== D9. Provider reachability is an operator-side precondition, not a new mount
+
+Decision:: For an invocation with the boundary selected, the provider
+executable and everything it loads at runtime must resolve inside the view --
+in Slice A, under `/usr` or the four `/bin`-family links. This is stated as an
+operator-side prerequisite of enablement and of the live qualification layer,
+with the preflight refusal naming the remedy. It adds no mount kind and no
+code path beyond the refusal that <<d4>> already keeps narrow.
+Reason:: The slice previously answered this category with a refusal only, and
+the refusal bites universally on the host designated for qualification: this
+machine has `/usr/bin/bwrap`, `/usr/bin/node`, `/usr/bin/env`, `/usr/bin/sh`
+and `/usr/bin/python3`, but no `claude` or `codex` at `/usr/bin` or
+`/usr/local/bin` *[O]*, and `PATH` resolves provider tooling through two
+`$HOME`-local entries that are deliberately not mounted *[O]* (E6). Layers 1
+and 2 gate every preventive-isolation claim in every record, and L1 to L6 all
+begin by starting a real CLI inside the boundary, so without this decision the
+gate had no performable precondition.
+Consequence for Layer 1:: The deterministic cases dispatch a *fake* provider
+through the real path, so the same rule applies to them. The fake executable
+is placed inside the synthetic repository each test builds -- mounted
+read-only at its own absolute path -- with a `/usr/bin/env python3` or
+`/bin/sh` shebang, both view-visible *[O]*, and *committed* in that
+repository's baseline commit as `PROOF.md` already is
+(`tests/unit/test_slice4.py:54-63`) *[I]*, so the post-Hop observation does
+not see it as an unauthorized untracked change. Today's fixtures write fake
+providers into `tmp_path` outside the repository
+(`tests/unit/test_slice4.py:73`) and some write side files there (`:1059`,
+`:1112`) *[I]*; those stay valid for the unisolated path, while the
+boundary-selected variants must move the executable into the synthetic
+repository and any side file into the channel directory or the scratch, since
+nothing else is writable.
+Rejected:: (a) *A fourth designated read-only external mount kind for the
+provider install tree.* It would make a `$HOME`-local or version-manager
+install usable, which is a real operational convenience, but it extends the
+enumeration the maintainer is being asked to authorize in <<m7,M7>> and binds
+a directory whose contents the operator never enumerated. Not taken here; if
+the maintainer prefers it, it is an addition to M7 and not a judgement call
+for the implementation Commission. (b) *Binding a `$HOME`-local install onto a
+path inside the view, for example `/usr/local/bin/claude`* -- that is a
+caller-supplied mount with an outside-repository source, so the fenced
+bind-source rule refuses it (`execution_boundary.py:124-127`) *[I]*, and
+making it pass would need either option (a) or the general loosening the
+2026-11-08 authorization forbids. Worth noting while rejecting it:
+`validate()`'s overlapping-destination check compares caller-supplied
+destinations only with one another (`:114-116`) and never with the generated
+system view *[I]*, so it would *not* catch an overmount into `/usr`; Slice A
+must therefore forbid system-view destinations explicitly rather than assume an
+existing check covers them. (c) *Copying the CLI into the repository or the
+scratch* -- it would put a provider binary into the agent's own write surface
+and into candidate scope.
+Residual:: An unprepared host cannot produce any isolation claim at all. The
+failure direction is a refusal, so this is an availability cost rather than a
+security gap, but it must be stated in the Operator Manual by the Commission's
+documentation step.
+
 [[reconciliation]]
 == Claim-by-claim reconciliation with existing records
 
@@ -728,6 +875,15 @@ privilege]: granted authority must be technically enforced *[D]*
 |Slice A supplies the enforcement substrate for one dimension (write) and
 nothing else. The privilege-elevation topology stays that record's and Slice
 B's.
+
+|The trusted state root is kept disjoint from the agent workspace in both
+directions (`slice4._require_external_state_root`, `slice4.py:87-92`) *[I]*
+|*Upheld, and the reason the channel is separated.* Keeping Coordinator state
+out of the agent's *workspace* would mean little if the boundary then mounted
+the Run state directory into the agent's *view*. <<d4>> therefore mounts only
+the per-invocation channel, and the Run snapshot, the dispatch marker, the
+usage record and the execution evidence -- including Slice A's own new
+`boundary` field -- stay outside the view in both directions.
 |===
 
 [[open-decisions]]
@@ -774,12 +930,13 @@ edits the file if and when they want the boundary on here.
 |[[m7]]M7
 |The 2026-11-08 authorization permits *one* designated exception to the
 repository-only bind-source rule, today's external scratch root. Slice A needs
-three designated kinds (scratch, result channel, provider authentication) plus
-a narrow enumerated read-only `/etc` set in the generated system view
-(<<d4>>). Does the maintainer extend the fence to exactly those, and no
-further?
+three designated kinds (scratch, the *per-invocation provider channel
+directory* -- not the Run state directory that contains it -- and provider
+authentication) plus a narrow enumerated read-only `/etc` set in the generated
+system view (<<d4>>). Does the maintainer extend the fence to exactly those,
+and no further?
 |*Extend it to exactly those four enumerated items, and keep every other
-prohibition.* The alternatives are worse: (a) refusing the result channel makes
+prohibition.* The alternatives are worse: (a) refusing the provider channel makes
 the Codex path unimplementable and leaves Claude unable to read its own closed
 settings; (b) refusing the authentication mount makes every isolated Run an
 authentication failure, which in practice means nobody turns the boundary on;
@@ -790,11 +947,30 @@ fourth one would again be visible as a code and record change rather than
 configuration. This decision is a *precondition for commissioning Slice A*,
 not something the implementation Commission may take: if it is not taken, Slice
 A's stop rule applies.
+
+|[[m8]]M8
+|How does the provider CLI become reachable inside the view (<<d9>>)? Either
+the operator installs it and its runtime at a view-visible path, or a *fourth*
+designated read-only external mount kind is added for the provider install
+tree -- which would extend <<m7,M7>>'s enumeration.
+|*Take the operator-side prerequisite, not a fourth mount kind.* It adds no
+mount kind, no code path and nothing to the fence; the cost is operational
+(the CLI must be installed outside a version manager's `$HOME` tree) and the
+failure direction is a named refusal. This is also a *precondition for the
+live qualification layer*, not only for commissioning: on this development
+host neither CLI is at a view-visible path today *[O]*, so L1 to L6 cannot
+start until the host is prepared. If the maintainer prefers the fourth mount
+kind, it is decided here and implemented with the same
+separate-named-parameter discipline -- never taken by the implementation
+Commission on its own judgement.
 |===
 
 == Provenance
 
 Produced by WorkItem `WI-WFC-EXEC-BOUNDARY-FTR-001`, Run
-`RUN-cdb3068d18134ae3babd479e1bd23faa`, Hop `H001`, at base HEAD `f492274`.
+`RUN-cdb3068d18134ae3babd479e1bd23faa`, Hop `H001`, at base HEAD `f492274`,
+and corrected in the same Run by Hop `H003` (external mount kinds, reviewer
+scope) and Hop `H006` (provider channel separated from the Run state
+directory, provider reachability; <<d4>>, <<d9>>, <<m8,M8>>, E7).
 Independent review, maintainer acceptance and any product closure are separate
 and are not recorded here.
