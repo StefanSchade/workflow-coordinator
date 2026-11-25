@@ -2,18 +2,559 @@
 
 Work item:: `WI-WFC-RECOVERY-ROUTING-001`
 Run:: `RUN-ff42615fa4cd4d35a95affd8a3e05585`
-Current Hop:: `H005` (`broad_review`, independent reviewer, gate,
+Current Hop:: `H018` (`broad_review`, independent reviewer, gate,
 blocking-only, `finding_authority: [resolve]`)
-Current verdict:: *Changes required.* One blocking finding (F-C below);
-route `correction`.
+Current verdict:: *Accept.* No blocking finding; no Finding disposition;
+route `accept`.
 
-This record holds every `broad_review` Hop of this Run in order: the
-renewed pass (<<h005>>) first, the first pass (<<h002>>) retained below it
-as history. Each pass states its own candidate range, its own measured
-checks and its own verdict; no earlier statement is edited or removed.
+This record holds every `broad_review` Hop of this Run, newest first: the
+second renewed pass (<<h018>>), then the first renewed pass (<<h005>>),
+then the first pass (<<h002>>), both retained below as history. Each pass
+states its own candidate range, its own measured checks and its own
+verdict; no earlier statement is edited or removed.
+
+[[h018]]
+== H018 — second renewed broad review (current)
+
+Invocation:: `INV-637ed37326234ac08fc94d8c23fb0608`
+Candidate:: `ca1f9019e7db423339e8bfd3665393322cac4429..573873312d1dc1b5ee564aeaf76d174870c3f44e`
+(the whole bugfix: `ace5d54` implement; the corrections `f5ed68b` H003,
+`8e8af7f` H006, `2935919` H008, `cb185a6` H010, `2f75382` H012, `1fa2aa1`
+H014, `5c6dd03` H016; and the review records in between)
+Date:: 2026-11-25
+Verdict:: `accept`
+Route:: `accept`
+
+Whole-candidate review against the task text and the governing scope, not a
+review of the last correction and not a review of a diff summary. I read the
+task, the Commission, the verification record and all earlier review records
+as context only, and re-derived every result below by my own execution
+against the candidate as committed at `5738733`. Absolute scratch paths are
+elided in the quoted output below; every probe ran under a throwaway
+`HOME`/`XDG_STATE_HOME` outside the repository.
+
+=== 1. Disposition
+
+Verdict:: `accept`
+Route:: `accept` -- `broad_review`'s completing route; nothing in the
+candidate needs correcting, so a hand-back-to-Worker route would be exactly
+the mistake C(i) exists to prevent.
+Finding disposition:: none. The authoritative ledger carries `F001`-`F007`,
+all already `resolved`. I re-derived each resolution by my own execution
+(<<h018-findings>>) and they all hold, so I propose no disposition change
+and no new Finding. This pass opens no blocking Finding.
+
+=== 2. What I verified, and how
+
+Environment: `/tmp/wfc-review-h002-venv/bin/python` (3.13.5, pytest 9.2.0,
+PyYAML 6.0.3, the venv's bundled `ruff` 0.17.5), the same pre-existing
+machine artifact earlier Hops used. Every test run is `--wfc-partial`; I did
+not run, and claim no result for, the full required suite or the
+Coordinator's task-check.
+
+New in this pass, and the reason this review could go further than H002's or
+H005's: I drove *the real engine and the real operator continuation
+admission path* (`operator._continue_existing_run`, `--continue-existing`)
+through the in-repository shim `tests/fixtures/bp9/wfc_entry.py` and the
+scripted provider `tests/fixtures/bp9/scripted_provider.py`, under
+`robust@v1`, with no pip install and no network. That is the seam H005's
+observation 1 named as executed-but-untested, and it is where a recovery
+either really continues a Run or really does not.
+
+[cols="2,3",options="header"]
+|===
+| Check | Result
+
+| `python -m ruff check .`
+| `All checks passed!`
+
+| `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+--failure-level=WARN` on all seven changed `.adoc` files
+| no output (clean) for each
+
+| `python3 -I scripts/wfc_doc_catalog.py check` at the candidate
+| `catalog current`; 83 unresolved links, 4 Project Memory
+`source_path` misses
+
+| the same `generate` + `check` pair on a clean `git archive` extract of
+`main`
+| identical: 83 unresolved links, 4 misses -- no regression
+
+| the three new test files
+| 42 passed (21 + 16 + 5)
+
+| 18 unit files covering every module the candidate touches and every
+neighbour of the changed seams (reducer, vertical, prompt, operator,
+admission, lifecycle journal/crash matrix, preservation, postrun, archive,
+report, audit projection, slice3/slice5b, A3 contract)
+| 580 collected, 580 passed, 0 failed, 0 skipped
+
+| whole `tests/unit` at the candidate
+| exactly 26 failures: 23 ×
+`test_claude_adapter_conformance.py`, 3 × `test_lifecycle_controller.py`
+
+| whole `tests/unit` on the clean extract of `main`
+| the same 26, plus one extraction artifact
+(`test_reducer.py::test_live_strategy_chain_...` fails with
+`git rev-parse HEAD ... exit status 128` because the extract is not a Git
+repository) -- the candidate introduces no new failure
+
+| `tests/integration/test_beta_e2e_fake_provider.py` (real engine)
+| 7 of 8 passed at the candidate; the one failure
+(`test_happy_path_cli_init_plan_run_yes_status_audit_report_archives_automatically`)
+fails identically on the extract of `main`
+|===
+
+The 26 failures are agent-local and environmental; I read the diagnostics
+off the failures themselves rather than taking them on trust:
+`ClaudeCliError: local pre-acceptance executable launch failure` together
+with `OSError: [Errno 30] Read-only file system: ... -> /tmp/wfc-claude-...`
+(this session's sandbox refuses the adapter's `/tmp` symlink), and
+`assert 'engine_exited_before_state' == 'completed'` with
+`wfc: error: unrecognized arguments: --execution-bindings-sha256` for the
+lifecycle controller. I located that last cause exactly: a stale `wfc`
+console script sits next to the venv's interpreter, and
+`_default_engine_command` prefers the sibling script over `PATH`, so the
+nested engine re-entry runs a build of this package that predates several
+merged WorkItems. That is also the sole cause of the one BP9 integration
+failure, which is why it reproduces unchanged on `main`.
+
+=== 3. Real-engine measurements
+
+All four probes used `robust@v1`, a disposable non-WFC consumer repository,
+a disposable Evidence repository, and a provider that *accepts a gate review
+without naming the required durable artifact in a CommitIntent* -- the
+incident's own mistake. Probe scripts lived under the repository's
+gitignored `tmp/` and are deleted.
+
+==== 3a. A classifies, B recovers, through the real engine and the real admission path
+
+[source,text]
+----
+RUN classification: reconcile_required
+after run:    status=reconcile_required phase=broad_review hop=2/5
+              stop_reason='mechanical_preemption:required durable artifact has no CommitIntent'
+              reconcile_reason='mechanical_recoverable'
+              anomalies=('required durable artifact has no CommitIntent',)
+              findings=[] semantic_stop=None human_question=None
+RESUME classification: completed | mechanically recovered; classified: completed
+RESUME run_id identical: True
+after resume: status=completed phase=broad_review hop=3/5
+journal: before 17 after 24  append-only: True
+new records: mechanical_recovery_intent, mechanical_recovery_resumed,
+             mechanical_recovery_launch_intent, mechanical_recovery_launch_spawned,
+             classified, ext.archive.intent, ext.archive.result
+predecessor archive byte-identical: True
+predecessor Evidence commit still resolves: commit
+archives: .../consumer-repo-run-<id>, .../consumer-repo-run-<id>-recovery-1
+  attempt 1: classification=reconcile_required preservation=not_needed
+             run_status=reconcile_required stop_reason='mechanical_preemption:...'
+  attempt 2: classification=completed      preservation=None
+             run_status=completed          stop_reason=None
+continuation argv: ... --expected-head <the Run's own live HEAD> ... --continue-existing
+worktree clean: True
+----
+
+So, by execution and not by inspection: A's classification is real; the
+stop reason and anomaly text survive in the Run record and in the archived
+Attempt; the Hop stays charged; `wfc resume` re-admits the *identical*
+`run_id` through the real `_preflight`/`admit_parsed` pipeline at the Run's
+own live HEAD; the journal is appended to only (the first 17 records are
+byte-for-byte the same records in the same order); the predecessor
+destination is byte-identical with its Evidence commit still resolving; the
+continuation's destination is additive; and each Attempt's `audit.json`
+states its own classification and its own preservation fact.
+
+==== 3b. The continuation is still an ordinary Hop: it cannot accept anything
+
+Same scenario, but the continuation's review *also* accepts without the
+CommitIntent:
+
+[source,text]
+----
+RESUME classification: reconcile_required | mechanically recovered; classified: reconcile_required
+after resume: status=reconcile_required hop=3/5
+              stop_reason='mechanical_preemption:required durable artifact has no CommitIntent'
+new records: ... classified, ext.preservation.intent, ext.preservation.not_needed,
+             ext.archive.intent, ext.archive.result
+----
+
+The recovered Hop is held to exactly the same durable-artifact rule and
+stops again. `_durable_artifact_anomalies` is provably not weakened on the
+recovery path -- had it been, this probe would have completed. The
+continuation also ran its *own* candidate-preservation step after its own
+`classified` record, which is F001's fix observed in the real engine rather
+than in a fixture.
+
+==== 3c. The Hop-budget boundary (H005's F-C), through the real engine
+
+`max_autonomous_hops: 2`, mechanical stop on the last authorized Hop:
+
+[source,text]
+----
+after run:    status=reconcile_required hop=2/2 stop_reason='mechanical_preemption:...'
+RESUME classification: refused_not_recoverable
+RESUME message: mechanical recovery refused: no autonomous Hop budget remains for a continuation
+after resume: status=reconcile_required hop=2/2 stop_reason='mechanical_preemption:...' (unchanged)
+journal: before 17 after 17  new records: []
+run.json byte-identical after refusal: True
+second resume: refused_not_recoverable
+----
+
+The exact state H005 reproduced as blocking is now a named refusal that
+changes nothing -- no journal record, no Run byte -- and the honest
+diagnosis stays on the record for the operator. Repeating the command
+repeats the refusal.
+
+==== 3d. Every stop whose next-action text names a path gets what the text promises
+
+Measured through `frontdoor.report.build_report` -- over *real archived
+Attempts* (`project_audit`) for the mechanical, `contradictory_route`,
+WFC-GIT-08 and open-blocking-Finding shapes, and over hand-built
+`wfc.audit/1` documents for the remaining statuses -- and then through the
+real `resume_lifecycle` on the same checkout:
+
+[cols="3,2,2",options="header"]
+|===
+| Stop shape | `next` text | what `wfc resume` really does
+
+| `reconcile_required`, mechanical anomaly
+| "...run `wfc resume`, which recovers it automatically if it is eligible,
+or refuses with a named reason if it is not"
+| recovers (3a) or refuses by name (3c)
+
+| `awaiting_human`, mechanical anomaly, no recorded question (the incident's
+own archived shape)
+| the same honest text
+| recovers the identical Run (fixture journal test, and 3a's shape)
+
+| `awaiting_human`, `contradictory_route:...` (C(iii)'s own stop)
+| the same honest text
+| `refused_not_recoverable`: "the stop reason is not the recoverable
+durable-artifact anomaly class: contradictory_route:..."; `run.json`
+byte-identical
+
+| `awaiting_human`, WFC-GIT-08 subject anomaly
+| the same honest text
+| `refused_not_recoverable` naming the excluded class; `run.json`
+byte-identical
+
+| `awaiting_human`, `completion_blocked_by_open_blocking_findings`, no
+question
+| "...no open question is recorded, this is not a recoverable mechanical
+stop, and no automated recovery exists for it" (names no command)
+| no-op, and nothing changes -- which is why the text names nothing
+
+| `awaiting_human` with a real recorded question
+| the unchanged fixed-table line "answer the open question, then run
+`wfc resume`"
+| unchanged pre-existing behaviour
+
+| `reconcile_required` from `interruption`, `awaiting_human_budget`,
+`interrupted`, `refused_not_recoverable`, `completed`
+| the unchanged fixed-table lines (or none, for `completed`)
+| unchanged
+|===
+
+I also ran the real `wfc status` and `wfc report` for the recovered Run of
+3a. `wfc status` reports the *latest* `classified` record (`completed`) and
+the `-recovery-1` archive destination; `wfc report` on each archived
+Attempt reports that Attempt's own facts -- the stopped Attempt at
+`2 of 5 hops` with the mechanical stop reason and the honest `next` line,
+the continuation at `3 of 5 hops`, `completed`, with both trusted commits.
+The recovery history is visible and not hidden behind the predecessor's
+facts.
+
+==== 3e. C(i)/(ii) in the prompt the real engine actually delivered
+
+Captured from the real dispatch by wrapping the provider (the worker Hop's
+prompt carries no block at all; the gate-review Hop's does):
+
+[source,text]
+----
+--- 01.txt ['phase=implement']
+(no review_route_semantics block)
+--- 02.txt ['phase=broad_review']
+[review_route_semantics]
+A review Hop that finds no blocking issue must choose the forward route that
+continues toward acceptance, never a route with hands_back_to_worker=true.
+The route named is_failed_evidence_route=true exists only for a required-
+evidence failure or an outcome=changes_required disposition, never as an
+ordinary choice when nothing needs correcting.
+In every review Hop of this phase, including a re-review with no new
+Finding, update the required durable artifact with this Hop's verdict and
+name that artifact's path in the CommitIntent.
+routes:
+  accept: effect=complete; hands_back_to_worker=false; is_failed_evidence_route=false
+  correction: effect=goto; target_phase=correct; target_phase_role=worker; hands_back_to_worker=true; is_failed_evidence_route=true
+----
+
+Rendered from the same real compiled profile for the incident's own phase,
+`focused_review` (no complete route at all), the block lists
+`correction` (`hands_back_to_worker=true`, `is_failed_evidence_route=true`)
+and `renew_broad_review` (`hands_back_to_worker=false`,
+`is_failed_evidence_route=false`). That is precisely the guidance whose
+absence caused the incident, derived from the profile, with no route name
+hard-coded.
+
+==== 3f. The one documented predicate element with no refusal test
+
+"A pure re-verification of the reconcile/resume reduction itself" is listed
+as a predicate element in the recovery chapter and has no test of its own, so
+I executed it: an incident-shaped `awaiting_human` Run whose *persisted*
+status contradicts its journalled classification.
+
+[source,text]
+----
+resume classification: refused_not_recoverable
+resume message: mechanical recovery refused: recovery predicate re-verification
+                failed: mechanical_recoverable reconciliation is invalid from
+                Run status awaiting_supervisor
+run.json byte-identical: True
+journal records before/after: 17 17  | new: []
+status after: awaiting_supervisor | stop_reason after: 'mechanical_preemption:...'
+----
+
+Named refusal, no mutation at all. The behavioural criterion holds for this
+element too; only the automated test is absent (<<h018-observations>>).
+
+=== 4. Acceptance criteria, item by item
+
+* *A implemented as specified.* One predicate function, pure and
+  status-agnostic; the five anomaly texts are shared constants so the
+  observed and the recognized text cannot drift; "worktree clean / HEAD at
+  this Hop's own end HEAD / no other anomaly" follow from exact-string
+  membership because `vertical.run_one_hop` joins multiple anomalies with
+  `"; "`; WFC-GIT-08 is excluded, decided explicitly in the verification
+  record, and I measured the exclusion end to end (3d). Every other
+  mechanical stop still reaches `_stop_for_human`
+  (`test_recovery_routing_reducer.py`, and the `tests/unit` run shows no
+  other classification's tests moving).
+* *B implemented as specified, for both shapes.* 3a measures the
+  newly-stopped shape with the real engine; the already-archived,
+  incident-shaped `awaiting_human` Run is reproduced by a fixture journal
+  whose recorded facts are the incident's (mechanical durable-artifact stop
+  reason, no question, no semantic stop, no open Finding, one recorded Hop,
+  clean tree, HEAD at the recorded end HEAD) and recovers with the identical
+  `run_id` and no manual state edit.
+* *Every violated predicate element refuses by name.* I enumerated the
+  shipped refusals exactly rather than counting tests: `_attempt_mechanical_recovery`
+  returns 16 named refusals -- 5 from the reducer predicate (no recorded Hop
+  outcome, open semantic stop, open human question, open blocking Finding,
+  non-recoverable anomaly class) and 11 of its own (incomplete lifecycle
+  provenance, moved HEAD, dirty worktree/unresolved submodules, no Hop
+  budget, changed Commission/envelope identity, changed provider executable,
+  profile not re-derivable, failed reconcile/resume re-verification,
+  unresolvable engine command, non-executable engine, active ownership
+  lock). Twelve of the sixteen have a dedicated test that also asserts
+  `run.json` is byte-identical, plus one for the launch-failure rollback and
+  two for the scope gate; I ran all 21. Of the four without one, I
+  reproduced the reconcile/resume re-verification by execution (3f);
+  `_verify_identities_unchanged` has its own test at
+  `test_lifecycle_controller.py:415`; and the remaining two (profile not
+  re-derivable, engine command unresolvable) are defensive `except` paths
+  around digest-verified inputs, the second being the environment half of an
+  element whose other half is tested. See <<h018-observations>> -- this is
+  the same element boundary H002, H004 and H005 drew, and I am not accepting
+  any of these four on inspection alone.
+* *Evidence and archived attempts provably unchanged by recovery.* Measured
+  byte-for-byte in 3a and 3b, with the predecessor's Evidence commit still
+  resolving; a pre-occupied recovery destination is refused, not
+  overwritten, and left byte-identical. A second `wfc resume` after a
+  successful recovery is a no-op: journal 24 → 24 records, Evidence tree
+  (22 files) byte-identical, no second archive attempt.
+* *Reviewer authority and Finding rules untouched.* Every Finding read on
+  the recovery path is a guard that *refuses*; recovery never writes
+  `findings`, `semantic_stop` or `human_question`. 3b shows a recovered Run
+  being held to the same gate; 3d shows a Run stopped *because* a blocking
+  Finding is open getting no automated recovery at all.
+* *`robust@v1`/`simple@v1` unchanged.* `git diff --stat ca1f901..5738733`
+  contains no `governance/`, `.wfc/`, `agent_skill/`, `resources/`,
+  `implementation_identity.py`, release-workflow or version-literal path; I
+  compiled `robust@v1` through the real commissioning path in 3a/3e and read
+  its route sets back unchanged. No new dependency.
+* *Docs, verification record and next-action texts accurate.* 3d is the
+  next-action check by execution. For the record I checked every per-Hop
+  `Scope` paragraph against `git log --name-status`: H001, H003, H008, H012
+  and H016 each name their real change set, including H012's corrected
+  paragraph (the `F006` defect does not recur). The four changed
+  non-review documents (two Operator Manual sources, the semantic-model
+  state table, the backlog entry) match the code I read and the behaviour I
+  measured, including the budget refusal, the rollback, and the single
+  residual crash window, which is described as what it is.
+* *Tests fail without the fix.* I did not re-run every earlier Hop's revert
+  experiment, but I re-derived the two that matter most for this pass by
+  code reading plus execution: the budget element is the only difference
+  between 3c's named refusal and H005's measured `interrupted` dead end, and
+  3b shows the durable-artifact rule still biting on the recovery path. The
+  21 new lifecycle tests drive the real `frontdoor.lifecycle`/`postrun`/
+  `preservation` code, real Git and a real Evidence repository; the 16
+  reducer and 5 prompt tests drive the real reducer and the real prompt
+  assembly.
+* *CommitIntent.* One plain repository-relative path, this record, derived
+  from `git status --short -uall`.
+
+=== 5. Simplicity and maintainability
+
+The shape is proportionate to the task: one pure predicate in the reducer,
+one additive reconcile reason, one recovery function at the lifecycle
+boundary whose checks are all pre-mutation, one narrowly-scoped admission
+flag, one prompt block, one rejected contradiction. I looked specifically
+for the cheaper design and did not find one that keeps the guarantees:
+folding the live checks into the predicate would make it impure and would
+break the B(ii) reuse; normalising C(iii)'s contradiction instead of
+rejecting it would have the reducer choose a route for the reviewer. The
+archive ordinal, the distinct `mechanical_recovery_*` record family and the
+`seq`-scoped postrun/preservation shortcuts are each the minimum that the
+"a checkout may now hold more than one `classified` record" change forces.
+I have no blocking maintainability finding; the simplifications I would
+still take are in <<h018-observations>>.
+
+[[h018-findings]]
+=== 6. The seven resolved Findings, re-verified
+
+I re-derived every resolution rather than accepting it.
+
+`F001` (a continuation's own preservation and archive facts):: holds, and
+now measured with the real engine: in 3b the continuation produced its own
+`ext.preservation.intent`/`.not_needed` pair strictly after its own
+`classified` record, and in 3a/3b each archived Attempt's `audit.json`
+states its own classification and preservation.
+
+`F002` (a named refusal test per predicate element):: holds for every
+element F002 named and for every trust-boundary branch. I enumerated all 16
+shipped refusals against the code at `5738733` (section 4) and ran the 21
+tests; the three branches F002 was opened about are covered, each asserting
+a byte-identical `run.json`.
+
+`F003` (no budget element):: holds -- 3c, with the real engine.
+
+`F004` (a named refusal must change nothing):: holds. At `5738733` the
+ownership lock (`lifecycle.py:937`) and the engine-resolution check
+(`lifecycle.py:929`) precede the first `journal.append`
+(`lifecycle.py:939`), and the reconcile/resume re-verification is computed
+before both; the one failure point that cannot be moved ahead of the
+mutation -- `Popen` itself -- rolls the Run and checkpoint back and appends
+`mechanical_recovery_rolled_back`, pinned by a test whose fixture proves the
+pre-mutation checks cannot see a dangling-shebang interpreter. 3c measures
+the no-mutation guarantee on a real refusal.
+
+`F005` (`reconcile_required`'s next-action text):: holds, and measured at
+the operator surface: the real `wfc report` on 3a's stopped Attempt prints
+the honest `wfc resume` line, and the same command then really recovered
+that Run.
+
+`F006` (the record's per-Hop `Scope` attestation):: holds. `git show
+--name-status 2f75382` is exactly three leaves, all `M`, and the corrected
+paragraph names `tests/unit/test_report.py` as gaining two tests with no
+assertion changed or deleted; `1fa2aa1` touched only that paragraph.
+
+`F007` (the question-less `awaiting_human` override):: holds -- row 5 of
+3d's table, measured end to end: the non-mechanical shape now gets a text
+that names no command, and `wfc resume` leaves it untouched.
+
+[[h018-observations]]
+=== 7. Non-blocking observations
+
+. *`wfc status` prints the latest preservation fact for the checkout, which
+  after a recovery may be the predecessor Attempt's.* Measured in 3a:
+  `CLASSIFICATION: completed` is followed by `PRESERVATION: not_needed`,
+  which is the stopped Attempt's record -- `preservation.latest_preservation_status`
+  is deliberately unscoped ("the latest preservation fact for this
+  checkout"), unlike the `seq`-scoped archive projection F001 fixed. The
+  facts printed are true and belong to the same `run_id`, the authoritative
+  per-Attempt Evidence is correctly scoped, and the one combination that
+  would read oddly (a predecessor that really preserved a candidate, then a
+  clean continuation) needs the operator to clean the worktree between
+  attempts, since a dirty tree refuses recovery. Hence an observation, not a
+  defect: passing the owning `classified` record's `seq` here too would make
+  the surface say which Attempt it means.
+. *Four of the sixteen named recovery refusals have no test at the recovery
+  call site.* The reconcile/resume re-verification is a documented predicate
+  element, so I executed it rather than reading it (3f): it refuses by name
+  and changes nothing. The other three are a pre-existing check with its own
+  test elsewhere and two defensive `except` paths around digest-verified
+  inputs. I deliberately do not raise this as blocking: H002's `F-B` drew the
+  element boundary around the trust-boundary branches (all of which are now
+  tested), H004 and H005 re-drew the same boundary, the behaviour is correct
+  where I could reach it, and nothing here is accepted on inspection alone.
+  A test for the reconcile/resume re-verification would nevertheless close
+  the last documented element, and 3f shows it is three lines of fixture
+  work.
+. *The real continuation admission path still has no test of its own.*
+  H005's observation 1 stands as written: `operator._continue_existing_run`
+  and the `allow_existing_state_root` branch are executed by no test; the
+  lifecycle tests use the fixture engine's `--continue-existing` stand-in. I
+  have now executed the real path (3a, 3b, 3c) and it behaves exactly as
+  specified -- none of its four named admission refusals fired on a
+  legitimate continuation -- so this is coverage rather than a defect; but the
+  repository's own rule for a producer/consumer seam is tests on both sides,
+  and `tests/integration/test_beta_e2e_fake_provider.py` already carries
+  the shim that makes such a test cheap. Worth a backlog line.
+. *`reducer.recoverable_mechanical_stop_anomaly` still has no production
+  caller* (H005's observation 2, not taken up): public module surface used
+  only by its own test. Deleting it and testing
+  `diagnose_mechanical_recovery_eligibility` directly would remove a
+  function a reader must prove unreachable.
+. *The recovery chapter's predicate list omits the provider-executable
+  re-verification.* `ch06_recovery/01_outcomes.adoc` lists six live
+  elements and says "every predicate element, live or recorded, is checked";
+  the code also re-verifies the provider executable
+  (`_verify_identities_unchanged`) pre-mutation and refuses by name. An
+  omission in a list, not a false statement -- the behaviour is stricter
+  than the text, never weaker.
+. *The verification record's `Scope` section has no paragraph for H006 or
+  H010.* Both corrections do have measured-checks sections, and every file
+  they touched is named in another Hop's paragraph (I checked `8e8af7f` and
+  `cb185a6` against `git log --name-status`; H006's `reducer.py` hunk is a
+  docstring line about its own new element), so nothing is withheld -- but a
+  maintainer reading only `== Scope` sees five of the seven corrections.
+. *A recovered Run carries its anomaly text forever* (H002's observation 2,
+  H005's observation 5). Intentional and documented; 3a shows the completed
+  Run still carrying `anomalies=('required durable artifact has no
+  CommitIntent',)`, and `operator._summary` will report it on an otherwise
+  clean completion.
+. *C(iii)'s stop is one more terminal `awaiting_human` with no question*
+  (H002's observation 1). Its next-action text and `wfc resume` both behave
+  honestly (3d), and the task admits "reject", so this is backlog material.
+. *`_review_route_semantics_block` re-derives the evaluator-escape
+  exclusion* that `permitted_route_keys` already computes (H002's
+  observation 3). Two places to keep in step; a test pins the behaviour.
+
+=== 8. Boundaries re-checked explicitly
+
+* *Reviewer authority and Finding rules: unchanged.* Nothing in A, B or C
+  lets the operator, the Coordinator or a resume accept, resolve, open or
+  override a Finding or skip a review. `git diff ca1f901..5738733` touches
+  no Finding operation; every Finding read is a refusal guard, and 3d shows
+  a Run stopped on an open blocking Finding getting no recovery.
+* *No recovery converts an unreviewed state into an accepted one.* 3b is
+  the decisive measurement: the recovered Hop is held to the same
+  durable-artifact rule and stops again; acceptance still requires the
+  phase's own accepting route from a real Hop.
+* *Resume widens nothing.* Hop budget measured `2/5 → 3/5` and `2/2`
+  refused; the continuation re-admits through the unchanged
+  `_preflight`/`admit_parsed` pipeline with the persisted `hop_limit`, the
+  digest-verified Commission and the Run's own live HEAD as
+  `--expected-head`.
+* *No historical Evidence or archived attempt is modified.* Measured
+  byte-for-byte across two successive recoveries plus an idempotent second
+  `wfc resume`.
+* *No state outside the Run's own checkout state and the additive archive is
+  written.* Every probe ran under a throwaway `HOME`/`XDG_STATE_HOME` in
+  scratch space; nothing under `~/.local/state` or the real Evidence
+  repository was read or written by this review (this session's sandbox
+  also refuses writes outside the worktree and that scratch space).
+* *No relaxation of trusted-Git, sandbox, scope, evidence or
+  durable-artifact checks.* The single changed admission check becomes a
+  stricter positive requirement on an explicitly opted-in path; 3b shows the
+  durable-artifact rule unweakened on the recovery path.
+* *The worktree is clean and no stray file is left behind.* My probe scripts
+  lived under the gitignored `tmp/` and are deleted; the only repository
+  change proposed in this Hop is this review artifact.
 
 [[h005]]
-== H005 — renewed broad review (current)
+== H005 — first renewed broad review (history)
 
 Invocation:: `INV-0cbb904fa4d348ee9b75d86150e93764`
 Candidate:: `ca1f9019e7db423339e8bfd3665393322cac4429..31f14a27949db695ad304a413f00825237539720`
