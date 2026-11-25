@@ -13,7 +13,318 @@ repository by my own execution, not taken from the implementation Hops'
 verification record (`wfc_token_usage_verification.adoc`), which carries no
 review or acceptance authority.
 
-== Pass H004 -- `RUN-b6554a0e52a84ca398a0da5b97d54df6` (current)
+== Pass H006 -- `RUN-b6554a0e52a84ca398a0da5b97d54df6` (current)
+
+Status:: *ACCEPT* -- both blocking Findings of the H004 pass (`F004`, `F005`)
+are correctly corrected, and the whole candidate holds against the task on
+every point I could reach by execution in this sandbox. No blocking Finding
+remains. Route: `renew_broad_review`.
+WorkItem:: `WI-WFC-TOKEN-USAGE-S1-001`
+Run / Hop:: `RUN-b6554a0e52a84ca398a0da5b97d54df6` / `H006`
+(`focused_review`, independent reviewer, gate, blocking-only,
+`finding_authority=resolve`).
+Invocation:: `INV-1e80690aa17b449c9d46da19dbd8376e`.
+Base HEAD:: `33dbbf3` (H005 correction). Candidate reviewed as a whole:
+`a457c32~1..33dbbf3` (49 leaves); the correction itself is
+`d4bf8ad..33dbbf3`, eight leaves: `docs/backlog/_open.adoc`,
+`docs/backlog/beta1_productization.adoc`,
+`docs/warm_storage/post-beta-planning/wfc_token_usage_verification.adoc`,
+`src/workflow_coordinator/claude_adapter.py`,
+`src/workflow_coordinator/codex_adapter.py`,
+`tests/unit/test_claude_adapter_usage.py`,
+`tests/unit/test_codex_adapter_conformance.py`,
+`tests/unit/test_codex_adapter_usage.py`.
+Date:: 2026-11-25.
+
+=== Finding dispositions
+
+[[f004-h006]]
+==== F004 -- resolved
+
+`F004` required that usage parsing never raise into the Hop and never alter
+candidate acceptance, routing or any existing outcome, for any provider
+output including malformed or pathological JSON.
+
+Verified by a differential I built myself, not by reading the diff. I loaded
+each parser twice from its own committed source -- once as committed, once
+with the H005 widening reverted in memory -- and drove the identical
+pathological stdout (`"[" * 200000 + "]" * 200000`) through both:
+
+* `json.loads()` on that input raises `RecursionError`, which is neither a
+  `ValueError` nor a `json.JSONDecodeError`. The pre-H005 clauses therefore
+  could not catch it, and both parsers *did* raise under the reverted
+  variant.
+* As committed, `claude_adapter._usage_from_wrapper_stdout` and
+  `codex_adapter._usage_from_stdout` both return `coverage=none` with every
+  figure `None`. The fix is load-bearing for both adapters.
+
+I then checked that `RecursionError` was the only hole, rather than assuming
+it. A 26-case hostile-input sweep over both parsers (empty, whitespace, NUL
+bytes, 200000-deep arrays, 60000-deep objects, deep nesting *inside* `usage`,
+a 100000-digit integer literal, `NaN`/`Infinity`, float/bool/string/negative
+figures, non-object `usage`, non-dict `modelUsage` entries, a lone-surrogate
+model key, duplicate keys, truncated objects, bare scalars, 5000
+`turn.completed` lines, `usage: null`/`usage: []`, a non-string `type`, a
+5000-digit single line, CRLF and a BOM) produced *no* exception from either
+parser and no figure that was not either `None` or a non-negative `int`. The
+`ValueError` already in the clause is what covers the huge-integer-literal
+case (CPython's 4300-digit `int` conversion limit), so the two members of the
+widened clause are both necessary.
+
+The end-to-end regression the correction added is real, not a unit-level
+stand-in: `tests/unit/test_codex_adapter_conformance.py::test_pathologically_nested_stdout_never_raises_out_of_execute_and_candidate_still_lands`
+drives `CodexCliAdapter.execute()` against a fake executable that writes a
+valid result envelope to `--output-last-message` and prints the pathological
+stdout, and asserts the candidate still lands with `returncode=0`. It passes
+on the candidate; the whole module (33 tests) passes.
+
+[[f005-h006]]
+==== F005 -- resolved
+
+`F005` required the docs-sync check to cover every owner the task names,
+including the in-scope backlog owners, with each falsified statement
+corrected and every table row's claim about a file true.
+
+Both passages I named in H004 are corrected, truthfully and without
+inventing acceptance:
+
+* `docs/backlog/_open.adoc` no longer says "Token-consumption evidence
+  remains undesigned". It now names `WI-WFC-TOKEN-USAGE-S1-001`, states what
+  is delivered (honest nullable field, per-invocation capture, Run state,
+  `audit.json`, `wfc report`, no price), and keeps the two things that are
+  genuinely open separate and unprejudged: "independent review and maintainer
+  acceptance of this slice are separate and not recorded here" and the
+  release-gate question (BP6/BP9). The "do not silently preserve or demote a
+  gate" caution survives.
+* `docs/backlog/beta1_productization.adoc` "Open design questions and
+  qualification" no longer contradicts the bullet eleven lines above it: the
+  implementation effort is named as implemented, while "its independent
+  review, maintainer acceptance and release-gate status remain open".
+
+The verification record's docs-sync table now carries a row for each
+(`_open.adoc` -- "Edited", `beta1_productization.adoc` "Open design
+questions" -- "Edited"), and I re-read every row of that table against its
+file: each row's claim about its file is now true. The H005 addendum states
+the correction. Both files render silently under
+`asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN`.
+
+[[token-usage-h006-verified]]
+=== Independently re-verified over the whole candidate
+
+Re-derived at base HEAD `33dbbf3` by my own execution, with a pre-change tree
+exported from `a457c32~1` for every differential. 22 scripted checks, 0
+failures.
+
+* *Byte-identical reprojection of a pre-change archive.* I built an attempt
+  archive the way the pre-change fixtures build one (two Hops, no
+  `usage.json` placed at all -- confirmed by globbing
+  `run/checkouts/*/usage.json`), projected it with the candidate `audit.py`
+  in-process and with the pre-change `audit.py` in a separate interpreter off
+  the exported tree, and compared the rendered bytes: identical, 4543 bytes
+  each. The reprojected document keeps `usage_not_reported` in `limits`, has
+  no top-level `usage` key (absent, not null) and every `hops[].usage` is
+  `None`. `limits` is emitted as `sorted(set(limits))`, so moving the seed
+  from the head of the list to the end cannot shift a byte.
+* *Aggregates equal the per-invocation records.* On a deliberately mixed Run
+  (Claude worker `complete` 100/10/7/-/3 with a `per_model` entry, Codex
+  reviewer `partial` 50/-, worker `none`, and a fourth Hop with no record at
+  all) I recomputed `totals`, `by_role`, `by_model` and `coverage_counts`
+  independently from the records and compared field by field: zero
+  divergence. `coverage_counts` is `{complete: 1, partial: 1, none: 2}` --
+  the Hop with no record is counted `none`, which is the only honest bucket.
+  `totals.input_tokens` is `{value: 150, lower_bound: true}` and equals the
+  sum of the per-role values; `cache_creation_tokens`, unknown everywhere,
+  stays `{value: null, lower_bound: false}` -- never `0`, and never called a
+  lower bound when it is simply unknown.
+* *Limits transitions, all four states.* No record at all ->
+  `usage_not_reported`; every record `coverage: none` -> `usage_not_reported`
+  and *not* `usage_partially_reported`; all `complete` -> neither code; one
+  `complete` plus one `none` -> `usage_partially_reported` and not
+  `usage_not_reported`. Measured on four separately built archives.
+* *The no-usage report is unchanged, by differential.* Rendering
+  `build_report`/`render_report_text` through the pre-change package and
+  through the candidate gives byte-identical report text both for an archive
+  with no `usage.json` and for the demo-kit-shaped case of a persisted record
+  whose coverage is `none` -- no `usage`-prefixed line, `usage_not_reported`
+  still in the `limits` line. This is the F002 guarantee, re-confirmed at
+  H005's HEAD rather than carried over.
+* *Report `--json` for the no-usage case is additive only.* The report
+  mapping gains exactly one key, `"usage": null`, with no key removed and no
+  shared value changed (checked for both no-usage shapes). An explicit null
+  is the same honest-unknown convention the task mandates for
+  `hops[].usage`, and the hard byte-identity constraint is scoped to
+  `audit.json`; the rendered text is unchanged. Recorded for transparency,
+  not as a defect.
+* *No price, anywhere.* `cost`, `usd` and `price` appear nowhere in the
+  serialized audit document of a Run with real figures, and nowhere in the
+  implementation except three comments that say a monetary field is never
+  read. The end-to-end integration assertion also pins `total_cost_usd` and
+  `costUSD` out of the report's stdout.
+* *Cache semantics are preserved per record and cannot be mixed in a real
+  Run.* The per-hop entry carries `input_includes_cache_read` verbatim
+  (`False` for the Claude record, `True` for the Codex one in the same
+  archive). The aggregates carry no such flag, which was H002's `O-6` and
+  H004's `O-3`; I confirmed the mitigation myself rather than taking it over:
+  `operator.py:443` raises `OperatorPreflightError` unless
+  `len({binding.adapter for binding in bindings.values()}) == 1`, so a
+  production Run cannot bind two providers and the aggregate cannot mix the
+  two definitions. My mixed-provider archive was synthetic. The observation
+  stays open as documentation polish, not a defect.
+* *Tests fail without the implementation.* Copying the new and changed test
+  modules onto the exported pre-change tree: all four new modules
+  (`test_usage_model.py`, `test_usage_persistence.py`,
+  `test_claude_adapter_usage.py`, `test_codex_adapter_usage.py`) fail at
+  collection with `ImportError` on the symbols that do not exist there, and
+  13 named tests fail inside the changed modules
+  (`TestUsageProjection` x 9, `TestUsageReport` x 4). The three
+  `test_audit_privacy.py` additions call `au._guard_privacy` directly, in the
+  established style of their neighbours, and therefore pass against either
+  tree; they pin the refusal behaviour rather than the projection wiring, and
+  the comprehensive canary fixture now carries a real usage record with a
+  `per_model` entry, which does route the new fields through the guard. That
+  is the right reading of the task's "must pass for the new fields".
+* *Allow-lists and write surface.* `CHECKOUT_ALLOW` gains exactly one entry
+  (`usage.json`); `_TOP_KEYS` gains exactly one (`usage`); `_HOP_KEYS` was
+  already frozen with `usage`. Every new nested shape is itself
+  `_assert_keys`-checked (`_HOP_USAGE_KEYS`, `_MODEL_USAGE_KEYS`,
+  `_USAGE_FIGURE_KEYS`, `_USAGE_SUMMARY_KEYS`, `_COVERAGE_COUNT_KEYS`), so
+  default-deny is preserved rather than widened. `write_usage_record` has one
+  call site, writing one leaf under the Run's own checkout root through
+  `atomic_write_json`.
+* *End to end on the fake provider.* `tests/integration/test_beta_e2e_fake_provider.py`
+  passes (8 tests). Its new assertions carry the scripted provider's fixed
+  `turn.completed` event (42/5/0/7/1) through capture, persistence, archive
+  and `wfc report`, including `cache_creation_tokens: 0` -- a provider-
+  *reported* zero, which is correctly distinct from a zero-fill.
+
+[[token-usage-h006-measured]]
+=== Measured checks
+
+* `python -m pytest -q --wfc-partial tests/unit/test_usage_model.py
+  tests/unit/test_usage_persistence.py tests/unit/test_claude_adapter_usage.py
+  tests/unit/test_codex_adapter_usage.py tests/unit/test_report.py
+  tests/unit/test_audit_projection.py tests/unit/test_audit_privacy.py
+  tests/unit/test_postrun_archive.py` -- 172 passed.
+* `... tests/unit/test_codex_adapter_conformance.py` -- 33 passed (includes
+  the new `execute()`-level `F004` regression).
+* `... tests/architecture/test_tutorial_kit_quotes.py
+  tests/architecture/test_consumer_tutorial_pages.py
+  tests/unit/test_agent_skill_content.py tests/unit/test_frontdoor_skill.py
+  tests/unit/test_quickstart_commands.py` -- 90 passed.
+* `... tests/integration/test_beta_e2e_fake_provider.py` -- 8 passed.
+* `... tests/unit` (whole directory) -- 27 failures, all in
+  `test_claude_adapter_conformance.py` (23) and `test_lifecycle_controller.py`
+  (4). I reproduced *exactly the same 27 failures* on the exported
+  pre-change tree in the same sandbox, so none is attributable to this
+  change. Their causes are environmental and named:
+  `OSError: [Errno 30] Read-only file system: ... -> '/tmp/wfc-claude-...'`
+  (this sandbox mounts `/tmp` read-only; the Claude adapter needs a short
+  `/tmp` symlink) and `RuntimeError: the installed wfc console script could
+  not be located` (I ran from `pythonpath` rather than installing the wheel,
+  deliberately, to leave no build artefact behind).
+* `python -m ruff check . --exclude tmp` -- "All checks passed!".
+* `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+  --failure-level=WARN` over `docs/backlog/_open.adoc`,
+  `docs/backlog/beta1_productization.adoc`, this record, the broad-review
+  record, the verification record, `01_quickstart.adoc`,
+  `ch10.../01_operating_pattern.adoc`, `release_notes.adoc` and
+  `operator_manual.adoc` -- silent for every file.
+* `python3 scripts/wfc_doc_catalog.py check` -- "83 unresolved links; 4
+  Project Memory source_path misses" both before and after my edit, identical
+  to the baseline H005 recorded, so no regression on either counted
+  dimension; every unresolved link is in an unrelated cold/warm storage file.
+  The run before my edit also printed "catalog current"; after it, it prints
+  one `changed:` line for this record and "catalog drifted". That is the
+  untracked local build artefact `build/wfc/document_catalog.jsonl`
+  (`build/` is git-ignored), which `generate` recreates; I did not write
+  outside my authorized scope to refresh it. I could not obtain a true
+  pre-change baseline from the exported tree, which carries no catalog.
+* Not run: the required full suite. `tests/conftest.py` fails configuration
+  without the verified offline wheel bundle (`WFC_TEST_INPUTS`/
+  `WFC_TEST_PROFILE`), which this sandbox does not provide. No full-suite
+  count is claimed here. No live provider CLI was invoked.
+* Environment: CPython 3.13 with `pytest` 9.2.0, `ruff` 0.17.6 and PyYAML
+  6.0.2 in a throw-away virtual environment outside the worktree; all scratch
+  artefacts were written under the git-ignored `tmp/` and removed. `git
+  status --short -uall` is identical to the state at the start of this Hop.
+
+[[token-usage-h006-observations]]
+=== Non-blocking observations
+
+O-1 (carried forward from H002 `O-1` and H004 `O-1`, still unaddressed) --
+`ch03` is still unreported:: `docs/developer_guide/ch03_engineering_conventions.adoc`
+lines 54-58 still say the consumer quickstart and tutorial listings
+"currently document that no token usage is reported" and that "the Agent
+Skill says nothing about token usage". After this change both clauses are
+false: the quickstart's limitations bullet now documents capture and both
+limit codes, and `references/stops-and-evidence.md` now speaks about usage.
+That file is the *source* of the convention, not one of the owners the
+convention or the task enumerates (the convention's own owner list is the
+Operator Manual ch03/ch06/ch09, the Agent Skill sources and the
+consumer-demo kit), and it is outside the WorkItem's declared scope
+(`.wfc/governance/wfc-token-usage-s1-001/work-item.yaml` lists only
+`docs/developer_guide/ch04_release_management.adoc` from the Developer
+Guide). It is therefore not an acceptance violation, and I do not block on
+it. *A maintainer decision is needed*: either widen scope for a two-sentence
+correction of the example, or carry it as a follow-up WorkItem. The example
+was last corrected by `WI-WFC-BETA2-FRONTDOOR-DOCS-SYNC-002` (`62f6740`)
+precisely to keep it true against the files, so it should not be left stale
+indefinitely. The verification record would also be more complete with a row
+recording the file as examined, falsified and reported rather than omitting
+it.
+
+O-2 (H004 `O-2`, still unaddressed) -- three imprecisions remain in the
+verification record:: (a) the `codex_adapter.py` bullet still frames the
+missing `json` import as "pre-existing in the module before this change"
+although `git show a457c32~1:src/workflow_coordinator/codex_adapter.py`
+contains zero `json.` uses (I re-verified: count 0, and no `import json`);
+the passage does end on the correct conclusion, that it was this slice's own
+omission. (b) the record-format bullet cites `atomic_write_text` where
+`write_usage_record` calls `atomic_write_json` -- defensible as a statement
+about the discipline, since `atomic_write_json` delegates to it, but
+imprecise. (c) the measured-checks bullet claims "exit code 0" for
+`pytest -q --wfc-partial tests/unit` in the same sentence that names 26
+pre-existing failures; a run with failures exits 1, and I measured 27
+failures there. None of this changes behaviour and the substantive claim --
+no new failure is attributable to the change -- I confirmed independently by
+differential. I leave them non-blocking for the same reason H004 did, and
+because the record is self-correcting on the only point that matters, but
+they are worth a one-line fix whenever the record is next touched.
+
+O-3 (new) -- the per-hop projection passes persisted figures through without
+re-coercing them:: `_hop_usage_entry` copies `coverage`, the five figures and
+`input_includes_cache_read` straight out of the archived `usage.json`,
+whereas `_usage_figure` filters aggregate contributions to real `int`s. A
+corrupted or hand-edited `usage.json` could therefore place a non-numeric
+value in `hops[].usage.input_tokens` (the privacy guard would still refuse a
+path or private string, and archive digests cover tampering, so nothing
+escapes the trust model). Re-using `coerce_token_count` at the projection
+boundary would close it in one line, but adding a second coercion layer for
+a path that only a broken archive can reach is exactly the kind of redundant
+safeguard the review brief warns against growing. Recorded as a choice, not
+a defect.
+
+O-4 (new, maintainability) -- the `ReductionError` branches in
+`write_usage_record` remain unreachable today:: this confirms H002's `O-5`
+from a different angle. One Hop id cannot be written twice within one
+`run_serial_hops` loop (the loop runs only while the Run is `READY`, and an
+uncertain Hop leaves that state), and a crash-recovery replay reaches
+`_persist_usage_record` with `outcome is None` and returns early. The
+conflicting-duplicate branch would turn a usage-write anomaly into an
+aborted Run *after* the Hop was already reduced. It is cheap and
+conservative; I note it only as the sort of safeguard worth re-examining
+before it is grown further.
+
+=== Disposition
+
+Verdict:: `accept`
+Route:: `renew_broad_review` (does not hand back to the Worker)
+Finding delta:: `F004` and `F005` resolved. No new Finding is proposed; the
+four observations above are recorded here for the maintainer, and `O-1`
+needs a scope decision about `docs/developer_guide/ch03_engineering_conventions.adoc`
+that no Hop of this WorkItem may take on its own.
+
+== Pass H004 -- `RUN-b6554a0e52a84ca398a0da5b97d54df6`
 
 Status:: *CHANGES REQUIRED* -- all three Findings from H002 (`F001`, `F002`,
 `F003`) are correctly resolved, but two blocking defects remain in the
