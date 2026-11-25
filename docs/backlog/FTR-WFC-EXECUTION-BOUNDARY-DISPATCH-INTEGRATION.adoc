@@ -85,10 +85,14 @@ readable.
 
 |Writes anywhere else on the host filesystem are prevented
 |Guaranteed
-|The only writable destinations in the view are the authorized writable
-subpaths inside the repository, the private `/tmp`, the external scratch and
--- for the Codex path only -- the per-invocation provider channel directory
-(<<channel>>). The Coordinator's own Run state and audit records
+|The only writable destinations *backed by the host* are the authorized
+writable subpaths inside the repository, the private `/tmp`, the external
+scratch and -- for the Codex path only -- the per-invocation provider channel
+directory (<<channel>>). Paths the child may still be able to write *inside
+the view* without reaching the host are bwrap's own base tmpfs and the
+directories it materialises to carry bind destinations; that is an in-view
+effect only, and Slice A intends to close it as well (<<mounts>>, the sandbox
+root row). The Coordinator's own Run state and audit records
 (`run.json`, `checkpoint.json`, `dispatch.json`, `execution-evidence.json`,
 `usage.json`) are *not* in the view at all, in either direction
 (<<mounts>>).
@@ -150,19 +154,26 @@ transport transmits, and a remote tool runs outside it.
 === The seam
 
 A new module `src/workflow_coordinator/execution_launcher.py` holds one pure
-transformation and two implementations of it:
+transformation with a single entry point, two implementations of it, and the
+Coordinator-side derivation of the value they consume (<<a-carrier>>):
 
 ----
 @dataclass(frozen=True)
-class LaunchPlan:            # what the adapter already knows
+class BoundaryGrant:         # Coordinator-computed per invocation; see <<a-carrier>>
+    mode: str                                  # "direct" | "bubblewrap"
+    repository: Path                           # canonical, symlink-free
+    writable_repository_paths: tuple[str, ...]  # repository-relative, normalized
+    readable_host_paths: tuple[Path, ...]       # outside the repository
+    writable_host_paths: tuple[Path, ...]       # outside the repository
+    provider_channel: Path
+    external_scratch: Path | None
+
+@dataclass(frozen=True)
+class LaunchPlan:            # the grant, plus what the adapter itself builds
+    grant: BoundaryGrant
     argv: tuple[str, ...]
     cwd: Path | None
     environment: Mapping[str, str] | None     # None = inherit, as Codex does today
-    repository: Path                          # canonical, symlink-free
-    writable_repository_paths: tuple[str, ...] # repository-relative, normalized
-    readable_host_paths: tuple[Path, ...]      # outside the repository
-    writable_host_paths: tuple[Path, ...]      # outside the repository
-    external_scratch: Path | None
 
 @dataclass(frozen=True)
 class PreparedLaunch:        # what the adapter passes to Popen
@@ -171,16 +182,25 @@ class PreparedLaunch:        # what the adapter passes to Popen
     environment: Mapping[str, str] | None
     boundary: str            # "direct" | "bubblewrap"
 
+def prepare(plan: LaunchPlan) -> PreparedLaunch: ...   # dispatches on plan.grant.mode
 def prepare_direct(plan: LaunchPlan) -> PreparedLaunch: ...
 def prepare_bubblewrap(plan: LaunchPlan) -> PreparedLaunch: ...
 ----
 
 `prepare_direct` returns the plan's own `argv`, `cwd` and `environment`
-unchanged, so an unisolated invocation is byte-identical to today's.
-`prepare_bubblewrap` validates the view through
-`execution_boundary.validate()` and returns `build_argv(...) + argv`,
+unchanged, so an unisolated invocation is byte-identical to today's. It reads
+*nothing* from the grant, which is why an adapter constructed without one
+behaves exactly as it does today. `prepare_bubblewrap` validates the view
+through `execution_boundary.validate()` and returns `build_argv(...) + argv`,
 `cwd=None` (the view sets the child's directory with `--chdir`) and the
 plan's `environment` unchanged.
+
+`prepare` is the single entry point both adapters call, and it selects the
+implementation from `plan.grant.mode` alone; an unrecognised mode is a
+refusal, never a direct launch. The adapters therefore cannot select the
+boundary, accidentally or otherwise -- which is what makes "no silent
+fallback" (<<enablement>>) a structural property of the seam rather than a
+rule each adapter has to remember.
 
 === Why this shape
 
@@ -191,8 +211,9 @@ plan's `environment` unchanged.
   sequence. The kill sequence is therefore not duplicated, not re-derived and
   not re-qualified.
 * *The transformation is pure.* It can be unit-tested exhaustively without a
-  namespace, which matters because an agent sandbox cannot necessarily start
-  `bwrap` at all (see the planning record's limits section).
+  namespace, which matters because an agent sandbox cannot necessarily create
+  the namespace a `bwrap` sandbox needs (see the planning record's limits
+  section).
 * *One seam, not two copies.* Both adapters call the same function; a future
   non-Bubblewrap boundary is a third `prepare_*`, selected by a closed name,
   exactly as `operator._execution_adapter` selects an adapter today "without a
@@ -200,6 +221,127 @@ plan's `environment` unchanged.
 * *`execution_boundary.py` keeps its documented contract.* It remains a view
   validator and argv builder that takes already-authorized grants; it gains no
   process, environment or authority responsibility.
+
+[[a-carrier]]
+=== How the grant reaches the launcher
+
+The grant is the security content of this slice, so the surface that carries
+it is an architecture decision and is taken here rather than left to the
+implementation Run.
+
+*What exists today.* Nothing carries it. `AgentExecutionRequest` carries
+`invocation`, `prompt`, `repository`, `result_contract`, `timeout_seconds`,
+`contract_version`, `result_contract_kind`, `permitted_routes` and
+`finding_authority` and nothing else (`adapter.py:44-69`); there is no field
+for a filesystem view, a grant set or a boundary mode. The two CLI adapters
+are constructed from an `ExecutionBinding` with only `result_directory`,
+`model`, `reasoning_effort` and `executable` (`operator.py:86-98`, `:977-980`;
+`claude_adapter.py:191-194`, whose only further field is the defaulted
+environment allowlist at `:195`; `codex_adapter.py:393-396`), and
+`slice4.run_real_one_hop` default-constructs a `CodexCliAdapter` the same way
+when no adapter was injected (`slice4.py:321-326`).
+
+*Decision: the construction axis, not the port.* The Coordinator computes one
+frozen `BoundaryGrant` per invocation and passes it to the CLI adapter's
+constructor as one optional parameter, `boundary: BoundaryGrant | None =
+None`, where `None` means today's unisolated behaviour. The
+provider-neutral port is *unchanged*: `AgentExecutionRequest`,
+`AgentExecutionOutcome` and `AgentExecutionPort.execute` gain no field
+(`adapter.py:44-97`).
+
+Four reasons, in order of weight:
+
+. *A port field would be silently ignorable, which is the shape decision (e)
+  forbids.* The port has four implementations under `src/`
+  (`adapter.py:105`, `:115`, `claude_adapter.py:284`,
+  `codex_adapter.py:417`), and two of them --
+  `FakeAdapter` and `SubprocessAdapter` (`adapter.py:100-125`) -- cannot
+  honour a filesystem view at all. A request field saying "confine yourself to
+  these paths" that some callees ignore is a fallback to unisolated execution
+  by construction. On the chosen axis, only an adapter that can honour a grant
+  can be handed one, so an ignored grant is not expressible.
+. *The port models semantic dispatch facts; the boundary is an execution-
+  environment fact.* Every field of `AgentExecutionRequest` is something the
+  prompt or the result contract depends on. The execution environment is
+  already modelled on the other axis -- the admitted binding, the result
+  directory and the executable are constructor arguments -- and the grant
+  belongs with them.
+. *The boundary mode already arrives on that axis.* Decision (e) puts the
+  closed `boundary` key on the Run execution envelope, i.e. on
+  `RunExecutionConfiguration` (`model.py:180-192`;
+  `serialization.py:1004-1043`, whose `_fields` call at `:1013` must gain
+  `optional={"boundary"}` for the key to be accepted at all). `operator.py`
+  holds that object exactly where it resolves the binding and constructs the
+  adapter (`:966-980`). Carrying the mode and the grant on two different
+  surfaces would split one decision in two.
+. *Blast radius.* The port is shared by `FakeAdapter`, `SubprocessAdapter`,
+  every adapter conformance test and the proof harness; none of them changes.
+
+*Consequences, stated so the implementation Run inherits no open question:*
+
+. *Both construction sites use one derivation function.* The grant is derived
+  once, Coordinator-side, by a single function that takes the repository, the
+  executing phase, the provider channel directory, the scratch root, the
+  authentication path and the selected mode, and returns the normalized grant
+  (<<mounts>>). `operator._execution_adapter` (`:86-98`) gains the grant as a
+  parameter and its caller computes it; the inputs are all in hand at that
+  call site, which already holds `profile`, `phase_key` (`:958`),
+  `workflow_role` (`:959`), the resolved binding (`:972`) and `run_root`
+  (`:977`). The derivation lives in the launcher module, not in either
+  adapter, so a per-adapter copy cannot drift.
+. *The second construction path stays explicitly unisolated, and that is not a
+  fallback.* `slice4.run_real_one_hop` gains the same optional grant
+  parameter, forwarded to its default `CodexCliAdapter` construction
+  (`slice4.py:172`, `:321-326`). Its only in-tree caller that relies on the
+  default is the Codex proof harness (`proof_harness.py:215-225`), which does
+  not pass one and therefore keeps running unisolated exactly as today. This
+  is a non-change for a path that never requested a boundary, not a silent
+  downgrade of one that did: if a caller passes a `bubblewrap` grant, that
+  path honours it or refuses by name, and a `bubblewrap` mode is never
+  satisfied by constructing an adapter without a grant.
+. *The audit field cannot diverge from the dispatch.* The `boundary` field of
+  decision (d)'s mode visibility is projected from the same grant the adapter
+  was constructed with, in `_binding_evidence` (`operator.py:677-685`, called
+  at `:981`), so there is one source for what ran and what was recorded. The
+  injected-adapter branch (`:984-989`) projects `direct`, which is what it is.
+. *Slice B's extension point is now named on both sides.* Slice B requires
+  that "the profile that the Slice A launcher consumes should be a value the
+  Coordinator computes"
+  (link:FTR-WFC-EXECUTION-BOUNDARY-PHASE-PROFILES.adoc[Slice B], target
+  architecture item 6). `BoundaryGrant` is that value: a later richer
+  profile changes the derivation function and the grant's contents without
+  changing the port, the seam or either adapter.
+
+*Rejected: boundary fields on `AgentExecutionRequest`.* It would put the grant
+where `vertical.run_one_hop` builds the request (`vertical.py:303`, `:332-339`),
+which also holds the phase, and it would need no change to either adapter
+constructor. It is rejected for reason 1 above: the same field would reach two
+adapters that cannot act on it, and fail-closed behaviour would then depend on
+a check in each implementation rather than on who can be handed a grant at
+all.
+
+[[a-lifecycle]]
+=== Who owns the pre-create and post-Hop removal lifecycle
+
+The same Coordinator frame that computes the grant. Materialising an absent
+authorized directory target (<<mounts>>) and removing it afterwards are two
+ends of one bracket around the Hop, and the adapter can own neither end: its
+`execute()` returns before the Hop's post-Hop observation and candidate
+acceptance (`vertical.py:400-422`), so an adapter-side removal would run too
+early, and an adapter that creates and deletes host directories is no longer a
+transport.
+
+Concretely, in `operator.py`'s per-Hop loop body: compute the grant, create
+the absent directory targets, construct the adapter with the grant (`:978`),
+call `run_real_one_hop` (`:1007-1023`), and after it returns (`:1024`) --
+which is after the post-Hop observation inside it -- remove the directories it
+created that are still empty. The bracket must also run when the Hop raises,
+so it is a `finally`-shaped bracket and a removal failure must not displace an
+exception already in flight. The agent never creates and never removes a
+grant path, and nothing is created outside the repository. Ordering is stated
+for clarity rather than for safety: Git does not track empty directories, so
+a still-empty pre-created directory is invisible to the post-Hop delta either
+way.
 
 === What flows through it
 
@@ -220,7 +362,7 @@ and needs no cwd either way.
 |Passed through unchanged. Bubblewrap does not clear the environment unless
 asked, and Slice A does not ask: the Claude adapter's allowlist -- four fixed
 names plus any name the operator lists in `WFC_CLAUDE_EXTRA_ENV_NAMES`
-(`claude_adapter.py:39`, `:42-46`, `:316-319`) -- plus its `TMPDIR` override, and the
+(`claude_adapter.py:41`, `:44-47`, `:316-319`) -- plus its `TMPDIR` override, and the
 Codex adapter's inherited environment, both keep exactly today's meaning. This
 is a deliberate non-change; see <<residual>>.
 
@@ -424,8 +566,10 @@ exist at launch.
   writable. This *overgrants* to that directory, and Slice A states it as a
   residual prevention gap (<<residual>>); the post-Hop scope check still
   refuses anything outside scope.
-. Pre-creation is a Coordinator act performed by the launcher's caller before
-  `validate()`, never by the agent, and never outside the repository.
+. Pre-creation is a Coordinator act, performed before `validate()` by the
+  per-Hop dispatch frame that computes the grant and brackets the Hop
+  (<<a-lifecycle>>), never by the agent or the adapter, and never outside the
+  repository.
 
 === Symlinks, hardlinks and mount overlaps
 
@@ -469,7 +613,9 @@ not an asserted safe condition.
 |Unchanged except the size cap. A size bound is Slice A's answer to scratch
 abuse: an agent filling the private tmpfs then exhausts a bounded allocation
 instead of the host's `/tmp`. The default size is an implementation decision
-to be stated in the Operator Manual, not hidden.
+to be stated in the Operator Manual, not hidden. It is not the *whole* answer:
+bwrap's own base tmpfs is a second in-view target, which the sandbox root row
+below addresses.
 
 |`/tmp/s` (external scratch)
 |read-write bind of the invocation-scoped scratch directory
@@ -523,13 +669,35 @@ repository
 destinations, not absent and not a copy of anything
 |bwrap materialises the parent chain of every bind destination, so with
 path-identity mounting `/home/<user>` exists while `HOME` still points at it
-(`claude_adapter.py:39`, `:316-319`). It is *not* literally empty: on a host
+(`claude_adapter.py:41`, `:316-319`). It is *not* literally empty: on a host
 where the repository, the state root or the scratch root lie under `$HOME`, the
 ancestor directories of those mounts exist inside it. What holds is that no
 host content under `$HOME` is reachable other than the designated mounts
 themselves, which is what the guarantee in <<guarantees>> states. The
 distinction matters for any provider that probes for its own state directory,
 which is a live-qualification question (L6).
+
+|The sandbox root `/`, and every directory bwrap materialises to carry a bind
+destination
+|`--remount-ro /` appended after all mounts -- *subject to Layer 1 measuring
+that it is non-recursive*
+|`build_argv` generates no root `--tmpfs` and no `--remount-ro /` today
+(`execution_boundary.py:166-182`), so the sandbox root and the materialised
+parent chain belong to bwrap's own base tmpfs and are, presumably, writable
+for the child. This is *not* a host exposure -- a tmpfs write is not a host
+write, and no guarantee in <<guarantees>> depends on it -- but two things
+follow. First, a child can create files at in-view paths that have no host
+backing, which a test asserting "the write attempt fails" would get wrong
+(N11). Second, an uncapped root tmpfs is a cheaper target for scratch abuse
+than the size-capped `/tmp` (N12). The installed build documents
+`--remount-ro DEST` as non-recursive, so appending `--remount-ro /` after the
+mount arguments should leave the writable binds, the private `/tmp` and the
+external scratch untouched. No Hop of this planning Commission could enter a
+sandbox to verify that (planning record, limits), so it is an *assumption*:
+Layer 1 must measure both the pre-change writability and the post-change
+behaviour of every writable grant, and if `--remount-ro /` is recursive or
+refuses, the implementation Run reports it and the in-view-only writability
+stays a stated residual rather than being papered over.
 |===
 
 Process flags in the generated view, for completeness, since they belong to
@@ -713,6 +881,16 @@ consequences for the ported fixtures, all cheap but none automatic:
 * Some fixtures write side files into `tmp_path` as well (`:1059`, `:1112`).
   Under the boundary those paths are not writable, so such a fixture must
   write into the channel directory or the scratch instead.
+* One existing fake provider runs `git add`, `git commit` and `git rev-parse`
+  inside the repository to produce the commit its test then observes
+  (`tests/unit/test_slice4.py:1114-1116`). That shape *cannot* be ported to a
+  boundary-selected variant: under the decided `.git` view the object database
+  and the index are not there (<<git>>), so Git inside the sandbox fails by
+  design. A boundary variant of that scenario must have the fake provider
+  leave worktree mutation only and let the Coordinator's trusted commit
+  produce the commit, which is the normal worker shape anyway. Stated here so
+  the implementation Run reads a decided consequence rather than debugging a
+  confusing fixture failure.
 
 [[outside-sources]]
 === Outside-repository sources: which rule each category passes through
@@ -1051,7 +1229,9 @@ combined with `--unshare-pid` means the sandbox's whole process tree dies with
 the `bwrap` process the adapter started, so a descendant that leaves its
 process group no longer survives. Scratch cleanup stays in the Claude
 adapter's `finally` block; the pre-created empty authorized directories are
-removed by their creator after the Hop if still empty. A cleanup failure must
+removed, if still empty, by the Coordinator dispatch frame that created them,
+after the Hop returns and after its post-Hop observation (<<a-lifecycle>>) --
+not by the adapter, which has returned by then. A cleanup failure must
 not suppress an exception already in flight, as the existing scratch-removal
 helpers already ensure.
 
@@ -1203,14 +1383,21 @@ provider channel, and the Evidence repository.
 |N11
 |From the Codex-shaped path, with the provider channel directory bound
 read-write: assert that `run.json`, `checkpoint.json`, `dispatch.json`,
-`execution-evidence.json` and `usage.json` are *absent* from the view, that a
-write attempt at each of their host paths fails, and that each host-side file
-is byte-identical afterwards (<<channel>>). The companion case asserts that
-on the Claude-shaped path the channel directory itself is not writable.
+`execution-evidence.json` and `usage.json` are *absent* from the view and that
+each host-side file is byte-identical afterwards (<<channel>>). The
+host-identity assertion is the guarantee; whether the write *attempt* itself
+fails is a separate observation the case must record rather than assume,
+because the in-view path may land on bwrap's base tmpfs with no host backing
+(<<mounts>>, the sandbox root row). The companion case asserts that on the
+Claude-shaped path the channel directory itself is not writable.
 
 |N12
 |Exhaust the private `/tmp` beyond its size cap, and the external scratch
-root, and show that the host's own `/tmp` is unaffected.
+root, and show that the host's own `/tmp` is unaffected. The same case
+measures whether the sandbox root tmpfs is writable and, if it is, whether
+`--remount-ro /` closes it without disturbing the writable grants
+(<<mounts>>, the sandbox root row) -- the size cap alone is not the whole
+answer to scratch abuse while an uncapped root tmpfs is writable.
 
 |N13
 |Leave a process behind: double-fork a long sleeper, let the invocation time
@@ -1321,7 +1508,8 @@ a deterministic-test result, an argv inspection or a positive claim.
 === Exit criteria
 
 . Layer 1 complete, in the required suite, passing under the Coordinator's
-  task-check, with every N-case asserting host-side non-effect.
+  task-check, with every N-case asserting host-side non-effect, and with the
+  sandbox-root measurement N12 requires recorded either way.
 . Layer 2's L1 to L7 performed and recorded, or each unperformed check named
   with its reason.
 . A qualification record exists that states, per claim, which layer
@@ -1352,6 +1540,12 @@ Specifically, the Run must stop or open a Finding rather than:
 * make the repository view writable beyond the normalized authorized grant;
 * introduce any fallback to unisolated execution, including a diagnostic-only
   one;
+* carry the grant or the boundary mode on a surface an adapter can ignore, or
+  construct an adapter without a grant while a `bubblewrap` mode was selected
+  for that invocation (<<a-carrier>>);
+* settle the sandbox-root writability question by assumption in either
+  direction instead of measuring it, or drop the measurement because the
+  host-side guarantee holds anyway (<<mounts>>, the sandbox root row);
 * relax, skip or make conditional the post-Hop candidate-scope check, the
   clean-worktree assertions or trusted Git's refusals;
 * weaken or delete an existing test to make a change pass;
@@ -1384,17 +1578,24 @@ are review checkpoints inside that Run, not separate Commissions:
   provider channel and the provider authentication location, each a separate
   validated parameter with its own checks),
   the enumerated `/etc` entries in the generated system view, `--proc` /
-  `--unshare-pid` / `--new-session` (and not `--as-pid-1`), and the `/tmp`
-  size cap -- classified exactly as <<outside-sources>> requires, and subject
+  `--unshare-pid` / `--new-session` (and not `--as-pid-1`), the `/tmp`
+  size cap, and the measured decision about `--remount-ro /` for the sandbox
+  root (<<mounts>>) -- classified exactly as <<outside-sources>> requires, and subject
   to the open maintainer decision named there. Unit and integration tests,
   including every negative case reachable at this level.
-. *Launcher seam.* `execution_launcher.py` with `prepare_direct` and
-  `prepare_bubblewrap`; both adapters call it instead of building `Popen`
-  arguments inline. Byte-identity tests for the direct path.
-. *Enablement and evidence.* The optional `boundary` key in both
-  configuration schemas, preflight, error classification, the persisted Run
-  state, the binding evidence and the audit projection, resume consistency.
-  Negative cases N14 and N15.
+. *Launcher seam and its carrier.* `execution_launcher.py` with
+  `BoundaryGrant`, `LaunchPlan`, the single `prepare` entry point,
+  `prepare_direct`, `prepare_bubblewrap` and the Coordinator-side grant
+  derivation; the `boundary` constructor parameter on both CLI adapters; the
+  forwarded optional parameter on `slice4.run_real_one_hop`; both adapters
+  calling the seam instead of building `Popen` arguments inline. The
+  provider-neutral port is not touched (<<a-carrier>>). Byte-identity tests
+  for the direct path, and a test that an unrecognised mode refuses.
+. *Enablement, lifecycle and evidence.* The optional `boundary` key in both
+  configuration schemas, preflight, error classification, the pre-create and
+  post-Hop removal bracket in the dispatch frame (<<a-lifecycle>>), the
+  persisted Run state, the binding evidence and the audit projection, resume
+  consistency. Negative cases N14 and N15.
 . *Documentation reconciliation.* The stale-statement list below.
 
 If the Run exhausts its Hop budget, step 5 is the only step that may be
@@ -1625,6 +1826,15 @@ slice does not edit a released section.
 . *The boundary can be off.* Opt-in means most Runs will not have it until the
   maintainer changes the default. Every claim is conditional on the recorded
   boundary mode for that Run.
+. *In-view writability that reaches no host path is not yet measured.* bwrap's
+  own base tmpfs, including the directories it materialises to carry bind
+  destinations, is presumably writable for the child (<<mounts>>, the sandbox
+  root row). No host guarantee depends on it, and Slice A intends
+  `--remount-ro /` to close it, but whether that works as documented could not
+  be tested by any Hop of the planning Commission. Until Layer 1 measures it,
+  this is an explicitly marked assumption rather than a property, and it is
+  the reason N11 asserts host-side identity rather than the failure of the
+  write attempt.
 
 == Non-goals
 

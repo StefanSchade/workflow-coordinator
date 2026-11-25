@@ -16,8 +16,9 @@ code, test, script, workflow, `.wfc/` or `governance/` file.
 Repository state:: base HEAD `f492274`, branch `wfc/exec-boundary-ftr-001b`,
 Run `RUN-cdb3068d18134ae3babd479e1bd23faa`, WorkItem
 `WI-WFC-EXEC-BOUNDARY-FTR-001`. Every line reference was read at that commit,
-except those added by the correction Hops `H003` and `H006`, which were read at
-the then-current head (`ec79853` for `H006`) against unchanged product code.
+except those added by the correction Hops `H003`, `H006` and `H009`, which were
+read at the then-current head (`ec79853` for `H006`, `a8a9338` for `H009`)
+against unchanged product code.
 Where a correction superseded an earlier statement of this record, the earlier
 form is named rather than deleted.
 Evidence classes:: *[I]* read from code, test or configuration in this
@@ -26,8 +27,8 @@ scratch-only command in this Hop (recorded in <<experiments>>). *[D]* stated
 by an existing repository document, cited rather than re-derived. *[A]* an
 explicitly marked assumption that this Hop did not verify.
 Not done here:: No live provider invocation, no credential was read, copied or
-mounted, no `bwrap` process could be executed (<<limits>>), no Git write of
-any kind.
+mounted, no `bwrap` sandbox could be entered (<<limits>>, which records what
+`bwrap` could still be asked about itself), no Git write of any kind.
 
 [[summary]]
 == What this record establishes
@@ -55,6 +56,13 @@ any kind.
   resolves there *[O]*, so the whole qualification plan has a precondition
   that must be stated and satisfied rather than discovered (<<d9>>,
   <<m8,M8>>).
+. Nothing in the present dispatch path can carry a view, a grant set or a
+  boundary mode to the place that starts the provider: the port has no such
+  field and the adapters are constructed with four values, none of them a
+  grant *[I]*. The surface that carries them is therefore a decision this
+  record has to take, and it takes it on the construction axis rather than on
+  the provider-neutral port (<<d10>>), which also settles who creates and
+  removes a not-yet-existing authorized target (<<d5>>).
 . Provider permissiveness inside the boundary must be bound to the boundary
   actually being in force for that invocation, because the provider's own
   `failIfUnavailable: true` turns a failed nested sandbox into a refusal
@@ -441,12 +449,22 @@ layers L1 to L6 could not start.
 [[limits]]
 == What could not be run, and why
 
-No `bwrap` process could be started in this Hop. The agent executes inside its
-own Bubblewrap sandbox, in which
+No `bwrap` *sandbox* could be entered in any Hop of this Commission. The agent
+executes inside its own Bubblewrap sandbox, in which
 `/proc/sys/user/max_user_namespaces` reads `0` and even a minimal
 `bwrap --dev /dev --ro-bind /usr /usr --tmpfs /tmp -- /bin/true` exits 1 with
 "bwrap: No permissions to create new namespace, likely because the kernel does
 not allow non-privileged user namespaces" *[O]*.
+
+Narrowed at H009:: `bwrap` itself does run far enough to report about itself.
+`bwrap --version` prints `bubblewrap 0.11.0` *[O]* -- closing the version
+question an earlier form of this section left open -- and `bwrap --help`
+documents every option the slice relies on, including `--remount-ro DEST`
+("does not recursively remount"), `--size BYTES` ("only for `--tmpfs`") and
+`--as-pid-1` ("do not install a reaper process with PID=1") *[O]*, which is
+the evidence behind <<d11>> and behind N13's reason for forbidding
+`--as-pid-1`. What remains impossible is every observation that requires
+*being inside* the view.
 
 This is an agent-local environmental limitation, not a product defect: the
 same host runs `tests/integration/test_execution_boundary_bwrap.py`
@@ -493,10 +511,11 @@ such a mask ever appears inside a path WFC observes.
 [[d1]]
 === D1. One provider-neutral launcher seam, not two adapter copies
 
-Decision:: Introduce one launcher function that both adapters call instead of
-`subprocess.Popen` directly, taking the argv, cwd, environment, timeout and
-the read and write paths the adapter already knows, and returning the same
-process handle semantics. Boundary selection happens once, in the launcher.
+Decision:: Introduce one launcher entry point that both adapters call instead
+of `subprocess.Popen` directly, taking the argv, cwd and environment the
+adapter builds plus a Coordinator-computed grant that carries the view (see
+<<d10>>), and returning the same process handle semantics. Boundary selection
+happens once, in the launcher, from the grant's mode.
 Reason:: The seam is already narrow: exactly one `Popen` per adapter, and all
 semantic acceptance happens afterwards in `validated_result` and the reducer
 *[I]*. The same conclusion was reached independently by
@@ -509,6 +528,13 @@ adapters'. (b) A boundary-aware third adapter -- it would fork the permission
 and schema logic. (c) A plugin or registry -- `operator._execution_adapter`
 deliberately has "no registry or fallback" *[I]*; two launchers selected by a
 closed name match the existing style.
+Corrected at H009 after a Finding:: An earlier form of this decision described
+the launcher as taking "the read and write paths the adapter already knows".
+It knows none of them: the port carries no filesystem view, grant set or
+boundary mode (`adapter.py:44-69` *[I]*, and the current-state table above
+says so), and the adapters are constructed with only `result_directory`,
+`model`, `reasoning_effort` and `executable` *[I]*. Where those inputs come
+from is now <<d10>>, and the Slice A seam section states the same decision.
 
 [[d2]]
 === D2. Mount the repository at its own absolute path, not at `/repo`
@@ -653,6 +679,16 @@ names a directory which does not yet exist, the Coordinator creates it before
 validation and removes it afterwards if it is still empty. For an entry that
 names a not-yet-existing *file*, bind the nearest existing ancestor directory
 writable and record the overgrant.
+Who owns the lifecycle (decided at H009):: The per-Hop dispatch frame that
+computes the grant -- `operator.py`'s loop body, which creates the directories
+before constructing the adapter (`:978`), calls `run_real_one_hop`
+(`:1007-1023`) and resumes after it returns (`:1024`) *[I]*. Not the adapter:
+`execute()` returns before the Hop's post-Hop observation and candidate
+acceptance (`vertical.py:400-422`) *[I]*, so an adapter-side removal would run
+too early, and a transport that creates and deletes host directories is no
+longer a transport. The bracket is `finally`-shaped so it also runs when the
+Hop raises. Ordering is for clarity, not safety: an empty directory is
+invisible to the post-Hop delta either way.
 Reason:: A bind source must exist (*[O]*, E3), and an empty directory is
 invisible to Git, so pre-creating one cannot disturb the clean-tree assertions
 at `vertical.py:440-449` or the post-Hop delta *[I]*. Pre-creating an empty
@@ -805,6 +841,89 @@ Residual:: An unprepared host cannot produce any isolation claim at all. The
 failure direction is a refusal, so this is an availability cost rather than a
 security gap, but it must be stated in the Operator Manual by the Commission's
 documentation step.
+
+[[d10]]
+=== D10. The grant travels on the construction axis, not on the port
+
+Decision:: The Coordinator computes one frozen `BoundaryGrant` per invocation
+-- mode, canonical repository, normalized writable repository paths, the
+readable and writable host paths, the provider channel directory and the
+external scratch root -- and passes it to the CLI adapter's constructor as one
+optional parameter whose `None` value means today's unisolated behaviour. The
+provider-neutral port is unchanged. One Coordinator-side derivation function
+produces the grant for both construction sites, and
+`slice4.run_real_one_hop` gains the same optional parameter, forwarded to the
+default `CodexCliAdapter` it builds when no adapter was injected.
+Reason:: Four, in order of weight. (1) A grant on `AgentExecutionRequest`
+would reach `FakeAdapter` and `SubprocessAdapter` (`adapter.py:100-125`)
+*[I]*, which cannot act on it, so a silently ignored confinement instruction
+would be expressible -- the exact shape <<d8>> forbids; on the construction
+axis only an adapter that can honour a grant can be handed one. (2) Every
+field of `AgentExecutionRequest` is a semantic dispatch fact the prompt or the
+result contract depends on, while the execution environment is already modelled
+on the construction axis (binding, result directory, executable) *[I]*. (3) The
+boundary *mode* already arrives there: <<d8>> puts the closed `boundary` key on
+the Run execution envelope (`model.py:180-192`, `serialization.py:1004-1043`;
+its `_fields` call at `:1013` must gain `optional={"boundary"}`, since unknown
+keys are rejected today, `serialization.py:217-231`) *[I]*, and
+`operator.py:966-980` holds that object exactly where it resolves the binding
+and constructs the adapter *[I]*. (4) Blast radius: the port is shared by both
+fixture adapters, every adapter conformance test and the proof harness, and
+none of them changes.
+Where the inputs are:: `operator.py:957-980` already holds the profile, the
+phase key (`:958`), the role (`:959`), the resolved binding (`:972`) and the
+Run root (`:977`) at the construction site *[I]*;
+`vertical.run_one_hop` binds `phase = profile.phases[run.phase]`
+(`vertical.py:303`) *[I]*, which is why the rejected alternative was
+mechanically available too.
+The second construction path:: `slice4.run_real_one_hop` default-constructs a
+`CodexCliAdapter` when `adapter is None` (`slice4.py:172`, `:321-326`) *[I]*,
+and its one in-tree caller that relies on that default is the Codex proof
+harness (`proof_harness.py:215-225`) *[I]*, which passes no grant and so stays
+unisolated exactly as today. That is a non-change for a path that never
+requested a boundary, not a fallback for one that did: a `bubblewrap` grant is
+honoured or refused by name, never satisfied by an adapter built without one.
+Auditability:: `_binding_evidence` (`operator.py:677-685`, called at `:981`)
+*[I]* projects the mode from the same grant the adapter was constructed with,
+so the audit field and the dispatch cannot diverge; the injected-adapter
+branch (`:984-989`) *[I]* projects `direct`.
+Rejected:: (a) *Boundary fields on `AgentExecutionRequest`* -- rejected for
+reason (1); it is otherwise defensible and needs no adapter-constructor change.
+(b) *Separate constructor arguments per path kind* -- one frozen value keeps the
+derivation in one place and gives <<d5>> and Slice B a single thing to extend.
+(c) *Deriving the grant inside each adapter from the request* -- it would put
+authority derivation into a transport and produce two copies of the
+normalization rules.
+Consequence for Slice B:: Slice B requires that the profile the launcher
+consumes be a Coordinator-computed value *[D]*. `BoundaryGrant` is that value:
+a richer later profile changes the derivation function, not the port, the seam
+or either adapter.
+
+[[d11]]
+=== D11. The sandbox root tmpfs, and what is only measurable inside a sandbox
+
+Decision:: Intend `--remount-ro /`, appended after the mount arguments, and
+make the implementation Run *measure* it (Layer 1, N12) rather than assume it.
+Reason:: `build_argv` generates no root `--tmpfs` and no `--remount-ro /`
+(`execution_boundary.py:166-182`) *[I]*, so the sandbox root and the parent
+directories bwrap materialises to carry bind destinations belong to bwrap's own
+base tmpfs and are presumably writable for the child. No host guarantee depends
+on this -- a tmpfs write is not a host write -- but two claims had to be
+re-phrased: a negative test asserting that an in-view write *attempt* fails can
+be wrong where the path has no host backing (N11 now asserts host identity and
+records the attempt's outcome separately), and the `/tmp` size cap is not the
+whole answer to scratch abuse while an uncapped root tmpfs is writable (N12).
+The installed build documents `--remount-ro DEST` as non-recursive *[O]*, so
+appending it for `/` should leave the writable binds, the private `/tmp` and
+the external scratch untouched.
+Assumption, explicitly:: That it behaves so is *unverified*. No Hop of this
+Commission could enter a sandbox at all (<<limits>>: namespace creation is
+refused and `/proc/sys/user/max_user_namespaces` reads `0` in the agent
+sandbox) *[O]*, so neither the writability nor the remedy could be observed.
+If the measurement shows `--remount-ro /` is recursive or refuses, the
+implementation Run reports that and the in-view-only writability stays a
+stated residual; it is not a reason to lower any host guarantee or to skip the
+measurement.
 
 [[reconciliation]]
 == Claim-by-claim reconciliation with existing records
@@ -970,7 +1089,10 @@ Commission on its own judgement.
 Produced by WorkItem `WI-WFC-EXEC-BOUNDARY-FTR-001`, Run
 `RUN-cdb3068d18134ae3babd479e1bd23faa`, Hop `H001`, at base HEAD `f492274`,
 and corrected in the same Run by Hop `H003` (external mount kinds, reviewer
-scope) and Hop `H006` (provider channel separated from the Run state
-directory, provider reachability; <<d4>>, <<d9>>, <<m8,M8>>, E7).
+scope), Hop `H006` (provider channel separated from the Run state
+directory, provider reachability; <<d4>>, <<d9>>, <<m8,M8>>, E7) and Hop
+`H009` (the carrier of the grant and the boundary mode, the pre-create and
+removal lifecycle owner, the sandbox root tmpfs; <<d1>>, <<d5>>, <<d10>>,
+<<d11>>, <<limits>>).
 Independent review, maintainer acceptance and any product closure are separate
 and are not recorded here.
