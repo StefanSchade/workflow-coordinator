@@ -16,8 +16,23 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .audit import AuditError, ProjectionError, project_audit
+from ..reducer import MECHANICAL_PREEMPTION_PREFIX
 
 REPORT_SCHEMA = "wfc.report/1"
+
+# The honest next-action line for a recoverable mechanical stop (WI-WFC-
+# RECOVERY-ROUTING-001): `wfc resume` itself decides, from the Run's own
+# recorded facts, whether this is automatically recoverable or must refuse
+# with a named reason -- this text promises only that real, existing path.
+# Shared by both shapes a recoverable mechanical stop can be reported under:
+# a legacy-classified "awaiting_human" Attempt with no recorded human
+# question, and the new "reconcile_required" classification Part A gives a
+# recoverable mechanical stop going forward.
+_MECHANICAL_RECOVERY_NEXT_ACTION = (
+    "a human must inspect the recorded mechanical stop facts; "
+    "run `wfc resume`, which recovers it automatically if it is "
+    "eligible, or refuses with a named reason if it is not"
+)
 
 # Fixed table: the one line naming the next human choice, keyed by the
 # reported status. Anything not in this table (together with "completed",
@@ -117,20 +132,26 @@ def build_report(audit: Mapping[str, Any], *, archive_ref: str | None = None) ->
     if limits:
         not_done.append("limits: " + ", ".join(sorted(limits)))
 
+    stop_reason = run.get("stop_reason")
+    mechanical_stop = isinstance(stop_reason, str) and stop_reason.startswith(
+        MECHANICAL_PREEMPTION_PREFIX
+    )
+
     next_action = None
     if not success:
         if status == "awaiting_human" and run.get("human_question_present") is False:
             # No open human question is recorded: "answer the open question"
             # would name a path that does not exist (the exact incident this
-            # WorkItem fixes). `wfc resume` itself now decides, from the
-            # Run's own recorded facts, whether this is automatically
-            # recoverable or must refuse with a named reason -- this text
-            # promises only that real, existing path.
-            next_action = (
-                "a human must inspect the recorded mechanical stop facts; "
-                "run `wfc resume`, which recovers it automatically if it is "
-                "eligible, or refuses with a named reason if it is not"
-            )
+            # WorkItem fixes).
+            next_action = _MECHANICAL_RECOVERY_NEXT_ACTION
+        elif status == "reconcile_required" and mechanical_stop:
+            # Part A's whole point: a recoverable mechanical stop now
+            # classifies "reconcile_required" rather than terminal
+            # "awaiting_human". The fixed table's "a human must reconcile
+            # the Run's conflicting state before resuming" asserts a
+            # conflicting state the recovery predicate guarantees is absent,
+            # and withholds the one path that actually exists for it.
+            next_action = _MECHANICAL_RECOVERY_NEXT_ACTION
         else:
             next_action = _NEXT_HUMAN_CHOICE.get(status, _UNKNOWN_NEXT_ACTION)
 

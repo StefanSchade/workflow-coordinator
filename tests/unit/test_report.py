@@ -98,6 +98,31 @@ class TestStopStatusesNeverReportedAsSuccess:
         assert "answer the open question" not in report["next_action"]
         assert "wfc resume" in report["next_action"]
 
+    def test_reconcile_required_from_a_mechanical_stop_names_wfc_resume_not_manual_reconciliation(self, tmp_path):
+        """A recoverable mechanical stop classified reconcile_required (Part A) is given
+        the same honest `wfc resume` text as the awaiting_human shape, not the fixed
+        table's "a human must reconcile the Run's conflicting state" line, which asserts
+        a conflicting state the recovery predicate guarantees is absent."""
+
+        audit = _audit_for(
+            tmp_path, status="reconcile_required",
+            stop_reason="mechanical_preemption:required durable artifact has no CommitIntent",
+        )
+        report = rp.build_report(audit)
+        assert report["next_action"] != rp._NEXT_HUMAN_CHOICE["reconcile_required"]
+        assert "reconcile the Run's conflicting state" not in report["next_action"]
+        assert "wfc resume" in report["next_action"]
+
+    def test_reconcile_required_from_a_non_mechanical_stop_keeps_the_fixed_reconciliation_text(self, tmp_path):
+        """An ordinary convergence conflict (not a recoverable mechanical stop) is
+        unaffected: `wfc resume` does not apply to it, so the fixed table's text stands."""
+
+        audit = _audit_for(
+            tmp_path, status="reconcile_required", stop_reason="convergence_conflict",
+        )
+        report = rp.build_report(audit)
+        assert report["next_action"] == rp._NEXT_HUMAN_CHOICE["reconcile_required"]
+
     @pytest.mark.parametrize("classification", ["interrupted", "uncertain_launch"])
     def test_lifecycle_supplied_classification_drives_the_report_status(self, tmp_path, classification):
         attempt_dir = ab.build_attempt(tmp_path)

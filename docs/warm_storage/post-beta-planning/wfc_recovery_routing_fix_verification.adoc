@@ -733,6 +733,92 @@ Full required suite and the Coordinator's task-check: not run by me, for
 the same reason as H001; the Coordinator's task-check runs it after this
 Hop with verified offline inputs my sandbox does not carry.
 
+=== H012 correction: measured checks (F005)
+
+H011's independent focused review found one new blocking Finding:
+`frontdoor/report.py`'s honest next-action override (`"run `wfc resume`,
+which recovers it automatically..."`) was gated on `status ==
+"awaiting_human"` only. Part A's whole point is that a recoverable
+mechanical stop now classifies `reconcile_required` going forward, making
+it the primary new production classification this WorkItem creates -- yet
+`reconcile_required` kept the unconditional fixed-table line "a human must
+reconcile the Run's conflicting state before resuming", which asserts a
+conflicting state the recovery predicate guarantees is absent, sends the
+operator toward a manual reconciliation procedure that does not exist (no
+CLI, no documented steps), and withholds the one path that does exist
+(`wfc resume`) -- root cause (3) of the original incident, reproduced for
+the new classification.
+
+Fixed in `frontdoor/report.py`'s `build_report`: the existing
+`awaiting_human`-without-a-recorded-question override is now a shared
+constant (`_MECHANICAL_RECOVERY_NEXT_ACTION`), and a second branch applies
+the identical text when `status == "reconcile_required"` and
+`stop_reason` starts with `reducer.MECHANICAL_PREEMPTION_PREFIX`
+(`"mechanical_preemption:"`). `reducer.py` is imported for that one
+constant; it was already pure (only `model`, `dataclasses`, `re`), so this
+does not pull the Git/subprocess dependencies `report.py`'s module
+docstring deliberately avoids by not importing `lifecycle`. A
+`reconcile_required` Attempt with a non-mechanical stop reason (the
+ordinary `convergence_conflict` shape) is unaffected and keeps the fixed
+table's text, since `test_report_status_coverage.py`'s
+`fixture-stop-reason` cases already pin that for every other status.
+
+Tests: two new cases added to `tests/unit/test_report.py` --
+
+* `test_reconcile_required_from_a_mechanical_stop_names_wfc_resume_not_manual_reconciliation`
+  -- a `reconcile_required` Attempt with
+  `stop_reason="mechanical_preemption:required durable artifact has no
+  CommitIntent"`; asserts `next_action` is not the fixed table's
+  "reconcile the Run's conflicting state" line and contains `"wfc
+  resume"`.
+* `test_reconcile_required_from_a_non_mechanical_stop_keeps_the_fixed_reconciliation_text`
+  -- a `reconcile_required` Attempt with the ordinary
+  `stop_reason="convergence_conflict"`; asserts the fixed table's text is
+  unchanged for that shape, since `wfc resume` does not apply to it.
+
+Confirmed to fail without the fix: copied `src/`, `tests/`,
+`pyproject.toml` and `scripts/` into a scratch copy under `$TMPDIR`,
+reverted only the `report.py` hunk (the `elif status ==
+"reconcile_required"` branch and its comment, back to the H001-era
+`awaiting_human`-only override), copied in the new
+`test_report.py`, and ran the two files against it:
+`AssertionError: assert "a human must reconcile the Run's conflicting
+state before resuming" != "a human must reconcile the Run's conflicting
+state before resuming"` on the first new test above -- the exact text
+F005 named -- with the second new test and the other 58 existing cases in
+the two files passing unaffected. The scratch copy was then deleted.
+
+Python: `/tmp/wfc-review-h002-venv/bin/python` (3.13.5, pytest 9.2.0,
+PyYAML 6.0.3) -- the same pre-existing venv used by H006-H010.
+
+[source,text]
+----
+tests/unit/test_report.py                       23 passed (2 new)
+tests/unit/test_report_status_coverage.py        37 passed
+tests/unit/test_mechanical_recovery_lifecycle.py 21 passed
+tests/unit/test_audit_privacy.py                  pass
+tests/unit/test_audit_user_name_match.py          pass
+tests/unit/test_audit_projection.py               pass
+----
+
+Lint: `/tmp/wfc-review-h002-venv/bin/python -m ruff check
+src/workflow_coordinator/frontdoor/report.py` -- all checks passed.
+
+Doc render (strict): `asciidoctor --safe-mode=safe -a assembled -o
+/dev/null --failure-level=WARN` on this record -- no output, exit 0. No
+other `.adoc` file needed a change: `ch06_recovery/01_outcomes.adoc` and
+the semantic model's state statements do not themselves reproduce
+`report.py`'s next-action strings, so F005's fix is confined to the one
+production module plus this record.
+
+Doc catalog: `python3 -I scripts/wfc_doc_catalog.py generate` then
+`check`, run after this record was written -- no additional unresolved
+links or Project Memory misses versus H010's own measured baseline.
+
+Full required suite and the Coordinator's task-check: not run by me, for
+the same reason as H001; the Coordinator's task-check runs it after this
+Hop with verified offline inputs my sandbox does not carry.
+
 == Existing-test behaviour deliberately replaced (as instructed, named)
 
 * Four `tests/unit/test_slice5b.py` durable-artifact-anomaly cases
@@ -787,6 +873,18 @@ Changed (H008, this correction, F004): `src/workflow_coordinator/frontdoor/lifec
 function); `tests/unit/test_mechanical_recovery_lifecycle.py` gained two
 tests; `docs/operator_manual/ch06_recovery/01_outcomes.adoc` and this
 record are the only `.adoc` files touched. No change to
+`src/workflow_coordinator/agent_skill/`, any program record or catalogue
+digest, trusted Git/sandbox/scope/admission rules, the release workflow,
+version literals, `governance/`, `.wfc/`, or `.github/`; no new
+dependency; no push, tag, release, publication, Runtime promotion,
+installation, or operation on the real incident Run or on
+`~/.local/state`.
+
+Changed (H012, this correction, F005): `src/workflow_coordinator/frontdoor/report.py`
+(`build_report`'s next-action override, extended to `reconcile_required`
+with a mechanical `stop_reason`, plus the one-line import of
+`reducer.MECHANICAL_PREEMPTION_PREFIX`); this record is the only other
+file touched. No existing test file changed. No change to
 `src/workflow_coordinator/agent_skill/`, any program record or catalogue
 digest, trusted Git/sandbox/scope/admission rules, the release workflow,
 version literals, `governance/`, `.wfc/`, or `.github/`; no new
