@@ -1,0 +1,793 @@
+= WFC release streamlining: planning record
+:toc:
+:toclevels: 2
+:revdate: 2026-11-25
+
+Standing:: Planning evidence supporting
+link:../../backlog/beta2_release_streamlining_plan.adoc[the Beta-2
+release-streamlining plan] and its four slice records. Not a governance
+document, not an implementation plan of record, and not an authorization.
+Nothing in the repository was changed to produce it beyond the plan, the four
+FTRs, the `_open.adoc` card and the one-sentence pointer in the P3 plan.
+Working basis::
+link:wfc_release_process_comparison_fable_2026-11-23.adoc[Release Engineering
+Review: spreadsheet-handling (core) and workflow-coordinator (WFC)]
+(2026-11-23), an independent, non-authorizing analysis written at WFC
+`baab49e`. Read in full. Everything it says about `core` is comparison context
+only; no `core` work is proposed and no `core` record is produced.
+Repository state:: base HEAD `0f50ad2`, 109 commits after `baab49e`
+(`git rev-list --count baab49e..HEAD`). All line references below were read at
+that commit.
+Evidence classes:: *[I]* read from code, workflow or configuration; *[D]*
+stated in repository documentation; *[O]* reconstructed from local Git state;
+*[X]* external assumption, not verifiable from this repository.
+
+[[staleness]]
+== Staleness of the basis, verified and extended
+
+The commissioning brief's staleness summary was checked rather than trusted.
+Three of its statements hold, two do not, and the version-bearing surface is
+larger than either the basis or the brief describes.
+
+=== Confirmed
+
+[cols="3,2",options="header"]
+|===
+|Claim |Check
+
+|The basis was written at `baab49e`, the commit carrying the local tag
+`v0.1.0b1`; `main` is 100+ commits later.
+|*[O]* `git cat-file -t baab49e` -> `commit`; `git tag -l` -> `v0.1.0b1`;
+`git rev-list --count baab49e..HEAD` -> 109.
+
+|`.github/` and the `Makefile` are unchanged since `baab49e`.
+|*[I]* `git diff --stat baab49e..HEAD -- .github/ Makefile pyproject.toml
+scripts/` reports changes to `pyproject.toml` (7 lines) and
+`scripts/wfc_dist_audit.py` (18 lines) *only*. The workflow the basis analysed
+is byte-identical to the one in the tree.
+
+|`pyproject.toml` (skill package data) and `scripts/wfc_dist_audit.py` (skill
+files in the allow-list) changed.
+|*[I]* `pyproject.toml:45-51` now lists `agent_skill/wfc/*.md` and
+`agent_skill/wfc/references/*.md`; `wfc_dist_audit.py:26-33` adds
+`WHEEL_SKILL_FILES` with the four exact names and `:92-93` requires them.
+
+|The Agent Skill was added, with tag-pinned URLs checked against the version.
+|*[I]* four new files, 515 lines
+(`git diff --stat baab49e..HEAD -- src/workflow_coordinator/agent_skill/`);
+`tests/unit/test_agent_skill_content.py:226-239` matches every
+`blob/v<x>/` URL in those files against
+`workflow_coordinator.implementation_identity.VERSION` *and* resolves the path
+after the tag in-tree.
+
+|Chapter 9 tutorials and release-note text were added.
+|*[I]* `docs/release_notes/release_notes.adoc` gained 26 lines; at `baab49e`
+it had one section heading (`== 0.1.0b1 -- (released)`), now two
+(`== 0.1.0b2 -- planned` at `:9`, `== 0.1.0b1 -- (released)` at `:35`).
+`tests/architecture/test_consumer_tutorial_pages.py` pins the tutorial pages.
+
+|`v0.1.0b1`'s publication state is not verifiable from the repository.
+|Correct, and treated as *[X]* throughout. What *is* locally verifiable: the
+tag exists locally and its commit `baab49e` is an ancestor of the
+last-fetched `refs/remotes/origin/main` (`2ca5046`), so the tagged commit is
+on the remote branch as of the last fetch *[O]*. Whether the tag *ref* was
+pushed, whether the tag run executed, and anything about PyPI, TestPyPI,
+Environments or Trusted Publishers remain *[X]*.
+|===
+
+=== Not confirmed
+
+[cols="3,3",options="header"]
+|===
+|Claim |What the files show
+
+|"Several test literals in `test_release_tooling.py`" belong to the
+version-bearing surface (commissioning brief; the basis says the version
+"also lives in ... `tests/unit/test_release_tooling.py`").
+|*Refuted as a surface item.* The ten `0.1.0b1` literals there are a
+*synthetic fixture* version: the module docstring says "each release-check
+case builds its own Git repository plus a local bare 'origin', and each
+dist-audit case builds its own in-memory wheel or sdist"
+(`test_release_tooling.py:1-6`), and `VERSION = "0.1.0b1"` at `:30` feeds
+`_write_baseline`'s generated `pyproject.toml` and notes (`:42-55`) and the
+synthetic archive names at `:202-203`. The constant is internally consistent
+and must *not* be bumped; bumping it would change nothing and risks implying
+it tracks the product version.
+
+|`scripts/wfc_doc_catalog.py` carries version references.
+|*Refuted.* `:762` and `:875` name
+`docs/cold_storage/sources/pre-0.1.0b1/...`, a directory-name prefix, not a
+version pin. The same is true of the `pre-0.1.0b1` references throughout
+`docs/`. Measured on this candidate with a `python3 -I` walk over
+`docs/**/*.{adoc,md}` (not with `ripgrep`, which under-reported here -- see
+the measurement note in <<checks>>): 636 lines in 146 files contain
+`0.1.0b1`, of which 257 lines in 82 files are the `pre-0.1.0b1` prefix; the
+rest are almost all historical records and release notes. A naive grep for the version string therefore over-reports the surface
+by more than an order of magnitude, and both figures grow with every record
+that mentions the prefix -- including this one. The enumerated table, not a
+grep, is the surface.
+|===
+
+=== Extended: the real version-bearing surface
+
+37 line sites in *thirteen* distinct files must change at a version bump
+(1 + 1 + 1 + 12 + 6 + 6 + 1 + 4 + 5), against the four version-bearing files
+the basis names. Full enumeration, with what enforces each, is in
+link:../../backlog/FTR-WFC-RELEASE-PREPARATION.adoc#problem[the R1 record].
+Two gaps carry the economic case for W2 -- the first new here, the second
+named by the basis itself:
+
+. *`pyproject.toml` and `implementation_identity.VERSION` can disagree while
+  the whole required suite stays green.* *[I]* No test imports both: the only
+  consumers of `implementation_identity.VERSION` are
+  `src/workflow_coordinator/frontdoor/skill.py`,
+  `tests/architecture/test_package_boundaries.py`,
+  `tests/unit/test_agent_skill_content.py` and
+  `tests/unit/test_frontdoor_skill.py`, and no test module reads
+  `pyproject.toml` with `tomllib` except `test_wfc_test_inputs.py` (for an
+  unrelated purpose). The equality is asserted only in CI, in
+  `release.yml:122` with `:139-140` and again at `:230` with `:246`. A
+  half-done bump is therefore invisible locally and surfaces as a red hosted
+  job.
+. *`README.md` can keep links to the previous tag and `make release-check`
+  passes.* *[I]* `check_readme_links` (`wfc_release_check.py:126-137`) rejects
+  only targets that do not start with `http://`, `https://`, `#` or
+  `mailto:`. No check compares the `blob/v<x>/` segment with the released
+  version. The Agent Skill files have exactly that check
+  (`test_agent_skill_content.py:237`); `README.md`, with ten such URLs, does
+  not.
+
+Both gaps are closed by W2 as adopted. Provenance, corrected after the renewed
+broad review: the first is new here -- a `pyproject`/`VERSION` divergence
+invisible to the required suite -- while the second is the basis's own
+observation (`comparison:251-252`, "The README check only rejects
+non-absolute links. It does not assert that the pinned `blob/<tag>/` links
+name the tag being released", repeated inside the W2 limitation at `:737`).
+What this record adds to the second is the asymmetry with the Agent Skill
+guard at `test_agent_skill_content.py:237`, which already makes exactly that
+assertion for the skill files.
+
+[[dispositions]]
+== W1-W10, claim by claim
+
+Disposition vocabulary: *adopt* as proposed, *adapt* (justified deviation),
+*defer* (not now, with the reason), *reject*. Status vocabulary against the
+repository: *confirmed*, *partly outdated*, *already implemented*, *refuted*.
+
+[cols="1,1,1,4",options="header"]
+|===
+|Rec |Status |Decision |Evidence and reason
+
+|*W1* -- correct the recovery rule for the TestPyPI-spent state; make
+`release` idempotent
+|confirmed
+|*adopt*, split across two slices
+|*[D]* `ch04_release_management.adoc:388-391` prescribes delete-and-retag for
+any failure before `publish-pypi` "-- no artifact has reached an index yet",
+and `:374-375` of the same chapter says "a pushed tag spends a TestPyPI
+version even if the publish then fails". *[I]* `publish-pypi` needs
+`publish-testpypi` (`release.yml:323`), so a corrected tag cannot pass once
+TestPyPI has the version. *[I]* `release.yml:371` calls `gh release create`,
+which fails on an existing release, so the job is not re-runnable. Recurring
+cost removed: the first real partial failure would otherwise start at a dead
+end -- a documentation defect with an operational consequence, at the price
+of one table and one two-branch shell step. Documentation part -> R2;
+workflow part -> R3. *Ordering consequence, found in correction:* because R2
+lands first, its corrected table would state "re-run the failed jobs" while
+the `release` job is still not re-runnable. R2 therefore writes that row with
+an explicit "while R3 is planned" exception, and R3 -- which changes the
+behaviour -- strikes the exception in the same slice. That is one of the four
+chapter-4 statements R3 owns under <<design-decisions,D-B>>; the rest of the
+chapter stays R2's.
+*Not* adopted: `skip-existing` on TestPyPI, which would
+let the rehearsal silently keep the old file and defeat G6's reason for being
+a real upload (MD-1).
+
+|*W2* -- one scripted release-preparation commit
+|partly outdated (the surface is larger)
+|*adopt*, with one *adapt*
+|See <<staleness>>. Recurring cost removed: 37 hand edits across thirteen
+files per release, two of which no local check can catch. Adapted: the basis
+asks that tests read the version from `pyproject.toml`; C1 names the literal
+at `tests/architecture/test_bp1_identity.py:41` deliberately "so a future bump
+touches it knowingly" (`ch04:42-45`). Keeping the literal and adding a
+`pyproject`-versus-`VERSION` guard closes the real gap without reversing a
+decided contract, and the guard would have caught the divergence that reading
+dynamically would merely have hidden. -> R1.
+
+|*W3* -- move the consumer smoke into the approval pause
+|confirmed as a description of Beta 1's cost
+|*defer pending maintainer decision D1*
+|*[D]* The cost is real and recorded in chapter 4: authenticated artifact
+download, manual transfer to the Operator's machine, member-by-member rebuild
+comparison because the wheel carries no commit identifier, and a rebuild whose
+byte-identity is not claimed (`ch04:531-556`, `:546-549`, `:251-254`). *[I]*
+Independently verified here: the Q1 post-run verifier is not in the repository
+(`git ls-files scripts/` lists seven scripts; `q1_postrun_verify.py`, which
+`ch04:315` reports as having run, is not one), so Beta 2 cannot repeat Q1 from
+the repository alone. The basis's further points -- that the tag run rebuilds
+so the published bytes are "equivalent by argument, not identical by
+construction", that the Q1 tooling lived under `~/wfc-runtime-env/`, and that
+recording the results took commits between the green run and the tag --
+are its own (`wfc_release_process_comparison_fable_2026-11-23.adoc:306-312`)
+and were not re-verified, since the primary run evidence is not in this
+repository; the first is consistent with `ch04:255-257`, which states that
+`check` re-runs in tag mode. *But* the P3 plan records "Q1 stays before the
+tag; confirmed again and finally"
+(`postbeta_plan_p3_release_engineering.adoc:507-510`). A planning Commission
+does not reverse that. Presented as decision D1 with both options, their costs
+and a recommendation (Option B for Beta 2) in the plan; implemented as the
+conditional slice R4, which holds both variants.
+
+|*W4* -- one approval, one record
+|confirmed in part; one count refined
+|*adopt in part*, *reject* one element
+|*[D]* Five separate Beta-1 authorizations are evidenced: the Q1 start
+release, the MD-5 acceptance (`ch04:574-589`), the G7 acceptance (`:344-354`),
+the pre-tag environment confirmation (ES-2) and the G8 approval. Only the last
+recurs. Adopted: name the `pypi` approval as *the* release authorization;
+attach `SHA256SUMS.txt` to the Release (the basis's point that the one useful
+place does not get it is correct -- `release.yml:371-374` attaches only the
+wheel and sdist); retire the MD and ES namespaces from the active chapter as
+decided history with a link. *Rejected:* "no acceptance statements in
+`docs/`". link:../../backlog/README.adoc[Backlog upkeep] requires independent
+acceptance to be *recorded with its evidence*; the two maintainer statements
+are that evidence. Moving them verbatim to cold storage removes the
+per-release reading cost without discarding the record. *Count refined:* the
+basis says seven copies; inside this repository five are verifiable -- the
+chapter's records, the P3 plan, the release-notes qualification paragraph
+(`release_notes.adoc:59-72`), the quoted acceptances, and three `_open.adoc`
+cards ("Release qualification preparation", "Q1 consumer smoke qualification
+executed", "Q1 check correction", all dated 2026-11-23). The other two it
+names are outside the repository and therefore *[X]*. -> R2 and R3.
+
+|*W5* -- put decision facts in the job summary
+|partly already implemented
+|*adopt* the remainder
+|*[I]* Already there: the artifact SHA-256 block (`release.yml:169-178`) and
+`python-compat`'s coverage-and-limits note (`:284-291`). *[D]* Still inferred
+rather than read, by the chapter's own account: the seed pip version, the
+`bwrap`/userns detail, the fetch reachability and the pytest counts
+(`ch04:485-495`, with `:518-529` stating that the job logs were not
+retrievable and the counts "not read"). Recurring cost removed: four
+paragraphs of reasoning per release replaced by six lines the job already has
+in hand -- the cheapest item in this plan. -> R3.
+
+|*W6* -- maintain the action pins mechanically
+|confirmed as a description; the mechanism is *[X]*
+|*defer* Dependabot; *reject* the lockfile for now
+|*[I]* No `.github/dependabot.yml` exists (`.github/` contains only
+`workflows/release.yml`). *[D]* Five actions are SHA-pinned with a documented
+resolution procedure (`ch04:207-218`). *[X]* The workflow dependency
+lockfile's availability and shape cannot be checked here. Economic reason to
+defer rather than adopt: for five pinned actions, a Dependabot pull-request
+stream is a *recurring triage obligation* for a single maintainer that
+plausibly exceeds the two or three manual `git ls-remote` resolutions a year it
+would replace. The one concrete pending item -- the Node-runtime deprecation
+warning against the two artifact actions (`ch04:515`) -- is a single one-time
+pin bump; it needs network access the agent environment may lack and must
+never be an invented SHA, so it is named as a maintainer or Operator step, not
+an FTR slice. This is the clearest case in the analysis of machinery whose own
+recurring cost exceeds the cost it removes. Revisit on a security advisory
+against a pinned action. -> plan decision D3, no slice.
+
+|*W7* -- decide what `python-compat` means
+|confirmed as a *gap between the classifiers and the qualified profile*;
+*refuted* as a contradiction inside the chapter
+|*present as maintainer decision D6*; no disposition taken here, and *no slice
+carries the change*
+|*[I]* The mechanical facts hold: `publish-testpypi` needs only `check`
+(`release.yml:293-295`), so a red `python-compat` does not stop publication,
+while `pyproject.toml:17-19` advertises CPython 3.10, 3.11 and 3.12 and only
+CPython 3.13 on Linux x86-64 is qualified. *[D]* But that is *decided*, not
+accidental: `release.yml:188-195` records it as "maintainer decision of
+2026-11-23 ... no release gate (no job waits for it; it reports the
+compatibility facts for the maintainer)", `ch04:164-168` as "not a
+prerequisite of any publishing job", `ch04:566` as "the informational
+`python-compat` matrix", and `_open.adoc:158` already names dropping
+3.10-3.12 as the available one-line alternative. `ch04:243` ("Every gate is
+release-blocking; there is no advisory class") is scoped to the enumerated
+gates G1-G8 (`ch04:267-274`), which do not include `python-compat`; it is
+therefore *not* in contradiction with the informational job. The basis itself
+claims only that "a red compat job would not stop publication" and offers
+"or remove the classifiers" (comparison `:800-805`). Adopting the `needs:`
+edit would *reverse a recorded maintainer decision*, which this Commission
+may not do. A second, later-found reason keeps it out of the slices
+altogether: the edit does not end in `release.yml`. It makes `ch04:165` and
+`:566` false and puts something that can stop a release outside the gate list
+G1-G8, which is contract material in P3's G namespace -- and P3 excluded a
+matrix from this release at all (E3's non-goals, "no ... Python or
+architecture matrix", `postbeta_plan_p3_release_engineering.adoc:332-334`, and
+"a Python/OS matrix" in *Not in this release*, `:615`), the existing matrix
+being a 2026-11-23 addition the maintainer made *informational by decision*
+(`_open.adoc:181`). -> plan decision D6 with three options and a
+recommendation (Option C for Beta 2); no slice carries either side of it, and
+R2 states only what the files state when it runs. See
+<<design-decisions,D-H>>.
+
+|*W8* -- reduce `ch04` to the steady state
+|confirmed, slightly understated
+|*adopt*
+|*[I]* The chapter is 615 lines; `:277-615` -- about 339 -- are the record of
+one release: the Q1 result record, the G7 acceptance, the MD-5 investigation,
+the hosted-run record, the run-#9 primary evidence, the artifact verification,
+the MD-5 acceptance and a self-declared superseded template. The basis said
+"about 300 of its 612". Recurring cost removed: every release task and every
+agent Hop that touches release work loads the chapter. The move is verbatim,
+to cold storage -- the repository's own home for completed investigations and
+earlier understanding (`docs/ai_info/doc_conventions.adoc`, knowledge homes) --
+with the BL1 slice as the precedent for the same kind of move
+(`_open.adoc`'s BL1 card). The basis's sub-point "move the Q1 request files and
+verifier into the repository" is carried by R4's common part, not by R2. -> R2.
+
+|*W9* -- verify after publication
+|confirmed as absent
+|*defer*
+|*[I]* No such job exists; `release` is the last of five. It would replace two
+cheap manual page checks (the chapter's *Verify* step) and add a job *after*
+the irreversible step whose natural failure mode -- index propagation delay --
+produces an alarming red run that means nothing. For a release cadence of a
+few betas a year the trade is negative. This is the second item rejected on
+economic grounds rather than on feasibility. Revisit if releases become
+frequent. -> plan's "deliberately not done", no slice.
+
+|*W10* -- smoke against a disposable repository
+|*already largely implemented*
+|*adapt* (reuse, do not rebuild)
+|*[I]* `examples/consumer-demo/make_workspace.py` already creates a separate,
+disposable consumer repository with its own Evidence repository and four
+ready-made requests; `rehearse.py` and `scripted_provider.py` rehearse
+complete Runs offline. *[D]* Slices S1 and S2 are implemented and
+independently accepted at Run level (`_open.adoc`'s consumer-demo-workspace
+entry), and that record's
+*own* slice S3 is already "one step after the existing clean-environment
+install smoke in the `check` job" pending its decision D2
+(`FTR-WFC-CONSUMER-DEMO-WORKSPACE.adoc:558-562`). Writing a second
+throwaway-repository mechanism would duplicate accepted work. The open part is
+the *consumer choice* for the real-provider smoke (`core`, which Beta 1 used
+and left two branches and worktrees in -- `ch04:330-332`, versus the kit), and
+it overlaps the demo record's D2. -> plan decision D5; folded into R4, with
+reconciliation of the two records required before either is commissioned.
+|===
+
+=== Already implemented or already decided, and therefore not re-planned
+
+Named so the slices do not repeat them:
+
+* *[D]* P3's decisions C1-C7, MD-1 to MD-6, the gates G1-G8 and the external
+  package ES-1 to ES-6. MD-5 and G7 were accepted by the maintainer for
+  `0.1.0b1` on 2026-11-23 (`ch04:574-589`, `:344-354`).
+* *[I]* The read-only preflight `scripts/wfc_release_check.py` and the exact
+  allow-list audit `scripts/wfc_dist_audit.py`, both behind Make targets and
+  both called from CI (`release.yml:116-117`, `:163-167`), with
+  `tests/architecture/test_offline_distribution.py:45` giving the audit rule
+  one implementation and two callers.
+* *[I]* Build once with artifact hand-over and checksum re-verification
+  (`release.yml:180-186`, `:302-312`, `:336-346`); zero repository secrets;
+  every action SHA-pinned; two Environments; release notes frozen before the
+  tag and enforced.
+* *[D]* E0-E3 and L1 were one-time packages; the hosted-runner adaptations of
+  2026-11-23 were one-time runner work -- seven recorded attempts with six
+  code or configuration responses, the seventh being the preflight's intended
+  refusal with "no code change" (`ch04:474-483`). None is repeated for
+  Beta 2.
+* *[I]* A `MANIFEST.in` is unnecessary: the sdist is already exactly scoped
+  and the audit enforces it mechanically (`ch04:68-72`).
+
+[[design-decisions]]
+== Design decisions of this plan, with rejected alternatives
+
+D-A -- Four slices, not ten:: W1-W10 group by *where the recurring cost
+sits*: the preparation commit (W2), the release chapter (W1 docs, W4, W8), the
+pipeline's own robustness (W1 workflow, W4, W5) and the placement of the
+consumer smoke (W3, W10). W7 is in no slice at all
+(<<design-decisions,D-H>>). _Rejected:_ one slice per recommendation -- six of
+the ten are one-to-three-line changes and would spend a Run each on
+commissioning overhead. _Also rejected:_ one single release-streamlining
+slice -- it would merge a documentation relocation, a new writing tool and a
+change to the publication chain into one Run and one review, which is exactly
+the merged-risk the commissioning brief warns against.
+
+D-B -- R2 writes chapter 4 first, and every later slice retires the "planned"
+wording its own work makes real:: R2 reduces the chapter and names R1's and
+R3's work *as planned*; R1 then owns three line groups (the runbook's prepare
+step and the two enumerations of what `release-check` asserts) and R3 owns
+four statements (the recovery exception, the idempotent `release` job, the
+attached `SHA256SUMS.txt` and the summary block). _Precedent, not invention:_
+this is exactly how E1 specified E2 and E3 ("planned tooling is named as
+planned, not as existing") and how E2, the implementing slice, closed it
+("chapter 4 updated") -- `_open.adoc`'s E1 and E2 cards.
+_Rejected:_ keeping chapter 4 out of R1 and R3 altogether, which an earlier
+draft of this plan did to buy a second parallel lane. It left the chapter
+stating five existing things as planned after the plan's own order had run --
+including a prepare command the autonomy list tells the operator to use -- and
+pinned that state with acceptance criteria ("no other line of the chapter
+differs", "`git diff` touches only the files in scope") that forbade repair.
+The repository's rule is that the owning documentation is maintained when
+behaviour changes (`ch03_engineering_conventions.adoc:35-36`), so the lane was
+given up instead: the file is the unit of conflict, not the section, and the
+schedule gain for a single maintainer running one Commission at a time is
+near-zero.
+_Also rejected:_ a separate chapter-4 upkeep step after each slice, or an
+operator-performed flip. Both move documentation truth out of the slice that
+changes the behaviour, which is what the rule exists to prevent, and the
+second would put a developer-guide chapter into Level-1 autonomy, which the
+plan's autonomy list deliberately limits to the controlling records and
+`_open.adoc`.
+
+D-C -- R2 first:: It is the only slice that corrects a defect with an
+operational consequence and no behaviour change at all, and it writes the
+specification the other two implement. _Rejected:_ R1 first -- the plan's own
+economics favour it, but it would then have to write the chapter sections R2
+is reducing and relocating in the same place, which is the merged risk the
+slicing avoids; after R2, R1 touches only the three line groups its own tool
+makes true.
+
+D-D -- R4 stays conditional:: Implementing either variant before D1 would
+either reverse a recorded decision without authority or foreclose the
+maintainer's choice. _Rejected:_ writing only Variant B as "the safe one" --
+it pre-decides D1 by making A more expensive to choose later.
+
+D-E -- Two economic rejections are stated as rejections:: W6 and W9 are the
+two recommendations whose own recurring cost plausibly exceeds the cost they
+remove. Saying so, with the arithmetic, is more useful than adopting them and
+quietly never doing them. _Rejected:_ "defer with no reason", which is how a
+backlog accumulates machinery.
+
+D-F -- The scope-ceiling problem is named, not worked around:: R3 and R4 touch
+`.github/workflows/release.yml`, outside `.wfc/config.yaml`'s
+`work_item_scope_ceiling` (`src`, `tests`, `scripts`, `docs`, `README.md`,
+`pyproject.toml`, `Makefile`, `examples/consumer-demo`). _Rejected:_ moving
+the logic into a script under `scripts/` to stay inside the ceiling -- it
+would put release-pipeline control flow in a second place to avoid a
+configuration entry the maintainer has granted before and removed again
+(`_open.adoc`'s E3 card).
+
+D-G -- R1 is the writing tool *and* the two guards, not the guards alone::
+The two guards (`pyproject` versus `VERSION`, README pins) close both
+*invisible* drift paths on their own, without adding the repository's first
+release tool that writes to the tree; they are the cheaper half of R1.
+_Rejected as the whole of R1:_ they leave the 37 hand edits across thirteen
+files in place, which is W2's actual recurring cost and R1's stated purpose. A
+guard turns a forgotten edit from a silent defect into a red test, which is
+better, but the edits are still made by hand every release. Worth recording
+for the opposite direction: if R1 ever has to be cut down, the guards are the
+part to keep.
+
+D-H -- W7 is in no slice, not even conditionally:: The `needs:` line of D6
+Option A was first kept in R3's scope marked *conditional on the maintainer's
+decision*. That survived two reviews and was wrong for the same reason both of
+them blocked on elsewhere: a slice must leave its owning documentation true.
+The edit makes `ch04:165` ("not a prerequisite of any publishing job") and
+`:566` false and puts something that can stop a release outside the gate list
+G1-G8, while R3's scope excludes the rest of the chapter and R2's AC-3 pins
+the informational wording -- so on the branch the plan then recommended, R3
+would have landed a chapter denying that a job which can stop the publication
+chain can. The decision *and its execution* therefore stay with the
+maintainer, with the chapter lines travelling along, exactly as the pending
+action-pin bump of
+link:../../backlog/beta2_release_streamlining_plan.adoc#d3[the plan's D3] is a
+maintainer or Operator step rather than an FTR slice. The plan's recommendation moved to Option C for
+Beta 2 as a consequence of counting the real cost: Option A is not the
+cheapest option to execute once its chapter and gate-list consequence is
+counted, the gap it closes is a correctness question with no recurring cost,
+and once R3 lands the compatibility result is one of the facts the maintainer
+reads at the `pypi` pause -- most of Option A's value without reversing
+anything.
+_Rejected:_ a conditional sixth ownership row with conditional clauses in R3's
+scope and `AC-8` and in R2's `AC-3`. It is the smallest edit, but it buys a
+branch that may never be taken with conditional acceptance criteria in two
+records, and it would have a slice execute a decision reversal whose
+documentation consequence reaches a contract list the slice may not touch.
+_Also rejected:_ recommending Option B to avoid the problem -- it trades away
+a probably-true claim to silence a check, and the recommendation should follow
+the economics, not the convenience of the slicing.
+_Not a contradiction of <<design-decisions,D-B>>:_ that entry rejects moving a
+*slice's* documentation consequence to a later step or to the operator. Here
+the behaviour change itself is the maintainer's, so documentation truth stays
+with whoever changes the behaviour, which is the same rule applied.
+
+[[impact]]
+== Impact matrix, with the Front Door docs-sync check applied
+
+The link:../../developer_guide/ch03_engineering_conventions.adoc#frontdoor-docs-sync[Front
+Door docs-sync convention] asks, on any change to the observable behaviour or
+operating surface of the installed Front Door, whether the shipped Agent Skill
+texts and the consumer tutorials still say what is true. It is a question to
+ask, not an obligation to edit. Asked for each slice:
+
+[cols="1,1,1,1,1,1",options="header"]
+|===
+|Slice |CLI / Front Door |Agent Skill |Tutorials (ch09, demo kit) |Release
+documentation |CI
+
+|*This planning Commission*
+|none
+|none
+|none
+|the P3 plan gains one pointer sentence; no decision changes
+|none
+
+|*R2* -- chapter steady state
+|none -- no command, flag, default, classification, report, diagnostic,
+admission, binding or recovery behaviour changes
+|*check asked, no edit needed*
+|*check asked, no edit needed*
+|chapter 4 rewritten to its steady state; records relocated verbatim to cold
+storage; `_open.adoc` card
+|none
+
+|*R1* -- release preparation
+|none. The tool is a `make` target and a script, not a `wfc` subcommand, so it
+is outside the Front Door surface the convention names
+|*check asked, no edit needed* -- but the four skill files are *subjects* of
+the surface list: `references/setup.md:30` carries the `==0.1.0b1` install pin
+and all four carry tag-pinned URLs, so the tool must own them and the guard
+must cover them
+|*check asked.* The five chapter 9 "What was verified" lines and
+`01_quickstart.adoc:120`, `:126`, `:130`, `:133` are in the surface question;
+plan decision D4 decides whether they are records (recommended: leave them) or
+pins
+|chapter 4 states the target, as planned, in R2; R1 then retires that wording
+and brings the two enumerations of what `release-check` asserts (the G1 row
+and the runbook's preflight sentence) up to date with the assertion it adds --
+three line groups, nothing else of the chapter
+|none
+
+|*R3* -- pipeline robustness
+|none -- CI configuration only
+|*check asked, no edit needed*
+|*check asked, no edit needed*
+|chapter 4 states these facts, as planned, in R2; R3 then retires the four
+statements its own work makes real -- the recovery exception for the `release`
+job, the job's idempotence, the attached `SHA256SUMS.txt` (including the
+runbook's "the same two artifact files") and the summary block -- and nothing
+else of the chapter
+|`release.yml`: idempotent `release`, `SHA256SUMS.txt` attached, six summary
+facts; the `needs:` graph left byte-identical -- D6's Option A is not slice
+work (<<design-decisions,D-H>>)
+
+|*R4* -- smoke placement (conditional)
+|none directly, but Variant A's script *drives* the installed CLI
+|*check applies in full* for Variant A: if the script documents or depends on
+a command, flag, classification or stop behaviour, the skill texts are checked
+against it in the same slice. Variant B: no edit needed
+|same, for the chapter 9 pages and the demo kit, whose quoted listings are
+guarded by `tests/architecture/test_tutorial_kit_quotes.py`
+|chapter 4: the sequence, G7's placement, the recovery consequence
+|`release.yml`: a summary line (A) or one digest assertion (B)
+|===
+
+[[checks]]
+== Checks run, and checks that could not be run
+
+Ran, for this Commission's own artifacts::
+* `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+  --failure-level=WARN` on every changed `.adoc`: no output. Asciidoctor
+  2.0.23.
+* `python3 scripts/wfc_doc_catalog.py generate` then `check`, before the
+  edits: *83 unresolved links, 4 Project Memory `source_path` misses*,
+  "catalog current". Re-run after the edits and compared against that
+  baseline. The catalog output is generated and left no untracked file
+  (`git status --short -uall` clean apart from pre-existing untracked
+  environment files that are not part of this work).
+* `python3 scripts/wfc_release_check.py`: refuses with exactly four topology
+  failures (not on `main`, dirty tree, local `main` out of sync with
+  `origin/main`, HEAD not reachable from `origin/main`) and *no* release-notes
+  or README-link failure -- confirming *[I]* that the `0.1.0b1` notes section
+  is frozen and the README links are absolute in the tree as it stands.
+* Targeted reads of every file the plan and the four records cite, at
+  `0f50ad2`, with the line numbers recorded in the citations.
+
+Could not run, and therefore not claimed::
+* *The full required suite.* The agent environment has no offline test-input
+  bundle, so `python -m pytest -q` was not executed and no pass, skip or
+  failure count is claimed. The Coordinator's task-check runs it with verified
+  offline inputs after this Hop. No file that the suite covers was changed:
+  the Commission touched only `.adoc` files under `docs/`.
+* *Anything about GitHub, PyPI or TestPyPI.* No network query was made and
+  none would have been trustworthy for this purpose. Every statement about
+  remote or web-interface state is marked *[X]* in the plan and above:
+  the push state of `v0.1.0b1`, whether the tag run executed and how it ended,
+  the contents of either index, attestations, the Trusted Publisher entries,
+  the two Environments, the `pypi` required-reviewer rule, branch or tag
+  protection, the availability of the workflow dependency lockfile, and the
+  Node-runtime deprecation timeline.
+* *A hosted run of anything.* R3's only real evidence is a hosted branch-push
+  run, which needs a push and is therefore a maintainer action; its FTR records
+  this as a fact to add afterwards, not as slice acceptance.
+* *`make lint` and `make format-check`.* Not run; no Python file was changed,
+  so neither could be affected, and claiming a result would add nothing.
+
+Corrected after the independent broad review (same Commission, later Hop)::
+The independent review of the whole candidate returned `changes_required` with
+three blocking Findings, all three verified here against the files before
+correcting:
++
+. *Tool-protocol residue in the committed documents.* Six of the new `.adoc`
+  files ended with a stray `</content>` line, and the plan with a further
+  `</invoke>`; seven lines in total, part of the commit object and invisible
+  to the strict render, which emits them as an ordinary paragraph. Deleted. A
+  search of all eight changed files for `antml`, `<invoke`, `<content>`,
+  `</parameter>` and `function_calls` now finds nothing.
+. *The W7 disposition rested on a contradiction the files do not contain.*
+  Re-verified: `ch04:243`'s gate-class sentence is scoped to the enumerated
+  gates G1-G8 at `:267-274`, which do not include `python-compat`, and the
+  same chapter (`:164-168`, `:566`), the workflow (`release.yml:188-195`,
+  `:290`) and `_open.adoc:181` ("it is not qualification and gates no
+  publication") record the job as informational *by the maintainer's
+  2026-11-23 decision*. Gating it reverses that decision. The disposition
+  above is rewritten, the choice is routed to the maintainer as plan decision
+  D6 with three options and a recommendation, and the `needs:` edit is marked
+  conditional in R3, in R2's AC-3, in the plan's R3 entry, its dependency
+  graph and its autonomy list, and in the `_open.adoc` card. R3's title no
+  longer announces "a real compatibility gate". (The *conditional* part of
+  this is superseded by the last correction below: the edit is now in no slice
+  at all, and the recommendation is Option C.)
+. *The plan and two FTRs disagreed about current behaviour.* The plan and R2
+  claimed "re-run the failed jobs" was already true of the implementation,
+  while R3 correctly showed `release.yml:371-374` calling `gh release create`
+  with no pre-check and no `--clobber`. R3 is right, re-verified at those
+  lines. The claim is dropped; R2's recovery table now carries an explicit
+  exception for the `release` job *while R3 is planned*, and R3 strikes that
+  exception when it lands -- which is why the single recovery row of chapter 4
+  is now named in R3's scope, under the repository's own rule that the owning
+  documentation is maintained when behaviour changes. The coupling was stated
+  in both records and in the plan's lane section, which at that point still
+  kept the rest of chapter 4 out of R1 and R3 to hold two parallel lanes --
+  superseded by the next correction below, which applies the same rule to every
+  chapter statement and gives up the second lane.
++
+Re-ran after the corrections: the strict render of every changed `.adoc` (no
+output) and `wfc_doc_catalog.py generate` then `check` against the same
+baseline of 83 unresolved links and 4 Project Memory misses. No Finding
+operation was reported: that authority is the independent reviewer's.
+
+Corrected after the independent focused review (same Commission, later Hop)::
+The focused review of the whole candidate returned `changes_required` with one
+new blocking Finding: the version surface was enumerated correctly site by
+site, but the *file count derived from it* was wrong, and the candidate
+contradicted itself about it.
++
+. *Thirteen files, not eleven.* Re-measured here before correcting: the R1
+  table lists 37 line sites (1 + 1 + 1 + 12 + 6 + 6 + 1 + 4 + 5) across
+  `pyproject.toml`, `implementation_identity.py`, `test_bp1_identity.py`,
+  `README.md`, `SKILL.md`, the three `references/*.md`,
+  `release_notes.adoc` and the four chapter 9 pages -- thirteen distinct
+  files. All thirteen paths and every per-file line count were re-verified in
+  the tree with a `python3 -I` read (`README.md` 12 sites: ten
+  `blob/v<x>/` URLs plus `:24` and `:26`; `SKILL.md` 6; `commission.md` 1,
+  `setup.md` 2, `stops-and-evidence.md` 3; `release_notes.adoc:9` is the
+  `== 0.1.0b2 -- planned` heading to be frozen, which is why the site is `:9`
+  and not the released `0.1.0b1` heading at `:35`). Eight places said
+  "eleven files" -- the plan twice, the R1 record three times, this record
+  twice and the `_open.adoc` card once -- and the R1 record contradicted them
+  at its D2 entry with the correct arithmetic ("the other ten files" =
+  thirteen minus the three tutorial pages). The count matters because it is
+  the slice's own completeness measure: an implementer following "eleven"
+  would build the short list R1 exists to prevent. All eight places now say
+  thirteen, the arithmetic is shown where the number is first derived, and the
+  D2 entry names what the ten excludes. The loose "four sites in four files"
+  comparison against the basis is replaced by "the four version-bearing files
+  the basis names", because the basis itself says "twelve README lines"
+  (`comparison:253-256`) and so does not claim four sites.
+. *Two unsupported magnitudes about `pre-0.1.0b1`.* "Roughly forty" `.adoc`
+  references and "over-reports by about a factor of three" were estimates, not
+  measurements. Measured instead (see <<staleness>>): 636 lines in 146 files
+  under `docs/` contain `0.1.0b1`, 257 lines in 82 files of them the
+  `pre-0.1.0b1` prefix, against 37 real sites. The R1 record now states the
+  point without a number, because that record is the implementer's surface
+  list and the figures drift with every record written; this record keeps the
+  measured figures with their method. The refutation itself was correct and is
+  unchanged: the prefix is a directory name, not a version pin.
++
+Measurement note: a `ripgrep` search in the agent environment returned lower
+figures (179 `pre-0.1.0b1` occurrences in 60 files, 500 `0.1.0b1` in 121) and
+silently omitted whole files, for example `docs/cold_storage/README.adoc`,
+which is not ignored by Git (`git check-ignore` exits 1 for it) and is not
+excluded by any `ripgrep` configuration found here. The cause was not
+established, so no `ripgrep` count is asserted: the figures above come from a
+`python3 -I` `os.walk` over `docs/**/*.{adoc,md}`, which applies no ignore
+rules at all. Re-ran after these corrections: the strict render of every
+changed `.adoc` (no output) and `wfc_doc_catalog.py generate` then `check`
+against the same baseline of 83 unresolved links and 4 Project Memory misses.
+No Finding operation was reported.
+
+Corrected after the renewed independent broad review (same Commission, later
+Hop)::
+The renewed broad review of the whole candidate returned `changes_required`
+with one new blocking Finding, verified here against the candidate's own text
+before correcting: the device of having R2 state R1's and R3's work *as
+planned* had no closing step, and two acceptance criteria forbade one. R3 was
+allowed chapter 4 "for one edit and no other" with `AC-8` pinning "no other
+line of the chapter differs"; R1 was excluded from the chapter outright with
+`AC-6` locking its diff to its scope list; and the plan's autonomy list gives
+the Level-1 operator upkeep in the controlling records and `_open.adoc`, not
+in a developer-guide chapter. After the plan's own order (R2, then R1 and R3)
+the chapter would therefore have described five existing things as planned,
+among them `make release-prepare` -- which the same plan has the operator run,
+so the runbook would have sent them back to the hand edits R1 exists to remove
+-- and `release-check`'s new tag-pinned-README assertion, which runs inside
+G1 and would have left the gate list understating a release-blocking gate.
+This is the same invariant the phase had already blocked on as `F003`, in the
+other direction, and the precedent the plan cites runs the other way: E1 named
+planned tooling as planned and E2, the implementing slice, recorded "chapter 4
+updated".
++
+Corrected by adopting the ownership rule throughout, which is <<design-decisions,D-B>>
+as it now reads: each slice retires the chapter statements its own work makes
+true. R1 gains three chapter-4 line groups (the runbook's prepare step and the
+two enumerations of what `release-check` asserts) with `AC-9` requiring the
+chapter to be left true and the diff to show nothing else; R3's scope and
+`AC-8` widen from one recovery row to the four statements it makes real;
+R2 gains a handover table listing every "planned" statement with the slice
+that retires it, and `AC-9` requiring that no such statement is written
+without an owner. The consequence is stated rather than hidden: because the
+file is the unit of conflict and not the section, the second lane is given up
+-- the plan, all four slice records and the `_open.adoc` card now say *one*
+lane,
+R2 then R1 then R3 then conditional R4, with R1 and R3 independent in content
+and commissionable in either order. The three feasible corrections the review
+named were weighed; this is the first of them, with the honest lane statement
+the review asked for, because it keeps documentation truth inside the slice
+that changes the behaviour and needs no new upkeep step or autonomy grant.
++
+Three non-blocking observations of the same review were taken as well, in four
+edits, because one of them named two counts: the
+provenance of R1's second gap is corrected (the basis states the README-pin
+gap at `comparison:251-252` and `:737`; only the `pyproject`/`VERSION` gap is
+new here), the hosted-runner count now reads "seven attempts with six
+responses", the P3 citation for the rejected workflow-versus-gates test is
+`:623-625`, and the guards-only alternative to R1 is recorded as
+<<design-decisions,D-G>>. Re-ran after these corrections: the strict render of
+every changed `.adoc` (no output) and `wfc_doc_catalog.py generate` then
+`check` against the same baseline of 83 unresolved links and 4 Project Memory
+misses. No Finding operation was reported.
+
+Corrected after the independent focused re-review (same Commission, later
+Hop)::
+The focused re-review of the whole candidate returned `changes_required` with
+one new blocking Finding, verified here against the candidate's own text and
+against the files before correcting: the ownership rule adopted in the
+previous correction stopped at the one *conditional* branch the plan then
+recommended. Under D6 Option A, R3 would add `python-compat` to
+`publish-testpypi`'s `needs` while chapter 4 says the job is "not a
+prerequisite of any publishing job" (`ch04:165`, re-read in the file, and
+`:566`), R2's `AC-3` pinned that wording unconditionally, R3's scope said
+"nothing else in chapter 4 is in scope" and its `AC-8` forbade any other line
+to differ. No slice could repair it, and the plan recommended that branch.
++
+Corrected by taking the conditional out of the slices instead of making the
+acceptance criteria conditional -- <<design-decisions,D-H>>, which also records
+the rejected smaller edit. W7 is now in no slice: R3's `needs:` graph is
+required to stay byte-identical (`AC-5`, the new non-goal, the Not-authorized
+line, a rewritten risk `R-2` about a Worker adding the line anyway, and a
+commissioning note), R2's `AC-3` describes the job as the files describe it
+when R2 runs and its handover table states why there is no sixth row, and the
+plan's ownership table says the same beside the five rows. Counting Option A's
+full cost -- the two chapter lines, the workflow comment, the gate-list
+question, P3's own non-goal against a matrix and the 2026-11-23 decision that
+made the existing one informational -- also changed the plan's
+*recommendation* from Option A to *Option C for Beta 2*, with Option A
+reconsidered for the first non-beta release and Option B named as the honest
+alternative; the three options, their costs and the maintainer's ownership of
+the decision are unchanged, and nothing here decides it. The plan's
+deliberately-not-done list, which already excluded "a Python or architecture
+matrix as a gate" as a P3 non-goal, now says explicitly that the one
+borderline case is routed to the maintainer and is in no slice.
++
+Checked by execution after the corrections: the strict render of every changed
+`.adoc` (no output) and `wfc_doc_catalog.py generate` then `check` against the
+same baseline of 83 unresolved links and 4 Project Memory misses. The four
+quoted file facts were re-read in the tree: `ch04:164-168` and `:566`,
+`ch04:243` with the gate list at `:267-274`, `release.yml:188-195` and
+`:293-295` (`publish-testpypi` needs only `check`), and P3's non-goals at
+`:332-334` and `:615`. No Finding operation was reported: that authority is
+the independent reviewer's.
+
+Deliberately not done::
+No product code, test, workflow, script, `Makefile`, `pyproject.toml`,
+version literal, `.wfc/` or `governance/` change. No Git write of any kind: no
+`add`, `mv`, `rm`, `reset`, `stash` or `commit`; the index was not touched.
+No push, tag, publication or external setting. No Finding operation -- that
+authority belongs to the independent reviewer alone.
