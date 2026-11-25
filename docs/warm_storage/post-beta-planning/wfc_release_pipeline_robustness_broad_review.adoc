@@ -1,0 +1,266 @@
+= R3 release-pipeline robustness: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the slice-R3
+candidate for WorkItem `WI-WFC-RELEASE-PIPELINE-ROBUSTNESS-001`
+(link:../../backlog/FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc[FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS]).
+Later passes are added above earlier ones; earlier passes are kept unedited
+apart from the `(current)` marker, which moves to the newest pass.
+
+== Pass H002 — `RUN-1cf0f8f9…` (current)
+
+Status:: *CHANGES REQUIRED.* One blocking Finding. The two `| tee` captures
+added to the `check` job silence the exit status of the required test suite
+(G2) and of the distribution content audit (G3), because the GitHub Actions
+*default* `run:` shell is `bash -e {0}` and has no `pipefail`. A red required
+suite or a failed C2 audit would therefore no longer stop the publication
+chain. Everything else in the candidate holds: the idempotent `release` job,
+the attached `SHA256SUMS.txt`, the summary block including
+`implementation_tree_sha256` in both run modes, and the four retired
+chapter-4 statements all verify by my own execution.
+WorkItem:: `WI-WFC-RELEASE-PIPELINE-ROBUSTNESS-001`
+Run / Hop:: `RUN-1cf0f8f9bda74ac895609353748b9159` / `H002` (`broad_review`,
+whole-candidate pass, independent adversarial reviewer, gate, blocking-only,
+`finding_authority: resolve`).
+Invocation:: `INV-24d2a4d850204edf9ede4e7951ff98ab`.
+Reviewed product:: the whole candidate at base HEAD
+`4b35e3076cee16fd5df7053d6b2f3b9d13100b6c` (prior range
+`d66e804..4b35e30`): `.github/workflows/release.yml` (+56/-7),
+`docs/developer_guide/ch04_release_management.adoc` (+15/-23) and the new
+`wfc_release_pipeline_robustness_verification.adoc` (+198).
+`git status --short -uall` shows one added untracked leaf (this artifact)
+beyond the pre-existing untracked worktree environment entries, which are not
+in the CommitIntent. I issued no mutating Git command and did not touch the
+index.
+Governing acceptance:: the FTR (problem W1/W4/W5, W7 excluded, design,
+AC-1 to AC-9, required tests, risks, withheld authority), the Commission task
+(DO, REVIEW FOCUS, Acceptance, Withheld authority) and the repository policy
+restated for this Run. Where the task text and the FTR differ, the FTR
+governs.
+
+=== Blocking Finding B1 — the two new `| tee` pipelines un-gate G2 and G3
+
+*Invariant.* A release gate enumerated in
+link:../../developer_guide/ch04_release_management.adoc#release-gates[chapter 4's
+gate list] is release-blocking ("Every gate is release-blocking; there is no
+advisory class, *scoped to the enumerated gates G1-G8*"), and the FTR's W5
+design requires that "nothing new is computed and *no step's exit status
+changes*". The Commission's withheld authority adds "no weakened or deleted
+test".
+
+*What the candidate does.* `.github/workflows/release.yml`:
+
+[source,yaml]
+----
+      - name: Required test suite          # :87-108, no `shell:`, no `set -o pipefail`
+        run: |
+          ...
+          python3 scripts/wfc_test_inputs.py exec \
+            ... -- python3 -m pytest -q | tee "$RUNNER_TEMP/pytest-output.txt"
+
+      - name: Distribution content audit (C2, G3)   # :116-117, same
+        run: make dist-audit | tee "$RUNNER_TEMP/dist-audit-output.txt"
+----
+
+Neither `run:` block sets `shell:` and neither contains `set -o pipefail`
+(the file sets `set -euo pipefail` only at `:121`, `:166`, `:253`, `:260`
+and `:400` — not in these two steps, and there is no `defaults: run: shell:`
+key anywhere in the file). A pipeline's exit status is that of its *last*
+command, so both steps now report `tee`'s status, which is 0 whatever
+`pytest` or `make dist-audit` did.
+
+*Reproduced locally.* Running the two shell forms GitHub documents:
+
+[source,text]
+----
+bash -e -c            'python3 -c "raise SystemExit(1)" | tee /dev/null'  -> exit 0
+bash --noprofile --norc -eo pipefail -c  (same pipeline)                  -> exit 1
+----
+
+`scripts/wfc_dist_audit.py:145,151` returns a non-zero status on a violation
+(`raise SystemExit(main())`), so G3 was a real gate before this change, and
+`make dist-audit` without the pipe failed the step under `bash -e`.
+
+*Why the candidate's justification does not hold.* The verification record's
+section "One more external assumption: GitHub Actions' default shell is
+`pipefail`" states "GitHub's documented default for a `run:` step on a Linux
+runner is `bash --noprofile --norc -eo pipefail {0}` -- `pipefail` already
+on". That is not GitHub's documented default; it is the shell GitHub uses
+when a step *explicitly* sets `shell: bash`. The documented default when
+`shell:` is omitted is `bash -e {0}`, without `pipefail` (GitHub Actions
+workflow-syntax reference, the `jobs.<job_id>.steps[*].shell` table; I
+fetched and read that page in this Hop). The claim is therefore not merely
+an unverified external assumption but a statement contradicted by the
+authoritative source, and the implementation rests on it. The record's
+"What changed" section repeats it ("GitHub Actions' default shell already
+runs with `-o pipefail`, so this does not change either step's exit
+status").
+
+*Consequence.* On a hosted run, a failing required suite or a failing C2
+audit leaves `check` green. `publish-testpypi` needs only `check`, so the
+chain continues to the real TestPyPI upload and on to `publish-pypi`. Two of
+the five pre-tag gates in ch04's enumeration (G2 "required suite green", G3
+"both artifacts contain exactly the C2 allow-list") would no longer block,
+which also makes `ch04:260` and `ch04:271-272` untrue of the pipeline as
+integrated — the opposite of AC-8. This is a reproduced violation of an
+explicit criterion and of the design's own "no step's exit status changes";
+I do not downgrade it for the low likelihood of a red suite.
+
+*Feasible, simpler correction* (the Worker chooses; all of these stay inside
+`.github/workflows/release.yml`):
+
+. Minimal: add `set -euo pipefail` as the first line of the "Required test
+  suite" block, and turn the `dist-audit` step into a block beginning with
+  the same line. One line each; matches the five other blocks in the file.
+. Or drop the pipes entirely and keep the capture without a pipeline, e.g.
+  redirect to the file and `cat` it, exiting with the command's own status.
+. The `tee`/capture mechanism itself is sound and proportionate: W5 needs
+  the suite's own summary line, and only a captured copy makes it available
+  to a later step. No further mechanism is needed.
+
+The verification record's two statements about the default shell must be
+corrected in the same correction Hop; the record is the slice's evidence and
+currently asserts a false fact about the platform.
+
+=== What I verified and found sound (by my own execution)
+
+Job graph, permissions, triggers, actions (AC-5, AC-6):: A Python
+comparison loaded `git show d66e804:.github/workflows/release.yml` and the
+committed file with `yaml.safe_load` and compared, per job, `needs:`, `if:`,
+`permissions:` and `environment:`, plus the top-level `permissions:` and the
+`on:` triggers. All identical: `needs` = `{check: null, python-compat:
+check, publish-testpypi: check, publish-pypi: publish-testpypi, release:
+publish-pypi}`; top-level `contents: read`; `publish-testpypi` and
+`publish-pypi` `contents: read` + `id-token: write`; `release` `contents:
+write` only; `check` and `python-compat` no job block. The sorted list of
+all eleven `uses:` references is byte-identical before and after — five
+distinct actions, same 40-hex SHAs, same trailing version comments. Nothing
+was added or re-pinned.
+No secret, no new network, no new trigger (AC-6):: A regex scan of the
+committed file finds no `secrets.`, no `curl`, no `wget`, no
+`workflow_dispatch` and no `GITHUB_TOKEN` literal. The only new outbound
+call is `gh release view`, which the FTR's W1 design prescribes and which
+uses the same `GH_TOKEN: ${{ github.token }}` and the same API host as the
+`gh release create` it replaces. Nothing in the file authorizes a push, tag,
+publication or repository setting.
+`release` is idempotent in both states (AC-1, R-3):: Reading `:395-423`:
+`view_output="$(gh release view "${tag}" --json id 2>&1)"` under `set +e`,
+status captured immediately into `view_status`; status 0 -> `gh release
+upload "${tag}" ... --clobber`; non-zero *and* the output matching
+`release not found` (case-insensitive) -> `gh release create` with the
+unchanged title and notes; any other non-zero -> the output is echoed to
+stderr and the step exits 1. A failed `view` is therefore not treated as
+absence, which is exactly R-3's mitigation. The block runs under
+`set -euo pipefail` (`:400`), so the `gh` calls themselves are not masked.
+`gh` flags verified locally:: `gh version 2.46.0` is installed here.
+`gh release upload --help` shows `gh release upload <tag> <files>...` with
+`--clobber` ("Overwrite existing assets of the same name"); `gh release view
+--help` shows `gh release view [<tag>]` with `--json fields`. Both flags the
+design relies on exist. *External assumption, correctly marked as such by
+the implementer and not verifiable here:* that `release not found` is the
+message `gh` produces for an absent release and that no other failure
+carries that wording. I could not re-run the implementer's
+`strings /usr/bin/gh` corroboration — reads outside the worktree are blocked
+by this session's sandbox — so I neither confirm nor dispute that detail; it
+remains an external assumption either way, which is how the record presents
+it.
+`SHA256SUMS.txt` is attached (AC-2):: Both branches list
+`dist/*.whl dist/*.tar.gz dist/SHA256SUMS.txt`. The file exists in the
+downloaded artifact: `check` writes it at `:169-178`, before the
+`upload-artifact` step at `:213-217` (`path: dist/`), and the `rm` in the two
+publishing jobs removes it only from those jobs' own downloaded copies.
+Publishing payload unchanged (AC-3):: `publish-testpypi` (`:338-351`) and
+`publish-pypi` (`:372-381`) still `sha256sum -c SHA256SUMS.txt`, then
+`rm SHA256SUMS.txt`, then upload `packages-dir: dist/` — byte-identical to
+the pre-slice text.
+Summary block and `implementation_tree_sha256` in both modes (AC-4):: The
+new step (`:184-209`) is in `check`, which carries no `if:` and runs on both
+the `main`-push and the `v*`-tag trigger, and the step itself is
+`if: always()`. All six design items appear as labelled lines: interpreter
+and seed pip version, `bwrap version`, `required-suite pass/skip counts`,
+artifact names/sizes/SHA-256, `implementation_tree_sha256`, `dist-audit
+result`. The tree digest is read from `$RUNNER_TEMP/wfc-version.json`, which
+the existing C3 step already writes (`:130`) from `wfc --version --json`;
+`src/workflow_coordinator/implementation_identity.py:68` confirms the
+product emits that exact key, so the value is read, not reconstructed. Every
+line has a `not captured` fallback and the step runs under `set +e`, and the
+group's exit status is the final `echo`'s, so the diagnostic cannot fail the
+job (R-4). Nothing in the block prints a credential; the values are versions,
+file names, byte sizes and digests.
+Chapter 4: exactly the four statements (AC-8):: The chapter diff is four
+hunks and nothing else (+15/-23): the CI section's `check` summary-facts
+sentence (now "also carries ... in both branch-push and tag-push runs"), the
+CI section's `release` bullet (idempotent inspect-before-create/upload *and*
+the three-files statement, which the FTR's scope groups in that one bullet),
+the runbook's publish-step sentence ("the same three files ... the wheel, the
+sdist and `SHA256SUMS.txt`"), and the struck recovery-table exception. The
+`python-compat` lines (`:176-178`, and the gate-section sentence at `:261`)
+and the whole G1-G8 enumeration (`:269-273`) are untouched, as AC-5's second
+half and the D6 standing require; `grep` for `python-compat` and for
+`RELEASE-PIPELINE-ROBUSTNESS` in the chapter confirms the first is unchanged
+and the second now returns nothing. The remaining "two artifact files" and
+"no `--clobber`" strings elsewhere in `docs/` are in warm-storage review
+records, the plan and the R2/R3 backlog records — provenance and planning
+material, not the owning chapter, and outside this slice's scope.
+No `needs:` edit, no D6 anticipation:: No `needs:` line differs, no
+Dependabot or other `.github/` file was added, and nothing about
+`python-compat` changed in either file. R-2's temptation was not taken.
+Renders and catalog (AC-8):: `asciidoctor --safe-mode=safe -a assembled
+-o /dev/null --failure-level=WARN` printed nothing (rc 0, empty stdout and
+stderr) for `ch04_release_management.adoc`, for the verification record and
+for `developer_guide.adoc` as a whole. `python3 scripts/wfc_doc_catalog.py
+generate` reports "579 records ...; unchanged", and `check` reports
+"Informational: 83 unresolved links; 4 Project Memory source_path misses" /
+"catalog current" — the stated baseline, with nothing added. The generated
+catalog lives at `build/wfc/document_catalog.jsonl`, which `.gitignore`
+covers.
+YAML parses (AC-7):: `yaml.safe_load` of the committed
+`.github/workflows/release.yml` succeeds.
+Front Door docs-sync:: Asked and answered: no Front Door command, argument,
+default, classification, report, diagnostic, admission, binding or recovery
+behaviour changes — this is CI configuration — so no Agent Skill or tutorial
+edit is owed. I agree with the implementer's answer.
+Scope:: Exactly three leaves in the candidate commit, all authorized: the
+workflow (under the maintainer's temporary file-exact ceiling entry of
+2026-11-25), the chapter and the new verification record. No `.wfc/`,
+`governance/`, product, test, script, `Makefile`, `pyproject.toml` or
+version change. `_open.adoc` correctly left to post-acceptance upkeep.
+The reported D1 difference:: I agree with the implementer's handling. The
+plan's D1 wording ("asserted equal in the tag run") has no counterpart in
+the FTR's design section or in AC-4, which ask only that the six facts
+appear as labelled lines; the task's own instruction is to report the
+difference and implement the FTR, not more. Printing the digest in both run
+modes without an in-workflow equality assertion is the FTR-conformant
+reading, and adding an assertion step would have been unauthorized
+mechanism. The difference is recorded in the verification record and here.
+
+=== Non-blocking observations
+
+. `echo "- bwrap version: $(bwrap --version 2>&1 || echo 'not captured')"`
+  (`:191`): if `bwrap` is absent the subshell captures the shell's own
+  `bwrap: command not found` on the redirected stderr and prints that
+  instead of `not captured`. It still reports the absence rather than
+  exiting, so R-4 holds; only the wording differs from the other lines.
+. `grep -E '^[0-9]+ (passed|failed|error)'` (`:192`) matches pytest's quiet
+  summary line in the ordinary cases ("N passed, M skipped in …", "N failed,
+  M passed in …"), but not a run whose line begins with a skip count or with
+  "no tests ran". The fallback then prints `not captured`, which is honest;
+  worth a thought only if the maintainer wants the count line to survive
+  those edge cases.
+. The `dist-audit result` line takes the last line of the captured audit
+  output. That is tool output, not a credential, and the runner's own
+  `/home/runner/work/...` paths are not sensitive — but it is the one line in
+  the block whose content the workflow does not control, so it is the line to
+  watch if `wfc_dist_audit.py`'s output ever changes.
+. Hosted-run steps I did not and could not execute, and which nothing in
+  this review claims: the tag-mode `release-check` preflight, the real
+  `gh release view` / `create` / `upload --clobber` calls, the OIDC uploads,
+  and the rendering of the new block in a real `$GITHUB_STEP_SUMMARY`. These
+  are AC-9, a maintainer action, and the implementer listed them correctly.
+. I did not run `python -m pytest -q`: `pytest` is not installed in this
+  sandbox and there is no network to install it. That is an agent-local
+  limitation, not a product finding; the Coordinator's task-check runs the
+  required suite separately. No Python, test or packaging file is touched by
+  the candidate, and B1 concerns how CI *reacts* to that suite, not the
+  suite itself.
