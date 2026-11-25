@@ -127,21 +127,28 @@ further terminal classification, itself recorded as a further `classified`
 journal record. Recovery never itself accepts the Run: the continuation
 still needs its own normal accepting route, exactly like any other Hop.
 
-Once the lock is taken and the Run is being rewritten, two narrow residual
-windows remain, both distinct from "a predicate element failed" and
-neither claimed to be covered by the no-mutation guarantee above: the
-continuation engine resolving at the pre-mutation check and then failing
-to actually spawn (the same kind of race the original launch's own
-`launch_failed_no_engine` handling already accepts) leaves the Run
-rewritten to `ready` with no process driving it; and a controller killed
-between the `mechanical_recovery_resumed` journal record and the
+The continuation engine resolving at the pre-mutation check and then
+failing to actually spawn -- the ordinary real-world cause is a stale
+console script whose absolute shebang interpreter has since been removed
+or replaced, which `os.path.isfile`/`os.access` alone cannot detect -- no
+longer leaves the Run rewritten to `ready` with no process driving it: the
+launch failure rolls the Run and checkpoint back to their pre-recovery
+state and appends a `mechanical_recovery_rolled_back` record (the journal
+stays append-only; nothing already written is rewritten or deleted), then
+refuses by name (`refused_not_recoverable`) exactly like any other
+predicate failure, and a later `wfc resume` recovers the identical Run once
+the engine is fixed.
+
+One narrow residual window remains, distinct from "a predicate element
+failed" and not covered by the no-mutation guarantee above: a controller
+killed between the `mechanical_recovery_resumed` journal record and the
 continuation's own further `classified` record has no `uncertain_launch`-
-equivalent re-entry of its own, unlike the original launch path. Either
+equivalent re-entry of its own, unlike the original launch path. This
 leaves the Run in the same unresumable shape mechanical recovery exists to
-remove, reachable only by an external kill or an already-vanishing engine
-executable in that exact window, not by any predicate-level mistake; a
-maintainer who finds a Run in this shape must treat it as outcome 2
-("Maintainer salvage + fresh successor Run") above.
+remove, reachable only by an external kill in that exact window, not by
+any predicate-level mistake or an ordinary launch failure; a maintainer
+who finds a Run in this shape must treat it as outcome 2 ("Maintainer
+salvage + fresh successor Run") above.
 
 The already-archived predecessor attempt (manifest, `audit.json`, raw
 files, its own Evidence commit) is never rewritten, moved, or overwritten.

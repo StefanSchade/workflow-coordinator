@@ -941,7 +941,15 @@ def _attempt_mechanical_recovery(
         _, process = _do_continuation_launch(
             repository, checkout_dir, journal, lock, authorized, prelaunch, current_head=facts.head,
         )
-    except LifecycleError:
+    except LifecycleError as error:
+        # F004: a launch failure here would otherwise leave the Run rewritten
+        # to `ready` with its mechanical diagnosis erased and no process to
+        # drive it -- unresumable. Roll the Run and checkpoint back to their
+        # pre-recovery state and record the rollback; the journal stays
+        # append-only, nothing already written is rewritten or deleted.
+        write_run_snapshot(run_path, run)
+        atomic_write_json(Path(checkout_state_root_value) / "checkpoint.json", checkpoint_projection(run, profile))
+        journal.append("mechanical_recovery_rolled_back", {"run_id": run.run_id, "error": str(error)})
         release_lock(lock)
         raise
     process.wait()

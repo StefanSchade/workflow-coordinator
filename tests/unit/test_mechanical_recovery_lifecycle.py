@@ -536,6 +536,53 @@ def test_recovery_refuses_on_active_lifecycle_lock_and_changes_nothing(
     assert second.classification == "completed", second.message
 
 
+def test_recovery_launch_failure_rolls_back_mutations_and_a_later_resume_still_recovers(
+    repository: Path, tmp_path: Path, state_home: Path,
+):
+    """F004: the continuation engine can pass both pre-mutation checks
+    (present at that path, marked executable) and still fail to actually
+    spawn -- a stale console script with a dangling shebang interpreter is
+    the ordinary real-world cause. The Run and checkpoint already rewritten
+    to ``ready`` for the continuation must be rolled back to their
+    pre-recovery state, with a ``mechanical_recovery_rolled_back`` record
+    appended (never a rewrite or deletion of an existing record), so the Run
+    is never left unresumable. A later resume with a working engine must
+    still recover it."""
+
+    result = _run_with_fake_engine(repository, tmp_path, "mechanical_awaiting_human")
+    run_path = _run_json_path(result)
+    before_bytes = run_path.read_bytes()
+    checkout_dir, journal = _checkout_dir_and_journal(repository)
+    before_records = journal.read_all()
+
+    broken_engine = tmp_path / "broken-wfc-engine"
+    broken_engine.write_text("#!/nonexistent/interpreter-xyz\n", encoding="utf-8")
+    broken_engine.chmod(0o755)
+    assert os.path.isfile(broken_engine) and os.access(broken_engine, os.X_OK)
+    L._ENGINE_COMMAND = (str(broken_engine),)
+
+    with pytest.raises(L.LifecycleError) as excinfo:
+        L.resume_lifecycle(repository)
+    assert excinfo.value.classification == "refused_not_recoverable"
+    assert "recovery continuation engine failed to launch" in str(excinfo.value)
+
+    assert run_path.read_bytes() == before_bytes
+    after_records = journal.read_all()
+    assert [r.kind for r in after_records[len(before_records):]] == [
+        "mechanical_recovery_intent", "mechanical_recovery_resumed",
+        "mechanical_recovery_launch_intent", "mechanical_recovery_launch_failed",
+        "mechanical_recovery_rolled_back",
+    ]
+    run_after = load_run(run_path)
+    assert run_after.status.value == "awaiting_human"
+    assert run_after.stop_reason == _MECHANICAL_STOP_REASON
+
+    L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
+    os.environ["WFC_FAKE_ENGINE_CONTINUE_MODE"] = "completed_consistent"
+    second = L.resume_lifecycle(repository)
+    assert second.classification == "completed", second.message
+
+
 # --------------------------------------------------------------------------
 # Out of scope entirely: no change to any other classification's behaviour.
 # --------------------------------------------------------------------------

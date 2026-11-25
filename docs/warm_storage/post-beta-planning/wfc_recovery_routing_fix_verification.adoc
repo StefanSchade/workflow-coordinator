@@ -625,6 +625,114 @@ Full required suite and the Coordinator's task-check: not run by me, for
 the same reason as H001; the Coordinator's task-check runs it after this
 Hop with verified offline inputs my sandbox does not carry.
 
+=== H010 correction: measured checks (F004, continuation-launch point)
+
+H009's independent focused review found H008's fix incomplete: it closed
+the ownership-lock and engine-resolution failure points, but the
+*continuation launch itself* -- `subprocess.Popen` inside
+`_do_continuation_launch` -- still ran after all four recovery mutations
+(`mechanical_recovery_intent`, `write_run_snapshot`, `checkpoint.json`,
+`mechanical_recovery_resumed`). H008's own pre-mutation check
+(`os.path.isfile`/`os.access(os.X_OK)`) answers only whether the resolved
+path exists and is marked executable, not whether `execve` will actually
+succeed; an ordinary pip console script with a since-invalidated absolute
+shebang interpreter (the venv recreated, or the interpreter's minor
+version bumped) passes both checks, then fails to spawn with `ENOENT`,
+reproducing the GOAL's own unresumable end state through a different,
+deterministic trigger than F003's.
+
+Fixed in `_attempt_mechanical_recovery`'s existing
+`except LifecycleError` handler around the mutate-then-launch block: on a
+launch failure, write back the original (pre-recovery) `run` snapshot and
+checkpoint projection, and append a new `mechanical_recovery_rolled_back`
+journal record carrying the launch error, before releasing the lock and
+re-raising the same `LifecycleError`/`refused_not_recoverable`. The
+journal stays strictly append-only -- `mechanical_recovery_intent` and
+`mechanical_recovery_resumed` are never removed, only followed by a record
+that states the attempt was rolled back -- and the Run's mechanical
+diagnosis (`status`, `stop_reason`, `anomalies`) is restored exactly, so a
+later `wfc resume` with a working engine recovers the identical Run. This
+is the smaller of the two alternatives F004 itself measured (a four-line
+rollback in the existing handler, versus building a second,
+recovery-specific crash matrix); it closes every `Popen` `OSError` class
+at this point, not only the stale-shebang trigger.
+
+Four lines of production code changed
+(`src/workflow_coordinator/frontdoor/lifecycle.py`): the bare
+`except LifecycleError: release_lock(lock); raise` became a named,
+commented branch that restores `run.json`/`checkpoint.json` to the
+pre-recovery `run` and `profile`, appends `mechanical_recovery_rolled_back`,
+then still releases the lock and re-raises.
+
+This does not touch the one window F004/H007/H008 already documented as
+deliberately left open: a controller killed between the
+`mechanical_recovery_resumed` journal record and the continuation's own
+further `classified` record still has no `uncertain_launch`-equivalent
+re-entry. That window is reachable only by an external kill, not by any
+ordinary launch failure (a removed engine, a lock conflict, or now a
+failed spawn all refuse cleanly before or with a rollback); `ch06`'s
+residual-window passage is updated to state this precisely instead of
+grouping the two together as before.
+
+Tests: one new case in `test_mechanical_recovery_lifecycle.py` --
+
+* `test_recovery_launch_failure_rolls_back_mutations_and_a_later_resume_still_recovers`
+  -- `L._ENGINE_COMMAND` points at a freshly written, `chmod 0o755`
+  executable script with a `#!/nonexistent/interpreter-xyz` shebang (so
+  both of H008's pre-mutation checks -- `os.path.isfile`,
+  `os.access(os.X_OK)` -- pass, and the failure is only in the actual
+  `Popen` call); asserts the raised `LifecycleError` classifies
+  `refused_not_recoverable` with message `"recovery continuation engine
+  failed to launch"`, that `run.json` is byte-identical to before the
+  attempt, that the journal gained exactly the five expected records
+  ending in `mechanical_recovery_rolled_back`, that the Run's `status` and
+  `stop_reason` are unchanged, and that a later `wfc resume` with a
+  working engine still recovers the Run to `completed`.
+
+Confirmed to fail without the fix: reverted only the one production hunk
+in `frontdoor/lifecycle.py` (restoring the bare
+`except LifecycleError: release_lock(lock); raise`) in a scratch copy
+under `$TMPDIR` (test tree, `pyproject.toml` and `scripts/` copied
+alongside so `pythonpath = ["src", "."]` resolves), and ran the full
+`test_mechanical_recovery_lifecycle.py` file against it: exactly the one
+new test fails, on `assert run_path.read_bytes() == before_bytes` (the
+`LifecycleError` propagates with the Run already mutated to `ready` and
+its diagnosis erased); the other 20 pre-existing tests in the file still
+pass unchanged. The scratch copy was then deleted.
+
+Python: `/tmp/wfc-review-h002-venv/bin/python` (3.13.5, pytest 9.2.0,
+PyYAML 6.0.3) -- the same pre-existing venv used by H006-H009; same stale
+installed `wfc` console script build (`--execution-bindings-sha256`
+argparse mismatch), so the same agent-local environmental failures recur
+unchanged.
+
+[source,text]
+----
+tests/unit/test_mechanical_recovery_lifecycle.py (1 new, 21 total)   21 passed
+tests/unit/test_lifecycle_controller.py          3 pre-existing failures (named above), rest pass
+tests/unit/test_lifecycle_crash_matrix.py                                 pass
+tests/unit/test_postrun_lifecycle.py                                      pass
+tests/unit/test_preservation_lifecycle.py                                 pass
+(110 collected across the five files above; 3 pre-existing failures, 107 pass)
+----
+
+Lint: `/tmp/wfc-review-h002-venv/bin/python -m ruff check .` -- all checks
+passed.
+
+Doc render (strict): `asciidoctor --safe-mode=safe -a assembled -o
+/dev/null --failure-level=WARN` on the two `.adoc` files this correction
+touches (`docs/operator_manual/ch06_recovery/01_outcomes.adoc` and this
+record) -- no output, exit 0, for each.
+
+Doc catalog: `python3 -I scripts/wfc_doc_catalog.py generate` then
+`check`, run after this record and the `ch06_recovery/01_outcomes.adoc`
+edit were written -- no additional unresolved links or Project Memory
+misses versus H008's own measured baseline.
+
+Full required suite and the Coordinator's task-check: not run by me, for
+the same reason as H001; the Coordinator's task-check runs it after this
+Hop with verified offline inputs my sandbox does not carry.
+
 == Existing-test behaviour deliberately replaced (as instructed, named)
 
 * Four `tests/unit/test_slice5b.py` durable-artifact-anomaly cases
