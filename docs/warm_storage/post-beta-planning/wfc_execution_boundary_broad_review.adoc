@@ -1,0 +1,381 @@
+= WFC Execution Boundary FTR revision: independent broad review
+:toc:
+:toclevels: 2
+:revdate: 2026-11-25
+
+Standing:: Durable review artifact of the independent broad-review phase of Run
+`RUN-cdb3068d18134ae3babd479e1bd23faa`
+(WorkItem `WI-WFC-EXEC-BOUNDARY-FTR-001`, Hop `H002`, `robust@v1`), reviewing
+the candidate at commit `6b013d7`. Not a governance document, not an
+authorization, not a maintainer acceptance.
+Subject:: The whole candidate: the revised umbrella record
+link:../../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[FTR-WFC-EXECUTION-TRUST-BOUNDARIES],
+link:../../backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc[Slice
+A], link:../../backlog/FTR-WFC-EXECUTION-BOUNDARY-PHASE-PROFILES.adoc[Slice B],
+the three pointer edits, the `_open.adoc` cards and
+link:wfc_execution_boundary_planning_record.adoc[the planning record].
+Verdict:: *changes_required.* Two blocking Findings, both in the security
+claims rather than in the structure of the work. Everything else verified as
+stated.
+Review basis:: Independent execution against the real code and governance data
+at `6b013d7`, not acceptance of the candidate's own citations. What could not
+be executed in this Hop is named in <<limits>>.
+
+[[verdict]]
+== Verdict and summary
+
+The candidate is substantially sound. The umbrella record preserves every dated
+decision and marks its supersessions in place; Slice A is a genuinely
+implementable contract whose central mechanical claims reproduce against the
+real code; Slice B is planning-only with no hidden implementation commitment;
+the index and pointer edits are minimal and non-contradictory. Nothing in the
+candidate authorizes or implies a push, tag, release, Runtime promotion, or
+network or MCP work, and no product code, test, script, workflow, `.wfc/` or
+`governance/` file was touched.
+
+Two blocking Findings stand in the way of acceptance. Both concern claims that
+are stated more strongly than the candidate's own mechanisms support, which is
+precisely the failure class this planning Commission exists to prevent before
+an implementation Run inherits it:
+
+. *F1 -- the number of external bind-source exceptions Slice A requires is
+  understated,* and the umbrella's supersession of the 2026-11-08
+  repository-only bind-source restriction therefore does not cover what Slice A
+  actually asks for (<<f1>>).
+. *F2 -- Slice A asserts a reviewer-phase write prevention that its own
+  not-yet-existing-target rule removes in the normal case* (<<f2>>).
+
+Both are correctable inside the authorized scope with bounded edits; neither
+requires a design change, and neither alone makes the design unworkable.
+
+[[verified]]
+== What I verified independently, and what it showed
+
+Every row below was established in this Hop by reading or executing against the
+candidate's subject matter, not by trusting the candidate's own citation.
+
+[cols="4,4",options="header"]
+|===
+|Claim under test |Outcome
+
+|The primitive is wired into nothing
+|*Confirmed.* `execution_boundary` is imported only by
+`tests/integration/test_execution_boundary_bwrap.py:6`,
+`tests/integration/test_nested_claude_bwrap_qualification.py:13` and
+`tests/unit/test_execution_boundary_config.py:7`; no module under `src/`
+references it.
+
+|`validate()` refuses a linked worktree
+|*Confirmed mechanically.* `execution_boundary.py:101-102` requires a real
+non-symlink `.git` directory. This checkout's `.git` is a 125-byte regular file
+containing
+`gitdir: .../workflow-coordinator/.git/worktrees/workflow-coordinator-exec-boundary-ftr-b`,
+and `git worktree list` shows fifteen linked worktrees as the normal operating
+pattern. Slice A's central premise holds.
+
+|Bind sources must be inside the repository and land at `/repo/<relative>`
+|*Confirmed* at `execution_boundary.py:121-129`. The `/repo` destination
+convention is hard-coded, so Slice A's decision D2 really does require changing
+the primitive and the tests that assert it.
+
+|The generated view has no `/proc`, no PID namespace, no `--clearenv`
+|*Confirmed* at `execution_boundary.py:166-182`: only `--die-with-parent`,
+`--dev /dev`, the `/usr` and `/bin`-family mounts, the repository, the `.git`
+mask, the caller's mounts, the external scratch and `--chdir`.
+
+|The bwrap options Slice A relies on exist on this host
+|*Confirmed* from the installed `bwrap --help`: `--ro-bind-data FD DEST`,
+`--bind-data`, `--proc DEST`, `--unshare-pid`, `--new-session`,
+`--die-with-parent`, `--size BYTES` and `--perms OCTAL` are all present. The
+`.git`-as-file masking mechanism Slice A names is therefore available. I could
+not confirm the stated version string `0.11.0` (<<limits>>).
+
+|Codex's `Popen` passes neither `cwd` nor `env`
+|*Confirmed* at `codex_adapter.py:444-447`; the repository is passed as `--cd`
+in argv (`:413`) and the child inherits the Coordinator's entire environment.
+Slice A's residual risk 7 and its "environment passed through unchanged" seam
+decision are accurate, and the asymmetry against Claude's filtered environment
+(`claude_adapter.py:316-321`, `:41`) is correctly described.
+
+|Both adapters embed absolute repository paths that identity-preserving
+mounting is meant to keep valid
+|*Confirmed:* `--cd str(request.repository.resolve())`
+(`codex_adapter.py:413`), `cwd=request.repository.resolve()`
+(`claude_adapter.py:328`), and `allowRead: [str(request.repository.resolve()),
+scratch]` with `blockReadsOutsideWorkingDirectories: true`
+(`claude_adapter.py:231`, `:243`). D2's reasoning is sound.
+
+|The result channel runs in both directions
+|*Confirmed.* Claude only reads `<run_root>/claude-closed-settings.json`
+(`claude_adapter.py:308`, `:315`); Codex must write
+`<run_root>/result-message.json` (`codex_adapter.py:434`, `:443`, `:461`) and
+read `<run_root>/structured-result.schema.json` (`:433`). `result_directory` is
+the checkout state root (`operator.py:979`), outside the repository. A writable
+bind for the Codex path is genuinely unavoidable.
+
+|Worker phases get the whole Commission scope; reviewer phases get only their
+own artifact
+|*Confirmed twice.* `commissioning.py:343-350` resolves `scope: S` to
+`list(request.scope)` and any other slot to
+`request.durable_artifacts[artifact_key]`;
+`governance/workflow-programs/robust/v1.yaml` gives `implement` and `correct`
+`scope: S` and the two reviewer phases `scope: A`. This Commission's own
+rendered profile shows it concretely
+(`.wfc/governance/wfc-exec-boundary-ftr-001/profile.yaml:24-26`, `:60-61`). The
+candidate's refusal to claim phase isolation is correct -- subject to <<f2>>.
+
+|The configuration vocabularies are closed and admit an optional key
+|*Confirmed.* `_fields` (`serialization.py:217-231`) rejects unknown keys and
+already supports an `optional` set;
+`run_execution_configuration_from_yaml` (`serialization.py:1004`) and
+`consumer_config_from_yaml` (`frontdoor/config.py:160`) both exist. Slice A's
+enablement mechanism and its "existing envelopes stay valid" claim are
+mechanically available.
+
+|Only `broad_review.accept` carries `{effect: complete}`
+|*Confirmed* in `governance/workflow-programs/robust/v1.yaml`;
+`focused_review` offers only `correction` and `renew_broad_review`. Slice A's
+Hop-budget and review-cycle reasoning rests on the right structure.
+
+|The cited stale statements exist at the cited lines
+|*Spot-checked and correct* for `docs/architecture.md:88-99`,
+`docs/technical_model/ch01_architecture_views/01_component_view.adoc:48-51`
+and `:82`,
+`docs/functional_model/ch02_scenarios_and_requirements/01_use_cases.adoc:103`,
+`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc:42-44`,
+`docs/operator_manual/ch01_orientation/02_boundaries.adoc:44-45`,
+`docs/developer_guide/ch01_development.adoc:66-67` and
+`docs/research/gondolin_execution_boundary_feasibility.adoc:26`. The
+already-stale Gondolin claim about denied web grants is also correct:
+`claude_adapter.py:241` allows `WebFetch(domain:*)`, `WebSearch` and
+`Bash(curl:*)` with an empty `deny`.
+
+|Strict render of every changed `.adoc`
+|*Passes.* All eight changed files render with
+`asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN`
+and print nothing.
+
+|Doc catalog
+|*No additional unresolved links.* `generate` reports the catalog unchanged and
+`check` reports "catalog current" with 83 informational unresolved links and 4
+Project Memory misses. None of the 83 originates in any of the eight changed
+files; the four entries that mention a changed record are pre-existing
+`docs/cold_storage/project_history/` relative links. Output stays at the
+uncommitted `build/wfc/document_catalog.jsonl`.
+
+|No stray files
+|*Confirmed.* `git status --short` shows only repository-root entries that are
+character devices `1, 3` owned by `nobody:nogroup` -- the review agent's own
+sandbox masks, exactly as the planning record's limits section describes. No
+tracked file is modified and no artifact of the prior Hop is left behind.
+|===
+
+[[findings]]
+== Blocking Findings
+
+[[f1]]
+=== F1. Slice A requires three external bind-source exceptions; the records authorize one
+
+Blocking.
+
+*What the records say.* Three statements disagree:
+
+* The umbrella record's 2026-11-08 external-scratch section states that "the
+  repository-only bind-source rule is superseded *only* by Slice A's one further
+  designated external mount kind, the Coordinator's own result directory; a
+  general loosening remains forbidden."
+* The planning record's decision D4 is titled "A second designated external
+  mount kind for the result channel" and decides to "add *exactly one* further
+  validated external mount kind".
+* Slice A's own mount model requires, outside the repository: the result
+  directory; a narrow, individually bound read-only `/etc` set
+  (`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/ssl/certs`,
+  `/etc/passwd` as the expected set); and a narrowly bound read-only provider
+  authentication path. Its decomposition step 1 names all three explicitly as
+  work items: "the result-channel mount kind, ... and the `/etc` and
+  authentication mount kinds".
+
+*Why it blocks.* The 2026-11-08 maintainer authorization states that it "does
+not authorize ... any general loosening of the existing repository-only
+bind-source rule (`validate()`'s `source.relative_to(repository)` check) beyond
+this one designated exception". I verified that the rule is the single check at
+`execution_boundary.py:124-127` and that it governs every caller-supplied
+`Mount`, with the system view at `:166-172` generated separately inside
+`build_argv`. Slice A needs at least one further *caller-designated,
+per-invocation, provider-specific* external source -- the authentication path --
+which cannot be a fixed generated system mount, and it does not say whether the
+`/etc` entries are generated system mounts or validated mount kinds.
+
+The result is a contract whose implementation Run is caught between its own
+requirement and its own stop rule: Slice A tells it to add the `/etc` and
+authentication mounts, while the umbrella tells it that only one further
+exception is superseded and the stop rule tells it to stop rather than widen.
+That is a reproduced inconsistency across the three records about how far an
+accepted maintainer restriction is being superseded, on exactly the
+security-relevant invariant that restriction fences. The acceptance criterion
+requires the records to be mutually consistent and every superseded statement
+to be explicitly marked; this supersession is marked for one of three cases.
+
+*What would resolve it,* within the authorized scope and without lowering any
+security claim:
+
+. State in Slice A, per external path category, whether it is a generated
+  system-view mount (like `/usr` today, outside the `Mount` validation rule) or
+  a validated designated mount kind (like the external scratch root). The
+  authentication path can only be the latter.
+. Extend the umbrella's 2026-11-08 supersession marker to name every category
+  Slice A actually requires, so the marker is accurate rather than
+  understated, and keep the prohibition on a general loosening.
+. Correct planning-record D4's "exactly one" to the actual set, and add the
+  widening of the 2026-11-08 fence as an open maintainer decision with options
+  and a recommendation -- the route the task prescribes for a requirement that
+  exceeds an existing authorization, rather than silently widening it.
+
+*What must not happen:* no blanket `/etc`, no whole provider configuration
+directory, and no general relaxation of `source.relative_to(repository)`. The
+Finding is about the records being honest and consistent about the exceptions,
+not about granting more of them.
+
+[[f2]]
+=== F2. The reviewer-phase write prevention is overclaimed; the file-shaped overgrant removes it in the normal case
+
+Blocking.
+
+*The claim.* Slice A's mount-model table asserts for a reviewer phase that
+"only that phase's own `durable_artifacts[artifact_key]` paths" are writable and
+that "a reviewer therefore *is* mechanically prevented from writing the worker's
+deliverables -- a real, honest asymmetry that follows from the existing program
+data".
+
+*Why it does not hold.* Slice A's own not-yet-existing-target rule says that for
+"an authorized entry that names a not-yet-existing *file*, no empty file is
+created ... Instead the nearest existing ancestor directory is mounted
+writable." A durable review artifact never exists at the launch of the phase
+that must create it -- that is its definition. So the normal reviewer case is
+precisely the file-shaped overgrant case.
+
+I reproduced this against this Commission's own data. The rendered profile gives
+`broad_review` the single scope entry
+`docs/warm_storage/post-beta-planning/wfc_execution_boundary_broad_review.adoc`
+(`.wfc/governance/wfc-exec-boundary-ftr-001/profile.yaml:60-61`), which did not
+exist at this Hop's start. Under Slice A's rule the boundary would bind
+`docs/warm_storage/post-beta-planning/` writable -- the directory that holds the
+worker's own deliverable `wfc_execution_boundary_planning_record.adoc` and the
+other post-beta-planning records that the Commission's own constraints call
+immutable. The reviewer would be mechanically able to write exactly the worker
+deliverable the record says it is mechanically prevented from writing.
+
+*Why it blocks rather than being a wording quibble.* This is a positive
+security-property assertion in the slice's contract, and it is the one place
+where Slice A claims a *phase-specific* prevention. The guarantees table
+disclaims the worker-to-reviewer direction only ("a worker phase's
+`authorized_scope` *is* the whole Commission scope"); residual risk 3 states the
+file-shaped overgrant generically, without connecting it to the asymmetry claim
+it negates. A reader of either section alone is misled, and the review focus
+asks specifically whether the Commission-scope versus phase-scope relation is
+stated without overclaiming. It is not.
+
+*What would resolve it:* qualify the reviewer row and the guarantees table so
+the reviewer-side prevention is stated as conditional on the artifact's parent
+directory, name the directory-granularity consequence (a reviewer whose artifact
+shares a directory with other records can write them), and cross-reference
+residual risk 3 from the claim it limits. Optionally note the cheap mitigation
+the implementation Commission could choose instead -- but do not require a new
+mechanism: a correctly stated limit is sufficient here, and inventing one would
+be a new requirement I have no authority to add.
+
+[[observations]]
+== Non-blocking observations
+
+None of these blocks acceptance. They are recorded for the correction Hop and
+for the implementation Commission, which may act on them or not.
+
+. *The Claude scratch path inside the view is mandatory, not optional.* Slice
+  A's provider table lists Claude `sandbox.filesystem.allowRead`/`allowWrite`
+  as something that "*may* be stated in terms of the in-view paths". With
+  identity-preserving mounting the repository path is unchanged, but the
+  external scratch is bound at `/tmp/s`, while
+  `claude_adapter.py:231-232` writes the *host* scratch path into `allowRead`
+  and `allowWrite`. Inside the view that path does not exist, so the nested
+  sandbox would deny scratch writes. Restating it is a precondition for L1/L2
+  passing, not a permissible relaxation, and it is not in the preflight list.
+. *`$HOME` is empty inside the view, not absent.* bwrap materialises the parent
+  chain of every bind destination, so with identity-preserving mounting
+  `/home/<user>` exists as an empty directory while `HOME` still points at it
+  (`claude_adapter.py:41`, `:316-320`). The practical question Slice A does not
+  raise is whether either CLI needs a *writable* state directory under `HOME`;
+  if it does, that is a further writable external mount, and only the stop rule
+  currently catches it. Worth naming as a live-qualification output beside L6.
+. *`--new-session` appears only in the decomposition and in planning D6,* never
+  in Slice A's own mount/flag discussion or its guarantees. Either include it in
+  the view description or drop it from the step list.
+. *Hop-budget arithmetic.* "12 as an upper limit (worker, broad review, and up
+  to four correct/focused-review cycles)" adds up to 10, not 12. The number is
+  an upper bound either way; the parenthetical should match it.
+. *The umbrella's "one further designated external mount kind" phrasing* would
+  read better as a list once F1 is resolved, so that a later reader cannot
+  reconstruct the understatement from the record alone.
+
+[[not-findings]]
+== Challenges I raised and then withdrew
+
+Recorded so the correction Hop does not re-litigate them.
+
+* *"Identity-preserving mounting is riskier than translating to `/repo`."*
+  Withdrawn. I checked both call sites: translation would require rewriting
+  argv (`codex_adapter.py:413`), the generated settings
+  (`claude_adapter.py:231`), the scratch logic and every absolute path an
+  operator sees. D2 chooses the option with fewer places a mistake becomes a
+  security mistake, and says so.
+* *"`--proc /proc` with `--unshare-pid` is an unjustified new exposure."*
+  Withdrawn as a Finding. The candidate neither hides it nor asserts it safe: it
+  is named in the mount table, in residual risk 5 and as open maintainer
+  decision M2 with a recommendation. That is the honest disposition, and the
+  existing test
+  `tests/integration/test_nested_claude_bwrap_qualification.py:20-44` documents
+  why no `/proc` stops an inner `bwrap`.
+* *"Opt-in makes the whole slice cosmetic."* Withdrawn. The reasoning in (e)
+  and D8 is sound, the default question is parked as M1 rather than pre-decided,
+  and every guarantee in the record is explicitly conditional on the recorded
+  boundary mode.
+* *"The untracked repository-root entries are stray files from the prior Hop."*
+  Withdrawn on inspection: they are the review agent's own sandbox masks
+  (character devices `1, 3`, `nobody:nogroup`), and the planning record's limits
+  section already identifies them correctly, including the useful observation
+  that an agent's `git status` can differ from the Coordinator's.
+* *"Slice B smuggles in an implementation commitment."* Withdrawn. Every section
+  is framed as a target or an option, the seven decisions are decisions rather
+  than tasks, and it states that it depends on rather than subsumes
+  `FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION` and that the `robust@v2`
+  question stays open without touching the closed `v1`.
+
+[[limits]]
+== What this review could not execute
+
+. *No `bwrap` process could be started.* The review agent runs inside its own
+  sandbox; a `bwrap` probe and reads under `/proc/sys/user/` were refused by the
+  session's permission layer and I did not retry them. This independently
+  corroborates the planning record's limits section and its consequence M5: the
+  implementation Commission's own Hops cannot qualify the sandbox either, so the
+  deterministic layer must ride on the Coordinator's task-check and the live
+  layer must be an Operator action. Every mechanical claim I make above is from
+  source reading or from the installed `bwrap --help`, never from an executed
+  sandbox.
+. *No `bwrap --version`.* Refused by the same layer. `--ro-bind-data` and the
+  other required options are present in the installed build's help output; the
+  specific version string `0.11.0` is cited from the existing records, not
+  observed here.
+. *No live provider call, no credential read, no credential copy, no Git write.*
+  By withheld authority and by my own scope.
+. *The full required suite is Coordinator-owned.* I measured no suite counts and
+  claim none. The candidate changes no test, so no suite effect is expected.
+
+[[route]]
+== Route
+
+`correction`, with Findings F1 and F2 recorded as blocking and open. The
+correction Hop can address both inside `docs/backlog` and
+`docs/warm_storage/post-beta-planning` with bounded edits: accurate supersession
+and mount-kind statements for F1, plus one open maintainer decision for the
+widening it implies; a qualified reviewer-asymmetry statement for F2. No design
+change, no new mechanism and no new requirement follows from this review.
