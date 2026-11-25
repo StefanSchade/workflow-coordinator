@@ -480,6 +480,62 @@ def test_recovery_refuses_on_incomplete_launch_provenance(
     assert run_path.read_bytes() == before_bytes
 
 
+def test_recovery_refuses_on_missing_engine_executable_and_a_later_resume_still_recovers(
+    repository: Path, tmp_path: Path, state_home: Path,
+):
+    """F004: a since-removed/renamed engine console script must be a named
+    refusal with no mutation at all, not a Run rewritten to ``ready`` with
+    its mechanical diagnosis erased and no process to drive it. A later
+    resume, with the engine available again, must still recover the Run."""
+
+    result = _run_with_fake_engine(repository, tmp_path, "mechanical_awaiting_human")
+    run_path = _run_json_path(result)
+    before_bytes = run_path.read_bytes()
+    _, journal = _checkout_dir_and_journal(repository)
+    before_record_count = len(journal.read_all())
+
+    L._ENGINE_COMMAND = (str(tmp_path / "no-such-engine-binary"),)
+    recovered = L.resume_lifecycle(repository)
+    assert recovered.classification == "refused_not_recoverable"
+    assert "no engine executable is available for a continuation" in recovered.message
+    assert run_path.read_bytes() == before_bytes
+    assert len(journal.read_all()) == before_record_count
+
+    L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
+    os.environ["WFC_FAKE_ENGINE_CONTINUE_MODE"] = "completed_consistent"
+    second = L.resume_lifecycle(repository)
+    assert second.classification == "completed", second.message
+
+
+def test_recovery_refuses_on_active_lifecycle_lock_and_changes_nothing(
+    repository: Path, tmp_path: Path, state_home: Path,
+):
+    """F004: a concurrently held checkout ownership lock must refuse the
+    continuation before any mutation, not after the Run has already been
+    rewritten to ``ready``."""
+
+    result = _run_with_fake_engine(repository, tmp_path, "mechanical_awaiting_human")
+    run_path = _run_json_path(result)
+    before_bytes = run_path.read_bytes()
+    checkout_dir, journal = _checkout_dir_and_journal(repository)
+    before_record_count = len(journal.read_all())
+
+    lock = J.try_acquire_lock(checkout_dir)
+    assert lock is not None
+    try:
+        recovered = L.resume_lifecycle(repository)
+        assert recovered.classification == "refused_not_recoverable"
+        assert "active lifecycle already running for this checkout" in recovered.message
+        assert run_path.read_bytes() == before_bytes
+        assert len(journal.read_all()) == before_record_count
+    finally:
+        J.release_lock(lock)
+
+    os.environ["WFC_FAKE_ENGINE_CONTINUE_MODE"] = "completed_consistent"
+    second = L.resume_lifecycle(repository)
+    assert second.classification == "completed", second.message
+
+
 # --------------------------------------------------------------------------
 # Out of scope entirely: no change to any other classification's behaviour.
 # --------------------------------------------------------------------------

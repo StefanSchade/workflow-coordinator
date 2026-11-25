@@ -509,6 +509,122 @@ Full required suite and the Coordinator's task-check: not run by me, for
 the same reason as H001; the Coordinator's task-check runs it after this
 Hop with verified offline inputs my sandbox does not carry.
 
+=== H008 correction: measured checks (F004)
+
+H007's independent focused review found one new blocking Finding: `wfc
+resume`'s mechanical recovery performed all of its mutations (journal
+`mechanical_recovery_intent`, `write_run_snapshot`, `checkpoint.json`,
+journal `mechanical_recovery_resumed`) *before* its last two failure
+points -- taking the checkout's ownership lock and actually launching the
+continuation engine. A refusal at either of those two points (a
+concurrently held lock, or a since-removed/renamed `wfc` console script --
+the ordinary cause of a launch failure here) left the Run rewritten to
+`ready` with its `stop_reason`/anomalies erased and no process driving it:
+a second `wfc resume` then answered "lifecycle already classified
+(no-op)", and no documented path recovered that Run -- the GOAL's own
+defect, reached by a different trigger than F003's.
+
+Fixed by moving every remaining predicate element -- the pure
+`reducer.require_reconcile`/`resume_after_reconcile` re-verification (both
+already side-effect-free; no mutation to move around) and a new check
+that the continuation engine is actually resolvable and executable
+(mirroring the existing `os.path.isfile`/`os.access(os.X_OK)` pattern
+`_do_prelaunch` already uses for the provider executable) -- and the
+ownership-lock acquisition itself, to run before the first mutation.
+`_attempt_mechanical_recovery` now computes the reconciled/resumed Run and
+resolves the engine purely, then takes the lock, and only then journals,
+writes `run.json`/`checkpoint.json`, and attempts the continuation launch;
+every failure path up to and including a lock conflict is now a named
+`refused_not_recoverable` with literally nothing written -- no journal
+record, no `run.json` write, no `checkpoint.json` write.
+
+Two residual windows remain, deliberately not closed by this correction,
+and are now named rather than hidden behind an unconditional claim (see
+the updated `ch06_recovery/01_outcomes.adoc` passage): the continuation
+engine resolving at the pre-mutation check and then still failing to spawn
+(a narrow TOCTOU no different in kind from the one the original launch's
+own `launch_failed_no_engine` handling already accepts), and a controller
+killed between the `mechanical_recovery_resumed` journal record and the
+continuation's own further `classified` record, for which the recovery's
+own record family has no `uncertain_launch`-equivalent re-entry. Building
+that re-entry would be a second, independent crash-matrix for the
+recovery path (a new classification, new `_advance`-side re-entry logic,
+its own test suite) -- a materially larger change than the Finding's own
+measured counterexamples required, and the Finding's own evidence framed
+closing it as one of two acceptable alternatives to naming it honestly in
+`ch06`. I chose the smaller, proportionate option.
+
+Tests: two new cases in `test_mechanical_recovery_lifecycle.py`, each
+asserting the named refusal, a byte-identical `run.json`, and that no new
+journal record was appended --
+
+* `test_recovery_refuses_on_missing_engine_executable_and_a_later_resume_still_recovers`
+  -- `L._ENGINE_COMMAND` pointed at a nonexistent path (the same shape
+  `test_lifecycle_crash_matrix.py`'s own
+  `test_launch_failed_no_engine_proves_no_engine_exists_and_bounds_relaunch`
+  uses for the original launch path); asserts
+  `"no engine executable is available for a continuation"`, no mutation,
+  and that a later `wfc resume` with the engine restored still recovers
+  the Run to `completed`.
+* `test_recovery_refuses_on_active_lifecycle_lock_and_changes_nothing` --
+  a concurrently held `try_acquire_lock` on the same checkout; asserts
+  `"active lifecycle already running for this checkout"`, no mutation, and
+  that releasing the lock and resuming again still recovers the Run.
+
+Confirmed to fail without the fix: reverted only the two production
+hunks in `frontdoor/lifecycle.py` in a scratch copy under `$TMPDIR`
+(restoring the pre-H008 mutate-then-lock/launch ordering, test tree
+unchanged) and ran the two new tests directly against it --
+`test_recovery_refuses_on_missing_engine_executable_and_a_later_resume_still_recovers`
+fails with `workflow_coordinator.frontdoor.lifecycle.LifecycleError:
+recovery continuation engine failed to launch: [Errno 2] No such file or
+directory: ...` (the launch attempt raised past the point the test
+expected a clean refusal, because the Run had already been mutated to
+`ready` before the launch was even attempted), and
+`test_recovery_refuses_on_active_lifecycle_lock_and_changes_nothing` fails
+its `run_path.read_bytes() == before_bytes` assertion (the Run was already
+rewritten before the lock check ran). The scratch copy was then deleted.
+
+Python: `/tmp/wfc-review-h002-venv/bin/python` (3.13.5, pytest 9.2.0,
+PyYAML 6.0.3) -- another pre-existing venv on the machine, found and used
+by H006/H007 before me; same stale installed `wfc` console script build
+(`--execution-bindings-sha256` argparse mismatch), so the same
+agent-local environmental failures recur unchanged.
+
+[source,text]
+----
+tests/unit/test_mechanical_recovery_lifecycle.py (2 new, 20 total)   20 passed
+tests/unit/test_lifecycle_controller.py          3 pre-existing failures (named above), rest pass
+tests/unit/test_lifecycle_crash_matrix.py                                 pass
+tests/unit/test_postrun_lifecycle.py                                      pass
+tests/unit/test_preservation_lifecycle.py                                 pass
+tests/unit (whole directory)   26 pre-existing failures: the 3
+  `test_lifecycle_controller.py` cases named above, plus 16 (23 counting
+  parametrized variants) `test_claude_adapter_conformance.py` cases --
+  neither module touched by this correction's diff (`git diff --stat`:
+  only `frontdoor/lifecycle.py` and
+  `tests/unit/test_mechanical_recovery_lifecycle.py`); rest pass
+  (1509 passed, 1 skipped, 15 subtests passed)
+----
+
+Lint: `/tmp/wfc-review-h002-venv/bin/python -m ruff check .` -- all checks
+passed.
+
+Doc render (strict): `asciidoctor --safe-mode=safe -a assembled -o
+/dev/null --failure-level=WARN` on the one `.adoc` this correction touches
+beyond this record (`docs/operator_manual/ch06_recovery/01_outcomes.adoc`)
+-- no output, exit 0.
+
+Doc catalog: `python3 -I scripts/wfc_doc_catalog.py generate` then
+`check`, run after this record and the `ch06_recovery/01_outcomes.adoc`
+edit were written -- `552 records, 415116 bytes; unchanged`; `catalog
+current`; 83 unresolved links, 4 Project Memory source_path misses,
+identical to H006's own measured baseline: no regression.
+
+Full required suite and the Coordinator's task-check: not run by me, for
+the same reason as H001; the Coordinator's task-check runs it after this
+Hop with verified offline inputs my sandbox does not carry.
+
 == Existing-test behaviour deliberately replaced (as instructed, named)
 
 * Four `tests/unit/test_slice5b.py` durable-artifact-anomaly cases
@@ -551,6 +667,18 @@ file); no further production file. `tests/unit/test_mechanical_recovery_lifecycl
 gained four tests (one F-A regression, three F-B refusal-element tests);
 no other test file changed. This record is the only `.adoc` touched by
 H003. No change to
+`src/workflow_coordinator/agent_skill/`, any program record or catalogue
+digest, trusted Git/sandbox/scope/admission rules, the release workflow,
+version literals, `governance/`, `.wfc/`, or `.github/`; no new
+dependency; no push, tag, release, publication, Runtime promotion,
+installation, or operation on the real incident Run or on
+`~/.local/state`.
+
+Changed (H008, this correction, F004): `src/workflow_coordinator/frontdoor/lifecycle.py`
+(`_attempt_mechanical_recovery`'s mutation ordering only; no other
+function); `tests/unit/test_mechanical_recovery_lifecycle.py` gained two
+tests; `docs/operator_manual/ch06_recovery/01_outcomes.adoc` and this
+record are the only `.adoc` files touched. No change to
 `src/workflow_coordinator/agent_skill/`, any program record or catalogue
 digest, trusted Git/sandbox/scope/admission rules, the release workflow,
 version literals, `governance/`, `.wfc/`, or `.github/`; no new

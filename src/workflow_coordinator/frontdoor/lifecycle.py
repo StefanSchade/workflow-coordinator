@@ -903,10 +903,15 @@ def _attempt_mechanical_recovery(
     except Exception as error:
         return _refused_recovery(run, f"governing profile could not be re-derived: {error}")
 
-    journal.append("mechanical_recovery_intent", {
-        "run_id": run.run_id, "checkout_state_root": checkout_state_root_value,
-        "anomaly": anomaly, "from_status": run.status.value,
-    })
+    # F004: every remaining predicate element -- the pure reconcile/resume
+    # re-verification and the continuation engine's resolvability -- is
+    # checked, and the ownership lock is taken, *before* any mutation below,
+    # for the same reason the provider-executable re-verification above
+    # already runs pre-mutation. Otherwise a since-removed/renamed `wfc`
+    # console script, a concurrent lifecycle holding the lock, or a failed
+    # reconcile/resume re-verification is discovered only after the Run has
+    # already been rewritten to `ready` with its mechanical diagnosis
+    # erased, leaving it unresumable.
     try:
         reconciled = run if run.status is RunStatus.RECONCILE_REQUIRED else require_reconcile(
             run, reason="mechanical_recoverable", current_head=run.current_head,
@@ -914,14 +919,25 @@ def _attempt_mechanical_recovery(
         resumed = resume_after_reconcile(reconciled, profile, current_head=facts.head)
     except ReductionError as error:
         return _refused_recovery(run, f"recovery predicate re-verification failed: {error}")
-    write_run_snapshot(run_path, resumed)
-    atomic_write_json(Path(checkout_state_root_value) / "checkpoint.json", checkpoint_projection(resumed, profile))
-    journal.append("mechanical_recovery_resumed", {"run_id": resumed.run_id, "to_status": resumed.status.value})
+    try:
+        engine_argv0 = _resolve_engine_command()[0]
+    except RuntimeError as error:
+        return _refused_recovery(run, str(error))
+    if not os.path.isfile(engine_argv0) or not os.access(engine_argv0, os.X_OK):
+        return _refused_recovery(run, f"no engine executable is available for a continuation: {engine_argv0}")
 
     lock = try_acquire_lock(checkout_dir)
     if lock is None:
         return _refused_recovery(run, "active lifecycle already running for this checkout")
     try:
+        journal.append("mechanical_recovery_intent", {
+            "run_id": run.run_id, "checkout_state_root": checkout_state_root_value,
+            "anomaly": anomaly, "from_status": run.status.value,
+        })
+        write_run_snapshot(run_path, resumed)
+        atomic_write_json(Path(checkout_state_root_value) / "checkpoint.json", checkpoint_projection(resumed, profile))
+        journal.append("mechanical_recovery_resumed", {"run_id": resumed.run_id, "to_status": resumed.status.value})
+
         _, process = _do_continuation_launch(
             repository, checkout_dir, journal, lock, authorized, prelaunch, current_head=facts.head,
         )
