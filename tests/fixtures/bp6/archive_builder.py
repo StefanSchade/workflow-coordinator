@@ -85,6 +85,40 @@ class ObservationSpec:
         }
 
 
+def usage_record(
+    *,
+    invocation_id: str = "INV-fixture",
+    role: str = "worker",
+    adapter: str = "claude_cli",
+    model: str | None = "claude-sonnet-5-5",
+    coverage: str = "complete",
+    input_tokens: int | None = 19,
+    output_tokens: int | None = 9,
+    cache_read_tokens: int | None = None,
+    cache_creation_tokens: int | None = None,
+    reasoning_output_tokens: int | None = None,
+    input_includes_cache_read: bool = False,
+    per_model: Sequence[Mapping[str, Any]] = (),
+) -> dict:
+    """One ``usage.json`` record, shaped exactly like
+    ``serialization.usage_record_to_data``'s own output."""
+
+    return {
+        "invocation_id": invocation_id,
+        "role": role,
+        "adapter": adapter,
+        "model": model,
+        "coverage": coverage,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        "reasoning_output_tokens": reasoning_output_tokens,
+        "input_includes_cache_read": input_includes_cache_read,
+        "per_model": list(per_model),
+    }
+
+
 @dataclass
 class HopSpec:
     hop_id: str
@@ -102,6 +136,11 @@ class HopSpec:
     summary_prose: str = PROVIDER_PROSE_CANARY
     attribution: str = "agent"
     observations: Sequence[ObservationSpec] = field(default_factory=lambda: (ObservationSpec(),))
+    # ``None`` (the default) means no usage.json record was ever persisted
+    # for this Hop -- distinct from a persisted record whose own coverage is
+    # "none". Pass a dict shaped like ``usage_record_to_data``'s output (see
+    # ``workflow_coordinator.serialization``) to simulate a captured record.
+    usage: Mapping[str, Any] | None = None
 
     def run_hop_dict(self) -> dict:
         return {
@@ -346,6 +385,14 @@ def build_attempt(
         _place(
             f"run/checkouts/{checkout_id}/execution-evidence.json", evidence_doc,
             source_abs=f"{state_path}/checkouts/{checkout_id}/execution-evidence.json",
+        )
+
+    usage_records = {hop.hop_id: hop.usage for hop in hops if hop.usage is not None}
+    if usage_records:
+        usage_doc = {"schema_version": 1, "run_id": run_id, "records": usage_records}
+        _place(
+            f"run/checkouts/{checkout_id}/usage.json", usage_doc,
+            source_abs=f"{state_path}/checkouts/{checkout_id}/usage.json",
         )
 
     if include_operator_summary:

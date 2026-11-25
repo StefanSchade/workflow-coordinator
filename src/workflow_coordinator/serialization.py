@@ -81,6 +81,7 @@ from .model import (
     StagedQualificationAttempt,
     StatFingerprint,
     UntrustedDiagnosticCapture,
+    UsageRecord,
     WorkItem,
     WorkflowProfile,
     WorkflowRole,
@@ -2370,6 +2371,23 @@ def run_from_json(text: str) -> Run:
 
 def dispatch_marker_to_data(marker: DispatchMarker) -> dict[str, Any]:
     return _json_value(marker)
+
+
+def usage_record_to_data(
+    record: UsageRecord, *, invocation_id: str, role: str, adapter: str, model: str | None,
+) -> dict[str, Any]:
+    """Project one invocation's provider-neutral usage, plus the persisted
+    identity/binding facts a checkout's ``usage.json`` keys it by, into the
+    exact JSON shape written to disk. Numbers, enumerations, and provider/
+    model identifiers only -- no prompt, output, path or credential."""
+
+    return {
+        "invocation_id": invocation_id,
+        "role": role,
+        "adapter": adapter,
+        "model": model,
+        **_json_value(record),
+    }
 
 
 def dispatch_marker_from_json(text: str) -> DispatchMarker:

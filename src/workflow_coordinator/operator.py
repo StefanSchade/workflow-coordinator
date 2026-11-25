@@ -52,6 +52,7 @@ from .persistence import (
     observation_to_data,
     qualification_index_for_inputs,
     write_run_snapshot,
+    write_usage_record,
 )
 from .prompt import (
     AgentOperatingContract,
@@ -70,6 +71,7 @@ from .serialization import (
     load_run,
     execution_attempt_to_data,
     execution_evidence_from_json,
+    usage_record_to_data,
 )
 from .slice4 import Slice4Error, checkout_state_root, register_checkout, run_real_one_hop, validate_checkout
 from .codex_adapter import CodexCliAdapter
@@ -808,6 +810,37 @@ def _write_invocation_diagnostics(
     return relative_path
 
 
+def _persist_usage_record(
+    run_root: Path,
+    *,
+    run_id: str,
+    hop_id: str,
+    invocation_id: str,
+    role: str,
+    binding: Mapping[str, object],
+    outcome,
+) -> None:
+    """Persist one invocation's already-captured, provider-neutral token
+    usage as Run state, beside the checkout's other per-invocation records.
+
+    A no-op when this call produced no fresh outcome (a crash-recovery replay
+    of an already-dispatched invocation never re-executed the provider in
+    this process). Not best-effort: a write failure here is the same class
+    of failure as any other Run-state write in this loop.
+    """
+    if outcome is None:
+        return
+    model = binding.get("model")
+    record = usage_record_to_data(
+        outcome.usage,
+        invocation_id=invocation_id,
+        role=role,
+        adapter=str(binding.get("adapter") or "local"),
+        model=model if isinstance(model, str) else None,
+    )
+    write_usage_record(run_root / "usage.json", run_id, hop_id, record)
+
+
 def _diagnostics_artifact_if_present(
     run_root: Path | None,
     *,
@@ -998,6 +1031,16 @@ def run_serial_hops(
                 invocation_id=invocation_id,
                 outcome=hop_run.outcome,
                 outcome_error=hop_run.outcome_error,
+            )
+        if hop_run.outcome is not None and run.hops:
+            _persist_usage_record(
+                run_root,
+                run_id=run.run_id,
+                hop_id=run.hops[-1].hop_id,
+                invocation_id=invocation_id,
+                role=workflow_role.value,
+                binding=binding,
+                outcome=hop_run.outcome,
             )
         if hop_run.vertical is not None or run.status is not RunStatus.RECONCILE_REQUIRED:
             current_evidence_json = (

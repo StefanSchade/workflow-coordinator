@@ -246,6 +246,48 @@ def publish_execution_evidence(
     return document, text
 
 
+USAGE_RECORD_SCHEMA_VERSION = 1
+
+
+def write_usage_record(
+    path: Path,
+    run_id: str,
+    hop_id: str,
+    record: Mapping[str, Any],
+    *,
+    replace_file: Replace = os.replace,
+) -> dict[str, Any]:
+    """Append one invocation's usage record atomically, keyed by Hop id.
+
+    Idempotent for an identical repeat (a resumed/re-checked Hop); refuses a
+    conflicting duplicate for the same Hop id rather than silently
+    overwriting it. Adds no new write surface beyond this one bounded
+    checkout-scoped leaf, with the same crash-safety discipline as
+    ``write_run_snapshot``/``publish_execution_evidence``.
+    """
+
+    if path.exists():
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(document, dict)
+            or document.get("schema_version") != USAGE_RECORD_SCHEMA_VERSION
+            or document.get("run_id") != run_id
+        ):
+            raise ReductionError("usage record Run identity conflict")
+        records = dict(document.get("records") or {})
+        existing = records.get(hop_id)
+        if existing == record:
+            return document
+        if existing is not None:
+            raise ReductionError("conflicting duplicate usage record for Hop")
+        records[hop_id] = dict(record)
+    else:
+        records = {hop_id: dict(record)}
+    document = {"schema_version": USAGE_RECORD_SCHEMA_VERSION, "run_id": run_id, "records": records}
+    atomic_write_json(path, document, replace_file=replace_file)
+    return document
+
+
 def trusted_qualification_index_for_run(
     run: Run,
     document: ExecutionEvidenceDocument,

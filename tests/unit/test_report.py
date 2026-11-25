@@ -162,6 +162,54 @@ class TestStopStatusesNeverReportedAsSuccess:
         assert "not reported as success" in text
 
 
+class TestUsageReport:
+    """WI-WFC-TOKEN-USAGE-S1-001: ``wfc report`` surfaces the Run's usage
+    honestly -- totals with their lower-bound marker, per-role lines and
+    coverage -- and the no-usage wording/behavior is unchanged."""
+
+    def test_no_usage_recorded_keeps_prior_wording_and_adds_no_usage_section(self, tmp_path):
+        audit = _audit_for(tmp_path)
+        report = rp.build_report(audit)
+        assert report["usage"] is None
+        text = rp.render_report_text(report)
+        assert not any(line.startswith("usage ") for line in text.splitlines())
+        assert "not done    nothing was pushed" in text
+        assert "usage_not_reported" in text
+
+    def test_a_recorded_usage_section_is_carried_into_the_report(self, tmp_path):
+        hops = [
+            ab.HopSpec(hop_id="H001", sequence=1, role="worker",
+                       usage=ab.usage_record(role="worker", input_tokens=2, output_tokens=4)),
+        ]
+        audit = _audit_for(tmp_path, hops=hops, hop_used=1)
+        report = rp.build_report(audit)
+        assert report["usage"]["totals"]["input_tokens"] == {"value": 2, "lower_bound": False}
+        assert report["usage"]["coverage_counts"] == {"complete": 1, "partial": 0, "none": 0}
+        text = rp.render_report_text(report)
+        assert "usage       coverage complete=1 partial=0 none=0" in text
+        assert "usage total input=2 output=4" in text
+        assert "usage role  worker  input=2 output=4" in text
+
+    def test_a_partial_total_carries_the_lower_bound_marker_in_text(self, tmp_path):
+        hops = [
+            ab.HopSpec(hop_id="H001", sequence=1, role="worker",
+                       usage=ab.usage_record(role="worker", input_tokens=10, output_tokens=None)),
+            ab.HopSpec(hop_id="H002", sequence=2, role="worker",
+                       usage=ab.usage_record(role="worker", input_tokens=None, output_tokens=7)),
+        ]
+        audit = _audit_for(tmp_path, hops=hops, hop_used=2)
+        report = rp.build_report(audit)
+        text = rp.render_report_text(report)
+        assert "input=10+" in text
+        assert "output=7+" in text
+
+    def test_json_render_carries_the_usage_section(self, tmp_path):
+        hops = [ab.HopSpec(hop_id="H001", sequence=1, role="worker", usage=ab.usage_record())]
+        audit = _audit_for(tmp_path, hops=hops, hop_used=1)
+        report = rp.build_report(audit)
+        assert json.loads(rp.render_report_json(report)) == report
+
+
 class TestReportInterpretsOnlyPersistedFacts:
     def test_no_archive_reference_without_one_supplied(self, tmp_path):
         audit = _audit_for(tmp_path)

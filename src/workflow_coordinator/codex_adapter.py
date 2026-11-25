@@ -7,6 +7,7 @@ dialect.  It derives that dialect projection from canonical semantic facts in
 
 from __future__ import annotations
 
+import json
 import os
 import copy
 import signal
@@ -40,9 +41,13 @@ from .model import (
     CoverageDisposition,
     DiagnosisClassification,
     FindingState,
+    NO_USAGE_REPORTED,
     Outcome,
     ResultContractKind,
+    UsageRecord,
     admits_result_contract_version,
+    coerce_token_count,
+    usage_coverage_for,
     StrategyAssessmentResult,
     StrategyRevisionKind,
 )
@@ -100,6 +105,71 @@ def assert_openai_strict_schema(schema: dict[str, Any]) -> None:
 
 def _bounded(value: str, limit: int = 16_384) -> str:
     return value[-limit:]
+
+
+_CODEX_USAGE_FIELDS = (
+    "input_tokens", "output_tokens", "cached_input_tokens",
+    "cache_write_input_tokens", "reasoning_output_tokens",
+)
+
+
+def _usage_from_stdout(stdout: str) -> UsageRecord:
+    """Parse Codex's token usage from the full, un-bounded ``exec --json``
+    stdout stream.
+
+    Collects every ``turn.completed`` event's ``usage`` object across the
+    whole invocation (Codex may emit more than one per invocation). Rule for
+    multiple events, per field: sum across events only when every single
+    event reports that field as a well-formed non-negative integer; if any
+    event is missing it, has the wrong type, or the event itself is not a
+    well-formed usage object, that one figure becomes unknown (``None``)
+    rather than a guessed or partial sum -- never raises, never alters
+    acceptance. A single event is the degenerate case of this same rule. No
+    event at all (including fully malformed/truncated stdout) yields
+    ``NO_USAGE_REPORTED``.
+    """
+
+    usage_events: list[object] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(event, dict) and event.get("type") == "turn.completed":
+            usage_events.append(event.get("usage"))
+    if not usage_events:
+        return NO_USAGE_REPORTED
+
+    totals: dict[str, int | None] = {}
+    for field_name in _CODEX_USAGE_FIELDS:
+        total = 0
+        well_formed = True
+        for usage in usage_events:
+            if not isinstance(usage, dict):
+                well_formed = False
+                break
+            value = coerce_token_count(usage.get(field_name))
+            if value is None:
+                well_formed = False
+                break
+            total += value
+        totals[field_name] = total if well_formed else None
+
+    return UsageRecord(
+        coverage=usage_coverage_for(totals["input_tokens"], totals["output_tokens"]),
+        input_tokens=totals["input_tokens"],
+        output_tokens=totals["output_tokens"],
+        cache_read_tokens=totals["cached_input_tokens"],
+        cache_creation_tokens=totals["cache_write_input_tokens"],
+        reasoning_output_tokens=totals["reasoning_output_tokens"],
+        # Codex's ``input_tokens`` already includes ``cached_input_tokens``
+        # (cache read); unlike Claude, it is not reported net of cache.
+        input_includes_cache_read=True,
+        per_model=(),
+    )
 
 
 def routing_result_openai_schema(
@@ -389,7 +459,11 @@ class CodexCliAdapter:
                 os.killpg(child.pid, signal.SIGKILL)
                 stdout, stderr = child.communicate()
         candidate = result.read_text(encoding="utf-8") or None
+        usage = _usage_from_stdout(stdout)
         diagnostics = () if child.returncode == 0 and not timed_out else (
             "Codex CLI timed out" if timed_out else f"Codex CLI exited {child.returncode}",
         )
-        return AgentExecutionOutcome(candidate, child.returncode, timed_out, _bounded(stdout), _bounded(stderr), diagnostics)
+        return AgentExecutionOutcome(
+            candidate, child.returncode, timed_out, _bounded(stdout), _bounded(stderr), diagnostics,
+            usage=usage,
+        )

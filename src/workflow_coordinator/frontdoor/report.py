@@ -150,6 +150,17 @@ def build_report(audit: Mapping[str, Any], *, archive_ref: str | None = None) ->
     if limits:
         not_done.append("limits: " + ", ".join(sorted(limits)))
 
+    usage = audit.get("usage")
+    usage_report = (
+        {
+            "coverage_counts": dict(usage["coverage_counts"]),
+            "totals": usage["totals"],
+            "by_role": usage["by_role"],
+        }
+        if isinstance(usage, Mapping)
+        else None
+    )
+
     stop_reason = run.get("stop_reason")
     mechanical_stop = isinstance(stop_reason, str) and stop_reason.startswith(
         MECHANICAL_PREEMPTION_PREFIX
@@ -202,7 +213,32 @@ def build_report(audit: Mapping[str, Any], *, archive_ref: str | None = None) ->
         "limits": limits,
         "next_action": next_action,
         "not_done": not_done,
+        "usage": usage_report,
     }
+
+
+_USAGE_METRIC_LABELS = (
+    ("input_tokens", "input"),
+    ("output_tokens", "output"),
+    ("cache_read_tokens", "cache_read"),
+    ("cache_creation_tokens", "cache_creation"),
+    ("reasoning_output_tokens", "reasoning"),
+)
+
+
+def _render_usage_metrics(metrics: Mapping[str, Any]) -> str:
+    """One compact line fragment per figure; a trailing ``+`` marks a total
+    that is a lower bound (some contributing invocation's figure was
+    unknown) -- never presented as exact when it is not."""
+
+    parts = []
+    for key, label in _USAGE_METRIC_LABELS:
+        figure = metrics[key]
+        if figure["value"] is None:
+            continue
+        marker = "+" if figure["lower_bound"] else ""
+        parts.append(f"{label}={figure['value']}{marker}")
+    return " ".join(parts) if parts else "none reported"
 
 
 def render_report_text(report: Mapping[str, Any]) -> str:
@@ -235,6 +271,17 @@ def render_report_text(report: Mapping[str, Any]) -> str:
         lines.append("findings    open blocking: " + ", ".join(report["findings_open_blocking"]))
     else:
         lines.append("findings    none open")
+
+    if report.get("usage"):
+        usage = report["usage"]
+        counts = usage["coverage_counts"]
+        lines.append(
+            "usage       coverage "
+            f"complete={counts['complete']} partial={counts['partial']} none={counts['none']}"
+        )
+        lines.append(f"usage total {_render_usage_metrics(usage['totals'])}")
+        for role in sorted(usage["by_role"]):
+            lines.append(f"usage role  {role}  {_render_usage_metrics(usage['by_role'][role])}")
 
     if report.get("archive_ref"):
         lines.append(f"archive     {report['archive_ref']}")

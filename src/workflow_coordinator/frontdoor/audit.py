@@ -51,6 +51,22 @@ _HOP_KEYS = frozenset({
     "outcome", "applied_route", "commits", "finding_delta_ids", "usage",
     "evidence",
 })
+_HOP_USAGE_KEYS = frozenset({
+    "coverage", "input_tokens", "output_tokens", "cache_read_tokens",
+    "cache_creation_tokens", "reasoning_output_tokens",
+    "input_includes_cache_read", "per_model",
+})
+_MODEL_USAGE_KEYS = frozenset({
+    "model", "input_tokens", "output_tokens", "cache_read_tokens",
+    "cache_creation_tokens", "reasoning_output_tokens",
+})
+_USAGE_METRIC_NAMES = (
+    "input_tokens", "output_tokens", "cache_read_tokens",
+    "cache_creation_tokens", "reasoning_output_tokens",
+)
+_USAGE_FIGURE_KEYS = frozenset({"value", "lower_bound"})
+_USAGE_SUMMARY_KEYS = frozenset({"coverage_counts", "totals", "by_role", "by_model"})
+_COVERAGE_COUNT_KEYS = frozenset({"complete", "partial", "none"})
 _EVIDENCE_KEYS = frozenset({
     "command_name", "status", "exit_code", "argv_digest", "error_class",
     "stdout_sha256", "stderr_sha256", "executable_identity_stable",
@@ -68,10 +84,11 @@ _RAW_FILE_KEYS = frozenset({"path", "sha256", "bytes"})
 _RAW_KEYS = frozenset({"retention", "manifest_sha256", "files"})
 _TOP_KEYS = frozenset({
     "schema", "attempt_id", "run", "governance", "hops", "findings",
-    "anomaly_count", "lifecycle", "raw", "limits",
+    "anomaly_count", "lifecycle", "raw", "limits", "usage",
 })
 
 _LIMIT_USAGE_NOT_REPORTED = "usage_not_reported"
+_LIMIT_USAGE_PARTIALLY_REPORTED = "usage_partially_reported"
 _LIMIT_NO_LIFECYCLE_FACTS = "no_lifecycle_facts"
 _LIMIT_PRESERVATION_NOT_RECORDED = "preservation_not_recorded"
 _LIMIT_GOVERNANCE_NOT_RECORDED = "governance_not_recorded"
@@ -256,9 +273,111 @@ def _evidence_entry(observation: dict, admitted_fingerprints: Mapping[str, Any])
     return entry
 
 
+def _hop_usage_entry(raw_record: Mapping[str, Any] | None) -> dict | None:
+    """Project one persisted invocation usage record into the exact,
+    allow-listed per-hop audit shape, or ``None`` when no record was
+    persisted for this Hop (never guessed, never zero-filled)."""
+
+    if raw_record is None:
+        return None
+    per_model = []
+    for item in raw_record.get("per_model") or []:
+        if not isinstance(item, Mapping):
+            continue
+        model_entry = {
+            "model": item.get("model"),
+            "input_tokens": item.get("input_tokens"),
+            "output_tokens": item.get("output_tokens"),
+            "cache_read_tokens": item.get("cache_read_tokens"),
+            "cache_creation_tokens": item.get("cache_creation_tokens"),
+            "reasoning_output_tokens": item.get("reasoning_output_tokens"),
+        }
+        _assert_keys(model_entry, _MODEL_USAGE_KEYS, context="hop usage per_model entry")
+        per_model.append(model_entry)
+    entry = {
+        "coverage": raw_record.get("coverage"),
+        "input_tokens": raw_record.get("input_tokens"),
+        "output_tokens": raw_record.get("output_tokens"),
+        "cache_read_tokens": raw_record.get("cache_read_tokens"),
+        "cache_creation_tokens": raw_record.get("cache_creation_tokens"),
+        "reasoning_output_tokens": raw_record.get("reasoning_output_tokens"),
+        "input_includes_cache_read": raw_record.get("input_includes_cache_read"),
+        "per_model": per_model,
+    }
+    _assert_keys(entry, _HOP_USAGE_KEYS, context="hop usage entry")
+    return entry
+
+
+def _usage_figure(values: Sequence[Any]) -> dict:
+    known = [value for value in values if isinstance(value, int) and not isinstance(value, bool)]
+    if not known:
+        figure = {"value": None, "lower_bound": False}
+    else:
+        figure = {"value": sum(known), "lower_bound": len(known) != len(values)}
+    _assert_keys(figure, _USAGE_FIGURE_KEYS, context="usage figure")
+    return figure
+
+
+def _usage_metrics(raw_records: Sequence[Mapping[str, Any] | None]) -> dict:
+    metrics = {
+        name: _usage_figure([record.get(name) if record is not None else None for record in raw_records])
+        for name in _USAGE_METRIC_NAMES
+    }
+    _assert_keys(metrics, frozenset(_USAGE_METRIC_NAMES), context="usage metrics")
+    return metrics
+
+
+def _build_usage_section(
+    raw_records: Sequence[Mapping[str, Any] | None], hop_roles: Sequence[str | None],
+) -> dict | None:
+    """Only when at least one Hop carries a persisted usage record (even one
+    whose own coverage is ``none``): the Run-wide totals, per-role and
+    per-model aggregates, and coverage counts. Omitted entirely otherwise, so
+    an archive with no usage capture at all reprojects byte-identically to
+    before this field existed."""
+
+    if not any(record is not None for record in raw_records):
+        return None
+    coverage_counts = {"complete": 0, "partial": 0, "none": 0}
+    for record in raw_records:
+        coverage = record.get("coverage") if record is not None else None
+        bucket = coverage if coverage in coverage_counts else "none"
+        coverage_counts[bucket] += 1
+    _assert_keys(coverage_counts, _COVERAGE_COUNT_KEYS, context="usage coverage_counts")
+
+    totals = _usage_metrics(raw_records)
+
+    by_role: dict[str, dict] = {}
+    for role in sorted({role for role in hop_roles if role is not None}):
+        subset = [
+            record for record, hop_role in zip(raw_records, hop_roles, strict=True)
+            if hop_role == role
+        ]
+        by_role[role] = _usage_metrics(subset)
+
+    by_model: dict[str, dict] = {}
+    models = sorted({
+        record.get("model") for record in raw_records
+        if record is not None and isinstance(record.get("model"), str)
+    })
+    for model in models:
+        subset = [
+            record for record in raw_records
+            if record is not None and record.get("model") == model
+        ]
+        by_model[model] = _usage_metrics(subset)
+
+    section = {
+        "coverage_counts": coverage_counts, "totals": totals, "by_role": by_role, "by_model": by_model,
+    }
+    _assert_keys(section, _USAGE_SUMMARY_KEYS, context="usage section")
+    return section
+
+
 def _build_hops_section(
-    run_doc: dict, plan_doc: dict | None, exec_evidence_doc: dict | None, limits: list[str],
-) -> list[dict]:
+    run_doc: dict, plan_doc: dict | None, exec_evidence_doc: dict | None,
+    usage_doc: dict | None, limits: list[str],
+) -> tuple[list[dict], list[Mapping[str, Any] | None], list[str | None]]:
     role_bindings = (plan_doc or {}).get("role_bindings") or {}
     phase_bindings = (plan_doc or {}).get("phase_bindings")
 
@@ -283,7 +402,9 @@ def _build_hops_section(
         key=lambda hop: (hop.get("sequence") if isinstance(hop.get("sequence"), int) else 0, hop.get("hop_id") or ""),
     )
 
-    hops_section = []
+    hops_section: list[dict] = []
+    raw_usage_records: list[Mapping[str, Any] | None] = []
+    hop_roles: list[str | None] = []
     for hop in raw_hops:
         role = hop.get("role")
         attempt = attempts_by_hop.get(hop.get("hop_id"))
@@ -299,6 +420,14 @@ def _build_hops_section(
             for observation in attempt.get("trusted_observations", []) or []:
                 evidence_list.append(_evidence_entry(observation, admitted_fingerprints))
 
+        raw_usage_record = None
+        if usage_doc is not None:
+            raw_usage_record = (usage_doc.get("records") or {}).get(hop.get("hop_id"))
+            if not isinstance(raw_usage_record, Mapping):
+                raw_usage_record = None
+        raw_usage_records.append(raw_usage_record)
+        hop_roles.append(role)
+
         entry = {
             "hop_id": hop.get("hop_id"),
             "sequence": hop.get("sequence"),
@@ -311,12 +440,12 @@ def _build_hops_section(
             "applied_route": hop.get("applied_route"),
             "commits": list(hop.get("actual_commits") or []),
             "finding_delta_ids": list(hop.get("finding_delta_ids") or []),
-            "usage": None,
+            "usage": _hop_usage_entry(raw_usage_record),
             "evidence": evidence_list,
         }
         _assert_keys(entry, _HOP_KEYS, context="hop entry")
         hops_section.append(entry)
-    return hops_section
+    return hops_section, raw_usage_records, hop_roles
 
 
 def _build_findings_section(run_doc: dict) -> list[dict]:
@@ -465,21 +594,34 @@ def project_audit(
     if run_doc is None:
         raise AuditError(f"{run_relpath} is listed in the manifest but is not readable")
 
-    limits: list[str] = [_LIMIT_USAGE_NOT_REPORTED]
+    limits: list[str] = []
 
     summary_doc = _read_copied_json(attempt_dir, "run/operator-summary.json", copied)
     plan_doc = _read_copied_json(attempt_dir, "run/operator-plan.json", copied)
     exec_evidence_doc = _read_copied_json(
         attempt_dir, f"run/checkouts/{checkout_id}/execution-evidence.json", copied,
     )
+    usage_doc = _read_copied_json(attempt_dir, f"run/checkouts/{checkout_id}/usage.json", copied)
 
     run_section = _build_run_section(run_doc, summary_doc, limits)
     governance_section = _build_governance_section(plan_doc, run_doc, limits)
-    hops_section = _build_hops_section(run_doc, plan_doc, exec_evidence_doc, limits)
+    hops_section, raw_usage_records, hop_roles = _build_hops_section(
+        run_doc, plan_doc, exec_evidence_doc, usage_doc, limits
+    )
     findings_section = _build_findings_section(run_doc)
     anomaly_count = len(run_doc.get("anomalies") or [])
     lifecycle_section = _build_lifecycle_section(lifecycle, limits)
     raw_section = _build_raw_section(manifest, manifest_path, raw_retention)
+    usage_section = _build_usage_section(raw_usage_records, hop_roles)
+
+    if usage_section is None:
+        limits.append(_LIMIT_USAGE_NOT_REPORTED)
+    else:
+        counts = usage_section["coverage_counts"]
+        if counts["complete"] + counts["partial"] == 0:
+            limits.append(_LIMIT_USAGE_NOT_REPORTED)
+        elif counts["partial"] > 0 or counts["none"] > 0:
+            limits.append(_LIMIT_USAGE_PARTIALLY_REPORTED)
 
     audit = {
         "schema": SCHEMA,
@@ -493,6 +635,8 @@ def project_audit(
         "raw": raw_section,
         "limits": sorted(set(limits)),
     }
+    if usage_section is not None:
+        audit["usage"] = usage_section
     _assert_keys(audit, _TOP_KEYS, context="audit document")
 
     _guard_privacy(

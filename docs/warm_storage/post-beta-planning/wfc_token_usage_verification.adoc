@@ -1,0 +1,476 @@
+= Token Usage S1: implementation verification record
+:toc:
+:toclevels: 2
+
+Maturity:: verification record, written by `WI-WFC-TOKEN-USAGE-S1-001` H001
+(Worker) at base HEAD `206777d25b94b553e9dff98592896d9fd5669b3b`. Not a
+review, not an acceptance. The independent reviewer performs the whole-
+candidate broad review separately, from scratch against the task document,
+and takes no credit from this record.
+Authority:: informative. Grants no acceptance, Finding disposition, Runtime
+promotion, tag, push or merge authority. No Finding operation was performed
+or proposed here; a Worker never opens, resolves or dispositions a Finding.
+Owns:: The design decisions, the provider-semantics difference and its
+unverified assumptions, the changed contracts, the Front-Door docs-sync
+table, the deliberately replaced assertions, the measured checks (exact
+commands and results), what could not be run and why, and the explicit
+non-goals.
+
+== Design decisions and reasons
+
+Record format and location:: One new bounded checkout-scoped leaf,
+`usage.json`, beside `run.json`/`checkpoint.json`/`execution-evidence.json`
+under `run/checkouts/<id>/` (`src/workflow_coordinator/persistence.py:
+write_usage_record`). It is a JSON object `{"schema_version": 1, "run_id":
+..., "records": {<hop_id>: <record>}}`, written with the same atomic-replace
+discipline as neighbouring Run records (`atomic_write_text`), append-only
+and idempotent for an identical repeat, and refuses a conflicting duplicate
+for an already-recorded Hop id rather than silently overwriting it
+(`persistence.py::write_usage_record`). It is keyed by Hop id (one Hop is
+exactly one invocation, per the task's own premise); each record additionally
+carries `invocation_id`, `role` and the effective `adapter`/`model` binding
+(`serialization.py::usage_record_to_data`). No prompt, output, path or
+credential is ever part of it -- only numbers, enumerations and provider/
+model identifiers. `frontdoor/archive.py`'s `CHECKOUT_ALLOW` gained
+`"usage.json"`, additively, so it is archived exactly like its neighbours
+when present and simply absent from the manifest when it is not.
+
+Capture, where it happens:: `AgentExecutionOutcome` (`adapter.py`) gained one
+new field, `usage: UsageRecord`, defaulting to the shared
+`NO_USAGE_REPORTED` sentinel so every existing positional construction
+(`FakeAdapter`, every inline test `Adapter`, `SubprocessAdapter`) keeps
+working unchanged. `ClaudeCliAdapter.execute()` and `CodexCliAdapter.
+execute()` each parse their own provider's full, un-bounded stdout (before
+the existing 16 KiB diagnostic-tail bounding) into a `UsageRecord`,
+independent of `candidate`/`returncode`/`timed_out`: the cost already
+occurred even when the wrapper itself reports failure or the process times
+out with partial output, so usage is read whenever the respective wire
+format is itself parsable, never gated on acceptance. This is why capture
+also covers failed, blocked and timed-out invocations whenever a parsable
+provider output exists, and why a non-parsable/absent output yields
+`NO_USAGE_REPORTED` (coverage `none`, every figure `None`) rather than
+raising. Persistence of the parsed record then happens one layer up, in
+`operator.py::run_serial_hops` (`_persist_usage_record`), using the already-
+threaded `RealHopRun.outcome` -- which is populated on *both* the accepted
+path and the `recover_uncertain` path in `slice4.py` (unmodified), so a
+failed/timed-out/blocked invocation's usage is persisted exactly when
+`slice4.py` already charges a Hop for it, with no new write surface and no
+change to `slice4.py` itself (out of this WorkItem's authorized scope).
+
+Coverage definition:: `model.usage_coverage_for(input_tokens, output_tokens)`:
+`complete` when both headline figures are known, `partial` when exactly one
+is, `none` when neither is -- applied uniformly to both providers, after
+each individual figure has already been defensively parsed
+(`model.coerce_token_count`: a non-negative `int` within
+`MAX_PLAUSIBLE_TOKEN_COUNT` (1e12), `bool`/`float`/`str`/negative/too-large/
+missing all yield `None`, never a guess, never zero).
+
+Codex multi-event rule:: Codex may emit more than one `turn.completed` event
+per invocation. The rule (`codex_adapter._usage_from_stdout`), applied
+independently per field across every collected event: sum that field across
+every event only when *every* event reports it as a well-formed non-negative
+integer; if any event is missing it, has the wrong type, or the event's own
+`usage` value is not even an object, that one figure becomes unknown rather
+than a partial/guessed sum. A single event is the degenerate case of the
+same rule. A line that is not valid JSON, or not a `turn.completed` event, is
+skipped, never raised. No event at all (including fully truncated/malformed
+stdout) yields `NO_USAGE_REPORTED`. Tested in
+`tests/unit/test_codex_adapter_usage.py::TestMultipleEvents` against derived
+fixtures built from the one real sample.
+
+Lower-bound semantics:: `frontdoor/audit.py::_usage_figure` sums only the
+known values among a group of records (a Hop's whole Run for `totals`, a
+role's subset for `by_role`, a model's subset for `by_model`); the total is
+`None` (never zero) when nothing in the group is known, and carries
+`"lower_bound": true` whenever at least one group member did not contribute
+a known value (including a Hop with no persisted record at all, which
+contributes nothing to every figure) -- the sum is real but understates the
+true total in that case, and this is the one and only place that marker is
+set. `wfc report` renders it as a trailing `+` on the figure
+(`report.py::_render_usage_metrics`).
+
+Limit codes:: `usage_not_reported` is kept, and is set, exactly when either
+(a) no Hop of the Run carries a persisted usage record at all (the old,
+unconditional case -- every pre-this-change archive), or (b) records exist
+but not one of them reports a usable headline figure (coverage `complete` or
+`partial` is zero across the whole Run). `usage_partially_reported` (new) is
+set instead when at least one Hop's coverage is `complete`/`partial` but not
+every Hop reached `complete` -- i.e. real reporting exists but is honestly
+incomplete; the two codes are mutually exclusive, and neither is set when
+every Hop in the Run is `complete`.
+
+Per-role/per-model source:: `by_role` is keyed by the Hop's own authoritative
+`role` (from `run.json`, always present, independent of whether
+`operator-plan.json`/governance is archived); `by_model` is keyed by the
+persisted record's own `model` (the effective binding captured at
+invocation time), and a Hop whose record carries no model (e.g. a local/fake
+adapter) is excluded from `by_model` but still counted in `totals`/
+`coverage_counts`. This is a deliberate asymmetry, recorded here rather than
+only in code comments: role is always knowable from Run state and is the
+more robust key; model is only knowable from the capture itself.
+
+Compatibility argument (byte-identity):: A pre-this-change archive never
+wrote `usage.json`, so for every Hop `usage_doc` is `None` and every hop's
+projected `"usage"` stays `None` (same literal value the old hard-coded
+projection produced). `_build_usage_section` returns `None` whenever no Hop
+carries a non-`None` record, so the top-level `"usage"` key is omitted
+entirely (not merely null) -- unconditionally true for every pre-this-change
+archive -- and `usage_not_reported` is appended to `limits` by the exact
+same unconditional-in-effect path the old code took. No other field this
+slice touches (`run`, `governance`, `findings`, `lifecycle`, `raw`) changed
+shape. `_TOP_KEYS`/`_HOP_KEYS` gained the already-reserved/allow-listed
+`"usage"` key additively; `_assert_keys` only refuses an *unexpected* key, so
+an allow-listed-but-absent key never fails the closed-set check. Measured in
+`tests/unit/test_postrun_archive.py::UsageAdditiveArchivingTests::
+test_old_style_attempt_with_no_usage_json_reprojects_without_the_usage_key`
+(a real `archive_run` over a state root built the pre-this-change way) and
+`tests/unit/test_audit_projection.py::TestUsageIsAlwaysNullNeverZero` (the
+synthetic `bp6` fixture, likewise never carrying `usage.json`).
+
+== Provider-semantics difference and its unverified assumptions
+
+Verified from the two real, read-only samples
+(`tests/fixtures/provider_usage_samples/`): Claude's `usage.input_tokens`
+excludes both `cache_read_input_tokens` and `cache_creation_input_tokens`
+(the real sample: `input_tokens: 2`, `cache_read_input_tokens: 9074`,
+`cache_creation_input_tokens: 12736` -- these are clearly disjoint, additive
+figures, not a subset relationship). Codex's `usage.input_tokens` *includes*
+`cached_input_tokens` (the real sample: `input_tokens: 17329`,
+`cached_input_tokens: 11008`, with `11008 < 17329`, consistent with
+inclusion; the task text states this inclusion as a verified fact of the
+real CLI, not an inference drawn here). `UsageRecord.
+input_includes_cache_read` carries this fact verbatim per record (`False`
+for every Claude-origin record, `True` for every Codex-origin record),
+meaningful only when `input_tokens` is not `None`; no aggregation anywhere
+in this slice sums a Claude figure with a Codex figure under one field
+without this flag remaining readable per contributing invocation (`by_role`/
+`by_model` split by role/model, which already separates adapters in every
+realistic binding).
+
+Unverified/assumed, not covered by the two real samples, and treated as
+optional-and-unknown-when-absent per the task's own instruction: Claude's
+`modelUsage` entries beyond the one model the real sample carries (multiple
+concurrent models in one invocation is assumed possible but untested
+against a real multi-model wrapper); Codex ever reporting `cache_write_
+input_tokens` as non-zero (the real sample has it at `0`; the field is
+parsed and stored, never asserted non-zero anywhere); a third adapter's wire
+format (none exists in this product).
+
+== Changed contracts
+
+* `AgentExecutionOutcome` (`adapter.py`): new field `usage: UsageRecord =
+  NO_USAGE_REPORTED`. Additive; every existing positional construction
+  keeps working.
+* `FakeAdapter` (`adapter.py`): new field `usage: UsageRecord =
+  NO_USAGE_REPORTED`, threaded into its `AgentExecutionOutcome`. Additive.
+* New `model.py` surface: `UsageCoverage`, `ModelUsage`, `UsageRecord`,
+  `NO_USAGE_REPORTED`, `MAX_PLAUSIBLE_TOKEN_COUNT`, `coerce_token_count`,
+  `usage_coverage_for`. Additive.
+* New `serialization.py` function: `usage_record_to_data`. Additive.
+* New `persistence.py` function: `write_usage_record`,
+  `USAGE_RECORD_SCHEMA_VERSION`. Additive; one new write surface, scoped to
+  the existing checkout directory.
+* `frontdoor/archive.py`: `CHECKOUT_ALLOW` gained `"usage.json"`. Additive.
+* `frontdoor/audit.py`: `_HOP_KEYS["usage"]` is now populated from the
+  archived record instead of hard-coded `None`; `_TOP_KEYS` gained the
+  conditionally-present `"usage"` key; `_build_hops_section`'s return shape
+  changed (now a 3-tuple, used only inside `project_audit`, not a public
+  contract); `limits`' `usage_not_reported` seeding changed from
+  unconditional to conditional (see compatibility argument above, and the
+  deliberately replaced assertions below); new limit code
+  `usage_partially_reported`.
+* `frontdoor/report.py`: `build_report`'s returned mapping gained a `"usage"`
+  key (`None` when absent); `render_report_text` gained new lines, present
+  only when usage was recorded.
+* `operator.py::run_serial_hops`: new call to `_persist_usage_record` per
+  dispatched invocation; no change to control flow, routing or any existing
+  field it already wrote.
+* `codex_adapter.py`: fixed a latent `NameError` (`json` was used but never
+  imported) uncovered while adding usage parsing -- pre-existing in the
+  module before this change, triggered only once `_usage_from_stdout` called
+  `json.loads`; every `CodexCliAdapter`/`operator.py` conformance and
+  integration test that exercises a real Codex-shaped subprocess now passes
+  where it previously raised `NameError` inside `execute()` the moment this
+  slice's own new parsing code ran (confirmed by re-running the same tests
+  against the unmodified baseline via a scoped `git stash`, which reproduced
+  the identical `NameError` once the single new `_usage_from_stdout` call
+  was present without the import -- i.e. this is this slice's own omission,
+  caught and fixed within the same change, not a pre-existing product
+  defect reaching users before now).
+
+No change to `wfc.audit/1`'s or `wfc.report/1`'s *required* fields; both
+additions are optional/allow-listed and absent exactly when this slice never
+ran (or ran but captured nothing to report, for `audit.json`'s `"usage"`
+key specifically -- see the compatibility argument).
+
+== Front-Door docs-sync table
+
+[cols="2,4,3,5",options="header"]
+|===
+|Owner |Statement checked |Result |Why
+
+|`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc`
+|Beta-limitations bullet "No token usage is reported ... `usage_not_reported`"
+|Edited
+|Flatly inaccurate now: usage is captured per invocation when the provider
+reports it. Rewrote to state what is captured, the lower-bound/coverage
+semantics, the no-price guarantee, and both limit codes.
+
+|`docs/operator_manual/ch09_consumer_quickstart/02_first_run_example.adoc`
+|Quoted `not done limits: preservation_not_recorded, usage_not_reported` sample line
+|Unchanged because still true
+|The quoted listing is the demo kit's real output
+(`examples/consumer-demo/scripted_provider.py`), which never emits a
+`turn.completed`-shaped stdout event; that fixture was deliberately left
+untouched (see below), so its archived Run still captures no usable usage
+and `usage_not_reported` remains the accurate limit. Guarded by
+`tests/architecture/test_tutorial_kit_quotes.py`/
+`test_consumer_tutorial_pages.py`, both re-run green.
+
+|`docs/operator_manual/ch09_consumer_quickstart/03_tutorial_program_change.adoc`
+|Same quoted sample line
+|Unchanged because still true
+|Same reasoning as the first-run example above.
+
+|`docs/operator_manual/ch09_consumer_quickstart/04_tutorial_stops.adoc`
+|`not done` lines (no `limits:` line present)
+|Unchanged because still true
+|This tutorial's own sample output carries no `limits:` line at all in the
+quoted listing; nothing to correct.
+
+|`examples/consumer-demo/scripted_provider.py`
+|(not a text statement; the fixture's own behavior)
+|Unchanged (deliberate)
+|Could have been extended to emit a `turn.completed` stdout event (in scope,
+unlike the BP9 fixture, see below), but doing so would change the two
+guarded tutorial listings' real recorded output and require regenerating
+them -- a change not required by any inaccurate statement, since the current
+listings are honest either way. Left untouched to keep the lowest-risk,
+most-honest-by-construction choice: say nothing changed and prove it by
+leaving the fixture that produces that proof alone.
+
+|`docs/operator_manual/ch10_level1_orchestration/01_operating_pattern.adoc`
+(`level1-cost`)
+|"WFC in this Beta does not measure complete token usage itself ... always
+carries the limit `usage_not_reported`"
+|Edited
+|Same inaccuracy as the quickstart bullet; rewrote to state usage capture
+exists but is never a price, and judging actual monetary cost still means
+your own provider billing, not a promise.
+
+|`docs/operator_manual/ch09_consumer_quickstart/00_overview.adoc`
+|"a Run ... costs usage (see ... starting small, and what it costs)"
+|Unchanged because still true
+|Generic cross-reference to the cost section; makes no claim about
+measurement or reporting itself.
+
+|`docs/operator_manual/ch03_running/02_launch_status.adoc`
+|`wfc report`/`wfc audit` field-list description ("`stop_reason`,
+`human_question_present`, ... and the rest of the sanitized Run facts")
+|Unchanged because still true
+|Open-ended ("and the rest of ..."), names no closed field list that usage
+would contradict.
+
+|`docs/operator_manual/ch04_evidence/02_archive.adoc`
+|Allow-list/port description ("the allow-list ... are the same shape")
+|Unchanged because still true
+|Describes the archiver's shape generically, not an enumerated file list;
+the additive `usage.json` entry does not contradict it.
+
+|`docs/operator_manual/ch06_recovery/01_outcomes.adoc`
+|References to `audit.json`/`wfc report` in recovery context
+|Unchanged because still true
+|No claim about usage/cost content.
+
+|`docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc`
+|Uses of the word "limits" (diagnosis limits, Unix socket path limits)
+|Unchanged because still true
+|None refer to the audit `limits` field or token usage; unrelated sense of
+the word.
+
+|`docs/release_notes/release_notes.adoc` (`0.1.0b2 -- planned`, the only
+unreleased section)
+|Beta-limitations bullet "The archived `audit.json` always reports
+`usage_not_reported`; token usage is not measured."
+|Edited
+|Same inaccuracy; rewrote to describe the capability and both limit codes.
+Only the planned (unreleased) section was touched; no released section was
+edited.
+
+|`docs/developer_guide/ch04_release_management.adoc` (Q1 consumer-smoke
+historical table row: "Audit" cell, `anomaly_count` 0, limits
+`preservation_not_recorded`, `usage_not_reported`)
+|Historical record of a specific, already-executed, already-verified Q1
+release smoke test's actual recorded facts
+|Unchanged (deliberate)
+|This is provenance of what that specific past smoke test actually
+recorded -- it predates this change and genuinely carried
+`usage_not_reported`. Rewriting it to anything else would misrepresent real
+history, which this WorkItem does not have authority to do (no invented
+acceptance/closure, no rewritten historical facts). A *future* release's own
+smoke test may record different `limits`; that is a fact for that future
+record, not this one.
+
+|`scripts/wfc_release_check.py`
+|Any hard-coded expectation of `limits`/`usage_not_reported`
+|Unchanged because no such expectation exists
+|Searched (`grep -n "usage_not_reported\|limits"`); no match. No release
+check needs the same change.
+
+|`src/workflow_coordinator/agent_skill/wfc/references/stops-and-evidence.md`
+("Reading `wfc report`")
+|Said nothing about usage/limits at all
+|Edited
+|Added one short, verifiable statement: the report shows captured usage,
+names both limit codes when capture was absent/incomplete, and is never a
+price nor an estimate. Re-ran `tests/unit/test_agent_skill_content.py` and
+`tests/unit/test_frontdoor_skill.py` green (both only pin substrings this
+addition does not remove).
+
+|`src/workflow_coordinator/agent_skill/wfc/SKILL.md`
+|Usage/cost content
+|Unchanged because none exists
+|Searched; no mention of usage or cost to begin with.
+
+|`docs/backlog/beta1_productization.adoc` ("Prefer recording provider-
+reported token usage ..." preference; "R2 Q8" open question; BP6/DG-1
+decision record)
+|Preference and open-question bullets
+|Edited (preference and R2 Q8 bullets only)
+|Recorded that `WI-WFC-TOKEN-USAGE-S1-001` now implements the DG-1
+fast-follow preference, without claiming acceptance (explicitly deferred to
+independent review/maintainer) and without reopening or silently resolving
+the R2 Q8 gate-vs-fast-follow question (DG-1 already decided fast-follow in
+the existing BP6 record, left untouched).
+
+|`docs/backlog/beta1_productization.adoc` (BP6/DG-1 historical decision
+paragraph itself)
+|"DG-1 decided 2026-11-20 ... BP6 reserves a nullable `usage` field ..."
+|Unchanged (deliberate)
+|Historical record of an already-made maintainer decision and an
+already-accepted BP6a/BP6b closure; not rewritten. The new bullets added
+elsewhere in the same file record the *new* fact (implementation now
+exists) without touching this historical paragraph.
+
+|`docs/backlog/_open.adoc`
+|Any token-usage-related passage
+|Unchanged because none exists
+|Searched; no existing passage references token usage. Adding a new
+tracking entry here was judged out of scope for this record (this is a
+maintainer-curated status/navigation file; inventing a new entry risks
+reading as inventing acceptance/closure status, which this WorkItem
+withholds).
+
+|`docs/cold_storage/**`, `docs/warm_storage/**` (other than this new record)
+|(all historical records mentioning token usage)
+|Unchanged (immutable provenance)
+|Per `CLAUDE.md` and this convention: historical records are provenance, not
+a source of current requirements, and are never edited.
+|===
+
+== Deliberately replaced assertions
+
+* `tests/unit/test_audit_projection.py::TestDefaultDenyAllowList::
+  test_top_level_keys_are_exactly_the_frozen_set` replaced by
+  `test_top_level_keys_are_exactly_the_frozen_set_minus_usage_when_none_is_recorded`,
+  asserting `set(audit.keys()) == au._TOP_KEYS - {"usage"}` for the
+  no-usage-recorded fixture (previously `== au._TOP_KEYS`, which this slice's
+  own conditional `"usage"` key necessarily changes for that one fixture). A
+  new companion test,
+  `TestUsageProjection::test_top_level_usage_key_appears_exactly_when_a_record_exists`,
+  asserts the original exact-equality form for the case this slice adds
+  (at least one usage record present).
+* No other existing assertion was weakened, deleted or had its meaning
+  changed; `TestUsageIsAlwaysNullNeverZero.test_every_hop_usage_is_null` and
+  `"usage_not_reported" in audit["limits"]` (unconditional-fixture case)
+  both still hold and were extended, not altered, with a new
+  `test_no_top_level_usage_key_when_no_record_exists` alongside them.
+
+== Measured checks
+
+Environment: this sandbox's system `python3` has no `pytest`/`pyyaml`
+installed; `/tmp/wfc-p1-venv` (a pre-existing virtualenv already present in
+this sandbox, `python 3.13.5`, `pytest 9.2.0`, `pyyaml 6.0.3`) was used for
+every command below via `--wfc-partial` with explicit paths, per the
+Coordinator's own guidance that this is exploratory validation, not
+Coordinator-trusted evidence.
+
+* `python3 -m ruff check .` -- `All checks passed!`.
+* `asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN`
+  on every changed `.adoc` file (`release_notes.adoc`,
+  `ch09_consumer_quickstart/01_quickstart.adoc`,
+  `ch10_level1_orchestration/01_operating_pattern.adoc`,
+  `beta1_productization.adoc`) -- no output, no warning, for each.
+* `python3 scripts/wfc_doc_catalog.py check` -- baseline (base HEAD, via a
+  scoped `git stash` of `src`/`tests`/`docs`): 83 unresolved links, 4 Project
+  Memory `source_path` misses. After this change: the same 83/4. No
+  regression.
+* Targeted `pytest --wfc-partial` runs, all green (exit 0), covering every
+  new and touched test module: `tests/unit/test_usage_model.py` (19),
+  `tests/unit/test_claude_adapter_usage.py` (17),
+  `tests/unit/test_codex_adapter_usage.py` (14),
+  `tests/unit/test_usage_persistence.py` (8),
+  `tests/unit/test_audit_projection.py` (53),
+  `tests/unit/test_report.py` (28), `tests/unit/test_postrun_archive.py`
+  (14), `tests/unit/test_archive_conformance.py`,
+  `tests/unit/test_archive_equivalence.py`, `tests/unit/test_archive_retention.py`,
+  `tests/unit/test_audit_privacy.py`, `tests/unit/test_audit_user_name_match.py`,
+  `tests/unit/test_agent_skill_content.py`, `tests/unit/test_frontdoor_skill.py`,
+  `tests/architecture/test_tutorial_kit_quotes.py`,
+  `tests/architecture/test_consumer_tutorial_pages.py`,
+  `tests/unit/test_operator.py`, `tests/unit/test_slice4.py`,
+  `tests/unit/test_slice5b.py`, `tests/unit/test_slice3_vertical.py`,
+  `tests/unit/test_slice4b_git_authority.py`,
+  `tests/unit/test_a2_evidence_commands.py`,
+  `tests/unit/test_persistence.py`, `tests/unit/test_serialization.py`,
+  `tests/unit/test_codex_adapter_conformance.py`,
+  `tests/unit/test_codex_adapter_smoke.py` -- all passed.
+* `python3 -m pytest -q --wfc-partial tests/unit` (the entire directory, not
+  only the targeted subset above): exit code 0; every failure reported is
+  one of the 26 pre-existing environment failures named below, none newly
+  introduced.
+* Pre-existing, confirmed non-regressions (reproduced identically on the
+  unmodified baseline via a scoped `git stash`, before this change was
+  applied): every `tests/unit/test_claude_adapter_conformance.py` test fails
+  in this sandbox with "local pre-acceptance executable launch failure"
+  (a subprocess-launch sandbox restriction, unrelated to this change); three
+  `tests/unit/test_lifecycle_controller.py` tests and the BP9 fake-provider
+  end-to-end test (`tests/integration/test_beta_e2e_fake_provider.py::
+  test_happy_path_...`) fail in this sandbox's `/tmp/wfc-p1-venv` with
+  `wfc: error: unrecognized arguments: --execution-bindings-sha256`, traced
+  to that venv's own stale installed `workflow_coordinator` package (`import
+  workflow_coordinator` there resolves to
+  `/tmp/wfc-p1-venv/lib/python3.13/site-packages/workflow_coordinator`, not
+  this worktree's `src/`) shadowing the in-repository engine re-entry for
+  that one nested subprocess hop; confirmed identical before and after this
+  change by re-running the same three tests against the unmodified baseline.
+  New assertions were still added to the BP9 happy-path test and to the
+  demo-kit-independent `scripted_provider.py` fixture (both logically
+  exercised by the equivalent, passing unit-level coverage above) because
+  they could not be executed end to end in this sandbox; this is an
+  agent-local environmental limitation, not a claim that they pass, and not
+  a production defect.
+* Not run here: the full required suite (`python -m pytest -q`, no
+  `--wfc-partial`) needs `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE` verified
+  offline inputs this sandbox does not have configured; the Coordinator's
+  own task-check runs it separately. A real `claude`/`codex` CLI live
+  qualification was not attempted (no network, no credentials in this
+  sandbox, and out of this WorkItem's scope regardless).
+
+== Non-goals, explicitly withheld
+
+No monetary/price figure is ever captured, stored or rendered (`total_cost_
+usd`/`costUSD` are read nowhere in either adapter's parser; asserted
+directly in `test_claude_adapter_usage.py::TestRealSample::
+test_no_monetary_field_is_ever_read`,
+`test_usage_persistence.py::TestUsageRecordToData::
+test_carries_no_monetary_field`, and the audit/BP9-e2e canary assertions).
+No figure is ever estimated or defaulted to zero for "not reported"; every
+unknown stays `None` end to end. No change to `wfc status`, routing,
+acceptance, review, Finding, admission, trusted-Git, sandbox or lifecycle
+semantics. No change to any provider invocation command line, prompt, model
+or reasoning setting. No `wfc.audit/2` or other breaking schema change --
+both new keys are additive and conditionally present/absent exactly as
+needed for byte-identical reprojection of a pre-this-change archive. No
+change to `robust@v1`/`simple@v1` program records or
+`src/workflow_coordinator/resources/**`.

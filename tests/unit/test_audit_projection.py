@@ -312,6 +312,177 @@ class TestUsageIsAlwaysNullNeverZero:
             assert hop["usage"] is None
             assert hop["usage"] != 0
 
+    def test_no_top_level_usage_key_when_no_record_exists(self, tmp_path):
+        attempt_dir = ab.build_attempt(tmp_path)
+        audit = au.project_audit(attempt_dir)
+        assert "usage" not in audit
+        assert "usage_not_reported" in audit["limits"]
+        assert "usage_partially_reported" not in audit["limits"]
+
+
+class TestUsageProjection:
+    """WI-WFC-TOKEN-USAGE-S1-001: per-hop usage, Run-wide aggregates,
+    coverage counts, the lower-bound marker, and the ``limits`` transitions
+    they drive -- every assertion below is mutation-sensitive against a
+    fixture that carries at least one real (non-null) usage record."""
+
+    def test_hop_with_a_record_projects_the_allow_listed_figures_verbatim(self, tmp_path):
+        hops = [
+            ab.HopSpec(
+                hop_id="H001", sequence=1, role="worker",
+                usage=ab.usage_record(
+                    invocation_id="INV-H001", role="worker", adapter="claude_cli",
+                    model="claude-haiku-5-5", coverage="complete",
+                    input_tokens=2, output_tokens=4, cache_read_tokens=9074,
+                    cache_creation_tokens=12736, reasoning_output_tokens=0,
+                    input_includes_cache_read=False,
+                    per_model=[{
+                        "model": "claude-haiku-5-5", "input_tokens": 2, "output_tokens": 4,
+                        "cache_read_tokens": 9074, "cache_creation_tokens": 12736,
+                        "reasoning_output_tokens": 0,
+                    }],
+                ),
+            ),
+        ]
+        audit = ab_project(tmp_path, hops)
+        [hop] = audit["hops"]
+        assert hop["usage"] == {
+            "coverage": "complete", "input_tokens": 2, "output_tokens": 4,
+            "cache_read_tokens": 9074, "cache_creation_tokens": 12736,
+            "reasoning_output_tokens": 0, "input_includes_cache_read": False,
+            "per_model": [{
+                "model": "claude-haiku-5-5", "input_tokens": 2, "output_tokens": 4,
+                "cache_read_tokens": 9074, "cache_creation_tokens": 12736,
+                "reasoning_output_tokens": 0,
+            }],
+        }
+        # invocation_id/role/adapter are persisted Run state but are not
+        # re-surfaced inside the per-hop usage object (already available at
+        # the hop level / not needed for audit purposes).
+        assert "invocation_id" not in hop["usage"]
+        assert "adapter" not in hop["usage"]
+
+    def test_hop_without_a_record_is_null_even_when_a_sibling_hop_has_one(self, tmp_path):
+        hops = [
+            ab.HopSpec(hop_id="H001", sequence=1, role="worker",
+                       usage=ab.usage_record(input_tokens=10, output_tokens=5)),
+            ab.HopSpec(hop_id="H002", sequence=2, role="independent_reviewer", usage=None),
+        ]
+        audit = ab_project(tmp_path, hops)
+        by_id = {hop["hop_id"]: hop for hop in audit["hops"]}
+        assert by_id["H001"]["usage"]["input_tokens"] == 10
+        assert by_id["H002"]["usage"] is None
+
+    def test_top_level_usage_key_appears_exactly_when_a_record_exists(self, tmp_path):
+        hops = [ab.HopSpec(hop_id="H001", sequence=1, role="worker", usage=ab.usage_record())]
+        audit = ab_project(tmp_path, hops)
+        assert "usage" in audit
+        assert set(audit.keys()) == au._TOP_KEYS
+
+    def test_coverage_counts_and_limit_transitions(self, tmp_path):
+        complete = ab.usage_record(coverage="complete", input_tokens=10, output_tokens=5)
+        partial = ab.usage_record(coverage="partial", input_tokens=10, output_tokens=None)
+        none_reported = ab.usage_record(coverage="none", input_tokens=None, output_tokens=None)
+
+        # Every Hop fully reported: no usage limit at all.
+        audit = ab_project(tmp_path / "all-complete", [
+            ab.HopSpec(hop_id="H001", sequence=1, usage=complete),
+        ])
+        assert audit["usage"]["coverage_counts"] == {"complete": 1, "partial": 0, "none": 0}
+        assert "usage_not_reported" not in audit["limits"]
+        assert "usage_partially_reported" not in audit["limits"]
+
+        # A mix of complete/partial/no-record hops: partially reported.
+        audit = ab_project(tmp_path / "mixed", [
+            ab.HopSpec(hop_id="H001", sequence=1, usage=complete),
+            ab.HopSpec(hop_id="H002", sequence=2, usage=partial),
+            ab.HopSpec(hop_id="H003", sequence=3, usage=None),
+        ])
+        assert audit["usage"]["coverage_counts"] == {"complete": 1, "partial": 1, "none": 1}
+        assert "usage_partially_reported" in audit["limits"]
+        assert "usage_not_reported" not in audit["limits"]
+
+        # Records exist but every one reports nothing usable: still "not reported".
+        audit = ab_project(tmp_path / "all-none", [
+            ab.HopSpec(hop_id="H001", sequence=1, usage=none_reported),
+        ])
+        assert audit["usage"]["coverage_counts"] == {"complete": 0, "partial": 0, "none": 1}
+        assert "usage_not_reported" in audit["limits"]
+        assert "usage_partially_reported" not in audit["limits"]
+
+    def test_totals_sum_only_known_figures_and_mark_a_partial_sum_as_a_lower_bound(self, tmp_path):
+        hops = [
+            ab.HopSpec(hop_id="H001", sequence=1, role="worker",
+                       usage=ab.usage_record(input_tokens=10, output_tokens=5)),
+            ab.HopSpec(hop_id="H002", sequence=2, role="worker",
+                       usage=ab.usage_record(input_tokens=None, output_tokens=7)),
+        ]
+        audit = ab_project(tmp_path, hops)
+        totals = audit["usage"]["totals"]
+        assert totals["input_tokens"] == {"value": 10, "lower_bound": True}
+        assert totals["output_tokens"] == {"value": 12, "lower_bound": False}
+
+    def test_a_total_with_nothing_known_is_null_never_zero(self, tmp_path):
+        hops = [ab.HopSpec(hop_id="H001", sequence=1, usage=ab.usage_record(
+            cache_read_tokens=None, cache_creation_tokens=None,
+        ))]
+        audit = ab_project(tmp_path, hops)
+        figure = audit["usage"]["totals"]["cache_creation_tokens"]
+        assert figure["value"] is None
+        assert figure["lower_bound"] is False
+
+    def test_by_role_aggregates_match_only_that_roles_hops(self, tmp_path):
+        hops = [
+            ab.HopSpec(hop_id="H001", sequence=1, role="worker",
+                       usage=ab.usage_record(role="worker", input_tokens=10, output_tokens=5)),
+            ab.HopSpec(hop_id="H002", sequence=2, role="worker",
+                       usage=ab.usage_record(role="worker", input_tokens=6, output_tokens=3)),
+            ab.HopSpec(hop_id="H003", sequence=3, role="independent_reviewer",
+                       usage=ab.usage_record(role="independent_reviewer", input_tokens=1, output_tokens=1)),
+        ]
+        audit = ab_project(tmp_path, hops)
+        by_role = audit["usage"]["by_role"]
+        assert by_role["worker"]["input_tokens"] == {"value": 16, "lower_bound": False}
+        assert by_role["independent_reviewer"]["input_tokens"] == {"value": 1, "lower_bound": False}
+
+    def test_by_model_aggregates_exclude_hops_with_no_recorded_model(self, tmp_path):
+        hops = [
+            ab.HopSpec(hop_id="H001", sequence=1,
+                       usage=ab.usage_record(model="claude-haiku-5-5", input_tokens=10, output_tokens=5)),
+            ab.HopSpec(hop_id="H002", sequence=2,
+                       usage=ab.usage_record(model=None, input_tokens=99, output_tokens=99)),
+        ]
+        audit = ab_project(tmp_path, hops)
+        by_model = audit["usage"]["by_model"]
+        assert set(by_model) == {"claude-haiku-5-5"}
+        assert by_model["claude-haiku-5-5"]["input_tokens"] == {"value": 10, "lower_bound": False}
+
+    def test_claude_and_codex_input_semantics_are_both_preserved_and_distinguishable(self, tmp_path):
+        hops = [
+            ab.HopSpec(hop_id="H001", sequence=1, role="worker", adapter="claude_cli",
+                       usage=ab.usage_record(adapter="claude_cli", input_includes_cache_read=False,
+                                              input_tokens=2, cache_read_tokens=9074)),
+            ab.HopSpec(hop_id="H002", sequence=2, role="worker", adapter="codex_cli",
+                       usage=ab.usage_record(adapter="codex_cli", input_includes_cache_read=True,
+                                              input_tokens=17329, cache_read_tokens=11008)),
+        ]
+        audit = ab_project(tmp_path, hops)
+        by_id = {hop["hop_id"]: hop for hop in audit["hops"]}
+        assert by_id["H001"]["usage"]["input_includes_cache_read"] is False
+        assert by_id["H002"]["usage"]["input_includes_cache_read"] is True
+
+    def test_no_monetary_field_is_ever_projected(self, tmp_path):
+        hops = [ab.HopSpec(hop_id="H001", sequence=1, usage=ab.usage_record())]
+        audit = ab_project(tmp_path, hops)
+        rendered = json.dumps(audit)
+        for canary in ("total_cost_usd", "costUSD", "cost_usd"):
+            assert canary not in rendered
+
+
+def ab_project(tmp_path, hops):
+    attempt_dir = ab.build_attempt(tmp_path, hops=hops, hop_used=len(hops))
+    return au.project_audit(attempt_dir)
+
 
 class TestMissingOptionalSourceFiles:
     def test_missing_execution_evidence_yields_empty_evidence_and_a_named_limit(self, tmp_path):
@@ -424,7 +595,10 @@ class TestDefaultDenyAllowList:
         for hop in audit["hops"]:
             assert set(hop.keys()) == au._HOP_KEYS
 
-    def test_top_level_keys_are_exactly_the_frozen_set(self, tmp_path):
+    def test_top_level_keys_are_exactly_the_frozen_set_minus_usage_when_none_is_recorded(self, tmp_path):
+        # "usage" is allow-listed but omitted entirely (not merely null) when
+        # no invocation of the Run carries a persisted usage record -- this
+        # is what keeps a pre-this-change archive reprojecting byte-identically.
         attempt_dir = ab.build_attempt(tmp_path)
         audit = au.project_audit(attempt_dir)
-        assert set(audit.keys()) == au._TOP_KEYS
+        assert set(audit.keys()) == au._TOP_KEYS - {"usage"}

@@ -104,7 +104,11 @@ wfc report <evidence-repo>/archive/unclassified/<attempt-id>/audit.json
 
 Renders the already-archived, already-classified facts; `wfc run` itself
 prints the exact destination path to use once a Run reaches a terminal
-state, and archiving happens automatically.
+state, and archiving happens automatically. The report also shows whatever
+provider-reported token usage was captured, and its `limits` line names
+`usage_not_reported`/`usage_partially_reported` when capture was absent or
+incomplete; it is never a price, and a figure the provider did not report is
+never estimated.
 
 ## The review record
 

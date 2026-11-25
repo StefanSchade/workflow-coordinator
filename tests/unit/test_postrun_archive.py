@@ -256,6 +256,65 @@ class PostrunArchiveLifecycleTests(unittest.TestCase):
             )
 
 
+class UsageAdditiveArchivingTests(unittest.TestCase):
+    """WI-WFC-TOKEN-USAGE-S1-001: ``usage.json`` is archived additively, and
+    an attempt built the pre-this-change way (no ``usage.json`` ever
+    written) reprojects its ``audit.json`` exactly as before -- no new key,
+    no changed limit for it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name) / "sandbox"
+        self.base.mkdir(parents=True)
+        self._home_before = os.environ.get("HOME")
+        self.addCleanup(self._restore_home)
+
+    def _restore_home(self):
+        if self._home_before is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self._home_before
+
+    def build(self, attempt: str, **kwargs) -> SimpleNamespace:
+        fx = build(self.base, attempt=attempt, **kwargs)
+        os.environ["HOME"] = str(fx.home)
+        return fx
+
+    def dest(self, fx) -> Path:
+        return fx.repo / "archive" / "unclassified" / fx.attempt
+
+    def test_old_style_attempt_with_no_usage_json_reprojects_without_the_usage_key(self):
+        fx = self.build("wfc-fixture-usage-absent-20261125-01")
+        report = ar.archive_run(state_root=fx.state, evidence_repo=fx.repo, raw_retention="local")
+        self.assertEqual(report.outcome, "archived")
+        audit = json.loads((self.dest(fx) / "audit.json").read_text())
+        self.assertNotIn("usage", audit)
+        self.assertIn("usage_not_reported", audit["limits"])
+        self.assertNotIn("usage_partially_reported", audit["limits"])
+        manifest = json.loads((self.dest(fx) / "manifest.json").read_text())
+        copied_paths = {entry["path"] for entry in manifest["copied_files"]}
+        self.assertNotIn(f"run/checkouts/{CHECKOUT}/usage.json", copied_paths)
+
+    def test_a_present_usage_json_is_archived_additively(self):
+        fx = self.build("wfc-fixture-usage-present-20261125-01")
+        write_json(fx.state / "checkouts" / CHECKOUT / "usage.json", {
+            "schema_version": 1, "run_id": fx.run_id,
+            "records": {"H001": {
+                "invocation_id": "INV-H001", "role": "worker", "adapter": "claude_cli",
+                "model": "claude-haiku-5-5", "coverage": "complete", "input_tokens": 2,
+                "output_tokens": 4, "cache_read_tokens": 9074, "cache_creation_tokens": 12736,
+                "reasoning_output_tokens": 0, "input_includes_cache_read": False, "per_model": [],
+            }},
+        })
+        report = ar.archive_run(state_root=fx.state, evidence_repo=fx.repo, raw_retention="local")
+        self.assertEqual(report.outcome, "archived")
+        manifest = json.loads((self.dest(fx) / "manifest.json").read_text())
+        copied_paths = {entry["path"] for entry in manifest["copied_files"]}
+        self.assertIn(f"run/checkouts/{CHECKOUT}/usage.json", copied_paths)
+        self.assertTrue((self.dest(fx) / "run" / "checkouts" / CHECKOUT / "usage.json").is_file())
+
+
 class ResolveOpsDirProductShapeTests(unittest.TestCase):
     """``frontdoor.archive.resolve_ops_dir`` must tell apart the product
     lifecycle's own per-checkout cached envelope path (never OPS evidence)
