@@ -1,0 +1,148 @@
+= R3 release-pipeline robustness: independent focused review
+:toc:
+:toclevels: 2
+
+This record holds every independent focused-review pass over the slice-R3
+candidate for WorkItem `WI-WFC-RELEASE-PIPELINE-ROBUSTNESS-001`
+(link:../../backlog/FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc[FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS]),
+each pass re-reviewing the whole candidate after a correction Hop addressed a
+broad-review Finding. Later passes are added above earlier ones; earlier
+passes are kept unedited apart from the `(current)` marker, which moves to
+the newest pass.
+
+== Pass H004 — `RUN-1cf0f8f9…` (current)
+
+Status:: *ACCEPT.* Finding F001 (opened at
+link:wfc_release_pipeline_robustness_broad_review.adoc#_blocking_finding_b1_the_two_new_tee_pipelines_un_gate_g2_and_g3[broad-review
+pass H002]: the two new `| tee` pipelines in the `check` job's required-suite
+and dist-audit steps silently discarded `pytest`'s and `make dist-audit`'s
+exit status under GitHub Actions' real default `run:` shell, `bash -e {0}`,
+which has no `pipefail`) is **resolved**. The H003 correction Hop's fix is
+correct, minimal and the only content change in the candidate since the H002
+pass: a `set -euo pipefail` line was prepended to each of the two affected
+`run:` blocks, nothing else in either step changed, and no other file or line
+was touched beyond the verification record's own correction section.
+WorkItem:: `WI-WFC-RELEASE-PIPELINE-ROBUSTNESS-001`
+Run / Hop:: `RUN-1cf0f8f9bda74ac895609353748b9159` / `H004` (`focused_review`,
+whole-candidate re-review after a single-Finding correction, independent
+adversarial reviewer, gate, blocking-only, `finding_authority: resolve`).
+Invocation:: `INV-b49e79ba19644de19f8d99f62227acab`.
+Reviewed product:: the whole candidate at base HEAD
+`5a2ba2344ba4fe55ed9ecac3f5454e906415e78e` (correction range
+`900efb6..5a2ba23`, prior whole-candidate base `d66e804..4b35e30`):
+`.github/workflows/release.yml` and
+`docs/warm_storage/post-beta-planning/wfc_release_pipeline_robustness_verification.adoc`
+are the only two tracked leaves the correction touched (confirmed by
+`git diff 900efb6..5a2ba23 --stat`); `docs/developer_guide/ch04_release_management.adoc`
+was not touched by the correction and was already verified at the H002 pass.
+`git status --short -uall` shows no tracked change beyond this new artifact
+and only the pre-existing untracked worktree environment entries (not in the
+CommitIntent). I issued no mutating Git command and did not touch the index.
+
+=== F001 — verified resolved (by my own independent execution, not by trusting the record)
+
+*The fix.* `git diff 900efb6..5a2ba23 -- .github/workflows/release.yml`
+shows exactly two added lines, each `set -euo pipefail`, as the first line
+of the "Required test suite" block (`:93`) and of the newly-blockified
+"Distribution content audit" block (`:117-119`). No other character in
+either step, or anywhere else in the file, differs.
+
+*Correctness of the fix, reproduced locally in this Hop* (not merely cited
+from the record):
+
+[source,text]
+----
+bash -e -c 'python3 -c "raise SystemExit(1)" | tee /dev/null'; echo "$?"
+# -> 0  (the real GitHub Actions run: default; F001's failure mode)
+
+bash -c 'set -euo pipefail; python3 -c "raise SystemExit(1)" | tee /dev/null'; echo "$?"
+# -> 1  (the corrected form; pytest's/dist-audit's own exit status wins and
+#        -e then stops the step)
+----
+
+This confirms both halves of the correction's claim: the platform's
+undecorated default swallows the failure, and the one-line fix restores it.
+G2 (required suite green) and G3 (C2 allow-list audit) are gates again; a
+red suite or a failed audit now fails the `check` job and
+`publish-testpypi`, which needs only `check`, no longer proceeds past it.
+
+*The record's self-correction is itself accurate.* The verification
+record's prior claim — "GitHub Actions' default shell already runs with
+`-o pipefail`" — was false: that invocation (`bash --noprofile --norc -eo
+pipefail {0}`) is documented for an explicit `shell: bash` key, not for an
+omitted one. I independently confirm GitHub's documented default for an
+unspecified `run:` shell on a Linux runner is `bash -e {0}` with no
+`pipefail` (`docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax`,
+the `jobs.<job_id>.steps[*].shell` table), matching both the broad-review
+Finding and the correction's `<<pipefail-correction>>` section in the
+verification record. The record now states this correctly and the false
+claim no longer appears anywhere in it.
+
+Disposition:: `finding_id: F001`, `proposed_state: resolved`.
+
+=== Whole-candidate re-check (not just the correction's diff)
+
+Job graph and permissions (AC-5, AC-6):: Re-ran an independent Python
+comparison (`yaml.safe_load` of `git show d66e804:.github/workflows/release.yml`
+versus the current working-tree file) over every job's `needs:`,
+`permissions:`, `if:` and `environment:`, plus the top-level `permissions:`
+and `on:` triggers: **identical**. Separately diffed the sorted set of
+`<owner>/<repo>@<40-hex-sha>` action references before and after: identical,
+nothing added or re-pinned.
+No secret, no new network call:: `grep -nE 'secrets\.|curl |wget |workflow_dispatch|GITHUB_TOKEN'`
+against the current file returns nothing.
+`release` job idempotency (AC-1):: Read `:398-426` directly: `gh release
+view "$tag" --json id` under `set +e` with the status captured immediately;
+status 0 -> `gh release upload ... --clobber`; non-zero and the captured
+output matching `release not found` (case-insensitive) -> `gh release
+create`; any other non-zero -> the output is echoed to stderr and the step
+exits 1. A failed `view` is not treated as absence. Unchanged since H002,
+which already verified it against this Hop's unchanged text.
+Chapter 4 — exactly the four statements, nothing else (AC-8):: The
+correction Hop did not touch `ch04_release_management.adoc` at all (the
+`git diff 900efb6..5a2ba23 --stat` output above lists only the two leaves
+named); the four-statement diff verified at the H002 pass therefore still
+describes the whole candidate without re-derivation needed, and I confirm by
+`git diff d66e804..5a2ba23 --stat -- docs/developer_guide/ch04_release_management.adoc`,
+which still reports exactly one file, +15/-23, the same shape as H002
+recorded. No `python-compat` or gate-list line differs.
+Renders:: `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+--failure-level=WARN` against `ch04_release_management.adoc` and against
+`wfc_release_pipeline_robustness_verification.adoc` (the file the correction
+edited) both printed nothing, run directly in this Hop.
+Doc catalog:: `python3 scripts/wfc_doc_catalog.py generate` then `check`
+reports "83 unresolved links; 4 Project Memory source_path misses" and
+"catalog current" — the stated baseline, unchanged, run directly in this
+Hop.
+YAML parses (AC-7):: `yaml.safe_load` of the current committed file
+succeeds, run directly in this Hop.
+Scope:: Exactly the two leaves the correction commit changed, both
+authorized (the workflow, under the maintainer's temporary file-exact
+ceiling entry of 2026-11-25, and the verification record). No `.wfc/`,
+`governance/`, product, test, script, `Makefile`, `pyproject.toml` or
+version change.
+Hosted-run steps not executed in this Hop, and not claimed to have run:
+the tag-mode `release-check` preflight, the actual `gh release view` /
+`create` / `upload --clobber` calls against a real GitHub repository and
+release, `publish-testpypi`/`publish-pypi`'s OIDC upload, and the rendering
+of the decision-facts block inside a real `$GITHUB_STEP_SUMMARY` on a hosted
+runner (AC-9, a maintainer action). `python -m pytest -q` was not run in
+this agent sandbox (no `pytest` module installed, no network); the
+Coordinator's task-check runs the required suite separately, and no Python,
+test or packaging file is touched by this slice or its correction.
+
+=== Non-blocking observations
+
+No new non-blocking observation arises from the correction itself; the three
+non-blocking observations recorded at the H002 pass (the `bwrap --version`
+absent-tool message, the pytest summary-line regex's narrow match, and the
+`dist-audit result` line echoing uncontrolled tool output) concern lines the
+correction did not touch and stand unchanged.
+
+=== Route
+
+No blocking Finding remains open. This Hop requests `renew_broad_review`: a
+focused correction resolved the sole broad-review blocking Finding, and the
+whole-candidate re-check above found nothing else amiss, so the next step is
+an independent broad-review pass to confirm whole-candidate acceptance,
+not a return to the Worker.
