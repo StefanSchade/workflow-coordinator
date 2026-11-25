@@ -168,11 +168,11 @@ secret anywhere in the file. Five jobs (one informational):
   pre-tag check; a refused preflight on a tag stops the publication chain,
   because it precedes the upload and `publish-testpypi` needs `check`; records
   the two artifacts' SHA-256 in the job summary and uploads `dist/` as a workflow artifact.
-  Nothing downstream rebuilds it. The summary will also carry the
+  Nothing downstream rebuilds it. The summary also carries the
   maintainer's full decision facts -- interpreter and seed pip version,
   `bwrap --version`, the pytest pass/skip counts, artifact names, sizes and
-  SHA-256, `implementation_tree_sha256`, and the `dist-audit` result --
-  *planned*, link:../backlog/FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc#scope[R3].
+  SHA-256, `implementation_tree_sha256`, and the `dist-audit` result -- in
+  both branch-push and tag-push runs, since `check` runs on both triggers.
 * `python-compat` (both triggers, `needs: check`, no elevated permissions, not
   a prerequisite of any publishing job, matrix CPython 3.10, 3.11 and 3.12 on
   `ubuntu-24.04`): the maintainer's small compatibility job of 2026-11-23.
@@ -210,16 +210,16 @@ secret anywhere in the file. Five jobs (one informational):
   same way.
 * `release` (tags only, `needs: publish-pypi`, job permissions `contents:
   write` only): downloads the same artifact and uses the preinstalled `gh`
-  CLI to create the GitHub Release from the tag, attaching exactly the two
-  artifact files, with a short fixed-body release note pointing at the
+  CLI to create the GitHub Release from the tag if none exists for it yet,
+  or to re-upload the assets with `--clobber` if one already does -- `gh
+  release view` decides which branch runs, and a failure of that step for a
+  reason other than an absent release stops the job rather than being
+  treated as absence -- attaching the wheel, the sdist and
+  `SHA256SUMS.txt`, with a short fixed-body release note pointing at the
   tag-pinned `docs/release_notes/release_notes.adoc` (C4's adoc section is
   not converted to the release body; linking it avoids a lossy adoc-to-
-  Markdown conversion). The job is *not yet idempotent* -- recreating an
-  existing GitHub Release fails, because `gh release create` has no
-  pre-check and no `--clobber` (<<recovery,the recovery table's
-  exception>>) -- and `SHA256SUMS.txt` is built but not attached to the
-  Release; making the job idempotent and attaching that file are both
-  *planned*, link:../backlog/FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc#scope[R3].
+  Markdown conversion). The job is idempotent (<<recovery,the recovery
+  table>>).
 
 Every third-party action is pinned to a full commit SHA with the release
 named in a trailing comment (resolved on 2026-11-23 with `git ls-remote`
@@ -325,11 +325,10 @@ version even if the publish then fails.
 
 *Publish.* `publish-testpypi` runs unattended on the tag (G6); `publish-pypi`
 waits for the `pypi` environment's required-reviewer approval (G8), then
-runs; `release` creates the GitHub Release from the same tag, attaching the
-same two artifact files the `check` job already built and audited (a third
-file, `SHA256SUMS.txt`, is *planned*,
-link:../backlog/FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc#scope[R3]). No job
-rebuilds the artifact after `check`.
+runs; `release` creates the GitHub Release from the same tag, or re-uploads
+with `--clobber` if one already exists for it, attaching the same three
+files the `check` job already built, audited and checksummed: the wheel,
+the sdist and `SHA256SUMS.txt`. No job rebuilds the artifact after `check`.
 
 *Approve.* The `pypi` environment's required-reviewer approval (G8) *is* the
 release authorization; GitHub records who approved and when. Approval is
@@ -355,13 +354,6 @@ re-tag.
 |Wrong content on PyPI |Yank; release the next version.
 |===
 
-* *Exception, while
-  link:../backlog/FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc[R3] is only
-  planned:* in both "re-run the failed jobs" states this holds for every job
-  *except* `release`. If that job already created the GitHub Release,
-  re-running it fails -- `release.yml:371-374` calls `gh release create`
-  with no pre-check and no `--clobber`. Until R3 integrates, attach the
-  missing assets by hand.
 * *Already true of the implementation:* no state needs a rebuild, because
   every publishing job re-runs against the artifact `check` built once
   (<<release-ci>>).

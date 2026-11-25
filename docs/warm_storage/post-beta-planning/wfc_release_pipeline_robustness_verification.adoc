@@ -1,0 +1,198 @@
+= R3 verification: re-runnable release job, attached checksums, decision facts
+
+Standing:: Implementation verification record for
+link:../../backlog/FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc[FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS]
+(slice R3 of link:../../backlog/beta2_release_streamlining_plan.adoc[the
+Beta-2 release-streamlining plan]). Written by the implementer; independent
+review and acceptance are recorded separately and are outstanding as of this
+writing. Verified against this repository at base HEAD
+`d66e804d3abd0e641a5e6f71e085fe2588adda25`.
+
+== What changed
+
+`.github/workflows/release.yml`:
+
+* `check` job: the "Required test suite" and "Distribution content audit"
+  steps now additionally `tee` their already-produced stdout to
+  `$RUNNER_TEMP/pytest-output.txt` and `$RUNNER_TEMP/dist-audit-output.txt`
+  (GitHub Actions' default shell already runs with `-o pipefail`, so this
+  does not change either step's exit status). A new "Decision facts for the
+  job summary (W5)" step, `if: always()`, appends one block to
+  `$GITHUB_STEP_SUMMARY`: interpreter and seed pip version, `bwrap
+  --version`, the pytest pass/skip line, artifact names/sizes/SHA-256,
+  `implementation_tree_sha256` (read from the C3 step's existing
+  `$RUNNER_TEMP/wfc-version.json`) and the `dist-audit` result line. Every
+  value is read from something an earlier step in the same job already
+  produced; nothing new is computed. Every line has a `not captured`
+  fallback and the step runs under `set +e`, so a missing value cannot fail
+  the job (R-4).
+* `release` job: `gh release create` is replaced with `gh release view
+  "$tag" --json id` to decide between `gh release create` (absent) and `gh
+  release upload --clobber` (present); a `gh release view` failure that is
+  not the "release not found" message stops the job instead of being
+  treated as absence (R-3). Both branches now attach
+  `dist/SHA256SUMS.txt` beside the wheel and the sdist. `release`'s
+  permissions (`contents: write` only) are unchanged.
+
+`docs/developer_guide/ch04_release_management.adoc`: the four statements
+named in link:../../backlog/FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc#scope[the
+FTR's scope] are retired (the recovery table's `release`-job exception
+struck; the CI section's `release`-job bullet now states the idempotent
+inspect-before-create/upload design instead of "not yet idempotent... is
+planned"; the same bullet and the runbook's publish step now say three
+files, not two; the CI section's `check`-job bullet states the summary
+block as existing, not planned). No other chapter line changed (see
+<<ch04-diff>>).
+
+Changed or added leaves:
+
+* `.github/workflows/release.yml` (edited)
+* `docs/developer_guide/ch04_release_management.adoc` (edited)
+* `docs/warm_storage/post-beta-planning/wfc_release_pipeline_robustness_verification.adoc`
+  (this file, new)
+
+`docs/backlog/_open.adoc` was not touched: recording acceptance and Run
+evidence there is post-acceptance backlog upkeep, outside this
+implementation Hop's authority (no self-acceptance).
+
+== Difference from the plan's D1 wording (reported, not silently resolved)
+
+Maintainer decision D1 (`beta2_release_streamlining_plan.adoc#d1`) describes
+Option B as printing `implementation_tree_sha256` in both runs' summaries
+"and asserting equality in the tag run", and the decisions-taken summary
+repeats "printed in both runs and asserted equal in the tag run". The FTR
+itself (`FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc`), which governs where
+this task text and the FTR differ, asks only that the `check` job's summary
+carry the six listed facts, including `implementation_tree_sha256`
+(link:../../backlog/FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc#design[its
+design section]); neither that design section nor
+link:../../backlog/FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc#tests[its
+required tests] asks for a mechanical equality-assertion step comparing the
+branch-run's value to the tag-run's value, and AC-4 only requires the six
+labelled lines to be present. This
+slice therefore implements exactly what the FTR specifies: the `check` job
+(which runs on both the branch-push and the tag-push triggers, unconditionally)
+prints `implementation_tree_sha256` in its summary every time it runs, which
+makes the value available for a human or an external process to compare
+between the two runs, but adds no in-workflow assertion step. This is
+reported as the governing difference between the task text and the FTR
+per the task's own instruction; nothing beyond the FTR's text was added.
+
+[[job-graph]]
+== Job-graph and permissions comparison (before/after, programmatic)
+
+A scratch script (`python3`, using `yaml.safe_load`, run from the repository
+root and removed again after use -- not committed) loaded both
+`git show d66e804:.github/workflows/release.yml` (before) and the edited
+working-tree file (after) and compared, per job, `needs:` and
+`permissions:`, plus the top-level `permissions:`. Result: **identical** --
+every job's `needs:` and every job's (and the top-level) `permissions:`
+block compare byte-for-byte equal before and after. `publish-testpypi`
+still lists only `check`; `release` still lists only `publish-pypi`.
+
+A separate `diff` of every `<owner>/<repo>@<40-hex-sha>` action reference
+between before and after shows the five pinned actions unchanged, same
+SHAs, same trailing-comment versions. A `grep` for `secrets\.`, `curl `,
+`wget `, and bare `http(s)://` literals shows the same two pre-existing
+URLs in both versions (`https://test.pypi.org/legacy/` and the release-notes
+link template) and no new one.
+
+[[ch04-diff]]
+== Chapter-4 diff is exactly the four named statements
+
+`git diff docs/developer_guide/ch04_release_management.adoc` touches only:
+the CI section's `check`-job summary-facts sentence, the CI section's
+`release`-job bullet (idempotency and the three-files statement together,
+since the FTR's scope groups them as one statement spanning that bullet),
+the runbook's publish-step sentence (the same three-files statement in its
+second location), and the recovery table's struck exception bullet. No
+`python-compat` or gate-list line, and no line outside these four
+locations, differs. `grep -n "RELEASE-PIPELINE-ROBUSTNESS"` against the
+edited file returns nothing: every `*planned*` marker pointing back at this
+FTR, which this slice owned, is gone.
+
+== `gh` flags verified locally against the installed CLI
+
+`gh version 2.46.0` is installed in this sandbox (no network call needed
+for `--help`). `gh release create --help`, `gh release upload --help` and
+`gh release view --help` were read directly:
+
+* `gh release upload <tag> <files>...` supports `--clobber`
+  ("Overwrite existing assets of the same name") -- exactly the flag the
+  design calls for.
+* `gh release view [<tag>]` supports `--json fields`; it has no documented
+  exit-code table in `--help`, so distinguishing "absent release" from
+  another failure (R-3) could not be fully confirmed by `--help` alone.
+  `strings /usr/bin/gh` was run locally (no network) and the installed
+  binary contains the literal string `release not found`, which is the
+  message this implementation matches on (case-insensitively) to decide
+  "absent". The exact HTTP-status-to-message mapping and whether any other
+  gh version wording could differ were **not** confirmed by a live call
+  against `api.github.com` (this sandbox's command approval for an
+  authenticated or network-reaching `gh` invocation was denied, and no
+  attempt was made to route around that); this one point -- that "release
+  not found" is the only message produced when the tag has no release, as
+  opposed to some other wording -- is recorded here as an **external
+  assumption**, not a locally verified fact, consistent with the task's
+  instruction to mark unverifiable `gh` behaviour as such.
+* `gh release create [<tag>] [<files>...]` accepts a tag and files
+  positionally, `--title` and `--notes`, matching the existing call
+  unchanged in the "absent" branch.
+
+== One more external assumption: GitHub Actions' default shell is `pipefail`
+
+Teeing the required-suite and `dist-audit` steps' stdout to a file
+(`... | tee "$RUNNER_TEMP/..."`) only leaves G2/G3 intact if the pipeline's
+exit status is the first command's (`pytest`/`dist-audit`), not `tee`'s.
+GitHub's documented default for a `run:` step on a Linux runner is
+`bash --noprofile --norc -eo pipefail {0}` -- `pipefail` already on, with no
+change needed from this slice. This is GitHub's own published default
+behaviour, not something a local, network-free sandbox can re-verify
+against a live hosted runner; it is recorded here as an external assumption
+this slice relies on for G2 and G3 to remain unweakened, rather than a
+locally proven fact.
+
+== Front Door docs-sync
+
+Asked and answered *no edit needed*: no Front Door command, argument,
+classification, report, diagnostic, admission, binding or recovery
+behaviour changes. This is CI configuration only.
+
+[[checks]]
+== Checks run
+
+* YAML parse: `python3 -c "import pathlib, yaml; yaml.safe_load(...)"`
+  against the edited `.github/workflows/release.yml` -- succeeds, no
+  output beyond the confirmation print.
+* Strict render: `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+  --failure-level=WARN docs/developer_guide/ch04_release_management.adoc`
+  -- printed nothing.
+* Doc catalog (`python3 scripts/wfc_doc_catalog.py generate` then `check`):
+  *83 unresolved links, 4 Project Memory source_path misses* -- confirmed
+  as the baseline by running the same check before the first edit in this
+  Hop, and unchanged after. The generated catalog file is git-ignored and
+  was left in place; no scratch comparison file remains in the repository
+  (the job-graph comparison script and its extracted before-copy of
+  `release.yml` were both deleted after use; `git status --short -uall`
+  shows only the two edited tracked files beyond this record).
+* `python -m pytest -q`: **not executed** -- `pytest` is not installed in
+  this agent sandbox (`python3 -m pytest` reports "No module named
+  pytest"), and no Python, test or packaging file is touched by this slice,
+  so no regression in the suite is expected from this change; this is
+  reported truthfully as an agent-local environmental limitation, not a
+  claim that the suite passed. The Coordinator's task-check runs the full
+  required suite separately with verified offline inputs.
+* Hosted-run steps **not executed**, and not claimed to have run: the
+  tag-mode `release-check` preflight, the actual `gh release view` /
+  `create` / `upload --clobber` calls against a real GitHub repository and
+  release, `publish-testpypi`/`publish-pypi`'s OIDC upload, and the
+  rendering of the decision-facts block inside a real
+  `$GITHUB_STEP_SUMMARY` on a hosted runner (AC-9; a maintainer action).
+
+== Scope note
+
+No file outside `.github/workflows/release.yml`, the four named chapter-4
+statements and this verification record proved necessary. The `needs:`
+graph, every job's `permissions:`, every pinned action SHA, and every
+`python-compat` line in both the workflow and chapter 4 are untouched, as
+required. No secret, network call, new action or new permission was added.

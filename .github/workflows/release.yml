@@ -105,7 +105,7 @@ jobs:
           python3 scripts/wfc_test_inputs.py exec \
             --profile cp313-linux-x86_64 \
             --bundle "$RUNNER_TEMP/wfc-bundle" \
-            -- python3 -m pytest -q
+            -- python3 -m pytest -q | tee "$RUNNER_TEMP/pytest-output.txt"
 
       - name: Build distributions
         run: >
@@ -114,7 +114,7 @@ jobs:
           -- python3 -m build
 
       - name: Distribution content audit (C2, G3)
-        run: make dist-audit
+        run: make dist-audit | tee "$RUNNER_TEMP/dist-audit-output.txt"
 
       - name: Clean-environment install and CLI identity smoke (C3, G4)
         run: |
@@ -175,6 +175,37 @@ jobs:
             echo '```'
             cat SHA256SUMS.txt
             echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Every value here is already produced earlier in this job; nothing new
+      # is computed and no step's exit status changes. `if: always()` and the
+      # fallback on every line so a diagnostic can never be the reason the
+      # job stops or the summary is incomplete (R-4).
+      - name: Decision facts for the job summary (W5)
+        if: always()
+        run: |
+          set +e
+          {
+            echo '### Decision facts'
+            echo "- interpreter and seed pip version: $(python3 --version 2>&1), pip seed $(python3 -c 'import ensurepip; print(ensurepip.version())' 2>/dev/null || echo 'not captured')"
+            echo "- bwrap version: $(bwrap --version 2>&1 || echo 'not captured')"
+            pytest_line="$(grep -E '^[0-9]+ (passed|failed|error)' "$RUNNER_TEMP/pytest-output.txt" 2>/dev/null | tail -n 1)"
+            echo "- required-suite pass/skip counts: ${pytest_line:-not captured}"
+            echo "- artifact names, sizes and SHA-256:"
+            echo '```'
+            if (cd dist && ls *.whl *.tar.gz SHA256SUMS.txt) >/dev/null 2>&1; then
+              (cd dist && for f in *.whl *.tar.gz SHA256SUMS.txt; do
+                printf '%s %s bytes\n' "$f" "$(stat -c %s "$f" 2>/dev/null || echo '?')"
+              done
+              cat SHA256SUMS.txt 2>/dev/null)
+            else
+              echo 'not captured'
+            fi
+            echo '```'
+            tree_sha256="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["implementation_tree_sha256"])' "$RUNNER_TEMP/wfc-version.json" 2>/dev/null)"
+            echo "- implementation_tree_sha256: ${tree_sha256:-not captured}"
+            audit_line="$(tail -n 1 "$RUNNER_TEMP/dist-audit-output.txt" 2>/dev/null)"
+            echo "- dist-audit result: ${audit_line:-not captured}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Nothing downstream rebuilds this artifact; publish-testpypi and
@@ -361,14 +392,32 @@ jobs:
           name: release-dist
           path: dist
 
-      - name: Create GitHub Release
+      - name: Create or update the GitHub Release (idempotent, W1)
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          gh release create "${tag}" \
-            dist/*.whl dist/*.tar.gz \
-            --title "${tag}" \
-            --notes "Release notes: https://github.com/${GITHUB_REPOSITORY}/blob/${tag}/docs/release_notes/release_notes.adoc"
+
+          set +e
+          view_output="$(gh release view "${tag}" --json id 2>&1)"
+          view_status=$?
+          set -e
+
+          if [ "${view_status}" -eq 0 ]; then
+            echo "Release ${tag} already exists; replacing its assets."
+            gh release upload "${tag}" \
+              dist/*.whl dist/*.tar.gz dist/SHA256SUMS.txt \
+              --clobber
+          elif printf '%s' "${view_output}" | grep -qi "release not found"; then
+            echo "Release ${tag} does not exist yet; creating it."
+            gh release create "${tag}" \
+              dist/*.whl dist/*.tar.gz dist/SHA256SUMS.txt \
+              --title "${tag}" \
+              --notes "Release notes: https://github.com/${GITHUB_REPOSITORY}/blob/${tag}/docs/release_notes/release_notes.adoc"
+          else
+            echo "gh release view failed for a reason other than an absent release:" >&2
+            printf '%s\n' "${view_output}" >&2
+            exit 1
+          fi
