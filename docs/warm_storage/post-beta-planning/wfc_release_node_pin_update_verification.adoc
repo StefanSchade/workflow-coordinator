@@ -1,0 +1,190 @@
+= Node-pin update verification: `upload-artifact` and `download-artifact` off Node 20
+
+Standing:: Implementation verification record for maintenance task
+WI-WFC-RELEASE-NODE-PIN-UPDATE-001, commissioned directly by the maintainer
+decision of 2026-11-25 ("Update the Node-runtime pins after R5; separate,
+narrowly bounded maintenance step"), not a numbered backlog slice. Written by
+the implementer; independent review and acceptance are recorded separately
+and are outstanding as of this writing. Verified against this repository at
+base HEAD `b5fbffd8d158603a47449ea6a8e1ecf0af65c37d`.
+
+== What changed
+
+`.github/workflows/release.yml`: exactly the five `uses:` lines pinning
+`actions/upload-artifact` (one occurrence) and `actions/download-artifact`
+(four occurrences) -- SHA and trailing comment together. No other line
+changed (see <<job-graph>>).
+
+`docs/developer_guide/ch04_release_management.adoc`: the pin-enumeration
+paragraph now names the two new pins, states that the maintainer replaced
+them on 2026-11-25 to leave the Node 20 runtime, and that the other three
+pins were checked at the same time and are already on a suitable runtime.
+The rest of the paragraph (including the "to change a version" sentence) and
+the rest of the chapter are unchanged. The clause "so nothing was upgraded"
+is now qualified ("at that time") because it would otherwise misstate this
+Hop's own change; it still correctly describes the 2026-11-23 pinning event
+it was written about.
+
+`docs/warm_storage/post-beta-planning/wfc_release_node_pin_update_verification.adoc`
+(this file, new).
+
+Changed or added leaves:
+
+* `.github/workflows/release.yml` (edited)
+* `docs/developer_guide/ch04_release_management.adoc` (edited)
+* `docs/warm_storage/post-beta-planning/wfc_release_node_pin_update_verification.adoc`
+  (this file, new)
+
+[[evidence-table]]
+== Evidence table
+
+[cols="2,3,3,2", options="header"]
+|===
+|Action |Old pin (runtime) |New pin (runtime) |Comment text
+
+|`actions/upload-artifact`
+|`ea165f8d65b6e75b540449e92b4886f43607fa02` (v4.6.2, `node20`)
+|`b7c566a772e6b6bfb58ed0dc250532a479d7789f` (v6.0.0, `node24`)
+|`# v6.0.0 (v6)`
+
+|`actions/download-artifact`
+|`d3f86a106a0bac45b974a628896c90dbdf5c8093` (v4.3.0, `node20`)
+|`37930b1c2abaa49bbe596cd826c3c89aef350131` (v7.0.0, `node24`)
+|`# v7.0.0 (v7)`
+|===
+
+Source of the table: the task text, which states these facts were collected
+by the Level-1 operator on 2026-11-25 by reading the public upstream
+repositories over HTTPS (`git ls-remote` for tags; `raw.githubusercontent.com`
+for `action.yml`'s `runs.using`), both tags lightweight so tag SHA equals
+commit SHA.
+
+[[reverified]]
+== Re-verified this Hop vs. taken from the task
+
+Web access was available this Hop. Re-verified directly, independently of
+the task text:
+
+* `git ls-remote --tags https://github.com/actions/upload-artifact v6.0.0
+  v6.0.0^{}` returned only `b7c566a772e6b6bfb58ed0dc250532a479d7789f
+  refs/tags/v6.0.0` (no separate peeled entry, confirming the tag is
+  lightweight and the tag SHA is the commit SHA) -- matches the table.
+* `git ls-remote --tags https://github.com/actions/download-artifact v7.0.0
+  v7.0.0^{}` returned only `37930b1c2abaa49bbe596cd826c3c89aef350131
+  refs/tags/v7.0.0` (same lightweight-tag confirmation) -- matches the
+  table.
+* `raw.githubusercontent.com/actions/upload-artifact/<new-sha>/action.yml`:
+  `runs.using: 'node24'`. `raw.githubusercontent.com/actions/upload-artifact/<old-sha>/action.yml`:
+  `runs.using: 'node20'`.
+* `raw.githubusercontent.com/actions/download-artifact/<new-sha>/action.yml`:
+  `runs.using: 'node24'`. `raw.githubusercontent.com/actions/download-artifact/<old-sha>/action.yml`:
+  `runs.using: 'node20'`.
+* Both new `action.yml` files were read in full: `upload-artifact`'s inputs
+  still include `name`, `path` and `if-no-files-found` with the same
+  semantics this workflow relies on; `download-artifact`'s inputs still
+  include `name` and `path`. No input this workflow sets was removed or
+  renamed.
+
+Taken from the task text, not independently re-derived this Hop: the
+rationale for choosing v6.0.0/v7.0.0 over the newer majors (upload-artifact
+v7.0.2, download-artifact v8.0.2) as "the smallest major bumps that remove
+`node20`"; the characterization of the documented breaking changes
+(self-hosted-runner firewall rules, by-artifact-ID extraction,
+`upload-artifact@v3`-and-below artifacts) as not applicable to this
+workflow; and that `actions/checkout` `d23441a` (v6.1.0) and
+`actions/setup-python` `ece7cb0` (v6.3.0) are already on `node24`, and that
+`pypa/gh-action-pypi-publish` `7245906` (v1.14.3) is a composite action
+(`runs.using: composite`), not a Node action. These were not independently
+re-fetched this Hop because the task's three unchanged actions/pins were
+out of scope for re-pinning; nothing in the task's account of them
+contradicts anything observed this Hop.
+
+[[runner-assumption]]
+== External assumption
+
+The new pins require Actions runner 2.327.1 or newer. Whether GitHub-hosted
+`ubuntu-24.04` runners (used by every job in this workflow) currently satisfy
+that version is an EXTERNAL ASSUMPTION: it cannot be checked from this
+sandbox (no hosted run, no GitHub API access), and the task text states it as
+an assumption rather than a verified fact. Nothing in this Hop runs the
+workflow on GitHub; the assumption is recorded, not resolved.
+
+[[job-graph]]
+== Job-graph, permissions and action-pin comparison (before/after, programmatic)
+
+A scratch script (`python3`, using `yaml.safe_load`, written at the
+repository root and removed again after use -- not committed) loaded `git
+show b5fbffd8:.github/workflows/release.yml` (before) and the edited
+working-tree file (after) and compared: the top-level `on:` trigger block
+and top-level `permissions:`; per job, `needs:`, `permissions:`, `if:`,
+`environment:`, `runs-on:` and `strategy:`; and, via a separate regex scan
+(`uses:\s*(\S+@[0-9a-f]{40})`) over the raw file text, every
+`<owner>/<repo>@<40-hex-sha>` reference in file order.
+
+Result:
+
+* Top-level `on:` (two triggers: `push` to `main`, `push` of tags matching
+  `v*`) identical before and after. Top-level `permissions:` (`contents:
+  read`) identical.
+* Job set unchanged: `{check, python-compat, publish-testpypi,
+  publish-pypi, release}`.
+* No job's `needs:`, `permissions:`, `if:`, `environment:`, `runs-on:` or
+  `strategy:` differs. In particular `publish-testpypi`'s `needs: [check,
+  python-compat]`, its `environment: testpypi` and its `permissions:
+  {contents: read, id-token: write}`, and `release`'s `permissions:
+  {contents: write}`, are all unchanged.
+* The regex scan found 11 `uses:` lines before and 11 after, in the same
+  order. Exactly 5 differ, all and only the `actions/upload-artifact` and
+  `actions/download-artifact` lines, each changing SHA and comment exactly
+  as in <<evidence-table>>. The other 6 (`actions/checkout` x2,
+  `actions/setup-python` x2, `pypa/gh-action-pypi-publish` x2) are
+  byte-for-byte identical before and after.
+* `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml'))"`
+  succeeds on the edited file.
+
+No job, `needs:` edge, permission, secret, environment, trigger or
+non-pin line changed.
+
+[[frontdoor]]
+== Front Door docs-sync
+
+Asked and answered *no edit needed*: this change is CI configuration only
+(two action pins moved off a deprecated Node runtime, plus the chapter
+paragraph documenting them). No Front Door command, argument,
+classification, report, diagnostic, admission, binding or recovery
+behaviour changes.
+
+[[checks]]
+== Checks run
+
+* YAML parse: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml'))"`
+  on the edited file -- succeeds.
+* Strict render: `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+  --failure-level=WARN docs/developer_guide/ch04_release_management.adoc`
+  and the same command against this file -- both printed nothing.
+* Doc catalog (`python3 scripts/wfc_doc_catalog.py generate` then `check`):
+  baseline confirmed as *83 unresolved links, 4 Project Memory
+  source_path misses* by running the check after this Hop's edits;
+  unchanged from the baseline stated in the task text (same 83 and 4). The
+  generated catalog file is git-ignored and was left in place; no scratch
+  comparison file remains in the repository.
+* `python -m pytest -q`: **not executed in this agent sandbox** -- no
+  offline test-input bundle is available here. No Python, test, script,
+  Makefile, pyproject or version file is touched by this Hop, so no
+  regression in the suite is expected; this is reported truthfully as an
+  agent-local environmental limitation, not a claim that the suite passed.
+  The Coordinator's task-check runs the full required suite separately with
+  verified offline inputs.
+* Hosted-run steps **not executed**, and not claimed to have run: no push,
+  tag, workflow dispatch or GitHub Actions run of any kind; no repository
+  setting was read or changed.
+
+== Scope note
+
+No file outside `.github/workflows/release.yml`, the named chapter-4
+paragraph and this verification record was touched. The job graph, every
+`needs:` edge, every permission, every environment, every trigger, and
+every pin other than the two named actions are untouched, as required. No
+secret, new action, job, GitHub setting or credential was added, read or
+changed. `.github/dependabot.yml`, `docs/backlog/`, `.wfc/` and
+`governance/` were not touched.
