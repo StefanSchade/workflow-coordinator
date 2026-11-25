@@ -1,0 +1,345 @@
+= R5 -- `python-compat` as gate G9 and Dependabot for the workflow actions: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the R5 candidate
+for WorkItem `WI-WFC-RELEASE-GATE-DEPENDENCY-AUTOMATION-001`. The current
+pass is *H002*; later passes are added above earlier ones and earlier passes
+stay unedited apart from the `(current)` marker, which moves to the newest
+pass.
+
+== Pass H002 -- `RUN-dd8bb6bf...` (current)
+
+WorkItem:: `WI-WFC-RELEASE-GATE-DEPENDENCY-AUTOMATION-001`
+Hop:: `H002` (`broad_review`, fresh independent adversarial pass, gate,
+blocking-only, `finding_authority: [resolve]`)
+Reviewed product:: the whole R5 candidate at review base HEAD
+`25f3297d5956dff7cb6eb2ff9def8dad8c0c5a32`, implementation range
+`328f944..25f3297` (one commit, `25f3297`): 4 leaves -- 2 new
+(`.github/dependabot.yml`,
+`docs/warm_storage/post-beta-planning/wfc_release_gate_dependency_automation_verification.adoc`)
+and 2 modified (`.github/workflows/release.yml`,
+`docs/developer_guide/ch04_release_management.adoc`). `git diff --name-status
+328f944..25f3297` returns exactly these four paths, matching the H001
+CommitIntent.
+Governing acceptance:: link:../../backlog/FTR-WFC-RELEASE-GATE-AND-DEPENDENCY-AUTOMATION.adoc[FTR-WFC-RELEASE-GATE-AND-DEPENDENCY-AUTOMATION]
+in full (its `Decisions it implements`, `Scope (file-exact)`, `Acceptance`
+and `Test strategy`), which governs where it differs from the Commission
+task; maintainer decisions D3 and D6 as recorded in
+link:../../backlog/beta2_release_streamlining_plan.adoc#decisions-taken[the
+Beta-2 plan's `decisions-taken`] together with the `<<d3>>` and `<<d6>>`
+option texts; `docs/developer_guide/ch04_release_management.adoc` (the CI
+section, the gate-class sentence, the gate list, the runbook and the
+recovery table). `D1`--`D6`, `G1`--`G9`, `R1`--`R5` and `O-n` are
+plan-, chapter- and review-internal labels, not Finding IDs.
+Finding state:: The projected authoritative Finding state for this Run is
+empty. This pass proposes *one* new blocking Finding (`finding_id: null`,
+see <<r5-h002-blocking>>) and disposes none.
+Verdict:: *changes_required*. One blocking Finding: chapter 4's new G9 text
+sources the G9 recovery response to the recovery table's "Failed before any
+upload" row, and that row prescribes the opposite action -- "Fix on `main`,
+delete the tag, tag again" -- so the chapter now states a falsehood about
+its own recovery table and the authoritative recovery table gives the wrong
+answer for the pre-upload failure mode G9 introduces. Everything else I
+re-derived holds: the job-graph edit is the single authorized `needs:` entry
+and nothing else in the graph, permissions, environments, `if:`, triggers or
+action pins moved; the Dependabot file parses, uses only keys I verified
+against GitHub's documented options reference, and its two groups match the
+action sets I re-derived from the workflow exactly; no document claims
+auto-merge is enabled or that anything ran on GitHub; only the four
+authorized leaves changed.
+
+[[r5-h002-method]]
+=== How I checked (own execution, not the implementer's record)
+
+I did not reuse the implementer's scripts or results. I extracted
+`git show 25f3297^:.github/workflows/release.yml` and the committed
+post-change file into the sandbox temp directory and compared them with a
+single `python3 -I -c` program using `yaml.safe_load` (nothing was written
+into the repository; the working tree is unchanged apart from pre-existing,
+untracked environment dotfiles and git-ignored `__pycache__`/catalog
+output).
+
+The program compared, before vs. after: every top-level key, the `on:`
+trigger block, top-level `permissions:`, `concurrency:`, `defaults:`, `env:`
+and `name:`; and per job `needs:` (normalized), `permissions:`,
+`environment:`, `if:`, `runs-on:`, `strategy:`, `timeout-minutes:`,
+`continue-on-error:`, `concurrency:`, `outputs:`, `env:`, `defaults:`, the
+ordered list of `uses:` values, the step count, the ordered step names and
+any remaining job key. It then re-derived the per-action job sets, compared
+them against `.github/dependabot.yml`'s groups, and ran a Kahn topological
+sort over the post-change `needs:` graph.
+
+[[r5-h002-graph]]
+=== Job graph, permissions and pins -- re-derived before/after
+
+Top level: `top_keys`, `on:`
+(`push` to `main`, `push` of tags `v*`), `permissions: {contents: read}`,
+`concurrency` (absent), `defaults` (absent), `env` (absent) and `name`
+(`release`) all compared *identical*.
+
+Job name set identical and ordered the same:
+`check`, `python-compat`, `publish-testpypi`, `publish-pypi`, `release`.
+
+Across all five jobs and all seventeen compared job-level fields, the
+program reported *exactly one* difference:
+
+* `publish-testpypi.needs`: `['check']` -> `['check', 'python-compat']`.
+
+Post-change per-job facts, for the record (every one of them unchanged from
+before):
+
+[cols="2,2,2,2,3",options="header"]
+|===
+|Job |`needs:` |`permissions:` |`environment:` |`if:`
+|`check` |-- |-- |-- |--
+|`python-compat` |`check` |-- |-- |--
+|`publish-testpypi` |`check`, `python-compat` |`contents: read`, `id-token: write` |`testpypi` |`startsWith(github.ref, 'refs/tags/v')`
+|`publish-pypi` |`publish-testpypi` |`contents: read`, `id-token: write` |`pypi` |`startsWith(github.ref, 'refs/tags/v')`
+|`release` |`publish-pypi` |`contents: write` |-- |`startsWith(github.ref, 'refs/tags/v')`
+|===
+
+Cycle check: Kahn sort over the post-change graph yields the complete order
+`check -> python-compat -> publish-testpypi -> publish-pypi -> release`
+(5 of 5 nodes emitted, so acyclic), and no `needs:` entry is dangling. The
+new edge cannot close a cycle because `python-compat` depends only on
+`check`, which `publish-testpypi` already depended on.
+
+Action pins: the full multiset of 11 `uses:` values is byte-identical before
+and after; the five distinct references are all 40-hex-digit SHA pins and
+unchanged:
+
+* `actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803`
+* `actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1`
+* `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02`
+* `actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093`
+* `pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086`
+
+No action was added, removed or re-pinned; no secret reference, no new
+permission, no new network access, no trigger change. The workflow comment
+above `python-compat` (`release.yml:222-230`) no longer claims "no release
+gate (no job waits for it)" and now states gate G9 and the
+`publish-testpypi` dependency; the surrounding "NOT qualification" facts and
+the 2026-11-23 attribution are intact. Both YAML files load with
+`yaml.safe_load`.
+
+[[r5-h002-dependabot]]
+=== Dependabot file -- keys justified and sets re-derived
+
+The committed file parses to exactly: `version: 2`; one `updates` entry with
+`package-ecosystem: github-actions`, `directory: /`,
+`schedule.interval: weekly`, `cooldown.default-days: 7`, and two `groups` --
+`check-only-actions` (`patterns`: `actions/checkout`,
+`actions/setup-python`, `actions/upload-artifact`; `update-types`: `minor`,
+`patch`) and `publish-path-actions` (`patterns`:
+`actions/download-artifact`, `pypa/gh-action-pypi-publish`). No other key.
+
+I re-derived the action sets from the workflow independently. Per-action job
+membership:
+
+[cols="3,3",options="header"]
+|===
+|Action |Jobs it runs in
+|`actions/checkout` |`check`, `python-compat`
+|`actions/setup-python` |`check`, `python-compat`
+|`actions/upload-artifact` |`check`
+|`actions/download-artifact` |`python-compat`, `publish-testpypi`, `publish-pypi`, `release`
+|`pypa/gh-action-pypi-publish` |`publish-testpypi`, `publish-pypi`
+|===
+
+With "check-only" = runs only in `check`/`python-compat` and
+"publish-path" = runs in at least one of
+`publish-testpypi`/`publish-pypi`/`release`, the derived sets are
+`{actions/checkout, actions/setup-python, actions/upload-artifact}` and
+`{actions/download-artifact, pypa/gh-action-pypi-publish}`. They are
+disjoint and together cover all five pinned actions. The program compared
+them to the two `groups.*.patterns` lists: *both match exactly*.
+`actions/download-artifact` also runs inside `python-compat`, so excluding
+it from the check-only group is correct, not conservative, and the
+implementer's record states that reason.
+
+Key verification (my own fetch of GitHub's Dependabot options reference this
+Hop; web access was available, so nothing below is an external assumption):
+
+[cols="2,4",options="header"]
+|===
+|Key |Status
+|`version: 2` |Documented, required, only valid value.
+|`updates`, `package-ecosystem: github-actions`, `directory: "/"` |Documented; `github-actions` is a documented ecosystem; singular `directory` is correct for one path.
+|`schedule.interval: "weekly"` |Documented value (`daily`, `weekly`, `monthly`, `quarterly`, `semiannually`, `yearly`, `cron`).
+|`cooldown.default-days: 7` |Documented. Applies to version updates only, not security updates; the reference's ecosystem table lists `github-actions` as supported for `default-days` and *not* for the `semver-*-days` options -- the file uses only `default-days`, so it stays inside the supported subset. Omitting cooldown would default to 3 days, so the 7 is a real choice.
+|`groups.<name>.patterns` |Documented sub-key; matches dependency names, `*` wildcard supported.
+|`groups.<name>.update-types` |Documented sub-key of `groups`; values `minor`, `patch`, `major` (distinct from the `version-update:semver-*` form used by `allow`/`ignore`).
+|===
+
+There is no per-group `labels` key in the reference (labels are
+update-entry-level), so a label could not distinguish the two sets from one
+`updates` entry; group name is the right mechanism and the file says so. I
+confirmed from the reference's branch-name section that the group name is
+what the branch name carries for a grouped update (`{group_name}` is the
+documented placeholder and the strategy-appropriate name for grouped
+updates), which is the identification the maintainer's own repository rule
+would match on. The file's comment and chapter 4 both state plainly that
+grouping enables nothing by itself and that auto-merge is a separate
+repository setting no file here configures -- correct, and no document in
+this candidate claims auto-merge is on.
+
+Behaviourally the `update-types: [minor, patch]` restriction also works in
+the right direction: a *major* bump of a check-only action matches no group
+and therefore arrives as its own ungrouped pull request without the
+eligible group's name, so it cannot be swept up by a rule keyed on that
+name.
+
+[[r5-h002-blocking]]
+=== Blocking Finding (new, `finding_id: null`)
+
+*The G9 recovery response cites a recovery-table row that prescribes the
+opposite action; the recovery table itself is now incomplete for G9.*
+
+`ch04_release_management.adoc:185-190` (new text) says, of a red
+`python-compat` caused by an index-side or upstream change:
+
+____
+... the response is a re-run of the failed jobs (`<<recovery>>`'s "Failed
+before any upload" row -- nothing has been uploaded yet), never a re-tag.
+____
+
+`ch04_release_management.adoc:394`, the cited row, reads in full:
+
+____
+|Failed before any upload |Fix on `main`, delete the tag, tag again.
+____
+
+Deleting the tag and tagging again *is* a re-tag. A reader who follows the
+cross-reference the chapter supplies as the authority for "never a re-tag"
+finds an instruction to re-tag. Two consequences, both reproduced by
+reading the committed file:
+
+. Chapter 4 contains a statement that is false -- the cited row does not
+  give the stated rule -- which violates the FTR acceptance criterion
+  "Chapter 4 contains no statement that is false for the integrated
+  pipeline", and the Commission's review focus "G9 with its recovery
+  response is consistent with the recovery table".
+. The recovery table, which is the chapter's authoritative recovery source,
+  now gives the wrong answer for the failure mode G9 introduces. This is
+  not a pre-existing defect the change merely inherits: before G9, a
+  pre-upload failure in tag mode could only be a `check` failure, and
+  `check` installs from the audited offline bundle, so such a failure is
+  caused by this repository and "fix on `main`, delete the tag, tag again"
+  was complete. G9 is the first release-blocking pre-upload job that
+  installs from the ordinary index, so it is the first pre-upload failure
+  that can be purely upstream and that a bare re-run can clear. The row is
+  therefore a statement the change makes *incomplete*, which the Commission
+  task's chapter-4 instruction explicitly covers ("bring every statement the
+  change makes false or incomplete up to date").
+
+The premise is defective upstream of the implementer: both the FTR ("the
+chapter's recovery table already says so for a failure before any upload")
+and the Commission task ("the recovery table already gives that rule for a
+failure before any upload, reference it") assert something the recovery
+table does not say. The maintainer's own D6 record in the plan
+(`beta2_release_streamlining_plan.adoc:626-631`) states only the rule
+itself -- "the response is a re-run of the failed jobs, not a re-tag" -- and
+makes no claim about the table. So honouring D6 does not require the false
+citation, and a correction is available inside the authorized chapter-4
+scope. I am not escalating this as a scope question, because a feasible fix
+exists within scope.
+
+Feasible correction (either is sufficient; the first is preferred because it
+also repairs the table):
+
+. Split the "Failed before any upload" row, or extend its action, so that it
+  distinguishes the two causes -- a failure caused by this repository: fix
+  on `main`, delete the tag, tag again; a transient or upstream failure with
+  nothing uploaded (the G9 case): re-run the failed jobs, the tag stands,
+  never re-tag -- and leave the G9 bullet's cross-reference pointing at the
+  now-correct row.
+. Or reword the G9 bullet so it stops attributing the rule to that row,
+  stating the D6 rule on its own authority and citing `<<recovery>>` only
+  for the state ("nothing has been uploaded yet").
+
+Nothing else in the candidate depends on the outcome; both options are
+confined to `docs/developer_guide/ch04_release_management.adoc` and the
+verification record.
+
+[[r5-h002-ok]]
+=== What I checked and found correct
+
+* *Chapter 4, statements the change makes false.* No occurrence of
+  "informational", "not a prerequisite", "gates nothing" or "G1-G8 below"
+  survives anywhere in the chapter (grep), and no other developer-guide
+  chapter mentions `python-compat` or the old gate range. "Five jobs (one
+  informational)" became "Five jobs"; the `python-compat` bullet states G9,
+  the accepted ordinary-index risk, and the maintainer-level nature of
+  dropping the 3.10-3.12 classifiers; the `publish-testpypi` bullet names
+  both prerequisites; the gate-class sentence now scopes to G1-G9 and
+  records D6 as decided rather than open; sequence steps 1 and 4 name G9;
+  the gate table gained a G9 row (`|CI` owner, consistent with G5/G6).
+* *No other decision moved.* D1, D2, D4 and D5 are not mentioned in the
+  diff; the pre-tag Q1 smoke (D1 Option B), the TestPyPI stage (D2) and the
+  G1-G8 rows are untouched. The `#d6` and `#d3` anchors the chapter links to
+  exist in the plan, and the plan's `decisions-taken` records D6 Option A
+  and D3 as the chapter describes them.
+* *Honesty about hosted state.* No file claims auto-merge is enabled, that a
+  Dependabot run happened, or that any workflow, push, tag or publication
+  ran. The verification record says so explicitly and reports `python -m
+  pytest -q` as *not executed* because `pytest` is absent from the agent
+  sandbox -- I reproduced that (`python3 -m pytest --version` -> "No module
+  named pytest"); the full suite is the Coordinator's task-check, and I make
+  no claim about it.
+* *Scope.* `git ls-files .github` lists exactly `.github/dependabot.yml` and
+  `.github/workflows/release.yml`, so the file's `directory: "/"` comment
+  about "the single workflow file" is accurate and no other `.github/` file
+  was added. `git diff --name-status 328f944..25f3297` is the four
+  authorized leaves; no `.wfc/`, `governance/`, product, test, script,
+  Makefile, pyproject or version file changed; `git status --short -uall`
+  shows no tracked modification (only pre-existing untracked environment
+  dotfiles).
+* *Renders and catalog, re-run by me.* `asciidoctor --safe-mode=safe -a
+  assembled -o /dev/null --failure-level=WARN` printed nothing for both
+  `docs/developer_guide/ch04_release_management.adoc` and the verification
+  record. `python3 scripts/wfc_doc_catalog.py generate` then `check`
+  reported "83 unresolved links; 4 Project Memory source_path misses" and
+  "catalog current" -- the stated baseline, no additional unresolved link.
+* *Front Door docs-sync.* The convention check is asked and answered "no
+  edit needed" in the verification record, and the answer is right: no Front
+  Door command, argument, classification, report, diagnostic, admission,
+  binding or recovery behaviour is touched.
+* *Simplicity.* I looked for a materially simpler solution and did not find
+  one worth naming. The gate is one `needs:` entry, not a new job or an
+  `if:`; the Dependabot file is one `updates` entry with the minimal
+  documented key set and no mechanism that pretends to enable auto-merge.
+  Two `updates` entries for the same ecosystem and directory would be
+  invalid, and a label cannot distinguish the sets, so the two named groups
+  are the simplest construction that satisfies D3. No abstraction, state or
+  recurring obligation beyond the Dependabot stream D3 itself chose.
+
+[[r5-h002-observations]]
+=== Non-blocking observations
+
+* *O-1.* The gate table's G9 row carries no recovery response of its own;
+  the response lives in the CI-section bullet. The table has no recovery
+  column (G1-G8 rows carry none either), so this is consistent with the
+  chapter's own shape, not a defect. Once the blocking Finding is corrected,
+  a reader arriving at G9 from the table still reaches the response through
+  `<<release-ci>>`; a direct `<<recovery>>` pointer in the G9 row would be a
+  small improvement, not a requirement.
+* *O-2.* `.github/dependabot.yml`'s header comment says the group name
+  "appears in each pull request's title and branch name". I verified the
+  branch-name half from the documented `{group_name}` placeholder; the
+  pull-request-title half I did not see stated in the sections I read.
+  Nothing in the file's validity or in D3's mechanism depends on the title,
+  and the maintainer's rule can match the branch name, so this is an
+  observation about one word of a comment, not a Finding.
+* *O-3.* The verification record notes the git-ignored generated catalog was
+  left in place, while the Commission's ENVIRONMENT paragraph asks that no
+  generated catalog be left behind. The file is git-ignored and outside the
+  CommitIntent, several git-ignored `__pycache__` trees pre-date this Hop,
+  and I regenerated the catalog myself during this review, so the state is
+  mine as much as the implementer's. Not a product defect.
+* *O-4.* The FTR's `Scope (file-exact)` lists `docs/backlog/_open.adoc` and
+  the FTR's own upkeep, which this Hop's authorized scope excludes; the
+  verification record states that and defers it. That deferral is correct
+  for this Hop. Recording R5 as implemented in `_open.adoc` and in the FTR's
+  status remains outstanding backlog upkeep for a later phase, together with
+  removing the temporary ceiling entries after integration.
