@@ -1,0 +1,338 @@
+= FTR-WFC-EXECUTION-BOUNDARY-PHASE-PROFILES -- Slice B: Phase-Dependent Visibility, Mutation And Capability Profiles
+
+Type:: future technical record -- Slice B of
+link:FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[the Execution Boundary umbrella
+record]. *Planning only.*
+Status:: proposed / backlog / deferred. Target architecture, dependencies and
+open decisions recorded; *no implementation is authorized*, no design is
+accepted, and nothing here is a commitment to build any of it.
+Current controlling source:: This record; see link:_open.adoc[the active-work
+manifest] for its current card.
+Next action:: None by an agent. The maintainer decides the open questions in
+<<decisions>> after
+link:FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc[Slice A] is
+implemented, qualified and in real use, and only then considers a design
+Commission.
+Not authorized here:: Any implementation; any design acceptance; any schema
+commitment; any change to the accepted `robust@v1` program or to any
+Commission rendered under it; any MCP or network design; any change to the
+trust model, review authority or Finding-disposition design; any claim that
+confidentiality or phase isolation exists.
+Depends on:: Slice A implemented *and* qualified. Slice B's mechanisms are
+extensions of Slice A's view construction; without an effective boundary they
+would be labels, not controls.
+Date:: 2026-11-25
+Supporting analysis::
+link:../warm_storage/post-beta-planning/wfc_execution_boundary_planning_record.adoc[the
+Execution Boundary planning record], whose verified current-state section is
+the factual basis for the gaps below.
+
+== What Slice B would be, and why it is separate
+
+Slice A gives every phase the same view: the whole working tree read-only, the
+phase's own `authorized_scope` writable, no `.git`. Slice B is the step from
+"one view for all phases" to *per-phase profiles over three independent
+dimensions*: what a phase may see, what it may change, and what it may
+execute.
+
+It is separate because its three hardest parts -- hiding content without
+leaking it through Git, provenance for a widened grant, and the
+privilege-elevation topology -- are each larger than Slice A in their own
+right, and because the maintainer's own framing is that these restriction
+capabilities become relevant *later*, in particular once another feature gives
+an agent a second route to the same resources.
+
+== Target architecture
+
+=== 1. Per-phase visible and writable repository subsets
+
+Today a phase declares one path list, `authorized_scope`, and the
+Coordinator uses it for two different purposes: as the writable grant
+(prospectively, once Slice A exists) and as the acceptance boundary for the
+post-Hop candidate check. Visibility is not modelled at all.
+
+The target shape is a phase-declared profile with at least a *visible* set and
+a *writable* set, where the writable set is contained in the visible set and
+the acceptance boundary stays derived from the writable set. The maintainer's
+framing is that "modelling visibility and writability becomes part of
+commissioning", which means these sets would be program- and Commission-level
+declarations resolved by the deterministic compiler, not agent-influenced
+input.
+
+What this would answer that Slice A cannot: a reviewer that must read the
+whole product but write only its artifact is already expressible; a worker
+that must not see a protected area is not.
+
+Open: whether a visible set is an allowlist (default hidden) or a denylist
+(default visible). An allowlist is the stronger model and the larger change;
+a denylist is incremental and fails open. This is decision <<d-b1>>.
+
+=== 2. Hiding `cold_storage` and confidential areas
+
+Two distinct motivations that must not be conflated:
+
+Confidentiality:: An area must be unreachable because its content is
+protected. The umbrella record's rule applies: a later review cannot undo
+disclosure, so the area must be absent before the agent starts.
+Context management:: An area is hidden because it is noise, not because it is
+secret. `docs/cold_storage/` is the named example: provenance that an agent
+should not routinely load. Hiding it is a context decision, and losing access
+to it is acceptable only if selected content can still be retrieved when
+genuinely needed.
+
+The filesystem part is mechanically easy once Slice A exists: an unmounted
+path does not exist in the view, and bubblewrap can also mask a path inside a
+mounted tree. The hard part is the second route.
+
+==== The Git object-database question
+
+If an area is hidden from the working tree but its content is in the
+repository's history, an agent that can reach the object database can
+reconstruct it. Slice A already removes that route by exposing no `.git` at
+all, which is why Slice A is a prerequisite rather than a parallel effort.
+Slice B must keep it removed and must state the remaining limits:
+
+* *A hidden path that is tracked at `HEAD` is still in the object store.*
+  Hiding it in the view is effective only while no Git access exists. Any
+  later Git capability -- a read-only Git service, a retrieval service that
+  reads history, a provider tool that shells out successfully -- reopens it.
+* *Mitigation options, none chosen here.* (a) No Git capability for any
+  ordinary phase, which is Slice A's state and the cheapest answer. (b) A
+  Coordinator-mediated Git read service that filters by the phase's visible
+  set -- powerful and a new trusted component with its own confused-deputy
+  risk. (c) Keeping genuinely confidential content out of the repository
+  entirely, which is an operating decision rather than a mechanism and is
+  probably the only honest answer for real secrets. (d) History rewriting,
+  which is out of the question for an existing repository.
+* *Derived output is a separate leak path.* The umbrella record's
+  information-flow rule already governs it: summaries, Findings, review
+  artifacts, logs, commit subjects and scratch all count as sinks. A
+  visibility profile does not bound them.
+
+=== 3. Controlled widening of visibility and write rights
+
+A phase sometimes legitimately needs more than its profile grants. The
+umbrella record's provenance rule governs any widening and is not weakened
+here: an effective widening must stay inside an authority envelope resolved
+only from authority-bearing inputs fixed independently of, and before, the
+requester could influence them. An agent may *request*; it never *creates*
+authority, and a delegating peer may pass on only what it was granted.
+
+The target shape is therefore a request/grant pair in which the request is an
+agent-authored result field and the grant is a Coordinator-side resolution
+against admitted governing input -- structurally the same separation that
+already exists between a CommitIntent and a trusted commit. The umbrella
+record's candidate, non-final event vocabulary
+(`requires_protected_read`, `requires_execution_surface_mutation`,
+`requires_network`, `requires_trusted_test_context`) is a naming sketch, not a
+schema, and Slice B does not commit to it either.
+
+Open: whether a widening is representable within one Run at all, or whether it
+must always terminate the Hop and require a new, differently-authorized
+Commission. The existing scope-escalation stop is the precedent and the
+cheaper answer.
+
+=== 4. The elevated-privilege and mandatory-defensive-review pattern
+
+link:FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW.adoc[The elevated-privilege
+record] owns the orchestration and authority pattern: explicit escalation,
+bounded elevated work, mechanically mandatory defensive review, and no
+ordinary route that bypasses it. Slice B owns only the *technical enforcement*
+that pattern needs, and the two must be designed together without either
+absorbing the other.
+
+The technical contribution Slice B would make:
+
+* A phase profile expressive enough to be the "execution boundary" element of
+  that record's privilege payload.
+* An enforced difference between an ordinary and an elevated phase's view:
+  different writable sets, different visible sets, different tool
+  availability.
+* The invariant that record states, made mechanical: a privileged mutation may
+  be exercised before defensive review only inside a boundary whose authority
+  is no greater than the authority granted to the mutating agent. Concretely,
+  an agent-authored Git hook or test must be executable inside the agent's own
+  view and *not* reachable by a more trusted host-side operation before
+  review. Trusted Git already forces `core.hooksPath` to `/dev/null`, which is
+  one instance of this invariant; the general case is unsolved.
+
+What Slice B must *not* do: invent a second escalation vocabulary, a second
+review authority, or a privilege-specific workflow stage. The topology is the
+other record's.
+
+=== 5. Protection of execution-relevant repository surfaces
+
+Slice A protects an execution-sensitive surface only when it happens to lie
+outside the phase's writable grant. A Commission whose scope legitimately
+includes `tests` can still modify `conftest.py`; one whose scope includes the
+repository root could modify `Makefile`.
+
+The target direction, from the umbrella record: technically restricted
+ordinary phases, explicitly authorized elevated phases, and a mandatory
+defensive review afterwards. The open technical question is how an
+execution-sensitive surface is *identified*. Options, none chosen: a declared
+set in repository policy (simple, maintainer-owned, and the only one whose
+provenance is clean); derivation from the toolchain (fragile); a per-path
+classification scheme (the taxonomy the umbrella record explicitly refuses to
+define today).
+
+Note the independent exposure Slice A leaves: trusted evidence commands
+execute agent-modified project code on the host with the Coordinator's
+ambient authority. That is the confused-deputy case in its most direct form,
+and it is a candidate for its own record rather than a Slice B sub-item.
+
+=== 6. Extensibility by later controlled services, without presupposing MCP
+
+If visibility is restricted, something must be able to supply selected
+content: a retrieval service for `cold_storage`, a read-only Git service, a
+cross-repository read service. An MCP sidecar is *one conceivable transport*
+for such services and is explicitly out of scope; naming it here is a pointer,
+not a dependency, and no part of this record may be read as an MCP design.
+
+What matters architecturally, whatever the transport:
+
+* A service is a *separate trust domain*. It runs outside the agent boundary,
+  with its own authority, and it must not be reachable in a way that lets an
+  agent widen its own visibility.
+* A service that answers from content a phase may not see is a confused
+  deputy. Its filter must be derived from the same phase profile the boundary
+  enforces, resolved Coordinator-side.
+* Slice A must leave an extension point, not a schema. Concretely: the
+  profile that the Slice A launcher consumes should be a value the Coordinator
+  computes, so that a later richer profile changes that computation without
+  changing the seam; and nothing in Slice A should hard-code "the view is the
+  whole working tree" as an assumption other code depends on.
+
+== What Slice A must therefore leave open
+
+. No commitment to a profile schema. Slice A derives its grant set from
+  today's `phase.authorized_scope` and nothing else, and does not introduce a
+  partial visibility vocabulary that a later design would have to carry.
+. No per-phase or per-adapter boundary selection. One Run, one boundary mode
+  (Slice A's decision), so per-phase profiles arrive as one coherent change
+  rather than on top of an accidental per-phase mechanism.
+. No hiding at all. A half-implemented hide is worse than none, because it
+  invites a confidentiality claim that the Git object database would refute.
+. No Git capability for ordinary phases. Every later hiding option depends on
+  that route staying closed.
+. No service, client, transport or sidecar of any kind.
+
+== Relation to `FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION`
+
+link:FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc[That record] observes
+one concrete instance of exactly the gap Slice B addresses: under the closed
+`robust@v1` program, a worker phase's `authorized_scope` resolves to the
+complete Commission Intent scope, including both reviewer-artifact paths,
+while each reviewer phase's resolves only to its own durable artifact. The
+worker-side separation is instructional, not mechanical.
+
+Slice B *depends on* that record and does not subsume it. The dependency runs
+the other way than it first appears:
+
+* The *data* problem is that record's: a worker phase's declared scope is too
+  wide. No boundary can fix that, because a boundary enforces the declared
+  scope faithfully. Narrowing it is a *program* change.
+* The *enforcement* problem is Slice B's: once a narrower scope is declared,
+  something must enforce it technically rather than instructionally.
+
+The program-version question this raises, and which this record does not
+answer:: `robust@v1` is closed and immutable; its worker phases carry
+`scope: S`, which the compiler resolves to the full Intent scope. A narrower
+worker-phase scope therefore requires a *new program revision*, for example a
+new scope slot that resolves to "the Intent scope minus every other phase's
+durable artifacts". That is a `robust@v2` question. Nothing here modifies
+`robust@v1`, any Commission already rendered under it, or the compiler's
+existing slot semantics, and nothing here justifies a rushed `v1` change --
+the same constraint that record already states.
+
+== Relation to the commissioning model
+
+The maintainer's framing that "visibility and writability become part of
+commissioning" fits the existing model well: a Commission Intent already
+declares `scope` and `durable_artifacts`, a program already declares per-phase
+scope slots, and the deterministic compiler already resolves one into the
+other with no agent write path. A visibility declaration would be another
+slot resolved the same way.
+
+Two existing properties must be preserved: the Intent has no write path to a
+program's phases, routes or review descriptors; and the compiler's resolution
+is deterministic and digest-pinned. A profile that an agent could influence
+would not be an authority root, which the umbrella record's provenance rule
+forbids.
+
+[[decisions]]
+== Open maintainer decisions, with options
+
+Each is a decision, not a task. None is recommended for action now.
+
+[cols="1,3,5",options="header"]
+|===
+|# |Decision |Options
+
+|[[d-b1]]B1
+|Is the visible set an allowlist or a denylist?
+|(a) Allowlist, default hidden: strong, fails closed, and a large change to
+every program and Commission. (b) Denylist, default visible: incremental,
+fails open, and cannot support a real confidentiality claim. (c) Allowlist for
+designated protected areas only, denylist elsewhere: a hybrid that needs a
+classification concept the umbrella record declines to define.
+
+|B2
+|Does `cold_storage` hiding happen before or after a retrieval service exists?
+|(a) Hide first, accept the loss of direct access. (b) Service first, hide
+after. (b) is safer and slower; (a) is the only one that delivers the context
+benefit soon, and is reversible.
+
+|B3
+|Is any agent-reachable Git capability acceptable once hiding exists?
+|(a) Never. (b) A Coordinator-mediated read service filtered by the phase
+profile. (a) is Slice A's state and costs agent convenience; (b) is a new
+trusted component.
+
+|B4
+|Does a widening request stay inside one Run or always end the Hop?
+|(a) End the Hop, reuse the existing scope-escalation stop. (b) In-Run grant
+resolved against admitted governing input. (a) needs no new mechanism.
+
+|B5
+|How is an execution-sensitive surface identified?
+|(a) Declared in repository policy by the maintainer. (b) Derived from the
+toolchain. (c) A per-path classification scheme. (a) is the only option whose
+provenance is clean today.
+
+|B6
+|Does narrowing worker-phase scope justify a `robust@v2`?
+|(a) Yes, as part of a deliberate program-version effort. (b) No, keep the
+instructional boundary and enforce only the declared scope. (c) Defer until a
+real violation occurs. This is the question
+link:FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc[the phase write-scope
+record] already parks.
+
+|B7
+|Are trusted evidence commands in Slice B's scope, or their own record?
+|Their own record, on the evidence that they are a different threat model
+(agent-modified code on the host, no provider credentials) and would double
+any qualification surface they joined.
+|===
+
+== Prerequisites before any Slice B design Commission
+
+. Slice A implemented and its qualification exit criteria met, including the
+  live layer.
+. Real operating experience with Slice A: does an agent that cannot run `git`
+  work acceptably, and what did the boundary actually prevent.
+. Decisions B1 and B3 taken, because every other part of the design follows
+  from them.
+. A decision on whether a program-version effort (B6) is in flight, because a
+  profile design that assumes a narrower worker scope and a program that does
+  not provide it would not compose.
+
+== Non-goals
+
+This record does not: design or authorize any implementation; define a
+classification taxonomy, label lattice, content scanner or taint-tracking
+mechanism; design an MCP sidecar, a network policy, a credential broker or a
+retrieval service; modify the accepted `robust@v1` program or any rendered
+Commission; introduce a new governance layer, program, gate or role; change
+review authority or Finding disposition; or claim that any confidentiality,
+hiding or phase-isolation property exists today.

@@ -1,0 +1,712 @@
+= WFC Execution Boundary: planning record for the dispatch-integration slice
+:toc:
+:toclevels: 2
+:revdate: 2026-11-25
+
+Standing:: Planning evidence supporting
+link:../../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[the Execution
+Boundary umbrella record] and the two slice records it points to,
+link:../../backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc[Slice
+A (dispatch integration)] and
+link:../../backlog/FTR-WFC-EXECUTION-BOUNDARY-PHASE-PROFILES.adoc[Slice B
+(phase profiles)]. Not a governance document, not an accepted design and not
+an authorization. Nothing outside `docs/backlog/` and
+`docs/warm_storage/post-beta-planning/` was changed to produce it: no product
+code, test, script, workflow, `.wfc/` or `governance/` file.
+Repository state:: base HEAD `f492274`, branch `wfc/exec-boundary-ftr-001b`,
+Run `RUN-cdb3068d18134ae3babd479e1bd23faa`, WorkItem
+`WI-WFC-EXEC-BOUNDARY-FTR-001`. Every line reference below was read at that
+commit.
+Evidence classes:: *[I]* read from code, test or configuration in this
+repository at `f492274`. *[O]* observed by executing a read-only or
+scratch-only command in this Hop (recorded in <<experiments>>). *[D]* stated
+by an existing repository document, cited rather than re-derived. *[A]* an
+explicitly marked assumption that this Hop did not verify.
+Not done here:: No live provider invocation, no credential was read, copied or
+mounted, no `bwrap` process could be executed (<<limits>>), no Git write of
+any kind.
+
+[[summary]]
+== What this record establishes
+
+. The Bubblewrap primitive is still wired into nothing, and in its present
+  form it cannot even validate the checkout WFC self-development actually runs
+  in, because that checkout is a linked Git worktree whose `.git` is a file
+  *[O]*.
+. The integration seam is narrow and already provider-neutral in shape: one
+  `subprocess.Popen` call per adapter, plus the Coordinator-owned result
+  directory each adapter reads from or writes to *[I]*.
+. An effective boundary needs four things the present primitive does not have:
+  a worktree-aware `.git` view, a narrow bidirectional channel to the
+  Coordinator's result directory, a `/proc` and process model the provider
+  runtimes require, and process/timeout/environment control that today lives
+  in the adapters *[I]*, *[D]*.
+. Provider permissiveness inside the boundary must be bound to the boundary
+  actually being in force for that invocation, because the provider's own
+  `failIfUnavailable: true` turns a failed nested sandbox into a refusal
+  rather than a silent downgrade *[I]*, *[D]*.
+. Slice A can state integrity (write prevention) honestly. It cannot state
+  confidentiality or phase isolation honestly, because the scope data it would
+  enforce is Commission-wide for worker phases *[I]*, and because hiding
+  content from an agent requires solving the Git object database, which Slice
+  A deliberately does not do.
+
+[[current-state]]
+== Verified current state
+
+=== The primitive and where it is not used
+
+`src/workflow_coordinator/execution_boundary.py` is 187 lines with exactly
+three public functions, `validate`, `build_argv` and `run`, plus `Mount`,
+`MountMode`, `ValidatedBoundary` and `BoundaryConfigurationError` *[I]*.
+
+No module under `src/` or `scripts/` imports it. The only importers are
+`tests/integration/test_execution_boundary_bwrap.py:6`,
+`tests/integration/test_nested_claude_bwrap_qualification.py:13` and
+`tests/unit/test_execution_boundary_config.py:7` *[I]*. The dispatch path
+(`vertical.run_one_hop`, `slice4.run_real_one_hop`, `operator.run_serial_hops`)
+contains no reference to it *[I]*. This confirms the statement already made in
+link:../../research/gondolin_execution_boundary_feasibility.adoc[the Gondolin
+feasibility study], table row "Bubblewrap primitive" *[D]*.
+
+=== What `validate()` accepts and refuses
+
+[cols="3,4,2",options="header"]
+|===
+|Rule |Where |Confirmed
+
+|`bwrap` must resolve to an executable file
+|`execution_boundary.py:94-96`
+|*[I]*
+
+|Repository path must be absolute, already symlink-free (`path ==
+path.resolve()`) and existing
+|`execution_boundary.py:50-55`, used at `:97`
+|*[O]* -- a repository reached through a symlinked parent is refused with
+"source must be an absolute real path"
+
+|Repository must not overlap `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`
+|`execution_boundary.py:98-100`
+|*[I]*
+
+|Repository must contain a real, non-symlink `.git` *directory*
+|`execution_boundary.py:101-102`
+|*[O]* -- refuses this checkout and a synthetic `git worktree add` checkout
+
+|Bind sources must be inside the repository, must already exist, must not
+contain a `.git` component, and the destination must be exactly
+`/repo/<repository-relative path>`
+|`execution_boundary.py:121-129`
+|*[O]* -- all four refusals reproduced
+
+|Only regular files and directories may be bound
+|`execution_boundary.py:130-131`
+|*[I]*
+
+|A writable grant is rejected when any non-directory inode under it has
+`st_nlink != 1` (hardlink alias defence), re-checked at `build_argv`
+|`execution_boundary.py:58-79`, `:132-133`, `:163`
+|*[I]*, exercised by `tests/integration/test_execution_boundary_bwrap.py:71-145`
+
+|Exactly one private `/tmp` tmpfs scratch is required
+|`execution_boundary.py:117-119`, `:137-138`
+|*[O]*
+
+|Destinations may not overlap each other
+|`execution_boundary.py:114-115`
+|*[I]*
+
+|One optional external scratch root, outside the repository and all system
+roots, bound at the fixed short destination `/tmp/s`
+|`execution_boundary.py:32`, `:139-156`, `:180-181`
+|*[I]*
+|===
+
+=== What `build_argv()` actually generates
+
+Observed verbatim for a worker-shaped grant (one writable repository subpath,
+private scratch, external scratch) *[O]*:
+
+----
+bwrap --die-with-parent --dev /dev --ro-bind /usr /usr
+  --symlink usr/bin /bin --symlink usr/sbin /sbin
+  --symlink usr/lib /lib --symlink usr/lib64 /lib64
+  --ro-bind <repository> /repo --tmpfs /repo/.git --remount-ro /repo/.git
+  --bind <repository>/docs /repo/docs
+  --tmpfs /tmp
+  --bind <external scratch> /tmp/s
+  --chdir /repo -- <command>
+----
+
+Absent from the generated argv, each verified by substring probe *[O]*:
+`--proc`, any `/etc` mount, `--unshare-pid`, `--unshare-net`, `--unshare-all`,
+`--clearenv`, `--setenv`, `--new-session`.
+
+Consequences that follow directly:
+
+* No `/proc`. The nested qualification found that this alone stops the
+  Bun-based Claude CLI before it contacts anything, and that
+  `--unshare-pid --proc /proc` in a throwaway harness made `claude --version`
+  succeed *[D]*
+  (link:../claude-adapter-and-sandbox/workflow_coordinator_nested_claude_live_qualification_2026-11-08.adoc[live
+  qualification], Phase B).
+* No `/etc`. `/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`,
+  `/etc/passwd` and `/etc/ssl/certs` all exist on this host *[O]* and none of
+  them is in the view, so name resolution, TLS trust and user lookup are
+  unavailable to the child.
+* No network namespace of its own: the child shares the host's network
+  namespace. The primitive therefore makes no network statement at all, in
+  either direction.
+* No PID namespace and no `--new-session`: a child that leaves the process
+  group is not contained by this primitive, and `run()` sets no timeout.
+* No environment control: `run()` is `subprocess.run(build_argv(...),
+  capture_output=True, check=False)` at `execution_boundary.py:185-187`, so
+  the child inherits the caller's whole environment, including `HOME` and any
+  token-bearing variable.
+* The provider binary must be resolvable inside the view. On this host `PATH`
+  contains `/home/stefan/.nvm/versions/node/v22.23.2/bin` and
+  `/home/stefan/.local/bin` *[O]*, neither of which is mounted; only `/usr`
+  and the four `/bin`-family symlinks are.
+
+=== How dispatch reaches a provider today
+
+[cols="3,5",options="header"]
+|===
+|Element |Fact
+
+|Port
+|`AgentExecutionPort.execute(AgentExecutionRequest) -> AgentExecutionOutcome`
+(`adapter.py:96-97`). The request carries `invocation`, `prompt`,
+`repository`, `result_contract`, `timeout_seconds`, `contract_version`,
+`result_contract_kind`, `permitted_routes`, `finding_authority`
+(`adapter.py:44-69`). There is no field for a filesystem view, a grant set or
+a boundary mode *[I]*.
+
+|Construction
+|`operator._execution_adapter` builds `CodexCliAdapter` or `ClaudeCliAdapter`
+"without a registry or fallback" from an `ExecutionBinding(adapter, model,
+reasoning)` (`operator.py:86-98`). `result_directory` is
+`checkout_state_root(state_root, association)` (`operator.py:977-980`), i.e.
+`<state_root>/checkouts/<checkout_id>` (`slice4.py:135-136`), which
+`slice4._require_external_state_root` forces to be disjoint from the checkout
+in both directions (`slice4.py:87-92`) *[I]*.
+
+|Dispatch
+|`vertical.run_one_hop` assembles the prompt and calls
+`adapter.execute(...)` once (`vertical.py:332-339`) *[I]*.
+
+|Claude argv
+|`claude -p --output-format json --json-schema <inline> --model <m> --effort
+<e> --restricted --safe-mode --strict-mcp-config --tools
+Read,Glob,Grep,Edit,Write,Bash,WebFetch,WebSearch --settings <file>
+--permission-mode acceptEdits --permission-prompts none
+--no-session-persistence <prompt>` (`claude_adapter.py:213-219`, tools at
+`:40`) *[I]*.
+
+|Claude settings
+|`sandbox.enabled: true`, `failIfUnavailable: true`,
+`allowUnsandboxedCommands: false`; `filesystem.denyRead: ["~/"]`,
+`allowRead: [<resolved repository>, <external scratch>]`, `allowWrite:
+[<external scratch>]`; `network.allowedDomains: []`;
+`permissions.allow: ["Edit", "Write", "WebFetch(domain:*)", "WebSearch",
+"Bash(curl:*)"]`, `permissions.deny: []`,
+`blockReadsOutsideWorkingDirectories: true` (`claude_adapter.py:222-245`)
+*[I]*. There is no write-scope field; `acceptEdits` plus `--restricted`
+carries the write authorization.
+
+|Claude process
+|Environment reduced to `PATH`, `HOME`, `USER`, `LANG` plus the
+`WFC_CLAUDE_EXTRA_ENV_NAMES` allowlist (`claude_adapter.py:41-47`,
+`:316-320`), then `TMPDIR`/`TMP`/`TEMP` overridden to a short
+`/tmp/wfc-claude-<token>` symlink whose target is an invocation-scoped
+directory under the ambient scratch root (`:57`, `:69-85`, `:254-264`,
+`:297-321`). `Popen(cwd=request.repository.resolve(), start_new_session=True,
+env=environment)` (`:322-331`). Timeout: `SIGTERM` to the process group,
+three seconds, then `SIGKILL` (`:335-344`). Both scratch paths are removed in
+a `finally` block (`:345-353`) *[I]*.
+
+|Claude result
+|The candidate is parsed out of the wrapper JSON on stdout
+(`claude_adapter.py:267-282`, `:356`). The child only has to *read*
+`<run_root>/claude-closed-settings.json` (`:308`, `:315`) *[I]*.
+
+|Codex argv
+|`codex --ask-for-approval never exec --ephemeral --json --color never
+--sandbox workspace-write --model <m> -c model_reasoning_effort="<e>" -c
+sandbox_workspace_write.network_access=true --cd <resolved repository>
+--output-schema <file> --output-last-message <file> -`
+(`codex_adapter.py:409-415`) *[I]*.
+
+|Codex process and result
+|`Popen(stdin=PIPE, stdout=PIPE, stderr=PIPE, start_new_session=True)` with
+*no* `cwd` and *no* `env` argument, so the child inherits the Coordinator's
+entire environment (`codex_adapter.py:444-447`). Same timeout and kill
+sequence (`:451-460`). The candidate is read back from
+`<run_root>/result-message.json` (`:434`, `:443`, `:461`), so the child must
+*write* into the Coordinator's result directory *[I]*.
+
+|Not-started versus started
+|`ExecutionNotStartedError` "proves the execution port was not entered"
+(`adapter.py:33-34`); `ClaudeCliError` and `CodexCliError` both subclass it
+(`claude_adapter.py:36`, `codex_adapter.py:57`).
+`slice4.run_real_one_hop` removes the dispatch marker and re-raises for
+`ExecutionNotStartedError` (`slice4.py:395-397`) but wraps `CodexCliError`
+into `Slice4Error` first (`:392-394`); `ClaudeCliError` is not named there and
+takes the generic branch. The asymmetry is pre-existing *[I]*.
+|===
+
+=== Commission scope versus phase `authorized_scope`
+
+`commissioning.render_commission` resolves a program phase's scope slot:
+`scope_slot == "S"` becomes `list(request.scope)`, the *complete* Commission
+Intent scope, and any other slot becomes exactly
+`request.durable_artifacts[artifact_key]`
+(`commissioning.py:343-350`) *[I]*. In `robust@v1` the two worker phases
+`implement` and `correct` carry `scope: S`, and the two reviewer phases carry
+`scope: A` with their own `artifact_key`
+(`governance/workflow-programs/robust/v1.yaml`) *[I]*.
+
+This is exactly what
+link:../../backlog/FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc[the phase
+write-scope record] already describes *[D]*, and it is directly observable in
+this Commission: `.wfc/governance/wfc-exec-boundary-ftr-001/work-item.yaml`
+has `scope: [docs/backlog, docs/warm_storage/post-beta-planning]` and names
+both reviewer artifacts inside the second entry *[I]*.
+
+Consequence for a boundary: a worker phase's writable grant, derived
+faithfully from `phase.authorized_scope`, is the whole Commission scope. A
+boundary built on that data prevents writes *outside the Commission*. It does
+not separate worker-owned paths from reviewer-artifact paths, and must not
+claim to.
+
+`a1_path_shape` (`serialization.py:354-369`) admits any canonical relative
+non-root path without globs or `..`, and nothing deduplicates nested entries.
+`_admit_a1` (`operator.py:160-224`) checks A1 path shape, governance-path
+overlap in both directions, the WorkItem scope ceiling and the Hop limits; it
+does not normalize or deduplicate nested scope entries *[I]*. A scope list
+containing both `docs` and `docs/backlog` is therefore
+admissible and would produce overlapping mount destinations, which
+`validate()` refuses (`execution_boundary.py:114-115`). Normalization is
+Slice A's problem, not an existing bug.
+
+=== Invariants that stay outside the boundary
+
+* Trusted Git runs on the host after the provider has exited:
+  `trusted_commit(..., allowed_paths=phase.authorized_scope, ...)`
+  (`vertical.py:400-408`), with every subprocess stripped of inherited `GIT_*`
+  variables (`git_facts.py:367-370`) and `core.hooksPath` forced to
+  `os.devnull` (`git_facts.py:295`, `:328`), committing with `--no-verify`
+  (`git_facts.py:816`) *[I]*.
+* The post-Hop scope observation runs either way: when no trusted commit
+  happens, `observe_hop(..., allowed_paths=phase.authorized_scope,
+  max_commits=0)` still observes the delta (`vertical.py:415-422`) *[I]*.
+* Evidence runs on the host, unconfined, with the Coordinator's snapshot
+  environment and `cwd=<repository>`
+  (`evidence.py:309-337`) *[I]*. This is the least confined execution in WFC
+  and is the indirect-execution case the umbrella record describes *[D]*.
+* The checkout association already records `canonical_path`, `git_dir` and
+  `common_dir`, and revalidates them on every Hop (`slice4.py:78-84`,
+  `:109-132`) *[I]*. The Coordinator therefore already knows the worktree's
+  real gitdir and common-dir without asking Git again at dispatch time.
+
+=== Configuration surfaces are closed
+
+* `consumer_config_from_yaml` admits exactly `schema_version`,
+  `repository_name`, `governance_dir`, `work_item_scope_ceiling`,
+  `max_autonomous_hops`, `default_execution` plus optional `evidence` and
+  `phase_execution` (`frontdoor/config.py:160-172`) *[I]*.
+* `run_execution_configuration_from_yaml` admits schema 1 or 2 with exactly
+  `schema_version` and `bindings`/`phase_bindings`, each binding exactly
+  `adapter`, `model`, `reasoning`, with `adapter` closed to `codex_cli` or
+  `claude_cli` (`serialization.py:1004-1037`) *[I]*.
+* The audit projection has a closed field allowlist and projects only
+  `adapter`, `model`, `reasoning` per binding
+  (`frontdoor/audit.py:44-45`, `:242-247`) *[I]*;
+  `operator._binding_evidence` produces exactly those plus `executable`
+  (`operator.py:677-685`) *[I]*.
+* `.wfc/config.yaml`'s `work_item_scope_ceiling` is `src`, `tests`,
+  `scripts`, `docs`, `README.md`, `pyproject.toml`, `Makefile`,
+  `examples/consumer-demo` *[I]*. `.wfc/` and `governance/` are not in it, so
+  no Run can edit the consumer config or a program record.
+
+[[experiments]]
+== Experiments performed in this Hop
+
+All experiments ran read-only against this checkout or inside the session
+scratch directory. The helper script lived in the repository's gitignored
+`/tmp/` scratch space and was removed afterwards; `git status --short -uall`
+showed no change attributable to it.
+
+E1 -- this checkout is a linked worktree::
+`.git` is a regular file of 125 bytes containing
+`gitdir: .../workflow-coordinator/.git/worktrees/workflow-coordinator-exec-boundary-ftr-b`;
+`git rev-parse` reports a `--git-dir` and a `--git-common-dir` that both lie
+outside the checkout. `validate()` refuses it: "repository must contain a real
+.git directory".
+
+E2 -- synthetic repository with a real `git worktree add`::
+A fresh `git init` repository validates successfully. A linked worktree created
+from it with `git worktree add` is refused with the same message, and its
+`.git` file points at `<main>/.git/worktrees/linked` while its common-dir is
+`<main>/.git`. Both are outside the linked checkout.
+
+E3 -- a not-yet-existing authorized target cannot be bound::
+A writable `Mount` whose source is `<repo>/docs/new` (absent) is refused with
+"source does not exist". Binding the existing parent `<repo>/docs` writable
+succeeds and yields destinations `['/repo/docs', '/tmp']`.
+
+E4 -- the remaining refusals reproduced::
+A writable bind of `<repo>/.git` is refused ("bind must map an existing
+non-`.git` repository subpath to its matching destination"); a bind source
+outside the repository is refused ("bind sources must be inside repository");
+a destination that does not match the source's repository-relative path is
+refused with the same message as the `.git` case; omitting the private scratch
+mount is refused ("exactly one private scratch mount is required").
+
+E5 -- generated argv::
+Recorded verbatim in <<current-state>>, including the eight substring probes
+for absent flags.
+
+E6 -- host facts::
+`bwrap` is `/usr/bin/bwrap`, version 0.11.0. `/etc/ssl/certs`,
+`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf` and `/etc/passwd`
+exist. `PATH` contains two `$HOME`-local entries that the generated view does
+not mount.
+
+[[limits]]
+== What could not be run, and why
+
+No `bwrap` process could be started in this Hop. The agent executes inside its
+own Bubblewrap sandbox, in which
+`/proc/sys/user/max_user_namespaces` reads `0` and even a minimal
+`bwrap --dev /dev --ro-bind /usr /usr --tmpfs /tmp -- /bin/true` exits 1 with
+"bwrap: No permissions to create new namespace, likely because the kernel does
+not allow non-privileged user namespaces" *[O]*.
+
+This is an agent-local environmental limitation, not a product defect: the
+same host runs `tests/integration/test_execution_boundary_bwrap.py`
+successfully outside the agent sandbox, and the Coordinator's own task-check
+executes the required suite there. Three consequences:
+
+. Every claim in this record about `validate()` and `build_argv()` is from
+  pure-Python execution or source reading. No claim about observed
+  *in-sandbox* filesystem behaviour is made on this Hop's own evidence; those
+  come from the existing tests and the two 2026-11-08 records *[D]*.
+. The same restriction will apply to the implementation Commission's worker
+  Hops. Its `bwrap` qualification therefore has to be carried by the required
+  suite under the Coordinator's task-check and by Operator-run live
+  qualification, not by agent-side experiments.
+. The observation is itself evidence for the nesting problem Slice A must
+  decide: an unprivileged user namespace is not always available one level
+  down, and Claude's `failIfUnavailable: true` turns that into a refusal.
+
+No provider CLI was invoked, inspected or located; `/home/stefan` is not
+readable in this sandbox apart from two session-specific subpaths. All
+statements about the installed Claude and Codex binaries are cited from the
+existing records *[D]*, never claimed as this Hop's observation.
+
+One further observation, relevant to Slice A rather than to this Hop: inside
+this agent's sandbox, `git status --short -uall` reports roughly twenty
+untracked repository-root paths (`.bashrc`, `.mcp.json`, `.claude/*` and
+similar) that do not exist in the checkout at all. Each is a character device
+`1, 3` owned by `nobody:nogroup` *[O]* -- the agent sandbox's own `/dev/null`
+masks over those paths. The Coordinator, outside that sandbox, sees a clean
+tree. An agent's view of Git status can therefore differ from the
+Coordinator's, which is one more reason the post-Hop observation is
+Coordinator-owned. Slice A's own view does not introduce such masks: it mounts
+the real working tree and masks only `.git`, whose absence is both intended
+and visible. `git_facts.py:227` already fails closed for special filesystem
+objects Git does not report as untracked, which is the right disposition if
+such a mask ever appears inside a path WFC observes.
+
+[[decisions]]
+== Design decisions, with the alternatives rejected
+
+[[d1]]
+=== D1. One provider-neutral launcher seam, not two adapter copies
+
+Decision:: Introduce one launcher function that both adapters call instead of
+`subprocess.Popen` directly, taking the argv, cwd, environment, timeout and
+the read and write paths the adapter already knows, and returning the same
+process handle semantics. Boundary selection happens once, in the launcher.
+Reason:: The seam is already narrow: exactly one `Popen` per adapter, and all
+semantic acceptance happens afterwards in `validated_result` and the reducer
+*[I]*. The same conclusion was reached independently by
+link:../../research/gondolin_execution_boundary_feasibility.adoc[the Gondolin
+study] *[D]*, from the opposite direction (a VM backend), which is evidence
+that the seam is the right one rather than a Bubblewrap-shaped convenience.
+Rejected:: (a) Wrapping inside `execution_boundary.run()` -- it has no
+environment, timeout, stdin or process-group handling and would duplicate the
+adapters'. (b) A boundary-aware third adapter -- it would fork the permission
+and schema logic. (c) A plugin or registry -- `operator._execution_adapter`
+deliberately has "no registry or fallback" *[I]*; two launchers selected by a
+closed name match the existing style.
+
+[[d2]]
+=== D2. Mount the repository at its own absolute path, not at `/repo`
+
+Decision:: The repository view keeps its host-absolute canonical path inside
+the boundary. `/repo` remains supported only where an existing caller asks
+for it.
+Reason:: Both adapters embed the resolved absolute repository path in argv
+(`--cd`, `cwd=`) and the Claude settings embed it in `allowRead` and rely on
+`blockReadsOutsideWorkingDirectories` *[I]*. Translating paths would mean
+rewriting argv, settings, every absolute path in diagnostics, and the
+scratch-symlink logic -- and silently diverging the paths an operator sees in
+`audit.json` from the paths the provider saw.
+Rejected:: Keeping `/repo` and translating. It creates a path-identity problem
+at exactly the place where a mistake is a security mistake, and it would make
+the Claude settings file describe a filesystem that does not exist inside the
+view.
+Cost:: `validate()`'s destination rule (`execution_boundary.py:128`) and the
+tests that assert `/repo` destinations have to change. This is a deliberate,
+reviewable change to the primitive, not an incidental one.
+
+[[d3]]
+=== D3. A worktree-aware, metadata-free `.git` view
+
+Decision:: Keep the existing masking idea -- `--tmpfs` plus `--remount-ro`
+over the checkout's `.git` -- and extend it to the worktree case, where `.git`
+is a file: mask it with an empty read-only placeholder, and mount *neither*
+the per-worktree gitdir nor the common-dir (both already known from the
+checkout association, `slice4.py:78-84`) *[I]*.
+Reason:: An ordinary agent needs no Git capability at all: WFC's Git writes
+are Coordinator-owned (`vertical.py:400-408`) and the agent reports a
+CommitIntent instead *[I]*. Exposing the object database would also hand the
+agent every path the boundary hides, which is the mechanism the maintainer's
+confidentiality goal explicitly names.
+Open and honest:: What the provider CLIs themselves need from Git inside the
+view is *not established*. Both CLIs are known to run Git-shaped tool calls
+when a session asks for them, and `--tools` includes `Bash`
+(`claude_adapter.py:40`) *[I]*, so Git commands will fail inside the view.
+Whether either CLI needs Git for its own startup is *[A]* assumed not, on the
+basis that the 2026-11-08 record saw `claude --version` succeed in a view with
+no Git at all *[D]*; the live qualification must confirm it and the FTR says so.
+Rejected:: (a) Binding the common-dir read-only -- defeats hiding and lets an
+agent read any blob. (b) Leaving the real `.git` in place for the main-checkout
+case -- the current primitive already refuses that, correctly. (c) A
+synthesized minimal gitdir -- new surface, no established need.
+
+[[d4]]
+=== D4. A second designated external mount kind for the result channel
+
+Decision:: Add exactly one further validated external mount kind: the
+Coordinator's per-checkout result directory, read-only for Claude, read-write
+for Codex, bound at its own absolute path, never an arbitrary host path.
+Reason:: Claude must read `<run_root>/claude-closed-settings.json`
+(`claude_adapter.py:308`) and Codex must write
+`<run_root>/result-message.json` (`codex_adapter.py:434`, `:461`) *[I]*. Both
+are outside the repository, and `validate()` currently allows exactly one such
+exception, the external scratch root (`execution_boundary.py:139-156`) *[I]*.
+Without this the Codex path cannot work at all.
+Rejected:: (a) Moving the result directory into the repository -- forbidden by
+`_require_external_state_root` (`slice4.py:87-92`) and wrong: it would put
+Coordinator state inside the agent's write surface. (b) Granting the whole
+state root -- it holds `run.json`, `checkpoint.json` and the checkout
+association. (c) Passing the result on stdout for Codex too -- that is a
+provider-transport change, not a boundary change.
+Residual:: Codex can overwrite its own result file arbitrarily. That is
+already true today and is why `validated_result` correlates the envelope's
+identity against the dispatch (`adapter.py:138-145`) *[I]*; the boundary
+neither improves nor worsens it.
+
+[[d5]]
+=== D5. Writable grants from `phase.authorized_scope`, with pre-created directories
+
+Decision:: Derive the writable grant set from `phase.authorized_scope`,
+normalized (drop any entry contained in another, then sort). For an entry that
+names a directory which does not yet exist, the Coordinator creates it before
+validation and removes it afterwards if it is still empty. For an entry that
+names a not-yet-existing *file*, bind the nearest existing ancestor directory
+writable and record the overgrant.
+Reason:: A bind source must exist (*[O]*, E3), and an empty directory is
+invisible to Git, so pre-creating one cannot disturb the clean-tree assertions
+at `vertical.py:440-449` or the post-Hop delta *[I]*. Pre-creating an empty
+*file* would be visible as an untracked path and is therefore not done.
+This is the mechanism that would have let the
+link:../../backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[Claude
+write-permission] case (`docs/developer_guide/` absent at launch) *[D]* work
+preventively rather than by provider permission.
+Rejected:: (a) Making the whole repository writable -- destroys the integrity
+goal. (b) Requiring every scope entry to exist -- would refuse legitimate
+Commissions that create a new directory, the exact case the Claude BUG
+records. (c) A writable overlay over the whole repository with later
+reconciliation -- a new mechanism, and the post-Hop check already reconciles.
+Residual:: The file-shaped-entry case overgrants to the parent directory. The
+post-Hop scope check still refuses anything outside scope, so this is a
+prevention gap, not an acceptance gap. Slice A must state it.
+
+[[d6]]
+=== D6. `/proc` and the process model: minimal, and a decided default
+
+Decision:: Add `--unshare-pid --proc /proc` to the generated view, and
+`--new-session`. Do not add `--unshare-net` in Slice A.
+Reason:: `/proc` is a demonstrated precondition for the Claude runtime *[D]*;
+`--unshare-pid` bounds what `/proc` then shows to the sandbox's own process
+branch *[D]*; `--new-session` detaches the controlling terminal, which is the
+standard bubblewrap hardening for an untrusted child. Leaving the network
+namespace alone keeps the boundary silent about network, which is what the
+maintainer's out-of-scope decision requires: a boundary that said nothing but
+quietly broke provider authentication would be worse than no boundary.
+Open:: The residual `/proc` exposure (host boot parameters, parts of
+`/proc/sys` and `/proc/net`) is named as unassessed by the 2026-11-08 record
+*[D]* and stays an explicit open item in the FTR rather than being asserted
+safe here.
+Rejected:: (a) No `/proc` -- the provider does not start. (b) `--proc /proc`
+without `--unshare-pid` -- exposes the host process table. (c)
+`--unshare-all` -- includes the network namespace and would break provider
+inference transport.
+
+[[d7]]
+=== D7. Provider permissiveness is bound to an effective boundary, per invocation
+
+Decision:: Each adapter keeps exactly its present settings when it runs
+unisolated. A more permissive provider profile is admissible only on an
+invocation for which the WFC boundary was actually validated and entered, and
+the boundary mode is recorded in the Hop's binding evidence and audit
+projection.
+Reason:: The 2026-11-16 direction already says provider configuration may
+become more permissive only after a boundary is "separately integrated and
+qualified" *[D]*. Mechanically, the dangerous failure is a permissive profile
+on an unisolated run, so the permission must be computed from the same value
+that selected the boundary, in the same call, not from configuration read
+elsewhere.
+Reason, second:: `sandbox.failIfUnavailable: true` (`claude_adapter.py:227`)
+*[I]* means the nested provider sandbox refuses rather than degrades. Combined
+with the observation that a nested user namespace may be unavailable (*[O]*,
+<<limits>>), an unqualified boundary plus unchanged provider settings can
+produce a hard refusal. Slice A must therefore treat "boundary on, provider
+settings unchanged" as a configuration whose startup behaviour is a
+qualification question, not an assumption.
+Rejected:: (a) A global "permissive provider" setting -- it would apply to
+unisolated runs. (b) Relaxing the provider sandbox to make the nested case
+start -- that is the "no existing safeguard dropped unsecured" line the
+maintainer drew. (c) Defaulting `enableWeakerNestedSandbox` -- explicitly
+forbidden by the 2026-11-08 authorization *[D]*.
+
+[[d8]]
+=== D8. Opt-in in Slice A, with no silent fallback
+
+Decision:: Slice A ships the boundary as opt-in, selected per Run through the
+execution envelope, absent meaning today's behaviour. Once selected, failure
+to establish it is a refusal classified as not-started; there is never a
+fallback to unisolated execution.
+Reason:: Default-on would change the behaviour of every existing Run, config
+and test at the same moment as introducing the mechanism, and would make the
+first failure mode "my Run stopped working" rather than "my Run is isolated".
+The closed configuration vocabularies (`frontdoor/config.py:160-172`,
+`serialization.py:1004-1037`) *[I]* accept a new *optional* key without
+invalidating any existing file.
+Migration:: opt-in for Slice A; a default-on decision belongs to the
+maintainer after the qualification exit criteria are met, and the FTR records
+it as an open decision rather than pre-deciding it.
+Rejected:: (a) Default-on -- see above. (b) Per-adapter default -- makes the
+security property depend on a model binding. (c) An environment variable --
+not auditable in the Run's own evidence.
+
+[[reconciliation]]
+== Claim-by-claim reconciliation with existing records
+
+[cols="3,5",options="header"]
+|===
+|Existing statement |Reconciliation
+
+|2026-11-09 product-scope decision: a provider's own mechanisms are treated as
+sufficient to protect that provider's own credentials; no WFC credential
+broker is a product requirement *[D]*
+|Unchanged and relied upon. Slice A needs no broker: it exposes the provider's
+existing authentication to the provider process in the ordinary way and
+nothing more. It must not be read as evidence that a blanket `$HOME` grant is
+acceptable; the opposite is required by the 2026-11-08 constraints *[D]*.
+
+|Beta-1 statement: Beta 1 must not claim preventive Commission-scope isolation
+*[D]*
+|Unchanged until Slice A is actually accepted *and* qualified. The umbrella
+record now says explicitly which sentence becomes retractable and on what
+evidence.
+
+|`DEC-WFC-009`: provider sandboxes are provider-owned and not
+Coordinator-verified *[D]*
+|Unchanged. Slice A adds a Coordinator-owned boundary beside it; it does not
+make the provider sandbox verified, and it does not remove it.
+
+|`docs/architecture.md:82-99`: WFC V1 provides neither hostile-code
+containment nor host isolation; no Coordinator-owned containment boundary is
+claimed *[I]*
+|Becomes partly stale when Slice A lands, for the filesystem dimension only.
+Outside this Commission's scope; listed for the implementation Commission.
+
+|link:../../backlog/FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc[Phase
+write scope]: worker-phase scope includes reviewer-artifact paths *[D]*
+|Confirmed at `commissioning.py:343-350` *[I]*. Slice A inherits the limit and
+says so; it does not narrow the scope data and does not claim phase isolation.
+
+|link:../claude-adapter-and-sandbox/workflow_coordinator_nested_claude_bwrap_qualification_2026-11-08.adoc[Nested
+qualification] items 1 and 3: no `/proc` stops an inner `bwrap`; an
+`AF_UNIX` bind under `/tmp/s` received `EPERM` *[D]*
+|Both carried forward as Slice A preconditions. The `EPERM` result is a named
+qualification question, not something Slice A assumes away.
+
+|link:../../research/gondolin_execution_boundary_feasibility.adoc[Gondolin
+study]: the Claude settings "deny `WebFetch`/`WebSearch`" and set
+`network.allowedDomains: []`
+|Half stale at `f492274`: `permissions.allow` now contains
+`WebFetch(domain:*)`, `WebSearch` and `Bash(curl:*)`, and `deny` is empty
+(`claude_adapter.py:241`) *[I]*. The study inspected `beebac42`. Outside
+scope; listed for the implementation Commission.
+
+|link:../../backlog/FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW.adoc[Elevated
+privilege]: granted authority must be technically enforced *[D]*
+|Slice A supplies the enforcement substrate for one dimension (write) and
+nothing else. The privilege-elevation topology stays that record's and Slice
+B's.
+|===
+
+[[open-decisions]]
+== Open maintainer decisions, with a recommendation
+
+[cols="1,4,3",options="header"]
+|===
+|# |Decision |Recommendation
+
+|M1
+|Does Slice A stay opt-in, or become default-on once qualified?
+|Opt-in now (<<d8>>); revisit default-on only after the Slice A exit criteria
+are met on this host for both adapters.
+
+|M2
+|Is the residual `/proc` exposure under `--unshare-pid --proc /proc`
+acceptable?
+|Accept for Slice A on this single-tenant development host, and record it as a
+named residual risk. It is a precondition for the provider starting at all,
+and no cheaper option was found.
+
+|M3
+|May the implementation Commission change `validate()`'s `/repo` destination
+convention and the tests that assert it (<<d2>>)?
+|Yes. It is inside `src` and `tests`, and the alternative is worse.
+
+|M4
+|Should confining *evidence* commands be in scope anywhere?
+|Not in Slice A. It is the least confined execution in WFC *[D]* and deserves
+its own record; mixing it into Slice A would double the qualification surface.
+
+|M5
+|Who runs the live qualification, and with how many invocations?
+|The maintainer or Level-1 operator, outside a Commission, with a stated
+minimal invocation budget. Slice A's worker Hops cannot do it: they cannot
+even start `bwrap` (<<limits>>).
+
+|M6
+|Does Slice A need a `.wfc/config.yaml` entry for this repository?
+|Not as part of the Commission. `.wfc/` is outside the scope ceiling *[I]*;
+the Commission adds the optional schema and documents it, and the maintainer
+edits the file if and when they want the boundary on here.
+|===
+
+== Provenance
+
+Produced by WorkItem `WI-WFC-EXEC-BOUNDARY-FTR-001`, Run
+`RUN-cdb3068d18134ae3babd479e1bd23faa`, Hop `H001`, at base HEAD `f492274`.
+Independent review, maintainer acceptance and any product closure are separate
+and are not recorded here.

@@ -1,0 +1,1175 @@
+= FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION -- Slice A: Provider-Dispatch Integration Of The WFC Execution Boundary
+
+Type:: future technical record -- Slice A of
+link:FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[the Execution Boundary umbrella
+record]. This record is the *binding contract and implementation concept* for
+the follow-up implementation Commission.
+Status:: contract and implementation concept complete and independently
+reviewed as a planning deliverable; *not implemented*, not commissioned and
+not qualified. No preventive isolation exists until this slice is implemented
+*and* its qualification exit criteria (<<qualification>>) are met.
+Current controlling source:: This record; see link:_open.adoc[the active-work
+manifest] for its current card.
+Authorized here:: Nothing. Commissioning the implementation is a separate
+maintainer action.
+Not authorized here:: Any product code, test, script, workflow, `Makefile`,
+`pyproject.toml`, `.wfc/` or `governance/` change; any network or MCP design;
+any provider-sandbox weakening on an unisolated run; any live provider
+invocation or credential handling; any push, tag, release or Runtime
+promotion; any change to the accepted `robust@v1` program; any edit of a
+historical record; the Slice B capabilities
+(link:FTR-WFC-EXECUTION-BOUNDARY-PHASE-PROFILES.adoc[phase profiles]).
+Date:: 2026-11-25
+Supporting analysis::
+link:../warm_storage/post-beta-planning/wfc_execution_boundary_planning_record.adoc[the
+Execution Boundary planning record] holds the verified current-state evidence
+with `file:line` references, the rejected alternatives and the open maintainer
+decisions. Every design statement below is traceable to it; it is not repeated
+here.
+Depends on:: Nothing in the repository. It depends on one maintainer act:
+commissioning it. The live part of <<qualification>> additionally depends on
+the maintainer's own authenticated provider access and is explicitly *not* a
+Commission deliverable.
+
+[[what]]
+== What Slice A is
+
+Slice A connects the already implemented, already reviewed Bubblewrap
+primitive `src/workflow_coordinator/execution_boundary.py` to the live
+provider dispatch path, through *one provider-neutral seam* used by both
+adapters, so that a dispatched agent process can write only where the
+Coordinator has authorized it to write and can reach neither `.git` nor the
+Git object database.
+
+It is deliberately the *integrity* slice of the three maintainer goals
+recorded in the umbrella record. Confidentiality (hiding), per-phase
+visibility profiles, elevated privilege and network containment are not in it.
+
+[[guarantees]]
+== (h) What Slice A guarantees, and what it does not
+
+This section and <<residual>> together are decision (h): the guarantees, the
+deferrals and the honest residual risks. The remaining decisions follow in the
+order (a) to (j).
+
+Each row states a property of an invocation *for which the boundary was
+selected and successfully established*. For any other invocation nothing in
+this slice changes, and no isolation claim applies to it.
+
+[cols="4,2,5",options="header"]
+|===
+|Property |Slice A |Note
+
+|Writes outside the Commission's `authorized_scope` for the executing phase
+are *prevented*, not merely rejected afterwards
+|Guaranteed
+|For the filesystem reachable through the boundary. The post-Hop
+candidate-scope check remains mandatory and unchanged
+(<<invariants>>).
+
+|Writes into `.git`, the per-worktree gitdir, the common Git directory, Git
+hooks and the index are prevented
+|Guaranteed
+|The agent sees an empty, read-only `.git` placeholder and no gitdir
+(<<git>>).
+
+|Reads of the Git object database, Git history and refs are prevented
+|Guaranteed
+|A consequence of the same `.git` view. This is *not* a confidentiality
+guarantee for repository *content*: every non-hidden working-tree file remains
+readable.
+
+|Writes anywhere else on the host filesystem are prevented
+|Guaranteed
+|Only the repository view, the authorized writable subpaths, the private
+`/tmp`, the external scratch and the one result-channel path exist in the view
+(<<mounts>>).
+
+|Reads of the operator's `$HOME`, other repositories, other checkouts and the
+Coordinator's state root are prevented
+|Guaranteed
+|Except the one result-channel path and the provider's own authentication
+location, both narrowly bound (<<mounts>>).
+
+|Per-phase write separation between a worker's own deliverables and a
+reviewer's durable artifacts
+|*Not* guaranteed
+|A worker phase's `authorized_scope` *is* the whole Commission scope; see
+link:FTR-WFC-PHASE-WRITE-SCOPE-ARTIFACT-ISOLATION.adoc[the phase write-scope
+record]. Slice A enforces the scope data that exists; it does not improve it.
+
+|Confidentiality: hiding a repository area from the agent
+|*Not* guaranteed
+|Deferred to link:FTR-WFC-EXECUTION-BOUNDARY-PHASE-PROFILES.adoc[Slice B].
+Slice A's default repository view is the whole working tree, read-only.
+
+|Network containment or egress policy
+|*Not* guaranteed, and not attempted
+|The boundary shares the host network namespace deliberately
+(<<enablement>>). Out of scope by maintainer decision.
+
+|Protection of execution-sensitive surfaces beyond read-only plus `.git`
+|Only as far as the read-only default reaches
+|Tests, `conftest.py`, `Makefile`, CI configuration and packaging hooks are
+protected only when they lie outside the phase's writable grant. A Commission
+whose scope legitimately includes `tests` can still modify tests. That is
+Slice B and
+link:FTR-WFC-ELEVATED-PRIVILEGE-DEFENSIVE-REVIEW.adoc[the elevated-privilege
+record].
+
+|Containment of hostile code, kernel-level isolation, provider-hosted or
+remote tool behaviour
+|*Not* guaranteed
+|A Linux filesystem boundary does not bound what an authorized provider
+transport transmits, and a remote tool runs outside it.
+
+|Confinement of trusted evidence commands
+|*Not* guaranteed, and not attempted
+|Evidence runs on the host, unconfined, exactly as today (<<invariants>>).
+|===
+
+[[a-seam]]
+== (a) Integration architecture: one provider-neutral launcher seam
+
+=== The seam
+
+A new module `src/workflow_coordinator/execution_launcher.py` holds one pure
+transformation and two implementations of it:
+
+----
+@dataclass(frozen=True)
+class LaunchPlan:            # what the adapter already knows
+    argv: tuple[str, ...]
+    cwd: Path | None
+    environment: Mapping[str, str] | None     # None = inherit, as Codex does today
+    repository: Path                          # canonical, symlink-free
+    writable_repository_paths: tuple[str, ...] # repository-relative, normalized
+    readable_host_paths: tuple[Path, ...]      # outside the repository
+    writable_host_paths: tuple[Path, ...]      # outside the repository
+    external_scratch: Path | None
+
+@dataclass(frozen=True)
+class PreparedLaunch:        # what the adapter passes to Popen
+    argv: tuple[str, ...]
+    cwd: Path | None
+    environment: Mapping[str, str] | None
+    boundary: str            # "direct" | "bubblewrap"
+
+def prepare_direct(plan: LaunchPlan) -> PreparedLaunch: ...
+def prepare_bubblewrap(plan: LaunchPlan) -> PreparedLaunch: ...
+----
+
+`prepare_direct` returns the plan's own `argv`, `cwd` and `environment`
+unchanged, so an unisolated invocation is byte-identical to today's.
+`prepare_bubblewrap` validates the view through
+`execution_boundary.validate()` and returns `build_argv(...) + argv`,
+`cwd=None` (the view sets the child's directory with `--chdir`) and the
+plan's `environment` unchanged.
+
+=== Why this shape
+
+* *Nothing about process handling moves.* Each adapter keeps its own
+  `subprocess.Popen` call, its own `stdin`/`stdout`/`stderr` wiring, its own
+  `text=True`, its own `start_new_session=True`, its own `communicate(timeout=
+  ...)` and its own `SIGTERM` / three seconds / `SIGKILL` process-group
+  sequence. The kill sequence is therefore not duplicated, not re-derived and
+  not re-qualified.
+* *The transformation is pure.* It can be unit-tested exhaustively without a
+  namespace, which matters because an agent sandbox cannot necessarily start
+  `bwrap` at all (see the planning record's limits section).
+* *One seam, not two copies.* Both adapters call the same function; a future
+  non-Bubblewrap boundary is a third `prepare_*`, selected by a closed name,
+  exactly as `operator._execution_adapter` selects an adapter today "without a
+  registry or fallback".
+* *`execution_boundary.py` keeps its documented contract.* It remains a view
+  validator and argv builder that takes already-authorized grants; it gains no
+  process, environment or authority responsibility.
+
+=== What flows through it
+
+[cols="2,5",options="header"]
+|===
+|Element |Treatment
+
+|argv
+|Prefixed, never rewritten. Every absolute path an adapter embeds stays valid
+because the repository is mounted at its own path (<<mounts>>).
+
+|cwd
+|`--chdir <repository>` inside the view reproduces the Claude adapter's
+`cwd=request.repository.resolve()`. Codex passes `--cd <repository>` in argv
+and needs no cwd either way.
+
+|environment
+|Passed through unchanged. Bubblewrap does not clear the environment unless
+asked, and Slice A does not ask: the Claude adapter's four-name allowlist plus
+its `TMPDIR` override, and the Codex adapter's inherited environment, both
+keep exactly today's meaning. This is a deliberate non-change; see
+<<residual>>.
+
+|stdin, stdout, stderr
+|Unchanged. `bwrap` passes its own standard streams to the child, so Codex's
+prompt-on-stdin and both adapters' piped output keep working. The streams are
+the adapter's `Popen` arguments and never appear in the plan.
+
+|timeout, signals, process group
+|Unchanged in the adapters. The boundary *improves* this case without being
+asked to: `--die-with-parent` is already generated, and with `--unshare-pid`
+the `bwrap` process is PID 1 of the sandbox, so every descendant dies with it
+rather than surviving as an orphan. The adapters' group signals reach `bwrap`,
+which is the process they started.
+
+|result and candidate
+|Unchanged. Claude's candidate is still parsed from the wrapper JSON on
+stdout; Codex's is still read from the result file in the Coordinator's result
+directory, which is why that directory needs a narrow writable bind
+(<<mounts>>).
+
+|scratch
+|Unchanged in the Claude adapter: it still creates the invocation-scoped real
+directory and the short `/tmp/wfc-claude-<token>` symlink, and still removes
+both in its `finally` block. Inside the view the real directory is bound at
+the fixed short destination `/tmp/s` and the adapter's `TMPDIR` for the child
+is that destination. The host-side symlink remains for the unisolated path.
+
+|usage
+|Unchanged. Usage is parsed from the provider's own transport output and is
+independent of the boundary.
+|===
+
+[[git]]
+== (b) Git worktrees, the `.git` view, and what the agent does not need
+
+=== The problem, mechanically confirmed
+
+`execution_boundary.validate()` requires the repository to contain a real,
+non-symlink `.git` *directory*. In a linked Git worktree `.git` is a regular
+file containing `gitdir: <path>`, and both the per-worktree gitdir and the
+common Git directory lie outside the checkout. The primitive therefore refuses
+exactly the checkout shape WFC self-development and the documented
+one-worktree-per-Run operating pattern actually use. This was reproduced
+against this repository's own checkout and against a synthetic
+`git worktree add` checkout (planning record, E1 and E2).
+
+=== The decided view
+
+. `validate()` accepts a checkout whose `.git` is *either* a real directory
+  *or* a regular file. A symlink at `.git` stays refused in both cases.
+. When `.git` is a directory, it is masked as today:
+  `--tmpfs <repository>/.git --remount-ro <repository>/.git`.
+. When `.git` is a file, a tmpfs cannot be mounted over it. It is masked with
+  an *empty, read-only regular file* using bubblewrap's `--ro-bind-data FD
+  DEST` (present in `bwrap` 0.11.0 on this host). The implementation
+  Commission must confirm by a real `bwrap` run that the result is an empty,
+  unwritable regular file and that `git -C <repository> rev-parse` inside the
+  view fails; if `--ro-bind-data` turns out unsuitable, `--bind-data` followed
+  by `--remount-ro`, or an equivalent that produces an empty unwritable file,
+  is admissible. Reaching the real gitdir is not.
+. Neither the per-worktree gitdir nor the common Git directory is mounted, in
+  any mode. They are already known to the Coordinator from the checkout
+  association, which records `canonical_path`, `git_dir` and `common_dir` and
+  revalidates them every Hop; the boundary uses those values only to *assert
+  that they are not inside the view*, never to mount them.
+. The result is a view in which no Git repository metadata, no refs, no index,
+  no hooks, no configuration and no object database exist.
+
+=== What the agent does not need
+
+Git is not a capability of an ordinary WFC agent. Every Git write is
+Coordinator-owned: the agent reports a CommitIntent and the Coordinator's
+trusted commit lands it after the agent has exited, with inherited `GIT_*`
+variables stripped, `core.hooksPath` forced to `/dev/null` and `--no-verify`.
+An agent that cannot run `git` loses no authorized capability.
+
+It does lose *convenience*: `git log`, `git diff` and `git status` are
+ordinary agent habits. Slice A accepts that cost and states it. The prompt and
+task text already describe the base HEAD and the authorized scope; a worker
+does not need Git to do authorized work. If experience shows a real need, a
+read-only Git *service* is a Slice B topic, not a Slice A mount.
+
+=== What the provider CLIs need from Git -- an open qualification question
+
+This is *not* established and Slice A must not assume it away.
+
+* It is *assumed*, on the evidence that `claude --version` completed inside an
+  experimentally `/proc`-enabled outer boundary that contained no Git at all,
+  that neither CLI requires Git for startup or for producing a structured
+  result.
+* It is *known* that both CLIs expose a `Bash` tool, and that Claude's tool
+  list includes it. A session that chooses to run `git` inside the view will
+  see it fail. The qualification must observe what the CLI then does: report
+  the failure in its transcript (acceptable), retry in a loop (acceptable but
+  wasteful), or abort the invocation (a finding that needs a decision).
+* If a live run shows a provider CLI genuinely cannot operate without Git, the
+  stop rule (<<stop>>) applies: record it as a blocking Finding with options,
+  do not paper over it by mounting the object database.
+
+[[mounts]]
+== (c) The mount model
+
+=== Repository view and path identity
+
+The repository is mounted *read-only at its own canonical absolute path*, not
+at `/repo`. Both adapters embed the resolved absolute repository path in argv
+(`--cd`, `cwd=`) and the Claude settings embed it in `allowRead` while relying
+on `blockReadsOutsideWorkingDirectories`; translating paths would mean
+rewriting argv, the generated settings, diagnostics and the scratch logic, and
+would make the settings file describe a filesystem that does not exist inside
+the view. `validate()`'s destination rule and the tests asserting `/repo`
+destinations change accordingly; `/repo` stays available for a caller that
+asks for it explicitly.
+
+=== Writable grants and the Commission-scope versus phase-scope relation
+
+The writable grant set for an invocation is derived from
+`phase.authorized_scope` of the *executing phase*, and from nothing else.
+
+[cols="2,5",options="header"]
+|===
+|Phase kind |What is mounted writable
+
+|Worker phase (`implement`, `correct` in `robust@v1`)
+|Every entry of `phase.authorized_scope`. Under `robust@v1` that slot resolves
+to the *complete* Commission Intent scope, which in practice includes the
+reviewer-artifact paths. Slice A mounts exactly that and claims exactly that.
+
+|Reviewer phase (`broad_review`, `focused_review`)
+|Only that phase's own `durable_artifacts[artifact_key]` paths, because that
+is what its `authorized_scope` resolves to. A reviewer therefore *is*
+mechanically prevented from writing the worker's deliverables -- a real,
+honest asymmetry that follows from the existing program data, not from a new
+Slice A mechanism.
+
+|Any phase
+|Nothing else. No write outside the repository except the private `/tmp`, the
+external scratch and the result channel below.
+|===
+
+What this is *not*: it is not phase-specific isolation of worker deliverables
+from reviewer artifacts, and Slice A must never be described that way. The
+guarantee is "no write outside the Commission scope for this phase", which for
+a worker phase equals "no write outside the Commission scope".
+
+Normalization, required before mounting: `authorized_scope` entries are
+canonical relative paths with no globs and no `..`, but nothing deduplicates
+nested entries, and `validate()` refuses overlapping destinations. The
+launcher therefore drops any entry contained in another, sorts the remainder,
+and refuses a scope list that cannot be normalized to a disjoint set.
+
+=== Not-yet-existing authorized targets
+
+A bind source must already exist; a writable `Mount` naming an absent path is
+refused (planning record, E3). This is the mechanism behind the
+link:BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[Claude
+write-permission] case, where the authorized `docs/developer_guide/` did not
+exist at launch.
+
+. For an authorized entry that does not exist and whose shape is a
+  *directory* (no file extension is not a reliable signal, so: any entry that
+  does not exist is treated as a directory unless the Commission says
+  otherwise), the Coordinator creates it, mode `0o700`, before validation, and
+  removes it after the Hop *if it is still empty*. Git does not track empty
+  directories, so this is invisible to the post-Hop delta and to the
+  clean-worktree assertions.
+. For an authorized entry that names a not-yet-existing *file*, no empty file
+  is created, because an untracked empty file would be visible to the post-Hop
+  observation. Instead the nearest existing ancestor directory is mounted
+  writable. This *overgrants* to that directory, and Slice A states it as a
+  residual prevention gap (<<residual>>); the post-Hop scope check still
+  refuses anything outside scope.
+. Pre-creation is a Coordinator act performed by the launcher's caller before
+  `validate()`, never by the agent, and never outside the repository.
+
+=== Symlinks, hardlinks and mount overlaps
+
+Unchanged from the reviewed primitive, and relied upon rather than
+re-invented: a writable grant whose tree contains a non-directory inode with
+more than one link is refused before launch and again at `build_argv`;
+symlink targets resolve inside the view, so a symlink pointing out of the
+repository resolves to nothing; `..` in a destination is refused; overlapping
+destinations are refused; only regular files and directories may be bound. The
+existing integration tests already exercise the hardlink, symlink-metadata and
+`..` escape cases against a real `bwrap`.
+
+=== `/tmp`, scratch, `/dev`, `/proc` and the system view
+
+[cols="2,2,5",options="header"]
+|===
+|Path |Mode |Reason and decision
+
+|`/usr`, and `/bin`, `/sbin`, `/lib`, `/lib64` as symlinks or binds
+|read-only
+|Unchanged. The provider binary and its interpreter must resolve here; see the
+preflight requirement in <<enablement>>.
+
+|`/dev`
+|`--dev` (bubblewrap's minimal device set)
+|Unchanged. No host device access.
+
+|`/proc`
+|`--proc /proc` together with `--unshare-pid`
+|*New in Slice A, and required.* The Bun-based Claude runtime does not start
+without procfs, and a nested `bwrap` cannot read
+`/proc/sys/kernel/overflowuid` without it. `--unshare-pid` bounds the visible
+process table to the sandbox's own branch. Residual `/proc` exposure (host
+boot parameters, parts of `/proc/sys` and `/proc/net`) is a named open item,
+not an asserted safe condition.
+
+|`/tmp`
+|private tmpfs, with an explicit `--size`
+|Unchanged except the size cap. A size bound is Slice A's answer to scratch
+abuse: an agent filling the private tmpfs then exhausts a bounded allocation
+instead of the host's `/tmp`. The default size is an implementation decision
+to be stated in the Operator Manual, not hidden.
+
+|`/tmp/s` (external scratch)
+|read-write bind of the invocation-scoped scratch directory
+|Unchanged in mechanism. For Claude it is also the child's `TMPDIR`. Its
+`AF_UNIX` behaviour under the boundary is an open qualification question: a
+short-path bind there was observed to fail with `EPERM` in the 2026-11-08
+investigation, and whether the real CLI's own socket path works is not known.
+
+|`/etc`
+|*no mount in Slice A*
+|`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/passwd` and
+`/etc/ssl/certs` all exist on the host and none is in the view today. Name
+resolution, TLS trust and user lookup are therefore unavailable, which would
+break provider authentication. Slice A must add the *narrowest set that the
+live qualification proves necessary*, each as a read-only bind of the
+individual file or directory, never `--ro-bind /etc /etc`. The expected set is
+`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/ssl/certs` and
+`/etc/passwd`; it is an *assumption* until the live qualification observes
+which are actually required, and the implementation must add only the observed
+ones.
+
+|The Coordinator result directory
+|read-only for Claude, read-write for Codex, bound at its own absolute path
+|*New in Slice A, and required.* Claude must read
+`<run_root>/claude-closed-settings.json`; Codex must write
+`<run_root>/result-message.json` and read
+`<run_root>/structured-result.schema.json`. This is one further designated
+external mount kind, validated the same way as the external scratch root:
+exactly the caller-designated per-checkout result directory, never an
+arbitrary host path, never the state root above it.
+
+|Provider configuration and authentication
+|exactly what the live qualification proves the provider needs, read-only,
+narrowly bound
+|See below. No blanket `$HOME` grant, under any circumstances.
+
+|Everything else, including `$HOME`, other repositories, other checkouts, the
+Coordinator state root above the result directory, the Evidence repository
+|absent
+|Not mounted means not reachable.
+|===
+
+=== The credential-exposure consequence, stated explicitly
+
+The boundary must expose the provider's own authentication to the provider
+process and nothing more. Four rules, all of which the 2026-11-08
+investigations established the need for:
+
+. No blanket `$HOME` bind, and no bind of a whole provider configuration
+  directory when a single file suffices.
+. No credential file, token, key or authentication material is ever copied
+  into the repository, the external scratch or any agent-writable path.
+. No token is injected through an environment variable merely to make a test
+  pass.
+. The authentication location is mounted *read-only*, and the fact that the
+  provider's own tool layer can still read what the provider process can read
+  is accepted by the 2026-11-09 product-scope decision and must be restated,
+  not quietly relied upon: WFC treats the provider application's own
+  mechanisms as sufficient to protect that provider's own authentication from
+  agent-driven tools. Slice A does not weaken that and does not improve it.
+
+Which path this is, for each provider, is a *live qualification output*, not an
+assumption of this record. The implementation must fail closed when the
+required path is not configured: an opt-in boundary that silently omits the
+authentication mount would turn every isolated Run into an authentication
+failure.
+
+[[provider]]
+== (d) Provider configuration inside the boundary
+
+=== The rule
+
+Provider configuration may become more permissive *only* on an invocation for
+which the WFC boundary was actually validated and entered. The value that
+selected the boundary and the value that selects the provider profile are the
+same value, computed in the same call. There is no global setting, no
+environment variable and no configuration file that can make a provider
+profile permissive on an unisolated run.
+
+=== What may relax, and under which precondition
+
+[cols="3,3,4",options="header"]
+|===
+|Setting |May relax to |Precondition
+
+|Claude `sandbox.enabled` / `failIfUnavailable`
+|*No change in Slice A.* Both stay `true`.
+|The nested-sandbox outcome inside the boundary is unqualified. Turning the
+nested sandbox off is the single most load-bearing relaxation available and
+must not be taken before the live qualification shows what the outer boundary
+actually enforces. If the nested sandbox cannot initialize, that is a Finding
+with options (<<stop>>), not a reason to disable it.
+
+|Claude `sandbox.filesystem.allowRead` / `allowWrite`
+|May be stated in terms of the in-view paths, since the view already enforces
+them
+|Only when the view is in force. The entries must still name the repository
+and the scratch, never widen beyond them. `denyRead: ["~/"]` is retained;
+inside the view `$HOME` is absent anyway, so the rule becomes redundant rather
+than wrong.
+
+|Claude `--permission-mode` / `--permission-prompts`
+|`acceptEdits` plus `--permission-prompts none` are *retained*
+|No change. The write authorization inside the authorized grant is what the
+Commission already intends, and the observed failure mode of this combination
+is a *denial*, which the boundary does not fix.
+
+|Claude `permissions.allow` web and `Bash(curl:*)` grants
+|*No change in Slice A.*
+|These are network grants accepted by separate, already-accepted decisions.
+Slice A makes no network statement and must not alter them in either
+direction.
+
+|Claude `enableWeakerNestedSandbox` or any equivalent
+|*Never*, in Slice A
+|Explicitly forbidden by the 2026-11-08 authorization, as a default and as an
+unreviewed workaround alike.
+
+|Codex `--sandbox workspace-write`
+|*No change in Slice A.* A boundary-conditional relaxation is conceivable but
+not authorized here.
+|If the live qualification shows `workspace-write` cannot initialize inside the
+boundary, that is a Finding with options for the maintainer (<<stop>>), not a
+change the implementation Commission may make on its own judgement. Any such
+relaxation would require a recorded maintainer decision, would apply only to
+invocations with the boundary in force, and would never become the default or
+reach an unisolated run. Note separately that
+link:BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[the Claude
+write-permission record]'s security invariant forbids moving the *Claude*
+adapter to Codex's coarser model; nothing here weakens that.
+
+|Codex `--ask-for-approval never`
+|Retained
+|No change. Unattended operation already requires it.
+
+|Codex `-c sandbox_workspace_write.network_access=true`
+|Retained
+|Accepted separately; Slice A makes no network statement.
+|===
+
+The bias is deliberate: Slice A relaxes almost nothing. The umbrella
+record's permission to become more permissive is a permission for *after*
+qualification, and Slice A's job is to earn it, not to spend it.
+
+=== How an operator can tell which mode a Run used
+
+Three places, all already existing surfaces:
+
+. The per-Hop binding evidence gains one field, `boundary`, with the closed
+  values `direct` and `bubblewrap`, projected beside `adapter`, `executable`,
+  `model` and `reasoning`.
+. The audit projection's closed field allowlist and its per-binding field set
+  gain the same field, so `wfc audit` and `wfc report` show it. A Run whose
+  projection carries no `boundary` field is, unambiguously, a Run from before
+  this slice.
+. The Run's own persisted state carries it, so recovery and `wfc resume`
+  cannot silently resume an isolated Run unisolated: a resumed Hop must use
+  the same boundary mode, and a mismatch is a refusal by name.
+
+A provider profile that differs because the boundary was in force must be
+derivable from that field plus the committed adapter code. The generated
+Claude settings file already persists under the result directory for the
+invocation's lifetime; Slice A does not add a second copy of it to the
+evidence.
+
+[[enablement]]
+== (e) Enablement, preflight, error classification and fail-closed semantics
+
+=== Selection
+
+Opt-in, per Run, through the execution envelope; absent means today's
+behaviour exactly.
+
+* `run_execution_configuration_from_yaml` gains one *optional* top-level key,
+  `boundary`, with the closed values `direct` and `bubblewrap`, defaulting to
+  `direct`. Its vocabulary is closed, so the key must be added explicitly;
+  adding it as optional keeps every existing envelope, Run, archived Commission
+  and test valid.
+* `consumer_config_from_yaml` gains the same optional key so a repository can
+  state its default. `.wfc/config.yaml` is outside this repository's scope
+  ceiling, so the implementation Commission adds the schema and the
+  documentation; editing this repository's own config to switch the boundary on
+  is a maintainer act.
+* Per-adapter and per-phase selection are *not* offered. A security property
+  that depends on which model a phase is bound to is a trap, and per-phase
+  boundaries are Slice B's subject.
+* Default-on is *not* decided here. It is an open maintainer decision
+  (planning record, M1), to be taken after the exit criteria in
+  <<qualification>> are met for both adapters.
+
+Rationale for opt-in over default-on: default-on changes the behaviour of
+every existing Run, configuration and test at the same moment as introducing
+the mechanism, and makes the first observed failure mode "my Run stopped
+working" rather than "my Run is isolated". Migration path: opt-in, then the
+maintainer's own use on this repository, then the qualification record, then a
+separate maintainer decision about the default.
+
+=== Preflight, before any provider dispatch
+
+Each check fails with a named `OperatorPreflightError`-class refusal that
+identifies the missing piece. All of them run only when the boundary is
+selected.
+
+. `bwrap` resolves to an executable file.
+. An unprivileged user namespace can actually be created: one
+  `bwrap ... -- /bin/true` probe. This is not redundant with check 1 -- on
+  this very development machine, inside a nested sandbox,
+  `/proc/sys/user/max_user_namespaces` reads `0` and the probe fails while the
+  binary is present.
+. The repository is a canonical, symlink-free, existing directory whose `.git`
+  is a directory or a regular file, not a symlink.
+. The result directory and the external scratch root exist, are directories,
+  and are disjoint from the repository and from each other.
+. The provider executable resolves to a path that exists *inside the view*.
+  A provider installed under `$HOME` -- and this host's `PATH` contains two
+  such entries -- is not reachable from a view that mounts only `/usr` and the
+  four `/bin`-family links, and must be refused by name before dispatch
+  rather than discovered as a confusing exec failure.
+. The authentication mount required for the selected adapter is configured and
+  exists.
+. The normalized writable grant set is disjoint and every entry is inside the
+  repository.
+
+=== Error classification
+
+* Every preflight failure, and every `BoundaryConfigurationError`, is
+  *not-started*: it proves the execution port was not entered. Both adapters'
+  own error types already subclass `ExecutionNotStartedError`, and a new
+  boundary error must join that hierarchy so the existing dispatch-marker
+  cleanup and re-raise path applies unchanged.
+* A `bwrap` process that starts and then exits before the provider command is
+  *also* not-started, and is distinguishable: `bwrap` writes its own
+  diagnostic to stderr and exits non-zero without the provider having run. The
+  implementation must classify it by `bwrap`'s own exit path, not by guessing
+  from output text. The existing asymmetry in which `CodexCliError` is wrapped
+  into `Slice4Error` while `ClaudeCliError` takes the generic
+  `ExecutionNotStartedError` branch must be made consistent for the new error
+  rather than copied.
+* A provider that starts inside the boundary and then fails is *started*, and
+  reaches the existing `ExecutionResultValidationError` path with its
+  transport outcome. Nothing changes here.
+
+=== No silent fallback
+
+If the boundary was selected and cannot be established, the invocation is
+refused. There is no retry without the boundary, no degraded mode, no
+"boundary unavailable, continuing" diagnostic, and no configuration that makes
+such a fallback possible. A test must prove this by making the boundary
+unestablishable and asserting a refusal rather than an unisolated dispatch.
+
+=== Timeout, kill and cleanup
+
+Unchanged in the adapters, with one gained property: `--die-with-parent`
+combined with `--unshare-pid` means the sandbox's whole process tree dies with
+the `bwrap` process the adapter started, so a descendant that leaves its
+process group no longer survives. Scratch cleanup stays in the Claude
+adapter's `finally` block; the pre-created empty authorized directories are
+removed by their creator after the Hop if still empty. A cleanup failure must
+not suppress an exception already in flight, as the existing scratch-removal
+helpers already ensure.
+
+[[invariants]]
+== (f) Interaction with existing invariants
+
+[cols="3,6",options="header"]
+|===
+|Invariant |Slice A
+
+|Trusted Git
+|Unchanged and still outside the boundary. It runs on the host after the
+provider has exited, with `GIT_*` stripped, hooks at `/dev/null` and
+`--no-verify`. The boundary never mounts the gitdir, so trusted Git is the
+only writer of Git state in either mode.
+
+|Post-Hop candidate-scope check
+|Unchanged and *still mandatory*. `trusted_commit(..., allowed_paths=
+phase.authorized_scope, ...)` and, when no commit happens,
+`observe_hop(..., allowed_paths=phase.authorized_scope, max_commits=0)` run
+exactly as today. The boundary is prevention; the check is acceptance. Neither
+replaces the other, and the check must not be relaxed because prevention
+exists -- the boundary can be off, can be newly broken, or can have a
+prevention gap (<<residual>>).
+
+|Candidate acceptance and the clean-worktree assertions
+|Unchanged. Pre-created empty directories are invisible to Git and therefore
+to these checks; that is why empty *files* are not pre-created.
+
+|Evidence, the baseline probe and `task-check`
+|Unchanged, Coordinator-owned, and deliberately *outside* the agent boundary.
+Justification: they are the Coordinator's own trusted observation, they need
+the host toolchain and the Coordinator's environment, and confining them is a
+different problem with a different threat model (it would confine
+agent-modified project code, not the agent). It is also the least confined
+execution in WFC today, and saying so plainly is better than bundling it into
+this slice. Recorded as open decision M4 in the planning record.
+
+|Reviewer read access
+|Unchanged in substance: a reviewer phase sees the whole working tree
+read-only, which is what reviewing the whole candidate requires, plus its own
+writable artifact path. Slice A must not narrow reviewer *read* access; a
+reviewer that cannot read the product cannot review it.
+
+|Per-Hop usage capture
+|Unchanged. Usage comes from the provider's own transport output.
+
+|Recovery and resume
+|A resumed Hop must use the same boundary mode as the Run it continues; a
+mismatch is a refusal by name, consistent with the existing
+"recovery requires an unchanged implementation identity" rule. The boundary
+mode is part of the Run's persisted state for exactly this reason.
+
+|`DEC-WFC-009` and the provider sandboxes
+|Unchanged. The provider sandbox stays provider-owned and
+not-Coordinator-verified. Slice A adds a Coordinator-owned boundary beside it
+and removes nothing.
+|===
+
+[[qualification]]
+== (g) Qualification plan
+
+Three layers. None of them may be substituted for another, and a positive
+claim may never stand in for a missing layer.
+
+=== Layer 1: deterministic tests through the real dispatch path
+
+Offline, network-free, no provider credentials, fake providers. These are the
+implementation Commission's own deliverable and part of the required suite.
+
+Positive cases:
+
+. A worker-shaped invocation dispatched through the real
+  `vertical.run_one_hop` path with a fake provider executable, with the
+  boundary selected, writes a file inside the authorized scope and the
+  Coordinator accepts the candidate.
+. The same for an authorized target *directory that did not exist* at launch.
+. A reviewer-shaped invocation writes its own durable artifact and nothing
+  else.
+. The result channel works in both directions: the fake Claude-shaped provider
+  reads the generated settings file, and the fake Codex-shaped provider writes
+  the result file that the Coordinator then reads back.
+. A linked Git worktree validates and dispatches successfully.
+. An unisolated invocation produces a byte-identical argv, cwd and environment
+  to today's, proving `prepare_direct` is a true identity.
+
+Negative cases, each attempting the forbidden access *through the real
+dispatch path with a real `bwrap`*, and each asserting both that the attempt
+failed and that the host-side target is unchanged:
+
+[cols="1,6",options="header"]
+|===
+|# |Attempt
+
+|N1
+|Write to a repository path outside the authorized grant.
+
+|N2
+|Write inside `.git` -- a new file, an existing file, a hook, the index.
+
+|N3
+|Read `.git`, a ref, the index, or an object by path, in both the
+`.git`-directory and the `.git`-file worktree shape.
+
+|N4
+|Reach the Git object database through the per-worktree gitdir path and
+through the common Git directory path, by absolute path, from a linked
+worktree.
+
+|N5
+|Escape through a symlink inside a writable grant that points outside the
+repository.
+
+|N6
+|Escape through `..` from a writable destination.
+
+|N7
+|Escape through a hardlink alias created before launch (already covered by
+the existing tests; re-asserted through the dispatch path) and through one the
+sandbox tries to create itself.
+
+|N8
+|Create a new mount, or a new user namespace that re-mounts a host path, from
+inside the sandbox.
+
+|N9
+|Create a file at a repository path the Commission did not authorize, when
+that path's parent *is* authorized and when it is not.
+
+|N10
+|Read the operator's `$HOME`, another checkout, the Coordinator state root
+above the result directory, and the Evidence repository.
+
+|N11
+|Write anywhere in the Coordinator result directory other than the one
+designated result file, from the Codex-shaped path.
+
+|N12
+|Exhaust the private `/tmp` beyond its size cap, and the external scratch
+root, and show that the host's own `/tmp` is unaffected.
+
+|N13
+|Leave a process behind: double-fork a long sleeper, let the invocation time
+out, and assert that after the adapter's kill sequence no descendant survives.
+
+|N14
+|Boundary selected but unestablishable: assert a named not-started refusal and
+assert that no provider process was started at all -- no silent fallback.
+
+|N15
+|A scope list that cannot be normalized to a disjoint set is refused before
+dispatch.
+|===
+
+=== Layer 2: live qualification with real authenticated providers
+
+Required before any preventive-isolation claim is made in any document. It is
+*not* a Commission deliverable: an agent Hop on this host cannot start `bwrap`
+at all (planning record, limits). The maintainer or Level-1 operator performs
+it outside a Commission, against a disposable repository, with a stated
+minimal invocation budget.
+
+[cols="1,4,4",options="header"]
+|===
+|# |Check |What it proves
+
+|L1
+|`claude` starts inside the boundary and completes one minimal authenticated
+`-p` invocation returning a valid structured result, with
+`sandbox.failIfUnavailable: true` unchanged and
+`enableWeakerNestedSandbox` unset.
+|That the outer boundary and the provider's own nested sandbox coexist. A
+failure here is the slice's central risk and a Finding, not a reason to
+relax the provider.
+
+|L2
+|The same invocation's `Bash` tool executes one harmless command.
+|That the nested sandbox's own bridge, including its `AF_UNIX` socket under
+the scratch bind, works inside the boundary. Startup success is not Bash
+success, and the two must be reported separately.
+
+|L3
+|`codex` completes one minimal authenticated `exec` invocation inside the
+boundary and its result file reaches the Coordinator.
+|The Codex path and the result-channel write mount end to end.
+
+|L4
+|For each provider: a write inside the authorized scope succeeds, including
+creating a previously nonexistent authorized directory, and WFC accepts the
+candidate.
+|The positive case the
+link:BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[Claude
+write-permission record] still has open, now under the boundary.
+
+|L5
+|For each provider: an instructed write outside the authorized scope, and an
+instructed write into `.git`, both fail, and the host targets are unchanged.
+|That the boundary, not the provider, is what prevents it -- the negative case
+the earlier attempt could not construct.
+
+|L6
+|The minimal `/etc` and authentication mount set is *observed*, by starting
+from none and adding only what a failure actually requires.
+|That the exposed set is the necessary set rather than a guess.
+
+|L7
+|The boundary mode appears in the Run's audit projection and report.
+|Operator-visible auditability.
+|===
+
+Authentication handling for the live layer: the maintainer's existing,
+lawfully-held provider authentication is used *in place*, mounted read-only at
+its own path into the view. Nothing is copied, printed, committed, or placed
+in the repository or the scratch. No `$HOME` is granted. If a check cannot be
+performed within those bounds, that is a valid reported outcome. A missing or
+impossible live qualification is reported as missing; it is never replaced by
+a deterministic-test result, an argv inspection or a positive claim.
+
+=== Exit criteria
+
+. Layer 1 complete, in the required suite, passing under the Coordinator's
+  task-check, with every N-case asserting host-side non-effect.
+. Layer 2's L1 to L7 performed and recorded, or each unperformed check named
+  with its reason.
+. A qualification record exists that states, per claim, which layer
+  established it.
+. Only then may any document say WFC preventively enforces a phase's
+  authorized scope, and only for invocations with the boundary in force.
+
+[[stop]]
+== (i) Stop rule for the implementation Run
+
+If any requirement in this record cannot be realised as specified, the
+implementation Run must end with a blocking Finding or an honest stop. It must
+not lower the security claim to make the work fit.
+
+Specifically, the Run must stop or open a Finding rather than:
+
+* mount the Git object database, the gitdir or the common Git directory to
+  make a provider or a convenience work;
+* mount `$HOME`, a whole provider configuration directory, or `/etc`
+  wholesale;
+* disable, weaken or default-away a provider sandbox or permission mechanism,
+  including `enableWeakerNestedSandbox` and `failIfUnavailable: false`;
+* make the repository view writable beyond the normalized authorized grant;
+* introduce any fallback to unisolated execution, including a diagnostic-only
+  one;
+* relax, skip or make conditional the post-Hop candidate-scope check, the
+  clean-worktree assertions or trusted Git's refusals;
+* weaken or delete an existing test to make a change pass;
+* describe a deterministic fake-provider result as a live qualification; or
+* claim preventive isolation while any exit criterion is unmet.
+
+A requirement that turns out to be unrealisable is recorded as an open
+decision with options and a recommendation, for the maintainer.
+
+[[decomposition]]
+== (j) Decomposition, scope, budget and documentation impact
+
+=== One Commission, four ordered internal steps
+
+Recommendation: *one* implementation Commission, not two. Splitting would
+leave an intermediate integrated state in which the boundary is half-wired,
+which is the condition the maintainer's intent exists to end, and `robust@v1`
+already provides an independent review at every cycle. The ordered steps below
+are review checkpoints inside that Run, not separate Commissions:
+
+. *Boundary view.* `execution_boundary.py`: the `.git`-file worktree case,
+  path-identity mounting, the result-channel mount kind, `--proc` /
+  `--unshare-pid` / `--new-session`, the `/tmp` size cap, and the `/etc` and
+  authentication mount kinds. Unit and integration tests, including every
+  negative case reachable at this level.
+. *Launcher seam.* `execution_launcher.py` with `prepare_direct` and
+  `prepare_bubblewrap`; both adapters call it instead of building `Popen`
+  arguments inline. Byte-identity tests for the direct path.
+. *Enablement and evidence.* The optional `boundary` key in both
+  configuration schemas, preflight, error classification, the persisted Run
+  state, the binding evidence and the audit projection, resume consistency.
+  Negative cases N14 and N15.
+. *Documentation reconciliation.* The stale-statement list below.
+
+If the Run exhausts its Hop budget, step 4 is the only step that may be
+carried by a successor Commission: it changes no security property.
+
+=== Proposed Commission shape
+
+[cols="2,5",options="header"]
+|===
+|Element |Proposal
+
+|Program
+|`robust@v1`, unchanged.
+
+|Hop upper limit
+|*12* as an upper limit (worker, broad review, and up to four
+correct/focused-review cycles). This is an upper bound, not a target.
+
+|Scope, exactly
+|`src`, `tests`, `docs/architecture.md`,
+`docs/technical_model/ch01_architecture_views/01_component_view.adoc`,
+`docs/technical_model/ch02_current_mechanics/04_persistence_adapters.adoc`,
+`docs/functional_model/ch01_purpose_and_goals/02_vision_and_goals.adoc`,
+`docs/functional_model/ch02_scenarios_and_requirements/01_use_cases.adoc`,
+`docs/operator_manual/ch01_orientation/02_boundaries.adoc`,
+`docs/operator_manual/ch05_self_development/01_topology_budget.adoc`,
+`docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc`,
+`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc`,
+`docs/developer_guide/ch01_development.adoc`,
+`docs/backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc`,
+`docs/backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc`,
+`docs/backlog/_open.adoc` and the Run's two durable review artifacts under
+`docs/warm_storage/post-beta-planning/`.
+
+|Not touched
+|`.wfc/config.yaml` (outside the scope ceiling; switching the boundary on for
+this repository is a maintainer act), `governance/`, `.github/`, `Makefile`,
+`pyproject.toml`, `scripts/`, `examples/`. No scope-ceiling change is needed:
+every scope path above lies under `src`, `tests` or `docs`, all three of which
+are permanent ceiling entries. Any ceiling change would be a maintainer
+decision and none is requested.
+
+|Evidence
+|`task-check` only, as `robust@v1` requires. The required suite gains the new
+tests, so the ordinary task-check covers them.
+
+|Explicitly outside the Commission
+|The live qualification layer (<<qualification>>), the `.wfc/config.yaml` edit,
+any Runtime promotion, any push.
+|===
+
+=== Front Door docs-sync impact
+
+This slice changes the observable operating surface of `wfc run`, so the
+`frontdoor-docs-sync` convention in
+link:../developer_guide/ch03_engineering_conventions.adoc[the engineering
+conventions] applies and must be performed, not merely noted. What changes:
+one new optional configuration key, one new refusal class, one new audit and
+report field, and a new documented limitation. The owners to check are the
+Operator Manual (chapter 1 boundaries, chapter 3 running, chapter 7 failure
+modes, chapter 9 quickstart and its limitations list), the Agent Skill sources
+`src/workflow_coordinator/agent_skill/wfc/SKILL.md` and its
+`references/*.md`, and the consumer tutorials under
+`docs/operator_manual/ch09_consumer_quickstart/` together with
+`examples/consumer-demo/`. An edit is needed only where a statement becomes
+inaccurate; the Agent Skill, for instance, may need nothing if it makes no
+containment statement. Note that `examples/consumer-demo/` quoted listings are
+guarded by `tests/architecture/test_tutorial_kit_quotes.py`, so a change there
+can fail a test.
+
+[[stale]]
+=== Statements that become stale when Slice A lands
+
+These are *not* edited by the planning Commission that produced this record;
+several lie outside its scope. The implementation Commission must reconcile
+each one, and must keep every statement true for the unisolated case, which
+remains the default.
+
+[cols="4,4",options="header"]
+|===
+|Location |What becomes stale
+
+|`docs/architecture.md:88-99`
+|"No current Coordinator-owned or Coordinator-verified OS/environment
+containment boundary is claimed" and "WFC ownership of a provider-independent
+execution-isolation boundary is an accepted future direction, not current V1
+functionality. Its dispatch integration and effective qualification are post
+Beta 1". Partly stale for the filesystem dimension, for isolated invocations
+only. The sentences at `:82-84` ("neither hostile-code containment nor host
+isolation") stay true and must be retained.
+
+|`docs/technical_model/ch01_architecture_views/01_component_view.adoc:48-51`
+and `:82`
+|"opt-in Linux filesystem boundary primitives" described as a "bounded,
+self-described auxiliary surface", and the inventory row's "Does not own:
+Authority resolution or integrated provider dispatch".
+
+|`docs/technical_model/ch02_current_mechanics/04_persistence_adapters.adoc:72-74`
+|"The existing `execution_boundary.py` is an experimental filesystem
+primitive, not an integrated provider-dispatch boundary. No current
+containment guarantee or provider-safeguard relaxation follows from the target
+direction."
+
+|`docs/functional_model/ch01_purpose_and_goals/02_vision_and_goals.adoc:89-95`
+|"it is not wired into provider dispatch", and the surrounding statement that
+the authoritative enforcement of a phase's authorized scope is the post-Hop
+Git observation. The latter stays true as the *acceptance* control and must
+not be deleted.
+
+|`docs/functional_model/ch02_scenarios_and_requirements/01_use_cases.adoc:103`
+|"`execution_boundary.py`'s mount primitives are unintegrated."
+
+|`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc:42-44` and
+`:90-106`
+|"`bwrap` (bubblewrap) is *not* required for ordinary consumer use" and "a
+planned, not-yet-wired execution-boundary mechanism". Both become conditional
+rather than false: true while the boundary is off, wrong once a consumer
+enables it. The prerequisite list and the limitations list both need the
+conditional form.
+
+|`docs/operator_manual/ch05_self_development/01_topology_budget.adoc:300-324`
+|The "Executing authority" passage and its forward reference to "a possible
+future WFC-owned bubblewrap execution layer".
+
+|`docs/operator_manual/ch01_orientation/02_boundaries.adoc:44-55`
+|"Harness v0 remains the deterministic execution boundary" and the sentence
+about WFC's documented execution and sandbox responsibilities.
+
+|`docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc:165-191`
+|The provider-permission failure-mode guidance, which gains a boundary-related
+not-started class.
+
+|`docs/developer_guide/ch01_development.adoc:66-67`
+|The list of `bwrap`-dependent tests, which grows, and the statement of what
+the development suite needs from the host.
+
+|`docs/research/gondolin_execution_boundary_feasibility.adoc:26`, `:56`, `:79`
+|"WFC's Bubblewrap primitive is not wired into any live execution path *[V]*",
+"No module under `src/` or `scripts/` imports it" and the launcher-seam
+discussion. Research standing, exploratory authority; a dated note is
+sufficient, and the record must not be rewritten. Separately, and *already*
+stale at `f492274` independently of this slice: its Claude-adapter row says
+the settings deny `WebFetch`/`WebSearch`, while
+`claude_adapter.py:241` now allows `WebFetch(domain:*)`, `WebSearch` and
+`Bash(curl:*)`.
+
+|`docs/research/context_sculpting_and_knowledge_lifecycle.adoc:117-121`
+|"*Prepared but unintegrated:*".
+
+|`docs/research/README.adoc:66-80`
+|Research topic R3's open questions, several of which Slice A answers for the
+filesystem dimension.
+
+|`docs/backlog/BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc`
+|Its "Next action" and the forward reference to post-Beta-1 integration, once
+L4 and L5 are recorded.
+
+|`docs/release_notes/release_notes.adoc`
+|The `0.1.0b1` limitations list, if and only if this slice is released in a
+version whose notes claim no preventive isolation. Check at release time; this
+slice does not edit a released section.
+|===
+
+[[residual]]
+== (h, continued) Residual risks, honestly stated
+
+. *Mutable-source assumption.* The primitive's own docstring already says it:
+  sources must remain stable between validation and execution. `build_argv`
+  revalidates, which narrows the window but does not close it. An actor who
+  can change the mount tree concurrently with validation is out of the threat
+  model.
+. *Hardlink and TOCTOU limits of the validator.* The `st_nlink != 1` defence
+  is a point-in-time check over the writable tree. It is effective against an
+  alias that exists at validation time and is re-checked at launch; it is not
+  a proof against a concurrent creator, and it is a full-tree walk whose cost
+  grows with the grant.
+. *File-shaped not-yet-existing scope entries overgrant* to the nearest
+  existing ancestor directory (<<mounts>>). Prevention gap, not acceptance
+  gap.
+. *Worker-phase grants are Commission-wide.* Stated in <<guarantees>>; the
+  cause is the program's scope slot, not the boundary.
+. *`/proc` exposure.* `--unshare-pid --proc /proc` still exposes host-global
+  procfs entries whose sensitivity is unassessed. Named, not resolved.
+. *No network statement.* The sandbox shares the host network namespace. An
+  agent with network access can transmit anything it can read; the effective
+  control is what is readable at all, which is Slice B.
+. *Codex inherits the Coordinator's whole environment* inside the boundary,
+  exactly as outside it. Any token-bearing variable in the Coordinator's
+  environment is visible to the Codex process. Slice A deliberately does not
+  change this, because narrowing it risks breaking Codex authentication and
+  needs its own qualification. It is a real residual exposure and belongs on
+  the follow-up list, not in a guarantee.
+. *The provider's own tool layer sees what the provider process sees.* Inside
+  the boundary this includes the narrowly mounted authentication path. This is
+  the condition the 2026-11-09 product-scope decision accepts; Slice A
+  restates rather than resolves it.
+. *Nested user namespaces are not always available.* Observed on this very
+  host inside a nested sandbox. Where the provider's own sandbox cannot
+  initialize and `failIfUnavailable` is `true`, the invocation refuses. That
+  is the correct failure direction, and it is a usability risk the
+  qualification must measure rather than a security risk.
+. *The boundary can be off.* Opt-in means most Runs will not have it until the
+  maintainer changes the default. Every claim is conditional on the recorded
+  boundary mode for that Run.
+
+== Non-goals
+
+This slice does not: design or implement network policy or egress control;
+design or depend on an MCP sidecar or any other service; hide any repository
+area from an agent; introduce per-phase visibility or capability profiles;
+implement privilege elevation or defensive-review topology; confine evidence
+commands; narrow worker-phase `authorized_scope`; change the accepted
+`robust@v1` program; introduce a credential broker; replace a provider
+sandbox; claim hostile-code containment; or add a governance layer, program,
+gate or role.
