@@ -1,0 +1,919 @@
+= Release Engineering Review: spreadsheet-handling (core) and workflow-coordinator (WFC)
+:toc: left
+:toclevels: 2
+:sectnums:
+:icons: font
+:revdate: 2026-11-23
+
+Standing:: Independent, read-only analysis. Not a governance document and not
+an implementation plan of record. Nothing in either repository was changed.
+
+== Purpose and evaluation criteria
+
+This report compares the release processes of `spreadsheet-handling` (`core`)
+and `workflow-coordinator` (WFC) and proposes how both can be operated
+repeatedly with little effort.
+
+Criteria, in order of weight:
+
+. *Recurring operational effort* -- human actions per routine release, and
+  how many of them need a conversation to coordinate.
+. *Risk actually removed* -- a control counts only for the failure it
+  prevents; a second control against the same failure counts for little.
+. *Alignment with current practice* -- PyPA publishing guide, PyPI Trusted
+  Publishing security model, GitHub Actions secure-use guidance (<<sources>>).
+. *Consistency* -- only where it lowers effort or error rate. Harmonization
+  is not a goal in itself.
+
+Paths are written `core:<path>` and `wfc:<path>`. Statements carry an evidence
+class where it matters:
+
+[horizontal]
+*[I]*:: implemented -- read from code or workflow definitions.
+*[D]*:: documented -- stated in repository documentation; may differ from [I].
+*[O]*:: observed -- reconstructed from Git history, tags, reflogs or recorded
+incidents.
+*[X]*:: external assumption -- GitHub/PyPI configuration that the repository
+references but cannot prove.
+
+== Evidence base and limitations
+
+Inspected (2026-11-23, `core` at `806f740f`, WFC at `baab49e`):
+
+* `core:.github/workflows/release.yml`, `core:pyproject.toml`,
+  `core:Makefile`, `core:tools/release_check.sh`, `release_status.sh`,
+  `pages_publish_check.sh`, `readme_links_check.sh`,
+  `core:scripts/build_docs_pages.sh`,
+  `core:docs/developer_guide/ch09_release_management/` (four files, 1,823
+  lines), `core:docs/backlog/FTR-RELEASE-PROCESS-AUTOMATION-P5.adoc`,
+  `FTR-AUTORELEASE-POLICY.adoc`, tags, branches, and the sibling `pages` and
+  `demo` checkouts as release dependencies.
+* `wfc:.github/workflows/release.yml`, `wfc:pyproject.toml`, `wfc:Makefile`,
+  `wfc:scripts/wfc_release_check.py`, `wfc_dist_audit.py`,
+  `wfc:docs/developer_guide/ch04_release_management.adoc`,
+  `wfc:docs/backlog/postbeta_plan_p3_release_engineering.adoc`,
+  `wfc:docs/release_notes/release_notes.adoc`, tags, the `origin/main` reflog,
+  and the two handover files in the parent directory
+  (`wfc_es_handover_2026-11-22.md`, `wfc_q1_runbook_2026-11-23.md`).
+
+Limitations:
+
+* *No remote access.* SSH to GitHub was refused from the review environment
+  and no project-specific query was sent to PyPI or the GitHub API. Remote
+  tags, Actions runs, PyPI contents, attestations, repository settings,
+  Environments, Trusted Publishers, secrets, and branch or tag protection are
+  all *[X]*: unverified.
+* *WFC `v0.1.0b1` publication state is unknown.* The annotated tag exists
+  locally on `baab49e` (created 2026-11-23 16:33 CET). Whether it was pushed
+  and whether the tag-mode chain (TestPyPI, approval, PyPI, GitHub Release)
+  ran is not recorded in the repository; `ch04` still says the tag-mode path
+  has not run on a hosted runner.
+* *core `v0.2.2` publication state is unknown.* The tag is on `origin/main`;
+  the local `pages` remote-tracking ref ends at the `v0.2.1` publish commit
+  (last fetched state, 2026-06-24), so neither PyPI nor Pages publication of
+  `v0.2.2` can be confirmed here.
+* *No build was run* (boundary: no dependency installation). The statement
+  about the core sdist content rests on the local
+  `core:src/spreadsheet_handling.egg-info/SOURCES.txt` of 2026-10-15, not on
+  the published file.
+* External documentation was consulted on 2026-11-23 through an automated
+  page reader; paraphrases below should be checked against the linked pages
+  before being quoted elsewhere.
+* `core:CLAUDE.md` asks for an in-repository review artifact for review
+  tasks. The commissioning prompt forbids repository changes and places the
+  output outside both repositories; this document is therefore the only
+  artifact.
+
+== Release process: core (as-is)
+
+=== Implemented behaviour [I]
+
+One workflow, `build-test-publish`, on push to `main` and on `+v*+` tags;
+top-level `permissions: contents: read`.
+
+[cols="1,1,4",options="header"]
+|===
+|Job |Runs on |What it does
+|`test` |`main` and tags
+|`ubuntu-latest`, CPython 3.12 only. Editable install of `.[dev]`. Writes the
+`WFC_READ_DEPLOY_KEY` secret to disk and runs `make wfc-setup`, which installs
+WFC from a `git+ssh` pin (`core:requirements/workflow-coordinator.txt`, commit
+`0b5260f`). Runs `make test` with `SPREADSHEET_HANDLING_SKIP_WFC_HOP_CONSUMER=1`.
+No lint step.
+|`publish` |tags, after `test`
+|Fresh checkout; `make readme-check TAG=<tag>`; `python -m build`;
+`pypa/gh-action-pypi-publish@release/v1` with `id-token: write`. No GitHub
+Environment. Build and upload happen in the same job.
+|`publish-docs` |tags, after `publish`
+|Installs Java, Asciidoctor, PlantUML, Graphviz; `make docs-pages`; pushes to
+`spreadsheet-handling-pages` with the `DOCS_DEPLOY_KEY` secret under
+`versions/<tag>/core/`, and `latest/core/` when the tag is the PEP 440
+maximum. Concurrency group, pinned host keys, rebase-and-retry push.
+|===
+
+Further implemented facts:
+
+* *Version* comes from the tag through `setuptools-scm`; tag and version
+  cannot disagree, but a shallow checkout or malformed tag changes the
+  version silently (`fallback_version = "0.0.0"`).
+* *Nothing in CI checks that the tag is on `main`.* Any `+v*+` tag on any
+  commit publishes to PyPI as soon as `test` is green.
+  `tools/release_check.sh` performs that check, but only locally and only when
+  the maintainer runs it; it also fails by design on a detached HEAD, so it
+  cannot run in the tag job as written.
+* *The published artifact is never exercised.* Tests run against an editable
+  install; `publish` rebuilds from a second checkout. There is no wheel
+  install, no content audit, no checksum record, no workflow artifact and no
+  GitHub Release.
+* *The sdist carries the whole tracked tree.* `SOURCES.txt` lists 1,809
+  entries: 1,236 under `docs/`, 266 under `tests/`, 49 under
+  `project_memory/`, 32 under `registries/`, plus `tools/`, `scripts/`,
+  `Makefile` and `.github/`; 189 are package source. There is no
+  `MANIFEST.in`.
+* *Actions* are referenced by mutable major tags (`checkout@v6`,
+  `setup-python@v6`, `setup-java@v5`) and a branch (`release/v1`). There is no
+  `dependabot.yml`.
+* *Two long-lived secrets* are in the release path: `DOCS_DEPLOY_KEY` (write
+  to the Pages repository) and `WFC_READ_DEPLOY_KEY` (read WFC).
+* *Local helpers:* four Bash tools, 1,090 lines, all read-only:
+  `release_check.sh` (topology only), `readme_links_check.sh`,
+  `pages_publish_check.sh`, `release_status.sh`.
+
+=== Documented process [D]
+
+The runbook (`02_release_runbook.adoc`, 1,064 lines) describes roughly this
+routine: fetch and `make release-check`; update the "Browse by version" table
+in `docs/pages/root_index.adoc` by hand; create a `release/v<version>` branch;
+rewrite README Pages links from `/latest/` to `/versions/<tag>/` with `sed`;
+`make readme-check`; commit; fast-forward `main`; push; tag locally;
+`make release-check TAG=...`; push the tag; watch CI; verify PyPI; pull the
+Pages checkout and run `make pages-check`; then a post-release sweep (freeze
+the release-notes heading, open the next `planned` section, restore the
+`/latest/` README links); then an eight-step demo alignment with its own tag
+and Pages publication.
+
+Where documentation and implementation or practice differ:
+
+[cols="2,3",options="header"]
+|===
+|Documented |Evidence of difference
+|`dev` is the integration branch; release merges `dev` into `main`
+(`01_ci_cd_and_publishing.adoc`, `docs/ai_info/git_and_workflow.adoc`).
+|No `dev` branch exists locally or among the known remote refs; work lands on
+`main`. [O]
+|Release notes are frozen in the post-release sweep.
+|Heading at the tag: `v0.2.0` "planned", `v0.2.1` "(released)", `v0.2.2`
+"planned". Three releases, two different practices. [O]
+|The post-release sweep runs once per tag.
+|Not done for `v0.2.2`: five weeks after the tag, `main` still shows
+"0.2.2 -- planned" and the README is still baked to `/versions/v0.2.2/`; the
+local `release/v0.2.2` branch remains. [O]
+|Demo alignment follows every core release.
+|The demo pins `spreadsheet-handling==0.1.0b6` and has no tag after
+`v0.1.0b6-demo`; three core releases had no demo stage. [O]
+|PyPA "explicitly recommends pinning to `release/v1` rather than a SHA".
+|The current action README recommends pinning to tagged versions or commit
+SHAs (<<sources>>).
+|`04_release_history.adoc` is the release history.
+|Ends at a "0.1.0b5 -- draft" entry; superseded by `release_notes.adoc`.
+|===
+
+=== Observed history [O]
+
+* Nine tags, `v0.1.0b1` to `v0.2.2`; all reachable from `origin/main` today.
+  `v0.1.0b1` was tagged but never published.
+* `v0.1.0b6` was tagged from `dev`; `main` had to be repaired by hand. This
+  produced `release_check.sh` -- a local check, not a CI gate.
+* `v0.2.0`: the Pages "Browse by version" table was stale after publication
+  (`FTR-RELEASE-PROCESS-AUTOMATION-P5`, postponed). The table is still
+  maintained by hand.
+* Before `v0.2.2`: `fix(ci): skip WFC hop consumer test on GitHub runners`
+  (`1dc1457f`, runner Git-LFS filter), a Python 3.10 test fix (`e359d37d`)
+  and a pandas-2-only defect (`BUG-JSON-INGRESS-MISSING-IDENTITY-P4A`). CI
+  tests neither Python 3.10 nor the pandas floor.
+* Pages publish commits by the workflow exist for `v0.1.0b6`, `v0.2.0` and
+  `v0.2.1`, so the docs job has worked at least three times.
+* `make release-status` today reports "mid-flight or inconsistent" with two
+  issues (demo pin, missing `v0.2.2` Pages snapshot). Both come from stale
+  local sibling checkouts or from the abandoned demo stage; the tool cannot
+  tell a real gap from a checkout that was not pulled.
+
+=== External assumptions [X]
+
+PyPI Trusted Publisher for `release.yml` without an environment; the two
+repository secrets; the matching deploy keys on the Pages and WFC
+repositories; Pages settings of `spreadsheet-handling-pages`; the demo
+repository's own workflow and secret.
+
+== Release process: WFC (as-is)
+
+=== Implemented behaviour [I]
+
+One workflow, `release`, on push to `main` and on `+v*+` tags; top-level
+`contents: read`; no repository secret anywhere; every action pinned to a
+commit SHA.
+
+[cols="1,1,4",options="header"]
+|===
+|Job |Runs on |What it does
+|`check` |`main` and tags
+|`ubuntu-24.04`, CPython 3.13.5. Fetches a hash-verified offline input
+bundle; lint; format check; the whole required suite with bubblewrap (after
+removing the runner's system Git-LFS filter entries); one build;
+`make dist-audit` (exact allow-list for wheel and sdist); wheel install into
+a clean venv and CLI identity assertion; strict Asciidoctor render;
+`make release-check TAG=<tag>` on tags only; SHA-256 record; uploads
+`release-dist`.
+|`python-compat` |`main` and tags, after `check`
+|Installs the same wheel on CPython 3.10, 3.11, 3.12 and runs eleven
+provider-free test modules against it. No job waits for it.
+|`publish-testpypi` |tags, after `check`
+|Environment `testpypi`. Downloads the artifact, re-verifies checksums, real
+upload through OIDC.
+|`publish-pypi` |tags, after `publish-testpypi`
+|Environment `pypi` (required reviewer intended). Same artifact, same
+verification, upload through OIDC.
+|`release` |tags, after `publish-pypi`
+|`contents: write`. `gh release create` with wheel and sdist; body is a link
+to the tag-pinned release notes.
+|===
+
+Further implemented facts:
+
+* *Version* is static in `pyproject.toml`. `wfc_release_check.py` asserts
+  tag equals `v<version>`, the notes section exists and is not "planned",
+  README links are absolute, and (tag mode) HEAD is reachable from
+  `origin/main`. This runs in CI, so a wrong-commit or wrong-version tag
+  stops before any upload.
+* *Build once* holds inside one workflow run. `check` also runs on the tag,
+  so the tag run *rebuilds*; the artifact of an earlier `main` run is never
+  the published one.
+* The README check only rejects non-absolute links. It does not assert that
+  the pinned `blob/<tag>/` links name the tag being released.
+* The version string also lives in
+  `wfc:src/workflow_coordinator/implementation_identity.py`, in
+  `tests/architecture/test_bp1_identity.py`, in twelve README lines and in
+  `tests/unit/test_release_tooling.py`.
+* `SHA256SUMS.txt` is written to the job summary and travels inside the
+  artifact it describes; it is not attached to the GitHub Release.
+* `gh release create` fails if the release already exists, so the `release`
+  job is not re-runnable after a partial success.
+
+=== Documented process [D]
+
+`ch04_release_management.adoc` (612 lines) defines a contract C1-C7, gates
+G1-G8, decisions MD-1 to MD-6 and, with the plan, external steps ES-1 to
+ES-6. Sequence: push the release commit to `main`; `check` green; download
+the artifact; run the consumer smoke qualification Q1-A (Claude adapter) and
+Q1-B (Codex adapter) on it in the `core` repository; maintainer accepts G7;
+freeze the notes; push the tag; `check` re-runs; TestPyPI; maintainer
+approves the `pypi` environment (G8); PyPI; GitHub Release; manual check of
+both pages.
+
+Differences between documentation and implementation:
+
+* *Recovery text is wrong for one state.* `ch04` says that if a step before
+  `publish-pypi` fails, the tag may be deleted and re-created from a
+  corrected commit because "no artifact has reached an index yet". After a
+  successful `publish-testpypi` this is false: TestPyPI refuses a second
+  upload of the version, and `publish-pypi` needs `publish-testpypi`, so the
+  corrected tag cannot pass. The same chapter states elsewhere that a pushed
+  tag spends a TestPyPI version.
+* "Every gate is release-blocking; there is no advisory class" -- but
+  `python-compat` gates nothing while the classifiers advertise 3.10-3.12.
+* Gate G2 still reads "Operator-run now; CI once MD-5 is settled" after the
+  acceptance. `ch04` notes that the acceptance "does not by itself rewrite"
+  the gate wording; the stale wording is a product of recording decisions as
+  appended prose.
+* The plan lists "signing or provenance attestation" as not in this release.
+  The pinned publish action generates PEP 740 attestations by default for
+  Trusted Publishing uploads (<<sources>>), so the first upload very likely
+  produces them. [X]
+
+=== Observed history [O]
+
+* The workflow was added on 2026-11-22 22:13 (`414d039`). On 2026-11-23,
+  `origin/main` received ten pushes between 00:57 and 15:52.
+* Seven hosted attempts failed on runner environment facts (17 Ruff
+  findings, Git identity for trusted subprocesses, `TMPDIR`, the runner's
+  Git-LFS filter, missing `bwrap`); run 9 on `23b9a3b` was green. This is
+  *one-time* runner adaptation.
+* The run-9 artifact needed an authenticated download, was transferred by
+  the maintainer to the Operator's machine, verified there, and compared
+  member by member with a local rebuild because the wheel carries no commit
+  identifier.
+* Q1-A and Q1-B each ran in under two minutes. Their preparation and
+  recording did not: a prepared runbook and handover outside the repository,
+  request files and `q1_postrun_verify.py` under `~/wfc-runtime-env/`, a
+  separate Evidence repository, two worktrees and branches left in `core`,
+  and seven documentation commits between the green run and the tag.
+* Between `23b9a3b` (qualified candidate) and the tag commit `baab49e`, only
+  `docs/` changed (five files); the packaged paths are identical. The tag
+  build is therefore equivalent by argument, not identical by construction.
+* 85 commits since 2026-11-22; `ch04` changed in 13 of them. About 300 of its
+  612 lines are records of this one release (hosted-run record, Q1 record,
+  two quoted acceptance statements, a superseded template).
+
+=== External assumptions [X]
+
+Pending Trusted Publishers on PyPI and TestPyPI naming `release.yml` and the
+environments `pypi` and `testpypi`; both GitHub Environments; the
+required-reviewer rule on `pypi`; Actions enabled. The workflow cannot
+create or verify any of these.
+
+== Comparison, commonalities and justified differences
+
+Common ground: one `release.yml` with the same two triggers; read-only
+default token; OIDC Trusted Publishing; `setuptools`; tag form `v<version>`;
+a single `release_notes.adoc` with one "planned" section; a read-only local
+preflight behind `make release-check`; the same retag-safety rule (never
+after a PyPI upload).
+
+Class: *J* justified product-specific difference -- keep. *H* historical or
+accidental -- worth harmonizing. *U* unclear -- needs evidence or a decision.
+
+[cols="3,4,4,1",options="header"]
+|===
+|Aspect |core |WFC |Class
+|Version identity |Tag-derived (`setuptools-scm`) |Static; preflight asserts tag equals version |J
+|Wrong-commit protection |Local script only; CI publishes any `+v*+` tag |CI asserts tag commit on `origin/main` |H
+|Test scope in CI |One interpreter (3.12), no dependency floor, no lint |Full suite on one qualified profile, lint, format |J for WFC; core gap H
+|Compatibility testing |None, `requires-python >=3.10` |Informational 3.10-3.12 smoke, non-gating |U
+|Build and artifact identity |Rebuild inside the publishing job |Build once per run, checksums, artifact hand-over |H
+|Artifact verification |None; sdist is the whole tree |Exact allow-list, clean-venv install, identity check |H in principle, J in strictness
+|Action pinning |Mutable tags and a branch |Commit SHAs, hand-resolved, no updater |H
+|Secrets |Two SSH deploy keys |None |Pages key J; WFC key H
+|Index strategy |PyPI only |TestPyPI, then PyPI |U
+|Environment and approval |None; tag push publishes |`pypi` environment with reviewer |H
+|Provenance |Default attestations (unverified) |Default attestations (unverified) |-- same
+|GitHub Release |None |Created with both files |H (low priority)
+|Release notes freeze |After the tag, by hand, drifting |Before the tag, enforced |H
+|README links |Bake before, restore after, two commits |Tag-pinned in the tree; pin not checked |H in principle
+|Docs publication |Versioned HTML to a Pages repository |Tag-pinned repository links only |J
+|Consumer qualification |None before publish; demo after, lapsed |Two real-provider Runs before the tag |J
+|Recovery guidance |Detailed; docs re-publish by job re-run |Short; wrong for the TestPyPI-spent state |H (fix WFC)
+|Platform claims |"OS Independent", tested on one Linux profile |Linux only, one qualified profile, stated |J for WFC; core claim U
+|===
+
+Consequential differences:
+
+*Wrong-commit and irreversibility.* In core, `git push origin v1.2.3` on any
+commit is an irreversible PyPI publication a few minutes later, with no
+server-side check and no pause. The only incident of this kind (`v0.1.0b6`
+from `dev`) was answered with a tool that the same person must remember to
+run. WFC closes this in CI and adds a pause. This is the largest real risk
+difference between the two processes and has nothing to do with WFC's agent
+security model. *H: core adopts.*
+
+*Build location.* core builds inside the job that holds `id-token: write`,
+so every build dependency resolved at that moment (`setuptools`,
+`setuptools-scm`, `wheel`, unpinned) runs with the ability to mint a PyPI
+upload token. Both the PyPA guide and the publish action tell users to build
+in a separate job and only download and upload in the publishing job
+(<<sources>>). Build-once also makes a retry of a half-finished upload safe,
+because the same bytes are uploaded again instead of a rebuilt file under the
+same name. *H: core adopts.* WFC's hash-pinned offline bundle goes further;
+that part is *J*.
+
+*Artifact audit.* WFC's exact allow-list is justified: its wheel carries four
+agent-contract texts whose presence and exclusivity matter. core does not
+need a per-file list, but it does need the check WFC's plan already inferred:
+its sdist ships 1,236 documentation files, review notes and Project Memory.
+The repository is public, so this is hygiene and size, not disclosure. A
+`MANIFEST.in` and a top-level-directory assertion suffice.
+
+*Compatibility.* The usual intuition is reversed here. WFC has one runtime
+dependency and a deliberately narrow qualified profile; its compat job is
+cheap honesty. core is a library on `numpy` and `pandas >=2.0`, declares
+`>=3.10`, tests exactly one combination, and has already shipped fixes for a
+3.10 test failure and a pandas-2-only defect. core needs a small matrix more
+than WFC does.
+
+*TestPyPI.* For WFC's first release it proves the OIDC wiring and metadata
+acceptance. On every later release that proof is already known, while the
+stage still burns a version on any failure after it. It keeps recurring
+value only if something is done with the TestPyPI upload -- see <<wfc-recs>>,
+W3. core should not add it.
+
+*Approval.* With a single maintainer who also pushes the tag, the reviewer
+is the same person; the approval is not an independent review. Its value is
+different and real: publication becomes reversible until the click, a
+mistaken or automated tag push cannot publish, and there is a defined
+moment to read a decision summary. PyPI calls a dedicated environment
+"strongly encouraged"; the PyPA guide asks for manual approval on the `pypi`
+environment (<<sources>>). One click per release is a fair price. *H: core
+adopts the environment; the reviewer rule is worthwhile for both.*
+
+*Release notes and README links.* Both repositories pin README links to a
+version and both do it by committing version-specific text. core pays with a
+release branch, two commits and a restore step that was skipped for
+`v0.2.2`. WFC pays later: Beta 2 must re-pin twelve lines, and the preflight
+would accept links that still say `v0.1.0b1`. The freeze-before-tag rule
+with CI enforcement is simply better than core's sweep. *H.*
+
+*Docs.* core's Pages publication serves a user guide for a library with a
+PyPI audience; WFC deliberately links tag-pinned repository files. Different
+products, different needs. *J.* The internal quality of core's Pages flow is
+discussed in <<core-recs>>.
+
+== Operational complexity and opportunities for automation
+
+=== Human actions on a routine release today
+
+[cols="1,3,3",options="header"]
+|===
+| |core (as documented) |WFC (as executed for Beta 1, minus one-time work)
+|Prepare |Edit version table; branch; `sed` README; check; commit; merge; push (7)
+|Edit version in up to five places; freeze notes; push (3)
+|Qualify |Local `release-check` twice (2)
+|Wait for `check`; authenticated artifact download; transfer; verify;
+install; two worktrees; two Runs; two post-run checks; record; accept (10+)
+|Publish |Tag; push tag (2) |Tag; push tag; approve (3)
+|Verify |PyPI page; pull Pages; `pages-check` (3) |PyPI page; Release page (2)
+|Reset |Freeze notes; open section; restore README; push (4) |none
+|Follow-up |Demo alignment, eight steps (lapsed) |none
+|Total |about 18, three pushes |about 18, several documentation commits
+|===
+
+Both processes need roughly the same number of human actions, for opposite
+reasons: core because mechanical steps were never automated, WFC because
+qualification and its record-keeping are manual.
+
+=== Controls that materially reduce risk
+
+* Tag-on-`main` and tag-equals-version checked in CI (WFC).
+* Build once, publish the tested bytes (WFC, within a run).
+* Wheel installed in a clean environment before publication (WFC).
+* OIDC without stored tokens (both); per-job permissions (both).
+* An approval pause before the irreversible step (WFC).
+* Release notes frozen and checked before the tag (WFC).
+* core's Pages safeguards: owned subtrees, PEP 440 "latest" guard, pinned
+  host keys, serialized pushes. They are proportionate and work unattended.
+
+=== Duplicate controls and self-generated QA work
+
+* *WFC: `sha256sum -c` in three downstream jobs.* The checksum file is
+  inside the artifact it verifies; it detects corruption, not tampering.
+  Harmless at three lines each, but not a security control. The useful place
+  for the checksums -- the GitHub Release -- does not get them.
+* *WFC: the same release facts in seven places* -- the Actions run, the
+  hosted-run record in `ch04`, the plan, the release-notes qualification
+  paragraph, the two parent-directory files, the Evidence repository, and
+  quoted acceptance statements. Each copy needed its own commit and can go
+  stale (G2 already has).
+* *WFC: inference in place of output.* The Operator could not read job logs,
+  so `ch04` reasons at length about the runner's pip version, bubblewrap and
+  the bundle fetch. Three `echo` lines into the job summary would have
+  replaced that analysis.
+* *WFC: four label namespaces* (C, G, MD, ES) for one release. MD and ES are
+  decided or done; carrying them forward makes every later reader decode
+  them.
+* *WFC: authorization layers.* For Beta 1 the maintainer separately released
+  the Q1 start, accepted MD-5, accepted G7, confirmed the environment before
+  the tag, and approved G8. Only the last is a recurring decision with its
+  own consequence.
+* *core: `release-check` twice plus `readme-check` locally plus the CI
+  guard* around a manual `sed` that need not exist.
+* *core: `pages-check` and `release-status`* (737 lines of Bash) verify
+  remote state through local sibling checkouts that the maintainer must pull
+  first. They report false inconsistency in the steady state and cannot see
+  PyPI at all. The checks they perform belong in the publishing job, where
+  the data is already present.
+* *core: the "Local Public-Surface Preview" procedure* (160 runbook lines)
+  and five cross-repository recovery scenarios describe situations that
+  automation would remove or that occurred once.
+
+=== Hidden state and external prerequisites
+
+* core: the release gate depends on WFC's repository being reachable with a
+  stored SSH key at an exact commit. A spreadsheet library cannot publish
+  when its workflow tooling's access breaks -- and the WFC consumer test is
+  skipped on the runner anyway.
+* core: unpinned `apt` documentation toolchain on `ubuntu-latest`, used only
+  *after* the PyPI upload. A docs build failure is discovered after the
+  irreversible step.
+* WFC: the tooling needed to repeat Q1 lives outside the repository
+  (`~/wfc-runtime-env/requests/q1/`, `~/wfc-q1/`), as do the two handover
+  documents. Beta 2 cannot be reproduced from the repository alone.
+* WFC: provider CLI authentication and model availability on the
+  maintainer's machine.
+* Both: Trusted Publisher entries and (WFC) Environment rules exist only as
+  web settings. Each should be listed once, in a short checklist, with the
+  date last confirmed.
+
+=== Coupling
+
+* core CI installs WFC; WFC qualifies on core and leaves branches and
+  worktrees there (`wfc/q1a`, `wfc/q1b`). Each project's release touches the
+  other. Neither dependency is required by either product.
+* core's runbook treats core, demo and Pages as one release. Practice has
+  already decoupled the demo; the documents and `release-status` have not.
+
+== Proposed target operating model
+
+=== Conceptual flow
+
+The same seven states for both projects, implemented locally in each
+repository:
+
+. *Release-ready (human).* The maintainer, or an agent on the maintainer's
+  behalf, produces one release-preparation commit on `main` and the
+  maintainer pushes the tag. This is the declaration.
+. *Preflight (automatic, seconds).* Tag on `main`; tag equals version; notes
+  section present and frozen; README links correct for the tag.
+. *Qualification (automatic).* Tests on the supported matrix; lint; one
+  build; artifact audit; install of the built wheel; project-specific
+  checks. Documentation is built here too, before anything is published.
+. *Candidate (automatic).* The built files are stored once with checksums.
+  Every later step uses these bytes.
+. *Decision (human, one click).* The run pauses at the `pypi` environment
+  and shows a summary: version, commit, matrix result, artifact names, sizes
+  and SHA-256, audit result. Project-specific pre-publication checks happen
+  in this pause.
+. *Publication (automatic).* PyPI upload with default attestations; GitHub
+  Release with the files and checksums; project-specific publication
+  (core: Pages).
+. *Verification (automatic).* Install the exact version from PyPI in a clean
+  environment and compare hashes with the candidate; project-specific checks
+  (core: the Pages paths exist).
+
+Recovery rules, identical for both:
+
+[cols="2,3",options="header"]
+|===
+|State |Action
+|Failed before any upload |Fix on `main`, delete the tag, tag again.
+|Uploaded to TestPyPI only (WFC) |Transient failure: re-run failed jobs.
+Content change: next version.
+|Uploaded to PyPI, later job failed |Re-run failed jobs. Never retag.
+|Wrong content on PyPI |Yank, release the next version.
+|===
+
+Because publication uses stored bytes, "re-run failed jobs" is safe in every
+state; no state requires a rebuild.
+
+=== Common and project-specific parts
+
+[cols="1,3",options="header"]
+|===
+|Common shape |Job sequence and names; environment name `pypi`; tag form;
+notes convention; preflight contract; pinned actions with an updater;
+decision summary; post-publication verification; the recovery table.
+|core only |Interpreter and dependency-floor matrix; build-time README link
+substitution; Pages build and publication; optional demo follow-up.
+|WFC only |Offline input bundle; bubblewrap runner preparation; exact
+allow-list audit; TestPyPI stage; real-provider consumer smoke.
+|===
+
+"Common" means the same shape, copied. A shared reusable workflow is not
+recommended: Trusted Publishing is not supported from inside a reusable
+workflow (<<sources>>), the two pipelines differ in most job bodies, and two
+files of this size are cheaper to maintain than a third repository.
+
+=== Operational effort in the target model
+
+[cols="1,2,2",options="header"]
+|===
+| |core |WFC
+|Human, routine
+|Curate notes; push tag; approve. (3)
+|Curate notes; push release commit and tag; run one smoke script; approve. (4)
+|Automatic
+|Preflight, matrix, build, audit, wheel test, docs build, PyPI, Release,
+Pages, version table, verification.
+|Preflight, suite, build, audit, smoke install, TestPyPI, PyPI, Release,
+verification.
+|Exceptional only
+|Re-run a failed job; retag before upload; yank.
+|The same, plus a version bump after a TestPyPI-spent failure.
+|One-time setup
+|`pypi` environment; Trusted Publisher entry updated to name it.
+|Already done for Beta 1.
+|===
+
+Success criterion: a release needs no conversation beyond "prepare release
+X" and no document longer than one page.
+
+[[core-recs]]
+== Recommendations for spreadsheet-handling (core)
+
+Effort: S under an hour, M about half a day, L a day or more.
+
+C1 -- Enforce release preconditions in the tag job (essential)::
+Limitation::: Any `+v*+` tag publishes; the on-`main` check is local,
+optional and fails on a detached HEAD.
+Change::: Add a first step to the tag path: fetch `origin/main`, assert the
+tag commit is an ancestor, assert the built version equals the tag, assert
+the notes section for the version exists and is frozen. Give
+`release_check.sh` a tag mode or add about twenty lines of shell.
+Improvement::: Removes the `v0.1.0b6` failure class server-side; removes the
+second local `release-check` run.
+Effort and upkeep::: S; none.
+
+C2 -- Build once, publish from a `pypi` environment (essential)::
+Limitation::: Build tools run in the job that can mint a PyPI token; the
+uploaded files were never tested; a failed upload cannot be retried without
+a rebuild; a tag push is immediately irreversible.
+Change::: A `build` job without `id-token` builds and uploads a workflow
+artifact; `publish` only downloads and uploads, with `environment: pypi`.
+Name that environment in the PyPI Trusted Publisher entry and restrict it to
+`+v*+` tags. Add the maintainer as required reviewer.
+Improvement::: Matches PyPA guidance; smaller token exposure; safe retry; a
+pause before the irreversible step.
+Effort and upkeep::: S-M plus one settings change on GitHub and PyPI; one
+click per release.
+
+C3 -- Freeze release notes before the tag (essential)::
+Limitation::: The sweep after the tag has drifted in two of three releases;
+published `v0.2.2` documentation calls the release "planned".
+Change::: Freeze the heading in the release-preparation commit; C1 enforces
+it. Open the next "planned" section when the first new note is written, not
+as a release step. Remove the diff-based sweep check from the runbook.
+Improvement::: Removes the post-release reset as a mandatory step.
+Effort and upkeep::: S; none.
+
+C4 -- Substitute README links at build time (worthwhile)::
+Limitation::: Bake branch, bake commit, restore commit, a local check and a
+CI guard, all for one `sed`; the restore was skipped for `v0.2.2`.
+Change::: In the `build` job, apply the documented substitution to
+`README.md` before `python -m build` and pass the version explicitly
+(`SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SPREADSHEET_HANDLING`), since the edit
+makes the tree dirty. Keep `readme-check` as an assertion on the built
+metadata. The committed README always says `/latest/`.
+Improvement::: Removes four manual steps and the release branch.
+Effort and upkeep::: S; none. Verify once that wheel metadata and sdist
+carry the versioned links.
+
+C5 -- Test the supported range and the built wheel (worthwhile)::
+Limitation::: One interpreter, newest dependencies, editable install; two
+recent defects were outside that single combination.
+Change::: Matrix of CPython 3.10 and the newest supported version, each with
+latest dependencies and once with a constraints file at the declared floors
+(`pandas 2.0`, `numpy 1.23.2`, where installable). Install the built wheel
+and run the suite against it. Adjust `requires-python` or the classifier
+"OS Independent" to what is tested.
+Improvement::: Compatibility claims are backed; packaging defects surface
+before publication.
+Effort and upkeep::: M; a few CI minutes; occasional floor updates.
+
+C6 -- Constrain the sdist (worthwhile)::
+Limitation::: The sdist contains the whole repository.
+Change::: Add a `MANIFEST.in` that prunes `docs`, `tests`, `project_memory`,
+`registries`, `tools`, `scripts`, `docs_generated`, `.github`; assert in CI
+that the sdist has only the expected top-level entries.
+Improvement::: Smaller, intentional artifact. No per-file allow-list needed.
+Effort and upkeep::: S; touched only when a top-level directory is added.
+
+C7 -- Take WFC out of the release gate (worthwhile)::
+Limitation::: `publish` needs `test`; `test` needs a stored SSH key and a
+reachable WFC commit; the WFC hop test is skipped on the runner.
+Change::: Move the WFC consumer tests to a separate job that `publish` does
+not need, or install WFC from its public source without a key. Delete the
+`WFC_READ_DEPLOY_KEY` secret.
+Improvement::: One secret and one foreign failure mode fewer.
+Effort and upkeep::: S; none.
+
+C8 -- Make the documentation flow self-verifying (worthwhile)::
+Limitation::: Docs are built after the PyPI upload; the version table is
+edited by hand and has already been wrong; verification needs local sibling
+checkouts.
+Change::: Build the Pages output in the qualification stage and store it as
+an artifact; `publish-docs` only pushes it. Generate the "Browse by version"
+table from the `versions/` directory of the Pages clone. Run the structural
+check on that clone before the push. Declare the demo an independent
+follow-up; drop its cross-correlation from `release-status`, or retire
+`release-status` and `pages-check` once the job covers them.
+Improvement::: Removes three manual steps and about 700 lines of helper
+script from the routine path; closes `FTR-RELEASE-PROCESS-AUTOMATION-P5`.
+Effort and upkeep::: M; lower than today.
+
+C9 -- Pin actions and automate the updates (worthwhile)::
+Limitation::: Mutable references; no updater; the documentation cites a
+PyPA recommendation that the action README does not make.
+Change::: Adopt the same mechanism as WFC (see W6): a workflow dependency
+lockfile or commit-SHA pins, plus a `dependabot.yml` for the
+`github-actions` ecosystem at a monthly interval.
+Improvement::: Reproducible workflow inputs with updates arriving as pull
+requests instead of as a release-day surprise.
+Effort and upkeep::: S; a monthly merge.
+
+C10 -- Shorten the runbook (worthwhile, after C1-C8)::
+Limitation::: 1,823 lines across four files, partly contradicting practice.
+Change::: One page: prepare, tag, approve, recovery table. Move the rest to
+cold storage; delete `04_release_history.adoc`; correct the `dev` branch
+statements.
+Improvement::: The document can be followed without a guide.
+Effort and upkeep::: M once.
+
+C11 -- Create a GitHub Release (optional)::
+Change::: A final job attaches wheel, sdist and checksums and links the
+versioned release notes.
+Effort and upkeep::: S; none.
+
+Not recommended for core: a TestPyPI stage, release-candidate tags (the
+approval pause already gives the "manual promote" that
+`FTR-AUTORELEASE-POLICY` asks for), an exact per-file allow-list, offline
+bundles, consumer qualification Runs, recorded acceptance statements.
+
+Pending housekeeping independent of these: restore the `/latest/` README
+links, freeze the `0.2.2` notes heading, delete `release/v0.2.2`.
+
+[[wfc-recs]]
+== Recommendations for workflow-coordinator (WFC)
+
+W1 -- Correct the recovery rule for the TestPyPI-spent state (essential)::
+Limitation::: `ch04` prescribes delete-and-retag for any failure before
+`publish-pypi`; after a successful TestPyPI upload that path cannot succeed.
+Change::: Replace the paragraph with the recovery table of the target model.
+Do not solve it with `skip-existing` on TestPyPI: the rehearsal would then
+silently keep the old file. Make `release` idempotent
+(`gh release view` before `create`, `upload --clobber`).
+Improvement::: The first real failure does not start with a dead end.
+Effort and upkeep::: S; none.
+
+W2 -- One scripted release-preparation commit (essential for Beta 2)::
+Limitation::: The version is edited in `pyproject.toml`,
+`implementation_identity.py`, a test literal and twelve README links; the
+preflight does not check that the README pins match the tag.
+Change::: A single `make` target that sets the version everywhere, re-pins
+README links to `blob/v<version>/`, and freezes the notes heading. Extend
+`check_readme_links` to require the current tag in links to this
+repository. Let tests read the version from `pyproject.toml` instead of a
+literal.
+Improvement::: Beta 2 preparation is one command and one commit; stale
+`v0.1.0b1` links cannot ship.
+Effort and upkeep::: S-M; none.
+
+W3 -- Move the consumer smoke into the approval pause (worthwhile; decision)::
+Limitation::: Q1 ran before the tag on a `main`-run artifact that needed an
+authenticated download and manual transfer; the tag run then rebuilt, so the
+qualified file is not the published file; recording results in the tree
+forced further commits between candidate and tag.
+Change::: Tag first. After `publish-testpypi`, while the run waits at the
+`pypi` environment, install the version from TestPyPI and run the smoke with
+one script kept in the repository (both adapters, post-run verification, a
+ten-line result). Approve or reject. Put the result in the GitHub Release
+text, not in `docs/`.
+Improvement::: The smoke tests the bytes that PyPI will receive; no artifact
+shuttle, no second `check` run on `main` as a prerequisite, no pre-tag
+evidence commits; TestPyPI gains a recurring purpose. The real-provider
+check before PyPI -- a justified WFC requirement -- is preserved.
+Cost::: A failed smoke spends a beta number. That reverses the recorded
+decision to keep Q1 before the tag; for a `bN` line the number is cheap.
+If Q1 stays before the tag::: Print `implementation_tree_sha256` in the job
+summary of both runs and let the tag run assert equality with the
+candidate's value, replacing the manual member-by-member comparison.
+Effort and upkeep::: M; lower than Beta 1.
+
+W4 -- One approval, one record (worthwhile)::
+Limitation::: Five separate maintainer authorizations and seven copies of
+the evidence for one release.
+Change::: The `pypi` deployment approval is the release authorization;
+GitHub records who and when. Evidence is the run, the Release assets with
+`SHA256SUMS.txt` attached, and the Evidence-repository commit ids in the
+Release text. No acceptance statements in `docs/`. Retire the MD and ES
+labels as decided history; keep one gate list.
+Improvement::: No documentation commits are needed to release.
+Effort and upkeep::: S; negative.
+
+W5 -- Put decision facts in the job summary (worthwhile)::
+Limitation::: Facts the maintainer was asked to accept were inferred because
+logs were not readable to the Operator.
+Change::: Write to the summary: interpreter and seed pip version, `bwrap`
+version, pytest pass and skip counts, artifact names, sizes, SHA-256,
+`implementation_tree_sha256`, audit result.
+Improvement::: The approval is informed by one screen; no evidence-limit
+paragraphs.
+Effort and upkeep::: S; none.
+
+W6 -- Maintain the action pins mechanically (worthwhile)::
+Limitation::: SHA pins were resolved by hand; run 9 already warns that the
+pinned artifact actions use a deprecated Node runtime.
+Change::: Evaluate GitHub's workflow dependency lockfile
+(`.github/workflows/actions.lock`, generated by `gh actions-lock`; reported
+generally available since 2026-10-28, <<sources>>); otherwise keep SHA pins.
+In both cases add `dependabot.yml` for `github-actions`. Use the same choice
+in core (C9).
+Improvement::: Pins stay current without a manual `git ls-remote` procedure.
+Effort and upkeep::: S; a monthly merge.
+
+W7 -- Decide what `python-compat` means (worthwhile)::
+Limitation::: Classifiers advertise 3.10-3.12; a red compat job would not
+stop publication.
+Change::: Add `python-compat` to the `needs` of `publish-testpypi`, or
+remove the classifiers. The first costs nothing at run time.
+Effort and upkeep::: S; none.
+
+W8 -- Reduce `ch04` to the steady state (worthwhile)::
+Limitation::: Half the chapter is the record of `0.1.0b1`; gate wording is
+stale; agents load the chapter as context for every release task.
+Change::: Keep contract, job description, one-page runbook and recovery
+table; move the hosted-run record, Q1 record, acceptances and template to
+cold storage; move the Q1 request files and verifier from
+`~/wfc-runtime-env/` into the repository (part of W3).
+Effort and upkeep::: M once.
+
+W9 -- Verify after publication (optional)::
+Change::: A final job installs the exact version from PyPI in a clean
+environment and compares hashes with `SHA256SUMS.txt`.
+Improvement::: Replaces the manual look at two web pages.
+Effort and upkeep::: S; none.
+
+W10 -- Smoke against a disposable repository (optional; decision)::
+Limitation::: Q1 uses `core` as its consumer and leaves branches and
+worktrees there.
+Change::: Let the smoke script create a throwaway repository, as the
+quickstart example already does. The smoke task is a two-line file; a real
+consumer adds little.
+Effort and upkeep::: S; none.
+
+Keep unchanged, because the product justifies them: the exact allow-list
+audit, the offline input bundle, the full suite on the one qualified
+profile, zero repository secrets, the environment approval, the static
+version, no Pages publication.
+
+Reuse for Beta 2: ES-1, ES-2, MD-1 to MD-6, the runner adaptation and
+packages E0-E3 were one-time. They do not need repeating. What Beta 2 would
+still repeat under the current design is the manual part: the version edits,
+the artifact shuttle, the two Runs with out-of-repository tooling, and the
+recording commits. W2 removes the first, W3 the second and third, W4 the
+fourth. With all four, Beta 2 is: run the preparation target, push commit
+and tag, run the smoke script, approve.
+
+== Prioritized implementation roadmap and open decisions
+
+[cols="1,3,3",options="header"]
+|===
+|Step |core |WFC
+|1 -- before the next release
+|C1, C2, C3; pending `0.2.2` housekeeping
+|W1, W2, W5
+|2 -- remove recurring manual work
+|C4, C7, C8
+|W3 (after the decision), W4, W7
+|3 -- robustness and upkeep
+|C5, C6, C9
+|W6, W9
+|4 -- documentation
+|C10, C11
+|W8, W10
+|===
+
+Each step is repository-local and independently useful; no step requires the
+other repository to move.
+
+Open decisions for the maintainer:
+
+. *WFC: smoke before or after the tag (W3).* Trades a possibly spent beta
+  number against artifact identity and the removal of the manual shuttle.
+. *WFC: is TestPyPI permanent?* If W3 is declined, its recurring value is
+  small and it could be dropped after two or three clean releases.
+. *Both: lockfile or SHA pins (C9, W6).* The lockfile is new; one mechanism
+  for both repositories is the point.
+. *core: required reviewer on `pypi` (C2).* The environment itself is
+  recommended regardless; the reviewer rule costs one click.
+. *core: what is supported?* Either test Python 3.10 and the pandas floor
+  (C5) or raise the declared minimums.
+. *core: is the demo part of a release?* Practice says no; the runbook and
+  `release-status` should then say the same (C8).
+. *WFC: consumer for the smoke (W10)* -- `core` or a disposable repository.
+
+To verify before acting on this report (all *[X]*): whether `v0.1.0b1` and
+`v0.2.2` are on PyPI; whether the WFC tag run has executed and how it ended;
+the actual Environment rules and Trusted Publisher entries; whether PyPI
+shows attestations for either project.
+
+[[sources]]
+== Sources
+
+Consulted 2026-11-23.
+
+* Python Packaging User Guide, "Publishing package distribution releases
+  using GitHub Actions CI/CD workflows" --
+  https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/
+  (separate build job, artifact hand-over, `pypi` environment with manual
+  approval, attestations by default from `gh-action-pypi-publish` v1.11.0).
+* PyPI, "Trusted Publishers: security model and considerations" --
+  https://docs.pypi.org/trusted-publishers/security-model/
+  (dedicated environment, job-level `id-token`, tag protection, minimal
+  publishing job).
+* PyPI, "Publishing with a Trusted Publisher" --
+  https://docs.pypi.org/trusted-publishers/using-a-publisher/
+  (environment optional but strongly encouraged).
+* `pypa/gh-action-pypi-publish` README, branch `release/v1` --
+  https://github.com/pypa/gh-action-pypi-publish
+  (pin to tagged versions or commit SHAs; attestations on by default with
+  Trusted Publishing; avoid `skip-existing`; build separately; not supported
+  inside reusable workflows).
+* GitHub Docs, "Secure use reference" --
+  https://docs.github.com/en/actions/reference/security/secure-use
+  (lockfile or full-length commit SHA for third-party actions; least
+  privilege for `GITHUB_TOKEN`; OIDC).
+* GitHub Docs, "Workflow dependency lockfiles" --
+  https://docs.github.com/en/actions/concepts/security/workflow-dependency-lockfiles
+  and the changelog entry of 2026-10-28 --
+  https://github.blog/changelog/2026-10-28-github-actions-workflow-lockfiles-are-generally-available/
+* GitHub Docs, "Deployments and environments" --
+  https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments
+  (required reviewers, deployment branch and tag patterns, availability for
+  public repositories).
