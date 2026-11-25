@@ -1,5 +1,11 @@
 = Recovery and routing bugfix — independent focused review
 
+This record is cumulative and append-only. <<part-i>> is the `H004`
+focused review exactly as recorded then, unchanged. <<part-ii>> is the
+`H007` focused review of the `H006` correction, with its own facts,
+measurements and disposition; the attribute block immediately below is
+`H004`'s and is not restated for `H007`.
+
 WorkItem:: `WI-WFC-RECOVERY-ROUTING-001`
 Run and Hop:: `RUN-ff42615fa4cd4d35a95affd8a3e05585`, `H004`
 (`focused_review`, independent reviewer, gate, blocking-only,
@@ -26,6 +32,9 @@ and the Worker's verification record were read as context only; every
 result below was re-derived by my own execution against the candidate as
 committed. This Hop made no product, test or documentation change — the
 only repository change proposed is this artifact.
+
+[[part-i]]
+== Part I — `H004` focused review (accept)
 
 == 1. Disposition
 
@@ -396,4 +405,340 @@ Coordinator's, not run or claimed by me
 
 | Independent whole-candidate review accepted with no blocking Finding
 | this record
+|===
+
+[[part-ii]]
+== Part II — `H007` focused review of the `H006` correction (changes required)
+
+Run and Hop:: `RUN-ff42615fa4cd4d35a95affd8a3e05585`, `H007`
+(`focused_review`, independent reviewer, gate, blocking-only,
+`finding_authority: [resolve]`, permitted routes `correction` and
+`renew_broad_review`)
+Invocation:: `INV-1f55d7a20949456fb3f1a2460a45a9ce`
+Review base HEAD:: `8e8af7fd4ae4fb69d5bcc59fb3a9b16d81f9f157`
+Correction under review:: `8e8af7f`
+(`fix: ... H006 refuse recovery by name when no Hop budget remains`), the
+single bounded `H006` correction answering the renewed broad review's
+blocking concern.
+Whole candidate:: `ca1f9019e7db423339e8bfd3665393322cac4429..8e8af7f`
+Predecessor review:: `H005` renewed broad review, recorded in
+`wfc_recovery_routing_fix_broad_review.adoc` (`5cd677f`), verdict
+`changes_required`; its concern is carried in this Run as `F003`.
+Date:: 2026-11-25
+Disposition:: *Changes required.* `F003` is resolved. One *new blocking
+Finding* (below): `wfc resume`'s mechanical recovery mutates the Run and
+the journal before its last two failure points, so a named refusal there
+leaves the Run unresumable with its mechanical stop reason erased — the
+same invariant `F003` named, reached by a different trigger. Route
+`correction`.
+
+This is again a whole-candidate review, re-derived by my own execution
+against `8e8af7f`. This Hop changed no product, test or documentation
+file; every experiment ran in a copy of `src/`, `tests/` and `scripts/`
+under `$TMPDIR`, and no `git` write command was used.
+
+=== 9. Disposition and route
+
+Verdict:: `changes_required`
+Route:: `correction`
+Finding disposition:: `F003` resolved. One new blocking Finding proposed
+with no ID, for the Coordinator to allocate.
+
+On the route choice, the same profile-derived rule as `H004` applied to
+the opposite outcome: `renew_broad_review` is the forward route *for a
+review that finds nothing to correct*. This review found a blocking
+defect, and `correction` — goto the `correct` worker phase — is exactly
+the route `C`'s own prompt rule reserves for `changes_required`.
+
+=== 10. Environment, and what I did not run
+
+Python: `/tmp/wfc-review-h002-venv/bin/python` (3.13.5, `pytest` 9.2.0,
+`PyYAML` 6.0.3), a pre-existing venv on this machine outside the
+repository. Nothing was installed anywhere, and no production dependency
+was touched. That venv carries a *stale* installed `wfc` console script
+(its `run` parser has no `--execution-bindings-sha256`), which is the sole
+cause of the three environmental failures below.
+
+[cols="2,3",options="header"]
+|===
+| Check | Measured result
+
+| `pytest --wfc-partial tests/unit/test_mechanical_recovery_lifecycle.py`
+| 18 passed
+
+| `pytest --wfc-partial tests/unit` (excluding
+`test_claude_adapter_conformance.py`, blocked by the read-only `/tmp`
+limitation `H004` documented)
+| `3 failed, 1498 passed, 1 skipped, 15 subtests passed in 175.03s`
+
+| the three failures
+| all in `tests/unit/test_lifecycle_controller.py`
+(`test_resume_after_verification_checks_cached_envelope_and_uses_pinned_phase_binding`,
+`test_scripted_yes_run_with_fake_provider_reaches_completed_classification`,
+`test_resume_after_classified_is_a_no_op_and_ext_records_are_ignored`),
+each failing with `wfc: error: unrecognized arguments:
+--execution-bindings-sha256 ...` from the stale installed script —
+agent-local, not a candidate defect, and the same three `H006` reported
+
+| `python -m ruff check .`
+| `All checks passed!`
+
+| `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+--failure-level=WARN` on all seven changed `.adoc` files
+| no output for each
+
+| `python3 -I scripts/wfc_doc_catalog.py generate` then `check`
+| `552 records, 415162 bytes; unchanged`, `83 unresolved links; 4 Project
+Memory source_path misses`, `catalog current` — identical to the `H005`
+and `H006` measured baseline
+|===
+
+Not run and not claimed: the full required suite (`python -m pytest -q`)
+and the Coordinator's task-check, which need verified offline inputs this
+sandbox does not carry.
+
+=== 11. `F003` — resolved
+
+`F003` required that a recovery never leave a Run in a state no documented
+path can recover and never erase the mechanical stop reason it must
+preserve, and specifically that recovery refuse by name, changing nothing,
+when no Hop budget remains. `H006` adds exactly one live re-verification
+in `_attempt_mechanical_recovery` (`frontdoor/lifecycle.py:887`), placed
+with the other live checks and before any mutation, plus one refusal test
+and the `ch06`/verification-record updates.
+
+I did not take the fix-dependence claim on trust. In the scratch copy I
+removed only the two added production lines, left the tests untouched, and
+re-ran the file: exactly one test fails, the new one, with the shape
+`H006` reported.
+
+[source,text]
+----
+FAILED tests/unit/test_mechanical_recovery_lifecycle.py::
+    test_recovery_refuses_on_no_hop_budget_remaining
+workflow_coordinator.serialization.ValidationError:
+    Run.hop_used exceeds Run.hop_limit
+  (raised inside the fake engine's own continuation, because the Run had
+   already been rewritten to `ready` before the relaunch)
+----
+
+I also checked the claim the fix leans on — that a Run stopped this way on
+its *last* authorized Hop still classifies honestly — rather than assuming
+it from the reducer's branch order. Driving `reduce_result` directly with
+`hop_used/hop_limit = 1/1` and a durable-artifact repository anomaly:
+
+[source,text]
+----
+status           = reconcile_required
+reconcile_reason = mechanical_recoverable
+stop_reason      = mechanical_preemption:required durable artifact has no declared path
+anomalies        = ('required durable artifact has no declared path',)
+hop_used/limit   = 1/1
+----
+
+So `A` stays honest at the budget ceiling and only the *continuation* is
+refused; the stop reason and anomaly text that `A` must preserve survive,
+and the candidate's test additionally asserts a byte-identical `run.json`
+after the refusal. `resume_after_reconcile`, `diagnose_mechanical_recovery_
+eligibility` and every other predicate element are untouched. `F003` is
+resolved.
+
+The consequence `H006` documents is real and acceptable: such a Run is not
+`wfc resume`-recoverable and needs the maintainer's own outcome-2 path. See
+observation 1 in section 13 for the one wording problem that leaves.
+
+[[h007-f-d]]
+=== 12. New blocking Finding — a refusal after the mutation point leaves the Run unresumable
+
+*The defect.* `_attempt_mechanical_recovery` performs its mutations —
+`journal.append("mechanical_recovery_intent")`, `write_run_snapshot`,
+the `checkpoint.json` write and `journal.append("mechanical_recovery_
+resumed")` (`frontdoor/lifecycle.py:906`–`919`) — *before* its last two
+failure points: the ownership-lock acquisition (`lifecycle.py:921`–`923`)
+and the continuation launch (`lifecycle.py:924`–`930`). Both of those
+report `refused_not_recoverable`, and both leave the Run rewritten to
+`ready` with `stop_reason` and `anomalies` cleared. Nothing can then
+recover it.
+
+*Reproduced, probe A — the continuation engine cannot be spawned.* This is
+the ordinary case of the `wfc` console script being absent, renamed or off
+`PATH` between the stopped Run and the operator's `wfc resume`; the product
+treats "no engine" as a first-class expected condition elsewhere
+(`launch_failed_no_engine` with its own retry budget), and the recovery
+path deliberately excludes itself from that bookkeeping
+(`lifecycle.py:824`–`827`). With `_ENGINE_COMMAND` pointed at a
+non-existent file:
+
+[source,text]
+----
+raised: recovery continuation engine failed to launch: [Errno 2] No such
+        file or directory: '.../definitely-not-an-engine'
+        classification='refused_not_recoverable'
+
+run.status       = 'ready'
+run.stop_reason  = None
+run.anomalies    = ()
+reconcile_reason = 'mechanical_recoverable'
+journal          = ..., 'mechanical_recovery_intent',
+                   'mechanical_recovery_resumed',
+                   'mechanical_recovery_launch_intent',
+                   'mechanical_recovery_launch_failed'
+
+second `wfc resume`, with a working engine restored:
+  classification = 'awaiting_human'
+  message        = 'lifecycle already classified (no-op)'
+`wfc status`     = 'awaiting_human'   (while run.json says 'ready')
+----
+
+No path recovers that Run: the predicate can no longer see a
+`mechanical_preemption:` stop reason, so `_attempt_mechanical_recovery`
+returns `None`; `_advance` reaches `_continue_after_launch`, whose
+`_evaluate` short-circuits on the stale `classified` record; the
+productized `prepare-successor` needs a frozen semantic stop this Run does
+not have; and a manual state edit is exactly what the task forbids. This
+is the `GOAL`'s own defect — a Run no documented path can recover, with
+its honest diagnosis gone — reintroduced by the mechanism built to remove
+it.
+
+*Reproduced, probe B — a concurrent lifecycle holds the ownership lock.*
+
+[source,text]
+----
+result.classification = 'refused_not_recoverable'
+result.message        = 'mechanical recovery refused: active lifecycle
+                         already running for this checkout'
+run.status            = 'ready'
+run.stop_reason       = None
+run.anomalies         = ()
+journal               = ..., 'mechanical_recovery_intent',
+                        'mechanical_recovery_resumed'
+----
+
+A refusal named exactly as the contract requires, which nevertheless
+changed both the Run and the journal and left the same unrecoverable
+shape.
+
+*What this contradicts.* `B`'s own rule, "if any predicate fails it
+refuses with a named classification and message and changes nothing"; the
+candidate's *normative* operator text, `ch06_recovery/01_outcomes.adoc`
+("Every predicate element, live or recorded, that fails refuses by name
+(`refused_not_recoverable`) and changes nothing -- no journal mutation, no
+Run mutation, no archive attempt"); and the verification record ("Any
+failure is also a named refusal with no mutation"). Both measured
+refusals are counterexamples to all three. Archived Evidence itself is
+*not* touched — the predecessor attempt was archived before the recovery
+and its `audit.json` keeps the true facts — so what is falsified is the
+live Run record, against `ch06`'s own "the historical Run record itself is
+never rewritten".
+
+A third, smaller instance of the same shape: the
+`recovery predicate re-verification failed` refusal (`lifecycle.py:915`–`916`)
+is returned after `mechanical_recovery_intent` is already in the journal,
+so "no journal mutation" is untrue for it too. That one is harmless for
+recoverability — `run.json` is still untouched there — so it is a doc
+accuracy point, not a second defect.
+
+*A feasible smaller alternative, measured.* Take the ownership lock and
+resolve the continuation engine *before* the first mutation — the
+discipline `_advance` already uses, and the one this function's own
+comment (`lifecycle.py:892`–`895`) already applies to the provider
+executable. In the scratch copy this was six lines: move
+`lifecycle.py:921`–`923` above line `906` and add a resolved-engine
+existence check with its own named refusal, releasing the lock on it.
+Measured there:
+
+* probe B refuses with `run.status == 'awaiting_human'`,
+  `stop_reason == 'mechanical_preemption:required durable artifact has no
+  CommitIntent'` and *no* new journal record;
+* probe A refuses by name
+  (`no engine executable is available for a continuation`) with the Run
+  untouched, and a later `wfc resume`, once the engine is available again,
+  recovers that same Run to `completed` at `hop_used/limit 2/5`;
+* all 18 existing tests in `test_mechanical_recovery_lifecycle.py` still
+  pass.
+
+That is a feasibility demonstration, not a prescription; the Worker owns
+the fix and its tests.
+
+*One residual window belongs to the same decision.* A controller killed
+between `mechanical_recovery_resumed` and the continuation's `classified`
+record leaves the identical shape, because the recovery's own record
+family has no re-entry of its own and `_evaluate` short-circuits on the
+stale `classified` record. Pre-mutation refusals alone do not close that.
+Either make the `mechanical_recovery_resumed`-without-`classified` state
+re-enterable, as `launch_spawned` already is, or stop claiming
+unconditional no-mutation refusals and crash-safety in `ch06`. Which of
+the two is the Worker's call; silently leaving both the window and the
+claim is not.
+
+=== 13. Non-blocking observations
+
+. *The budget refusal points at a path no mechanism implements.* `ch06`
+  and the verification record send a budget-exhausted mechanical stop to
+  "authorizing additional Hop budget ... through the existing documented
+  path (outcome 1/2)". Nothing in the tree raises an existing Run's
+  `hop_limit` — it is fixed at Run creation from
+  `max_autonomous_hops` (`model.py:950`) and no code or CLI mutates it —
+  and outcome 1 provably refuses this Run, so the only real path is
+  outcome 2, a fresh successor. `report.py:48`'s pre-existing
+  `awaiting_human_budget` text makes the same unbacked promise, so this is
+  neither introduced here nor an affected classification; but the two new
+  sentences inherit it, and narrowing them to outcome 2 costs one clause.
+. *The `reconcile_required` next-action text was not given the same
+  honesty treatment as `awaiting_human`.* "A human must reconcile the
+  Run's conflicting state before resuming" (`report.py:49`) is now also
+  reached by the new `mechanical_recoverable` class, where there is
+  nothing for a human to reconcile and `wfc resume` is the entire path.
+  Not false, but it buries the real action that the `awaiting_human`
+  branch now states plainly.
+. *The three environmentally blocked `test_lifecycle_controller.py` cases
+  are precisely the `wfc resume` no-op/caching cases this WorkItem
+  changes.* Nothing to fix in the candidate; worth the Coordinator's
+  attention that its task-check will be the first trusted execution of
+  them against this change.
+. `H004`'s observations 1–4 were re-read and still stand as recorded; none
+  of them was affected by `H006`.
+
+=== 14. Acceptance clauses, re-checked at `8e8af7f`
+
+[cols="3,1",options="header"]
+|===
+| Clause | Reproduced
+
+| A implemented as specified, including at the budget ceiling
+| yes
+
+| Incident reproduced structurally by tests that fail without the fix
+| yes, re-verified by my own revert experiment on `H006`'s hunk
+
+| Every violated predicate element refused with a named reason
+| yes for every element, including `H006`'s new one
+
+| A refusal changes nothing
+| *no* — section 12
+
+| No path leaves a Run that no documented path can recover
+| *no* — section 12
+
+| Evidence and archived attempts provably unchanged by recovery
+| yes, including in the failing probes of section 12
+
+| Reviewer authority and Finding rules untouched
+| yes
+
+| `robust@v1` and `simple@v1` unchanged
+| yes — no diff under `governance/`
+
+| Docs and the verification record accurate
+| not yet — section 12 and observation 1
+
+| Existing tests pass
+| yes, outside the three stale-console-script cases in section 10
+
+| Full required suite and quality gates
+| gates measured (section 10); the full suite and task-check are the
+Coordinator's, not run or claimed by me
+
+| Independent whole-candidate review accepted with no blocking Finding
+| *no* — one new blocking Finding, section 12
 |===
