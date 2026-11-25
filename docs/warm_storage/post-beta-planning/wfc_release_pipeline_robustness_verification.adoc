@@ -6,7 +6,11 @@ link:../../backlog/FTR-WFC-RELEASE-PIPELINE-ROBUSTNESS.adoc[FTR-WFC-RELEASE-PIPE
 Beta-2 release-streamlining plan]). Written by the implementer; independent
 review and acceptance are recorded separately and are outstanding as of this
 writing. Verified against this repository at base HEAD
-`d66e804d3abd0e641a5e6f71e085fe2588adda25`.
+`d66e804d3abd0e641a5e6f71e085fe2588adda25`. Updated in a later correction
+Hop to add `set -euo pipefail` to two `check`-job steps and to correct a
+false claim this record previously made about GitHub Actions' default shell
+(<<pipefail-correction>>); nothing else in this record's description of the
+candidate changed.
 
 == What changed
 
@@ -14,9 +18,11 @@ writing. Verified against this repository at base HEAD
 
 * `check` job: the "Required test suite" and "Distribution content audit"
   steps now additionally `tee` their already-produced stdout to
-  `$RUNNER_TEMP/pytest-output.txt` and `$RUNNER_TEMP/dist-audit-output.txt`
-  (GitHub Actions' default shell already runs with `-o pipefail`, so this
-  does not change either step's exit status). A new "Decision facts for the
+  `$RUNNER_TEMP/pytest-output.txt` and `$RUNNER_TEMP/dist-audit-output.txt`.
+  Both steps' `run:` blocks now start with `set -euo pipefail` (see
+  <<pipefail-correction>>), so the pipeline's exit status is `pytest`'s and
+  `make dist-audit`'s, not `tee`'s, and neither step's exit status is
+  otherwise changed. A new "Decision facts for the
   job summary (W5)" step, `if: always()`, appends one block to
   `$GITHUB_STEP_SUMMARY`: interpreter and seed pip version, `bwrap
   --version`, the pytest pass/skip line, artifact names/sizes/SHA-256,
@@ -88,10 +94,13 @@ working-tree file (after) and compared, per job, `needs:` and
 `permissions:`, plus the top-level `permissions:`. Result: **identical** --
 every job's `needs:` and every job's (and the top-level) `permissions:`
 block compare byte-for-byte equal before and after. `publish-testpypi`
-still lists only `check`; `release` still lists only `publish-pypi`.
+still lists only `check`; `release` still lists only `publish-pypi`. Re-run
+against the final file state after the `set -euo pipefail` correction
+(<<pipefail-correction>>): same result, identical.
 
 A separate `diff` of every `<owner>/<repo>@<40-hex-sha>` action reference
-between before and after shows the five pinned actions unchanged, same
+between before and after (also re-run against the final, corrected file)
+shows the five pinned actions unchanged, same
 SHAs, same trailing-comment versions. A `grep` for `secrets\.`, `curl `,
 `wget `, and bare `http(s)://` literals shows the same two pre-existing
 URLs in both versions (`https://test.pypi.org/legacy/` and the release-notes
@@ -139,18 +148,46 @@ for `--help`). `gh release create --help`, `gh release upload --help` and
   positionally, `--title` and `--notes`, matching the existing call
   unchanged in the "absent" branch.
 
-== One more external assumption: GitHub Actions' default shell is `pipefail`
+[[pipefail-correction]]
+== Correction: the two `tee` pipelines needed an explicit `pipefail`
 
-Teeing the required-suite and `dist-audit` steps' stdout to a file
-(`... | tee "$RUNNER_TEMP/..."`) only leaves G2/G3 intact if the pipeline's
-exit status is the first command's (`pytest`/`dist-audit`), not `tee`'s.
-GitHub's documented default for a `run:` step on a Linux runner is
-`bash --noprofile --norc -eo pipefail {0}` -- `pipefail` already on, with no
-change needed from this slice. This is GitHub's own published default
-behaviour, not something a local, network-free sandbox can re-verify
-against a live hosted runner; it is recorded here as an external assumption
-this slice relies on for G2 and G3 to remain unweakened, rather than a
-locally proven fact.
+An earlier version of this record (and of the implementation) asserted that
+"GitHub Actions' default shell already runs with `-o pipefail`", citing
+`bash --noprofile --norc -eo pipefail {0}` as the default. That citation is
+GitHub's documented shell for an explicit `shell: bash` key
+(`docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax`,
+`jobs.<job_id>.steps[*].shell`); neither of these two steps sets `shell:`,
+so GitHub's actual default for a `run:` step on a Linux runner applies
+instead: `bash -e {0}`, with no `pipefail`. Under that real default, `cmd |
+tee file` reports `tee`'s exit status (always 0 here), not `cmd`'s, so a
+failing `pytest` run or a `dist-audit` violation would have left the `check`
+job green and, since `publish-testpypi` needs only `check`, allowed the
+publication chain to proceed on a red required suite or a failed C2
+audit -- unweakening neither G2 nor G3 as the FTR's W5 design and the
+Commission's "no weakened or deleted test" require.
+
+Reproduced locally:
+
+[source,bash]
+----
+bash -e -c 'python3 -c "raise SystemExit(1)" | tee /dev/null'; echo "$?"
+# -> 0 (GitHub Actions' real run: default; the failure is swallowed)
+
+bash -c 'set -euo pipefail; python3 -c "raise SystemExit(1)" | tee /dev/null'; echo "$?"
+# -> 1 (with set -euo pipefail, the first command's exit status wins)
+----
+
+Fix applied in this Hop, confined to `.github/workflows/release.yml`: the
+"Required test suite" step's `run:` block and the "Distribution content
+audit" step's `run:` block (previously a single-line `run:`, now a block)
+each now start with `set -euo pipefail`, matching the convention already
+used elsewhere in this same file (the C3 smoke step, the G1 preflight step,
+the python-compat venv/metadata steps, the `release` job's idempotent-upload
+step). No other line in either step changed; the `tee` capture mechanism
+itself needed no further change. The two run-block diffs are the complete
+content change in this Hop (confirmed by `diff` against the pre-correction
+file: one added `set -euo pipefail` line in each of the two blocks, nothing
+else).
 
 == Front Door docs-sync
 
@@ -161,16 +198,21 @@ behaviour changes. This is CI configuration only.
 [[checks]]
 == Checks run
 
-* YAML parse: `python3 -c "import pathlib, yaml; yaml.safe_load(...)"`
+* YAML parse: `python3 -c "import yaml; yaml.safe_load(open(...))"`
   against the edited `.github/workflows/release.yml` -- succeeds, no
-  output beyond the confirmation print.
+  output beyond the confirmation print. Re-run after the
+  `set -euo pipefail` correction (<<pipefail-correction>>); still succeeds.
 * Strict render: `asciidoctor --safe-mode=safe -a assembled -o /dev/null
   --failure-level=WARN docs/developer_guide/ch04_release_management.adoc`
-  -- printed nothing.
+  -- printed nothing. Re-run after the correction (ch04 itself was not
+  touched by the correction); still printed nothing. The same strict render
+  against this verification record itself (also changed in the correction)
+  likewise printed nothing.
 * Doc catalog (`python3 scripts/wfc_doc_catalog.py generate` then `check`):
   *83 unresolved links, 4 Project Memory source_path misses* -- confirmed
   as the baseline by running the same check before the first edit in this
-  Hop, and unchanged after. The generated catalog file is git-ignored and
+  Hop, and unchanged after the original slice's edits and again after the
+  correction's edits. The generated catalog file is git-ignored and
   was left in place; no scratch comparison file remains in the repository
   (the job-graph comparison script and its extracted before-copy of
   `release.yml` were both deleted after use; `git status --short -uall`
