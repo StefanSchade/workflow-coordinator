@@ -24,6 +24,9 @@ RELEASE_NOTES = Path("docs/release_notes/release_notes.adoc")
 README = Path("README.md")
 NOTES_HEADING = re.compile(r"^==\s+(\S+)\s+--\s+(.+?)\s*$")
 README_LINK = re.compile(r"\[[^\]\n]*\]\(([^\s)]+)\)")
+README_BLOB_LINK = re.compile(
+    r"https://github\.com/StefanSchade/workflow-coordinator/blob/v([^/]+)/"
+)
 
 
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -123,17 +126,24 @@ def check_release_notes(repo: Path, version: str) -> str | None:
     return f"release notes has no section for version {version}"
 
 
-def check_readme_links(repo: Path) -> str | None:
+def check_readme_links(repo: Path, version: str) -> str | None:
     path = repo / README
     if not path.is_file():
         return f"README.md not found: {README}"
+    text = path.read_text(encoding="utf-8")
     offenders = [
         target
-        for target in README_LINK.findall(path.read_text(encoding="utf-8"))
+        for target in README_LINK.findall(text)
         if not target.startswith(("http://", "https://", "#", "mailto:"))
     ]
     if offenders:
         return "README.md has repository-relative documentation link(s): " + ", ".join(offenders)
+    stale = sorted({found for found in README_BLOB_LINK.findall(text) if found != version})
+    if stale:
+        return (
+            "README.md has blob link(s) pinned to a version other than "
+            f"{version!r}: {', '.join(stale)}"
+        )
     return None
 
 
@@ -150,7 +160,7 @@ def run_checks(repo: Path, explicit_tag: str | None) -> tuple[str, list[str]]:
         checks.append(tag_error)
     else:
         checks.append(check_tag_matches_version(version, tag))
-    checks += [check_release_notes(repo, version), check_readme_links(repo)]
+    checks += [check_release_notes(repo, version), check_readme_links(repo, version)]
     return mode, [check for check in checks if check]
 
 

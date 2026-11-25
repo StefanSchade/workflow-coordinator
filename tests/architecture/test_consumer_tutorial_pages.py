@@ -15,6 +15,10 @@ CHAPTER = REPOSITORY / "docs" / "operator_manual" / "ch09_consumer_quickstart"
 _SHELL_BLOCK_RE = re.compile(r"\[source,shell\]\n-{4,}\n(.*?)\n-{4,}", re.DOTALL)
 _HEADING_RE = re.compile(r"^(=+)\s+(.+?)\s*$")
 _ANCHOR_BLOCK_RE = re.compile(r"\[\[([A-Za-z0-9_\-]+)(?:,[^\]]*)?\]\]")
+# D4 (maintainer, 2026-11-25): these lines are historical verification
+# records, not re-pinned at release; a version is named, not necessarily the
+# current one.
+_VERSION_RE = re.compile(r"\b[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.]*\b")
 
 TUTORIAL_FILES = (
     "02_first_run_example.adoc",
@@ -177,7 +181,9 @@ def test_every_tutorial_names_the_wfc_version_in_what_was_verified_and_disclaims
         match = re.search(r"=== What was verified\n(.*?)(?=\n=== |\Z)", text, re.DOTALL)
         assert match is not None, f"{name}: no 'What was verified' section"
         section = match.group(1)
-        assert "0.1.0b1" in section, f"{name}: 'What was verified' does not name the WFC version"
+        assert _VERSION_RE.search(section), (
+            f"{name}: 'What was verified' does not name a WFC version"
+        )
         disclaims_live = bool(
             re.search(r"\bnot\b[^.]*\bexecuted\b", section)
             or "no live run was performed" in section.lower()

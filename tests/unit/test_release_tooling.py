@@ -25,6 +25,7 @@ def _load(name: str, relative: str):
 
 
 release_check = _load("wfc_release_check", "scripts/wfc_release_check.py")
+release_prepare = _load("wfc_release_prepare", "scripts/wfc_release_prepare.py")
 dist_audit = _load("wfc_dist_audit", "scripts/wfc_dist_audit.py")
 
 VERSION = "0.1.0b1"
@@ -43,6 +44,7 @@ def _write_baseline(
     notes_version: str | None = None,
     notes_status: str = "(released)",
     readme_relative: bool = False,
+    readme_blob_version: str | None = None,
 ) -> None:
     (repo / "pyproject.toml").write_text(
         f'[project]\nname = "workflow_coordinator"\nversion = "{version}"\n', encoding="utf-8"
@@ -53,7 +55,15 @@ def _write_baseline(
         f"= Release Notes\n\n== {notes_version or version} -- {notes_status}\n\nBody.\n",
         encoding="utf-8",
     )
-    link = "docs/guide.adoc" if readme_relative else "https://example.invalid/guide.adoc"
+    if readme_relative:
+        link = "docs/guide.adoc"
+    elif readme_blob_version is not None:
+        link = (
+            "https://github.com/StefanSchade/workflow-coordinator/blob/"
+            f"v{readme_blob_version}/docs/guide.adoc"
+        )
+    else:
+        link = "https://example.invalid/guide.adoc"
     (repo / "README.md").write_text(f"# Project\n\nSee [docs]({link}).\n", encoding="utf-8")
 
 
@@ -142,6 +152,28 @@ def test_branch_mode_refuses_relative_readme_link(tmp_path):
     assert any("repository-relative documentation link" in failure for failure in failures)
 
 
+def test_branch_mode_passes_readme_blob_link_pinned_to_the_released_version(tmp_path):
+    repo = _init_repo_pair(tmp_path, readme_blob_version=VERSION)
+    _, failures = release_check.run_checks(repo, None)
+    assert failures == []
+
+
+def test_branch_mode_refuses_readme_blob_link_pinned_to_a_stale_version(tmp_path):
+    repo = _init_repo_pair(tmp_path, readme_blob_version="9.9.9")
+    _, failures = release_check.run_checks(repo, None)
+    assert any(
+        "blob link(s) pinned to a version other than" in failure and "9.9.9" in failure
+        for failure in failures
+    )
+
+
+def test_branch_mode_readme_blob_check_still_refuses_a_relative_link(tmp_path):
+    repo = _init_repo_pair(tmp_path, readme_relative=True)
+    _, failures = release_check.run_checks(repo, None)
+    assert any("repository-relative documentation link" in failure for failure in failures)
+    assert not any("blob link(s) pinned to a version other than" in failure for failure in failures)
+
+
 # ---------------------------------------------------------------------------
 # Tag mode
 # ---------------------------------------------------------------------------
@@ -193,6 +225,239 @@ def test_tag_mode_refuses_planned_notes_and_relative_readme(tmp_path):
     assert mode == "tag"
     assert any("still marked 'planned'" in failure for failure in failures)
     assert any("repository-relative documentation link" in failure for failure in failures)
+
+
+# ---------------------------------------------------------------------------
+# Release preparation
+# ---------------------------------------------------------------------------
+
+PREPARE_OLD = "1.0.0"
+PREPARE_NEW = "2.0.0"
+
+
+def _blob_link(version: str) -> str:
+    return f"https://github.com/StefanSchade/workflow-coordinator/blob/v{version}/docs/x.adoc"
+
+
+def _write_surface_tree(
+    repo: Path, *, old: str = PREPARE_OLD, notes_status: str = "planned"
+) -> None:
+    (repo / "pyproject.toml").write_text(
+        f'[project]\nname = "workflow_coordinator"\nversion = "{old}"\n', encoding="utf-8"
+    )
+
+    identity_dir = repo / "src" / "workflow_coordinator"
+    identity_dir.mkdir(parents=True)
+    (identity_dir / "implementation_identity.py").write_text(
+        f'"""Identity."""\nVERSION = "{old}"\n', encoding="utf-8"
+    )
+
+    bp1_dir = repo / "tests" / "architecture"
+    bp1_dir.mkdir(parents=True)
+    (bp1_dir / "test_bp1_identity.py").write_text(
+        "def test_identity():\n"
+        f"    assert first['version'] == '{old}' and first['source_commit'] is None\n",
+        encoding="utf-8",
+    )
+
+    (repo / "README.md").write_text(
+        f"# Project\n\nSee [docs]({_blob_link(old)}).\n\n"
+        f"Once {old} is published to PyPI.\n\n"
+        f"`python3 -m pip install 'workflow-coordinator=={old}'`\n",
+        encoding="utf-8",
+    )
+
+    skill_dir = identity_dir / "agent_skill" / "wfc"
+    refs_dir = skill_dir / "references"
+    refs_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(f"[link]({_blob_link(old)})\n", encoding="utf-8")
+    (refs_dir / "commission.md").write_text(f"[link]({_blob_link(old)})\n", encoding="utf-8")
+    (refs_dir / "setup.md").write_text(
+        f"[link]({_blob_link(old)})\n\n`python3 -m pip install 'workflow-coordinator=={old}'`\n",
+        encoding="utf-8",
+    )
+    (refs_dir / "stops-and-evidence.md").write_text(
+        f"[link]({_blob_link(old)})\n", encoding="utf-8"
+    )
+
+    quickstart_dir = repo / "docs" / "operator_manual" / "ch09_consumer_quickstart"
+    quickstart_dir.mkdir(parents=True)
+    (quickstart_dir / "01_quickstart.adoc").write_text(
+        f"Once {old} is published to PyPI.\n\n"
+        f"`python3 -m pip install 'workflow-coordinator=={old}'`\n\n"
+        f"The exact `=={old}` pin installs this.\n\n"
+        f'Reports `"version": "{old}"` here.\n',
+        encoding="utf-8",
+    )
+
+    notes_dir = repo / "docs" / "release_notes"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "release_notes.adoc").write_text(
+        f"= Notes\n\n== {PREPARE_NEW} -- {notes_status}\n\nNew body.\n\n"
+        f"== {old} -- (released)\n\nOld body.\n",
+        encoding="utf-8",
+    )
+
+
+def _snapshot(repo: Path) -> dict[Path, bytes]:
+    return {path: path.read_bytes() for path in sorted(repo.rglob("*")) if path.is_file()}
+
+
+def test_release_prepare_rewrites_every_enumerated_site_and_nothing_else(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_surface_tree(repo)
+
+    errors = release_prepare.prepare(repo, PREPARE_NEW)
+
+    assert errors == []
+    assert (repo / "pyproject.toml").read_text(encoding="utf-8") == (
+        f'[project]\nname = "workflow_coordinator"\nversion = "{PREPARE_NEW}"\n'
+    )
+    assert (repo / "src/workflow_coordinator/implementation_identity.py").read_text(
+        encoding="utf-8"
+    ) == f'"""Identity."""\nVERSION = "{PREPARE_NEW}"\n'
+    assert (repo / "tests/architecture/test_bp1_identity.py").read_text(encoding="utf-8") == (
+        f"def test_identity():\n"
+        f"    assert first['version'] == '{PREPARE_NEW}' and first['source_commit'] is None\n"
+    )
+    assert (repo / "README.md").read_text(encoding="utf-8") == (
+        f"# Project\n\nSee [docs]({_blob_link(PREPARE_NEW)}).\n\n"
+        f"Once {PREPARE_NEW} is published to PyPI.\n\n"
+        f"`python3 -m pip install 'workflow-coordinator=={PREPARE_NEW}'`\n"
+    )
+    skill_dir = repo / "src/workflow_coordinator/agent_skill/wfc"
+    assert (skill_dir / "SKILL.md").read_text(encoding="utf-8") == (
+        f"[link]({_blob_link(PREPARE_NEW)})\n"
+    )
+    assert (skill_dir / "references/commission.md").read_text(encoding="utf-8") == (
+        f"[link]({_blob_link(PREPARE_NEW)})\n"
+    )
+    assert (skill_dir / "references/setup.md").read_text(encoding="utf-8") == (
+        f"[link]({_blob_link(PREPARE_NEW)})\n\n"
+        f"`python3 -m pip install 'workflow-coordinator=={PREPARE_NEW}'`\n"
+    )
+    assert (skill_dir / "references/stops-and-evidence.md").read_text(encoding="utf-8") == (
+        f"[link]({_blob_link(PREPARE_NEW)})\n"
+    )
+    quickstart = repo / "docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc"
+    assert quickstart.read_text(encoding="utf-8") == (
+        f"Once {PREPARE_NEW} is published to PyPI.\n\n"
+        f"`python3 -m pip install 'workflow-coordinator=={PREPARE_NEW}'`\n\n"
+        f"The exact `=={PREPARE_NEW}` pin installs this.\n\n"
+        f'Reports `"version": "{PREPARE_NEW}"` here.\n'
+    )
+    notes = repo / "docs/release_notes/release_notes.adoc"
+    assert notes.read_text(encoding="utf-8") == (
+        f"= Notes\n\n== {PREPARE_NEW} -- (released)\n\nNew body.\n\n"
+        f"== {PREPARE_OLD} -- (released)\n\nOld body.\n"
+    )
+
+
+def test_release_prepare_is_idempotent(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_surface_tree(repo)
+
+    assert release_prepare.prepare(repo, PREPARE_NEW) == []
+    after_first = _snapshot(repo)
+
+    errors = release_prepare.prepare(repo, PREPARE_NEW)
+
+    assert errors != []
+    assert any("already" in error and "released" in error for error in errors)
+    assert _snapshot(repo) == after_first
+
+
+def test_release_prepare_refuses_an_invalid_version(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_surface_tree(repo)
+    before = _snapshot(repo)
+
+    errors = release_prepare.prepare(repo, "not-a-version")
+
+    assert any("not a valid PEP 440 version" in error for error in errors)
+    assert _snapshot(repo) == before
+
+
+def test_release_prepare_refuses_a_missing_release_notes_section(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_surface_tree(repo)
+    before = _snapshot(repo)
+
+    errors = release_prepare.prepare(repo, "3.0.0")
+
+    assert any("no section for version 3.0.0" in error for error in errors)
+    assert _snapshot(repo) == before
+
+
+def test_release_prepare_refuses_an_already_released_notes_section(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_surface_tree(repo)
+    before = _snapshot(repo)
+
+    errors = release_prepare.prepare(repo, PREPARE_OLD)
+
+    assert any("already '(released)'" in error for error in errors)
+    assert _snapshot(repo) == before
+
+
+def test_release_prepare_refuses_a_missing_enumerated_file(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_surface_tree(repo)
+    (repo / "README.md").unlink()
+    before = _snapshot(repo)
+
+    errors = release_prepare.prepare(repo, PREPARE_NEW)
+
+    assert any("site file not found: README.md" in error for error in errors)
+    assert _snapshot(repo) == before
+
+
+def test_release_prepare_refuses_a_version_literal_matched_zero_times(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_surface_tree(repo)
+    bp1 = repo / "tests/architecture/test_bp1_identity.py"
+    bp1.write_text(
+        'def test_identity():\n    assert first["version"] == "1.0.0"\n', encoding="utf-8"
+    )
+    before = _snapshot(repo)
+
+    errors = release_prepare.prepare(repo, PREPARE_NEW)
+
+    assert any(
+        "test_bp1_identity.py" in error
+        and "expected exactly one occurrence" in error
+        and "found 0" in error
+        for error in errors
+    )
+    assert _snapshot(repo) == before
+
+
+def test_release_prepare_refuses_a_version_literal_matched_twice(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_surface_tree(repo)
+    pyproject = repo / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8") + f'version = "{PREPARE_OLD}"\n', encoding="utf-8"
+    )
+    before = _snapshot(repo)
+
+    errors = release_prepare.prepare(repo, PREPARE_NEW)
+
+    assert any(
+        "pyproject.toml" in error
+        and "expected exactly one occurrence" in error
+        and "found 2" in error
+        for error in errors
+    )
+    assert _snapshot(repo) == before
 
 
 # ---------------------------------------------------------------------------
