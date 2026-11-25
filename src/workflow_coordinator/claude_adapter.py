@@ -154,7 +154,7 @@ def _usage_from_wrapper_stdout(stdout: str) -> UsageRecord:
 
     try:
         wrapper = json.loads(stdout)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError, RecursionError):
         return NO_USAGE_REPORTED
     if not isinstance(wrapper, dict):
         return NO_USAGE_REPORTED

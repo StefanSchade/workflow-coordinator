@@ -97,3 +97,10 @@ class TestDefensiveParsing:
         usage = _usage_from_stdout(event)
         assert usage.coverage is UsageCoverage.NONE
         assert usage.input_tokens is None
+
+    def test_pathologically_nested_json_line_is_skipped_not_raised(self):
+        # json.loads() raises RecursionError (not JSONDecodeError) on very
+        # deep nesting; this must never escape into the Hop (F004).
+        deeply_nested_line = "[" * 200_000 + "]" * 200_000
+        usage = _usage_from_stdout(deeply_nested_line)
+        assert usage == NO_USAGE_REPORTED

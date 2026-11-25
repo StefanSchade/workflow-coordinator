@@ -136,7 +136,7 @@ def _usage_from_stdout(stdout: str) -> UsageRecord:
             continue
         try:
             event = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, RecursionError):
             continue
         if isinstance(event, dict) and event.get("type") == "turn.completed":
             usage_events.append(event.get("usage"))

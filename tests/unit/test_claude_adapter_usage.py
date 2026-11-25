@@ -107,6 +107,12 @@ class TestDefensiveParsing:
     def test_a_non_object_wrapper_is_no_usage_reported(self, wrapper):
         assert _usage_from_wrapper_stdout(wrapper) == NO_USAGE_REPORTED
 
+    def test_pathologically_nested_json_is_no_usage_reported_not_raised(self):
+        # json.loads() raises RecursionError (not JSONDecodeError) on very
+        # deep nesting; this must never escape into the Hop (F004).
+        deeply_nested = "[" * 200_000 + "]" * 200_000
+        assert _usage_from_wrapper_stdout(deeply_nested) == NO_USAGE_REPORTED
+
     def test_usage_is_still_parsed_from_a_failed_wrapper(self):
         # The cost already occurred even when the wrapper itself reports
         # failure; usage parsing is not gated on type/subtype/is_error.

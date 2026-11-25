@@ -355,14 +355,32 @@ already-accepted BP6a/BP6b closure; not rewritten. The new bullets added
 elsewhere in the same file record the *new* fact (implementation now
 exists) without touching this historical paragraph.
 
-|`docs/backlog/_open.adoc`
-|Any token-usage-related passage
-|Unchanged because none exists
-|Searched; no existing passage references token usage. Adding a new
-tracking entry here was judged out of scope for this record (this is a
-maintainer-curated status/navigation file; inventing a new entry risks
-reading as inventing acceptance/closure status, which this WorkItem
-withholds).
+|`docs/backlog/_open.adoc` ("Token-consumption evidence remains
+undesigned ...")
+|Open-questions bullet calling the capability undesigned
+|Edited
+|Corrected by H005 (F005): H002's broad review and H004's focused review
+both missed this in-scope passage (`docs/backlog/_open.adoc:259` before this
+correction), which this WorkItem's own implementation falsifies -- the
+capability is no longer undesigned. Rewrote the bullet to state what
+`WI-WFC-TOKEN-USAGE-S1-001` now implements (captured, persisted, projected,
+reported; no price), without inventing acceptance: the maintainer's
+MUST-HAVE-vs-fast-follow release-gate question (BP6/BP9) is left explicitly
+open, unchanged.
+
+|`docs/backlog/beta1_productization.adoc` ("Open design questions and
+qualification": "Token-usage implementation effort and its release-gate
+status are open")
+|Open-design-questions paragraph
+|Edited
+|Corrected by H005 (F005): this passage, eleven lines below the preference
+bullet this record already describes above as edited, still called the
+*implementation effort itself* open -- directly contradicted by the
+candidate's own delivered implementation, a self-contradiction neither H002
+nor H004 examined. Rewrote to state the implementation is delivered by
+`WI-WFC-TOKEN-USAGE-S1-001` (cross-referencing the preference bullet above)
+while truthfully keeping independent review, maintainer acceptance and the
+release-gate status open; no acceptance or closure invented.
 
 |`docs/cold_storage/**`, `docs/warm_storage/**` (other than this new record)
 |(all historical records mentioning token usage)
@@ -564,6 +582,104 @@ own `python3` has neither):
   independent of this correction. The full required suite was not run here
   for the same `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE` reason as before; the
   Coordinator's task-check runs it separately.
+
+== H005 correction addendum
+
+Written by `WI-WFC-TOKEN-USAGE-S1-001` H005 (Worker, correction phase)
+against the independent focused review recorded at
+`docs/warm_storage/post-beta-planning/wfc_token_usage_focused_review.adoc`
+(verdict `changes_required`, two blocking Findings: F004, F005). Same
+authority limits as above: informative only, no Finding disposition
+performed or proposed here.
+
+F004 (usage parsing can raise `RecursionError` out of `execute()`):: Confirmed
+by direct reproduction at the function boundary: `json.loads()` raises
+`RecursionError` (not `json.JSONDecodeError`) on a pathologically deeply
+nested JSON value (`"["*200_000 + "]"*200_000`), and both
+`claude_adapter._usage_from_wrapper_stdout` and
+`codex_adapter._usage_from_stdout` caught only `(json.JSONDecodeError,
+ValueError)`, so that exception escaped uncaught. Fixed by widening both
+`except` clauses to also catch `RecursionError`, which is Python's own
+documented behavior for this input shape and not a provider-specific
+assumption; both functions already treat any caught decode failure as
+`NO_USAGE_REPORTED`/an unparsable event, so the fix changes no other
+behavior. New regression tests:
+`test_claude_adapter_usage.py::TestDefensiveParsing::
+test_pathologically_nested_json_is_no_usage_reported_not_raised`,
+`test_codex_adapter_usage.py::TestDefensiveParsing::
+test_pathologically_nested_json_line_is_skipped_not_raised`, and an
+end-to-end reproduction at the real adapter boundary,
+`test_codex_adapter_conformance.py::
+test_pathologically_nested_stdout_never_raises_out_of_execute_and_candidate_still_lands`,
+which drives a fake Codex executable that writes a valid candidate result to
+`--output-last-message` and also prints the pathological line to stdout,
+then asserts `CodexCliAdapter.execute()` returns normally with the candidate
+intact and `usage.coverage is UsageCoverage.NONE`. All three fail with
+`RecursionError` against the pre-fix code (reproduced by temporarily
+reverting the two adapter files in a disposable WIP stash, confirming the
+failure, then restoring with `git stash apply` and dropping the entry) and
+pass with the fix. The analogous `_candidate_from_wrapper` `json.loads` call
+in `claude_adapter.py` was deliberately left untouched: it already only runs
+on the zero-exit, non-timeout path (pre-existing, unconditional behavior
+predating this WorkItem), is not usage parsing, and widening it is outside
+this slice's scope and this Finding's reproduction.
+
+F005 (docs-sync check missed two in-scope backlog owners):: Confirmed by
+direct inspection: `docs/backlog/_open.adoc:259` still read "Token-consumption
+evidence remains undesigned" and the docs-sync table's row for that file
+falsely claimed no such passage existed; `docs/backlog/beta1_productization.adoc`'s
+"Open design questions and qualification" section still called "Token-usage
+implementation effort ... open" eleven lines below the preference bullet this
+same record already (correctly) edited to say the implementation now exists
+-- a self-contradiction within one file that no prior Hop's docs-sync pass
+examined. Both are named explicitly by task DO item 6 and are inside the
+WorkItem's declared scope. Fixed: the `_open.adoc` bullet now states that the
+capability is no longer undesigned and names what is implemented, while
+explicitly leaving the maintainer's MUST-HAVE-vs-fast-follow release-gate
+question (BP6/BP9) open, unchanged; the `beta1_productization.adoc` open-design
+paragraph now cross-references the preference bullet's delivered
+implementation while truthfully keeping independent review, maintainer
+acceptance and the release-gate status open. Neither edit records acceptance,
+closure or a settled release-gate decision -- only the implementation fact
+this WorkItem itself establishes. The docs-sync table rows above are
+corrected and a new row is added for the second passage.
+
+Measured checks run for this correction (same sandbox limits as above:
+`WFC_TEST_INPUTS`/`WFC_TEST_PROFILE` unavailable, so `--wfc-partial` with
+explicit paths; a fresh venv built in this sandbox's own writable scratch
+directory with `pip install pytest pyyaml ruff`, since neither this
+sandbox's system `python3` nor a prior session's venv were reachable here):
+
+* `python -m pytest -q --wfc-partial tests/unit/test_claude_adapter_usage.py
+  tests/unit/test_codex_adapter_usage.py
+  tests/unit/test_codex_adapter_conformance.py tests/unit/test_report.py
+  tests/unit/test_audit_projection.py tests/unit/test_audit_privacy.py
+  tests/unit/test_usage_model.py tests/unit/test_usage_persistence.py` --
+  191 passed.
+* `python -m pytest -q --wfc-partial
+  tests/unit/test_claude_adapter_conformance.py` in this sandbox fails on an
+  unrelated, pre-existing environmental restriction: `ClaudeCliAdapter`
+  symlinks a short `TMPDIR` under the fixed path
+  `/tmp/wfc-claude-<invocation-token>`, which this sandbox's write allowlist
+  does not cover for an arbitrary per-test token (only this session's own
+  fixed `/tmp/wfc-claude-<session-token>` path is writable); this is the same
+  class of sandbox-local `/tmp` restriction recorded by the H002/H004
+  addenda above, not a regression from this correction -- the two
+  usage-parsing fix lines touch neither this adapter's launch path nor any
+  code this failure exercises.
+* `python -m ruff check .` -- all checks passed (repo-wide, not file-scoped).
+* `asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN
+  docs/backlog/_open.adoc` and the same for
+  `docs/backlog/beta1_productization.adoc` -- no output (clean) for both.
+* `python3 scripts/wfc_doc_catalog.py check` -- 83 unresolved links, 4
+  Project Memory source_path misses, "catalog current"; identical to the
+  baseline this record already established before H003/H005, so no
+  regression.
+* Not run here: the full required suite (`python -m pytest -q`, no
+  `--wfc-partial`) and `tests/integration/test_beta_e2e_fake_provider.py`,
+  for the same reasons recorded above (no `WFC_TEST_INPUTS`/
+  `WFC_TEST_PROFILE`, and the stale-installed-package subprocess shadowing);
+  no full-suite count is claimed by this addendum.
 
 No existing assertion anywhere was weakened or deleted by this correction;
 the three new tests above are additive, and the existing usage-report tests
