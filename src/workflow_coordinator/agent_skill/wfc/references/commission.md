@@ -80,4 +80,8 @@ starts, as a mandatory pre-launch baseline probe: it must already be
 committed, exit `0` on today's clean tree, and leave the tree and `HEAD`
 unchanged. A non-zero exit, an unresolvable executable, a timeout, or any
 tree mutation refuses the whole Run before launch (`refused_probe`) and
-still consumes this checkout's one lifecycle.
+still consumes this checkout's one lifecycle. Diagnosing and correcting a
+correctable cause -- a missing declared input, a misplaced scratch
+directory -- and repeating the probe in a fresh checkout is ordinary
+preparation, not a decision that needs asking first; see
+`stops-and-evidence.md` for the full table.

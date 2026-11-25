@@ -32,6 +32,19 @@ WORKER_REVIEWER_EXCLUSION = "Not for use inside a WFC Worker or Reviewer Hop."
 FORBIDDEN_SNIPPETS = ("$ARGUMENTS", "${CLAUDE_SKILL_DIR}", "allowed-tools")
 TOP_LEVEL_FLAG_COMBOS = ({"--version"}, {"--version", "--json"})
 
+# Level-1 autonomy contract phrases (WI-WFC-LEVEL1-AUTONOMY-002): the
+# delegated-mandate principle and the preserved boundaries must both survive
+# in the skill text, not just in the Operator Manual it distils.
+DELEGATED_AUTHORITY_PHRASE = "Delegated task authority persists across execution attempts"
+DIAGNOSTIC_UNCERTAINTY_PHRASE = "is not, by itself, a reason to ask"
+PRESERVED_BOUNDARY_PHRASES = (
+    "a push, tag, publication or configuration",
+    "Runtime promotion",
+    "widening scope, authority, program or Hop budget",
+    "discarding a branch, worktree, stash or preserved ref",
+)
+STOP_TABLE_HEADER = "| Classification(s) | You may, on your own | A human decides |"
+
 # One subcommand invoker per real CLI dispatch branch (``frontdoor/cli.py``),
 # so the drift guard runs each subcommand's own real argparse parser.
 SUBCOMMAND_MAIN = {
@@ -50,6 +63,11 @@ GITHUB_BLOB_RE = re.compile(
     r"^https://github\.com/StefanSchade/workflow-coordinator/blob/v([^/]+)/([^#]+)(?:#.*)?$"
 )
 MARKDOWN_LINK_RE = re.compile(r"\]\((https://[^)\s]+)\)")
+
+
+def _normalized(text: str) -> str:
+    """Collapse whitespace so a phrase can be matched across a line wrap."""
+    return re.sub(r"\s+", " ", text)
 
 
 def _parse_frontmatter(text: str) -> dict:
@@ -249,3 +267,78 @@ def test_drift_guard_wfc_commands_match_real_cli():
                 f"'wfc {subcommand} --help'"
             )
     assert checked_any, "expected at least one 'wfc ...' line in a fenced shell block"
+
+
+def test_delegated_authority_persists_phrase_present():
+    """WI-WFC-LEVEL1-AUTONOMY-002: a technical failure or stopped attempt does
+    not end Level 1's delegated task authority; this must survive verbatim in
+    the skill, not only in the Operator Manual it distils."""
+    text = SKILL_FILE.read_text(encoding="utf-8")
+    assert DELEGATED_AUTHORITY_PHRASE in text
+
+
+def test_diagnostic_uncertainty_not_reason_to_ask_phrase_present():
+    text = SKILL_FILE.read_text(encoding="utf-8")
+    assert DIAGNOSTIC_UNCERTAINTY_PHRASE in text
+
+
+def test_skill_preserves_every_always_ask_boundary():
+    """Every boundary the delegated mandate never covers must still be
+    stated and binding after the autonomy rewrite, not merely implied."""
+    normalized = _normalized(SKILL_FILE.read_text(encoding="utf-8"))
+    for phrase in PRESERVED_BOUNDARY_PHRASES:
+        assert phrase in normalized, f"SKILL.md no longer states the boundary: {phrase!r}"
+
+
+def test_skill_qualifies_discard_boundary_and_states_own_worktree_cleanup_freedom():
+    """WI-WFC-LEVEL1-AUTONOMY-002 F001: the worktree/branch/stash/ref discard
+    boundary must be qualified to the operator's own, not-yet-dispositioned
+    work (never a blanket 'always ask'), and the skill must say, as plainly
+    as Operator Manual ch10 does, that removing its own already-integrated-
+    or-dispositioned worktree and scratch needs no further human decision."""
+    normalized = _normalized(SKILL_FILE.read_text(encoding="utf-8"))
+    assert (
+        "discarding a branch, worktree, stash or preserved ref this session "
+        "did not itself create for this task" in normalized
+    )
+    assert "Own-worktree cleanup" in normalized
+    assert (
+        "remove the worktree and scratch directory this session itself "
+        "created for it" in normalized
+    )
+
+
+def test_skill_never_section_still_withholds_finding_and_review_authority():
+    text = SKILL_FILE.read_text(encoding="utf-8")
+    assert "Open or resolve a Finding." in text
+    assert "Commit inside a Run's checkout." in text
+    assert "Edit `.wfc/` state or Evidence by hand." in text
+    assert "Relaunch `wfc run` in a checkout that already has a lifecycle." in text
+
+
+def test_stops_and_evidence_has_stop_classification_table():
+    """The distinction between technical continuation (inside the delegated
+    mandate) and a stop that needs a new human decision must be explicit and
+    operational, not just asserted in prose."""
+    text = (SKILL_ROOT / "references/stops-and-evidence.md").read_text(encoding="utf-8")
+    assert STOP_TABLE_HEADER in text
+    for classification in (
+        "refused_probe",
+        "awaiting_human_budget",
+        "reconcile_required",
+        "uncertain_launch",
+        "awaiting_human",
+    ):
+        assert f"`{classification}`" in text, f"stop table missing a row for {classification!r}"
+    normalized = _normalized(text)
+    assert "only the independent reviewer" in normalized.lower() or (
+        "resolved by" in normalized and "independent reviewer" in normalized
+    ), "the Finding boundary must survive next to the autonomy table"
+
+
+def test_stops_and_evidence_keeps_salvage_and_discard_as_human_judgment():
+    normalized = _normalized(
+        (SKILL_ROOT / "references/stops-and-evidence.md").read_text(encoding="utf-8")
+    )
+    assert "human judgment" in normalized
+    assert "nothing is discarded without that judgment" in normalized

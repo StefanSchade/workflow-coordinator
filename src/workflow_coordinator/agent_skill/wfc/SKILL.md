@@ -28,38 +28,38 @@ distinct operating contract.
 
 ## Authorization
 
-WFC's authority model, stated as rules, neither looser nor stricter than it
-is implemented and practised. This skill introduces no approval step of its
-own and has no delegation object, file or flag of its own to grant one.
+WFC's authority model, stated as rules, neither looser nor stricter than it is
+implemented and practised. This skill introduces no approval step of its own and has no
+delegation object, file or flag of its own to grant one.
 
-1. **Authority facts** -- the human decides scope, program, Hop budget,
-   and any binding in `wfc plan` that differs from the role's committed
-   `default_execution`. `--yes` asserts this authorization without verification.
-2. **Initial authorization** -- for a fact the human has not yet decided:
-   propose a value, show the `wfc plan` projection, ask once, undecided
-   facts only.
-3. **Existing delegation** -- a decision already made (task instruction,
-   standing instruction, or an approved decomposition) covers a launch with
-   scope, program and Hop budget within the delegation and each binding as
-   approved or matching its committed role default. Proceed with `--yes`
-   without a further approval turn, and report the digests and what was launched.
-4. **Narrow reading** -- ambiguity is not delegation: ask. The scope ceiling
-   in `.wfc/config.yaml` bounds a Commission; it does not approve one.
-5. **Never delegated by a launch** -- resolving a stop; widening scope or
-   budget, also after a stop; a push, tag, publication or configuration
-   change; changing the installed WFC version; discarding a branch,
-   worktree, stash or preserved ref.
-6. **The record** -- `authority_source` names truthfully who authorized the
-   Commission and by which instruction.
-7. **The reserved go** -- when the human keeps the launch decision, prepare
-   everything and hand over the exact `wfc run` command, or wait for the
-   instruction to launch.
+1. **Authority facts** -- the human decides scope, program, Hop budget, and any binding
+   in `wfc plan` that differs from the role's committed `default_execution`. `--yes`
+   asserts this authorization without verification.
+2. **Initial authorization** -- for a fact the human has not yet decided: propose a value,
+   show the `wfc plan` projection, ask once, undecided facts only.
+3. **Existing delegation** -- a decision already made (task instruction, standing
+   instruction, or an approved decomposition) covers a launch with scope, program and Hop
+   budget within the delegation and each binding as approved or matching its committed
+   role default. Proceed with `--yes` without a further approval turn, and report the
+   digests and what was launched.
+4. **Narrow reading** -- ambiguity is not delegation: ask. The scope ceiling in
+   `.wfc/config.yaml` bounds a Commission; it does not approve one.
+5. **Never delegated by a launch** -- judging a stop's disposition; widening scope or
+   budget, also after a stop; a push, tag, publication or configuration change; changing
+   the installed WFC version; discarding a branch, worktree, stash or preserved ref this
+   session did not itself create for this task.
+6. **The record** -- `authority_source` names truthfully who authorized the Commission and
+   by which instruction.
+7. **The reserved go** -- when the human keeps the launch decision, prepare everything and
+   hand over the exact `wfc run` command, or wait for the instruction to launch.
+8. **Own-worktree cleanup** -- not withheld by item 5: once a Run is archived and
+   integrated or otherwise dispositioned, remove the worktree and scratch directory this
+   session itself created for it, without a further ask.
 
-Always stop and ask before: a push, tag, publication or configuration
-change; a Runtime promotion or a change of installed WFC version; widening
-scope, authority, program or Hop budget beyond what the human set; deciding
-how a stopped Run is resolved; discarding a branch, worktree, stash or
-preserved ref.
+Always stop and ask before: a push, tag, publication or configuration change; a Runtime
+promotion or a change of installed WFC version; widening scope, authority, program or
+Hop budget beyond what the human set; judging a stop's disposition; discarding a branch,
+worktree, stash or preserved ref this session did not itself create for this task.
 
 ## Preflight
 
@@ -95,6 +95,13 @@ See `references/setup.md` for repository readiness and `wfc init`,
 `references/commission.md` for authoring, and `references/stops-and-evidence.md`
 for everything about a stop.
 
+Delegated task authority persists across execution attempts: a technical
+failure or a stopped Run does not end it, and uncertainty about *why* an
+attempt failed is not, by itself, a reason to ask -- try a plausible,
+verifiable, bounded correction before the cause is proven. A new human
+decision is needed only for what Authorization's item 5 withholds, never
+merely because an earlier attempt failed.
+
 1. Confirm the repository is ready (clean tree, `.wfc/config.yaml`, a
    committed guidance file, a committed evidence/task-check command).
 2. Draft the Commission: task document, scope, program, personas, evidence.
@@ -105,9 +112,14 @@ for everything about a stop.
 6. Monitor with `wfc status`. Read `CLASSIFICATION`, never the exit code --
    `awaiting_human` and other legitimate stops exit non-zero too.
 7. On `CLASSIFICATION: completed`, render with `wfc report` and verify
-   independently against the declared scope before treating it as accepted.
-   On anything else, read `references/stops-and-evidence.md` and bring it to
-   the human.
+   independently against the declared scope before treating it as accepted,
+   then integrate and remove this Run's own worktree and scratch directory
+   (Authorization item 8) without a further ask. On anything else, read
+   `references/stops-and-evidence.md`: act on your own where it says this
+   mandate already covers the next step (a corrected probe retried in a
+   fresh checkout, `wfc resume` where permitted, a successor Commission at
+   the same scope/program/Hop budget); bring to the human only a stop that
+   genuinely asks for a new authorization decision.
 
 ## Never
 

@@ -122,3 +122,16 @@ scratch directory): an untracked file anywhere inside the repository counts
 as a dirty tree and refuses launch. Keep the scratch directory, the
 worktree/checkout, the Evidence repository and the installed Runtime
 (changed only by explicit promotion) apart.
+
+## Preparing the check command's own environment
+
+Preparing, verifying and, where the committed check or baseline probe needs
+it, correcting that command's own environment -- declared inputs, scratch
+directories, `TMPDIR` placement outside the worktree -- is ordinary
+preparation within an already-authorized Commission; it needs no separate
+human decision each time, and a probe that fails for a correctable reason
+may be retried, once corrected, in a fresh checkout. For WFC's own
+self-development specifically, the offline test-input bundle and
+`WFC_TEST_INPUTS`/`WFC_TEST_PROFILE` this entails are the same ordinary
+preparation step, described in Operator Manual chapter 3's offline-input
+guidance.
