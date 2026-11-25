@@ -4,11 +4,344 @@
 
 This record holds every independent broad-review pass over the R5 candidate
 for WorkItem `WI-WFC-RELEASE-GATE-DEPENDENCY-AUTOMATION-001`. The current
-pass is *H002*; later passes are added above earlier ones and earlier passes
+pass is *H005*; later passes are added above earlier ones and earlier passes
 stay unedited apart from the `(current)` marker, which moves to the newest
 pass.
 
-== Pass H002 -- `RUN-dd8bb6bf...` (current)
+== Pass H005 -- `RUN-dd8bb6bf...` (current)
+
+WorkItem:: `WI-WFC-RELEASE-GATE-DEPENDENCY-AUTOMATION-001`
+Hop:: `H005` (`broad_review`, renewed independent adversarial pass over the
+whole candidate, gate, blocking-only, `finding_authority: resolve`)
+Reviewed product:: the whole R5 candidate at review base HEAD
+`007393a85cf24889f0298fb109bc142fd76db04d`, cumulative implementation range
+`328f944..007393a` (four commits: `25f3297` implementation, `9ff1d74` H002
+broad review, `4c613e0` H003 correction, `007393a` H004 focused review).
+`git diff --name-status 328f944..HEAD` returns exactly six paths: two new
+`.github` leaves and `docs/developer_guide/ch04_release_management.adoc`,
+plus the three warm-storage records (verification, broad review, focused
+review). No other leaf.
+Governing acceptance:: link:../../backlog/FTR-WFC-RELEASE-GATE-AND-DEPENDENCY-AUTOMATION.adoc[FTR-WFC-RELEASE-GATE-AND-DEPENDENCY-AUTOMATION]
+in full, which governs where it differs from the Commission task; maintainer
+decisions D3 and D6 as recorded in
+link:../../backlog/beta2_release_streamlining_plan.adoc#decisions-taken[the
+Beta-2 plan's `decisions-taken`] and in the `<<d3>>`/`<<d6>>` option texts;
+`docs/developer_guide/ch04_release_management.adoc` (CI section, gate-class
+sentence, gate list, runbook, recovery table). `D1`--`D6`, `G1`--`G9`,
+`R1`--`R5` and `O-n` are plan-, chapter- and review-internal labels, not
+Finding IDs.
+Finding state:: `F001` (opened H002, resolved H004) is the only Finding in
+this Run's authoritative state and is already `resolved`; I re-verified its
+subject independently (below) and found nothing that reopens it. This pass
+opens no Finding and proposes no Finding-state change.
+Verdict:: *accept*. Every acceptance criterion of the FTR reproduces green
+under my own execution. The job-graph edit is the single authorized `needs:`
+entry and nothing else in the workflow moved -- a normalized before/after
+comparison of every top-level key and seventeen fields per job over all five
+jobs reports exactly one difference. The Dependabot file parses, uses only
+keys I verified this Hop against GitHub's own documented options reference,
+and its two groups match the check-only and publish-path action sets I
+re-derived from the workflow byte-for-byte. Chapter 4 holds no statement
+false for the integrated pipeline, G9 and its recovery response are mutually
+consistent with the (now split) recovery table, both risks are stated, and
+no decision other than D3 and D6 moved. Nothing claims auto-merge is enabled
+or that anything ran on GitHub.
+
+[[r5-h005-method]]
+=== How I checked (own execution)
+
+I re-derived everything from the repository rather than reading the H002 or
+H004 records for results; I read those records only to check their claims
+against my own. One scratch `python3` program (written at the repository
+root, run with `python3 -I`, and deleted again -- it appears in no
+CommitIntent and `git status --short -uall` is back to its pre-review state)
+loaded `git show 328f944:.github/workflows/release.yml` and the committed
+file at `HEAD` with `yaml.safe_load` and compared, normalized:
+
+* top level: `name`, the `on:` trigger block, `permissions:`, `env:`,
+  `concurrency:`, `defaults:`;
+* per job: `needs:` (normalized to a sorted list), `permissions:`,
+  `environment:`, `if:`, `runs-on:`, `strategy:`, `timeout-minutes:`,
+  `continue-on-error:`, `outputs:`, the ordered list of `uses:` values and
+  the step count.
+
+It then ran a colour-marking DFS for cycles and dangling `needs:`, a Kahn
+topological sort, a pin-set comparison, a from-scratch re-derivation of the
+per-action job membership, and a set comparison of that derivation against
+`.github/dependabot.yml`'s two `groups.*.patterns` lists.
+
+[[r5-h005-graph]]
+=== Job graph, permissions, triggers and pins -- re-derived before/after
+
+The whole normalized structural diff `328f944 -> HEAD` is one hunk:
+
+----
+   "needs": [
+-    "check"
++    "check",
++    "python-compat"
+   ],
+----
+
+in `publish-testpypi`. Everything else compared identical: the two triggers
+(`push` to `main`, `push` of tags `v*`), the top-level
+`permissions: {contents: read}`, the absent `concurrency`/`defaults`/`env`,
+the job name set and order, and every one of the compared per-job fields --
+including `publish-testpypi`'s own `permissions: {contents: read, id-token:
+write}`, its `environment: testpypi` and its
+`if: startsWith(github.ref, 'refs/tags/v')`.
+
+Post-change graph, as my program printed it:
+
+[cols="2,2,2,2,3",options="header"]
+|===
+|Job |`needs:` |`permissions:` |`environment:` |`if:`
+|`check` |-- |-- |-- |--
+|`python-compat` |`check` |-- |-- |--
+|`publish-testpypi` |`check`, `python-compat` |`contents: read`, `id-token: write` |`testpypi` |`startsWith(github.ref, 'refs/tags/v')`
+|`publish-pypi` |`publish-testpypi` |`contents: read`, `id-token: write` |`pypi` |`startsWith(github.ref, 'refs/tags/v')`
+|`release` |`publish-pypi` |`contents: write` |-- |`startsWith(github.ref, 'refs/tags/v')`
+|===
+
+DFS reported no cycle and no dangling `needs:`; the Kahn sort emitted all
+five nodes in the order `check -> python-compat -> publish-testpypi ->
+publish-pypi -> release`, so the graph is acyclic. The new edge cannot close
+a cycle: `python-compat` depends only on `check`, which `publish-testpypi`
+already required.
+
+The set of `uses:` values is identical before and after, and all five are
+40-hex-digit SHA pins (`actions/checkout@d23441a...`,
+`actions/setup-python@ece7cb0...`, `actions/upload-artifact@ea165f8...`,
+`actions/download-artifact@d3f86a1...`,
+`pypa/gh-action-pypi-publish@7245906...`); the program found no `uses:`
+without a 40-hex pin. No action added, removed or re-pinned; no secret
+reference, no new permission, no new network access.
+
+The workflow comment above `python-compat` no longer claims "no release gate
+(no job waits for it ...)" and now states gate G9, maintainer decision D6
+and the `publish-testpypi` dependency, while the "NOT qualification" facts
+(no offline bundle, no bubblewrap, no provider, no full suite) and the
+2026-11-23 attribution are intact -- so the comment the edit made false is
+the one that changed, and only it.
+
+[[r5-h005-dependabot]]
+=== Dependabot file -- keys re-verified and sets re-derived
+
+`yaml.safe_load` of `.github/dependabot.yml` yields exactly `version: 2` and
+one `updates` entry whose keys are `package-ecosystem`, `directory`,
+`schedule`, `cooldown`, `groups` -- nothing else. Only the `github-actions`
+ecosystem; one entry.
+
+My own re-derivation of per-action job membership from the workflow:
+
+[cols="3,3,2",options="header"]
+|===
+|Action |Jobs it runs in |Class
+|`actions/checkout` |`check`, `python-compat` |check-only
+|`actions/setup-python` |`check`, `python-compat` |check-only
+|`actions/upload-artifact` |`check` |check-only
+|`actions/download-artifact` |`python-compat`, `publish-testpypi`, `publish-pypi`, `release` |publish-path
+|`pypa/gh-action-pypi-publish` |`publish-testpypi`, `publish-pypi` |publish-path
+|===
+
+Derived check-only set `{actions/checkout, actions/setup-python,
+actions/upload-artifact}`, derived publish-path set
+`{actions/download-artifact, pypa/gh-action-pypi-publish}`. Compared
+programmatically against the file: `check-only-actions.patterns` equals the
+first set and `publish-path-actions.patterns` equals the second, with empty
+symmetric difference in both cases; the groups are disjoint and their union
+covers every action the workflow pins. `actions/download-artifact` runs
+inside `python-compat` as well, so its exclusion from the check-only group
+is required, not merely cautious -- the file's comment and chapter 4 both
+say so.
+
+The decision texts also agree under both readings: the plan's
+`decisions-taken` records D3 as "automerge only for actions that run in the
+`check` job", the FTR as actions running "exclusively in the unprivileged
+`check` and `python-compat` jobs". Because `actions/upload-artifact` runs in
+`check` and the other two run in `check` *and* `python-compat`, the two
+formulations select the same three actions here, so the implementation
+satisfies the FTR without deviating from the plan record.
+
+Key verification (my own fetch of GitHub's Dependabot options reference and
+of its version-update PR-optimization page this Hop; web access was
+available, so nothing below is an external assumption):
+
+[cols="2,4",options="header"]
+|===
+|Key |Status
+|`version: 2` |Documented, required.
+|`updates`, `package-ecosystem: github-actions`, `directory: "/"` |Documented; `github-actions` is a documented ecosystem value; singular `directory` is correct for a single path.
+|`schedule.interval: "weekly"` |Documented value (`daily`, `weekly`, `monthly`, `quarterly`, `semiannually`, `yearly`, `cron`).
+|`cooldown.default-days: 7` |Documented, with sub-keys `default-days`, `semver-*-days`, `include`, `exclude`. The reference's ecosystem table lists `github-actions` as supported for `default-days` and *not* for the `semver-*-days` options; the file uses only `default-days`, so it stays inside the supported subset. Cooldown applies to version updates, not security updates; the documented implicit default is 3 days, so the explicit 7 is a real choice.
+|`groups.<name>.patterns` |Documented sub-key (dependency-name matching, `*` wildcard).
+|`groups.<name>.update-types` |Documented sub-key of `groups`, values `minor`, `patch`, `major` -- distinct from the `version-update:semver-*` form that `allow`/`ignore` use.
+|===
+
+Two further checks of the mechanism itself:
+
+* *No per-group `labels` key exists* in the reference (`labels` is
+  update-entry-level and would apply uniformly to every PR from this single
+  entry), so a label genuinely cannot distinguish the two sets. Group name
+  is the right mechanism, and the file says so.
+* *The group name really is the identifier.* H002 could only confirm the
+  branch-name half and left the PR-title half as observation `O-2`. I
+  resolved it: GitHub's version-update PR-optimization page states for the
+  `groups` example that the name "will be used in pull request titles and
+  branch names", and shows the title form ("Bump lodash in
+  monorepo-dependencies group"). The file's comment and chapter 4's sentence
+  are therefore accurate as written; `O-2` is closed as a non-issue.
+
+Behaviour in the fail-safe direction, which I checked rather than assumed: a
+*major* bump of a check-only action matches `check-only-actions`' patterns
+but not its `update-types`, and matches no other group, so it arrives as its
+own ungrouped pull request without the eligible group's name and cannot be
+swept up by a rule keyed on that name. The same holds for any action added
+to the workflow later but not to a pattern list.
+
+[[r5-h005-ch04]]
+=== Chapter 4 -- re-read whole, not only the diff
+
+* *Nothing stale survives.* A repository-wide search finds no "informational"
+  `python-compat`, no "not a prerequisite of any publishing job", no "gates
+  nothing", no "no slice of that plan executes it", and no gate-class
+  sentence scoped to G1-G8 anywhere in the developer guide. The two
+  remaining "G1-G8" strings are deliberate references to *the other eight*
+  gates ("blocks publication the same way G1-G8 block their own step"), not
+  a stale enumeration. No developer-guide or operator-manual file outside
+  chapter 4 mentions `python-compat` or the G namespace.
+* *Both risks are stated.* The accepted risk (the 3.10-3.12 jobs install
+  from the ordinary index, not the offline bundle `check` uses, so an
+  index-side or upstream change can turn a release red for a reason outside
+  this repository; dropping the classifiers later is a maintainer-level
+  change) is in the CI-section bullet, attributed to D6. The residual
+  Dependabot risk (an action in `check` still influences the bytes later
+  published, so auto-merge there is *lower* risk, not none, bounded by the
+  `pypi` approval G8 and the audited, hash-listed artifact) is in the
+  Dependabot paragraph, attributed to D3. Both match the FTR's wording and
+  the plan's option texts.
+* *G9 and the recovery table agree* -- the subject of `F001`. The CI bullet
+  now sources "re-run the failed jobs, never a re-tag" to D6 itself and says
+  the table "now splits" the pre-upload state, which is what the table does:
+  repository-caused (for example `check`) keeps "fix on `main`, delete the
+  tag, tag again"; not caused by this repository (`python-compat`, G9, D6's
+  accepted risk) gets "re-run the failed jobs. Never re-tag." I checked the
+  split for the two ways it could mislead, and it survives both: a genuine
+  3.10-3.12 incompatibility in this repository's own code is
+  repository-caused and lands in the first row, which both locations scope
+  correctly ("a `python-compat` failure of *this kind*"); and a transient,
+  not-repository-caused pre-upload failure elsewhere in the tag path is now
+  answered correctly by the second row's cause class, where the single
+  pre-split row would have told the operator to re-tag. The split is
+  strictly an improvement over the baseline, not only a repair of the
+  citation.
+* *No other decision moved.* The cumulative chapter diff `328f944..HEAD`
+  touches only the "Five jobs" lead-in, the `python-compat` bullet, the
+  `publish-testpypi` bullet's `needs:` parenthetical, the new Dependabot
+  paragraph, the gate-class sentence, sequence steps 1 and 4, the gate table
+  (new `|CI`-owned G9 row) and the recovery row split. D1 (pre-tag smoke),
+  D2 (TestPyPI), D4 and D5 are absent from the diff; G1-G8's rows, the
+  runbook's prepare/preflight/tag/approve/verify text and the
+  decided-maintainer-points section are untouched.
+* *Sequence consistency.* Step 1 states G9 runs against the same artifact
+  once `check` is green (true on both triggers), step 4 that
+  `publish-testpypi` runs only once `check` and `python-compat` are both
+  green (true: tag-only job, `needs: [check, python-compat]`). The gate
+  table's G9 row names the `needs:` as the binding mechanism, which matches
+  the workflow byte-for-byte.
+
+[[r5-h005-honesty]]
+=== Honesty about hosted state and about tests
+
+No file in the candidate claims auto-merge is enabled, that Dependabot has
+run, or that any workflow, push, tag, publication or GitHub setting was
+exercised; the Dependabot file's own header and chapter 4 both state
+plainly that auto-merge is a repository setting no file here configures. The
+verification record reports `python -m pytest -q` as *not executed* because
+`pytest` is absent from the agent sandbox; I reproduced that locally
+(`python3 -m pytest --version` -> no module named pytest) and make no claim
+about the full suite, which is the Coordinator's separately executed
+task-check. The FTR's test strategy allows the documented programmatic
+before/after comparison in place of a workflow-structure test, and
+`tests/unit/test_release_tooling.py` indeed has none (and is outside this
+WorkItem's scope).
+
+[[r5-h005-checks]]
+=== Checks I ran this Hop
+
+* `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+  --failure-level=WARN` over `docs/developer_guide/ch04_release_management.adoc`
+  and over the verification record -- printed nothing, exit 0 each.
+* `python3 scripts/wfc_doc_catalog.py generate` ("584 records, 440686 bytes;
+  unchanged") then `check` -- "Informational: 83 unresolved links; 4 Project
+  Memory source_path misses", "catalog current": exactly the stated baseline,
+  no additional unresolved link and no additional Project Memory miss.
+* `yaml.safe_load` over both `.github/dependabot.yml` and
+  `.github/workflows/release.yml` -- both parse.
+* `git ls-files .github` -- exactly `.github/dependabot.yml` and
+  `.github/workflows/release.yml`, so no other `.github/` file was added and
+  the file's `directory: "/"` comment about the single workflow file is
+  accurate.
+* `git diff --name-status 328f944..HEAD` and `git status --short -uall` --
+  the six authorized leaves and no tracked modification; no `.wfc/`,
+  `governance/`, product, test, script, Makefile, `pyproject` or version
+  file changed. My scratch program was removed after use.
+* Front Door docs-sync: the convention check is asked and answered "no edit
+  needed" in the verification record, and I confirm the answer -- no Front
+  Door command, argument, classification, report, diagnostic, admission,
+  binding or recovery behaviour is touched by CI and Dependabot
+  configuration.
+
+[[r5-h005-simplicity]]
+=== Simplicity and maintainability
+
+I looked again for a materially simpler way to the same guarantees and did
+not find one worth requiring. The gate is one `needs:` entry rather than a
+new job, an `if:` or a status check; the Dependabot file is a single
+`updates` entry with the minimal documented key set and no mechanism that
+pretends to enable auto-merge. Two `updates` entries for the same ecosystem
+and directory would violate the documented no-overlap rule, and a label
+cannot distinguish the sets, so two named groups is the simplest valid
+construction for D3. The one piece of arguably redundant mechanism is the
+second group: identification only strictly needs the eligible group's name,
+and publish-path updates would be distinguishable by arriving ungrouped.
+It costs three lines, carries no state and makes the partition auditable
+against the workflow (I used it that way in this review), so it is not a
+maintainability defect -- recorded below as an observation, not a Finding.
+
+[[r5-h005-observations]]
+=== Non-blocking observations
+
+* *O-2 (from H002) -- closed.* The PR-title half of the group-name claim is
+  documented after all; see <<r5-h005-dependabot>>. Nothing to change.
+* *O-5 (new).* The CI bullet's historical aside calls a `check` failure "the
+  only pre-upload cause before G9". Strictly, `publish-testpypi`'s own
+  pre-upload steps (artifact download, SHA re-verification) could also fail
+  before any upload. The aside is a rationale about the *former* pipeline,
+  not a statement about the integrated one, and the operator-facing table is
+  correct -- indeed the split now answers that transient case better than
+  the single row did. Not worth a correction Hop; a future chapter edit
+  could write "the only release-blocking gate job before any upload".
+* *O-6 (new).* The two `patterns` lists name actions exactly, with no
+  wildcard, so adding an action to the workflow later requires adding it to
+  one list. The failure direction is safe (an unlisted action arrives
+  ungrouped and is therefore not automerge-eligible), but neither the file's
+  comment nor chapter 4 names this upkeep duty. A one-sentence note would be
+  an improvement, not a requirement.
+* *O-1, O-3, O-4 (from H002) -- unchanged and still non-blocking.* The gate
+  table carries no recovery column for any gate; the git-ignored generated
+  catalog is outside every CommitIntent and I regenerated it myself; and the
+  FTR's `Scope (file-exact)` entries `docs/backlog/_open.adoc` and the FTR's
+  own status remain backlog upkeep for a later phase, correctly deferred by
+  this WorkItem's narrower authorized scope, together with removing the
+  temporary ceiling entries after integration. I also checked
+  `docs/release_notes/release_notes.adoc`, which calls the job
+  "informational": that sentence records the *2026-11-23 run 9*
+  qualification evidence, where the job was informational by decision, so it
+  is true as history, it is a frozen release-notes section G1 requires not
+  to move, and it is outside this WorkItem's scope. No change is owed there.
+
+== Pass H002 -- `RUN-dd8bb6bf...`
 
 WorkItem:: `WI-WFC-RELEASE-GATE-DEPENDENCY-AUTOMATION-001`
 Hop:: `H002` (`broad_review`, fresh independent adversarial pass, gate,
