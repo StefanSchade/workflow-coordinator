@@ -862,6 +862,108 @@ class RequiredEvidenceIdentity:
     timeout_seconds: int
 
 
+class UsageCoverage(CoordinatorValue):
+    """How completely one invocation's provider-reported token usage was
+    captured: both headline figures (``complete``), only one of them
+    (``partial``), or neither (``none`` -- including an unparsable or absent
+    provider report)."""
+
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    NONE = "none"
+
+
+# A conservative sanity bound against a corrupted or placeholder provider
+# value (e.g. a sentinel near a 64-bit boundary); no real token count
+# plausibly approaches it, so anything beyond it is treated as unparsable,
+# never as a real figure.
+MAX_PLAUSIBLE_TOKEN_COUNT = 1_000_000_000_000
+
+
+def coerce_token_count(value: object) -> int | None:
+    """Defensively parse one provider-reported token figure.
+
+    Returns the reported value only when it is a non-negative ``int`` within
+    ``MAX_PLAUSIBLE_TOKEN_COUNT``; any other JSON shape (bool, float, str,
+    negative, too large, missing) yields ``None`` -- an unknown figure is
+    never guessed and never zero-filled.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0 or value > MAX_PLAUSIBLE_TOKEN_COUNT:
+        return None
+    return value
+
+
+def usage_coverage_for(input_tokens: int | None, output_tokens: int | None) -> UsageCoverage:
+    """The one coverage rule shared by every provider: both headline figures
+    reported is ``complete``, exactly one is ``partial``, neither is
+    ``none``."""
+
+    if input_tokens is not None and output_tokens is not None:
+        return UsageCoverage.COMPLETE
+    if input_tokens is not None or output_tokens is not None:
+        return UsageCoverage.PARTIAL
+    return UsageCoverage.NONE
+
+
+@dataclass(frozen=True)
+class ModelUsage:
+    """One model's token figures from a provider's own per-model breakdown
+    (for example Claude's ``modelUsage``); absent when the provider reports
+    only an invocation-level aggregate (for example Codex)."""
+
+    model: str
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_creation_tokens: int | None
+    reasoning_output_tokens: int | None
+
+
+@dataclass(frozen=True)
+class UsageRecord:
+    """Provider-neutral token usage for one invocation.
+
+    Every figure is either a non-negative integer the provider reported or
+    ``None`` (unknown) -- never estimated and never zero-filled for "not
+    reported". No monetary/price figure is ever carried here.
+
+    ``input_includes_cache_read`` preserves the one real cross-provider
+    semantic difference this record keeps rather than silently normalising
+    away: Codex's ``input_tokens`` already includes ``cached_input_tokens``
+    (cache read); Claude's ``input_tokens`` excludes both cache read and
+    cache creation. It is meaningful only when ``input_tokens`` is not
+    ``None``.
+    """
+
+    coverage: UsageCoverage
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_creation_tokens: int | None
+    reasoning_output_tokens: int | None
+    input_includes_cache_read: bool
+    per_model: tuple[ModelUsage, ...] = ()
+
+
+# The one shared "nothing captured" value: every adapter returns this,
+# rather than ``None``, when its invocation's provider output carried no
+# parsable usage at all (including a timeout or crash with no output) -- a
+# captured-but-empty record is still a record, distinct from no record ever
+# having been persisted for a Hop (see ``frontdoor.audit``).
+NO_USAGE_REPORTED = UsageRecord(
+    coverage=UsageCoverage.NONE,
+    input_tokens=None,
+    output_tokens=None,
+    cache_read_tokens=None,
+    cache_creation_tokens=None,
+    reasoning_output_tokens=None,
+    input_includes_cache_read=False,
+)
+
+
 @dataclass(frozen=True)
 class StagedQualificationAttempt:
     """One immutable schema-4 pre-route execution attempt."""

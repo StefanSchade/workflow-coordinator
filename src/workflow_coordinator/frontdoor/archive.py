@@ -100,6 +100,7 @@ CHECKOUT_ALLOW = [
     "dispatch.json",
     "structured-result.schema.json",
     "execution-evidence.json",
+    "usage.json",
 ]
 
 OPS_ROOT_ALLOW = [

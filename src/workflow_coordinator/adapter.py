@@ -8,7 +8,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .model import ResultContractKind, ResultValue, admits_result_contract_version
+from .model import (
+    NO_USAGE_REPORTED,
+    ResultContractKind,
+    ResultValue,
+    UsageRecord,
+    admits_result_contract_version,
+)
 from .serialization import ValidationError, review_verdict_from_data, routing_result_from_data, work_result_from_data
 
 
@@ -77,6 +83,11 @@ class AgentExecutionOutcome:
     stdout: str
     stderr: str
     diagnostics: tuple[str, ...] = ()
+    # Provider-reported token usage, parsed defensively from the provider's
+    # own transport output independent of candidate acceptance; always a
+    # record (never ``None``), with ``NO_USAGE_REPORTED`` naming the case
+    # where nothing was parsable. See ``model.UsageRecord``.
+    usage: UsageRecord = NO_USAGE_REPORTED
 
 
 ROUTING_RESULT_ENVELOPE_CONTRACT = "routing-result-envelope/v1"
@@ -89,9 +100,10 @@ class AgentExecutionPort(Protocol):
 @dataclass(frozen=True)
 class FakeAdapter:
     output: str
+    usage: UsageRecord = NO_USAGE_REPORTED
 
     def execute(self, request: AgentExecutionRequest) -> AgentExecutionOutcome:
-        return AgentExecutionOutcome(self.output, 0, False, "", "")
+        return AgentExecutionOutcome(self.output, 0, False, "", "", usage=self.usage)
 
 
 @dataclass(frozen=True)

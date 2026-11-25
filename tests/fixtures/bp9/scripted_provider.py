@@ -158,6 +158,18 @@ def main() -> int:
         "result": result,
     }
     output.write_text(json.dumps(payload), encoding="utf-8")
+    # A fixed, deterministic token-usage event on stdout, matching the real
+    # `codex exec --json` wire contract's own `turn.completed` event (WI-WFC-
+    # TOKEN-USAGE-S1-001): every BP9 Hop this provider answers this way now
+    # carries real, non-zero usage end to end, from capture through archive
+    # to `wfc report`.
+    print(json.dumps({
+        "type": "turn.completed",
+        "usage": {
+            "input_tokens": 42, "cached_input_tokens": 5, "cache_write_input_tokens": 0,
+            "output_tokens": 7, "reasoning_output_tokens": 1,
+        },
+    }))
     return 0
 
 

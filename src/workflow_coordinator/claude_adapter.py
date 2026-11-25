@@ -20,7 +20,15 @@ from .adapter import (
     AgentExecutionRequest,
     ExecutionNotStartedError,
 )
-from .model import ResultContractKind, admits_result_contract_version
+from .model import (
+    ModelUsage,
+    NO_USAGE_REPORTED,
+    ResultContractKind,
+    UsageRecord,
+    admits_result_contract_version,
+    coerce_token_count,
+    usage_coverage_for,
+)
 from .persistence import atomic_write_json
 from .structured_result_schema import structured_result_envelope_schema
 
@@ -109,6 +117,71 @@ def _remove_scratch_path(path: Path) -> None:
 
 def _bounded(value: str, limit: int = 16_384) -> str:
     return value[-limit:]
+
+
+def _claude_model_usage(model_usage: object) -> tuple[ModelUsage, ...]:
+    """Project Claude's ``modelUsage`` (keyed by model id) defensively; an
+    entry whose own shape is wrong is skipped, never raised."""
+
+    if not isinstance(model_usage, dict):
+        return ()
+    entries = []
+    for model_id, raw_entry in model_usage.items():
+        if not isinstance(model_id, str) or not model_id or not isinstance(raw_entry, dict):
+            continue
+        entries.append(
+            ModelUsage(
+                model=model_id,
+                input_tokens=coerce_token_count(raw_entry.get("inputTokens")),
+                output_tokens=coerce_token_count(raw_entry.get("outputTokens")),
+                cache_read_tokens=coerce_token_count(raw_entry.get("cacheReadInputTokens")),
+                cache_creation_tokens=coerce_token_count(raw_entry.get("cacheCreationInputTokens")),
+                reasoning_output_tokens=coerce_token_count(raw_entry.get("thinkingTokens")),
+            )
+        )
+    return tuple(sorted(entries, key=lambda item: item.model))
+
+
+def _usage_from_wrapper_stdout(stdout: str) -> UsageRecord:
+    """Parse Claude's token usage from the full, un-bounded wrapper stdout.
+
+    Independent of ``_candidate_from_wrapper``'s success criteria: the
+    invocation's cost already occurred even when the wrapper reports failure,
+    so usage is read whenever the wrapper itself parses as a JSON object,
+    never gated on ``type``/``subtype``/``is_error``. A monetary field such
+    as ``total_cost_usd``/``costUSD`` is never read here.
+    """
+
+    try:
+        wrapper = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return NO_USAGE_REPORTED
+    if not isinstance(wrapper, dict):
+        return NO_USAGE_REPORTED
+    usage = wrapper.get("usage")
+    input_tokens = output_tokens = cache_read_tokens = cache_creation_tokens = None
+    reasoning_output_tokens = None
+    if isinstance(usage, dict):
+        input_tokens = coerce_token_count(usage.get("input_tokens"))
+        output_tokens = coerce_token_count(usage.get("output_tokens"))
+        cache_read_tokens = coerce_token_count(usage.get("cache_read_input_tokens"))
+        cache_creation_tokens = coerce_token_count(usage.get("cache_creation_input_tokens"))
+        details = usage.get("output_tokens_details")
+        if isinstance(details, dict):
+            reasoning_output_tokens = coerce_token_count(details.get("thinking_tokens"))
+    return UsageRecord(
+        coverage=usage_coverage_for(input_tokens, output_tokens),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        reasoning_output_tokens=reasoning_output_tokens,
+        # Claude's ``input_tokens`` is reported net of both cache read and
+        # cache creation (see the fixture README and the verification
+        # record); never includes them the way Codex's does.
+        input_includes_cache_read=False,
+        per_model=_claude_model_usage(wrapper.get("modelUsage")),
+    )
 
 
 @dataclass(frozen=True)
@@ -281,9 +354,11 @@ class ClaudeCliAdapter:
         stdout = stdout or ""
         stderr = stderr or ""
         candidate = None if timed_out or child.returncode != 0 else self._candidate_from_wrapper(stdout)
+        usage = _usage_from_wrapper_stdout(stdout)
         diagnostics = () if child.returncode == 0 and not timed_out else (
             "Claude CLI timed out" if timed_out else f"Claude CLI exited {child.returncode}",
         )
         return AgentExecutionOutcome(
-            candidate, child.returncode, timed_out, _bounded(stdout), _bounded(stderr), diagnostics
+            candidate, child.returncode, timed_out, _bounded(stdout), _bounded(stderr), diagnostics,
+            usage=usage,
         )

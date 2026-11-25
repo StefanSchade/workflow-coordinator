@@ -339,6 +339,25 @@ def test_happy_path_cli_init_plan_run_yes_status_audit_report_archives_automatic
     ]
     assert git(evidence_path, "status", "--porcelain=v1") == ""  # the archive commit left it clean.
 
+    # WI-WFC-TOKEN-USAGE-S1-001: the scripted provider's fixed `turn.completed`
+    # stdout event (the real Codex CLI's own wire contract) is captured,
+    # persisted, archived and reported end to end -- never a price, never a
+    # zero-fill, never affecting the already-asserted "completed" outcome.
+    archived_audit = json.loads(archived_audit_bytes)
+    [hop] = archived_audit["hops"]
+    assert hop["usage"] == {
+        "coverage": "complete", "input_tokens": 42, "output_tokens": 7,
+        "cache_read_tokens": 5, "cache_creation_tokens": 0, "reasoning_output_tokens": 1,
+        "input_includes_cache_read": True, "per_model": [],
+    }
+    assert archived_audit["usage"]["coverage_counts"] == {"complete": 1, "partial": 0, "none": 0}
+    assert archived_audit["usage"]["totals"]["input_tokens"] == {"value": 42, "lower_bound": False}
+    assert "usage_not_reported" not in archived_audit["limits"]
+    assert "usage_partially_reported" not in archived_audit["limits"]
+    assert "total_cost_usd" not in report.stdout and "costUSD" not in report.stdout
+    assert "usage total input=42 output=7" in report.stdout
+    assert "usage role  worker  input=42 output=7" in report.stdout
+
 
 # ==========================================================================
 # (b) Correction/review cycle under robust@v1: a blocking review Finding,
