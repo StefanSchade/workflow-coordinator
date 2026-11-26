@@ -162,12 +162,12 @@ task-check inherit the launching environment. It authorizes nothing and runs
 no `plan`/`run`. It refuses by name, before creating what it can avoid
 creating: a path whose checkout identity already carries a lifecycle
 (`refused_existing_lifecycle`), an existing path, a missing parent, a path
-inside the repository, a scratch directory inside the checkout, a dirty base,
-an existing branch, an unsafe hook. One Run per checkout is unchanged: the
-identity is the resolved top-level *and* the Git common directory, so a
-rotated checkout needs a new *path*, not only a fresh `git worktree add`. A
-spent path stays spent -- this makes a fresh one cheap, never a spent one
-reusable, and removes no worktree, branch or directory.
+inside *any* working tree of the repository, a scratch directory inside the
+checkout, a dirty base, an existing branch, an unsafe hook. One Run per
+checkout is unchanged: the identity is the resolved top-level *and* the Git
+common directory, so a rotated checkout needs a new *path*, not only a fresh
+`git worktree add`. A spent path stays spent -- this makes a fresh one cheap,
+never a spent one reusable, and removes no worktree, branch or directory.
 
 ## The preparation hook, and what it is trusted with
 

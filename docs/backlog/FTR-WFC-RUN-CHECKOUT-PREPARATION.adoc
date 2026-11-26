@@ -130,6 +130,12 @@ AD-5's "controlled cleanup" names.
 * Whether the command also creates the branch, or only the worktree.
   *Decided in <<design-2026-11-26,the Design>>, decision 3*: it creates the
   branch, refusing an existing branch name by name.
+* Whether a hook that leaves the *prepared* checkout dirty should become a
+  refusal of its own, or stay the consumer's responsibility as hook content.
+  Raised by the independent review of the first candidate and *open*; see
+  <<correction-2026-11-27,the correction note>>. Today such a preparation
+  succeeds and the operator meets the problem at `wfc run`, after
+  authorization.
 
 [[design-2026-11-26]]
 == Design (2026-11-26, WI-WFC-BETA2-O4-001)
@@ -195,10 +201,19 @@ command creates the two leaves it owns, not an arbitrary directory tree
 outside the repository.
 
 |`refused_path_inside_repository`
-|The target or scratch path resolves inside the repository's own worktree or
-its Git common directory (or contains either). An untracked file anywhere
-inside the tree dirties it and refuses launch; a checkout inside a checkout
-is not a fresh checkout.
+|The target or scratch path resolves inside -- or contains -- *any* working
+tree the repository has registered, or its Git common directory. Not only the
+working tree `--repository` names: one repository has many working trees
+sharing one common directory (this repository's own topology is one fresh
+worktree per Run), all of them are trees of it, and dirtying another checkout
+is the same defect as dirtying the given one. An untracked file anywhere
+inside a working tree makes *that* tree dirty, so its `observe_repository` is
+no longer clean, the pre-Hop boundary check of a Run living in it fails and a
+launch there is refused as not at the clean authorized baseline; a checkout
+inside a checkout is not a fresh checkout. The trees are read once, before
+the first effect, from `git worktree list --porcelain -z`, which lists the
+main tree too -- so this one check subsumes the resolved top-level rather
+than special-casing it (correction of 2026-11-27).
 
 |`refused_scratch_inside_checkout`
 |The scratch path resolves inside the target checkout path. `TMPDIR` must be
@@ -270,9 +285,14 @@ created checkout or scratch directory. The hook may only put a directory it
 prepared itself in front of `PATH`.
 
 |`refused_config`
-|The Consumer Config named by `--config` exists at the base ref but cannot be
-parsed, so the declaration cannot be read. A *missing or uncommitted* config
-file is not a refusal; it simply means "no hook declared".
+|The Consumer Config named by `--config` exists at the base ref but its bytes
+are not valid UTF-8, or it cannot be parsed, so the declaration cannot be
+read. A *missing or uncommitted* config file is not a refusal; it simply
+means "no hook declared". The decode is named rather than strict because the
+committed bytes are the consumer's: a strict text decode of Git's output
+would otherwise escape as an unhandled exception instead of a refusal, which
+is the defect class `git_facts._run_git_raw` already reads bytes for
+(correction of 2026-11-27).
 
 |`refused_create`
 |A directory or the launch-environment file this command must create cannot
@@ -298,9 +318,12 @@ under the repository's Git common directory, and the new branch ref. Both are
 purely additive, both are Git's own doing, and neither moves or removes an
 existing ref or worktree; the slice's "writes only inside the checkout and
 scratch directory it creates" claim is true of everything *WFC* writes, and
-this is the one exception, which no implementation of "create a worktree"
-can avoid. Nothing else outside those directories is written, and nothing
-anywhere is removed, in any code path, including every refusal path.
+this is the one durable exception, which no implementation of "create a
+worktree" can avoid (besides a transient copy of the live index under
+`TMPDIR` that the shared `git_facts` observation path makes and removes
+itself, rather than touching the real index). Nothing else outside those
+directories is written, and nothing anywhere is removed, in any code path,
+including every refusal path.
 *Rejected:* creating the worktree detached and leaving the branch to the
 operator (cheaper, but it moves a step back into the manual recipe this slice
 exists to remove).
@@ -472,3 +495,40 @@ Manual (chapters 3, 9 and 10), the Developer Guide (chapter 1) and
 link:FTR-WFC-LEVEL1-OPERATOR-GUIDANCE.adoc[the operator-guidance record] are
 updated in the same slice, retiring the statements the O1 slice wrote as
 *planned* for O4.
+
+[[correction-2026-11-27]]
+=== Correction note (2026-11-27)
+
+Two corrections after the independent broad review of the first candidate, in
+the same WorkItem; the Design above is amended in place and the two table
+rows name the date.
+
+. `refused_path_inside_repository` covered only the working tree
+  `--repository` named, so a fresh path nested in a *sibling* working tree of
+  the same repository was accepted and prepared -- which left untracked
+  entries in that sibling, made it dirty and would have refused the next Hop
+  of a Run living there. The boundary set is now every working tree
+  `git worktree list --porcelain -z` reports plus the Git common directory,
+  resolved once before the first effect (`prepare_checkout.registered_working_trees`,
+  `prepare_checkout.repository_boundaries`), under the same refusal name and
+  with no new flag, state or mechanism. Both directions are tested (prepared
+  from the main tree into a linked one, and from a linked tree into the main
+  one), for the checkout path and for the scratch path, each asserting that
+  the bystanding tree stays clean.
+. A committed Consumer Config whose bytes are not UTF-8 raised
+  `UnicodeDecodeError` instead of the `refused_config` the table promises.
+  Git's output is now read as bytes and decoded with a named refusal
+  (`prepare_checkout._git_bytes`, `_git_raw`), which also covers the module's
+  other Git reads.
+
+Nothing else changed: no new refusal name, no change to the hook contract, to
+the launch environment, to the one-Run-per-checkout invariant or to journal,
+lifecycle, classification and archive behaviour, and still nothing is removed
+on any code path. The reviewer's remaining observations were recorded as
+non-blocking: the module's private Git helpers now state in one sentence why
+they are plain `subprocess.run` rather than `git_facts`' trusted-Git path,
+and the transient index copy is named in decision 3 above. Whether a hook
+that dirties the prepared checkout should become a refusal of its own
+(`refused_hook_dirtied_checkout`) is left as an open maintainer question: it
+is additional mechanism beyond this slice's acceptance, and hook *content* is
+by design the consumer's responsibility.

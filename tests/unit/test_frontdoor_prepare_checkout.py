@@ -29,6 +29,7 @@ from workflow_coordinator.frontdoor.journal import (
     checkout_identity,
     journal_path,
 )
+from workflow_coordinator.git_facts import observe_repository
 
 # The toy consumer's committed baseline probe. It needs exactly what a real
 # prepared environment supplies: a prepared tool first on PATH, the hook's own
@@ -124,6 +125,13 @@ def toy(tmp_path, monkeypatch):
     checkouts = tmp_path / "checkouts"
     checkouts.mkdir()
     return repository, checkouts, state
+
+
+def _linked_worktree(repository: Path, path: Path, branch: str) -> Path:
+    """One more working tree of the same repository, as every Run gets."""
+
+    _git(repository, "worktree", "add", "-b", branch, str(path), "HEAD")
+    return path
 
 
 def _prepare(repository: Path, target: Path, **overrides):
@@ -281,6 +289,71 @@ def test_refuses_a_path_inside_the_repository(toy):
     assert refusal.value.name == "refused_path_inside_repository"
     assert not (repository / "nested").exists()
     assert _git(repository, "status", "--porcelain=v1", "--untracked-files=all") == ""
+
+
+def test_registered_working_trees_lists_every_tree_including_the_main_one(toy):
+    repository, checkouts, _ = toy
+    sibling = _linked_worktree(repository, checkouts / "sibling", "work/sibling")
+    both = {repository.resolve(), sibling.resolve()}
+    # Seen from either tree: a repository is its common directory and *all*
+    # its working trees, so the boundary set is the same from both sides.
+    assert set(P.registered_working_trees(repository)) == both
+    assert set(P.registered_working_trees(sibling)) == both
+    assert set(P.repository_boundaries(
+        canonical_checkout(repository), P.registered_working_trees(repository),
+    )) == both | {canonical_checkout(repository).git_common_dir}
+
+
+def test_refuses_a_checkout_path_inside_another_working_tree_of_the_repository(toy):
+    """The repository has many working trees sharing one common directory, and
+    preparing into another of them dirties *that* tree: its next pre-Hop
+    boundary check would fail and a launch there would be refused as not at
+    the clean authorized baseline. One fresh worktree per Run is this
+    repository's own topology, so this is the ordinary case, not an exotic
+    one."""
+
+    repository, checkouts, _ = toy
+    sibling = _linked_worktree(repository, checkouts / "sibling", "work/sibling")
+
+    with pytest.raises(P.PreparationRefusal) as refusal:
+        _prepare(repository, sibling / "run-checkout", branch="work/nested")
+    assert refusal.value.name == "refused_path_inside_repository"
+    assert not (sibling / "run-checkout").exists()
+    assert not (sibling / "run-checkout-scratch").exists()
+    # The bystanding tree is untouched, so a Run living in it can still launch.
+    assert _git(sibling, "status", "--porcelain=v1", "--untracked-files=all") == ""
+    assert observe_repository(sibling).clean
+
+
+def test_refuses_a_checkout_path_inside_the_main_tree_seen_from_a_linked_worktree(toy):
+    """The other direction: whichever working tree ``--repository`` names, the
+    refusal covers every other tree of the same repository."""
+
+    repository, checkouts, _ = toy
+    sibling = _linked_worktree(repository, checkouts / "sibling", "work/sibling")
+
+    with pytest.raises(P.PreparationRefusal) as refusal:
+        _prepare(sibling, repository / "run-checkout", branch="work/nested")
+    assert refusal.value.name == "refused_path_inside_repository"
+    assert not (repository / "run-checkout").exists()
+    assert _git(repository, "status", "--porcelain=v1", "--untracked-files=all") == ""
+    assert observe_repository(repository).clean
+
+
+def test_refuses_a_scratch_path_inside_another_working_tree_of_the_repository(toy):
+    repository, checkouts, _ = toy
+    sibling = _linked_worktree(repository, checkouts / "sibling", "work/sibling")
+
+    with pytest.raises(P.PreparationRefusal) as refusal:
+        _prepare(
+            repository, checkouts / "fresh", scratch=sibling / "scratch", branch="work/fresh",
+        )
+    assert refusal.value.name == "refused_path_inside_repository"
+    assert "scratch path" in str(refusal.value)
+    # Refused before the first effect: neither path was created.
+    assert not (checkouts / "fresh").exists()
+    assert not (sibling / "scratch").exists()
+    assert _git(sibling, "status", "--porcelain=v1", "--untracked-files=all") == ""
 
 
 def test_refuses_a_scratch_directory_inside_the_checkout(toy):
@@ -664,6 +737,32 @@ def test_refuses_a_committed_config_it_cannot_parse(tmp_path, monkeypatch):
             repository=repository, target=checkouts / "fresh", branch="work/toy",
         )
     assert refusal.value.name == "refused_config"
+    assert not (checkouts / "fresh").exists()
+
+
+def test_refuses_a_committed_config_whose_bytes_are_not_utf_8(tmp_path, monkeypatch):
+    """A named refusal, not a traceback. The config's bytes are the
+    consumer's, so a strict text decode of Git's output must not escape as an
+    unhandled exception -- the same defect class ``git_facts._run_git_raw``
+    reads bytes for."""
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "state").mkdir()
+    repository = _toy_repository(tmp_path)
+    config = repository / ".wfc" / "config.yaml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_bytes(b"schema_version: 1\nrepository_name: \xff\xfe\n")
+    _git(repository, "add", "-A")
+    _git(repository, "commit", "-m", "a committed config that is not utf-8")
+    checkouts = tmp_path / "checkouts"
+    checkouts.mkdir()
+
+    with pytest.raises(P.PreparationRefusal) as refusal:
+        P.prepare_checkout(
+            repository=repository, target=checkouts / "fresh", branch="work/toy",
+        )
+    assert refusal.value.name == "refused_config"
+    assert "not valid UTF-8" in str(refusal.value)
     assert not (checkouts / "fresh").exists()
 
 

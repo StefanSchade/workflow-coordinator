@@ -45,7 +45,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from ..commissioning import CommissionError, _path
 from ..evidence import UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES
@@ -348,32 +348,50 @@ def _untrusted_tail(label: str, value: bytes) -> str:
     return f"{label} tail, untrusted{notice}:\n{tail.decode('utf-8', 'backslashreplace')}"
 
 
-def _git(repository: Path, *arguments: str, refusal: str = "refused_git") -> str:
-    completed = subprocess.run(
-        ("git", "-C", str(repository), *arguments), capture_output=True, text=True,
-    )
+def _git_bytes(repository: Path, *arguments: str, refusal: str = "refused_git") -> bytes:
+    """Run one Git command the command needs and return its stdout bytes.
+
+    Deliberately plain ``subprocess.run`` rather than ``git_facts``' private
+    trusted-Git path (which scrubs ``GIT_*`` and pins ``core.hooksPath``):
+    this command runs on the operator's host, against the operator's own
+    repository and environment, and is about to execute a committed hook with
+    the operator's full privileges, so a repository-local Git hook is not a
+    boundary this command could claim to hold.  The bytes are decoded, if at
+    all, by the caller, so that a path or blob which is not UTF-8 becomes a
+    named refusal instead of an unhandled exception.
+    """
+
+    completed = subprocess.run(("git", "-C", str(repository), *arguments), capture_output=True)
     if completed.returncode:
         raise PreparationRefusal(
             refusal,
             f"git {' '.join(arguments)} failed in {repository}",
-            detail=_untrusted_tail("git stderr", completed.stderr.encode("utf-8", "replace")),
+            detail=_untrusted_tail("git stderr", completed.stderr),
         )
-    return completed.stdout.strip()
+    return completed.stdout
 
 
 def _git_raw(repository: Path, *arguments: str, refusal: str = "refused_git") -> str:
-    """Like ``_git`` but without stripping: for reading a committed blob."""
+    """Git's stdout as text, unstripped: for reading a committed blob.
 
-    completed = subprocess.run(
-        ("git", "-C", str(repository), *arguments), capture_output=True, text=True,
-    )
-    if completed.returncode:
+    The decode failure is a *named* refusal, because the bytes are the
+    consumer's and not ours -- the same reason ``git_facts._run_git_raw``
+    reads bytes: a strict text decode would otherwise escape as an unhandled
+    exception rather than the refusal this command's vocabulary promises.
+    """
+
+    stdout = _git_bytes(repository, *arguments, refusal=refusal)
+    try:
+        return stdout.decode("utf-8")
+    except UnicodeDecodeError as error:
         raise PreparationRefusal(
             refusal,
-            f"git {' '.join(arguments)} failed in {repository}",
-            detail=_untrusted_tail("git stderr", completed.stderr.encode("utf-8", "replace")),
-        )
-    return completed.stdout
+            f"the output of git {' '.join(arguments)} in {repository} is not valid UTF-8: {error}",
+        ) from error
+
+
+def _git(repository: Path, *arguments: str, refusal: str = "refused_git") -> str:
+    return _git_raw(repository, *arguments, refusal=refusal).strip()
 
 
 def _git_succeeds(repository: Path, *arguments: str) -> bool:
@@ -381,6 +399,61 @@ def _git_succeeds(repository: Path, *arguments: str) -> bool:
         ("git", "-C", str(repository), *arguments), capture_output=True, text=True,
     )
     return completed.returncode == 0
+
+
+def registered_working_trees(repository: Path) -> tuple[Path, ...]:
+    """Every working tree registered for this repository, resolved.
+
+    One Git repository has *many* working trees sharing one Git common
+    directory, and every one of them is a tree of that repository -- this
+    repository's own topology is one fresh worktree per Run, so a dozen
+    siblings is the ordinary case.  Creating anything inside another of them
+    leaves untracked entries there, which makes *that* tree dirty: its
+    ``observe_repository`` is no longer clean, the pre-Hop boundary check of a
+    Run living in it fails, and a launch there is refused as "not at the clean
+    authorized baseline".  Dirtying another checkout is the same defect as
+    dirtying the given one, so the refusal covers all of them.
+
+    ``git worktree list --porcelain -z`` lists them all, the main tree
+    included, so this subsumes the top-level of whichever tree
+    ``--repository`` happens to name.  ``-z`` because this repository reads
+    paths out of Git NUL-terminated rather than trusting its quoting, and
+    ``os.fsdecode`` because a path is bytes to the kernel, not text.
+    """
+
+    prefix = b"worktree "
+    records = _git_bytes(repository, "worktree", "list", "--porcelain", "-z").split(b"\0")
+    trees = tuple(
+        Path(os.fsdecode(record[len(prefix):])).resolve()
+        for record in records
+        if record.startswith(prefix)
+    )
+    if not trees:
+        raise PreparationRefusal(
+            "refused_git",
+            f"git reports no working tree for {repository}; a checkout is prepared from a "
+            "repository that has a working tree, not from a bare one",
+        )
+    return trees
+
+
+def repository_boundaries(
+    source: CanonicalCheckout, working_trees: Sequence[Path],
+) -> tuple[Path, ...]:
+    """The paths neither created path may lie inside or contain.
+
+    The working tree ``--repository`` named, every other working tree the
+    repository has registered, and the Git common directory.  The first is
+    listed by the second in every topology observed here; it is kept in the
+    set because a disagreement between a recorded worktree path and the
+    resolved top-level must not silently weaken a check that already holds.
+    """
+
+    boundaries: list[Path] = []
+    for path in (source.toplevel, *working_trees, source.git_common_dir):
+        if path not in boundaries:
+            boundaries.append(path)
+    return tuple(boundaries)
 
 
 def committed_entry(repository: Path, commit: str, relative_path: str) -> CommittedEntry | None:
@@ -590,13 +663,16 @@ def existing_lifecycle_evidence(checkout_dir: Path) -> str | None:
     return None
 
 
-def _require_outside_repository(path: Path, *, kind: str, source: CanonicalCheckout) -> None:
-    if _overlaps(path, source.toplevel) or _overlaps(path, source.git_common_dir):
-        raise PreparationRefusal(
-            "refused_path_inside_repository",
-            f"the {kind} path is inside (or contains) the repository: {path}; an untracked "
-            "file anywhere in the tree dirties it and refuses launch",
-        )
+def _require_outside_repository(path: Path, *, kind: str, boundaries: Sequence[Path]) -> None:
+    for boundary in boundaries:
+        if _overlaps(path, boundary):
+            raise PreparationRefusal(
+                "refused_path_inside_repository",
+                f"the {kind} path is inside (or contains) {boundary}, which is a working tree of "
+                f"this repository or its Git directory: {path}; an untracked file anywhere in a "
+                "working tree dirties that tree and refuses launch there -- including the next "
+                "Hop of a Run that already lives in it",
+            )
 
 
 def _require_fresh_leaf(given: str | os.PathLike[str], *, kind: str) -> Path:
@@ -672,15 +748,20 @@ def _prepare(
             f"a committed baseline the operator can name (changed: {shown or 'unresolved submodules'})",
         )
 
+    # Resolved once, before the first effect: every working tree of this
+    # repository, not only the one --repository named, is a tree the created
+    # paths must stay out of.
+    boundaries = repository_boundaries(source, registered_working_trees(repository_root))
+
     # Where the two paths *are* is decided before whether they exist: a path
     # inside the repository, or a scratch directory nested in the checkout, is
     # the more actionable refusal of the two.
     worktree = Path(target).resolve()
-    _require_outside_repository(worktree, kind="checkout", source=source)
+    _require_outside_repository(worktree, kind="checkout", boundaries=boundaries)
     _require_fresh_leaf(target, kind="checkout")
 
     scratch_path = resolve_scratch_path(worktree, scratch)
-    _require_outside_repository(scratch_path, kind="scratch", source=source)
+    _require_outside_repository(scratch_path, kind="scratch", boundaries=boundaries)
     if _overlaps(scratch_path, worktree):
         raise PreparationRefusal(
             "refused_scratch_inside_checkout",
@@ -782,7 +863,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
             "and one sourceable launch-environment file. Removes nothing, ever. Runs no `wfc "
             "plan`/`wfc run`, writes no journal and authorizes nothing. Refuses, by name, a "
             "path whose checkout identity already carries a lifecycle, an existing path, a path "
-            "inside the repository, a dirty base and an unsafe hook."
+            "inside any working tree of the repository, a dirty base and an unsafe hook."
         ),
     )
     parser.add_argument("--repository", default=".",
