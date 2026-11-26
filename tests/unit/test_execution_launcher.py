@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow_coordinator.execution_boundary import EXTERNAL_SCRATCH_DESTINATION, BoundaryConfigurationError
+from workflow_coordinator.execution_boundary import BoundaryConfigurationError
 from workflow_coordinator.execution_launcher import (
     AbsentWritableScopeEntryError, BoundaryGrant, LaunchPlan, StartedSignal, close_started_signal_write_end,
     derive_boundary_grant, direct_grant, normalized_writable_scope,
