@@ -1,0 +1,127 @@
+= FTR-WFC-RUN-CHECKOUT-PREPARATION -- No Deterministic Step Prepares The Fresh Checkout And Environment Every Run Needs
+
+Type:: future technical record -- Front Door lifecycle-adjacent capability gap
+(preparation of a *new* checkout; deliberately not reuse of a spent one)
+Status:: proposed / backlog; nothing implemented
+Current controlling source:: This record; see link:_open.adoc[the active-work
+manifest] for its current card and
+link:beta2_operator_efficiency_plan.adoc#o4[the Beta-2 operator-efficiency
+plan] for the two variants, order and acceptance.
+Next action:: Decide link:beta2_operator_efficiency_plan.adoc#d4[D4] (prepare
+only, or prepare and clean up), then a separately authorized Commission after
+link:beta2_operator_efficiency_plan.adoc#o1[O1].
+Not authorized here:: Any implementation; any weakening of the
+one-Run-per-checkout invariant or of the ownership lock; any change to the
+journal, lifecycle classification or archive behaviour; any removal of a
+checkout, branch, worktree or Evidence repository; any Run.
+Priority:: medium-high by footprint: five recorded friction entries, and the
+cost recurs on every single Run.
+Date:: 2026-11-26.
+Supporting analysis::
+link:../warm_storage/post-beta-planning/wfc_beta2_operator_efficiency_analysis.adoc[The
+Beta-2 operator-efficiency analysis], candidate `C3`, friction entries 4, 6,
+12, 17 and 20.
+
+== Relation to the decided lifecycle model
+
+link:../technical_model/ch04_target_and_alternatives/03_adr_closed_versioned_workflow_programs.adoc#adr-ad5[AD-5]
+keeps *one Run per canonical checkout* as the Beta contract and names the
+remedy for the resulting operational friction explicitly: "The preferred way
+to reduce that friction later is *automated worktree or branch creation and
+controlled cleanup at the Front Door*, not a looser kernel invariant."
+
+This record is that automation, and only that. Controlled *reuse* of a spent
+checkout is link:FTR-WFC-LIFECYCLE-ROTATION.adoc[FTR-WFC-LIFECYCLE-ROTATION]'s
+subject, stays behind AD-5's five entry conditions, and is explicitly *not*
+part of this record. The two are complements: rotation would make an old
+checkout reusable, this makes a fresh one cheap.
+
+== Problem
+
+Every Run needs, before `wfc run` can succeed:
+
+* a checkout at a *fresh path*. The lifecycle is keyed by a digest of the
+  resolved top-level *and* the resolved Git common directory
+  (`frontdoor/journal.py:75-89`), so removing a worktree and re-creating one
+  at the same path reproduces the same checkout identity and the same
+  `refused_active_lifecycle` (friction entry 12);
+* its own virtual environment with an editable install. A shared venv whose
+  editable install points at another worktree breaks that worktree's gate
+  (friction entry 4);
+* the declared inputs the evidence command needs in the *launching* process's
+  environment -- for WFC self-development the verified offline bundle and
+  `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`. Both the baseline probe
+  (`frontdoor/lifecycle.py:417-419`, `subprocess.run` with no `env=`) and the
+  in-Hop task-check (`evidence.py:88-98`, which copies `os.environ`) inherit
+  it;
+* a scratch `TMPDIR` outside the worktree, since an untracked file inside the
+  repository makes the tree dirty and refuses launch;
+* until link:FTR-WFC-UNUSED-ROLE-DEFAULT-TOLERANCE.adoc[the unused-role-default
+  record] is addressed, a second committed Consumer Config for `simple@v1`.
+
+All of it is manual, none of it is a recipe in the shipped texts, and each
+omission costs a refused probe plus the checkout's single lifecycle. Two
+further entries attach to the same step: a stale `.git/config.lock` in the
+worktree's common Git directory (entry 6) and the host CLI sandbox's
+placeholder device nodes in the checkout root (entry 17).
+
+The duration coupling is worth stating because it bounds another remedy: the
+evidence timeout is a kernel hard cap of 900 seconds (`model.py:27`), and the
+full suite has reached 896.96 seconds without the verified bundle against 171
+seconds with it
+(link:BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS.adoc[the timeout BUG]'s C3
+diagnostic). A correctly prepared environment is therefore not only
+convenient; it is what keeps a lint-inclusive evidence command inside the cap.
+
+== Direction (not a chosen design)
+
+A Front Door command that creates a worktree at a fresh path plus a sibling
+scratch directory, and drives the consumer-specific part of environment
+preparation from a *declared, committed hook* rather than hard-coding WFC's
+own offline bundle -- that bundle is WFC's development tooling, not a generic
+consumer need, and hard-coding it would make a self-development detail part
+of the product surface.
+
+Two variants, per link:beta2_operator_efficiency_plan.adoc#d4[D4]:
+
+Variant A, prepare only (the plan's recommendation for Beta 2):: creates and
+prepares; writes only inside the checkout and scratch directory it creates;
+removes nothing.
+Variant B, prepare and clean up:: variant A plus removal of a checkout and
+scratch directory *the command itself created and recorded*, which is what
+AD-5's "controlled cleanup" names.
+
+== Boundaries any implementation must keep
+
+* *The one-Run-per-checkout invariant is not touched.* The command must
+  refuse any path whose checkout digest already carries a journal, by name.
+  Making a spent checkout usable again is rotation and is out of scope.
+* *The ownership lock is not touched*; this record is not about concurrency.
+* *No journal, lifecycle classification or archive behaviour changes.* The
+  command prepares a checkout; it does not authorize, launch or classify
+  anything.
+* *Removal, in variant B, is destructive and must be bounded by the
+  command's own record of what it created.* It must never touch the Evidence
+  repository, which is durable and remote-less, nor a branch, worktree or ref
+  the command did not create. The Agent Skill already withholds discarding
+  anything the session did not itself create (`SKILL.md:50`, `:57`); that
+  withholding is the reason the variant is a maintainer decision and not a
+  default.
+
+== Open decisions
+
+* link:beta2_operator_efficiency_plan.adoc#d4[D4] -- variant A or B. The plan
+  recommends A for Beta 2 and B afterwards on the evidence of A's use, so
+  that the record of what the command created exists and is exercised before
+  anything is removed.
+* How the consumer-specific preparation hook is declared, and whether it
+  lives in `.wfc/config.yaml` (which is outside every WorkItem scope and
+  therefore a maintainer edit) or beside the Commission. Not analysed; it is
+  the first design question an implementing Commission must answer.
+* Whether the command also creates the branch, or only the worktree.
+
+== Lifecycle
+
+Proposed. No implementation, test, configuration change or Run is authorized
+by this record, and nothing about the checkout lifecycle, the ownership lock
+or AD-5's contract is changed by it.

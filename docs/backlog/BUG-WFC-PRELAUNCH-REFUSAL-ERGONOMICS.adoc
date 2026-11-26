@@ -1,0 +1,117 @@
+= BUG-WFC-PRELAUNCH-REFUSAL-ERGONOMICS -- Three Pre-Launch Refusals Arrive Late Or Incomplete, And Each One Spends The Checkout's Only Lifecycle
+
+Type:: bug -- Front Door refusal timing and diagnostics (not an admission
+defect: every refusal below is correct in substance, and no input that is
+admissible today becomes inadmissible)
+Status:: proposed / backlog; nothing implemented
+Current controlling source:: This record; see link:_open.adoc[the active-work
+manifest] for its current card and
+link:beta2_operator_efficiency_plan.adoc#o2[the Beta-2 operator-efficiency
+plan] for the slice shape, order and acceptance.
+Next action:: A separately authorized Commission after
+link:beta2_operator_efficiency_plan.adoc#o1[O1].
+Not authorized here:: Any implementation; any change to the baseline probe's
+semantics, to any classification or exit code, to the trusted/untrusted
+evidence split, or to what inputs are admissible; any Run.
+Priority:: medium. These were three of the four lifecycle losses in the
+recorded session, and each costs a fresh worktree, a fresh venv and a fresh
+multi-minute baseline probe.
+Date:: 2026-11-26.
+Supporting analysis::
+link:../warm_storage/post-beta-planning/wfc_beta2_operator_efficiency_analysis.adoc[The
+Beta-2 operator-efficiency analysis], candidate `C2`, friction entries 2, 14
+and 21.
+
+== Problem
+
+`wfc run` authorizes at most one lifecycle per canonical checkout
+(`frontdoor/journal.py:75-89`), so any refusal raised at or after
+authorization costs the operator a whole new checkout. Three refusals in the
+first three steps are avoidably expensive.
+
+=== (a) The Consumer Config path contract is checked only after authorization
+
+`wfc plan` accepts an absolute `--config` and reads it straight from the
+filesystem (`frontdoor/plan.py:271-272`). The actual contract -- an
+A1-normalized, repository-relative, *committed* path -- is enforced where the
+config is re-read from the Git tree (`frontdoor/verify.py:71`, raising
+`commissioning.py:107-108`), which happens at step 5, after the lifecycle is
+authorized and the Commission is committed. The operator sees
+`post-commit verification failed: Consumer Config must be an A1-normalized
+repository-relative path` with classification `inconsistent`
+(`frontdoor/lifecycle.py:586-592`) -- a classification whose documented
+disposition is a maintainer judgement, not "correct the input and retry".
+Friction entry 2.
+
+=== (b) `--executable` is never compared with the adapter it must match
+
+`--executable` defaults to `codex` unconditionally (`frontdoor/lifecycle.py:79`,
+`:1206`) and is validated only for PATH resolvability (`:342-348`) and then
+for being an executable regular file (`:354-359`). The expected provider is
+already known at exactly that point: the resolved envelope is required to use
+a single adapter, precisely because the executable is one scalar
+(`frontdoor/config.py:294-295`). Nothing compares the two. A `claude_cli`
+binding launched without `--executable` resolved `codex`, the first Hop
+exited 2, the Run ended `reconcile_required` and the checkout was spent, with
+no candidate and no damage. Friction entry 14.
+
+=== (c) The baseline-probe refusal discards the output it captured
+
+`_do_probe` runs the evidence command with `capture_output=True`
+(`frontdoor/lifecycle.py:417-419`) and, on a non-zero exit, prints the exit
+code alone (`:426-430`). The captured stdout and stderr are dropped. Two
+comparisons inside the product show how far behind this is: the *mutation*
+branch of the same function names the changed paths (`:431-436`), and the
+in-Hop evidence path retains a bounded, explicitly untrusted stdout/stderr
+tail (`evidence.py:243-260`, `:305`). The operator had to reproduce the
+command by hand with the Coordinator's environment -- about six minutes -- to
+learn which test failed. Friction entry 21.
+
+This is *not* covered by the existing diagnostics records:
+link:BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS.adoc[failure diagnostics],
+link:BUG-WFC-EVIDENCE-COMMAND-RESOLUTION-DIAGNOSTICS.adoc[command resolution]
+and link:BUG-WFC-OPERATOR-DIAGNOSTIC-PROPAGATION.adoc[operator diagnostic
+propagation] all concern the in-Hop A2 evidence path or provider transport,
+and link:BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS.adoc[timeout diagnostics]
+concerns the in-Hop timeout branch (`evidence.py:347-363`). The baseline
+probe is a separate code path (`frontdoor/lifecycle.py:406-437`).
+
+== Direction (not a chosen design)
+
+(a) Check the path shape where the input is first read, so `wfc plan` refuses
+it and `wfc run` refuses it before authorization. This moves an existing
+refusal earlier and must widen nothing.
+
+(b) Refuse an *unambiguous* cross-adapter mismatch before dispatch, by name:
+the resolved basename is the other adapter's known provider binary. Never
+refuse an unrecognized basename and never refuse an explicit path -- a
+legitimate wrapper must stay launchable.
+
+(c) Include a bounded, explicitly untrusted tail of the already-captured
+output in the refusal, reusing the in-Hop path's existing limit and labelling
+(`evidence.py:25`, 16384 bytes). Persist nothing as evidence; this is printed
+diagnostics, not an observation.
+
+== Risks and the boundary this must not blur
+
+* (b) is a *new* refusal. The failure mode to avoid is a false positive
+  blocking a legitimate provider wrapper, which is why it fires only on an
+  unambiguous mismatch.
+* (c) prints command output in a refusal. It must carry the same bounded
+  limit and the same untrusted labelling the in-Hop path uses. A tail printed
+  as though it were trusted evidence would be a real regression of the
+  trusted/untrusted split, which
+  link:BUG-WFC-EVIDENCE-FAILURE-DIAGNOSTICS.adoc[the failure-diagnostics
+  record] established deliberately.
+* (a) must change *when* the refusal happens and not *what* is admissible.
+
+== Open decisions
+
+None required. The three changes are independent and each could be taken
+alone; the plan groups them because they share one code region, one slice and
+one qualification. If the maintainer wants the smallest possible step, (c) is
+the cheapest and highest-value of the three.
+
+== Lifecycle
+
+Proposed. No implementation, test or Run is authorized by this record.

@@ -1,0 +1,918 @@
+= WFC Beta-2 operator efficiency -- friction analysis and improvement candidates
+:toc:
+:toclevels: 2
+
+Maturity::  analysis, complete for its evidence base
+Authority:: informative; non-authorizing. It decides nothing, authorizes
+nothing, and schedules nothing.
+Updated::   2026-11-26
+Owns::      The root-cause analysis of the recorded Level-1 operator friction,
+the catalogue of improvement candidates with their authority classification,
+and the disposition of the repository owner's five candidate themes. The
+executable plan derived from it is
+link:../../backlog/beta2_operator_efficiency_plan.adoc[the Beta-2
+operator-efficiency plan]; the technical homes are the BUG/FTR records that
+plan names.
+
+== Summary: the six conclusions that matter
+
+. *The dominant cost is not token volume; it is a refusal that arrives after
+  it is expensive.* Three of the four Runs that lost a checkout in this
+  session lost it to a fact the Front Door could have established earlier
+  from inputs it already had: a Consumer Config path shape checked only after
+  authorization (<<e2,2>>), an `--executable` never compared with the single
+  adapter it must match (<<e14,14>>), and a baseline probe whose captured
+  output is discarded before the refusal is printed (<<e21,21>>). Each one
+  consumes the checkout's single lifecycle, so each costs a fresh worktree,
+  a fresh venv and a fresh 3-6 minute baseline probe. These are the cheapest
+  improvements in this analysis and they are pure ergonomics.
+. *The one deterministic gate per Commission is the highest-leverage operator
+  decision in the system, and nothing helps the operator choose it.* The
+  evidence command is a single argv (`commissioning.py:362-364`,
+  `frontdoor/lifecycle.py:415`), chosen freely at authoring time. One
+  omission of lint cost ten Hops, six task-checks and two Opus Broad Reviews
+  for one unused import (<<e18,18>>). The remedy that fits Beta 2 is a rule
+  and a sentence in the shipped texts, not a contract change: the evidence
+  command must run the repository's own gates, which here means `make check`
+  (`Makefile:28`), not `python -m pytest -q`.
+. *A newly established constraint bounds that remedy: the evidence timeout is
+  a kernel hard cap of 900 seconds* (`model.py:27`, enforced at
+  `frontdoor/request.py:81`), and the plain suite has already reached 896.96
+  seconds once on this repository
+  (link:../../backlog/BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS.adoc[the timeout
+  BUG]'s C3 diagnostic). A lint-inclusive `make check` therefore fits only
+  with the verified offline input bundle in the environment (the same
+  diagnostic measured 171 seconds with it). The evidence rule and the
+  deterministic environment preparation are one coupled change, not two
+  independent ones.
+. *The answer channel the operator looked for in <<e15,15>> already exists and
+  is invisible.* `wfc resume` correctly refused -- it covers only the
+  mechanical durable-artifact anomaly class (`reducer.py:487-500`,
+  `frontdoor/lifecycle.py:871-875`). `prepare-successor --authority-decision`
+  (`operator.py:324-342`) is the productized path for exactly an
+  `awaiting_human` stop carrying a frozen semantic stop, and an escalation of
+  *any* kind, `operational` included, freezes one (`reducer.py:1753-1759`,
+  gate at `operator.py:1688`). The Agent Skill describes neither
+  `prepare-successor` nor `export-salvage`, forbids running an undescribed
+  subcommand (`SKILL.md:131`) and warns that an unrecognized bare subcommand
+  falls through to a legacy entry point (`SKILL.md:136-137`); the Operator
+  Manual shows the command only as
+  `python -m workflow_coordinator.operator prepare-successor`
+  (`ch06_recovery/02_successors.adoc:130-131`). The cheapest fix in this
+  whole analysis is three sentences of shipped text.
+. *Of the owner's five themes, two are confirmed as stated, two are confirmed
+  but already fully owned by existing records that defer them, and one is
+  reshaped.* Automatic worktree management (a) is confirmed and is the
+  direction
+  link:../../technical_model/ch04_target_and_alternatives/03_adr_closed_versioned_workflow_programs.adoc#adr-ad5[AD-5]
+  itself names as preferred; better diagnostics (e) is confirmed and one
+  genuinely uncovered gap remains (the baseline-probe refusal). Continuation
+  after interruption (b) and targeted successor Runs (c) are confirmed as
+  gaps but are held by records whose own deferral reasons still hold.
+  Simplifying large CommitIntents (d) is reshaped: its record already
+  contains the question, the three alternatives, the regression inventory and
+  the success criteria, so Beta 2's useful contribution is at most the
+  read-only helper -- and this session found first-hand that the accepted
+  mitigation it would replace is itself contaminated (<<e17,17>>).
+. *The honest Beta-2 cut is small, cheap and entirely category A.* Six
+  candidates are pure ergonomics and four of them are a handful of lines plus
+  tests. Everything that touches a trust or authority boundary -- the
+  evidence-command list, an in-place Hop-budget raise, Worker-only closure of
+  a mechanical Finding, phase entry, CommitIntent enumeration, checkout reuse
+  -- is recorded with options and a recommendation and is *not* proposed for
+  Beta 2. No candidate in this analysis requires reversing a recorded
+  maintainer decision.
+
+== Method and evidence base
+
+Read in full:
+link:wfc_level1_operator_friction_log.adoc[the Level-1 operator friction log]
+(entries 1-21, 2026-11-25/26); the Agent Skill sources
+(`src/workflow_coordinator/agent_skill/wfc/SKILL.md` and the three
+`references/*.md`); Operator Manual chapters
+link:../../operator_manual/ch03_running/01_preparation.adoc[3 (preparation)],
+link:../../operator_manual/ch06_recovery/02_successors.adoc[6 (successors)],
+link:../../operator_manual/ch09_consumer_quickstart/01_quickstart.adoc[9
+(quickstart)] and
+link:../../operator_manual/ch10_level1_orchestration/01_operating_pattern.adoc[10
+(the Level-1 operating pattern)]; the eight records the owner named;
+link:../../backlog/_open.adoc[the active-work manifest];
+link:../../developer_guide/ch03_engineering_conventions.adoc#frontdoor-docs-sync[the
+Front Door docs-sync convention]; AD-5 and AD-6 of the closed-programs ADR;
+and, as the format precedent for the derived plan,
+link:../../backlog/beta2_release_streamlining_plan.adoc[the Beta-2
+release-streamlining plan].
+
+Read read-only for grounding: `src/workflow_coordinator/frontdoor/`
+(`lifecycle.py`, `plan.py`, `config.py`, `report.py`, `request.py`,
+`verify.py`, `journal.py`, `archive.py`, `skill.py`),
+`commissioning.py`, `evidence.py`, `reducer.py`, `model.py`, `operator.py`,
+`git_facts.py`, `Makefile`, `pyproject.toml`,
+`.github/workflows/release.yml` and
+`tests/unit/test_self_development_consumer_config.py`.
+
+Executed in this Hop (agent-local, not Coordinator-trusted evidence):
+`python3 scripts/wfc_doc_catalog.py generate` then `check`, establishing the
+stated baseline of 83 unresolved links and 4 Project Memory source-path
+misses before any file of this Commission was written; `asciidoctor
+--safe-mode=safe -a assembled -o /dev/null --failure-level=WARN` on every
+file this Commission creates or changes; and a read-only inspection of this
+worktree's own root dotfiles, which produced the new first-hand fact in
+<<e17,entry 17>>.
+
+Every statement about current behaviour below carries a `path:line`
+reference or quotes a friction-log entry. Anything else is marked
+*assumption*. Line references are to this repository at base HEAD
+`78bd7a7`.
+
+== The friction-to-root-cause map
+
+All 21 entries. "Class" is the A/B classification of the *remedy*, not of the
+observation; <<classification,the classification section>> states the rule.
+"Operator" means the remedy is an operator or Commission-authoring practice
+with no product change. Candidate IDs are <<candidates,the catalogue>>'s.
+
+[cols="1,4,3,1,2",options="header"]
+|===
+|# |Root cause |Evidence |Class |Remedy
+
+|[[e1]]1
+|One refusal is applied to two unlike inputs: a `--execution-override` the
+operator typed for this Commission (an intent that cannot take effect) and a
+`default_execution` role entry standing in the repository's committed config
+(a fact about the repository, which the selected program simply does not
+consume). Only the first is an operator error.
+|`frontdoor/config.py:257-262` refuses the config default; `:252-256` refuses
+the override; `:269-274` shows that only `required_roles` are ever resolved,
+so an unused default is already inert.
+|A
+|<<c1,C1>>; until then the second-config pattern, stated in <<c6,C6>>'s text
+work.
+
+|[[e2]]2
+|The Consumer Config path's shape contract (A1-normalized,
+repository-relative, committed) is enforced at a strictly later boundary than
+the one that first reads the input, and the resulting classification is
+`inconsistent` rather than a named pre-launch refusal.
+|`frontdoor/plan.py:271-272` accepts an absolute path and reads it from the
+filesystem; `frontdoor/verify.py:71` reads it from the Git tree, whose
+`_path` check raises the A1 message (`commissioning.py:107-108`);
+`frontdoor/lifecycle.py:586-592` turns that into
+`post-commit verification failed`, classification `inconsistent`, after the
+lifecycle is authorized and the Commission is committed.
+|A
+|<<c2,C2>>
+
+|[[e3]]3
+|No concurrency contract and no lock for two Runs archiving into one Evidence
+repository. Each attempt's narrow-cleanliness rule allows only its *own*
+destination and staging prefixes, so a concurrent attempt's staging directory
+reads as "not clean" -- a refusal, not corruption, but one that lands after
+the Run's work is complete.
+|`frontdoor/archive.py:805-820`, called with this attempt's two prefixes at
+`:1114`; no lock, mutex or retry exists in `archive.py`; no statement in the
+Operator Manual's evidence chapter.
+|Operator
+|<<c6,C6>> states the contract (serialize archiving; one Run at a time).
+*No mechanism change recommended*: the behaviour is fail-closed and correct,
+and the recurrence is one serialization decision per parallel pair.
+
+|[[e4]]4
+|The baseline probe and the in-Hop task-check both inherit the launching
+process's environment, so the checkout's venv, the verified offline input
+bundle, `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE` and a `TMPDIR` outside the
+worktree are preconditions of the gate -- but preparing them is manual, and
+the shipped texts omit the editable-install hazard (a shared venv whose
+editable install points at another worktree breaks that worktree's gate).
+|`frontdoor/lifecycle.py:417-419` (probe: `subprocess.run` with no `env=`,
+inheriting); `evidence.py:88-98` (in-Hop: `snapshot_environment` copies
+`os.environ`, defaulting only `PATH`); `agent_skill/.../setup.md:135-143`
+describes the obligation but not the recipe or the hazard.
+|A
+|<<c3,C3>>, with <<c6,C6>> for the text.
+
+|[[e5]]5
+|`wfc report` takes only a positional source path, although the Evidence
+location is mechanically derivable from the same config the other
+subcommands already read.
+|`frontdoor/report.py:328` (`source` only; no `--repository`);
+`frontdoor/plan.py:229` and `frontdoor/lifecycle.py:1201`, `:1222` accept
+`--repository`; `frontdoor/config.py:304-337` (`resolve_evidence`) already
+derives the Evidence repository from the config.
+|A
+|<<c4,C4>>
+
+|[[e6]]6
+|A stale, read-only `.git/config.lock` in the worktree's common Git
+directory. Attributed by <<e17,entry 17>>'s own timestamp evidence to the
+host CLI sandbox, not to a WFC code path.
+|Friction log entries 6 and 17 (`.git/config.lock` timestamps equal to the
+Worker Hop start).
+|Operator
+|*No product remedy.* <<c6,C6>> states how to tell a stale lock from a live
+one; removal stays a maintainer decision, as entry 17 records.
+
+|[[e7]]7
+|A factual premise about a shipped text entered a task document unverified
+and was adopted into a normative convention, needing a second Commission to
+correct it. Operator process, recorded as such by the log itself.
+|Friction log entry 7 (`grep -rni usage src/workflow_coordinator/agent_skill/`
+empty; correction commit `62f6740`).
+|Operator
+|*No product remedy.* <<c6,C6>>'s commission-authoring rule: verify a claim
+about a shipped file against the file before writing it into a task.
+
+|[[e8]]8
+|A basis document was commissioned from 107 commits after its own baseline,
+so part of its claims were stale.
+|Friction log entry 8; the same staleness analysis is recorded in
+link:wfc_release_streamlining_planning_record.adoc[the release-streamlining
+planning record].
+|Operator
+|*No product remedy.* <<c6,C6>>'s rule: check a basis document's baseline
+against `main` and state the drift in the task.
+
+|[[e9]]9
+|The strict-render gate enumerates eight entry documents. Individual backlog
+records, the backlog plans and all of `docs/warm_storage/` are outside it, so
+a committed review artifact with a malformed table row passed unnoticed.
+|`.github/workflows/release.yml:150-157` names
+`operator_manual.adoc`, `developer_guide.adoc`,
+`workflow_program_use_cases.adoc`, `docs/README.adoc`,
+`workflow_execution_semantics.adoc`, `docs/backlog/_open.adoc`,
+`workflow_program_architecture.adoc`, `_ai_info.adoc` and
+`doc_conventions.adoc` -- and nothing else.
+|A
+|<<c5,C5>>
+
+|[[e10]]10
+|No root cause: an observation that two Commissions ran in parallel without
+collision and that review convergence varies by task breadth (7 and 12 Hops
+for broad tasks, 2 for a docs-only slice).
+|Friction log entry 10 (Run results of 2026-11-25).
+|Operator
+|*No remedy needed.* Retained as budget-setting data in <<c6,C6>> together
+with <<e13,13>>.
+
+|[[e11]]11
+|A temporary scope-ceiling entry is pinned by an exact-equality test, so the
+ceiling entry and the test expectation are one change, not two. The slice
+texts named the ceiling entry and not the pin.
+|`tests/unit/test_self_development_consumer_config.py:42-48` asserts the
+ceiling tuple exactly; the same file's `:51-60` is the analogous pin behind
+<<e21,21>>.
+|Operator
+|*No product remedy; the pin is deliberate.* <<c6,C6>> states the coupling as
+a commissioning rule. Relaxing the test to read the ceiling from the config
+is *rejected*: it would delete the only mechanical guard that a ceiling
+widening is noticed.
+
+|[[e12]]12
+|The lifecycle is keyed by the checkout's *identity digest*, computed from the
+resolved top-level and the resolved Git common directory -- not by the
+worktree object. Removing a worktree and re-creating one at the same path
+reproduces the same digest, hence the same lifecycle.
+|`frontdoor/journal.py:75-89` (`sha256(toplevel + "\n" + common_dir)`);
+AD-5's mechanics paragraph.
+|A
+|<<c3,C3>> makes a fresh path mechanical; <<c6,C6>> states it.
+
+|[[e13]]13
+|No root cause: 2-5 Hops for narrow slices written against a controlling FTR
+versus 7-12 for broad tasks.
+|Friction log entry 13.
+|Operator
+|*No remedy needed.* Budget data for <<c6,C6>>; it is also this analysis's
+own basis for every Hop estimate below.
+
+|[[e14]]14
+|`--executable` defaults to `codex` unconditionally and is validated only for
+PATH resolvability. The resolved execution envelope is already required to
+use exactly one adapter, so the expected provider binary is known at the same
+moment the executable is validated, and is never compared with it.
+|`frontdoor/lifecycle.py:79` (`DEFAULT_EXECUTABLE = "codex"`), `:1206` (the
+flag), `:342-348` (`_resolve_executable`: PATH resolvability only), `:354-359`
+(prelaunch: file and exec bit only); `frontdoor/config.py:294-295` refuses
+mixed adapters precisely because the executable is a single scalar.
+|A
+|<<c2,C2>>
+
+|[[e15]]15
+|Two distinct causes, conflated by the log's own phrasing. (i) `wfc resume`
+is scoped to the mechanical durable-artifact anomaly class and therefore
+*correctly* refused an operational stop. (ii) The productized answer channel
+for an `awaiting_human` stop with a frozen semantic stop exists and is absent
+from the shipped operator texts, so the operator could not reach it. An
+`operational` escalation does freeze such a stop.
+|(i) `reducer.py:487-500` (the scope gate at `:487-488`, the named refusals
+at `:490-499`); `frontdoor/lifecycle.py:871-875`. (ii) `operator.py:310`,
+`:324-342` (`prepare-successor --authority-decision`), `:1683-1704` with the
+eligibility gate at `:1688`; `reducer.py:1753-1759` freezes
+`SemanticStop(kind=...)` for `result.escalation` of any kind;
+`SKILL.md:131`, `:136-137`;
+`operator_manual/ch06_recovery/02_successors.adoc:115-124`, `:130-131`.
+|A for (ii); B for a lighter channel
+|<<c6,C6>> for (ii) -- the primary remedy. <<c8,C8>> records the weight
+question as a deferred category-B candidate.
+
+|[[e16]]16
+|Three independent causes in one entry: a per-Hop timeout default too low for
+current block sizes (resolved, see <<e20,20>>); a Worker staging with
+`git add`; and a CommitIntent subject without WorkItem/Hop identity. The
+latter two are Commission-authoring omissions against known fail-closed
+preconditions.
+|Friction log entry 16; the timeout half is superseded by
+`frontdoor/lifecycle.py:80`. The index precondition and the identity-bearing
+subject are the same two classes the
+link:../../backlog/FTR-WFC-COMMIT-INTENT-ENUMERATION.adoc[CommitIntent
+enumeration record] separates as "tool-contract problems" (its D3-002).
+|Operator
+|*No product remedy.* <<c6,C6>> keeps the commit mechanics in the authoring
+checklist, where the CommitIntent record already places them.
+
+|[[e17]]17
+|The host CLI sandbox bind-mounts character devices over root dotfiles inside
+the checkout and leaves an empty `.git/config.lock` in the linked worktree's
+common Git directory. *New first-hand fact from this Hop*: they are not
+empty files but `/dev/null` device nodes -- `crw-rw-rw- 1 nobody nogroup
+1, 3` for `.bashrc`, `.gitconfig`, `.mcp.json`, `.profile` and the rest -- and
+they appear as non-ignored untracked entries in
+`git status --short -uall` (22 entries in this worktree, all of them such
+placeholders).
+|Direct inspection of this Commission's own worktree root;
+`git_facts.py:589-590` classifies non-ignored untracked state as an anomaly
+wherever that predicate is applied. *Consequence not previously recorded*:
+the accepted CommitIntent mitigation "name every path, derived from
+`git status --short -uall`"
+(link:../../backlog/FTR-WFC-COMMIT-INTENT-ENUMERATION.adoc[enumeration
+record], commit `71da86e`) consumes exactly the output these placeholders
+contaminate.
+|Operator; boundary question routed
+|*No new work proposed.* Entry 17's own candidate stands: re-check after the
+Execution Boundary Slice A qualification. A dated pointer is added to the
+CommitIntent record for the contaminated mitigation. See
+<<unverified,what could not be verified>> for the part I did not establish.
+
+|[[e18]]18
+|A Commission declares exactly one trusted evidence argv, chosen by operator
+judgement at authoring time, and nothing relates that choice to the
+repository's own gate definition. The chosen command covered behaviour and
+not lint, so no deterministic check could see a `ruff F401` residue; ten
+Hops, six task-checks and two Opus Broad Reviews did not, and the final
+Broad Review found it by running `ruff check .` itself.
+|`commissioning.py:362-364` renders the single named `task-check` command;
+`frontdoor/lifecycle.py:415` runs that one argv as the probe; the
+repository's own gate is `make check` = `lint format-check test`
+(`Makefile:28`, `:20-21`, `:23-26`) with `ruff` `select = ["F"]`
+(`pyproject.toml:76-80`); friction log entry 18.
+|A for the rule; B for the list
+|<<c6,C6>> carries the operator rule and the skill example -- the primary
+remedy. <<c7,C7>> records the evidence-command *list* as a deferred
+category-B candidate, with the coupling that makes it category B.
+
+|[[e19]]19
+|An exhausted Hop budget is a distinct terminal status with no in-place
+raise, and the productized successor path is categorically ineligible for it,
+so a one-import mechanical residue costs a full successor Commission with its
+own review chain.
+|`reducer.py:1968-1981` and `:2046-2056` set
+`RunStatus.AWAITING_HUMAN_BUDGET` (`model.py:132`) without touching
+`semantic_stop`; `operator.py:1688` requires `AWAITING_HUMAN` *and* a
+non-null semantic stop, so a budget stop fails both halves -- stated in the
+manual at
+`operator_manual/ch06_recovery/02_successors.adoc:118-119`;
+`frontdoor/lifecycle.py:887-888` refuses recovery with no budget left;
+`agent_skill/.../commission.md:71-73`.
+|B
+|<<c8,C8>>, *recommended deferred*. <<c6,C6>> carries the proportionate
+interim remedy: budget a retire-heavy rework above the usual double, and
+prevent the case with <<e18,18>>'s gate rule.
+
+|[[e20]]20
+|Resolved during the session: the per-Hop timeout default was raised and a
+repository default key added. Only promotion of the Runtime and the installed
+skill remains, which is a maintainer action.
+|`frontdoor/lifecycle.py:80` (`DEFAULT_HOP_TIMEOUT_SECONDS = 14400.0`),
+`:1284-1294` (flag, then config key, then default), `:1210-1213` (the help
+text); `agent_skill/.../setup.md:63-67`.
+|--
+|*No remedy needed.* <<c6,C6>> retires entry 16's superseded 7200-second
+advice; the promotion is the maintainer's.
+
+|[[e21]]21
+|Two causes. (i) Editing the committed `.wfc/config.yaml` to satisfy
+<<e1,1>>'s refusal breaks an exact-equality test of that very file, so the
+full-suite baseline probe failed. (ii) The probe refusal prints only the exit
+code, although `subprocess.run` captured stdout and stderr three lines
+earlier -- and the sibling refusal in the same function *does* name its
+facts.
+|(i) `tests/unit/test_self_development_consumer_config.py:51-60` pins
+`default_execution` exactly, `independent_reviewer` included. (ii)
+`frontdoor/lifecycle.py:417-419` captures output; `:426-430` prints the exit
+code only; `:431-436` -- the mutation branch of the same function -- names
+the changed paths. The in-Hop path is further ahead still: it retains a
+bounded, explicitly untrusted stdout/stderr tail (`evidence.py:243-260`,
+`:305`).
+|A
+|<<c2,C2>> for (ii); <<c1,C1>> removes (i)'s cause entirely; <<c6,C6>>
+states the second-config pattern meanwhile.
+|===
+
+[[candidates]]
+== The candidate catalogue
+
+Eight candidates survived evaluation. Each states the exact problem with its
+friction-log evidence, where the fix belongs, its authority and trust impact,
+risk, benefit, size as a Hop-budget estimate (upper limit about twice the
+expected count, following <<e13,entry 13>>'s observed convergence) and the
+qualification it needs. Four candidates the operator proposed are *rejected
+or absorbed*; they are listed in <<rejected>> with the reason.
+
+[[c1]]
+=== C1 -- A program ignores role defaults it does not use
+
+Problem:: `simple@v1` cannot be used in a repository whose committed config
+carries a `robust@v1` reviewer default, so every `simple@v1` Commission needs
+a second committed config file that must never be integrated. Evidence:
+<<e1,1>>, <<e21,21>>. This session carries one such commit
+(`chore(worktree-local): second config ...; never integrate`), which is the
+recurring cost in concrete form.
+Where the fix belongs:: Front Door, `frontdoor/config.py:257-262`. Six lines
+plus tests.
+Authority and trust impact:: Narrow but real, and it must not be waved away.
+The refusal is the only mechanical signal that a role default is inert; a
+consumer could read a committed `independent_reviewer` default as evidence
+that review happens when the selected program performs none. Against that:
+the program selection, not the config, decides whether review happens, and an
+unknown role *name* is already refused when the config is parsed
+(`config.py:204-206`), so the check only ever fires on a valid role the
+program does not use. The asymmetry that resolves it: a
+`--execution-override` is a per-Commission *intent* that cannot take effect
+and should stay refused (`config.py:252-256`); a `default_execution` entry is
+a standing repository *fact* that several programs share.
+Risk:: Low. Mitigation: refuse config defaults no longer, keep refusing
+overrides, and have `wfc plan` *print* which role defaults the selected
+program ignores, so the inertness is visible rather than silent.
+Benefit:: Removes a per-Commission committed artifact and the
+never-integrate hazard it creates; removes <<e21,21>>'s entire failure mode.
+Size:: One Commission, Hop budget 6.
+Qualification:: A test that `simple@v1` resolves against the committed
+repository config unchanged; a test that an unused *override* is still
+refused; `tests/unit/test_self_development_consumer_config.py` green and
+unchanged; `wfc plan` output asserted to name the ignored default.
+
+[[c2]]
+=== C2 -- Pre-launch refusals that are complete and early
+
+Problem:: Three refusals around `wfc run`'s first three steps either arrive
+after the lifecycle is spent or omit the fact the operator needs, and each
+one costs a fresh worktree, venv and baseline probe. (a) A Consumer Config
+path outside the repository is accepted by `wfc plan` and refused after
+authorization as `inconsistent` (<<e2,2>>). (b) `--executable` is never
+compared with the single adapter the envelope resolved to (<<e14,14>>).
+(c) The baseline-probe refusal prints the exit code and discards the output
+it already captured (<<e21,21>>).
+Where the fix belongs:: Front Door: `frontdoor/plan.py` (a),
+`frontdoor/lifecycle.py` steps 1-3 (a, b, c). No kernel change; no new
+classification.
+Authority and trust impact:: None for (a) and (c): (a) moves an existing
+refusal earlier and widens nothing, (c) adds diagnostic output only, and the
+output must be labelled untrusted exactly as the in-Hop path labels its own
+(`evidence.py:243-260`). (b) *adds* a fail-closed refusal, which narrows
+rather than widens -- the one case to get right is a legitimate wrapper
+binary whose name matches neither adapter.
+Risk:: (b) false positives. Mitigation: refuse only an unambiguous mismatch
+-- the basename resolves to the *other* adapter's known binary -- and never
+refuse an unrecognized name or an explicit path. (c) output volume and
+secret leakage. Mitigation: reuse the existing bounded-tail limit
+(`evidence.py:25`, 16384 bytes) and the same untrusted labelling; do not
+persist it as evidence.
+Benefit:: Removes the three cheapest lifecycle losses observed in the
+session. (c) alone replaces a six-minute manual re-run of the probe command
+with a line of printed output.
+Size:: One Commission, Hop budget 8.
+Qualification:: One test per refusal: an absolute/non-A1 `--config` refused
+by `wfc plan` with no lifecycle consumed; a `claude_cli` envelope with
+`--executable codex` refused by name before dispatch; a failing probe whose
+refusal contains a bounded tail of the captured output and is labelled
+untrusted. The existing `refused_probe`/`refused_prelaunch` classifications
+must be asserted unchanged.
+
+[[c3]]
+=== C3 -- One deterministic Run-checkout preparation step
+
+Problem:: Every Run needs a fresh checkout *at a fresh path*, its own venv
+with an editable install, the verified offline bundle in the environment, a
+`TMPDIR` outside the worktree and -- until <<c1,C1>> -- a second config file.
+All of it is manual, none of it is a recipe in the shipped texts, and each
+omission costs a refused probe or a broken gate. Evidence: <<e4,4>>,
+<<e6,6>>, <<e12,12>>, <<e17,17>>, <<e20,20>>.
+Where the fix belongs:: Front Door, as a new command. This is the direction
+link:../../technical_model/ch04_target_and_alternatives/03_adr_closed_versioned_workflow_programs.adoc#adr-ad5[AD-5]
+itself names: "The preferred way to reduce that friction later is *automated
+worktree or branch creation and controlled cleanup at the Front Door*, not a
+looser kernel invariant."
+Authority and trust impact:: Category A *only while it honours the
+one-Run-per-checkout invariant* -- that is, while it always creates a new
+path and never reuses a checkout that holds a lifecycle. Reuse is
+link:../../backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc[FTR-WFC-LIFECYCLE-ROTATION]'s
+category-B subject and is explicitly not part of this candidate. The one
+genuine authority question is *cleanup*: removing a checkout is destructive,
+and the Agent Skill already withholds discarding anything this session did
+not itself create (`SKILL.md:50`, `:57`).
+Risk:: (a) Scope creep into rotation. Mitigation: an acceptance criterion
+that the command refuses any path whose checkout digest
+(`frontdoor/journal.py:75-89`) already has a journal. (b) A preparation
+command that writes outside the repository is a new kind of Front Door
+effect. Mitigation: the prepare-only variant writes only inside the new
+checkout and the scratch directory it creates. (c) Environment preparation
+is consumer-specific; WFC's own offline bundle is not a generic consumer
+need. Mitigation: prepare the generic part (worktree, scratch, `TMPDIR`) and
+drive the consumer-specific part from a declared, committed hook rather than
+hard-coding WFC's own.
+Benefit:: The largest single reduction in operator mechanics in this
+analysis, and the precondition for <<e18,18>>'s evidence rule being usable at
+all: `make check` fits the 900-second cap only with the verified bundle in
+place (171 versus 896.96 seconds, per
+link:../../backlog/BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS.adoc[the timeout
+BUG]).
+Size:: Prepare-only variant: one Commission, Hop budget 10. With controlled
+cleanup: add one Commission, Hop budget 8.
+Qualification:: A fresh path is created and a path with an existing lifecycle
+is refused by name; the prepared checkout passes an unmodified baseline probe
+that the unprepared one fails; the one-Run-per-checkout invariant is asserted
+unchanged; nothing outside the created checkout and scratch directory is
+written; for the cleanup variant, removal refuses anything the command did
+not create.
+
+[[c4]]
+=== C4 -- Commission scaffolding and two CLI ergonomics gaps
+
+Problem:: (a) The operator writes a Python build script and a shell wrapper
+per Commission to turn the same fields `wfc plan` already takes into a
+Consumer Request YAML -- which `wfc plan` already assembles in memory and
+then throws away (`frontdoor/plan.py:136-154`). (b) `wfc report` cannot
+resolve the Evidence location the config already names (<<e5,5>>).
+Evidence: <<e5,5>>, <<e13,13>>, <<e16,16>>, <<e21,21>>.
+Where the fix belongs:: Front Door. (a) is an emission path over
+`consumer_request_from_plan_inputs`; (b) is `resolve_evidence`
+(`frontdoor/config.py:304-337`) wired into `frontdoor/report.py`.
+What is deterministic, and what is the operator's judgement:: Deterministic:
+the YAML assembly, the field-for-field correspondence with the preview, the
+digest, and the Evidence path. The operator's judgement, which no scaffold
+may supply: scope, program, personas, Hop budget, the evidence command and
+the authority source. The candidate deliberately automates only the former.
+Authority and trust impact:: No trust boundary. The emitted request grants no
+authority: `wfc run` re-reads it from `--request`, re-parses it under the
+closed schema and re-digests it, and the plan-to-authorization drift check
+(`frontdoor/lifecycle.py:304-307`) is unchanged. There *is* a contract
+question that is not a trust question: `wfc plan` is documented as writing
+nothing (`frontdoor/plan.py:1-16`, `:222-225`, and the same promise in the
+manual and the skill), so emission must not become part of a bare `wfc plan`.
+Risk:: An emitted request read as authorization. Mitigation: emit outside the
+repository by default, and keep the existing `NEXT EXPLICIT ACTION` line
+(`frontdoor/plan.py:209-213`) stating that nothing is launched.
+Benefit:: Removes a hand-written script per Commission and the class of
+transcription error between preview and request that <<e21,21>>'s digest
+check exists to catch.
+Size:: One Commission, Hop budget 8.
+Qualification:: The emitted request, passed unchanged to `wfc run`,
+reproduces the previewed Commission digest exactly; a bare `wfc plan` is
+asserted byte-identical in behaviour and writes nothing; `wfc report`
+resolves an archived Attempt from `--repository` alone and the positional
+form still works.
+
+[[c5]]
+=== C5 -- The strict-render gate covers the documents that actually change
+
+Problem:: The render gate names eight entry documents; the backlog records,
+the backlog plans and all of warm storage are outside it, which is where
+nearly every documentation Commission actually writes. A committed review
+artifact with a malformed table row passed unnoticed. Evidence: <<e9,9>>.
+Where the fix belongs:: `Makefile` and `scripts/`, inside the scope ceiling.
+*Not* `.github/workflows/release.yml`: that file is outside the ceiling
+(`.wfc/config.yaml`'s `work_item_scope_ceiling`) and would need a
+maintainer-granted temporary entry for a gain a Make target achieves without
+one.
+Authority and trust impact:: None.
+Risk:: The real one: making `asciidoctor` a dependency of `make check` would
+make the repository's own gate -- and therefore every Commission's baseline
+probe -- fail on a host without Ruby. Mitigation: a separate `docs-render`
+target that documentation Commissions name in their evidence command,
+*not* a new prerequisite of `check`. A gate that skips when its tool is
+absent is not a gate and is not proposed.
+Benefit:: Every future documentation Commission's own deterministic gate sees
+what it writes, which is exactly the proportionality rule: no reviewer spent
+on what a cheap check decides.
+Size:: One Commission, Hop budget 4.
+Qualification:: The target fails on a deliberately malformed `.adoc` under
+`docs/backlog/` and under `docs/warm_storage/`, and passes on the tree as it
+is; `make check` is asserted to have gained no new prerequisite.
+
+[[c6]]
+=== C6 -- The shipped operator texts say what this session learned
+
+Problem:: The single largest body of remedy in this analysis is text. Twelve
+entries resolve wholly or primarily into statements that are missing,
+superseded or wrong in the Agent Skill and the Operator Manual. Evidence:
+<<e1,1>>, <<e2,2>>, <<e3,3>>, <<e4,4>>, <<e6,6>>, <<e7,7>>, <<e8,8>>,
+<<e10,10>>, <<e11,11>>, <<e12,12>>, <<e13,13>>, <<e14,14>>, <<e15,15>>,
+<<e16,16>>, <<e18,18>>, <<e19,19>>, <<e20,20>>, <<e21,21>>. The content, each
+item traceable to an entry: the evidence command must run the repository's
+own gates, with <<e18,18>> named as the worked example of what a
+deterministic gate must prevent; the 900-second cap and its coupling to the
+prepared environment; `prepare-successor` as the answer channel for an
+`awaiting_human` semantic stop, and `wfc resume`'s actual scope; the
+second-config pattern and the never-integrate rule, until <<c1,C1>> lands;
+the per-checkout environment recipe and the shared-editable-install hazard;
+a rotated checkout needs a new *path*; `--executable` is required for every
+non-default adapter; the Evidence-repository concurrency contract; the
+observed Hop-convergence figures as budget guidance; the temporary
+ceiling-entry/test-pin coupling; the commit mechanics; and the retirement of
+entry 16's superseded 7200-second advice.
+Where the fix belongs:: `src/workflow_coordinator/agent_skill/wfc/` and the
+Operator Manual chapters 2, 3, 6, 9 and 10. One documentation defect is in
+scope here and is a *wrong statement*, not an omission:
+`operator_manual/ch03_running/01_preparation.adoc:315-317` says `--request`
+is "repository-relative to `--repository`", while `wfc run` reads it as a
+plain filesystem path (`frontdoor/lifecycle.py:287`) and the skill correctly
+says it "need not live inside the repository"
+(`agent_skill/.../commission.md:45`). That sentence is the shape of
+<<e2,entry 2>>'s confusion: three arguments with three different path
+contracts, documented as one.
+Authority and trust impact:: None. It states current behaviour and withholds
+nothing new. It must not state <<c1,C1>>'s, <<c2,C2>>'s or <<c3,C3>>'s work
+as existing before those land.
+Risk:: The slice asserts many facts about the product and a wrong one ships
+to consumers. Mitigation: every statement carries a `path:line` the reviewer
+re-checks; the existing contract tests
+(`tests/unit/test_agent_skill_content.py`,
+`tests/unit/test_frontdoor_skill.py`,
+`tests/architecture/test_consumer_tutorial_pages.py`) must stay green.
+Benefit:: The cheapest and broadest remedy available: no code change, no new
+surface, and it is the *only* remedy for the eight entries whose cause is
+operator knowledge rather than product behaviour.
+Size:: One Commission, Hop budget 10.
+Qualification:: Strict render; the four skill and tutorial contract tests
+green; a reviewer re-check of every `path:line` claim; an explicit statement
+per item that it describes behaviour as integrated, not as planned.
+
+[[c7]]
+=== C7 -- A list of evidence commands (category B, recorded and deferred)
+
+Problem:: One gate per Commission conflates lint, format and tests into a
+single pass/fail, so the cheap checks cannot run first and fail fast, and an
+operator omission in the single command leaves a whole class unguarded.
+Evidence: <<e18,18>>.
+Where the fix belongs:: The product core, not the Front Door -- and this is
+what makes it category B. The kernel *already* models several named evidence
+commands (`model.py:232`, a `Mapping[str, EvidenceCommand]`) and the accepted
+program literals already declare an evidence *list*
+(`commissioning.py:140`, `:155`: `{"task-check-v1": {"evidence":
+["task-check"]}}`, resolved into each phase at `:288`, `:351-352`). What
+would have to change is the Consumer Request schema
+(`frontdoor/request.py:38-40`, one argv and one timeout) *and* the accepted
+program literals' evidence profiles.
+Authority and trust impact:: Load-bearing, and newly established here:
+`model.py:699` requires `phase.evidence == ("task-check",)` exactly for
+`is_closed_terminal_worker_shape`, which `select_result_contract`
+(`model.py:715`) uses to choose `simple@v1`'s result contract. Extending the
+evidence list of `simple@v1` therefore changes which result contract its
+sole phase is admitted under -- a semantic change, not a plumbing change.
+The accepted `robust@v1` program is also out of bounds by the owner's
+standing constraint.
+Risk:: High relative to benefit for Beta 2: a contract change to the
+accepted programs, their digests and the result-contract selection, in the
+release after the one where the publication path first ran.
+Benefit:: Real but largely obtainable without it: a committed wrapper or
+`make check` gives ordered, fail-fast lint-then-test today, at the cost of
+one conflated exit code.
+Size:: Not sized as a Beta-2 slice. A design investigation first, Hop budget
+10, before any implementation is sized.
+Qualification:: Not applicable until the design question is decided. The
+`model.py:699` coupling must be resolved explicitly, not discovered during
+implementation.
+
+[[c8]]
+=== C8 -- The economy of continuing a stopped Run (category B, recorded and deferred)
+
+Problem:: Two shapes cost a full successor Commission with its own review
+chain for work that is mechanically trivial. (i) An exhausted Hop budget has
+no in-place raise and is categorically ineligible for the productized
+successor path, so a one-import lint residue costs three agent Hops
+(<<e19,19>>). (ii) An `awaiting_human` operational stop can be answered only
+through `prepare-successor`, which requires five newly pinned governing input
+paths and a clean successor checkout at an exact baseline -- heavy for
+handing over one failing node id (<<e15,15>>).
+Where the fix belongs:: The product core: Hop accounting, admission and
+review authority.
+Authority and trust impact:: Category B on three counts. A budget raise
+changes an admitted WorkItem's governing truth and collides with the recorded
+rule that used Hops are never reset and resume requires explicit maintainer
+authority (`FTR-WFC-ATOMIC-HOP-RECOVERY`'s `WFC-AUTO-05`). Worker-only
+closure of a "purely mechanical" Finding moves Finding disposition away from
+the independent reviewer -- the safeguard the repository is built on -- and
+requires a machine-decidable definition of "mechanical" that does not exist.
+A lighter answer channel re-opens what governing truth a continuation admits.
+Risk:: The specific erosion to name: "a deterministic check failing with no
+behaviour change" is not mechanically distinguishable from "a reviewer's
+blocking Finding the Worker would rather close itself". Any such mechanism
+must derive the class from the Coordinator's own observation, never from the
+agent's claim about its own change.
+Benefit:: Saves two agent Hops in the observed case. Measured against the
+session: once.
+Size:: Not sized as a Beta-2 slice.
+Qualification:: Not applicable. The interim remedy is <<c6,C6>>'s budget
+guidance plus <<e18,18>>'s gate rule, which prevents the case rather than
+cheapening its repair.
+
+[[rejected]]
+=== Candidates evaluated and rejected or absorbed
+
+[cols="2,4",options="header"]
+|===
+|Candidate |Disposition
+
+|Accept `--repository` on `wfc report` (<<e5,5>>'s own wording)
+|*Reshaped into <<c4,C4>>.* `--repository` names the *consumer* repository,
+while `wfc report` reads the *Evidence* repository; accepting the flag as a
+synonym for a different repository would be a worse surface than the
+positional path. The useful form is resolving the Evidence location from the
+config the flag identifies.
+
+|Relax the scope-ceiling test to read the ceiling from the config (<<e11,11>>)
+|*Rejected.* It would delete the only mechanical guard that a ceiling
+widening is noticed, to save one coordinated edit in a deliberately rare
+operation. The coupling becomes a documented commissioning rule instead.
+
+|A lock or a serialization mechanism for concurrent Evidence archiving
+(<<e3,3>>)
+|*Rejected for Beta 2.* The current behaviour is fail-closed and correct
+(`frontdoor/archive.py:805-820`); the recurrence is one operator decision per
+parallel pair; and a lock in the archive path is a new failure mode next to
+the irreversible step of a Run. Documented contract instead (<<c6,C6>>).
+
+|Automatic worktree *reuse* after a terminal lifecycle
+|*Out of scope and category B.* Owned by
+link:../../backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc[FTR-WFC-LIFECYCLE-ROTATION]
+under AD-5's five entry conditions. <<c3,C3>> is deliberately the complement:
+it makes a *fresh* checkout cheap instead of making an old one reusable.
+
+|A recommended evidence command *shipped as a default* (the owner's candidate
+viii, second half)
+|*Partly rejected.* A recommendation in the skill text is <<c6,C6>>. A
+shipped *default* evidence command is rejected: the command must be the
+consumer's own committed gate, and a default would be guessed from a
+repository WFC cannot inspect at install time. A baseline *self-check* -- run
+the exact evidence command by hand in the new checkout before launching --
+is an operator rule and is in <<c6,C6>>.
+|===
+
+[[themes]]
+== The owner's five themes, dispositioned
+
+[cols="1,1,4",options="header"]
+|===
+|Theme |Disposition |Why
+
+|(a) Automatic worktree management
+|*Confirmed*, as <<c3,C3>>
+|It is the friction with the widest footprint (five entries) and AD-5 names
+automated creation and controlled cleanup at the Front Door as the preferred
+direction, so the candidate aligns with a recorded decision rather than
+reopening one. The owner's reading is right that
+link:../../backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc[the existing FTR] is not
+congruent: that record is about *reuse* of a spent checkout, which stays
+category B behind AD-5's five entry conditions, while this candidate only
+makes a fresh checkout cheap. Hence a new record rather than an amendment.
+
+|(b) Continuation after interruption
+|*Confirmed as a gap; deferred*
+|Partly implemented, and more than the backlog currently says: the
+`resume_after_reconcile` seam is now wired in production
+(`frontdoor/lifecycle.py:919`), though only for the recoverable
+durable-artifact anomaly class, so
+link:../../backlog/_open.adoc[the manifest]'s "production entry absent" and
+the record's R1.5 section are both stale in that narrow respect -- a dated
+pointer is added to each. What remains is the general entrypoint plus the two
+operator-visible costs in <<c8,C8>>, which are category B and recommended
+deferred. The cheap part of <<e15,15>> is not a recovery gap at all: it is
+the undocumented `prepare-successor` channel, and it belongs to <<c6,C6>>.
+
+|(c) Targeted successor Runs
+|*Confirmed as a gap; deferred*, no new record
+|The renderer still hardcodes the entry phase (`commissioning.py:369`) while
+the kernel admits any declared phase (`model.py:1053-1054`,
+`operator.py:478-479`). AD-6 records the capability as desired and defers it
+explicitly, on the ground that the substitute works; nothing in this
+session's friction contradicts that -- no entry shows a Run that needed a
+non-default entry phase. Entering at a review phase also interacts with
+durable-artifact admission (`operator.py:561-576`), so it is not the
+cosmetic renderer change it first looks like. Deferral upheld. A dated
+pointer corrects the record's drifted line citations.
+
+|(d) Simplifying large CommitIntents
+|*Reshaped*, no new record
+|link:../../backlog/FTR-WFC-COMMIT-INTENT-ENUMERATION.adoc[The existing
+record] already holds the central question, three alternatives with their
+security consequences, a nine-case regression inventory and measurable
+success criteria -- a new record would duplicate it. Nothing in this
+session's 21 entries is a CommitIntent cardinality failure, so there is no
+new evidence to raise its priority. The one new fact is adverse to the
+*current* mitigation rather than to the mechanism: <<e17,17>> establishes
+first-hand that `git status --short -uall`, which the accepted mitigation
+tells the Worker to derive paths from, is contaminated by the host sandbox's
+device-node placeholders. That strengthens the case for the record's
+Alternative 1 (a read-only helper that derives a canonical list and filters
+to authorized scope) and is added to the record as a dated pointer. Not
+proposed for Beta 2: the record's own non-goal against extensive change near
+a release still applies.
+
+|(e) Better diagnostics
+|*Confirmed; one uncovered gap*
+|Three of the four named records are implemented and reviewer-accepted
+(failure diagnostics, operator diagnostic propagation, command resolution);
+link:../../backlog/BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS.adoc[the timeout
+BUG] is open and is the in-Hop timeout path (`evidence.py:347-363` discards
+partial output on timeout). None of the four covers the *baseline probe*,
+which is a different code path (`frontdoor/lifecycle.py:406-437`) and the
+one the operator actually hit in <<e21,21>>. That gap is new and is recorded
+as <<c2,C2>>(c). The timeout record gains a dated pointer for the 900-second
+cap's newly established coupling to the evidence-command rule.
+|===
+
+[[classification]]
+== The A/B classification
+
+Category A -- pure ergonomics:: Skill and manual text, Front Door argument
+handling and refusal timing, diagnostic output, scaffolding over inputs the
+Front Door already parses, and deterministic preparation of a *fresh*
+checkout. <<c1,C1>>, <<c2,C2>>, <<c3,C3>>, <<c4,C4>>, <<c5,C5>>, <<c6,C6>>.
+Category B -- touches a trust or authority boundary:: <<c7,C7>> (the evidence
+contract and, through `model.py:699`, result-contract selection), <<c8,C8>>
+(Hop accounting, admission, and Finding disposition authority), and the three
+themes already held by deferring records: phase entry (c), CommitIntent
+enumeration (d) and checkout reuse. Each is presented with options, a
+recommendation and the decision it needs. *None is presented as decided.*
+
+Where an ergonomic change could erode a safeguard, stated plainly::
+* <<c1,C1>> removes the only mechanical signal that a committed role default
+  is inert. Mitigated by keeping the override refusal and printing the
+  ignored defaults in `wfc plan`; the residual risk is a consumer misreading
+  a config as evidence of review.
+* <<c2,C2>>(c) prints provider-adjacent command output in a refusal. It must
+  carry the same bounded limit and untrusted labelling the in-Hop path
+  already uses; a tail printed as though it were trusted evidence would be a
+  real regression of the trusted/untrusted split.
+* <<c2,C2>>(b) adds a refusal. The erosion risk is the opposite of the usual
+  one -- a false positive that blocks a legitimate wrapper -- which is why it
+  must fire only on an unambiguous cross-adapter mismatch.
+* <<c3,C3>> sits directly against the one-Run-per-checkout invariant. Its
+  acceptance must assert the invariant, and its cleanup variant is
+  destructive and is therefore a separate decision, not a default.
+* <<c4,C4>> would, in its naive form, break `wfc plan`'s documented
+  write-nothing promise. The promise is not a trust boundary, but it is a
+  stated contract, so the change belongs behind an explicit flag or a
+  separate subcommand and is routed as a maintainer decision.
+* <<c5,C5>> would, if wired into `make check`, make the repository's own gate
+  -- and therefore every baseline probe -- depend on a Ruby tool. Not
+  proposed.
+
+[[unverified]]
+== What could not be verified
+
+* *Whether `make check` passes its baseline in the Coordinator environment.*
+  Established: the probe inherits the launching environment
+  (`frontdoor/lifecycle.py:417-419`, no `env=`), the in-Hop runner does the
+  same (`evidence.py:88-98`), `make check` is `lint format-check test`
+  (`Makefile:28`) and the hard cap is 900 seconds (`model.py:27`). Not
+  established: the actual wall-clock time of `make check` in that
+  environment, or that `make` and the `PYTHON` variable resolve there. This
+  Hop's sandbox has a read-only `/tmp` and no network, so measuring it was
+  not attempted. The friction log's own open question on this point is
+  narrowed, not closed.
+* *Whether the entry-15 Run was in fact eligible for `prepare-successor`.*
+  Established from code: an `operational` escalation freezes a semantic stop
+  (`reducer.py:1753-1759`), which is what the eligibility gate requires
+  (`operator.py:1688`). Not established: that that specific Run satisfied the
+  remaining predicates (the published checkpoint identity anchor, a clean
+  successor checkout at an exact baseline). The Run's state root was not
+  inspected. The conclusion that the channel was *invisible* does not depend
+  on this.
+* *Whether <<e17,17>>'s placeholder device nodes reach a per-Hop predicate.*
+  Established: they exist as non-ignored untracked entries, and
+  `git_facts.py:589-590` classifies such state as an anomaly where that
+  predicate is applied. Not established: whether that predicate is on the
+  per-Hop path for the Run in entry 17, which completed ten Hops with the
+  placeholders present. That question belongs to the Execution Boundary Slice
+  A qualification, which this analysis does not enter.
+* *The exact refusal branch behind entry 15's `refused_not_recoverable`.* The
+  log records the classification but not the reason text, and
+  `reducer.py:490-499` offers five distinct named reasons. Not reproduced.
+* *Whether the installed Runtime and installed skill carry <<e20,20>>'s
+  timeout default.* The source does (`frontdoor/lifecycle.py:80`); promotion
+  is a maintainer action and is not observable from this repository.
+* *Hop-budget estimates.* Every estimate in <<candidates,the catalogue>> is
+  derived from <<e10,10>> and <<e13,13>>'s observed convergence (2-5 Hops
+  narrow, 7-12 broad) at roughly twice the expected count. They are
+  *assumptions*, not measurements of these slices.

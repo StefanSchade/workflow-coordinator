@@ -1,0 +1,116 @@
+= FTR-WFC-EVIDENCE-COMMAND-SEQUENCE -- One Evidence Command Per Commission Conflates Every Deterministic Gate Into One Exit Code
+
+Type:: future technical record -- evidence contract capability question
+(category B: it reaches the accepted program literals and, through the
+terminal-Worker shape predicate, result-contract selection)
+Status:: proposed / backlog; *recommended deferred*, nothing implemented
+Current controlling source:: This record; see link:_open.adoc[the active-work
+manifest] for its current card and
+link:beta2_operator_efficiency_plan.adoc#d6[the Beta-2 operator-efficiency
+plan's decision D6] for the recommendation and the interim remedy.
+Next action:: None scheduled. If the maintainer opens it, a design
+investigation first -- itself separately authorized and independently
+reviewed -- which must resolve the `model.py:699` coupling below explicitly
+rather than discover it during implementation.
+Not authorized here:: Any implementation, schema or contract change; any
+change to the accepted `robust@v1` or `simple@v1` programs, their evidence
+profiles or their digests; any change to result-contract selection, to
+evidence timeout semantics or to the trusted A2 evidence contract; any
+scheduling of the investigation; any Run.
+Priority:: deferred. Most of the benefit is available today without it; see
+the interim remedy.
+Date:: 2026-11-26.
+Supporting analysis::
+link:../warm_storage/post-beta-planning/wfc_beta2_operator_efficiency_analysis.adoc[The
+Beta-2 operator-efficiency analysis], candidate `C7`, friction entry 18.
+
+== Problem
+
+A Commission declares exactly one trusted `task-check` command
+(`commissioning.py:362-364`), which is also the mandatory pre-launch baseline
+probe (`frontdoor/lifecycle.py:415`). Lint, format checks and tests therefore
+sit behind one conflated exit code: the cheap checks cannot run first and
+fail fast, and an operator omission in the single command leaves a whole
+class of defect unguarded with nothing to signal it.
+
+The recorded cost (friction entry 18): the chosen command was
+`python -m pytest -q` while this repository's own gate is `make check` =
+`lint format-check test` (`Makefile:28`, `:20-21`, `:23-26`) with `ruff`
+configured as `select = ["F"]` (`pyproject.toml:76-80`). A retired test left
+its import behind (`ruff` F401). Ten Hops, six task-checks and two Opus Broad
+Reviews did not see it, because no pytest node runs `ruff`; the final Broad
+Review found it by running `ruff check .` itself and raised it as a blocking
+Finding, one Broad Review after the Hop budget would have allowed the
+correction. `ruff check .` was clean on `main` beforehand, so a
+lint-inclusive baseline probe would have surfaced it at the first Hop's
+task-check for the price of one Worker correction and no reviewer at all.
+
+== What the kernel already supports, and what would actually have to change
+
+The kernel is not the obstacle. It already models several *named* evidence
+commands -- `WorkflowProfile.evidence_commands` is a
+`Mapping[str, EvidenceCommand]` (`model.py:232`) -- and the accepted program
+literals already declare an evidence *list*:
+`{"task-check-v1": {"evidence": ["task-check"]}}` (`commissioning.py:140`,
+`:155`), resolved into each phase's evidence slot at `:288` and `:351-352`.
+
+What would have to change is therefore (i) the Consumer Request schema, which
+today carries exactly one argv and one timeout
+(`frontdoor/request.py:38-40`, `:68-85`), and (ii) the accepted program
+literals' evidence profiles.
+
+== Why this is category B: the coupling that makes it a semantic change
+
+`model.py:699` requires `phase.evidence == ("task-check",)` *exactly* for
+`is_closed_terminal_worker_shape`, and `select_result_contract`
+(`model.py:715`) uses that predicate to choose the semantic result contract
+`simple@v1`'s sole phase is admitted under. Extending `simple@v1`'s evidence
+list to, say, `("lint", "task-check")` therefore changes which result
+contract that phase runs under -- a change to admitted semantics, not a
+plumbing change.
+
+Two further boundaries: the accepted `robust@v1` program is out of bounds by
+a standing maintainer constraint, and both programs' literals are
+digest-bearing, so any change to them moves every Commission digest that
+selects them.
+
+== The interim remedy, which takes most of the benefit
+
+Available today, with no contract change: declare the repository's own gate
+as the single command -- `make check` here -- or a committed wrapper script
+that runs lint and then tests in order. That gives ordered, fail-fast
+lint-then-test at the cost of one conflated exit code, and the identical
+command then runs as the baseline probe, so the baseline must pass on the
+clean tree before anything launches.
+
+Two constraints on that remedy, both established in the analysis: the
+evidence timeout is a kernel hard cap of 900 seconds (`model.py:27`,
+enforced at `frontdoor/request.py:81`), and the suite has reached 896.96
+seconds without the verified offline bundle against 171 with it
+(link:BUG-WFC-EVIDENCE-TIMEOUT-DIAGNOSTICS.adoc[the timeout BUG]'s C3
+diagnostic) -- so the rule depends on a correctly prepared environment. And
+this repository's `format-check` covers only five files
+(`Makefile:23-26`); a whole-tree format gate is not available and is not
+implied.
+
+The operator rule and the worked example belong to
+link:FTR-WFC-LEVEL1-OPERATOR-GUIDANCE.adoc[the operator-guidance record],
+which carries them as text rather than as a contract change.
+
+== Open decisions
+
+* link:beta2_operator_efficiency_plan.adoc#d6[D6] -- open the design question
+  or defer. The plan recommends *defer*: a change to the accepted programs,
+  their digests and result-contract selection, in the release after the one
+  in which the publication path first ran, for a benefit largely obtainable
+  through the interim remedy.
+* If opened: whether a named gate's failure routes differently from a
+  behavioural failure (a lint residue and a failing test are not the same
+  signal), and whether the baseline probe runs the whole list or only the
+  cheap prefix. Neither is analysed here.
+
+== Lifecycle
+
+Proposed and deferred. No implementation, schema change, program change or
+Run is authorized by this record, and the single-command evidence contract is
+unchanged by it.
