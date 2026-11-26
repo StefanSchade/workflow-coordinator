@@ -299,10 +299,18 @@ if dd if=/dev/zero of=/tmp/overflow bs=1M count=8 2>/dev/null; then exit 1; fi
 
 
 def test_sandbox_root_remount_ro_does_not_disturb_writable_grants(tmp_path):
-    """N12 (the sandbox-root half): --remount-ro / must not be recursive in a
-    way that breaks the private /tmp, the external scratch or a writable
-    repository grant; it must close writes to in-view-only tmpfs paths that
-    have no host backing."""
+    """N12 (the sandbox-root half, the part a test can establish):
+    --remount-ro / must not be recursive in a way that breaks the private
+    /tmp, the external scratch or a writable repository grant.
+
+    Whether --remount-ro / also closes bwrap's own base tmpfs at the sandbox
+    root (<<mounts>>, the sandbox root row) is NOT established here. That is
+    a one-time qualification measurement, taken with and without the flag on
+    a named kernel and bwrap version and recorded in
+    docs/warm_storage/post-beta-planning/wfc_execution_boundary_slice_a_layer1_qualification_record.adoc;
+    it is not a recurring regression test, and this case asserts nothing
+    about it in either direction.
+    """
     repo = tmp_path / 'repo'
     repo.mkdir()
     (repo / '.git').mkdir()
@@ -320,19 +328,11 @@ set -eu
 printf ok > {writable}/still-writable
 printf ok > /tmp/still-writable
 printf ok > {EXTERNAL_SCRATCH_DESTINATION}/still-writable
-no_host_backing=0
-if (mkdir /no-host-backing-here) 2>/dev/null; then no_host_backing=1; fi
-echo "no_host_backing=$no_host_backing"
 '''
     result = run(boundary, ['/bin/sh', '-c', script])
     assert result.returncode == 0, result.stderr
     assert (writable / 'still-writable').read_text() == 'ok'
     assert (external_root / 'still-writable').read_text() == 'ok'
-    # Whichever way the no-host-backing probe above came out, record it: a
-    # writable root tmpfs here would be a stated residual, not a host
-    # exposure (<<mounts>>, the sandbox root row), and --remount-ro / is
-    # intended to close exactly this case.
-    assert b'no_host_backing=0' in result.stdout or b'no_host_backing=1' in result.stdout
 
 
 def test_sandbox_cannot_create_a_new_mount_or_user_namespace(tmp_path):

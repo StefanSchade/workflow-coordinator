@@ -45,15 +45,20 @@ def test_outer_boundary_no_longer_blocks_nested_bwrap_on_the_missing_proc_precon
     original meaning as still applies: the exact diagnostic this test used
     to assert (the inner ``bwrap`` failing to read
     ``/proc/sys/kernel/overflowuid``) must never reappear, because Slice A's
-    whole point is to supply that precondition. What it cannot establish
-    (and does not assume either way) is whether *this host* permits a
-    doubly-nested unprivileged user namespace at all -- the planning
-    record's own development host could not, inside an agent sandbox, and
-    the contract names this an open, host-dependent residual
-    (<<residual>>, "nested user namespaces are not always available").  This
-    test therefore measures and records that outcome rather than asserting
-    it, exactly as the sibling N12 case measures the sandbox-root tmpfs
-    question rather than assuming it.
+    whole point is to supply that precondition; the outer marker is written
+    into the re-granted external scratch and not into its root; and where the
+    nested namespace *is* available, the nested marker is written from inside
+    the inner view's own fresh ``/tmp``.
+
+    What this test does not establish, in either direction, is whether *this
+    host* permits a doubly-nested unprivileged user namespace at all -- the
+    planning record's own development host could not, inside an agent
+    sandbox, and the contract names this an open, host-dependent residual
+    (<<residual>>, "nested user namespaces are not always available").  The
+    test tolerates both outcomes; it records neither. Availability was
+    measured once, outside any Worker sandbox, and that measurement -- not
+    this test -- is what states it for a named host:
+    `docs/warm_storage/post-beta-planning/wfc_execution_boundary_slice_a_layer1_qualification_record.adoc`.
     """
     repository = tmp_path / "repository"
     shutil.copytree(FIXTURES / "repository", repository)
@@ -88,9 +93,16 @@ def test_outer_boundary_no_longer_blocks_nested_bwrap_on_the_missing_proc_precon
         # scratch was re-granted explicitly rather than inherited.
         assert (tmpdir / "nested-marker").read_text() == "nested"
     else:
-        # Not available on this host; a named, reported refusal rather than
-        # the old /proc gap, and not a reason to lower any guarantee.
-        assert result.returncode != 0
+        # Not available on this host, or refused for some other reason. This
+        # branch has not been observed on any host so far (the 2026-11-26
+        # measurement in the qualification record saw the branch above), so
+        # the only thing asserted here is the one property every refusal on
+        # this path must have: it is reported rather than silent. The inner
+        # bwrap writes its own diagnostic to stderr, which the outer view
+        # passes through unchanged; a nonzero exit with nothing to read would
+        # itself be a defect, and the overflowuid exclusion above already
+        # covers the historical /proc gap.
+        assert result.stderr != b""
     assert not (external_scratch / "outer-marker").exists()
 
 

@@ -1,0 +1,273 @@
+= WFC Execution Boundary Slice A: Layer-1 qualification record
+:toc:
+:toclevels: 2
+:revdate: 2026-11-26
+
+Maturity:: Qualification record for the Layer-1 measurements of Slice A that
+no test establishes. It holds two one-time measurements taken by the Level-1
+operator on a named host, outside any Worker sandbox, and states for each of
+them what it does and does not establish.
+Authority:: Informative. This record is not an authorization, not a maintainer
+acceptance, and not the Layer 2 live qualification. It grants no Finding
+disposition, Runtime promotion, tag, push or merge authority, and it changes
+no security claim: no document may say WFC preventively enforces a phase's
+authorized scope on the strength of anything written here
+(link:../../backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc[the
+binding Slice A contract], exit criteria).
+Updated:: 2026-11-26
+Owns:: The two Layer-1 measurements below -- the behaviour of
+`--remount-ro /` at the sandbox root, and the availability of a nested
+unprivileged user namespace -- together with the platform data, the method,
+the explicit non-claims and the re-qualification trigger.
+Does not own:: Layer 2 and its L1 to L7 checks; the exit criteria's
+disposition; the assertions of the Layer-1 test suite, which are owned by the
+tests themselves; and findings F1 to F15 of
+link:wfc_execution_boundary_slice_a_opus_implementation_review.adoc[the Opus
+implementation review], except finding F4, whose measurement half this record
+supplies.
+
+[[why]]
+== 1. Why this record exists
+
+The Slice A contract's first exit criterion requires Layer 1 "with the
+sandbox-root measurement N12 requires recorded either way", and its stop rule
+forbids settling the sandbox-root writability question by assumption in either
+direction. Its third exit criterion requires a record that states, per claim,
+which layer established it.
+
+Two questions in that area cannot be settled by an assertion in the required
+suite:
+
+* whether `--remount-ro /` is recursive on the qualification host, and whether
+  it closes bubblewrap's own base tmpfs at the sandbox root
+  (the contract's mount model, the sandbox root row);
+* whether a doubly-nested unprivileged user namespace is available at all,
+  which the contract names an open, host-dependent residual ("nested user
+  namespaces are not always available").
+
+The first needs a comparison between two different builds of the argument
+vector, one of which does not exist in the product. The second is a property
+of the host, not of the product. Before 2026-11-26 both were "measured" by
+assertions that could not fail (review finding F4). Those assertions have been
+removed; the measurements below replace them, and the two tests now claim only
+what they establish.
+
+Both measurements are *one-time qualification measurements*, not recurring
+regression tests. Nothing in the product persists them, and no evidence
+mechanism was extended to carry them; they are valid for the technical
+conditions stated in <<platform>> and must be repeated when those change
+(<<requalification>>).
+
+[[platform]]
+== 2. Platform and provenance
+
+[cols="2,3",options="header"]
+|===
+|Element |Value
+
+|Host
+|Development host `agent-vm`, the Level-1 operator's own host, outside any
+WFC Worker sandbox.
+
+|Kernel
+|Linux `6.12.86+deb13-amd64`
+
+|Bubblewrap
+|`bubblewrap 0.11.0` (`bwrap --version`)
+
+|Python
+|`python3.13`
+
+|User namespaces
+|`/proc/sys/kernel/unprivileged_userns_clone` = `1`; real, unprivileged user
+namespaces available to the measuring user
+
+|User
+|uid 1000, unprivileged
+
+|Date
+|2026-11-26
+
+|Taken by
+|The Level-1 operator, by hand. Not by a Worker Hop: the Worker sandbox of
+this repository's own Runs cannot start `bwrap` and has a read-only `/tmp`,
+which is why no Hop could take these measurements itself.
+|===
+
+[[sandbox-root]]
+== 3. Measurement 1: the sandbox root under `--remount-ro /`
+
+=== Method
+
+The validated boundary of the N12 case was used: a repository with a writable
+grant at `<repository>/writable`, a scratch mount at `/tmp`, and an external
+scratch directory. It was run through `execution_boundary.run` twice:
+
+* *with* -- the production `build_argv`, unchanged;
+* *without* -- a throwaway checkout of the same commit in which the single
+  line `args += ['--remount-ro', '/']` in `build_argv` was neutralised.
+
+The throwaway checkouts were deleted afterwards. Production code was not
+changed for the measurement.
+
+The probe script inside the view wrote to the writable grant, to `/tmp` and to
+`/tmp/s`; then `mkdir /no-host-backing-here` (the sandbox root itself),
+`mkdir /tmp/newdir`, `mkdir /usr/newdir`; then a write to `/etc/hosts`.
+
+The repository was placed outside `/tmp`. A repository located under `/tmp` is
+shadowed by the private `/tmp` of the view (review finding F8, out of scope
+for this record); both measurements avoided that condition rather than
+resolving it.
+
+=== Result
+
+[cols="3,2,2",options="header"]
+|===
+|Probe |With `--remount-ro /` |Without it
+
+|Write to the writable repository grant
+|ok
+|ok
+
+|Write to `/tmp` and to `/tmp/s` (external scratch)
+|ok
+|ok
+
+|`mkdir /tmp/newdir`
+|ok
+|ok
+
+|`mkdir /usr/newdir`
+|refused
+|refused
+
+|Write `/etc/hosts`
+|refused
+|refused
+
+|`mkdir /no-host-backing-here` (the sandbox root)
+|*refused*
+|*writable*
+|===
+
+=== Conclusion
+
+On this kernel and this `bwrap` version, `--remount-ro /` is *not recursive*:
+the writable repository grant, the private `/tmp` and the external scratch
+`/tmp/s` all survive it, and the read-only parts of the generated system view
+are unaffected in both directions. It *does* close the sandbox root's own base
+tmpfs, which is writable for the child without it. That base tmpfs is the
+stated residual of the contract's sandbox root row; a write there reaches no
+host path either way, so this is an in-view hygiene property and not a
+host-side guarantee.
+
+The last row of the table is the whole measured difference between the two
+builds.
+
+=== What the test establishes, and what it does not
+
+`tests/integration/test_execution_boundary_bwrap.py` has
+`test_sandbox_root_remount_ro_does_not_disturb_writable_grants`. That test
+establishes, by assertion, only the non-recursiveness half: the writable grant
+and the external scratch still hold the bytes written to them with the
+production argument vector, and the in-view write to the private `/tmp`
+succeeds too, since the probe script runs under `set -eu` and the case asserts
+return code 0. It asserts nothing about whether the sandbox root is closed, because a
+test running one build cannot compare two, and it no longer suggests
+otherwise. The closure of the sandbox root is established by the measurement
+above and by nothing else in the repository.
+
+[[nested]]
+== 4. Measurement 2: nested bubblewrap availability
+
+=== Method
+
+The fixture of
+link:../../../tests/integration/test_nested_claude_bwrap_qualification.py[the
+nested-bubblewrap qualification test] was run on the same host and the same
+date, with the repository located outside `/tmp` (an operator home-directory
+temporary path).
+
+=== Result
+
+The inner `bwrap` of the fixture completed: return code 0, the nested marker
+present as `nested-marker` in the re-granted external scratch, no stderr
+output.
+
+=== Conclusion
+
+On this host, a doubly-nested unprivileged user namespace *is* available, and
+the branch of the nested test that runs is therefore the "available" one: the
+nested marker is written from inside the inner view's own fresh `/tmp`, which
+also confirms that the external scratch was re-granted explicitly rather than
+inherited.
+
+The "not available" branch of that test has *not* been observed on any host in
+this measurement. It remains reachable in principle -- the contract's residual
+list records that nested user namespaces were unavailable on this very host
+when it was observed from inside a nested sandbox -- and the
+test's failure branch now asserts only the one property any refusal on that
+path must have, namely that it is reported on stderr rather than silent. No
+claim is made here about what that branch would show.
+
+[[per-claim]]
+== 5. Per claim, which layer established it
+
+This record states the layer for exactly the two claims it owns. The rest of
+the Layer-1 claim map is in the review's own coverage table, and Layer 2 is
+unperformed.
+
+[cols="3,2,3",options="header"]
+|===
+|Claim |Established by |Standing
+
+|`--remount-ro /` closes the sandbox root's base tmpfs, and is not recursive
+over the writable grants, the private `/tmp` or the external scratch
+|Layer 1, *measured* by the operator (<<sandbox-root>>); the
+non-recursiveness half is additionally asserted by the N12 test, the closure
+half by no test
+|Valid for the platform in <<platform>> only. In-view property; no host-side
+guarantee depends on it.
+
+|A doubly-nested unprivileged user namespace is available
+|Layer 1, *measured* on one host only (<<nested>>)
+|Host-dependent. Not a property of the product, and not generalised to any
+other host.
+|===
+
+[[non-claims]]
+== 6. What these measurements do not establish
+
+* *No live provider qualification.* Both measurements used `/bin/sh` and the
+  fixture's own stub. No real provider CLI was invoked, no credential was
+  used, and nothing here may be described as a live qualification.
+* *Layer 2 is not performed.* L1 to L7 of the contract's live layer are
+  untouched by this record, and exit criterion 2 stays open.
+* *No preventive-isolation claim.* While any exit criterion is unmet, no
+  document may say WFC preventively enforces a phase's authorized scope.
+  This record does not change that and is not evidence for it.
+* *No maintainer acceptance.* This is an operator measurement, not an
+  acceptance, and it dispositions no Finding -- including F4, whose
+  disposition belongs to an independent review.
+* *No statement beyond the rows above.* In particular, nothing is measured
+  here about the sensitivity of the exposed `/proc` entries, about the
+  shadowing of a repository under `/tmp` (F8), or about any other open
+  finding of the implementation review.
+
+[[requalification]]
+== 7. Re-qualification trigger
+
+These measurements are valid for the technical conditions in <<platform>>
+under the current mount model. Re-qualification is required when any of these
+changes:
+
+* the host kernel, including an upgrade of `6.12.86+deb13-amd64`;
+* the `bwrap` version, including an upgrade of `0.11.0`, or a change in how
+  the installed build documents `--remount-ro DEST`;
+* the mount model itself -- the set or order of generated mount arguments in
+  `build_argv`, the placement of `--remount-ro /` after the mounts, or the
+  introduction of a further writable or external mount kind.
+
+A re-qualification repeats the method above by hand on the then-current host
+and replaces the tables in this record, with its own platform data. It is not
+automated, and no test in the required suite re-measures it.
