@@ -287,6 +287,42 @@ def test_plan_never_runs_a_repository_configured_fsmonitor_helper(repository: Pa
     assert _tree_snapshot(repository) == tree_before
 
 
+def test_plan_names_an_unused_committed_role_default_instead_of_refusing(repository: Path):
+    """D2 Option A: a program ignores a committed role default it does not
+    use (FTR-WFC-UNUSED-ROLE-DEFAULT-TOLERANCE), and ``wfc plan`` names it."""
+
+    _run(["init", "--repository", str(repository), "--scope-ceiling", "src", "--scope-ceiling", "tests"])
+    config_path = repository / ".wfc" / "config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "default_execution: {}\n",
+            "default_execution:\n  independent_reviewer: {adapter: codex_cli, model: review-model, reasoning: high}\n",
+        ),
+        encoding="utf-8",
+    )
+    git(repository, "add", ".")
+    git(repository, "commit", "-q", "-m", "chore: commit Consumer Config")
+
+    task_path = repository / "task.md"
+    task_path.write_text(_TASK_TEXT, encoding="utf-8")
+
+    code, out, err = _run(_plan_args(repository, task_path=task_path))
+    assert code == 0, err
+    assert "role defaults ignored by this program: independent_reviewer" in out
+
+
+def test_plan_names_no_ignored_role_defaults_when_every_default_is_used(repository: Path):
+    _run(["init", "--repository", str(repository), "--scope-ceiling", "src", "--scope-ceiling", "tests"])
+    git(repository, "add", ".")
+    git(repository, "commit", "-q", "-m", "chore: commit Consumer Config")
+    task_path = repository / "task.md"
+    task_path.write_text(_TASK_TEXT, encoding="utf-8")
+
+    code, out, err = _run(_plan_args(repository, task_path=task_path))
+    assert code == 0, err
+    assert "role defaults ignored by this program: (none)" in out
+
+
 def test_plan_output_is_stable_across_repeated_calls(repository: Path):
     _run(["init", "--repository", str(repository), "--scope-ceiling", "src", "--scope-ceiling", "tests"])
     git(repository, "add", ".")
@@ -298,6 +334,32 @@ def test_plan_output_is_stable_across_repeated_calls(repository: Path):
     code_b, out_b, _ = _run(_plan_args(repository, task_path=task_path))
     assert code_a == code_b == 0
     assert out_a == out_b
+
+
+def test_plan_refuses_an_absolute_config_path_before_any_mutation(repository: Path, tmp_path: Path):
+    task_path = repository / "task.md"
+    task_path.write_text(_TASK_TEXT, encoding="utf-8")
+    head_before = git(repository, "rev-parse", "HEAD")
+    outside_config = tmp_path / "outside-config.yaml"
+    outside_config.write_text("placeholder\n", encoding="utf-8")
+
+    code, out, err = _run([*_plan_args(repository, task_path=task_path), "--config", str(outside_config)])
+    assert code != 0
+    assert out == ""
+    assert "A1-normalized" in err
+    assert git(repository, "rev-parse", "HEAD") == head_before
+
+
+def test_plan_refuses_a_dot_dot_traversal_config_path_before_any_mutation(repository: Path, tmp_path: Path):
+    task_path = repository / "task.md"
+    task_path.write_text(_TASK_TEXT, encoding="utf-8")
+    head_before = git(repository, "rev-parse", "HEAD")
+
+    code, out, err = _run([*_plan_args(repository, task_path=task_path), "--config", "../escape/config.yaml"])
+    assert code != 0
+    assert out == ""
+    assert "A1-normalized" in err
+    assert git(repository, "rev-parse", "HEAD") == head_before
 
 
 def test_plan_reports_missing_config_clearly(repository: Path):

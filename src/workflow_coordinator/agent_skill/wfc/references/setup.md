@@ -98,12 +98,12 @@ nonempty, single-line strings encodable as UTF-8, with no NUL. Choose models
 and reasoning supported by the provider. All effective bindings must use one adapter
 (`codex_cli` or `claude_cli`), and `wfc run --executable` must match it -- pass
 `--executable claude` for a `claude_cli` binding, `--executable codex` (the
-default) for `codex_cli`. **Current limitation**: nothing refuses a mismatch
-before dispatch -- a `claude_cli` binding launched without `--executable
-claude` fails inside the first Hop instead of at prelaunch, costing a whole
-checkout. Get this right at launch time; do not rely on a refusal to catch
-it. (Planned: a named pre-dispatch refusal for an unambiguous
-adapter/executable mismatch retires this paragraph.)
+default) for `codex_cli`. WFC refuses an unambiguous cross-adapter mismatch
+before dispatch -- a bare (non-path) `--executable` name that resolves to the
+*other* adapter's own known binary -- but never an explicit path or an
+unrecognized bare name, so a legitimate provider wrapper is never blocked.
+Get the executable and adapter aligned regardless; do not rely on this narrow
+check to catch every mismatch.
 
 Read the effective bindings by phase in `wfc plan` before authorization.
 An omitted or empty `phase_execution` keeps the existing role-keyed
@@ -111,26 +111,15 @@ envelope and digest. With phase overrides the digest covers the complete
 phase-keyed envelope. WFC pins that envelope through launch and resume,
 and records the choices in execution evidence.
 
-## `simple@v1` in a repository with a committed reviewer default
+## Role defaults a program does not use
 
-**Current limitation**: `simple@v1` uses no `independent_reviewer` role, so a
-committed `.wfc/config.yaml` that still carries an `independent_reviewer`
-default (set for `robust@v1` Commissions) makes `wfc plan`/`wfc run` refuse
-every `simple@v1` Commission outright ("execution config defaults name roles
-the selected program does not use"). Do not edit the committed
-`.wfc/config.yaml` to work around this -- a repository's own test may pin its
-exact committed defaults, and an edit breaks that pin and fails the baseline
-probe, which still consumes the checkout's lifecycle. Instead create a
-second, reviewer-less Consumer Config file (for example
-`.wfc/config-simple.yaml`, a copy of the committed one with the
-`independent_reviewer` default removed), select it with `--config
-.wfc/config-simple.yaml` on both `wfc plan` and `wfc run` -- `wfc run`
-re-verifies the committed `--config` file from Git history at the authorized
-HEAD, and a dirty tree is refused, so this second file must be committed in
-this checkout's own local branch, but never merged or pushed into `main`: it
-is a workaround for this checkout's Run, not a repository artifact. (Planned:
-tolerating an unused *config* role default removes this file and this whole
-failure mode.)
+A committed `default_execution` role entry that the selected program does
+not use (for example an `independent_reviewer` default kept for `robust@v1`
+Commissions, in a repository that also runs `simple@v1`) is tolerated, not
+refused: `wfc plan` names every ignored default in its preview. Only an
+unused `--execution-override` is still refused -- it is a per-Commission
+intent that cannot take effect, unlike a standing repository default several
+programs may legitimately share.
 
 ## A stale lock in `.git/`
 

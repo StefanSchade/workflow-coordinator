@@ -27,7 +27,7 @@ from pathlib import Path
 
 import yaml
 
-from ..commissioning import CommissionError, CompiledCommission, compile_commission
+from ..commissioning import CommissionError, CompiledCommission, _path, compile_commission
 from ..git_facts import GitPreflightError, repository_head, repository_identity
 from .config import (
     ConsumerConfig, ExecutionEnvelope, consumer_config_from_yaml, execution_overrides_from_flags, resolve_execution,
@@ -196,6 +196,10 @@ def render_plan_summary(
     manifest_digest = hashlib.sha256(json.dumps(compiled.manifest, sort_keys=True).encode("utf-8")).hexdigest()
     lines.append(f"projected Commission manifest digest: sha256:{manifest_digest}")
     lines.append("")
+    lines.append(
+        "role defaults ignored by this program: "
+        + (", ".join(envelope.ignored_default_roles) if envelope.ignored_default_roles else "(none)")
+    )
     lines.append("resolved execution envelope (separate from the Commission; not published):")
     for role in sorted(envelope.configuration.bindings, key=lambda value: value.value):
         binding = envelope.configuration.bindings[role]
@@ -268,8 +272,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wfc plan: cannot read task document '{args.task}': {error}", file=sys.stderr)
         return 2
 
+    try:
+        _path(args.config, context="--config")
+    except CommissionError as error:
+        print(f"wfc plan: {error}", file=sys.stderr)
+        return 2
+
     config_path = Path(args.config)
-    config_file = config_path if config_path.is_absolute() else repository / config_path
+    config_file = repository / config_path
     try:
         config_text = config_file.read_text(encoding="utf-8")
     except OSError as error:

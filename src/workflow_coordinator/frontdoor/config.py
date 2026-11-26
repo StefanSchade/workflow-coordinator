@@ -97,6 +97,10 @@ class ExecutionEnvelope:
     configuration: RunExecutionConfiguration
     text: str
     digest: str
+    # D2 Option A (FTR-WFC-UNUSED-ROLE-DEFAULT-TOLERANCE): role names the
+    # config's ``default_execution`` names but the selected program's phases
+    # do not use -- tolerated rather than refused, but never silent.
+    ignored_default_roles: tuple[str, ...] = ()
 
 
 def _single_line_value(value: Any, *, context: str) -> str:
@@ -254,12 +258,12 @@ def resolve_execution(
         raise CommissionError(
             "execution overrides name roles the selected program does not use: " + ", ".join(unknown_roles)
         )
-    unknown_default_roles = sorted(set(config.default_execution) - required_roles)
-    if unknown_default_roles:
-        raise CommissionError(
-            "execution config defaults name roles the selected program does not use: "
-            + ", ".join(unknown_default_roles)
-        )
+    # D2 Option A: an unused *default* is tolerated (it is a standing
+    # repository fact several programs may legitimately share), unlike an
+    # unused *override* above, which is a per-Commission intent that cannot
+    # take effect and is refused as a real operator error. The caller (``wfc
+    # plan``) names these in its preview so the tolerance stays visible.
+    ignored_default_roles = tuple(sorted(set(config.default_execution) - required_roles))
     unknown_phases = sorted(set(config.phase_execution) - set(phase_roles))
     if unknown_phases:
         raise CommissionError(
@@ -298,7 +302,10 @@ def resolve_execution(
         envelope["boundary"] = config.boundary
     text = yaml.safe_dump(envelope, sort_keys=False, allow_unicode=True)
     configuration = run_execution_configuration_from_yaml(text)
-    return ExecutionEnvelope(configuration=configuration, text=text, digest=configuration.sha256)
+    return ExecutionEnvelope(
+        configuration=configuration, text=text, digest=configuration.sha256,
+        ignored_default_roles=ignored_default_roles,
+    )
 
 
 def resolve_evidence(

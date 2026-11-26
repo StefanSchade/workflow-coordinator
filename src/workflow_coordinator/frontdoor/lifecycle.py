@@ -37,7 +37,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from ..commissioning import CommissionError, compile_commission
+from ..commissioning import CommissionError, _path, compile_commission
+from ..evidence import UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES
 from ..git_facts import (
     GitPreflightError,
     NewPathCommitIntent,
@@ -284,6 +285,12 @@ def _cached_commission(repository: Path, checkout_dir: Path, authorized: Journal
 # --------------------------------------------------------------------------
 
 def _authorize(inputs: RunInputs, checkout_dir: Path, journal: Journal) -> tuple[JournalRecord, Any]:
+    # O2(a): the same A1-normalized, repository-relative shape
+    # ``verify_commission`` re-checks post-commit (``frontdoor/verify.py``,
+    # via ``commissioning._path``), checked here before authorization
+    # instead -- the input either passes this identical shape check or is
+    # refused now, not after a Commission commit, as ``inconsistent``.
+    _path(inputs.config_path, context="--config")
     request_text = inputs.request_path.read_text(encoding="utf-8")
     config_text = (inputs.repository / inputs.config_path).read_text(encoding="utf-8")
     _, _, compiled, envelope, request_file_path, commission_digest = _compile(
@@ -348,15 +355,59 @@ def _resolve_executable(executable: str) -> str:
     return found
 
 
+# O2(b): each adapter's own known provider binary name -- the same bare
+# names already defaulted elsewhere (``DEFAULT_EXECUTABLE``, the adapters'
+# own ``executable`` defaults). Used only to catch an *unambiguous* mismatch;
+# never widened into a registry of acceptable names.
+_ADAPTER_KNOWN_BASENAME = {"codex_cli": "codex", "claude_cli": "claude"}
+
+
+def _envelope_adapter(checkout_dir: Path, authorized: JournalRecord) -> str:
+    """The single adapter the authorized envelope resolved to.
+
+    ``resolve_execution`` already refuses a mixed-adapter envelope, so every
+    binding (role-keyed or phase-keyed) names the same adapter; any one of
+    them is representative.
+    """
+
+    configuration = run_execution_configuration_from_yaml(_pinned_envelope_text(checkout_dir, authorized))
+    bindings = configuration.bindings if configuration.schema_version == 1 else configuration.phase_bindings
+    return next(iter(bindings.values())).adapter
+
+
+def _refuse_cross_adapter_executable_mismatch(executable_argument: str, executable_path: str, adapter: str) -> None:
+    """Refuse only an unambiguous cross-adapter ``--executable``, by name.
+
+    Never an explicit path (absolute or containing a separator) and never an
+    unrecognized bare name -- both stay launchable, so a legitimate provider
+    wrapper is never blocked (BUG-WFC-PRELAUNCH-REFUSAL-ERGONOMICS (b)).
+    """
+
+    if os.path.isabs(executable_argument) or os.sep in executable_argument:
+        return
+    basename = os.path.basename(executable_path)
+    other_basenames = {name for other, name in _ADAPTER_KNOWN_BASENAME.items() if other != adapter}
+    if basename in other_basenames:
+        raise LifecycleError(
+            f"--executable resolved to '{basename}', the known binary of a different adapter than "
+            f"this envelope's '{adapter}'; pass the executable for '{adapter}' or an explicit path",
+            classification="refused_prelaunch",
+        )
+
+
 def _do_prelaunch(repository: Path, checkout_dir: Path, journal: Journal, authorized: JournalRecord) -> JournalRecord:
     journal.append("prelaunch_intent", {})
 
-    executable_path = _resolve_executable(authorized.data["executable_argument"])
+    executable_argument = authorized.data["executable_argument"]
+    executable_path = _resolve_executable(executable_argument)
     if not os.path.isfile(executable_path) or not os.access(executable_path, os.X_OK):
         raise LifecycleError(
             f"provider executable does not exist or is not executable: {executable_path}",
             classification="refused_prelaunch",
         )
+    _refuse_cross_adapter_executable_mismatch(
+        executable_argument, executable_path, _envelope_adapter(checkout_dir, authorized),
+    )
     executable_sha256 = hashlib.sha256(Path(executable_path).read_bytes()).hexdigest()
     package_identity = implementation_identity()
 
@@ -403,6 +454,26 @@ def _verify_identities_unchanged(prelaunch: JournalRecord) -> None:
 # Step 3: the one-shot baseline probe.
 # --------------------------------------------------------------------------
 
+def _bounded_untrusted_tail(stdout: bytes, stderr: bytes) -> str:
+    """The already-captured probe output, bounded and labelled untrusted.
+
+    Reuses the in-Hop evidence path's own limit
+    (``evidence.UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES``) rather than
+    choosing a new one. Printed only, as part of a refusal message: nothing
+    here is written to disk or to any journal/evidence record
+    (BUG-WFC-PRELAUNCH-REFUSAL-ERGONOMICS (c)).
+    """
+
+    limit = UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES
+
+    def rendered(label: str, value: bytes) -> str:
+        tail = value[-limit:]
+        notice = f" (showing the last {limit} of {len(value)} bytes)" if len(value) > limit else ""
+        return f"{label} tail, untrusted{notice}:\n{tail.decode('utf-8', 'backslashreplace')}"
+
+    return rendered("stdout", stdout) + "\n" + rendered("stderr", stderr)
+
+
 def _do_probe(repository: Path, checkout_dir: Path, journal: Journal, authorized: JournalRecord) -> JournalRecord:
     journal.append("probe_intent", {})
 
@@ -425,7 +496,8 @@ def _do_probe(repository: Path, checkout_dir: Path, journal: Journal, authorized
     facts_after = observe_repository(repository)
     if completed.returncode != 0:
         raise LifecycleError(
-            f"baseline probe failed with exit code {completed.returncode}; no provider ran",
+            f"baseline probe failed with exit code {completed.returncode}; no provider ran\n"
+            + _bounded_untrusted_tail(completed.stdout, completed.stderr),
             classification="refused_probe",
         )
     if facts_after.head != facts_before.head or not facts_after.clean or facts_after.unresolved_submodules:

@@ -315,10 +315,32 @@ def test_resolve_execution_digest_differs_only_with_binding_and_not_with_role_or
     assert envelope_a.configuration.bindings != envelope_b.configuration.bindings
 
 
-def test_resolve_execution_rejects_role_widening_beyond_the_program() -> None:
+def test_resolve_execution_rejects_override_widening_beyond_the_program() -> None:
+    config = consumer_config_from_yaml(config_text())
+    with pytest.raises(CommissionError, match="execution overrides name roles the selected program does not use"):
+        resolve_execution(config, {"independent_reviewer": {"model": "x"}}, _WORKER_PHASE)
+
+
+def test_resolve_execution_tolerates_an_unused_config_default_and_names_it() -> None:
+    """D2 Option A (FTR-WFC-UNUSED-ROLE-DEFAULT-TOLERANCE): a program resolves
+    cleanly against a committed default it does not use, and names it."""
+
     config = consumer_config_from_yaml(config_text(roles="worker,independent_reviewer"))
-    with pytest.raises(CommissionError, match="roles the selected program does not use"):
-        resolve_execution(config, {}, _WORKER_PHASE)
+    envelope = resolve_execution(config, {}, _WORKER_PHASE)
+    assert envelope.ignored_default_roles == ("independent_reviewer",)
+    assert set(envelope.configuration.bindings) == {WorkflowRole.WORKER}
+
+
+def test_resolve_execution_reports_no_ignored_defaults_when_every_default_is_used() -> None:
+    config = consumer_config_from_yaml(config_text())
+    envelope = resolve_execution(config, {}, _WORKER_PHASE)
+    assert envelope.ignored_default_roles == ()
+
+
+def test_resolve_execution_still_refuses_an_unknown_role_name_at_parse_time() -> None:
+    text = config_text().replace("worker:", "observer:")
+    with pytest.raises(CommissionError, match="unknown role"):
+        consumer_config_from_yaml(text)
 
 
 def test_resolve_execution_rejects_incomplete_binding() -> None:

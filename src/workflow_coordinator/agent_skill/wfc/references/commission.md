@@ -87,10 +87,11 @@ resolve the Evidence location itself.)
 ROLE.FIELD=VALUE`, then `phase_execution`; see `setup.md` for the full
 precedence and the YAML shape. All effective bindings in a Run share one
 adapter, and `wfc run --executable` must match it (`--executable claude`
-for `claude_cli`, `--executable codex`, the default, for `codex_cli`).
-**Current limitation**: a mismatch is not refused before dispatch -- get it
-right at launch time, since the failure otherwise surfaces inside the first
-Hop. (Planned: a named pre-dispatch refusal retires this limitation.)
+for `claude_cli`, `--executable codex`, the default, for `codex_cli`). WFC
+refuses an unambiguous cross-adapter mismatch before dispatch -- a bare
+`--executable` name resolving to the *other* adapter's own known binary --
+but never an explicit path or an unrecognized bare name; get it right at
+launch time regardless of this narrow safety net.
 
 ## Scope and the scope ceiling
 
@@ -148,8 +149,11 @@ baseline probe: it must already be committed, exit `0` on today's clean
 tree, and leave the tree and `HEAD` unchanged. A non-zero exit, an
 unresolvable executable, a timeout, or any tree mutation refuses the whole
 Run before launch (`refused_probe`) and still consumes this checkout's one
-lifecycle -- run it by hand in the fresh checkout, with any required
-environment already prepared, before ever launching. Diagnosing and
+lifecycle. A non-zero-exit refusal prints a bounded, explicitly untrusted
+tail of the stdout/stderr it already captured, beside the exit code -- still
+run it by hand in the fresh checkout, with any required environment already
+prepared, before ever launching, rather than relying on that tail alone.
+Diagnosing and
 correcting a correctable cause -- a missing declared input, a misplaced
 scratch directory -- and repeating the probe in a fresh checkout is
 ordinary preparation, not a decision that needs asking first; see

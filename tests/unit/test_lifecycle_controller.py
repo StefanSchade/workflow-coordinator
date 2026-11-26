@@ -406,6 +406,54 @@ def test_prelaunch_refuses_when_engine_state_root_already_exists(repository: Pat
     assert excinfo.value.classification == "refused_prelaunch"
 
 
+# --------------------------------------------------------------------------
+# O2(a): the Consumer Config path shape is refused before authorization,
+# not only once re-read from Git history at the authorized HEAD.
+# --------------------------------------------------------------------------
+
+def test_run_refuses_an_absolute_config_path_before_authorization(repository: Path, tmp_path: Path, state_home: Path):
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    head_before = git(repository, "rev-parse", "HEAD")
+    confirmed = []
+    inputs = L.RunInputs(
+        repository=repository, config_path=str(repository / L.DEFAULT_CONFIG_PATH),
+        request_path=request_path, target_dir=None, overrides=_OVERRIDES,
+        executable=str(FAKE_PROVIDER), hop_timeout_seconds=60.0,
+        confirm=lambda a, b: confirmed.append((a, b)) or True,
+    )
+    with pytest.raises(L.CommissionError, match="A1-normalized"):
+        L.run_lifecycle(inputs)
+    assert not confirmed
+    assert git(repository, "rev-parse", "HEAD") == head_before
+    assert not state_home.exists()
+
+
+def test_run_refuses_a_dot_dot_traversal_config_path_before_authorization(repository: Path, tmp_path: Path, state_home: Path):
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    confirmed = []
+    inputs = L.RunInputs(
+        repository=repository, config_path="../escape/config.yaml",
+        request_path=request_path, target_dir=None, overrides=_OVERRIDES,
+        executable=str(FAKE_PROVIDER), hop_timeout_seconds=60.0,
+        confirm=lambda a, b: confirmed.append((a, b)) or True,
+    )
+    with pytest.raises(L.CommissionError, match="A1-normalized"):
+        L.run_lifecycle(inputs)
+    assert not confirmed
+    assert not state_home.exists()
+
+
+def test_run_cli_reports_refused_prelaunch_for_a_malformed_config_path(repository: Path, tmp_path: Path, state_home: Path):
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    code = cli_main([
+        "run", "--repository", str(repository), "--request", str(request_path),
+        "--config", str(repository / L.DEFAULT_CONFIG_PATH), "--executable", str(FAKE_PROVIDER),
+        "--yes", *_CLI_WORKER_OVERRIDE_FLAGS,
+    ])
+    assert code == L.EXIT_CODES["refused_prelaunch"]
+    assert not state_home.exists()
+
+
 def test_journal_root_not_disjoint_refuses_before_any_effect(repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(repository / "inside-repo-state"))
     request_path = _write_request(repository, tmp_path / "request.yaml")
@@ -415,6 +463,71 @@ def test_journal_root_not_disjoint_refuses_before_any_effect(repository: Path, t
         L.run_lifecycle(inputs)
     assert git(repository, "rev-parse", "HEAD") == head_before
     assert not (repository / "inside-repo-state").exists()
+
+
+# --------------------------------------------------------------------------
+# O2(b): an unambiguous cross-adapter ``--executable`` mismatch is refused
+# before dispatch; an explicit path or an unrecognized bare name is not.
+# --------------------------------------------------------------------------
+
+_CLAUDE_OVERRIDES = {"worker": {"adapter": "claude_cli", "model": "fixture-model", "reasoning": "medium"}}
+
+
+def test_prelaunch_refuses_an_unambiguous_cross_adapter_executable_mismatch(
+    repository: Path, tmp_path: Path, state_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    fake_codex.write_text(FAKE_PROVIDER.read_text(encoding="utf-8"), encoding="utf-8")
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    inputs = _inputs(repository, request_path, executable="codex", overrides=_CLAUDE_OVERRIDES)
+    with pytest.raises(L.LifecycleError) as excinfo:
+        L.run_lifecycle(inputs)
+    assert excinfo.value.classification == "refused_prelaunch"
+    assert "codex" in str(excinfo.value) and "claude_cli" in str(excinfo.value)
+
+
+def test_prelaunch_allows_an_unrecognized_bare_executable_name_despite_adapter(
+    repository: Path, tmp_path: Path, state_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    wrapper = bin_dir / "my-provider-wrapper"
+    wrapper.write_text(FAKE_PROVIDER.read_text(encoding="utf-8"), encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    checkout_dir = J.checkout_directory(J.canonical_checkout(repository))
+    journal = J.Journal(checkout_dir / "journal.jsonl")
+    inputs = _inputs(repository, request_path, executable="my-provider-wrapper", overrides=_CLAUDE_OVERRIDES)
+    authorized, lock = L._authorize(inputs, checkout_dir, journal)
+    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    assert prelaunch.data["executable_path"] == str(wrapper)
+    J.release_lock(lock)
+
+
+def test_prelaunch_allows_an_explicit_path_executable_regardless_of_its_basename(
+    repository: Path, tmp_path: Path, state_home: Path,
+):
+    codex_named_wrapper = tmp_path / "codex"
+    codex_named_wrapper.write_text(FAKE_PROVIDER.read_text(encoding="utf-8"), encoding="utf-8")
+    codex_named_wrapper.chmod(0o755)
+
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    checkout_dir = J.checkout_directory(J.canonical_checkout(repository))
+    journal = J.Journal(checkout_dir / "journal.jsonl")
+    inputs = _inputs(
+        repository, request_path, executable=str(codex_named_wrapper), overrides=_CLAUDE_OVERRIDES,
+    )
+    authorized, lock = L._authorize(inputs, checkout_dir, journal)
+    prelaunch = L._do_prelaunch(repository, checkout_dir, journal, authorized)
+    assert Path(prelaunch.data["executable_path"]).name == "codex"
+    J.release_lock(lock)
 
 
 # --------------------------------------------------------------------------
@@ -436,6 +549,40 @@ def test_probe_failure_refuses_before_any_commission_commit(repository: Path, tm
     assert excinfo.value.classification == "refused_probe"
     assert git(repository, "rev-parse", "HEAD") == head_before
     assert git(repository, "status", "--porcelain") == ""
+
+
+def test_probe_failure_refusal_carries_a_bounded_untrusted_output_tail(
+    repository: Path, tmp_path: Path, state_home: Path,
+):
+    """O2(c): the probe refusal no longer discards the output it captured."""
+
+    failing = repository / "checks" / "check.sh"
+    failing.write_text(
+        "#!/bin/sh\necho stdout-marker-xyz\necho stderr-marker-abc 1>&2\nexit 7\n", encoding="utf-8",
+    )
+    failing.chmod(0o755)
+    git(repository, "add", ".")
+    git(repository, "commit", "-q", "-m", "test: make task-check fail with output")
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+
+    inputs = _inputs(repository, request_path)
+    with pytest.raises(L.LifecycleError) as excinfo:
+        L.run_lifecycle(inputs)
+    assert excinfo.value.classification == "refused_probe"
+    message = str(excinfo.value)
+    assert "stdout-marker-xyz" in message
+    assert "stderr-marker-abc" in message
+    assert "untrusted" in message
+
+
+def test_bounded_untrusted_tail_is_bounded_to_the_evidence_module_limit():
+    limit = L.UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES
+    oversized = b"a" * (limit + 500)
+    rendered = L._bounded_untrusted_tail(oversized, b"short and unremarkable")
+    assert "untrusted" in rendered
+    assert f"the last {limit}" in rendered
+    assert "a" * limit in rendered
+    assert "a" * (limit + 1) not in rendered
 
 
 def test_probe_timeout_refuses_and_reports_no_provider_ran(repository: Path, tmp_path: Path, state_home: Path):

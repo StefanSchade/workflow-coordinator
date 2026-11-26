@@ -3,13 +3,15 @@
 Type:: bug -- Front Door refusal timing and diagnostics (not an admission
 defect: every refusal below is correct in substance, and no input that is
 admissible today becomes inadmissible)
-Status:: proposed / backlog; nothing implemented
+Status:: implemented (2026-11-26); see the dated Implementation note below.
+The `Problem`, `Direction` and `Open decisions` sections are kept as the
+historical record that motivated the Design above.
 Current controlling source:: This record; see link:_open.adoc[the active-work
 manifest] for its current card and
 link:beta2_operator_efficiency_plan.adoc#o2[the Beta-2 operator-efficiency
 plan] for the slice shape, order and acceptance.
-Next action:: A separately authorized Commission after
-link:beta2_operator_efficiency_plan.adoc#o1[O1].
+Next action:: None of this record's own; independent focused and broad
+review of the implementing Commission (WI-WFC-BETA2-O3O2-001).
 Not authorized here:: Any implementation; any change to the baseline probe's
 semantics, to any classification or exit code, to the trusted/untrusted
 evidence split, or to what inputs are admissible; any Run.
@@ -21,6 +23,62 @@ Supporting analysis::
 link:../warm_storage/post-beta-planning/wfc_beta2_operator_efficiency_analysis.adoc[The
 Beta-2 operator-efficiency analysis], candidate `C2`, friction entries 2, 14
 and 21.
+
+== Design (2026-11-26, WI-WFC-BETA2-O3O2-001)
+
+*(a) Config path shape, moved earlier.* The A1-normalized, repository-
+relative shape check (`commissioning._path`, the same one `verify_commission`
+already applies when re-reading `--config` from Git history) now also runs
+where `--config` is first read as a plain filesystem argument: in `wfc
+plan`'s `main()`, before the file is opened at all; in `wfc run`'s
+`_authorize()`, as its very first statement -- before either config/request
+read, before `inputs.confirm()` is called, before the checkout lock, and
+before any journal record. A shape failure there raises the same
+`CommissionError` message ("... must be an A1-normalized repository-relative
+path"); for `wfc run` this reaches `cmd_run`'s existing generic exception
+handler unchanged, which reports classification `refused_prelaunch` for a
+`CommissionError` with no `.classification` of its own -- no new
+classification is introduced. *Not refused*: anything that already passes
+this shape check -- the check only moves earlier, so nothing admissible
+today becomes inadmissible. The post-commit re-check in
+`verify_commission` is left exactly as it is (defense in depth against a
+config path whose *content*, not shape, differs from what was authorized);
+the only behaviour removed is a shape-only mismatch surfacing as a late,
+misleading `inconsistent`.
+
+*(b) An unambiguous cross-adapter `--executable` mismatch, refused before
+dispatch.* `_do_prelaunch` already resolves `--executable` to a concrete
+path. After that resolution, and only when the raw CLI value was a *bare*
+name (no path separator, not absolute -- an explicit path is never touched
+by this check), its basename is compared against the two adapters' own known
+binary names (`codex` for `codex_cli`, `claude` for `claude_cli`, both
+already literal defaults elsewhere in this module and the adapters
+themselves). The envelope's single adapter is already pinned and available
+from the cached `envelope.yaml` at this point (`resolve_execution` already
+refuses a mixed-adapter envelope, so there is exactly one to read). A
+refusal fires only when the resolved basename equals the *other* adapter's
+known binary -- an unambiguous, exact name collision -- with classification
+`refused_prelaunch`, before any provider dispatch. *Not refused*: an
+explicit path, regardless of basename (a legitimate wrapper may be named
+anything and live anywhere); a bare name that is neither known binary (an
+unrecognized wrapper name on `PATH`). This is a genuinely new refusal,
+scoped as narrowly as the record's own mitigation: no unambiguous-mismatch
+false positive is possible because the only two names it ever compares
+against are the product's own two adapters' own default binary names.
+
+*(c) The probe refusal carries a bounded, labelled-untrusted tail.*
+`_do_probe` already captures stdout/stderr (`subprocess.run(...,
+capture_output=True)`). On a non-zero exit, the refusal message now appends
+the last `evidence.UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES` (16384) bytes of
+each stream, decoded leniently and explicitly labelled "untrusted" in the
+printed text -- the same limit the in-Hop evidence path already uses
+(`evidence.py:25`), reused rather than re-chosen. Nothing is written to disk
+or to any journal/evidence record; the bytes already exist only in this
+process's memory for the duration of raising the one exception, exactly as
+today's exit-code-only message does. *Unchanged*: the probe's own semantics
+(still exit-code-based, still strictly before any provider runs), the
+`refused_probe` classification and exit code, and the trusted/untrusted
+split -- no probe byte is ever persisted as, or presented as, evidence.
 
 == Problem
 
@@ -112,6 +170,28 @@ alone; the plan groups them because they share one code region, one slice and
 one qualification. If the maintainer wants the smallest possible step, (c) is
 the cheapest and highest-value of the three.
 
+== Implementation note (2026-11-26, WI-WFC-BETA2-O3O2-001)
+
+Implemented exactly as the Design section above states, all three in
+`frontdoor/lifecycle.py`. (a) `_authorize` checks `commissioning._path` on
+`inputs.config_path` as its first statement; `frontdoor/plan.py`'s `main`
+checks the same shape on `--config` before opening the file. (b)
+`_do_prelaunch` calls the new `_refuse_cross_adapter_executable_mismatch`
+after resolving the executable, comparing a bare name's resolved basename
+against `_ADAPTER_KNOWN_BASENAME`; an explicit path is exempted before any
+comparison. (c) `_do_probe`'s non-zero-exit refusal appends
+`_bounded_untrusted_tail`, which reuses
+`evidence.UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES`. All three refusals
+report classification `refused_prelaunch`/`refused_probe` as designed; no
+classification or exit code moved. New tests cover each refusal and each
+named non-refusal (an explicit path, an unrecognized bare name, the still-
+admissible config path shapes) in `tests/unit/test_lifecycle_controller.py`
+and `tests/unit/test_frontdoor_init_plan.py`. The skill
+(`references/setup.md`, `references/commission.md`) and the Operator Manual
+(`ch03_running/01_preparation.adoc`, `ch09_consumer_quickstart/01_quickstart.adoc`)
+no longer describe the executable mismatch as undetected; entry 14's row in
+`docs/backlog/FTR-WFC-LEVEL1-OPERATOR-GUIDANCE.adoc` is marked retired.
+
 == Lifecycle
 
-Proposed. No implementation, test or Run is authorized by this record.
+Implemented, see the dated Implementation note above.
