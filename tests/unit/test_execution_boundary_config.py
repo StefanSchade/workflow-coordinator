@@ -354,3 +354,22 @@ def test_designated_external_mounts_cannot_overlap_the_generated_system_view(tmp
     assert os.path.isdir('/etc')
     with pytest.raises(BoundaryConfigurationError, match='generated system view'):
         validate(repo, [scratch], provider_channel=Path('/etc'))
+
+
+def test_undesignated_mount_with_outside_repository_source_is_refused(tmp_path: Path):
+    """N16's companion assertion: the three designated external-mount
+    parameters (external scratch, provider channel, provider authentication)
+    are each separately validated, never a general relaxation of
+    ``source.relative_to(repository)``. An arbitrary host path offered
+    through a plain, undesignated ``Mount`` -- the fourth, unenumerated
+    route -- is still refused by that unchanged generic rule, and the
+    attempted source is left untouched."""
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    outside = tmp_path / 'outside-host-path'
+    outside.write_text('data')
+    scratch = Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)
+    with pytest.raises(BoundaryConfigurationError, match='inside repository'):
+        validate(repo, [scratch, Mount(outside, PurePosixPath(str(outside)), MountMode.WRITABLE)])
+    assert outside.read_text() == 'data'
