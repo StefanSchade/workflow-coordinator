@@ -15,10 +15,15 @@ link:../../backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc[the
 binding contract], all five ordered internal steps (section (j)), measured
 against the real code and the real test suite, not against the candidate's
 own summary of itself.
-Verdict:: *changes_required* -- two blocking Findings, both missing required
-Layer-1 test coverage for an explicitly named contract property; no violation
-of implemented behavior was reproduced anywhere else, and no security claim,
-test, or scope statement needed correction.
+Verdict (Hop `H002`, this candidate only):: *changes_required* -- two blocking
+Findings, both missing required Layer-1 test coverage for an explicitly named
+contract property; no violation of implemented behavior was reproduced
+anywhere else, and no security claim, test, or scope statement needed
+correction.
+Current verdict:: *accept*, as of the renewed broad review recorded in
+<<h005>> (Hop `H005`, candidate at commit `d3ede31`): both Findings below
+(F1, F2) are resolved, confirmed by that Hop's own independent execution, and
+no new blocking issue was found.
 
 [[verdict]]
 == Verdict and summary
@@ -338,3 +343,104 @@ defects, and both are already true on `main` for the unmodified
 Live Layer 2 qualification (real authenticated providers) was correctly not
 attempted by the candidate and was not attempted by this review either; it
 remains an operator-performed, out-of-Commission act.
+
+[[h005]]
+== Renewed broad review (Hop H005): both Findings confirmed resolved, accepted
+
+Standing:: This section records the disposition of the renewed broad-review
+phase, Hop `H005`, re-examining the whole candidate at commit `d3ede31`
+(range `d64c8d3..d3ede31`, i.e. this Hop's own H002 broad review plus H003's
+correction plus H004's focused review of that correction) after the H002
+broad review above opened F1 and F2 and H003/H004 addressed them. No `src/`
+change exists anywhere in that range; the only changes since the H002
+candidate reviewed above are the two additive regression tests
+(`d83885b`) and the two review artifacts (`1ac0316`, `d3ede31`, this file's
+own prior section and the separate focused-review artifact).
+
+*Verdict: accept.* No blocking Finding. F1 and F2 are both genuinely
+resolved, confirmed in this Hop by my own direct execution against the real
+code (not by re-reading H003's or H004's claims about it):
+
+* *F1 (resume boundary-mode-mismatch refusal untested).* I reproduced the
+  exact scenario by driving `operator.run_serial_hops` directly, in both
+  mismatch directions (`bubblewrap`-run resumed `direct`, and `direct`-run
+  resumed `bubblewrap`), against a real Git repository and a real
+  `register_checkout` association. Both raised
+  `OperatorPreflightError("execution boundary mode mismatch: ...")` before
+  `dispatch.json` was ever created and left the repository's tracked file
+  byte-unchanged. This is exactly what
+  `tests/unit/test_execution_boundary_dispatch_preflight.py::test_resumed_hop_with_boundary_mode_mismatch_refuses_before_any_provider_process_starts`
+  (added in H003) asserts, and the regression coverage the gap named.
+* *F2 (N16's undesignated-Mount companion assertion untested).* I
+  reproduced the exact scenario by calling `execution_boundary.validate()`
+  directly with a plain, undesignated `Mount` whose source is an existing
+  sibling path entirely outside the repository tree: it raised
+  `BoundaryConfigurationError("bind sources must be inside repository")`
+  and left the outside file's content unchanged. This is exactly what
+  `tests/unit/test_execution_boundary_config.py::test_undesignated_mount_with_outside_repository_source_is_refused`
+  (added in H003) asserts.
+
+I additionally re-read, independently of the candidate's or any prior
+review's own summary, the security-critical surfaces the broad review above
+already covered in depth, to confirm nothing regressed between the
+candidate reviewed there and the one reviewed here (there is no `src/`
+diff between them, so this is a re-confirmation, not a new finding):
+`execution_boundary.py`'s `validate()`/`build_argv()` (mount-shape,
+bind-source, overlap, hardlink-alias and generated-system-view checks
+unchanged and correct by reading); `execution_launcher.py`'s
+`derive_boundary_grant`/`prepare`/`prepare_direct`/`prepare_bubblewrap`
+(matches the seam shape of section (a) field-for-field; an unrecognised
+mode refuses; `prepare_direct` reads nothing from the grant);
+`operator.py`'s `run_serial_hops` (resume check fires first, before
+`checkout_state_root`; the pre-create/`finally`-shaped removal bracket
+swallows only `OSError` around each individual `rmdir()`, never
+suppressing an in-flight exception; `validate_grant` runs before
+`_execution_adapter` is constructed) and `_preflight_boundary` (checks 1-6
+of section (e), each a named `OperatorPreflightError`); both adapters'
+direct-mode branches (`claude_adapter.py:323-336`,
+`codex_adapter.py:448-449`), which construct an unisolated `grant` and keep
+`scratch_for_child_env = str(tmp_dir)` byte-identical to `main` whether
+`self.boundary` is `None` or an explicit `direct`-mode grant. I also
+confirmed, by direct inspection, that the Coordinator-level
+`_preflight_boundary` check for the external scratch root is necessarily a
+no-op at that point (the Claude adapter alone creates and binds that
+directory, per invocation, inside its own `execute()`, after Coordinator
+preflight has already run) but that this defers rather than skips the
+check: `execution_launcher.validate_grant()` -- called again inside
+`prepare_bubblewrap()` with the real `external_scratch` path filled in --
+still runs strictly before `Popen`, so no dispatch can reach an
+unvalidated mount set. This is an architectural redundancy (the grant is
+validated once at the Coordinator level without `external_scratch`, and
+again at the adapter level with it), not a gap: every invocation's full
+mount set is validated before the provider process starts, one way or
+another.
+
+I also re-confirmed the scope and mechanical constraints independently:
+`git status --short -uall` at the end of this Hop shows only the
+pre-existing, unrelated untracked dotfiles already noted above and in the
+focused review; no staged changes; `.wfc/config.yaml` does not exist in
+this repository and is untouched; no `governance/`, `.github/`,
+`Makefile`, `pyproject.toml`, `scripts/` or `examples/` change exists
+anywhere in `main..HEAD` (the only `.wfc/governance/` paths touched are the
+Commission's own commissioning manifest, written by the Coordinator at
+commit `328e712`, before any Worker Hop); the documentation changes I
+read (`docs/architecture.md`, the Operator Manual quickstart and
+failure-modes chapters) consistently state that no preventive-isolation
+claim is made and that Layer 2 has not been performed, for every invocation
+regardless of boundary mode.
+
+Agent-sandbox limits of this Hop, stated for completeness and consistent
+with the two reviews above: this sandbox cannot start `bwrap`
+(`--unshare-user` refuses) and has no working offline test-input bundle for
+a required-suite `pytest` run, so the integration suite and the full unit
+suite could not be executed here under the project's own test-input
+discipline; I instead verified both correction tests and the
+security-critical invariants they and the surrounding code implement by
+direct, targeted execution of the real functions against the real source
+tree (shown above), which is a stronger independent check for the two
+specific Findings than re-running the named test files would have been.
+This Hop relies on the Coordinator's own task-check (reported separately as
+passing for this candidate) as the authoritative confirmation of the full
+required suite.
+
+No new Finding opened. F1 and F2 remain resolved.
