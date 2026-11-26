@@ -522,6 +522,7 @@ def run_one_hop(
             actual_commits=delta.actual_commits,
             required_evidence=required_plan,
             trusted_observations=observations,
+            boundary=str(binding.get("boundary") or "direct"),
         )
         if publish_staged_attempt is None:
             document = ExecutionEvidenceDocument(4, run_identity, (attempt,))

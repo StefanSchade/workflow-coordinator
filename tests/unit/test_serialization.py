@@ -702,6 +702,25 @@ bindings:
         parsed.bindings[WorkflowRole.WORKER] = parsed.bindings[WorkflowRole.WORKER]
 
 
+def test_execution_configuration_boundary_key_is_optional_closed_and_run_wide():
+    direct_by_default = run_execution_configuration_from_yaml(
+        "schema_version: 1\nbindings:\n  worker: {adapter: codex_cli, model: m, reasoning: high}\n"
+    )
+    assert direct_by_default.boundary == "direct"
+
+    bubblewrap = run_execution_configuration_from_yaml(
+        "schema_version: 1\nboundary: bubblewrap\nbindings:\n"
+        "  worker: {adapter: codex_cli, model: m, reasoning: high}\n"
+    )
+    assert bubblewrap.boundary == "bubblewrap"
+
+    with pytest.raises(ValidationError, match="boundary must be direct or bubblewrap"):
+        run_execution_configuration_from_yaml(
+            "schema_version: 1\nboundary: other\nbindings:\n"
+            "  worker: {adapter: codex_cli, model: m, reasoning: high}\n"
+        )
+
+
 @pytest.mark.parametrize("adapter", ("codex_cli", "claude_cli"))
 def test_execution_binding_parser_admits_exactly_the_two_supported_adapters(adapter):
     parsed = run_execution_configuration_from_yaml(
@@ -913,6 +932,31 @@ def test_run_v3_round_trip_persists_only_concrete_identity_and_new_hop_records()
     assert run_from_json(encoded) == run
 
 
+def test_run_boundary_field_is_omitted_when_direct_and_round_trips_when_bubblewrap():
+    """``direct`` is equivalent to the key being absent, so a historical Run
+    from before this slice -- which never had it -- replays byte-identical
+    (<<enablement>>); only an actually-isolated Run's value is ever written."""
+    run = v3_run_with_assessment()
+    assert run.boundary == "direct"
+    encoded = run_to_json(run)
+    assert '"boundary"' not in encoded
+    assert run_from_json(encoded) == run
+
+    isolated = replace(run, boundary="bubblewrap")
+    isolated_encoded = run_to_json(isolated)
+    assert '"boundary":"bubblewrap"' in isolated_encoded
+    assert run_from_json(isolated_encoded) == isolated
+
+    unsupported = json.loads(isolated_encoded)
+    unsupported["boundary"] = "other"
+    with pytest.raises(ValidationError, match="unsupported value"):
+        run_from_json(json.dumps(unsupported))
+
+    legacy = run_from_json(PRECHANGE_RUN_JSON)
+    assert legacy.boundary == "direct"
+    assert run_to_json(legacy) == PRECHANGE_RUN_JSON
+
+
 def test_schema4_execution_evidence_is_closed_and_anchor_is_route_independent():
     workflow, run = tracked_convergence_run()
     run, _, evaluator_hop = convergence_cycle(
@@ -982,6 +1026,31 @@ def test_schema4_execution_evidence_is_closed_and_anchor_is_route_independent():
         malformed["attempts"][0][field] = "unsupported-value"
         with pytest.raises(ValidationError, match="must be one of"):
             execution_evidence_from_json(json.dumps(malformed))
+
+
+def test_schema4_execution_evidence_boundary_field_is_omitted_for_direct_and_round_trips_for_bubblewrap():
+    """The binding evidence gains ``boundary`` beside adapter/executable/
+    model/reasoning (<<provider>>); an attempt recorded before this slice,
+    or any direct-mode attempt, has no such key at all, so a historical
+    schema-4 execution-evidence file replays byte-identical."""
+    workflow, run = tracked_convergence_run()
+    run, _, evaluator_hop = convergence_cycle(run, workflow, evidence_prefix="boundary")
+    run, _, evidence_json = qualification_evidence(run, {evaluator_hop: ("pass",)})
+    assert '"boundary"' not in evidence_json
+    document = execution_evidence_from_json(evidence_json)
+    assert document.attempts[0].boundary == "direct"
+
+    bubblewrap_document = replace(
+        document, attempts=tuple(replace(attempt, boundary="bubblewrap") for attempt in document.attempts)
+    )
+    encoded = execution_evidence_to_json(bubblewrap_document)
+    assert '"boundary":"bubblewrap"' in encoded
+    assert execution_evidence_from_json(encoded) == bubblewrap_document
+
+    unsupported = json.loads(evidence_json)
+    unsupported["attempts"][0]["boundary"] = "unsupported-value"
+    with pytest.raises(ValidationError, match="boundary"):
+        execution_evidence_from_json(json.dumps(unsupported))
 
 
 def test_schema4_observation_round_trips_untrusted_diagnostic_capture():

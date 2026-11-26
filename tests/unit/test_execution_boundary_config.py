@@ -14,18 +14,19 @@ def test_file_grant_is_exact_and_invalid_config_never_spawns(tmp_path: Path):
     file = tmp_path / 'file'
     file.write_text('data')
     scratch = Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)
-    grant = Mount(file, PurePosixPath('/repo/file'), MountMode.WRITABLE)
+    grant = Mount(file, PurePosixPath(str(file)), MountMode.WRITABLE)
     boundary = validate(tmp_path, [grant, scratch])
-    argv = build_argv(boundary, ['/usr/bin/cat', '/repo/file'])
+    argv = build_argv(boundary, ['/usr/bin/cat', str(file)])
     index = argv.index('--bind')
-    assert argv[index:index + 3] == ['--bind', str(file), '/repo/file']
+    assert argv[index:index + 3] == ['--bind', str(file), str(file)]
     link = tmp_path / 'link'
     link.symlink_to(file)
     bad = [
-        Mount(link, PurePosixPath('/repo/link'), MountMode.WRITABLE),
-        Mount(Path('relative'), PurePosixPath('/repo/file'), MountMode.WRITABLE),
-        Mount(tmp_path / '.git', PurePosixPath('/repo/.git'), MountMode.WRITABLE),
-        Mount(file, PurePosixPath('/repo/missing/file'), MountMode.WRITABLE),
+        Mount(link, PurePosixPath(str(link)), MountMode.WRITABLE),
+        Mount(Path('relative'), PurePosixPath(str(file)), MountMode.WRITABLE),
+        Mount(tmp_path / '.git', PurePosixPath(str(tmp_path / '.git')), MountMode.WRITABLE),
+        Mount(file, PurePosixPath(str(tmp_path / 'missing' / 'file')), MountMode.WRITABLE),
+        Mount(file, PurePosixPath('/repo/file'), MountMode.WRITABLE),  # the retired /repo convention
     ]
     with patch('subprocess.run') as spawn:
         for item in bad:
@@ -38,14 +39,34 @@ def test_file_grant_is_exact_and_invalid_config_never_spawns(tmp_path: Path):
         spawn.assert_not_called()
 
 
+def test_git_file_shaped_worktree_is_accepted(tmp_path: Path):
+    """A linked Git worktree's `.git` is a regular file; validate() accepts it
+    and build_argv() masks it with the FD-backed ro-bind-data wrapper."""
+    (tmp_path / '.git').write_text('gitdir: /elsewhere/.git/worktrees/x\n')
+    boundary = validate(tmp_path, [Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)])
+    argv = build_argv(boundary, ['/bin/true'])
+    assert argv[:3] == ['/bin/sh', '-c', 'exec 9</dev/null && exec "$0" "$@"']
+    assert argv[3] == boundary.binary
+    index = argv.index('--ro-bind-data')
+    assert argv[index:index + 3] == ['--ro-bind-data', '9', f"{tmp_path}/.git"]
+
+
+def test_git_symlink_is_rejected(tmp_path: Path):
+    real_git = tmp_path.parent / 'real-git'
+    real_git.mkdir()
+    (tmp_path / '.git').symlink_to(real_git)
+    with pytest.raises(BoundaryConfigurationError, match='.git'):
+        validate(tmp_path, [Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)])
+
+
 def test_overlapping_destinations_rejected(tmp_path: Path):
     (tmp_path / '.git').mkdir()
     directory = tmp_path / 'dir'
     directory.mkdir()
     (directory / 'file').touch()
     with pytest.raises(BoundaryConfigurationError, match='overlapping'):
-        validate(tmp_path, [Mount(directory, PurePosixPath('/repo/dir'), MountMode.WRITABLE),
-                            Mount(directory / 'file', PurePosixPath('/repo/dir/file'), MountMode.WRITABLE),
+        validate(tmp_path, [Mount(directory, PurePosixPath(str(directory)), MountMode.WRITABLE),
+                            Mount(directory / 'file', PurePosixPath(str(directory / 'file')), MountMode.WRITABLE),
                             Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)])
 
 
@@ -53,7 +74,7 @@ def test_unreadable_writable_tree_fails_closed(tmp_path: Path):
     (tmp_path / '.git').mkdir()
     directory = tmp_path / 'dir'
     directory.mkdir()
-    mounts = [Mount(directory, PurePosixPath('/repo/dir'), MountMode.WRITABLE),
+    mounts = [Mount(directory, PurePosixPath(str(directory)), MountMode.WRITABLE),
               Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)]
     boundary = validate(tmp_path, mounts)
     with patch('workflow_coordinator.execution_boundary.os.scandir', side_effect=PermissionError('denied')):
@@ -70,10 +91,58 @@ def test_hardlinked_fifo_in_writable_tree_is_rejected(tmp_path: Path):
     fifo = tmp_path / 'fifo'
     os.mkfifo(fifo)
     os.link(fifo, directory / 'alias')
-    mounts = [Mount(directory, PurePosixPath('/repo/dir'), MountMode.WRITABLE),
+    mounts = [Mount(directory, PurePosixPath(str(directory)), MountMode.WRITABLE),
               Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)]
     with pytest.raises(BoundaryConfigurationError, match='hardlink aliases'):
         validate(tmp_path, mounts)
+
+
+def test_tmp_scratch_size_cap_is_generated(tmp_path: Path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    boundary = validate(repo, [Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)], tmp_size_bytes=123456)
+    argv = build_argv(boundary, ['/bin/true'])
+    index = next(i for i in range(len(argv) - 1) if argv[i] == '--tmpfs' and argv[i + 1] == '/tmp')
+    assert argv[index - 2:index + 2] == ['--size', '123456', '--tmpfs', '/tmp']
+
+
+def test_sandbox_root_is_remounted_read_only_after_all_mounts(tmp_path: Path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    boundary = validate(repo, [Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)])
+    argv = build_argv(boundary, ['/bin/true'])
+    chdir_index = argv.index('--chdir')
+    root_remount_indexes = [i for i, arg in enumerate(argv) if arg == '--remount-ro' and argv[i + 1] == '/']
+    assert len(root_remount_indexes) == 1
+    assert root_remount_indexes[0] < chdir_index
+
+
+def test_proc_and_pid_namespace_flags_present_without_as_pid_1(tmp_path: Path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    boundary = validate(repo, [Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)])
+    argv = build_argv(boundary, ['/bin/true'])
+    assert '--unshare-pid' in argv
+    assert '--new-session' in argv
+    assert '--as-pid-1' not in argv
+    index = argv.index('--proc')
+    assert argv[index:index + 2] == ['--proc', '/proc']
+
+
+def test_generated_etc_entries_are_bound_read_only_when_present(tmp_path: Path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    boundary = validate(repo, [Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)])
+    argv = build_argv(boundary, ['/bin/true'])
+    for etc_path in ('/etc/resolv.conf', '/etc/hosts', '/etc/nsswitch.conf', '/etc/ssl/certs', '/etc/passwd'):
+        if os.path.exists(etc_path):
+            index = argv.index(etc_path)
+            assert argv[index - 1] == '--ro-bind'
+            assert argv[index + 1] == etc_path
 
 
 def test_external_scratch_is_validated_and_mounted_after_private_tmp(tmp_path: Path):
@@ -189,3 +258,99 @@ def test_external_scratch_root_symlink_is_rejected_before_any_access(tmp_path: P
             validate(repo, [scratch], external_scratch=root_link)
         spawn.assert_not_called()
     assert secret.read_text() == 'host secret'
+
+
+def test_provider_channel_is_bound_read_only_for_claude_and_read_write_for_codex(tmp_path: Path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    channel = tmp_path / 'channel'
+    channel.mkdir()
+    scratch = Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)
+
+    read_only = validate(repo, [scratch], provider_channel=channel)
+    argv = build_argv(read_only, ['/bin/true'])
+    index = argv.index(str(channel))
+    assert argv[index - 1] == '--ro-bind'
+
+    writable = validate(repo, [scratch], provider_channel=channel, provider_channel_writable=True)
+    argv = build_argv(writable, ['/bin/true'])
+    index = argv.index(str(channel))
+    assert argv[index - 1] == '--bind'
+
+
+def test_provider_channel_must_not_be_the_run_state_directory(tmp_path: Path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    run_root = tmp_path / 'run-root'
+    run_root.mkdir()
+    (run_root / 'run.json').write_text('{}')
+    scratch = Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)
+    with pytest.raises(BoundaryConfigurationError, match='Run state directory'):
+        validate(repo, [scratch], provider_channel=run_root)
+
+
+def test_provider_channel_must_be_disjoint_and_a_directory(tmp_path: Path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    inside_repo = repo / 'channel'
+    inside_repo.mkdir()
+    not_a_directory = tmp_path / 'channel-file'
+    not_a_directory.write_text('x')
+    scratch = Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)
+    for bad in (inside_repo, not_a_directory, tmp_path / 'missing'):
+        with pytest.raises(BoundaryConfigurationError):
+            validate(repo, [scratch], provider_channel=bad)
+
+
+def test_provider_channel_writable_grant_runs_hardlink_walk(tmp_path: Path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    channel = tmp_path / 'channel'
+    channel.mkdir()
+    fifo = tmp_path / 'channel-fifo'
+    os.mkfifo(fifo)
+    os.link(fifo, channel / 'alias')
+    scratch = Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)
+    with pytest.raises(BoundaryConfigurationError, match='hardlink aliases'):
+        validate(repo, [scratch], provider_channel=channel, provider_channel_writable=True)
+
+
+def test_readable_host_paths_are_bound_read_only(tmp_path: Path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    auth = tmp_path / 'auth-token'
+    auth.write_text('token')
+    scratch = Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)
+    boundary = validate(repo, [scratch], readable_host_paths=(auth,))
+    argv = build_argv(boundary, ['/bin/true'])
+    index = argv.index(str(auth))
+    assert argv[index - 1] == '--ro-bind'
+    assert argv[index + 1] == str(auth)
+
+
+def test_readable_host_path_cannot_substitute_an_arbitrary_host_path(tmp_path: Path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    scratch = Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)
+    for bad in (tmp_path / 'missing', Path('relative-auth')):
+        with pytest.raises(BoundaryConfigurationError):
+            validate(repo, [scratch], readable_host_paths=(bad,))
+
+
+def test_designated_external_mounts_cannot_overlap_the_generated_system_view(tmp_path: Path):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    scratch = Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)
+    # /etc is the parent of generated-view entries (/etc/passwd etc.) but not
+    # one of the system roots, so this exercises the generated-system-view
+    # check specifically rather than the earlier system-mount overlap check.
+    assert os.path.isdir('/etc')
+    with pytest.raises(BoundaryConfigurationError, match='generated system view'):
+        validate(repo, [scratch], provider_channel=Path('/etc'))

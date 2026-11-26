@@ -85,18 +85,30 @@ against accidental damage, not a security perimeter. A provider's own
 sandbox/permission request (Codex `--sandbox workspace-write`, the Claude
 adapter's closed profile) is a transitional operational safeguard -- useful,
 not discarded without reason, but provider-owned and not Coordinator-verified
-(`DEC-WFC-009`). No current Coordinator-owned or Coordinator-verified
-OS/environment containment boundary is claimed, for self-development or any
-other consumer repository, and WFC does not require a provider sandbox to
-preventively enforce a phase's `authorized_scope`; the Coordinator's own
-post-Hop Git/scope observation is the authoritative enforcement of that
-scope for candidate acceptance; this does not prevent or undo writes. WFC
-ownership of a provider-independent execution-isolation boundary is an accepted
-future direction, not current V1 functionality. Its dispatch integration and
-effective qualification are post Beta 1; Beta 1 must not claim preventive
-Commission-scope isolation. Existing provider safeguards remain in place; see
+(`DEC-WFC-009`). An opt-in, Coordinator-owned Linux filesystem boundary
+(`src/workflow_coordinator/execution_boundary.py`) is now wired into both
+provider adapters' dispatch through one provider-neutral launcher seam
+(`src/workflow_coordinator/execution_launcher.py`); it defaults to off, and
+selecting it is a Run-wide configuration choice, never a default. It is
+designed so that, for an invocation that selects it and for which it is
+successfully established, writes outside the authorized grant and access to
+`.git`, the gitdir and the common Git directory are refused at the OS level
+rather than merely rejected afterward -- but **no preventive-isolation claim
+is made for any invocation yet**: that claim requires both the deterministic
+Layer 1 tests and the Layer 2 live qualification with real authenticated
+providers to have passed (`FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION`),
+and Layer 2 has not been performed. The boundary shares the provider's
+network namespace, hides no repository content from an agent, and claims
+nothing about hostile-code or kernel-level containment. Until the
+qualification exit criteria are met, and always for an invocation that does
+not select the boundary (still every Run by default), the Coordinator's own
+post-Hop Git/scope observation remains the sole authoritative enforcement of
+a phase's `authorized_scope` for candidate acceptance; this does not prevent
+or undo writes. Confidentiality, per-phase visibility profiles, elevated
+privilege and network containment remain future directions, not current V1
+functionality. See
 [FTR-WFC-EXECUTION-TRUST-BOUNDARIES](backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc)
-for its status and non-current standing.
+for its status and standing.
 
 This document stays a short overview. The next level of detail lives in three
 subject models, which explain rather than authorize:

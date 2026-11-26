@@ -2006,12 +2006,13 @@ output.write_text(json.dumps({{"schema_version":1,"run_id":fact("run_id"),"hop_i
 
 def test_binding_evidence_projects_only_the_explicit_resolved_value():
     resolved = ExecutionBinding("codex_cli", "explicit-model", "high")
-    binding = operator._binding_evidence(resolved, executable="fake-codex")
+    binding = operator._binding_evidence(resolved, executable="fake-codex", boundary="direct")
     assert binding == {
         "adapter": "codex_cli",
         "executable": "fake-codex",
         "model": "explicit-model",
         "reasoning": "high",
+        "boundary": "direct",
     }
 
 

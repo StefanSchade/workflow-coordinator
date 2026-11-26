@@ -17,8 +17,44 @@ FIXTURES = Path(__file__).parents[1] / "fixtures" / "nested_claude_bwrap_qualifi
 SUN_PATH_MAXIMUM = 108
 
 
-def test_outer_boundary_reports_the_missing_proc_precondition_before_nested_bwrap(tmp_path: Path):
-    """The accepted outer primitive has no /proc, so the inner bwrap stops."""
+def test_outer_boundary_no_longer_blocks_nested_bwrap_on_the_missing_proc_precondition(tmp_path: Path):
+    """Slice A's outer view now supplies ``/proc`` itself; the historical
+    precondition gap this test used to observe is closed, by design.
+
+    Two things changed from the pre-Slice-A version of this test, both
+    stated here rather than only in the review artifact:
+
+    * *Path-identity mounting* (<<mounts>>): the repository is mounted at its
+      own canonical path, not ``/repo``, so the stub is addressed by that
+      real path rather than a fixed ``/repo`` destination that no longer
+      exists in the view.
+    * *The fixture's own nested ``bwrap`` invocation* (``provider_stub.sh``)
+      used to pass ``--chdir /repo`` -- a path its own minimal inner view
+      (only ``/usr``, the ``/bin``-family links, ``/tmp`` and ``/tmp/s``)
+      never bound, before or after this slice. Before Slice A that line was
+      dead code: the inner ``bwrap`` always stopped at the ``overflowuid``
+      read first. Once the outer view supplies ``/proc`` (<<mounts>>, the
+      very fix this record makes), the inner ``bwrap`` gets far enough to
+      reach that unrelated, never-correct ``--chdir`` and would fail for a
+      reason that has nothing to do with ``/proc``. The fixture now targets
+      ``--chdir /tmp``, which it does bind, so the remaining mechanics this
+      probe exercises (namespace, external-scratch re-grant) stay
+      meaningful.
+
+    What this test still establishes mechanically, preserving as much of its
+    original meaning as still applies: the exact diagnostic this test used
+    to assert (the inner ``bwrap`` failing to read
+    ``/proc/sys/kernel/overflowuid``) must never reappear, because Slice A's
+    whole point is to supply that precondition. What it cannot establish
+    (and does not assume either way) is whether *this host* permits a
+    doubly-nested unprivileged user namespace at all -- the planning
+    record's own development host could not, inside an agent sandbox, and
+    the contract names this an open, host-dependent residual
+    (<<residual>>, "nested user namespaces are not always available").  This
+    test therefore measures and records that outcome rather than asserting
+    it, exactly as the sibling N12 case measures the sandbox-root tmpfs
+    question rather than assuming it.
+    """
     repository = tmp_path / "repository"
     shutil.copytree(FIXTURES / "repository", repository)
     (repository / ".git").mkdir()
@@ -36,15 +72,25 @@ def test_outer_boundary_reports_the_missing_proc_precondition_before_nested_bwra
         boundary,
         [
             "/bin/sh", "-ceu",
-            "TMPDIR=/tmp/s/claude-tmp; export TMPDIR; exec /bin/sh /repo/provider_stub.sh",
+            f"TMPDIR=/tmp/s/claude-tmp; export TMPDIR; exec /bin/sh {repository}/provider_stub.sh",
         ],
     )
 
-    assert result.returncode == 1
-    assert result.stderr == b"bwrap: Can't read /proc/sys/kernel/overflowuid: No such file or directory\n"
+    old_blocking_diagnostic = b"bwrap: Can't read /proc/sys/kernel/overflowuid: No such file or directory\n"
+    assert result.stderr != old_blocking_diagnostic
+    assert b"overflowuid" not in result.stderr
     tmpdir = external_scratch / "claude-tmp"
     assert (tmpdir / "outer-marker").read_text() == "outer"
-    assert not (tmpdir / "nested-marker").exists()
+    if result.returncode == 0:
+        # A doubly-nested unprivileged user namespace is available on this
+        # host: the inner bwrap completed its own mount setup and wrote its
+        # marker from inside its own fresh /tmp, confirming the external
+        # scratch was re-granted explicitly rather than inherited.
+        assert (tmpdir / "nested-marker").read_text() == "nested"
+    else:
+        # Not available on this host; a named, reported refusal rather than
+        # the old /proc gap, and not a reason to lower any guarantee.
+        assert result.returncode != 0
     assert not (external_scratch / "outer-marker").exists()
 
 

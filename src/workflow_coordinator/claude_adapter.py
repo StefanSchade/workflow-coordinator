@@ -11,7 +11,7 @@ import signal
 import stat
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .adapter import (
@@ -20,6 +20,8 @@ from .adapter import (
     AgentExecutionRequest,
     ExecutionNotStartedError,
 )
+from .execution_boundary import EXTERNAL_SCRATCH_DESTINATION
+from .execution_launcher import BoundaryGrant, LaunchPlan, boundary_started_marker, direct_grant, prepare
 from .model import (
     ModelUsage,
     NO_USAGE_REPORTED,
@@ -193,6 +195,10 @@ class ClaudeCliAdapter:
     reasoning_effort: str
     executable: str = "claude"
     extra_environment_names: tuple[str, ...] = field(default_factory=_extra_environment_names)
+    # None (the default) means today's unisolated behaviour: this adapter
+    # does not and cannot choose the boundary; it reads grant.mode alone,
+    # through the launcher seam, and refuses by name on an unrecognised one.
+    boundary: BoundaryGrant | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.extra_environment_names, tuple):
@@ -219,8 +225,10 @@ class ClaudeCliAdapter:
         )
 
     @staticmethod
-    def _settings(request: AgentExecutionRequest, external_scratch_dir: Path) -> dict[str, object]:
-        scratch = str(external_scratch_dir)
+    def _settings(request: AgentExecutionRequest, scratch: str) -> dict[str, object]:
+        """``scratch`` is the path the child itself will see: the real host
+        directory when unisolated, or the fixed in-view destination
+        (``/tmp/s``) when the boundary is in force (<<provider>>)."""
         return {
             "sandbox": {
                 "enabled": True,
@@ -298,6 +306,7 @@ class ClaudeCliAdapter:
         real_dir = self._external_scratch_dir(request)
         _supersede_or_reject_leftover(real_dir, "external scratch target")
         _supersede_or_reject_leftover(tmp_dir, "short TMPDIR symlink")
+        marker = None
         try:
             try:
                 real_dir.mkdir(parents=True, mode=0o700)
@@ -311,23 +320,47 @@ class ClaudeCliAdapter:
                     permitted_routes=request.permitted_routes,
                     finding_authority=request.finding_authority,
                 )
+                if self.boundary is not None and self.boundary.mode != "direct":
+                    # Inside the view the real scratch directory is bound at
+                    # the fixed short destination; settings and the child's
+                    # TMPDIR both name that in-view path (<<provider>>).
+                    scratch_for_settings = scratch_for_child_env = str(EXTERNAL_SCRATCH_DESTINATION)
+                    grant = replace(self.boundary, external_scratch=real_dir)
+                else:
+                    # Unisolated: byte-identical to today. Settings name the
+                    # real host scratch directory; the child's own TMPDIR
+                    # stays the short symlink for the AF_UNIX path-length
+                    # reason documented on _SHORT_TMP_ROOT above.
+                    scratch_for_settings = str(real_dir)
+                    scratch_for_child_env = str(tmp_dir)
+                    grant = self.boundary if self.boundary is not None else direct_grant(request.repository.resolve())
                 atomic_write_json(schema, schema_object)
-                atomic_write_json(settings, self._settings(request, real_dir))
+                atomic_write_json(settings, self._settings(request, scratch_for_settings))
                 environment = {
                     name: os.environ[name]
                     for name in (*_ENVIRONMENT_NAMES, *self.extra_environment_names)
                     if name in os.environ
                 }
-                environment.update(TMPDIR=str(tmp_dir), TMP=str(tmp_dir), TEMP=str(tmp_dir))
-                child = subprocess.Popen(
+                environment.update(
+                    TMPDIR=scratch_for_child_env, TMP=scratch_for_child_env, TEMP=scratch_for_child_env
+                )
+                plan = LaunchPlan(
+                    grant,
                     self.argv(
                         request,
                         json.dumps(schema_object, separators=(",", ":"), sort_keys=True),
                         settings,
                     ),
-                    cwd=request.repository.resolve(),
+                    request.repository.resolve(),
+                    environment,
+                )
+                prepared = prepare(plan)
+                marker = boundary_started_marker(grant)
+                child = subprocess.Popen(
+                    prepared.argv,
+                    cwd=prepared.cwd,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    start_new_session=True, env=environment,
+                    start_new_session=True, env=prepared.environment,
                 )
             except (OSError, ValueError) as error:
                 raise ClaudeCliError("local pre-acceptance executable launch failure") from error
@@ -342,6 +375,10 @@ class ClaudeCliAdapter:
                 except subprocess.TimeoutExpired:
                     os.killpg(child.pid, signal.SIGKILL)
                     stdout, stderr = child.communicate()
+            if marker is not None and not timed_out and child.returncode != 0 and not marker[1].exists():
+                # bwrap itself exited before the provider ever ran (its own
+                # exit path, not a guess from stderr text); not-started.
+                raise ClaudeCliError("execution boundary failed before the provider started")
         finally:
             # tmp_dir is normally a symlink (shutil.rmtree() refuses to
             # operate on one, silently no-oping under ignore_errors=True)

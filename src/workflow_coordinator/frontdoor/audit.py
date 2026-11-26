@@ -47,7 +47,7 @@ _GOVERNANCE_KEYS = frozenset({
 _COMPONENT_DIGEST_KEYS = frozenset({"path", "digest"})
 _EXECUTABLE_KEYS = frozenset({"name"})
 _HOP_KEYS = frozenset({
-    "hop_id", "sequence", "phase", "role", "adapter", "model", "reasoning",
+    "hop_id", "sequence", "phase", "role", "adapter", "model", "reasoning", "boundary",
     "outcome", "applied_route", "commits", "finding_delta_ids", "usage",
     "evidence",
 })
@@ -378,6 +378,10 @@ def _build_hops_section(
     run_doc: dict, plan_doc: dict | None, exec_evidence_doc: dict | None,
     usage_doc: dict | None, limits: list[str],
 ) -> tuple[list[dict], list[Mapping[str, Any] | None], list[str | None]]:
+    # One Run-wide value (<<enablement>>), read from the trusted Run snapshot
+    # rather than the per-role/phase execution envelope. Absent (None) means
+    # unambiguously a Run from before this slice, never guessed as "direct".
+    run_boundary = run_doc.get("boundary")
     role_bindings = (plan_doc or {}).get("role_bindings") or {}
     phase_bindings = (plan_doc or {}).get("phase_bindings")
 
@@ -436,6 +440,7 @@ def _build_hops_section(
             "adapter": binding.get("adapter"),
             "model": binding.get("model"),
             "reasoning": binding.get("reasoning"),
+            "boundary": run_boundary,
             "outcome": hop.get("outcome"),
             "applied_route": hop.get("applied_route"),
             "commits": list(hop.get("actual_commits") or []),

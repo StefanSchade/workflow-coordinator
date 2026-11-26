@@ -85,6 +85,7 @@ class ConsumerConfig:
     raw_text: str
     evidence: EvidenceConfigValue | None = None
     phase_execution: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    boundary: str = "direct"
 
 
 @dataclass(frozen=True)
@@ -168,10 +169,13 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
             "schema_version", "repository_name", "governance_dir", "work_item_scope_ceiling",
             "max_autonomous_hops", "default_execution",
         },
-        optional={"evidence", "phase_execution"},
+        optional={"evidence", "phase_execution", "boundary"},
     )
     if data["schema_version"] != 1:
         raise CommissionError("Consumer Config.schema_version must be 1")
+    boundary = data.get("boundary", "direct")
+    if boundary not in {"direct", "bubblewrap"}:
+        raise CommissionError("Consumer Config.boundary must be direct or bubblewrap")
     governance_dir = _path(data["governance_dir"], context="Consumer Config.governance_dir")
     if not isinstance(data["work_item_scope_ceiling"], list) or not data["work_item_scope_ceiling"]:
         raise CommissionError("Consumer Config.work_item_scope_ceiling must be a non-empty list")
@@ -219,6 +223,7 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
         raw_text=text,
         evidence=evidence,
         phase_execution=phase_execution,
+        boundary=boundary,
     )
 
 
@@ -274,9 +279,10 @@ def resolve_execution(
         bindings[name] = {field: fields[field] for field in ("adapter", "model", "reasoning")}
     if len({binding["adapter"] for binding in bindings.values()}) != 1:
         raise CommissionError("mixed execution adapters are incompatible with the single scalar executable")
-    text = yaml.safe_dump(
-        {"schema_version": version, key: bindings}, sort_keys=False, allow_unicode=True,
-    )
+    envelope: dict[str, object] = {"schema_version": version, key: bindings}
+    if config.boundary != "direct":
+        envelope["boundary"] = config.boundary
+    text = yaml.safe_dump(envelope, sort_keys=False, allow_unicode=True)
     configuration = run_execution_configuration_from_yaml(text)
     return ExecutionEnvelope(configuration=configuration, text=text, digest=configuration.sha256)
 

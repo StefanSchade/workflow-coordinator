@@ -574,3 +574,44 @@ def test_zero_exit_sandbox_refusal_does_not_retry_or_invent_transport_failure(tm
     outcome = adapter(tmp_path, executable).execute(request(tmp_path))
     assert observed.read_text() == "one"
     assert outcome.returncode == 0 and not outcome.timed_out and outcome.candidate_result is None
+
+
+def test_explicit_direct_mode_grant_is_byte_identical_to_no_grant_at_all(tmp_path: Path):
+    """A dispatch frame that always computes and passes a grant -- even a
+    ``mode="direct"`` one -- must produce exactly the same settings and
+    environment as an adapter constructed with ``boundary=None``
+    (<<a-carrier>>): the grant's *mode* is the only thing that may ever
+    select a behaviour, never its mere presence."""
+    from dataclasses import replace as _replace
+
+    from workflow_coordinator.execution_boundary import EXTERNAL_SCRATCH_DESTINATION
+    from workflow_coordinator.execution_launcher import derive_boundary_grant
+
+    observed_without = tmp_path / "observed-without.json"
+    observed_with = tmp_path / "observed-with.json"
+
+    def script(observed_path: Path) -> str:
+        return f'''\
+            import json, pathlib, sys
+            arguments = sys.argv[1:]
+            settings = pathlib.Path(arguments[arguments.index("--settings") + 1])
+            pathlib.Path({str(observed_path)!r}).write_text(settings.read_text())
+            print(json.dumps({{"type": "result", "subtype": "success", "is_error": False,
+                              "structured_output": {envelope(Invocation("RUN-C", "H001", "INV-C"))!r}}}))
+        '''
+
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    without_grant = adapter(tmp_path, fake(tmp_path, script(observed_without)))
+    without_grant.execute(request(repository))
+
+    direct_grant = derive_boundary_grant(mode="direct", repository=repository, authorized_scope=())
+    with_grant = _replace(
+        without_grant, boundary=direct_grant, executable=str(fake(tmp_path, script(observed_with))),
+    )
+    with_grant.execute(request(repository))
+
+    settings_without = json.loads(observed_without.read_text())
+    settings_with = json.loads(observed_with.read_text())
+    assert settings_without == settings_with
+    assert str(EXTERNAL_SCRATCH_DESTINATION) not in json.dumps(settings_with)

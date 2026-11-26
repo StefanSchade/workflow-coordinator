@@ -21,7 +21,9 @@ from .adapter import (
     Invocation, AgentExecutionPort,
     ROUTING_RESULT_ENVELOPE_CONTRACT,
 )
+from .claude_adapter import ClaudeCliError
 from .codex_adapter import CodexCliAdapter, CodexCliError
+from .execution_launcher import BoundaryGrant
 from .git_facts import GitPreflightError, observe_hop, preflight_hop
 from .evidence import EvidenceRunner, FAIL_CLOSED_EVIDENCE_RUNNER, PreparedEvidenceCommand
 from .model import DispatchMarker, ExecutionEvidenceDocument, Run, WorkflowProfile
@@ -174,6 +176,7 @@ def run_real_one_hop(
     evidence_runner: EvidenceRunner = FAIL_CLOSED_EVIDENCE_RUNNER,
     evidence_commands: dict[str, PreparedEvidenceCommand] | None = None,
     execution_binding: Mapping[str, object] | None = None,
+    boundary: BoundaryGrant | None = None,
 ) -> RealHopRun:
     """Plug the concrete process boundary into the sole accepted vertical path."""
     if validate_checkout(state_root, repository) != association:
@@ -318,11 +321,14 @@ def run_real_one_hop(
     )
     write_run_snapshot(run_root / "run.json", run)
     write_dispatch_marker(dispatch_path, marker)
+    channel_dir = run_root / "provider-channel"
+    channel_dir.mkdir(parents=True, exist_ok=True)
     execution_port = adapter or CodexCliAdapter(
-        run_root,
+        channel_dir,
         model=model,
         reasoning_effort=reasoning_effort,
         executable=executable,
+        boundary=boundary,
     )
 
     def require_registered_checkout() -> None:
@@ -389,7 +395,7 @@ def run_real_one_hop(
         )
     except ExecutionResultValidationError as error:
         return recover_uncertain(error.outcome, str(error))
-    except CodexCliError as error:
+    except (CodexCliError, ClaudeCliError) as error:
         dispatch_path.unlink(missing_ok=True)
         raise Slice4Error(str(error)) from error
     except ExecutionNotStartedError:

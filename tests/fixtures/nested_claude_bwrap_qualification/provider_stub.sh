@@ -15,7 +15,7 @@ printf outer > "$TMPDIR/outer-marker"
 exec bwrap --die-with-parent --dev /dev --ro-bind /usr /usr \
     --symlink /usr/bin /bin --symlink /usr/sbin /sbin \
     --symlink /usr/lib /lib --symlink /usr/lib64 /lib64 \
-    --tmpfs /tmp --bind /tmp/s /tmp/s --chdir /repo \
+    --tmpfs /tmp --bind /tmp/s /tmp/s --chdir /tmp \
     --setenv TMPDIR /tmp/s/claude-tmp -- \
     /bin/sh -ceu '
         test "$TMPDIR" = /tmp/s/claude-tmp

@@ -179,12 +179,18 @@ class ExecutionBinding:
 
 @dataclass(frozen=True)
 class RunExecutionConfiguration:
-    """Pinned execution choices, keyed by role in v1 and by phase in v2."""
+    """Pinned execution choices, keyed by role in v1 and by phase in v2.
+
+    ``boundary`` is one Run-wide value, never per-role or per-phase: a
+    security property that depends on which model a phase is bound to is a
+    trap (<<enablement>>). ``"direct"`` is today's unisolated behaviour.
+    """
 
     schema_version: int
     bindings: Mapping[WorkflowRole, ExecutionBinding]
     phase_bindings: Mapping[str, ExecutionBinding] = field(default_factory=lambda: MappingProxyType({}))
     sha256: str = ""
+    boundary: str = "direct"
 
     def binding_for(self, phase: str, role: WorkflowRole) -> ExecutionBinding:
         if self.schema_version == 2:
@@ -670,6 +676,11 @@ class Run:
     anomalies: tuple[str, ...] = ()
     semantic_stop: SemanticStop | None = None
     successor_provenance: SuccessorProvenance | None = None
+    # The boundary mode this Run was created with; "direct" for every Run
+    # from before this slice. A resumed Hop must use the same mode as the
+    # Run it continues -- recovery requires an unchanged implementation
+    # identity, and the boundary mode is part of that identity.
+    boundary: str = "direct"
 
     @property
     def hop_remaining(self) -> int:
@@ -993,6 +1004,12 @@ class StagedQualificationAttempt:
     actual_commits: tuple[str, ...]
     required_evidence: tuple[RequiredEvidenceIdentity, ...]
     trusted_observations: tuple[Observation, ...]
+    # The boundary mode this Hop actually dispatched under, projected beside
+    # adapter/executable/model/reasoning (<<provider>>); "direct" for every
+    # attempt recorded before this slice. Not part of the pre-route anchor:
+    # the anchor binds route-independent qualification facts, and the
+    # boundary mode is neither.
+    boundary: str = "direct"
 
 
 @dataclass(frozen=True)
@@ -1029,6 +1046,7 @@ def new_run(
     *,
     run_id: str,
     baseline_head: str,
+    boundary: str = "direct",
 ) -> Run:
     """Create one attempt after its human-authored inputs have been validated."""
 
@@ -1036,6 +1054,8 @@ def new_run(
         raise ValueError(f"unknown initial phase: {work_item.initial_phase}")
     if work_item.repository not in policy.scope:
         raise ValueError("work item repository is outside repository policy scope")
+    if boundary not in {"direct", "bubblewrap"}:
+        raise ValueError(f"unrecognised boundary mode: {boundary!r}")
     return Run(
         schema_version=3 if profile.schema_version == 3 else 2,
         run_id=run_id,
@@ -1051,6 +1071,7 @@ def new_run(
         status=RunStatus.READY,
         hop_limit=work_item.max_autonomous_hops,
         hop_used=0,
+        boundary=boundary,
     )
 
 

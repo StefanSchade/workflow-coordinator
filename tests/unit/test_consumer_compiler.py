@@ -327,6 +327,23 @@ def test_resolve_execution_rejects_incomplete_binding() -> None:
         resolve_execution(config, {}, _TWO_ROLE_PHASES)
 
 
+def test_consumer_config_boundary_key_is_optional_and_propagates_to_the_envelope() -> None:
+    direct_by_default = consumer_config_from_yaml(config_text())
+    assert direct_by_default.boundary == "direct"
+    direct_envelope = resolve_execution(direct_by_default, {}, _WORKER_PHASE)
+    assert "boundary" not in direct_envelope.text
+    assert direct_envelope.configuration.boundary == "direct"
+
+    config = consumer_config_from_yaml(config_text() + "boundary: bubblewrap\n")
+    assert config.boundary == "bubblewrap"
+    envelope = resolve_execution(config, {}, _WORKER_PHASE)
+    assert "boundary: bubblewrap" in envelope.text
+    assert envelope.configuration.boundary == "bubblewrap"
+
+    with pytest.raises(CommissionError, match="boundary must be direct or bubblewrap"):
+        consumer_config_from_yaml(config_text() + "boundary: other\n")
+
+
 def test_phase_bindings_follow_executing_topology_and_merge_field_by_field() -> None:
     workflow = profile({
         "draft": phase({"continue": route("goto", "revise")}),

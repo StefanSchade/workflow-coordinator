@@ -23,6 +23,7 @@ from .adapter import (
     ExecutionNotStartedError,
     Invocation,
 )
+from .execution_launcher import BoundaryGrant, LaunchPlan, boundary_started_marker, direct_grant, prepare
 from .persistence import atomic_write_json, atomic_write_text
 from .serialization import (
     ESCALATION_KINDS,
@@ -394,6 +395,9 @@ class CodexCliAdapter:
     model: str
     reasoning_effort: str
     executable: str = "codex"
+    # None (the default) means today's unisolated behaviour; see the matching
+    # field on ClaudeCliAdapter.
+    boundary: BoundaryGrant | None = None
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -441,8 +445,12 @@ class CodexCliAdapter:
                 ),
             )
             atomic_write_text(result, "")
+            grant = self.boundary if self.boundary is not None else direct_grant(request.repository.resolve())
+            plan = LaunchPlan(grant, self.argv(request, schema, result), None, None)
+            prepared = prepare(plan)
+            marker = boundary_started_marker(grant)
             child = subprocess.Popen(
-                self.argv(request, schema, result), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                prepared.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True, start_new_session=True,
             )
         except (OSError, ValueError) as error:
@@ -458,6 +466,10 @@ class CodexCliAdapter:
             except subprocess.TimeoutExpired:
                 os.killpg(child.pid, signal.SIGKILL)
                 stdout, stderr = child.communicate()
+        if marker is not None and not timed_out and child.returncode != 0 and not marker[1].exists():
+            # bwrap itself exited before Codex ever ran; not-started, by its
+            # own exit path rather than by guessing from stderr text.
+            raise CodexCliError("execution boundary failed before the provider started")
         candidate = result.read_text(encoding="utf-8") or None
         usage = _usage_from_stdout(stdout)
         diagnostics = () if child.returncode == 0 and not timed_out else (

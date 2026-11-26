@@ -1010,7 +1010,10 @@ def run_execution_configuration_from_yaml(text: str) -> RunExecutionConfiguratio
     if version not in {1, 2}:
         raise ValidationError(f"{context}.schema_version has unsupported version: {version}")
     key = "phase_bindings" if version == 2 else "bindings"
-    _fields(data, context=context, required={"schema_version", key})
+    _fields(data, context=context, required={"schema_version", key}, optional={"boundary"})
+    boundary = data.get("boundary", "direct")
+    if boundary not in {"direct", "bubblewrap"}:
+        raise ValidationError(f"{context}.boundary must be direct or bubblewrap")
     raw_bindings = _mapping(data[key], context=f"{context}.{key}")
     bindings: dict[WorkflowRole, ExecutionBinding] = {}
     phase_bindings: dict[str, ExecutionBinding] = {}
@@ -1040,6 +1043,7 @@ def run_execution_configuration_from_yaml(text: str) -> RunExecutionConfiguratio
         bindings=MappingProxyType(bindings),
         phase_bindings=MappingProxyType(phase_bindings),
         sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        boundary=boundary,
     )
 
 
@@ -1355,6 +1359,12 @@ def run_to_json(run: Run) -> str:
     data = _json_value(run)
     # A read-only inspection must be able to serialize an historical v1 Run
     # without silently manufacturing the two v2 fields.
+    if data.get("boundary") == "direct":
+        # The default/unisolated value is equivalent to the key being
+        # absent, so a historical Run from before this slice -- which never
+        # had the key -- replays byte-identical; only an actually-isolated
+        # Run's "bubblewrap" value is ever written.
+        data.pop("boundary", None)
     if run.schema_version == 1:
         data.pop("semantic_stop", None)
         data.pop("successor_provenance", None)
@@ -1788,7 +1798,12 @@ def _required_evidence_identity(
 
 
 def execution_attempt_to_data(attempt: StagedQualificationAttempt) -> dict[str, Any]:
-    return _json_value(attempt)
+    data = _json_value(attempt)
+    if data.get("boundary") == "direct":
+        # Equivalent to the key being absent, so an attempt recorded before
+        # this slice -- which never had it -- replays byte-identical.
+        data.pop("boundary", None)
+    return data
 
 
 def _staged_qualification_attempt(
@@ -1800,8 +1815,12 @@ def _staged_qualification_attempt(
     data = _fields(
         value,
         context=context,
-        required={field.name for field in fields(StagedQualificationAttempt)},
+        required={field.name for field in fields(StagedQualificationAttempt)} - {"boundary"},
+        optional={"boundary"},
     )
+    boundary = data.get("boundary", "direct")
+    if boundary not in {"direct", "bubblewrap"}:
+        raise ValidationError(f"{context}.boundary has unsupported value: {boundary!r}")
     raw_plan = data["required_evidence"]
     raw_observations = data["trusted_observations"]
     if not isinstance(raw_plan, list) or not isinstance(raw_observations, list):
@@ -1861,6 +1880,7 @@ def _staged_qualification_attempt(
         actual_commits=_strings(data["actual_commits"], context=f"{context}.actual_commits"),
         required_evidence=plan,
         trusted_observations=observations,
+        boundary=boundary,
     )
     if not attempt.candidate_result_present:
         raise ValidationError(f"{context} must record a validated candidate result")
@@ -1900,7 +1920,11 @@ def _staged_qualification_attempt(
 
 
 def execution_evidence_to_json(document: ExecutionEvidenceDocument) -> str:
-    text = json.dumps(_json_value(document), sort_keys=True, separators=(",", ":")) + "\n"
+    data = _json_value(document)
+    for attempt in data.get("attempts", []):
+        if attempt.get("boundary") == "direct":
+            attempt.pop("boundary", None)
+    text = json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n"
     parsed = execution_evidence_from_json(text)
     if parsed != document:
         raise ValidationError("execution evidence does not round-trip through schema 4")
@@ -2299,14 +2323,17 @@ def run_from_json(text: str) -> Run:
         raise ValidationError(f"invalid Run JSON: {error}") from error
     raw = _mapping(value, context="Run")
     version = _integer(raw.get("schema_version"), context="Run.schema_version")
-    v2_fields = {field.name for field in fields(Run)}
+    v2_fields = {field.name for field in fields(Run)} - {"boundary"}
     v1_fields = v2_fields - {"semantic_stop", "successor_provenance"}
     if version == 1:
-        data = _fields(raw, context="Run", required=v1_fields)
+        data = _fields(raw, context="Run", required=v1_fields, optional={"boundary"})
     elif version in {2, 3}:
-        data = _fields(raw, context="Run", required=v2_fields)
+        data = _fields(raw, context="Run", required=v2_fields, optional={"boundary"})
     else:
         raise ValidationError(f"Run.schema_version has unsupported version: {version}")
+    boundary = data.get("boundary", "direct")
+    if boundary not in {"direct", "bubblewrap"}:
+        raise ValidationError(f"Run.boundary has unsupported value: {boundary!r}")
     raw_hops = data["hops"]
     raw_findings = data["findings"]
     if not isinstance(raw_hops, list) or not isinstance(raw_findings, list):
@@ -2349,6 +2376,7 @@ def run_from_json(text: str) -> Run:
                 data["successor_provenance"], context="Run.successor_provenance"
             )
         ),
+        boundary=boundary,
     )
     if run.hop_used != len(run.hops):
         raise ValidationError("Run.hop_used must equal the number of Hop summaries")

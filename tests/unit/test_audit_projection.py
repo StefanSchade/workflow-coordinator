@@ -595,6 +595,17 @@ class TestDefaultDenyAllowList:
         for hop in audit["hops"]:
             assert set(hop.keys()) == au._HOP_KEYS
 
+    def test_hop_boundary_field_projects_the_run_wide_value(self):
+        # boundary is one Run-wide value (<<enablement>>), read from the
+        # trusted Run snapshot, never guessed as "direct" when the Run
+        # predates this slice and carries no such key at all.
+        hop = {"hop_id": "H001", "sequence": 1, "phase": "implement", "role": "worker"}
+        hops, _, _ = au._build_hops_section({"hops": [hop], "boundary": "bubblewrap"}, None, None, None, [])
+        assert hops[0]["boundary"] == "bubblewrap"
+
+        hops_legacy, _, _ = au._build_hops_section({"hops": [hop]}, None, None, None, [])
+        assert hops_legacy[0]["boundary"] is None
+
     def test_top_level_keys_are_exactly_the_frozen_set_minus_usage_when_none_is_recorded(self, tmp_path):
         # "usage" is allow-listed but omitted entirely (not merely null) when
         # no invocation of the Run carries a persisted usage record -- this

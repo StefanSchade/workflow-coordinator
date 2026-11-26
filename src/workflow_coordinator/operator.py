@@ -77,25 +77,86 @@ from .slice4 import Slice4Error, checkout_state_root, register_checkout, run_rea
 from .codex_adapter import CodexCliAdapter
 from .claude_adapter import ClaudeCliAdapter
 from .vertical import convergence_prompt_context
+from . import execution_boundary
+from . import execution_launcher
+from .execution_launcher import BoundaryGrant
 
 
 class OperatorPreflightError(RuntimeError):
     """A local rejection that occurred before provider execution."""
 
 
-def _execution_adapter(binding: ExecutionBinding, *, result_directory: Path, executable: str):
+def _execution_adapter(
+    binding: ExecutionBinding, *, result_directory: Path, executable: str, boundary: BoundaryGrant,
+):
     """Construct one admitted provider without a registry or fallback."""
     if binding.adapter == "codex_cli":
         return CodexCliAdapter(
             result_directory, model=binding.model, reasoning_effort=binding.reasoning,
-            executable=executable,
+            executable=executable, boundary=boundary,
         )
     if binding.adapter == "claude_cli":
         return ClaudeCliAdapter(
             result_directory, model=binding.model, reasoning_effort=binding.reasoning,
-            executable=executable,
+            executable=executable, boundary=boundary,
         )
     raise OperatorPreflightError(f"unsupported execution adapter: {binding.adapter}")
+
+
+def _boundary_authentication_path() -> Path | None:
+    """The operator-configured provider authentication location, a host
+    prerequisite for selecting ``bubblewrap`` (<<enablement>>). Unset means
+    none configured; preflight refuses the boundary by name rather than
+    silently omitting the mount."""
+    value = os.environ.get("WFC_BOUNDARY_AUTHENTICATION_PATH")
+    return Path(value) if value else None
+
+
+_VIEW_VISIBLE_ROOTS = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
+
+
+def _preflight_boundary(grant: BoundaryGrant, binding: ExecutionBinding, executable: str) -> None:
+    """Named, fail-closed checks run only when the boundary is selected.
+
+    Every failure here is a not-started refusal before any provider
+    dispatch: it proves the execution port was never entered.
+    """
+    if grant.mode == "direct":
+        return
+    bwrap_path = shutil.which("bwrap")
+    if not bwrap_path:
+        raise OperatorPreflightError("execution boundary selected but 'bwrap' does not resolve to an executable")
+    probe = subprocess.run(
+        [bwrap_path, "--unshare-user", "--dev", "/dev", "--", "/bin/true"], capture_output=True,
+    )
+    if probe.returncode != 0:
+        raise OperatorPreflightError(
+            "execution boundary selected but an unprivileged user namespace could not be created: "
+            + probe.stderr.decode(errors="replace").strip()
+        )
+    git_entry = grant.repository / ".git"
+    if not grant.repository.is_dir() or git_entry.is_symlink() or not (git_entry.is_dir() or git_entry.is_file()):
+        raise OperatorPreflightError(
+            "execution boundary selected but the repository has no real (non-symlink) .git directory or file"
+        )
+    if grant.provider_channel is None or not grant.provider_channel.is_dir():
+        raise OperatorPreflightError("execution boundary selected but the provider channel directory is not configured")
+    if grant.external_scratch is not None and not grant.external_scratch.is_dir():
+        raise OperatorPreflightError("execution boundary selected but the external scratch root is not configured")
+    if not grant.readable_host_paths:
+        raise OperatorPreflightError(
+            "execution boundary selected but no provider authentication location is configured "
+            "(set WFC_BOUNDARY_AUTHENTICATION_PATH to a view-visible, operator-prepared path)"
+        )
+    resolved_executable = shutil.which(executable)
+    if not resolved_executable:
+        raise OperatorPreflightError(f"execution boundary selected but the provider executable does not resolve: {executable}")
+    if not any(resolved_executable == root or resolved_executable.startswith(f"{root}/") for root in _VIEW_VISIBLE_ROOTS):
+        raise OperatorPreflightError(
+            "execution boundary selected but the provider executable is not reachable inside the view: "
+            f"{resolved_executable}; install the CLI and its runtime at a view-visible path "
+            "(for example under /usr/local/bin, with its runtime likewise under /usr)"
+        )
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -674,7 +735,7 @@ def _reconstructed_context(
     )
 
 
-def _binding_evidence(binding: ExecutionBinding, *, executable: str) -> dict[str, object]:
+def _binding_evidence(binding: ExecutionBinding, *, executable: str, boundary: str) -> dict[str, object]:
     """Project the same admitted value used to construct the production adapter."""
 
     return {
@@ -682,6 +743,7 @@ def _binding_evidence(binding: ExecutionBinding, *, executable: str) -> dict[str
         "executable": executable,
         "model": binding.model,
         "reasoning": binding.reasoning,
+        "boundary": boundary,
     }
 
 
@@ -881,6 +943,12 @@ def run_serial_hops(
         raise OperatorPreflightError(
             f"Slice-5B serial driver refuses a Hop limit above {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS}"
         )
+    if execution_configuration is not None and run.boundary != execution_configuration.boundary:
+        raise OperatorPreflightError(
+            "execution boundary mode mismatch: this Run was created with "
+            f"{run.boundary!r}, this invocation resolved {execution_configuration.boundary!r}; "
+            "a resumed Hop must use the same boundary mode as the Run it continues"
+        )
     run_root = checkout_state_root(state_root, association)
     execution_evidence_path = run_root / "execution-evidence.json"
     evidence: list[dict[str, object]] = []
@@ -963,64 +1031,108 @@ def run_serial_hops(
             raise OperatorPreflightError(
                 f"no admitted persona for workflow role: {workflow_role.value}"
             ) from error
-        if adapter is None:
-            if execution_configuration is None:
-                raise OperatorPreflightError(
-                    "production execution requires explicit resolved bindings"
-                )
-            try:
-                resolved_binding = execution_configuration.binding_for(phase_key, workflow_role)
-            except KeyError as error:
-                raise OperatorPreflightError(
-                    f"no admitted execution binding for phase {phase_key} ({workflow_role.value})"
-                ) from error
-            run_root = checkout_state_root(state_root, association)
-            execution_adapter = _execution_adapter(
-                resolved_binding, result_directory=run_root, executable=executable
-            )
-            binding = _binding_evidence(resolved_binding, executable=executable)
-        else:
-            execution_adapter = adapter
-            binding = {
-                "adapter": "local",
-                "executable": executable,
-                "model": None,
-                "reasoning": None,
-            }
+        pending_creates: tuple[Path, ...] = ()
         phase_artifacts = (
             durable_artifacts
             if run.hop_used == 0 and durable_artifacts
             else artifact_map.get(run.phase, ())
         )
-        current_qualification_index = qualification_index(run)
-        reconstructed = _reconstructed_context(
-            run, profile, repository, phase_artifacts, prior_observations
-        )
-        convergence_context = convergence_prompt_context(
-            run, profile, current_qualification_index
-        )
-        projected_context = (
-            reconstructed
-            if convergence_context is None
-            else (*reconstructed, convergence_context)
-        )
-        hop_run = run_real_one_hop(
-            run, profile, repository, components,
-            agent_operating_contract=agent_operating_contract,
-            state_root=state_root, association=association,
-            task_payload=task_payload, invocation_id=invocation_id, persona=persona,
-            timeout_seconds=timeout_seconds, executable=executable,
-            adapter=execution_adapter,
-            durable_artifacts=phase_artifacts,
-            context_items=(
-                (*initial_context_items, *projected_context)
-                if run.hop_used == 0
-                else projected_context
-            ),
-            evidence_runner=evidence_runner,
-            evidence_commands=evidence_commands or {},
-            execution_binding=binding,
-        )
+        try:
+            if adapter is None:
+                if execution_configuration is None:
+                    raise OperatorPreflightError(
+                        "production execution requires explicit resolved bindings"
+                    )
+                try:
+                    resolved_binding = execution_configuration.binding_for(phase_key, workflow_role)
+                except KeyError as error:
+                    raise OperatorPreflightError(
+                        f"no admitted execution binding for phase {phase_key} ({workflow_role.value})"
+                    ) from error
+                run_root = checkout_state_root(state_root, association)
+                channel_dir = run_root / "provider-channel"
+                channel_dir.mkdir(parents=True, exist_ok=True)
+                grant = execution_launcher.derive_boundary_grant(
+                    mode=execution_configuration.boundary,
+                    repository=repository,
+                    authorized_scope=profile.phases[phase_key].authorized_scope,
+                    artifact_paths=phase_artifacts,
+                    provider_channel=channel_dir,
+                    provider_channel_writable=(resolved_binding.adapter == "codex_cli"),
+                    authentication_path=_boundary_authentication_path(),
+                )
+                _preflight_boundary(grant, resolved_binding, executable)
+                pending_creates = execution_launcher.missing_writable_targets(grant)
+                for target in pending_creates:
+                    target.mkdir(parents=True, mode=0o700)
+                if grant.mode != "direct":
+                    # Checks 4, 7 and 8 of (e): the normalized grant set, the
+                    # channel/scratch disjointness and run-state exclusion, and
+                    # the hardlink-alias walk. Deferred to here, after
+                    # pre-creation, because a not-yet-existing authorized
+                    # directory is a valid target only once materialised; this
+                    # must still run before any provider dispatch.
+                    try:
+                        execution_launcher.validate_grant(grant)
+                    except execution_boundary.BoundaryConfigurationError as error:
+                        raise OperatorPreflightError(
+                            f"execution boundary selected but the generated view failed validation: {error}"
+                        ) from error
+                execution_adapter = _execution_adapter(
+                    resolved_binding, result_directory=channel_dir, executable=executable, boundary=grant,
+                )
+                binding = _binding_evidence(resolved_binding, executable=executable, boundary=grant.mode)
+            else:
+                execution_adapter = adapter
+                binding = {
+                    "adapter": "local",
+                    "executable": executable,
+                    "model": None,
+                    "reasoning": None,
+                    "boundary": "direct",
+                }
+            current_qualification_index = qualification_index(run)
+            reconstructed = _reconstructed_context(
+                run, profile, repository, phase_artifacts, prior_observations
+            )
+            convergence_context = convergence_prompt_context(
+                run, profile, current_qualification_index
+            )
+            projected_context = (
+                reconstructed
+                if convergence_context is None
+                else (*reconstructed, convergence_context)
+            )
+            hop_run = run_real_one_hop(
+                run, profile, repository, components,
+                agent_operating_contract=agent_operating_contract,
+                state_root=state_root, association=association,
+                task_payload=task_payload, invocation_id=invocation_id, persona=persona,
+                timeout_seconds=timeout_seconds, executable=executable,
+                adapter=execution_adapter,
+                durable_artifacts=phase_artifacts,
+                context_items=(
+                    (*initial_context_items, *projected_context)
+                    if run.hop_used == 0
+                    else projected_context
+                ),
+                evidence_runner=evidence_runner,
+                evidence_commands=evidence_commands or {},
+                execution_binding=binding,
+            )
+        finally:
+            # The agent never creates and never removes a grant path; this
+            # bracket is the Coordinator dispatch frame's alone, and a
+            # removal failure must never suppress an exception already in
+            # flight (<<a-lifecycle>>). Git does not track empty
+            # directories, so a still-empty one is invisible to the post-Hop
+            # delta either way.
+            for target in pending_creates:
+                try:
+                    if target.is_dir() and not any(target.iterdir()):
+                        target.rmdir()
+                except OSError:
+                    pass
         run = hop_run.run
         diagnostics_artifact = None
         if hop_run.vertical is None and hop_run.outcome is not None:
@@ -1981,7 +2093,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 Path(args.successor_continuation), repository, args.expected_head, paths, governing,
                 expected_descriptor_sha256=args.successor_continuation_sha256,
             )
-        run = new_run(item, profile, policy, run_id=run_id, baseline_head=args.expected_head)
+        run = new_run(
+            item, profile, policy, run_id=run_id, baseline_head=args.expected_head,
+            boundary=execution_configuration.boundary,
+        )
         if successor_provenance is not None:
             if run.run_id == successor_provenance.predecessor_run_id:
                 raise OperatorPreflightError("successor Run identity must differ from its predecessor")
