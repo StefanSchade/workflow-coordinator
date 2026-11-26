@@ -1,0 +1,179 @@
+= Beta-2 O4 `wfc prepare-checkout`: independent focused review
+
+This record holds every independent focused-review pass over the corrections
+to the Beta-2 O4 `wfc prepare-checkout` candidate (WorkItem
+`WI-WFC-BETA2-O4-001`). The broad-review pass lives in
+`docs/warm_storage/post-beta-planning/wfc_beta2_o4_broad_review.adoc`. The
+current pass is *H004*.
+
+== Pass H004 (current)
+
+WorkItem:: `WI-WFC-BETA2-O4-001`
+Hop:: `H004` (`focused_review`, fresh independent reviewer, gate,
+blocking-only, `finding_authority: [resolve]`)
+Reviewed change:: the correction Hop `H003`
+(`ff7760e264118552b0cf617eec4016747a08e8a8`, range
+`16b9b8fa70600107145fbbad9b0367c26e1e130e..ff7760e264118552b0cf617eec4016747a08e8a8`),
+in the context of the whole O4 candidate against the H002 broad review's one
+open blocking Finding `F001` (the broad review's own anchor `<<o4-f1>>`,
+`F-1`).
+Governing acceptance:: the Commission task for this WorkItem (the slice's
+`Acceptance`, the binding decision D4, the hook's stated trust boundary) and
+Finding `F001`.
+Disposition:: *Accept.* `F001` is resolved: the gap it reproduced (a fresh
+checkout or scratch path nested inside another working tree of the same
+repository was accepted and prepared, dirtying that tree) is closed in both
+directions, with no new mechanism, no new refusal name and no weakened
+safeguard. No new blocking Finding.
+
+=== What H003 changed
+
+Seven leaves (`git show --stat ff7760e`): `prepare_checkout.py` (the only
+product-code change), its test file, the O4 record, the backlog index, two
+Operator Manual paragraphs and the Agent Skill reference. No other module is
+touched -- `lifecycle.py`, `journal.py`, `archive.py`, `audit.py`, `config.py`,
+`git_facts.py` and `cli.py` are absent from the diff, so the one-Run-per-
+checkout invariant, journal, lifecycle and archive behaviour are untouched by
+inspection of the commit itself, independently of the summary's claim.
+
+=== `F001` resolved: every registered working tree is now a boundary
+
+*Reproduced first, independently, before trusting the fix.* I built a toy
+repository with a main checkout and one linked worktree (plain `git`, no
+fixture code) and ran `prepare_checkout` at the pre-correction commit
+`16b9b8f` through the module directly: `prepare_checkout(repository=<main>,
+target=<sibling>/run-checkout)` created a worktree and scratch directory
+inside the sibling, leaving `?? run-checkout/` under
+`git status --untracked-files=all` in the sibling -- exactly the broad
+review's reproduction.
+
+*Then re-ran the identical script at `ff7760e`, both directions:*
+
+* `prepare_checkout(repository=<main>, target=<sibling>/run-checkout, ...)`
+  now raises `PreparationRefusal("refused_path_inside_repository")`; the
+  sibling's `git status --untracked-files=all` stays empty and
+  `run-checkout` was never created.
+* The reverse direction, `prepare_checkout(repository=<sibling>,
+  target=<main>/run-checkout2, ...)`, refuses the same way; the main tree's
+  status stays empty.
+
+This matches the shipped tests
+(`test_refuses_a_checkout_path_inside_another_working_tree_of_the_repository`,
+`test_refuses_a_checkout_path_inside_the_main_tree_seen_from_a_linked_worktree`,
+`test_refuses_a_scratch_path_inside_another_working_tree_of_the_repository`,
+`test_registered_working_trees_lists_every_tree_including_the_main_one`), which
+I also ran directly (`pytest tests/unit/test_frontdoor_prepare_checkout.py
+--wfc-partial`, 54 passed).
+
+The remedy is exactly the "feasible, simpler remedy" the broad review asked
+for and no more: `registered_working_trees()` reads
+`git worktree list --porcelain -z` once, before the first effect, resolves
+each path with `os.fsdecode`; `repository_boundaries()` is that set plus the
+resolved top-level and the Git common directory, deduplicated; and
+`_require_outside_repository` iterates the set under the *same*
+`refused_path_inside_repository` name used before -- no new refusal name, no
+new flag, no new state. The old `source.toplevel`/`source.git_common_dir`
+comparison is subsumed rather than kept alongside it (`registered_working_trees`
+always includes the main tree, and `repository_boundaries` keeps `toplevel`
+in the set only as a belt-and-suspenders entry against a disagreement, not as
+a second code path). `boundaries` is computed once, ahead of the dirty-base
+check's `observe_repository` call and ahead of any path creation, so a
+refusal on this ground is still decided before the more specific
+`refused_existing_path`/`refused_scratch_inside_checkout` refusals, preserving
+the ordering the broad review verified as "the more actionable order".
+
+=== The N-1 fix (non-UTF-8 committed config): independently confirmed, not merely re-described
+
+The broad review's N-1 observation (a non-UTF-8 committed Consumer Config
+raised an unhandled `UnicodeDecodeError` instead of `refused_config`) is also
+fixed in this Hop, although it was non-blocking. `_git_bytes` now reads Git's
+stdout as bytes; `_git_raw` decodes with a named `refused_config` on
+`UnicodeDecodeError` rather than `text=True`'s silent exception path; `_git`
+is now `_git_raw(...).strip()`. I ran the shipped regression test
+(`test_refuses_a_committed_config_whose_bytes_are_not_utf_8`) directly: it
+commits a config containing `\xff\xfe` and asserts `refused_config` with "not
+valid UTF-8" in the message, rather than a traceback. Pass.
+
+=== N-2, N-3, N-4: dispositioned honestly, no new mechanism added where none was required
+
+* *N-2* (a hook that dirties the prepared checkout is not itself a refusal)
+  is correctly left as an *open maintainer question* in the record's "Open
+  decisions" list, not implemented: it is additional mechanism beyond this
+  slice's acceptance, and the broad review itself said so. The correction
+  note states this explicitly.
+* *N-3* (the transient index-copy exception to "nothing outside the two
+  created directories is written") is now qualified in Design decision 3
+  with the half-sentence the broad review asked for.
+* *N-4* (the module's private Git helpers duplicate `git_facts`' trusted path
+  without its `GIT_*` scrub) now carries one paragraph of rationale on
+  `_git_bytes` stating why plain `subprocess.run` is the right call here (this
+  command runs on the operator's host with the operator's own privileges,
+  about to execute a committed hook with those same privileges, so a
+  repository-local Git hook is not a boundary this command could claim to
+  hold). I agree with the judgement: inventing a scrub here would be a
+  safeguard addressing a boundary this command does not have in the first
+  place.
+
+None of N-2/N-3/N-4 was blocking, and none required new mechanism; recording
+one sentence of rationale or qualifying a claim is proportionate to each.
+
+=== Independently re-verified at this HEAD
+
+* *The widened boundary does not weaken the single-worktree case.* The
+  pre-existing `test_refuses_a_path_inside_the_repository` (one working tree,
+  no sibling) still passes: `registered_working_trees` always lists the main
+  tree, so the single-worktree repository is still refused exactly as before.
+* *Working-tree discovery is symmetric.* `registered_working_trees(main) ==
+  registered_working_trees(sibling)` as sets, which is what makes the fix work
+  from either side of `--repository` without a special case for "the one
+  named" versus "the others".
+* *No regression in the surrounding modules.* `pytest
+  tests/unit/test_frontdoor_prepare_checkout.py tests/unit/test_git_facts.py
+  tests/unit/test_frontdoor_skill.py tests/architecture/test_package_boundaries.py
+  tests/unit/test_quickstart_commands.py --wfc-partial`: 156 passed, 0 failed,
+  0 skipped (own venv at `/tmp/wfc-review-h002-venv`, `src` on `pythonpath`
+  ahead of the venv's own stale installed copy).
+* *Lint.* `ruff check .`: all checks passed, no unused import left behind by
+  the `Sequence` addition or the `_git`/`_git_raw`/`_git_bytes` rework.
+* *Strict render.* All four changed `.adoc` files (`FTR-WFC-RUN-CHECKOUT-PREPARATION.adoc`,
+  `_open.adoc`, `01_preparation.adoc`, `01_quickstart.adoc`) render with
+  `asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN`
+  and print nothing.
+* *Doc catalog.* `scripts/wfc_doc_catalog.py generate` reports "unchanged";
+  `check` reports exactly the baseline 83 unresolved links and 4 Project
+  Memory misses, "catalog current", no stray generated file.
+* *Agent Skill length.* `references/setup.md` is still exactly 200 lines
+  (replaced in place, not appended to).
+* *Docs-sync is consistent with the code.* `_open.adoc`, Operator Manual
+  chapter 3 and the quickstart all now say "any working tree of the
+  repository" rather than "the repository('s own worktree)", matching the
+  refusal's new scope; none overstates it (none claims removal, none claims
+  the hook contract changed).
+* *Git discipline.* `git status --short -uall` at `ff7760e` shows only the
+  seven leaves of the CommitIntent as tracked changes, plus this sandbox's
+  own pre-existing untracked placeholder/session files, which this Hop and
+  H003 both left untouched. No mutating Git command was run by this review
+  (no `git add`/`commit`/`stash`/`reset`); my own throwaway reproduction
+  script was written under the repository's gitignored `tmp/` and removed
+  before finishing, leaving no stray file.
+
+=== Scope and authority
+
+This Hop's authorized scope is this record alone; I made no product, test or
+other-documentation edit. H003's edits are all within the slice's scope
+(the new module, its test file, the record the slice names, the backlog
+index and the two doc paragraphs the broad review's Finding and observations
+named) and the withheld-authority list (`.wfc/config.yaml`, `governance/`,
+`.github/`, push/tag/release, `wfc skill install`, destructive operations,
+journal/lifecycle/archive/invariant changes) is untouched, matching the H003
+summary.
+
+=== Verdict
+
+Accept, route `renew_broad_review`. Finding `F001` is resolved: independently
+reproduced as present at the pre-correction commit and independently
+reproduced as closed, in both directions, at `ff7760e`, with the bystander
+working tree left clean in every case and nothing removed on any path. The
+three non-blocking broad-review observations (N-1, N-3, N-4) are addressed
+proportionately and N-2 is correctly left as an open maintainer decision
+rather than implemented. No new blocking Finding.
