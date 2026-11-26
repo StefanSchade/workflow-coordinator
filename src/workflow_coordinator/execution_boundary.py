@@ -279,7 +279,7 @@ def validate(
     )
 
 
-def build_argv(boundary: ValidatedBoundary, command: Sequence[str]) -> list[str]:
+def build_argv(boundary: ValidatedBoundary, command: Sequence[str], *, status_fd: int | None = None) -> list[str]:
     # Revalidate at the execution boundary; callers cannot bypass validation by
     # directly constructing the public dataclass.
     boundary = validate(
@@ -292,8 +292,23 @@ def build_argv(boundary: ValidatedBoundary, command: Sequence[str]) -> list[str]
     )
     if not command or not command[0] or any(not isinstance(arg, str) for arg in command):
         raise BoundaryConfigurationError("command must contain a nonempty executable and string arguments")
-    args = ['--die-with-parent', '--dev', '/dev', '--proc', '/proc', '--unshare-pid', '--new-session',
-            '--ro-bind', '/usr', '/usr']
+    if status_fd is not None and (not isinstance(status_fd, int) or isinstance(status_fd, bool) or status_fd < 0):
+        raise BoundaryConfigurationError("status_fd must be a non-negative integer file descriptor")
+    if status_fd == _GIT_FILE_MASK_FD:
+        # The .git-file masking wrapper below reopens this exact fd number to
+        # /dev/null immediately before exec-ing into bwrap; letting the
+        # caller's started-signal pipe land on the same number would have the
+        # wrapper silently close the Coordinator's own pipe out from under it.
+        raise BoundaryConfigurationError(
+            f"status_fd must not reuse the reserved .git-file-mask descriptor ({_GIT_FILE_MASK_FD})"
+        )
+    args = ['--die-with-parent']
+    if status_fd is not None:
+        # bwrap writes JSON status documents to this fd from the outer,
+        # trusted bwrap process itself; see execution_launcher.StartedSignal.
+        args += ['--json-status-fd', str(status_fd)]
+    args += ['--dev', '/dev', '--proc', '/proc', '--unshare-pid', '--new-session',
+             '--ro-bind', '/usr', '/usr']
     for path in ('/bin', '/sbin', '/lib', '/lib64'):
         if os.path.islink(path):
             args += ['--symlink', os.readlink(path), path]
@@ -342,6 +357,15 @@ def build_argv(boundary: ValidatedBoundary, command: Sequence[str]) -> list[str]
     return [boundary.binary, *args]
 
 
-def run(boundary: ValidatedBoundary, command: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
-    """Run only through bwrap, returning its status and unmodified output bytes."""
-    return subprocess.run(build_argv(boundary, command), capture_output=True, check=False)
+def run(
+    boundary: ValidatedBoundary, command: Sequence[str], *, status_fd: int | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run only through bwrap, returning its status and unmodified output bytes.
+
+    ``status_fd``, when given, is passed through to the spawned process (so
+    bwrap itself, not a descendant, can write to it) and is otherwise this
+    function's only difference from an unconfigured invocation.
+    """
+    argv = build_argv(boundary, command, status_fd=status_fd)
+    pass_fds = (status_fd,) if status_fd is not None else ()
+    return subprocess.run(argv, capture_output=True, check=False, pass_fds=pass_fds)

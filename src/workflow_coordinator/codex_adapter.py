@@ -7,6 +7,7 @@ dialect.  It derives that dialect projection from canonical semantic facts in
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import copy
@@ -23,7 +24,16 @@ from .adapter import (
     ExecutionNotStartedError,
     Invocation,
 )
-from .execution_launcher import BoundaryGrant, LaunchPlan, boundary_started_marker, direct_grant, prepare
+from .execution_launcher import (
+    BUBBLEWRAP,
+    BoundaryGrant,
+    LaunchPlan,
+    close_started_signal_write_end,
+    direct_grant,
+    open_started_signal,
+    prepare,
+    provider_started,
+)
 from .persistence import atomic_write_json, atomic_write_text
 from .serialization import (
     ESCALATION_KINDS,
@@ -433,43 +443,60 @@ class CodexCliAdapter:
             raise CodexCliError(
                 "current phase has no permitted routes; refusing to dispatch an unroutable invocation"
             )
+        grant = self.boundary if self.boundary is not None else direct_grant(request.repository.resolve())
+        started_signal = None
         try:
-            schema = self.result_directory / "structured-result.schema.json"
-            result = self.result_directory / "result-message.json"
-            atomic_write_json(
-                schema,
-                structured_result_envelope_openai_schema(
-                    request.invocation, request.contract_version, request.result_contract_kind,
-                    permitted_routes=request.permitted_routes,
-                    finding_authority=request.finding_authority,
-                ),
-            )
-            atomic_write_text(result, "")
-            grant = self.boundary if self.boundary is not None else direct_grant(request.repository.resolve())
-            plan = LaunchPlan(grant, self.argv(request, schema, result), None, None)
-            prepared = prepare(plan)
-            marker = boundary_started_marker(grant)
-            child = subprocess.Popen(
-                prepared.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, start_new_session=True,
-            )
-        except (OSError, ValueError) as error:
-            raise CodexCliError("local pre-acceptance executable launch failure") from error
-        try:
-            stdout, stderr = child.communicate(request.prompt, timeout=request.timeout_seconds)
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            os.killpg(child.pid, signal.SIGTERM)
             try:
-                stdout, stderr = child.communicate(timeout=3)
+                started_signal = open_started_signal() if grant.mode == BUBBLEWRAP else None
+                schema = self.result_directory / "structured-result.schema.json"
+                result = self.result_directory / "result-message.json"
+                atomic_write_json(
+                    schema,
+                    structured_result_envelope_openai_schema(
+                        request.invocation, request.contract_version, request.result_contract_kind,
+                        permitted_routes=request.permitted_routes,
+                        finding_authority=request.finding_authority,
+                    ),
+                )
+                atomic_write_text(result, "")
+                plan = LaunchPlan(
+                    grant, self.argv(request, schema, result), None, None,
+                    status_fd=None if started_signal is None else started_signal.write_fd,
+                )
+                prepared = prepare(plan)
+                child = subprocess.Popen(
+                    prepared.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, start_new_session=True,
+                    pass_fds=() if started_signal is None else (started_signal.write_fd,),
+                )
+            except (OSError, ValueError) as error:
+                raise CodexCliError("local pre-acceptance executable launch failure") from error
+            finally:
+                if started_signal is not None:
+                    close_started_signal_write_end(started_signal)
+            try:
+                stdout, stderr = child.communicate(request.prompt, timeout=request.timeout_seconds)
+                timed_out = False
             except subprocess.TimeoutExpired:
-                os.killpg(child.pid, signal.SIGKILL)
-                stdout, stderr = child.communicate()
-        if marker is not None and not timed_out and child.returncode != 0 and not marker[1].exists():
-            # bwrap itself exited before Codex ever ran; not-started, by its
-            # own exit path rather than by guessing from stderr text.
-            raise CodexCliError("execution boundary failed before the provider started")
+                timed_out = True
+                os.killpg(child.pid, signal.SIGTERM)
+                try:
+                    stdout, stderr = child.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    stdout, stderr = child.communicate()
+            started = provider_started(started_signal) if started_signal is not None else True
+            if not timed_out and child.returncode != 0 and not started:
+                # The started-signal pipe never received an `exit-code`
+                # document: bwrap's own setup failed before Codex ever ran
+                # (not-started), proven by a descriptor the confined process
+                # can neither write nor withdraw -- never by guessing from
+                # stderr text.
+                raise CodexCliError("execution boundary failed before the provider started")
+        finally:
+            if started_signal is not None:
+                with contextlib.suppress(OSError):
+                    os.close(started_signal.read_fd)
         candidate = result.read_text(encoding="utf-8") or None
         usage = _usage_from_stdout(stdout)
         diagnostics = () if child.returncode == 0 and not timed_out else (

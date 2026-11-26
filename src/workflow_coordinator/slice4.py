@@ -321,8 +321,22 @@ def run_real_one_hop(
     )
     write_run_snapshot(run_root / "run.json", run)
     write_dispatch_marker(dispatch_path, marker)
-    channel_dir = run_root / "provider-channel"
-    channel_dir.mkdir(parents=True, exist_ok=True)
+    # Per-invocation, never per-checkout (F2); see operator.py's matching
+    # comment for the identity and archive-lifetime rationale. This is the
+    # second of the two construction sites <<a-carrier>> names (used only by
+    # a caller that injects no adapter, e.g. the Codex proof harness) --
+    # created here only in that case, since an injected adapter already
+    # carries its own ``result_directory`` and its caller (operator.py's
+    # dispatch frame) has already created that directory itself; creating
+    # it again here too would collide with that one, not reuse it.
+    channel_dir = run_root / "provider-channel" / invocation_id
+    if adapter is None:
+        try:
+            channel_dir.mkdir(parents=True)
+        except FileExistsError as error:
+            raise Slice4Error(
+                f"provider channel directory already exists for invocation {invocation_id}: {channel_dir}"
+            ) from error
     execution_port = adapter or CodexCliAdapter(
         channel_dir,
         model=model,

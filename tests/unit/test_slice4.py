@@ -295,7 +295,9 @@ output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001
     assert result.reduction.run.status.value == "completed"
     assert result.reduction.run.hop_used == 1 and result.reduction.run.hops[0].actual_commits
     assert result.checkpoint["state"]["status"] == "completed" and (repository / "PROOF.md").read_text() == "after\n"
-    argv = json.loads((state / "checkouts" / association.checkout_id / "provider-channel" / "argv.json").read_text())
+    argv = json.loads(
+        (state / "checkouts" / association.checkout_id / "provider-channel" / "INV-1" / "argv.json").read_text()
+    )
     assert argv[:3] == ["--ask-for-approval", "never", "exec"]
     for token in ("--ephemeral", "--json", "--color", "never", "--sandbox", "workspace-write", "--model", "explicit-test-model", "-"):
         assert token in argv
@@ -438,7 +440,10 @@ output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001
     result = run_real_one_hop(run, workflow, repository, _components(), state_root=state, association=association, agent_operating_contract=load_agent_operating_contract(), persona="fixture persona", task_payload="fixture", invocation_id="INV-1", timeout_seconds=2, model="explicit-test-model", reasoning_effort="high", executable=str(executable))
     assert result.reduction.run.status.value == "completed"
     emitted = json.loads(
-        (state / "checkouts" / association.checkout_id / "provider-channel" / "structured-result.schema.json").read_text()
+        (
+            state / "checkouts" / association.checkout_id / "provider-channel" / "INV-1"
+            / "structured-result.schema.json"
+        ).read_text()
     )
     assert emitted["properties"]["result"]["properties"]["requested_route"] == {
         "type": "string", "enum": ["accept", "correction"],
@@ -495,7 +500,9 @@ output.write_text(json.dumps({"schema_version":1,"run_id":"RUN-1","hop_id":"H001
     )
 
     run_root = state / "checkouts" / association.checkout_id
-    emitted = json.loads((run_root / "provider-channel" / "structured-result.schema.json").read_text())
+    emitted = json.loads(
+        (run_root / "provider-channel" / "INV-1" / "structured-result.schema.json").read_text()
+    )
     dispatched_result = emitted["properties"]["result"]["properties"]
     assert dispatched_result["requested_route"] == {
         "type": "string", "enum": ["accept", "correction"],

@@ -1,11 +1,12 @@
 import ast
 import os
+import subprocess
 from pathlib import Path, PurePosixPath
 
 import pytest
 
 from workflow_coordinator.execution_boundary import (
-    BoundaryConfigurationError, EXTERNAL_SCRATCH_DESTINATION, Mount, MountMode, run, validate,
+    BoundaryConfigurationError, EXTERNAL_SCRATCH_DESTINATION, Mount, MountMode, build_argv, run, validate,
 )
 
 
@@ -386,6 +387,72 @@ mv {channel}/result.json.tmp {channel}/result.json
     result = run(writable, ['/bin/sh', '-c', script])
     assert result.returncode == 0, result.stderr
     assert (channel / 'result.json').read_text() == 'renamed'
+
+
+def test_json_status_fd_is_written_by_bwrap_and_is_not_open_inside_the_view(tmp_path):
+    """F1: real `bwrap`, real ``--json-status-fd``. (3), the Coordinator's
+    half: the generated argv names the exact fd passed in, and the fd is
+    genuinely written to by the outer, trusted `bwrap` process -- an
+    ``exit-code`` document is observed for a command that ran and exited
+    0. (3), the confined half: from inside the view, the very same fd
+    number is not open at all, so the sandboxed process can neither forge
+    nor withdraw what bwrap itself reports."""
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    boundary = validate(repo, [Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)])
+    read_fd, write_fd = os.pipe()
+    try:
+        argv = build_argv(
+            boundary,
+            ['/usr/bin/python3', '-c',
+             f'import os\ntry:\n os.write({write_fd}, b"x")\nexcept OSError:\n print("closed")\nelse:\n print("open")'],
+            status_fd=write_fd,
+        )
+        index = argv.index('--json-status-fd')
+        assert argv[index + 1] == str(write_fd)
+        result = subprocess.run(argv, capture_output=True, check=False, pass_fds=(write_fd,))
+    finally:
+        os.close(write_fd)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == b'closed'
+    os.set_blocking(read_fd, False)
+    try:
+        chunk = os.read(read_fd, 65536)
+    except BlockingIOError:
+        chunk = b''
+    os.close(read_fd)
+    assert b'"exit-code"' in chunk
+
+
+def test_json_status_fd_reports_no_exit_code_document_when_mount_setup_fails(tmp_path):
+    """F1: the companion not-started case, through the same primitive, with
+    a bind source that does not exist so `bwrap`'s own mount setup fails
+    before any command is exec'd."""
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    missing_source = tmp_path / 'does-not-exist'
+    boundary = validate(repo, [Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)])
+    read_fd, write_fd = os.pipe()
+    try:
+        argv = build_argv(boundary, ['/bin/true'], status_fd=write_fd)
+        # Corrupt one bind source after validate()/build_argv() have already
+        # produced a valid argv, so bwrap's own mount setup -- not this
+        # module's own validation -- is what fails.
+        bind_index = argv.index('--ro-bind')
+        argv[bind_index + 1] = str(missing_source)
+        result = subprocess.run(argv, capture_output=True, check=False, pass_fds=(write_fd,))
+    finally:
+        os.close(write_fd)
+    assert result.returncode != 0
+    os.set_blocking(read_fd, False)
+    try:
+        chunk = os.read(read_fd, 65536)
+    except BlockingIOError:
+        chunk = b''
+    os.close(read_fd)
+    assert b'"exit-code"' not in chunk
 
 
 def test_readable_host_path_is_not_writable(tmp_path):

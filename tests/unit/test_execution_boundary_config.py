@@ -333,7 +333,13 @@ def test_readable_host_paths_are_bound_read_only(tmp_path: Path):
     assert argv[index + 1] == str(auth)
 
 
-def test_readable_host_path_cannot_substitute_an_arbitrary_host_path(tmp_path: Path):
+def test_readable_host_path_requires_an_existing_absolute_path(tmp_path: Path):
+    """States exactly what this check proves: a nonexistent path and a
+    relative path are refused. It does *not* prove narrowness -- an
+    arbitrary *existing*, disjoint host path is accepted by design; see
+    ``test_readable_host_path_accepts_any_existing_disjoint_host_path``
+    below and F3's disposition (the operator's own responsibility, not a
+    technically enforced invariant)."""
     repo = tmp_path / 'repo'
     repo.mkdir()
     (repo / '.git').mkdir()
@@ -341,6 +347,34 @@ def test_readable_host_path_cannot_substitute_an_arbitrary_host_path(tmp_path: P
     for bad in (tmp_path / 'missing', Path('relative-auth')):
         with pytest.raises(BoundaryConfigurationError):
             validate(repo, [scratch], readable_host_paths=(bad,))
+
+
+def test_readable_host_path_accepts_any_existing_disjoint_host_path(tmp_path: Path):
+    """F3 (maintainer disposition, 2026-11-26): the choice of the
+    authentication mount is the operator's own responsibility; WFC enforces
+    the boundary the operator set against the agent, and does not protect
+    the operator from the operator's own authorization decisions. No
+    narrowing check exists or is added -- a whole directory (not just a
+    single file) is accepted exactly like a single file, as long as it is
+    absolute, canonical, existing and disjoint from every other mount. This
+    is accepted behaviour, not a defect; see
+    `docs/operator_manual/ch01_orientation/02_boundaries.adoc` for the
+    operator-facing statement that this is an explicit extension of the
+    read authority, and the contract's `<<outside-sources>>` section for
+    why no further restriction is authorized here."""
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    (repo / '.git').mkdir()
+    scratch = Mount(None, PurePosixPath('/tmp'), MountMode.SCRATCH)
+    whole_directory = tmp_path / 'a-whole-credential-directory'
+    whole_directory.mkdir()
+    (whole_directory / 'id_ed25519').write_text('not a real key')
+    (whole_directory / 'unrelated-project').mkdir()
+    boundary = validate(repo, [scratch], readable_host_paths=(whole_directory,))
+    assert boundary.readable_host_paths == (whole_directory,)
+    argv = build_argv(boundary, ['/bin/true'])
+    index = argv.index(str(whole_directory))
+    assert argv[index - 1] == '--ro-bind'
 
 
 def test_designated_external_mounts_cannot_overlap_the_generated_system_view(tmp_path: Path):

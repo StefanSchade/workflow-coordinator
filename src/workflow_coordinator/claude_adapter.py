@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -21,7 +22,16 @@ from .adapter import (
     ExecutionNotStartedError,
 )
 from .execution_boundary import EXTERNAL_SCRATCH_DESTINATION
-from .execution_launcher import BoundaryGrant, LaunchPlan, boundary_started_marker, direct_grant, prepare
+from .execution_launcher import (
+    BUBBLEWRAP,
+    BoundaryGrant,
+    LaunchPlan,
+    close_started_signal_write_end,
+    direct_grant,
+    open_started_signal,
+    prepare,
+    provider_started,
+)
 from .model import (
     ModelUsage,
     NO_USAGE_REPORTED,
@@ -306,7 +316,7 @@ class ClaudeCliAdapter:
         real_dir = self._external_scratch_dir(request)
         _supersede_or_reject_leftover(real_dir, "external scratch target")
         _supersede_or_reject_leftover(tmp_dir, "short TMPDIR symlink")
-        marker = None
+        started_signal = None
         try:
             try:
                 real_dir.mkdir(parents=True, mode=0o700)
@@ -334,6 +344,7 @@ class ClaudeCliAdapter:
                     scratch_for_settings = str(real_dir)
                     scratch_for_child_env = str(tmp_dir)
                     grant = self.boundary if self.boundary is not None else direct_grant(request.repository.resolve())
+                started_signal = open_started_signal() if grant.mode == BUBBLEWRAP else None
                 atomic_write_json(schema, schema_object)
                 atomic_write_json(settings, self._settings(request, scratch_for_settings))
                 environment = {
@@ -353,17 +364,21 @@ class ClaudeCliAdapter:
                     ),
                     request.repository.resolve(),
                     environment,
+                    status_fd=None if started_signal is None else started_signal.write_fd,
                 )
                 prepared = prepare(plan)
-                marker = boundary_started_marker(grant)
                 child = subprocess.Popen(
                     prepared.argv,
                     cwd=prepared.cwd,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     start_new_session=True, env=prepared.environment,
+                    pass_fds=() if started_signal is None else (started_signal.write_fd,),
                 )
             except (OSError, ValueError) as error:
                 raise ClaudeCliError("local pre-acceptance executable launch failure") from error
+            finally:
+                if started_signal is not None:
+                    close_started_signal_write_end(started_signal)
             try:
                 stdout, stderr = child.communicate(timeout=request.timeout_seconds)
                 timed_out = False
@@ -375,11 +390,18 @@ class ClaudeCliAdapter:
                 except subprocess.TimeoutExpired:
                     os.killpg(child.pid, signal.SIGKILL)
                     stdout, stderr = child.communicate()
-            if marker is not None and not timed_out and child.returncode != 0 and not marker[1].exists():
-                # bwrap itself exited before the provider ever ran (its own
-                # exit path, not a guess from stderr text); not-started.
+            started = provider_started(started_signal) if started_signal is not None else True
+            if not timed_out and child.returncode != 0 and not started:
+                # The started-signal pipe never received an `exit-code`
+                # document: bwrap's own setup failed before the provider
+                # ever ran (not-started), proven by a descriptor the
+                # confined process can neither write nor withdraw -- never
+                # by guessing from stderr text.
                 raise ClaudeCliError("execution boundary failed before the provider started")
         finally:
+            if started_signal is not None:
+                with contextlib.suppress(OSError):
+                    os.close(started_signal.read_fd)
             # tmp_dir is normally a symlink (shutil.rmtree() refuses to
             # operate on one, silently no-oping under ignore_errors=True)
             # but may be a plain directory if symlink creation itself never

@@ -104,10 +104,17 @@ CHECKOUT_ALLOW = [
 ]
 
 # The per-invocation provider channel directory (<<channel>>): the three
-# provider-channel files now live one level deeper than CHECKOUT_ALLOW
-# reaches. Kept as a separate, named allow-list rather than widened into
-# CHECKOUT_ALLOW itself, so the existing depth-one patterns keep matching a
-# recorded historical run unchanged (tests/fixtures/bp5, bp7).
+# provider-channel files now live two levels deeper than CHECKOUT_ALLOW
+# reaches -- one for the channel directory itself, one more for the
+# invocation subdirectory that makes the channel per-invocation rather than
+# per-checkout (F2; a Hop-N file must never be readable, by this archiver or
+# by anything else, as if it belonged to Hop N+1). Kept as a separate, named
+# allow-list rather than widened into CHECKOUT_ALLOW itself, so the existing
+# depth-one patterns keep matching a recorded historical run unchanged
+# (tests/fixtures/bp5, bp7). The three file names are agent-reachable on the
+# Codex path (the channel is writable there) and so are never trusted
+# content, only trusted *locations*; nothing here treats their bytes as
+# Coordinator-authored.
 CHANNEL_DIR_NAME = "provider-channel"
 CHANNEL_ALLOW = [
     "claude-closed-settings.json",
@@ -390,8 +397,9 @@ def _plan_run_files(run_dir: Path) -> list[Path]:
                 planned += [p for p in sorted(checkout_dir.glob(pattern)) if p.is_file()]
             channel_dir = checkout_dir / CHANNEL_DIR_NAME
             if channel_dir.is_dir():
-                for pattern in CHANNEL_ALLOW:
-                    planned += [p for p in sorted(channel_dir.glob(pattern)) if p.is_file()]
+                for invocation_dir in sorted(p for p in channel_dir.iterdir() if p.is_dir()):
+                    for pattern in CHANNEL_ALLOW:
+                        planned += [p for p in sorted(invocation_dir.glob(pattern)) if p.is_file()]
     return planned
 
 
@@ -422,14 +430,15 @@ def collect_run_files(run_dir: Path, dest_root: Path, copied: list[dict]) -> Non
                         _copy_one(src, dest_root, rel, copied)
             channel_dir = checkout_dir / CHANNEL_DIR_NAME
             if channel_dir.is_dir():
-                for pattern in CHANNEL_ALLOW:
-                    for src in sorted(channel_dir.glob(pattern)):
-                        if src.is_file():
-                            rel = (
-                                Path("run") / "checkouts" / checkout_dir.name
-                                / CHANNEL_DIR_NAME / src.name
-                            )
-                            _copy_one(src, dest_root, rel, copied)
+                for invocation_dir in sorted(p for p in channel_dir.iterdir() if p.is_dir()):
+                    for pattern in CHANNEL_ALLOW:
+                        for src in sorted(invocation_dir.glob(pattern)):
+                            if src.is_file():
+                                rel = (
+                                    Path("run") / "checkouts" / checkout_dir.name
+                                    / CHANNEL_DIR_NAME / invocation_dir.name / src.name
+                                )
+                                _copy_one(src, dest_root, rel, copied)
 
 
 def collect_ops_files(ops_dir: Path, dest_root: Path, copied: list[dict]) -> None:

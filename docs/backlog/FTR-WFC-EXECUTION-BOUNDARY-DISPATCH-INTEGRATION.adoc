@@ -562,23 +562,57 @@ link:BUG-WFC-CLAUDE-ADAPTER-WRITE-PERMISSION-MISMATCH.adoc[Claude
 write-permission] case, where the authorized `docs/developer_guide/` did not
 exist at launch.
 
-. For an authorized entry that does not exist and whose shape is a
-  *directory* (no file extension is not a reliable signal, so: any entry that
-  does not exist is treated as a directory unless the Commission says
-  otherwise), the Coordinator creates it, mode `0o700`, before validation, and
-  removes it after the Hop *if it is still empty*. Git does not track empty
-  directories, so this is invisible to the post-Hop delta and to the
-  clean-worktree assertions.
-. For an authorized entry that names a not-yet-existing *file*, no empty file
-  is created, because an untracked empty file would be visible to the post-Hop
-  observation. Instead the nearest existing ancestor directory is mounted
-  writable. This *overgrants* to that directory, and Slice A states it as a
-  residual prevention gap (<<residual>>); the post-Hop scope check still
-  refuses anything outside scope.
-. Pre-creation is a Coordinator act, performed before `validate()` by the
-  per-Hop dispatch frame that computes the grant and brackets the Hop
-  (<<a-lifecycle>>), never by the agent or the adapter, and never outside the
-  repository.
+*Reworked by the maintainer's 2026-11-26 disposition (F5 of the independent
+Opus implementation review; see
+link:../warm_storage/post-beta-planning/wfc_execution_boundary_slice_a_opus_implementation_review.adoc[the
+review] and
+link:FTR-WFC-EXECUTION-BOUNDARY-FILE-SCOPE-CREATION.adoc[the follow-up
+backlog record]).* The rule this section originally stated -- "any entry that
+does not exist is treated as a directory unless the Commission says
+otherwise" -- let a worker-phase scope entry that actually named a
+not-yet-existing *file* be silently pre-created as a *directory* instead,
+because no file extension is a reliable shape signal and a worker phase's
+scope is not generally declared as durable artifacts. That Commission could
+then never create the file it meant to, and a non-empty such directory
+would survive the cleanup bracket as an untracked directory in the worktree.
+The rule is now fail-closed:
+
+. An authorized entry that already exists (file or directory) is mounted as
+  itself. Unchanged.
+. An authorized entry that is one of the executing phase's own declared
+  durable artifacts (the reviewer case: a durable review artifact never
+  exists when its phase starts) and does not yet exist is mounted at its
+  nearest *existing* ancestor directory strictly inside the repository. This
+  *overgrants* to that directory, and Slice A states it as a residual
+  prevention gap (<<residual>>); the post-Hop scope check still refuses
+  anything outside scope. If not even that ancestor exists (the artifact's
+  whole parent chain is absent), the Commission is refused by name rather
+  than silently widened to the repository root -- the prior behaviour's own
+  unstated degenerate case.
+. Every other authorized entry that does not yet exist -- which, because no
+  file extension is a reliable shape signal, can never be told apart from a
+  not-yet-existing *file* -- is refused by name:
+  `execution_launcher.AbsentWritableScopeEntryError`, a named, fail-closed
+  preflight refusal raised before any provider dispatch and before anything
+  is created on the host. No directory is pre-created at that path, and the
+  grant is never silently widened to an ancestor the Commission never named.
+  The refusal's own message states the remedy: declare the path as a durable
+  artifact for the executing phase, or create it (even empty) in the
+  repository, before dispatching under the boundary. This is an interim
+  answer, not a design for the underlying need (creating new files inside a
+  precise file scope is a legitimate and regularly needed Commission
+  pattern); the long-term resolution is recorded, not designed or
+  implemented, in
+  link:FTR-WFC-EXECUTION-BOUNDARY-FILE-SCOPE-CREATION.adoc[the follow-up
+  backlog record].
+. Resolution (where it succeeds) and refusal (where it does not) both happen
+  before validation, in the per-Hop dispatch frame that computes the grant
+  and brackets the Hop (<<a-lifecycle>>); nothing is ever created by the
+  agent or the adapter, and never outside the repository. A refusal here
+  leaves no stray directory behind: grant derivation runs before the
+  per-invocation provider channel directory (<<channel>>) is created, so a
+  Commission refused this way leaves nothing new anywhere on the host, not
+  only inside the repository.
 
 === Symlinks, hardlinks and mount overlaps
 
@@ -661,11 +695,13 @@ never an arbitrary host path, never the Run state directory that contains it.
 See <<outside-sources>>.
 
 |Provider configuration and authentication
-|exactly what the live qualification proves the provider needs, read-only,
-narrowly bound
+|whatever the operator names, read-only
 |See <<outside-sources>> for its classification -- also a designated,
 individually validated external mount kind -- and the credential rules below.
-No blanket `$HOME` grant, under any circumstances.
+*Corrected (F3, 2026-11-26):* narrowness (not naming a blanket `$HOME` or a
+whole provider configuration directory) is the operator's own
+responsibility, stated as a recommendation; Slice A implements no narrowing
+check on this mount beyond the disjointness every designated mount gets.
 
 |Everything else, including other repositories, other checkouts, the
 Coordinator's Run state directory outside the provider channel, the Evidence
@@ -750,9 +786,22 @@ sandbox is not the authoritative boundary, the WFC boundary must not be the
 weaker of the two.
 
 *Decision.* The three provider channel files move into a dedicated
-per-invocation channel directory under the Run state directory -- for example
+per-invocation channel directory under the Run state directory --
+`<run_root>/provider-channel/<invocation_id>/`, not merely
 `<run_root>/provider-channel/` -- and it is the *channel directory*, never the
-Run state directory, that is passed to the adapter and mounted:
+Run state directory, that is passed to the adapter and mounted. The
+invocation-id component is load-bearing, not cosmetic: the Slice A
+implementation Run built only `<run_root>/provider-channel/` (one directory
+per *checkout*, not per invocation), which the independent Opus
+implementation review's F2 found let a Hop N file -- and, in that same
+implementation's mistaken placement of the started-signal marker discussed
+below, a Hop N *classification input* -- survive into Hop N+1. The directory
+must not pre-exist for a given invocation (refuse rather than reuse a
+leftover) and is never reused by a later invocation; it is intentionally
+*not* removed when the Hop ends, because `wfc archive` must still be able to
+read it afterward (<<a-lifecycle>> is unaffected: this directory is not a
+pre-created writable grant target, so it is outside that bracket). Its only
+lifecycle end is the checkout's own.
 
 [cols="3,2,4",options="header"]
 |===
@@ -951,12 +1000,17 @@ entry named `run.json`, `checkpoint.json`, `dispatch.json`,
 caller-supplied mounts is unchanged.
 
 |The provider authentication location
-|*A designated, individually validated external mount kind* of the same form,
-read-only, narrowed to the single file or directory the live qualification
-proves necessary
+|*A designated, individually validated external mount kind* of the same
+form, read-only, named by the operator via `WFC_BOUNDARY_AUTHENTICATION_PATH`
 |*Third* designated exception. It cannot be a generated system-view entry: its
 path is provider- and operator-specific, varies per invocation, and is a
-live-qualification output rather than a constant.
+live-qualification output rather than a constant. *Corrected (F3,
+2026-11-26):* "narrowed to the single file or directory the live
+qualification proves necessary" described an intended narrowing check that
+was never implemented and is not authorized now; the disjointness and
+system-view checks every designated mount gets are the only checks this
+mount has, and the operator's own choice of what to name is the only
+narrowing that exists.
 
 |Anything else outside the repository
 |None
@@ -996,7 +1050,22 @@ process and nothing more. Four rules, all of which the 2026-11-08
 investigations established the need for:
 
 . No blanket `$HOME` bind, and no bind of a whole provider configuration
-  directory when a single file suffices.
+  directory when a single file suffices. *Corrected by the maintainer's
+  2026-11-26 disposition (F3 of the independent Opus implementation
+  review):* this is an *operating recommendation* to whoever configures
+  `WFC_BOUNDARY_AUTHENTICATION_PATH`, not a technically enforced invariant.
+  `execution_boundary.validate()` accepts any existing, absolute, canonical
+  file or directory that is disjoint from the repository, the system roots,
+  the channel, the scratch, every other mount and the generated system view
+  -- including a whole `$HOME`, a whole provider configuration directory, or
+  (observed directly) `/etc/shadow` -- and Slice A implements no narrowing
+  beyond that disjointness. The choice of what to name is the *operator's*
+  responsibility: WFC enforces the security boundary the operator set
+  against the agent, and does not protect the operator from the operator's
+  own authorization decision for this one, explicitly-designated,
+  operator-controlled mount. No further path restriction is authorized here;
+  see the Operator Manual's statement that this mount is an explicit
+  extension of the read authority.
 . No credential file, token, key or authentication material is ever copied
   into the repository, the external scratch or any agent-writable path.
 . No token is injected through an environment variable merely to make a test
@@ -1013,6 +1082,23 @@ assumption of this record. The implementation must fail closed when the
 required path is not configured: an opt-in boundary that silently omits the
 authentication mount would turn every isolated Run into an authentication
 failure.
+
+*Traced and closed: no channel from inside a Run can reach this choice.*
+`operator._boundary_authentication_path()` takes no argument and reads
+exactly one value, `os.environ.get("WFC_BOUNDARY_AUTHENTICATION_PATH")`, once
+per Hop, in the Coordinator's own process. Every channel a confined agent
+might use to influence it was traced and found closed, each with a
+Layer-1 test that attempts it: the environment the dispatched provider
+receives is either a fixed allowlist (Claude, plus any name the *operator*
+lists in `WFC_CLAUDE_EXTRA_ENV_NAMES`) or the Coordinator's own inherited
+environment (Codex) -- in neither case can the agent's own process write
+back into the Coordinator's environment, because a child process can never
+mutate a parent's environment on any POSIX system; repository content, the
+Commission or task payload text, and files in the writable grant or the
+provider channel are never read by this function at all, only `os.environ`;
+and the function is called fresh every Hop from the one long-lived
+Coordinator process, so nothing a prior Hop's provider did survives into the
+value read for the next one. No channel was found open; none needed closing.
 
 [[provider]]
 == (d) Provider configuration inside the boundary
@@ -1222,6 +1308,81 @@ selected.
 * A provider that starts inside the boundary and then fails is *started*, and
   reaches the existing `ExecutionResultValidationError` path with its
   transport outcome. Nothing changes here.
+
+[[started-signal]]
+==== The started signal, reworked (F1; maintainer disposition 2026-11-26)
+
+The Slice A implementation Run realised the bullet above with a file,
+`.wfc-boundary-started`, that a `/bin/sh` wrapper touched immediately before
+exec-ing into the provider argv, placed inside the one writable,
+host-visible location the invocation carried (the provider channel for a
+writable-channel Codex grant, the external scratch otherwise). The
+independent Opus implementation review's F1 found that this file sits
+inside the view the confined agent can write to, so a provider that *did*
+run could delete it and be misclassified as not-started, and a `bwrap`
+setup failure could be misclassified as started by a marker left over from
+an earlier invocation (F2, before the per-invocation channel rework above
+closed that half). Both defects follow the same root cause: the one input to
+a security classification was reachable, in either direction, from inside
+the boundary it was supposed to classify.
+
+*The reworked mechanism.* `bwrap --json-status-fd FD` (present in `bwrap`
+0.11.0, the version this record's probes were run against) writes one JSON
+document per status change to `FD`, from the outer, trusted `bwrap` process
+itself -- never from the sandboxed command, and never passed on to it: `FD`
+is not open inside the view at all (confirmed by a Layer-1 test that
+attempts to write to it from inside and observes `EBADF`). Two documents
+matter here:
+
+* `{"child-pid": N, "mnt-namespace": M}`, written as soon as `bwrap` forks,
+  *before* it knows whether `exec`-ing the wrapped command will even
+  succeed. Its presence alone proves nothing about whether the provider
+  started: it is written both when the provider genuinely starts and when
+  `bwrap`'s own mount setup subsequently fails.
+* `{"exit-code": N}`, written only once the wrapped command has actually
+  been exec'd *and* has exited, regardless of what `N` is. Its presence is
+  the proof this slice now relies on for "started"; its absence, together
+  with the process having exited, is the proof for "not-started".
+
+*The carrier.* The Coordinator opens one `os.pipe()` per invocation
+(`execution_launcher.open_started_signal`) before building the launch plan,
+passes only the write end to the `bwrap` process via `subprocess.Popen`'s
+`pass_fds` (never to any other descendant), and closes its own copy of the
+write end immediately after the process is spawned
+(`close_started_signal_write_end`) -- so the write end is held open by
+nothing but `bwrap` itself, and the Coordinator's read of the accumulated
+documents (`execution_launcher.provider_started`, invoked only after the
+process has already been waited on) always terminates at EOF rather than
+blocking, and is additionally bounded by a fixed byte cap. `prepare_bubblewrap`
+refuses to build an argv at all when no such descriptor is supplied
+(`LaunchPlan.status_fd`), so a bubblewrap launch can never silently proceed
+without the signal. The `/bin/sh` touch-first wrapper and the marker file it
+wrote are removed entirely, along with their tests, rather than left as dead
+code beside the new mechanism.
+
+*The kill/timeout case (N13), stated precisely so it is not rediscovered as
+an ambiguity.* The signal is deliberately *never consulted* when the
+adapter's own timeout fired (`timed_out`): whether `bwrap` was itself killed
+by the adapter's `SIGKILL` before writing anything, or the provider was
+killed by the forwarded `SIGTERM` and `bwrap` had time to report its exit
+before the Coordinator's own kill sequence proceeded, both leave the
+started/not-started question moot -- the adapter already has a definite,
+differently-labelled outcome (`timed_out=True`) for that case, exactly as it
+did under the marker. The pipe is still drained and closed in every case
+(including the timeout case) to avoid a descriptor leak, but its content
+never changes the classification when `timed_out` is true.
+
+*Why `--json-status-fd` and not the `--info-fd` variant.* Both are
+non-forgeable by the same construction (an outer-process-owned descriptor
+never passed to the sandboxed command). `--json-status-fd` was chosen
+because its `exit-code` document is unambiguous proof the wrapped command
+was reached, with no further interpretation needed; `--info-fd` reports
+earlier, child-pid-shaped information with the same non-forgeability but
+without that direct a signal, and offers no advantage for this slice's
+precise question ("did the provider start", not "what will its sandbox
+namespace be"). Neither needs a wrapper process or additional
+infrastructure, consistent with the disposition's instruction against
+adding either.
 
 === No silent fallback
 

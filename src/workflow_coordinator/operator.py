@@ -1050,17 +1050,41 @@ def run_serial_hops(
                         f"no admitted execution binding for phase {phase_key} ({workflow_role.value})"
                     ) from error
                 run_root = checkout_state_root(state_root, association)
-                channel_dir = run_root / "provider-channel"
-                channel_dir.mkdir(parents=True, exist_ok=True)
-                grant = execution_launcher.derive_boundary_grant(
-                    mode=execution_configuration.boundary,
-                    repository=repository,
-                    authorized_scope=profile.phases[phase_key].authorized_scope,
-                    artifact_paths=phase_artifacts,
-                    provider_channel=channel_dir,
-                    provider_channel_writable=(resolved_binding.adapter == "codex_cli"),
-                    authentication_path=_boundary_authentication_path(),
-                )
+                # Per-invocation, never per-checkout (F2): identity and
+                # lifetime match this one invocation, so a Hop-N marker (or
+                # any Hop-N state) can never be read back by Hop N+1. Grant
+                # derivation (which can refuse the scope by name, F5) runs
+                # first, against this path value alone, so a refusal here
+                # never leaves a created directory on the host; only once it
+                # has succeeded is the directory actually created, refusing
+                # rather than reusing a leftover -- it must not pre-exist.
+                # Not removed when the Hop ends: `wfc archive` still needs to
+                # read it, possibly long after this process has exited, so
+                # its only lifecycle end is the checkout's own (unmanaged
+                # here).
+                channel_dir = run_root / "provider-channel" / invocation_id
+                try:
+                    grant = execution_launcher.derive_boundary_grant(
+                        mode=execution_configuration.boundary,
+                        repository=repository,
+                        authorized_scope=profile.phases[phase_key].authorized_scope,
+                        artifact_paths=phase_artifacts,
+                        provider_channel=channel_dir,
+                        provider_channel_writable=(resolved_binding.adapter == "codex_cli"),
+                        authentication_path=_boundary_authentication_path(),
+                    )
+                except execution_boundary.BoundaryConfigurationError as error:
+                    raise OperatorPreflightError(
+                        f"execution boundary selected but the writable scope could not be "
+                        f"established: {error}"
+                    ) from error
+                try:
+                    channel_dir.mkdir(parents=True)
+                except FileExistsError as error:
+                    raise OperatorPreflightError(
+                        f"provider channel directory already exists for invocation {invocation_id}: "
+                        f"{channel_dir}"
+                    ) from error
                 _preflight_boundary(grant, resolved_binding, executable)
                 pending_creates = execution_launcher.missing_writable_targets(grant)
                 for target in pending_creates:

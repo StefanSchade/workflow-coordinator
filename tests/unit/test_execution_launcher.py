@@ -1,11 +1,13 @@
+import os
 from pathlib import Path
 
 import pytest
 
 from workflow_coordinator.execution_boundary import EXTERNAL_SCRATCH_DESTINATION, BoundaryConfigurationError
 from workflow_coordinator.execution_launcher import (
-    BoundaryGrant, LaunchPlan, boundary_started_marker, derive_boundary_grant, direct_grant,
-    missing_writable_targets, normalized_writable_scope, prepare, prepare_bubblewrap, prepare_direct,
+    AbsentWritableScopeEntryError, BoundaryGrant, LaunchPlan, StartedSignal, close_started_signal_write_end,
+    derive_boundary_grant, direct_grant, missing_writable_targets, normalized_writable_scope,
+    open_started_signal, prepare, prepare_bubblewrap, prepare_direct, provider_started,
 )
 
 
@@ -93,27 +95,26 @@ def test_derive_boundary_grant_resolves_a_not_yet_existing_artifact_to_its_exist
     assert missing_writable_targets(grant) == ()
 
 
-def test_derive_boundary_grant_without_artifact_paths_pre_creates_a_nested_directory(tmp_path: Path):
-    """No file extension is a reliable shape signal (<<mounts>>): a missing
-    entry absent from ``artifact_paths`` is treated as a directory to be
-    pre-created at its own path, even when an existing ancestor is
-    available -- the worker-phase default, as opposed to the declared-
-    artifact case above."""
+def test_derive_boundary_grant_refuses_an_absent_non_artifact_entry_even_with_an_existing_ancestor(
+    tmp_path: Path,
+):
+    """F5: no file extension is a reliable shape signal (<<mounts>>), so an
+    absent entry that is not a declared durable artifact is refused by name
+    -- never silently pre-created as a directory -- regardless of whether an
+    existing ancestor is available."""
     (tmp_path / "docs" / "warm_storage").mkdir(parents=True)
-    grant = derive_boundary_grant(
-        mode="bubblewrap", repository=tmp_path,
-        authorized_scope=("docs/warm_storage/new_chapter",),
-    )
-    assert grant.writable_repository_paths == ("docs/warm_storage/new_chapter",)
-    assert missing_writable_targets(grant) == (tmp_path / "docs/warm_storage/new_chapter",)
+    with pytest.raises(AbsentWritableScopeEntryError, match="docs/warm_storage/new_chapter"):
+        derive_boundary_grant(
+            mode="bubblewrap", repository=tmp_path,
+            authorized_scope=("docs/warm_storage/new_chapter",),
+        )
 
 
-def test_derive_boundary_grant_pre_creates_a_directory_with_no_existing_ancestor(tmp_path: Path):
-    grant = derive_boundary_grant(
-        mode="bubblewrap", repository=tmp_path, authorized_scope=("brand-new/nested/dir",),
-    )
-    assert grant.writable_repository_paths == ("brand-new/nested/dir",)
-    assert missing_writable_targets(grant) == (tmp_path / "brand-new/nested/dir",)
+def test_derive_boundary_grant_refuses_an_absent_entry_with_no_existing_ancestor_either(tmp_path: Path):
+    with pytest.raises(AbsentWritableScopeEntryError, match="brand-new/nested/dir"):
+        derive_boundary_grant(
+            mode="bubblewrap", repository=tmp_path, authorized_scope=("brand-new/nested/dir",),
+        )
 
 
 def test_derive_boundary_grant_grants_an_existing_entry_directly(tmp_path: Path):
@@ -125,14 +126,29 @@ def test_derive_boundary_grant_grants_an_existing_entry_directly(tmp_path: Path)
 
 def test_derive_boundary_grant_never_overgrants_to_the_repository_root(tmp_path: Path):
     """A brand-new top-level entry (whose only existing ancestor would be
-    the repository root itself) is pre-created, never resolved to granting
-    the whole repository."""
-    grant = derive_boundary_grant(mode="bubblewrap", repository=tmp_path, authorized_scope=("new-top-level.txt",))
-    assert grant.writable_repository_paths == ("new-top-level.txt",)
-    assert missing_writable_targets(grant) == (tmp_path / "new-top-level.txt",)
+    the repository root itself) is refused, never resolved to granting the
+    whole repository and never silently pre-created."""
+    with pytest.raises(AbsentWritableScopeEntryError):
+        derive_boundary_grant(mode="bubblewrap", repository=tmp_path, authorized_scope=("new-top-level.txt",))
+
+
+def test_derive_boundary_grant_refuses_a_declared_artifact_with_no_existing_ancestor_at_all(tmp_path: Path):
+    """The degenerate case of the artifact-resolution rule: when not even
+    the artifact's own repository-root ancestor exists, the Opus review's
+    F5 detail flagged the old behaviour as pre-creating the artifact's own
+    path as a directory too -- now refused by the same named error rather
+    than silently widened to the repository root."""
+    with pytest.raises(AbsentWritableScopeEntryError, match="no existing ancestor"):
+        derive_boundary_grant(
+            mode="bubblewrap", repository=tmp_path,
+            authorized_scope=("brand-new/nested/review.adoc",),
+            artifact_paths=("brand-new/nested/review.adoc",),
+        )
 
 
 def test_derive_boundary_grant_bubblewrap_mode_normalizes_scope_and_auth(tmp_path: Path):
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
     auth = tmp_path / "auth"
     channel = tmp_path / "channel"
     grant = derive_boundary_grant(
@@ -170,8 +186,13 @@ def test_prepare_bubblewrap_builds_argv_through_the_primitive(tmp_path: Path):
     (tmp_path / '.git').mkdir()
     (tmp_path / 'src').mkdir()
     grant = BoundaryGrant(mode="bubblewrap", repository=tmp_path, writable_repository_paths=("src",))
-    plan = LaunchPlan(grant, ("/bin/true",), None, {"PATH": "/usr/bin"})
-    prepared = prepare(plan)
+    read_fd, write_fd = os.pipe()
+    try:
+        plan = LaunchPlan(grant, ("/bin/true",), None, {"PATH": "/usr/bin"}, status_fd=write_fd)
+        prepared = prepare(plan)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
     assert prepared.boundary == "bubblewrap"
     assert prepared.cwd is None
     assert prepared.environment == {"PATH": "/usr/bin"}
@@ -179,48 +200,86 @@ def test_prepare_bubblewrap_builds_argv_through_the_primitive(tmp_path: Path):
     assert str(tmp_path / 'src') in prepared.argv
 
 
-def test_boundary_started_marker_absent_for_direct_mode(tmp_path: Path):
-    assert boundary_started_marker(direct_grant(tmp_path)) is None
-
-
-def test_boundary_started_marker_absent_without_a_writable_outside_location(tmp_path: Path):
+def test_prepare_bubblewrap_requires_a_status_descriptor(tmp_path: Path):
+    """F1: a bubblewrap launch with no started-signal pipe is refused before
+    any process starts -- the confined agent must never be the only proof
+    that a provider started, so the launcher does not silently proceed
+    without a trusted signal."""
+    (tmp_path / '.git').mkdir()
     grant = BoundaryGrant(mode="bubblewrap", repository=tmp_path)
-    assert boundary_started_marker(grant) is None
+    plan = LaunchPlan(grant, ("/bin/true",), None, None)
+    with pytest.raises(BoundaryConfigurationError, match="started-signal status descriptor"):
+        prepare_bubblewrap(plan)
 
 
-def test_boundary_started_marker_prefers_writable_channel_over_scratch(tmp_path: Path):
-    channel = tmp_path / "channel"
-    scratch = tmp_path / "scratch"
-    grant = BoundaryGrant(
-        mode="bubblewrap", repository=tmp_path, provider_channel=channel,
-        provider_channel_writable=True, external_scratch=scratch,
-    )
-    in_view, host = boundary_started_marker(grant)
-    assert host == channel / ".wfc-boundary-started"
-    assert str(in_view) == str(host)  # the channel is mounted at its own path (identity)
-
-
-def test_boundary_started_marker_falls_back_to_external_scratch(tmp_path: Path):
-    scratch = tmp_path / "scratch"
-    grant = BoundaryGrant(mode="bubblewrap", repository=tmp_path, external_scratch=scratch)
-    in_view, host = boundary_started_marker(grant)
-    assert host == scratch / ".wfc-boundary-started"
-    assert str(in_view) == f"{EXTERNAL_SCRATCH_DESTINATION}/.wfc-boundary-started"
-
-
-def test_prepare_bubblewrap_wraps_the_command_to_touch_the_marker_first(tmp_path: Path):
+def test_prepare_bubblewrap_emits_json_status_fd_and_no_marker_wrapper(tmp_path: Path):
+    """F1: the command argv is the plan's own argv, unwrapped -- no
+    ``.wfc-boundary-started`` marker file and no ``/bin/sh`` touch-first
+    wrapper; the trusted signal is `bwrap`'s own ``--json-status-fd``."""
     repo = tmp_path / 'repo'
     repo.mkdir()
     (repo / '.git').mkdir()
-    channel = tmp_path / "channel"
-    channel.mkdir()
-    grant = BoundaryGrant(
-        mode="bubblewrap", repository=repo, provider_channel=channel, provider_channel_writable=True,
-    )
-    plan = LaunchPlan(grant, ("/bin/true",), None, None)
-    prepared = prepare(plan)
-    assert prepared.argv[-3:] == ('sh', str(channel / '.wfc-boundary-started'), '/bin/true')
-    assert ': > "$1"; shift; exec "$@"' in prepared.argv
+    grant = BoundaryGrant(mode="bubblewrap", repository=repo)
+    read_fd, write_fd = os.pipe()
+    try:
+        plan = LaunchPlan(grant, ("/bin/true",), None, None, status_fd=write_fd)
+        prepared = prepare(plan)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+    assert prepared.argv[-2:] == ("--", "/bin/true")
+    index = prepared.argv.index("--json-status-fd")
+    assert prepared.argv[index + 1] == str(write_fd)
+    assert ".wfc-boundary-started" not in " ".join(prepared.argv)
+    assert "sh" not in prepared.argv[-3:-1]
+
+
+def test_open_started_signal_round_trips_through_the_pipe():
+    signal = open_started_signal()
+    try:
+        os.write(signal.write_fd, b'{"child-pid": 1}{"exit-code": 0}')
+        close_started_signal_write_end(signal)
+        assert provider_started(signal) is True
+    finally:
+        os.close(signal.read_fd)
+
+
+def test_provider_started_false_when_only_a_child_pid_document_arrives():
+    """bwrap writes `child-pid` as soon as it forks, before it knows whether
+    exec-ing the wrapped command will even succeed; its presence alone must
+    never be read as proof the provider started."""
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b'{"child-pid": 123}')
+    os.close(write_fd)
+    signal = StartedSignal(read_fd, write_fd)
+    try:
+        assert provider_started(signal) is False
+    finally:
+        os.close(read_fd)
+
+
+def test_provider_started_false_when_the_pipe_is_empty():
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    signal = StartedSignal(read_fd, write_fd)
+    try:
+        assert provider_started(signal) is False
+    finally:
+        os.close(read_fd)
+
+
+def test_provider_started_true_for_a_nonzero_exit_code_document():
+    """A command that ran and exited nonzero is still a started provider
+    (<<enablement>>, error classification): the exit-code value itself does
+    not matter, only that the document exists at all."""
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b'{"child-pid": 1}{"exit-code": 3}')
+    os.close(write_fd)
+    signal = StartedSignal(read_fd, write_fd)
+    try:
+        assert provider_started(signal) is True
+    finally:
+        os.close(read_fd)
 
 
 def test_prepare_bubblewrap_with_an_invalid_grant_refuses_before_any_process(tmp_path: Path):

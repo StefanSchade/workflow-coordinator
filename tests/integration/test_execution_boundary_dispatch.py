@@ -29,7 +29,7 @@ from workflow_coordinator.claude_adapter import ClaudeCliAdapter
 from workflow_coordinator.codex_adapter import CodexCliAdapter, CodexCliError
 from workflow_coordinator.execution_launcher import BoundaryGrant, derive_boundary_grant
 from workflow_coordinator.prompt import PromptComponent, load_agent_operating_contract
-from workflow_coordinator.slice4 import register_checkout, run_real_one_hop
+from workflow_coordinator.slice4 import Slice4Error, checkout_state_root, register_checkout, run_real_one_hop
 from tests.support import phase, profile, route
 
 from dataclasses import replace
@@ -626,3 +626,207 @@ def test_n13_killing_a_timed_out_invocation_leaves_no_surviving_descendant(tmp_p
     time.sleep(1.0)
     second = heartbeat.read_text()
     assert first == second, "a descendant survived the adapter's kill sequence and kept writing"
+
+
+# -- F1/F2: the started signal and the per-invocation channel ---------------
+
+
+def _forge_everything_reachable(channel: Path) -> str:
+    """The script body a forging fake provider runs before exiting
+    nonzero: delete, recreate and overwrite every file it can reach in the
+    writable channel, including a name that looks like the retired marker.
+    None of this may change the started/not-started classification (F1):
+    the classification now rests on a pipe the confined process never has
+    open at all."""
+    return f'''\
+        import pathlib, shutil, sys
+        sys.stdin.read()
+        channel = pathlib.Path({str(channel)!r})
+        for child in channel.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+        (channel / ".wfc-boundary-started").write_text("forged")
+        (channel / "result-message.json").write_text("forged result")
+        sys.exit(1)
+    '''
+
+
+def test_f1_a_provider_that_ran_and_forged_every_reachable_file_is_still_classified_as_started(tmp_path):
+    """(1), the started half, Codex-shaped: a provider that actually ran,
+    then deleted and forged every file it can reach in the writable channel
+    (including a file named like the retired marker) and exited nonzero, is
+    still classified as a *started* provider -- the classification no
+    longer reads anything the confined process can reach at all."""
+    repository = tmp_path / "repo"
+    _init_repo(repository)
+    grant = _codex_grant(repository, tmp_path, writable=())
+    channel = grant.provider_channel
+    fake = _write_fake_provider(repository, _forge_everything_reachable(channel))
+    _commit_all(repository, "test: baseline")
+    adapter = CodexCliAdapter(channel, model="m", reasoning_effort="high", executable=str(fake), boundary=grant)
+    from workflow_coordinator.adapter import AgentExecutionRequest, ROUTING_RESULT_ENVELOPE_CONTRACT
+    request = AgentExecutionRequest(
+        Invocation("RUN-1", "H001", "INV-1"), "hello", repository,
+        ROUTING_RESULT_ENVELOPE_CONTRACT, 15.0, permitted_routes=("done",),
+    )
+    outcome = adapter.execute(request)
+    assert outcome.timed_out is False
+    assert outcome.returncode == 1
+    assert "Codex CLI exited 1" in outcome.diagnostics
+
+
+def test_f1_claude_shaped_provider_that_ran_and_forged_the_scratch_is_still_classified_as_started(tmp_path):
+    """(1), the started half, Claude-shaped: the Claude channel is
+    read-only, so the external scratch bound at ``/tmp/s`` is the only
+    writable, host-visible location reachable at all; forging it (and
+    writing a file shaped like the retired marker there) must not change
+    the classification either."""
+    repository = tmp_path / "repo"
+    _init_repo(repository)
+    fake = _write_fake_provider(repository, '''\
+        import pathlib, sys
+        scratch = pathlib.Path("/tmp/s")
+        (scratch / ".wfc-boundary-started").write_text("forged")
+        for child in scratch.iterdir():
+            try:
+                child.unlink()
+            except IsADirectoryError:
+                pass
+        sys.exit(1)
+    ''')
+    _commit_all(repository, "test: baseline")
+    grant = _claude_grant(repository, tmp_path, writable=())
+    adapter = ClaudeCliAdapter(grant.provider_channel, model="m", reasoning_effort="high",
+                                executable=str(fake), boundary=grant)
+    from workflow_coordinator.adapter import AgentExecutionRequest, ROUTING_RESULT_ENVELOPE_CONTRACT
+    request = AgentExecutionRequest(
+        Invocation("RUN-1", "H001", "INV-1"), "hello", repository,
+        ROUTING_RESULT_ENVELOPE_CONTRACT, 15.0, permitted_routes=("done",),
+    )
+    outcome = adapter.execute(request)
+    assert outcome.timed_out is False
+    assert outcome.returncode == 1
+    assert "Claude CLI exited 1" in outcome.diagnostics
+
+
+def test_f1_a_boundary_that_fails_before_exec_is_still_classified_as_not_started(tmp_path):
+    """(1), the not-started half, exercising the real signal-based
+    classification rather than the pre-launch ``validate()`` shortcut N7
+    already covers: the command `bwrap` is asked to exec does not exist, so
+    `bwrap` forks (writing `child-pid`) and then fails to exec it -- never
+    writing an `exit-code` document. This is fact (c) from the maintainer's
+    own candidate description: an exec failure looks, on the wire, exactly
+    like a mount-setup failure, and both must classify as not-started."""
+    repository = tmp_path / "repo"
+    _init_repo(repository)
+    _commit_all(repository, "test: baseline")
+    grant = _codex_grant(repository, tmp_path, writable=())
+    missing_executable = str(repository / "does-not-exist")
+    adapter = CodexCliAdapter(grant.provider_channel, model="m", reasoning_effort="high",
+                               executable=missing_executable, boundary=grant)
+    from workflow_coordinator.adapter import AgentExecutionRequest, ROUTING_RESULT_ENVELOPE_CONTRACT
+    request = AgentExecutionRequest(
+        Invocation("RUN-1", "H001", "INV-1"), "hello", repository,
+        ROUTING_RESULT_ENVELOPE_CONTRACT, 15.0, permitted_routes=("done",),
+    )
+    with pytest.raises(CodexCliError, match="execution boundary failed before the provider started"):
+        adapter.execute(request)
+
+
+_RETRY_RESULT = (
+    '{"schema_version":1,"run_id":"RUN-1","hop_id":"H001","invocation_id":"INV-1",'
+    '"result":{"schema_version":1,"status":"completed","requested_route":"retry",'
+    '"scope_changed":false,"requires_human":false,"escalation":null,"findings":[],'
+    '"claimed_commits":[],"commit_intent":{"paths":["%s"],"subject":"docs(workflow): WI-1 H001 fixture"},'
+    '"evidence_refs":[],"summary":"hop1"}}'
+)
+
+
+def test_f2_a_second_boundary_hop_is_refused_without_any_state_from_the_first_hop_leaking_in(tmp_path):
+    """(2): two consecutive boundary-selected Hops of one Run through the
+    real dispatch path, the channel directory derived exactly as
+    ``operator.py``'s dispatch frame derives it (per invocation, under the
+    Run's own state root). The first Hop succeeds and leaves its own result
+    in its own channel directory. Between the Hops, something changes on
+    the host (here: a hardlink alias appears in the writable grant, exactly
+    the shape N7 already proves is refused) -- simulating what P5 asks for
+    without needing a live, breakable `bwrap` install. The second Hop must
+    be refused by name, as cleanly as a first Hop would be, and nothing
+    about Hop 1's channel, result or marker-shaped state may be visible to
+    or required by Hop 2's classification."""
+    repository = tmp_path / "repo"
+    _init_repo(repository)
+    (repository / "writable").mkdir()
+    protected = repository / "protected.txt"
+    protected.write_text("protected\n")
+    fake = _write_fake_provider(repository, f'''\
+        import pathlib, sys
+        sys.stdin.read()
+        args = sys.argv[1:]
+        output = pathlib.Path(args[args.index("--output-last-message") + 1])
+        pathlib.Path("writable/hop1.txt").write_text("hop1\\n")
+        output.write_text({_RETRY_RESULT % "writable/hop1.txt"!r})
+    ''')
+    head = _commit_all(repository, "test: baseline")
+    workflow = profile({"work": replace(
+        phase({"done": route("complete"), "retry": route("goto", "work")}, role="worker"),
+        authorized_scope=("writable", "fake-provider.py"),
+    )})
+    state = tmp_path / "state"
+    association = register_checkout(state, repository)
+    run_root = checkout_state_root(state, association)
+    auth = _auth(tmp_path)
+
+    def _grant_for(invocation_id: str) -> BoundaryGrant:
+        channel = run_root / "provider-channel" / invocation_id
+        channel.mkdir(parents=True)
+        return BoundaryGrant(
+            mode="bubblewrap", repository=repository, writable_repository_paths=("writable",),
+            readable_host_paths=(auth,), provider_channel=channel, provider_channel_writable=True,
+        )
+
+    run = replace(run_for(workflow, budget=2), current_head=head, baseline_head=head)
+    grant1 = _grant_for("INV-1")
+    adapter1 = CodexCliAdapter(grant1.provider_channel, model="m", reasoning_effort="high",
+                                executable=str(fake), boundary=grant1)
+    hop1 = run_real_one_hop(
+        run, workflow, repository, _components(),
+        agent_operating_contract=load_agent_operating_contract(),
+        state_root=state, association=association,
+        task_payload="fixture", invocation_id="INV-1", persona="fixture persona",
+        timeout_seconds=15, executable=str(fake), adapter=adapter1,
+    )
+    assert hop1.reduction.run.status.value == "ready"
+    assert hop1.reduction.run.hop_used == 1
+    assert (repository / "writable" / "hop1.txt").read_text() == "hop1\n"
+    hop1_channel_contents = sorted(p.name for p in grant1.provider_channel.iterdir())
+    assert "result-message.json" in hop1_channel_contents
+
+    # Something changes on the host between the two Hops (never the agent's
+    # own doing -- the agent could not create this from inside the view,
+    # exactly as N7 proves): a hardlink alias appears in the writable grant.
+    (repository / "writable" / "alias").hardlink_to(protected)
+
+    grant2 = _grant_for("INV-2")
+    adapter2 = CodexCliAdapter(grant2.provider_channel, model="m", reasoning_effort="high",
+                                executable=str(fake), boundary=grant2)
+    # The alias is refused by validate() itself, before any bwrap process is
+    # built (the same primitive N7 already proves) -- a pre-launch refusal,
+    # not the started-signal classification -- but it is still a clean
+    # not-started outcome, reached without any dependency on Hop 1's state.
+    with pytest.raises(Slice4Error, match="local pre-acceptance executable launch failure"):
+        run_real_one_hop(
+            hop1.reduction.run, workflow, repository, _components(),
+            agent_operating_contract=load_agent_operating_contract(),
+            state_root=state, association=association,
+            task_payload="fixture", invocation_id="INV-2", persona="fixture persona",
+            timeout_seconds=15, executable=str(fake), adapter=adapter2,
+        )
+    assert protected.read_text() == "protected\n"
+    assert grant1.provider_channel != grant2.provider_channel
+    # Hop 1's own channel and result are exactly as Hop 1 left them -- Hop
+    # 2's refusal reads nothing from it and writes nothing into it.
+    assert sorted(p.name for p in grant1.provider_channel.iterdir()) == hop1_channel_contents
+    assert not (run_root / "dispatch.json").exists()
