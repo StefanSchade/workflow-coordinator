@@ -1,0 +1,911 @@
+= WFC Execution Boundary Slice A: Opus assurance review after the rework
+:toc:
+:toclevels: 2
+:revdate: 2026-11-26
+
+Standing:: Durable review artifact of
+`WI-WFC-EXEC-BOUNDARY-ASSURANCE-001` (Run
+`RUN-49cd6342ade049969ccd814f70b060d8`, Hop `H001`), the second Opus-class
+read of Slice A and the first after its rework. Informative. Not a
+governance document, not an authorization, not a maintainer acceptance, not
+the Layer 2 live qualification, and not a Finding disposition. It changes no
+code, no test and no existing document.
+Subject:: The integrated state of this branch, `git diff c5843d8 HEAD` under
+`src`, `tests` and the reconciled `docs/` trees, measured against
+link:../../backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc[the
+binding contract as it now stands], the maintainer's 2026-11-26 dispositions
+of F1 to F5, and
+link:wfc_execution_boundary_slice_a_opus_implementation_review.adoc[the first
+Opus implementation review]. The rework commits are `924332e`, `1324c28`,
+`7ab61e8`, `bfc3045`, `7b8c388` and the operator lint fix `93a3d26`. The two
+rework reviews
+(link:wfc_execution_boundary_rework_ab_broad_review.adoc[broad],
+link:wfc_execution_boundary_rework_ab_focused_review.adoc[focused]) and
+link:wfc_execution_boundary_slice_a_layer1_qualification_record.adoc[the
+Layer-1 qualification record] were treated as claims to challenge, not as
+evidence.
+Decision this supports:: Whether the implementation may be promoted into the
+installed Runtime as a Layer-1-qualified, opt-in feature (boundary default
+`direct`, not enabled for this repository, no Layer 2).
+Evidence discipline:: Every finding carries an evidence class. *EXECUTED*
+means this Hop ran it and observed the result. *TRACED* means the code was
+followed by hand and the conclusion follows from the text alone. *SUSPECTED*
+means plausible but unverified, with the verifying probe named. This Hop's
+sandbox refuses to start `bwrap` at the permission layer and has no `pytest`,
+no `ruff` and no `jsonschema`, so no test in the suite was run here;
+everything marked EXECUTED was run as a direct probe against the real
+modules, with scratch outside the repository. The operator's 2026-11-26
+`bwrap` measurements on `agent-vm` (kernel `6.12.86+deb13-amd64`,
+`bubblewrap 0.11.0`) are inputs, marked *OPERATOR-MEASURED*, never this
+Hop's results.
+
+[[verdict]]
+== 1. Verdict
+
+. *Promote as a Layer-1-qualified, opt-in feature.* F1 to F5 are all really
+  fixed, each by the mechanism its disposition required; I tried to forge,
+  withdraw and stale the started signal on both adapters and found no route.
+. The boundary itself is still sound: the generated view contains *exactly*
+  the contract's mount kinds plus `--json-status-fd N` and nothing else
+  (EXECUTED, token by token), and no route to unisolated execution under a
+  selected `bubblewrap` mode exists.
+. The unisolated `direct` path stays byte-identical in both adapters
+  (`prepare_direct` reads nothing from even a fully populated grant;
+  `pass_fds=()` is identical to the default; the new branch short-circuits).
+. *Two things do change for every existing user of the installed Runtime,
+  and neither is operator-documented:* the provider channel became
+  per-invocation in `direct` mode too, changing the Run-state layout and
+  `wfc archive`'s layout and content (N2); and the separate hop-timeout
+  WorkItem in the same diff raised the default per-Hop cap from 900 s to
+  14400 s and added a config key. Both are deliberate; only the first is
+  undocumented.
+. No new blocker and no new major finding. Eight minor items and four notes,
+  none of which blocks an opt-in, default-off promotion.
+. *Before the promotion commit:* document N2 (one paragraph), and refresh the
+  contract's own `Status::`/`Type::`/`Authorized here::` header and the
+  `_open.adoc` card, which still read as a pre-implementation planning record
+  and mention neither the Opus review nor the rework (N8).
+. *Before anyone actually selects `bubblewrap` on any host:* fix N1 (a
+  reachable, nondeterministic launch refusal when the status pipe lands on
+  file descriptor 9) and N3 (the unchecked, undocumented new `bwrap`
+  capability prerequisite). Both are small and local.
+. F6 to F15 need no action before promotion. F14 and F15 are moot; F7 and F9
+  are reduced to notes by the rework; the rest stay open as the maintainer
+  intended.
+
+[[f1-f5]]
+== 2. F1 to F5 verification
+
+[cols="1,1,4,1,4",options="header"]
+|===
+|Id |Fixed |How verified |Evidence |Residual
+
+|F1
+|yes
+|The marker file and its `/bin/sh` touch-first wrapper are gone;
+classification now reads a Coordinator-owned `os.pipe()` whose write end
+goes to `bwrap` alone via `--json-status-fd` plus `pass_fds`, is closed by
+the Coordinator immediately after spawn, and is read back after the process
+has been waited on, with an `exit-code` document as the sole proof of
+"started". I built the full argv and read every token; drove
+`provider_started` over seven payloads; confirmed `prepare_bubblewrap`
+refuses to build an argv at all without a descriptor; confirmed the
+`direct` path never opens a pipe. Both adapters' call sites are textually
+equivalent.
+|EXECUTED for the argv, the parser and the refusal; TRACED for both
+adapters; OPERATOR-MEASURED for the fd not being open inside the view and
+for the document semantics
+|The mechanism is sound; four small items hang off it: N1 (fd 9), N3
+(unchecked `bwrap` capability), N5 (docstring versus behaviour on
+`timed_out`), N9 (no case asserts the signal survives the `.git`-file
+wrapper on a nonzero exit).
+
+|F2
+|yes
+|The channel is `<run_root>/provider-channel/<invocation_id>` at both
+construction sites, `invocation_id` is a fresh `uuid4` per Hop, creation
+refuses rather than reuses a leftover, and nothing is removed at Hop end
+(deliberate, for `wfc archive`). The archive reaches two levels deeper and
+keeps the historical depth-one checkout patterns. I built a synthetic
+three-invocation Run-state tree and ran `_plan_run_files` and
+`collect_run_files` against it. No symptomatic clean-up was added anywhere.
+|EXECUTED for the archive; TRACED for `operator.py`/`slice4.py`
+|N2: the per-invocation layout applies in `direct` mode too, so the
+Run-state layout and the archive change for every user. N7: a preflight
+refusal *after* the channel `mkdir` leaves an empty invocation directory.
+
+|F3
+|yes, as dispositioned
+|The disposition asked for documentation and contract correction, not code.
+All four parts are present: the contract is corrected in three places
+(credential rule 1, the outside-sources table row, the mount-kind table
+row) from "narrowed to what the live qualification proves necessary" to an
+operating recommendation; the Operator Manual states the explicit
+read-authority extension and that WFC does not narrow it; the overclaiming
+test is renamed to what it proves and a companion test states the accepted
+behaviour; and the "no channel from inside a Run" argument is traced in the
+contract with three tests behind it. I re-traced that argument myself:
+`_boundary_authentication_path()` takes no argument, reads `os.environ`
+once per Hop in the Coordinator process, opens no file, and the `boundary`
+key itself is frozen in the Commission envelope, so no in-Run edit of
+`.wfc/config.yaml` can change the current Run's mode.
+|TRACED for the influence channels; EXECUTED for the documents
+|None against the disposition. The mount still accepts any existing
+disjoint host path, by decision.
+
+|F4
+|yes
+|Both tautological assertions are gone: the `no_host_backing` probe and its
+self-satisfying assertion were deleted from the N12 case, whose docstring
+now says explicitly that it establishes nothing about the sandbox root; the
+nested-`bwrap` case's empty failure branch now asserts a real property
+(a refusal is reported on stderr). The measurement itself lives in a new
+qualification record with platform data, method, the with/without table,
+explicit non-claims, a per-claim layer map and a re-qualification trigger,
+and the contract's exit-criteria section now states that criterion 1 is
+still *not* met. No persistence infrastructure was added.
+|EXECUTED for the diff; OPERATOR-MEASURED for the measurement itself
+|The nested test's failure branch has never been exercised on any host; the
+record says so. The measurement is valid only for the stated platform, by
+design.
+
+|F5
+|yes, as dispositioned
+|`AbsentWritableScopeEntryError` is a named, fail-closed refusal raised
+inside `derive_boundary_grant`, before the channel directory is created and
+before any dispatch, wrapped by `operator.py` into `OperatorPreflightError`.
+I exercised all six scope shapes directly: an absent entry that is not a
+declared artifact is refused (file-shaped *and* directory-shaped); a
+declared artifact resolves to its nearest existing ancestor; the degenerate
+"no ancestor at all" case is refused rather than widened to the repository
+root; an existing entry is granted as itself; one absent entry refuses a
+whole otherwise-valid list. `missing_writable_targets`, the pre-create loop
+and the `finally` removal bracket are gone, and `grep` over
+`execution_launcher.py`, `execution_boundary.py`, both adapters, `slice4.py`
+and `operator.py` finds no `mkdir` that can touch the repository at all. The
+contract's `<<mounts>>` rule and `<<a-lifecycle>>` section are rewritten, the
+Operator Manual and the `ch07` failure-mode table carry the remedy, and the
+long-term problem is a separate backlog record.
+|EXECUTED for every scope shape and for the absence of repository `mkdir`;
+TRACED for the dispatch frame
+|N4: the new backlog record still describes the retired pre-create
+behaviour in the present tense. N6: on the legacy `--durable-artifact`
+path, artifact resolution is available at Hop 1 but not at Hop 2+.
+|===
+
+Two things in this table deserve to be said plainly, because a verified
+absence of defects is a result. First, the F1 mechanism is a genuine
+improvement in kind, not a patch: the classification input moved from "a
+file inside the view" to "a descriptor that does not exist inside the view",
+and the `fd 9` collision the `.git`-file masking could have caused was
+noticed and guarded in the same change — I verified by execution that dash
+really does clobber exactly fd 9 through that wrapper and no other number.
+Second, the F5 refusal is complete in the dimension that mattered: there is
+now no code path under the boundary that creates anything inside the
+repository, so the "directory where a file was authorized" class is closed,
+not merely narrowed.
+
+[[new-findings]]
+== 3. New findings, ranked by severity
+
+No blocker and no major finding. Severity is relative to promoting an
+opt-in, default-off feature whose only user is a Level-1 operator.
+
+[cols="1,1,1,3,3,3,3,2",options="header"]
+|===
+|Id |Sev |Evidence |Location |Defect |Concrete failure scenario |Recommended fix |Owner scope
+
+|N1
+|minor
+|EXECUTED
+|`src/workflow_coordinator/execution_boundary.py:295-304`;
+`src/workflow_coordinator/execution_launcher.py:275-283`
+|`build_argv` refuses any `status_fd` equal to the reserved
+`.git`-file-mask descriptor 9, unconditionally — including for a
+directory-shaped `.git`, where no `/bin/sh` wrapper is emitted and no
+collision is possible — and `open_started_signal` takes whatever number
+`os.pipe()` hands out.
+|With five unrelated descriptors open in the engine process at dispatch
+time, `os.pipe()` returns `(8, 9)` and the write end is 9 (I reproduced the
+descriptor arithmetic). Every boundary-selected Hop then refuses with
+`BoundaryConfigurationError`, which both adapters collapse into "local
+pre-acceptance executable launch failure" — a message that names neither
+the boundary nor the real cause. Fail-closed, but nondeterministic and
+undiagnosable from the operator's output.
+|Renumber instead of refusing: `os.dup2` the write end to a descriptor the
+wrapper does not touch (or simply retry the pipe) in
+`open_started_signal`, and keep the `build_argv` guard as a last-resort
+assertion applied only when the `.git`-file wrapper is actually emitted.
+|`execution_launcher.py`, `execution_boundary.py`, one unit test asserting
+a launch with a forced fd-9 pipe still succeeds
+
+|N2
+|minor
+|EXECUTED
+|`src/workflow_coordinator/operator.py:1063`, `:1080`;
+`src/workflow_coordinator/frontdoor/archive.py:397-441`
+|The per-invocation channel path is computed and created in the
+`adapter is None` branch regardless of boundary mode, so `direct`-mode Runs
+— every Run in the installed Runtime — also get
+`<run_root>/provider-channel/<invocation_id>/`, where they previously had
+one reused `<run_root>/provider-channel/`. Nothing operator-facing says so.
+|A Hop-16 Run now leaves 16 channel subdirectories instead of one reused
+directory, and `wfc archive` copies every invocation's
+`result-message.json`, `structured-result.schema.json` and
+`claude-closed-settings.json` at a new, one-level-deeper path instead of
+only the last Hop's (I built a three-invocation tree and observed exactly
+that). Any consumer tooling or habit that reads
+`run/checkouts/<id>/provider-channel/<name>` from an archive finds nothing
+there.
+|Either state the change where the archive layout and the Run state
+directory are described (Operator Manual, and the contract's `<<channel>>`
+section, which currently argues the invocation component only from the
+boundary's needs), or scope the invocation component to `bubblewrap` mode
+and leave `direct` on the flat path. The first is one paragraph; the second
+is a two-line conditional.
+|one Operator Manual passage and one contract sentence, or
+`operator.py` plus `slice4.py` plus the archive test
+
+|N3
+|minor
+|TRACED
+|`src/workflow_coordinator/operator.py:129-136`;
+`src/workflow_coordinator/execution_launcher.py:293-327`
+|The F1 fix introduces a new host prerequisite — an installed `bwrap` that
+supports `--json-status-fd` and writes the documented document sequence —
+and neither preflight nor any document checks or states it. The preflight
+probe is still `bwrap --unshare-user --dev /dev -- /bin/true`, which an old
+`bwrap` passes; `provider_started` treats an unparseable or absent stream as
+"not started" and nothing distinguishes that from a real setup failure.
+|On a host with a `bwrap` that rejects `--json-status-fd`, or after a future
+`bwrap` changes the stream's shape, every boundary-selected Hop whose
+provider exits nonzero is reported as "execution boundary failed before the
+provider started", and the provider's real diagnostic is discarded. The
+contract's own rule is that an unmet prerequisite must be a *named*
+preflight refusal; this one is an unnamed misclassification. I confirmed by
+execution that a stream with any unparseable prefix yields `started=False`.
+|Add a preflight check that the resolved `bwrap` accepts
+`--json-status-fd` (a trivial probe writing to a throwaway pipe) and refuse
+by name if it does not; state the minimum `bwrap` version where the other
+boundary prerequisites are listed. Optionally require the `child-pid`
+document to be present as a protocol sanity check, so "protocol not
+understood" is distinguishable from "nothing ran".
+|`operator.py`, the Operator Manual's prerequisite list, one unit test
+
+|N4
+|minor
+|EXECUTED
+|`docs/backlog/FTR-WFC-EXECUTION-BOUNDARY-FILE-SCOPE-CREATION.adoc:25`
+|The Problem section still states, in the present tense, "The
+implementation pre-creates absent writable entries as directories (the
+contract's mount rule 1) unless the phase declares the path as a durable
+artifact". That is the pre-rework behaviour and is now false of the
+implementation and of the contract rule it cites.
+|A reader of the backlog record — the record a later design Commission will
+be handed — is told the boundary silently creates directories, and will
+design against a behaviour that no longer exists. The immediately following
+interim-decision paragraph contradicts it, which makes the record
+self-inconsistent rather than merely stale. The rework's own focused review
+named this exact line as a non-blocking residual; it was not corrected.
+|Past tense, or "before this disposition". One sentence.
+|one line in the backlog record
+
+|N5
+|minor
+|TRACED
+|`src/workflow_coordinator/execution_launcher.py:262-268`;
+`src/workflow_coordinator/claude_adapter.py:393`;
+`src/workflow_coordinator/codex_adapter.py:488`
+|`StartedSignal`'s docstring says "The pipe is deliberately never consulted
+when the adapter's own timeout/kill sequence fired". Both adapters call
+`provider_started(started_signal)` unconditionally and then discard the
+value when `timed_out` is true, so the pipe *is* read — a blocking read — on
+the kill path.
+|No classification consequence today, and the contract's
+`<<started-signal>>` section states the real behaviour precisely ("still
+drained and closed in every case ... but its content never changes the
+classification"). The defect is that the source's own statement is the one a
+future maintainer will read, and it makes the kill path look free of a
+blocking read on a descriptor whose liveness depends on `bwrap` not leaking
+the write end to a descendant that outlives it.
+|Align the docstring with the contract's wording, or guard the call
+(`started = ... if started_signal is not None and not timed_out else True`),
+which also removes the read from the kill path entirely.
+|`execution_launcher.py` docstring, optionally two adapter lines
+
+|N6
+|minor
+|TRACED
+|`src/workflow_coordinator/operator.py:1034-1038`, `:1065-1073`,
+`:559-581`
+|`phase_artifacts` is the Commission-level `durable_artifacts` tuple only
+while `run.hop_used == 0`, and `artifact_map.get(run.phase, ())` afterwards.
+On the legacy `--durable-artifact` path the two are mutually exclusive, so
+`artifact_map` is empty and later Hops see no declared artifacts at all.
+With the F5 refusal in force this difference is now load-bearing for
+availability, not only for grant width.
+|A legacy-input Run whose initial phase is `DurableArtifact.OPTIONAL`, whose
+declared artifact does not exist yet, and which is re-entered by a route:
+Hop 1 is admitted (the artifact resolves to its ancestor), Hop 2 is refused
+by `AbsentWritableScopeEntryError` for the same path, mid-Run. The
+commission-time guards at `:561` and `:575` close the `REQUIRED` variants
+but not `OPTIONAL`.
+|Either carry the legacy artifacts into `artifact_map` under the initial
+phase so both Hops see the same declaration, or refuse the legacy input at
+commission time when the boundary is selected.
+|`operator.py`, one unit test
+
+|N7
+|minor
+|TRACED
+|`src/workflow_coordinator/operator.py:1079-1086`
+|The per-invocation channel directory is created *before*
+`_preflight_boundary` and `validate_grant` run, so every non-F5 preflight
+refusal leaves an empty `<run_root>/provider-channel/<invocation_id>/`
+behind, and nothing removes it.
+|An operator iterating on an unmet prerequisite (no `bwrap`, no
+authentication path, provider not view-visible) accumulates one empty
+directory per attempt under the Run state root. Outside the repository,
+invisible to Git, no security effect — but the contract's new claim that a
+refusal "leaves nothing new anywhere on the host" is true only of the F5
+refusal, and only the F5 test asserts it.
+|Create the channel after the preflight checks that do not need it, or
+remove it on a refusal. Alternatively state the scope of the claim.
+|`operator.py`, one assertion in the existing preflight test
+
+|N8
+|minor
+|EXECUTED
+|`docs/backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc:3-20`;
+`docs/backlog/_open.adoc:691-700`
+|The contract's body was reconciled thoroughly by the rework, but its header
+was not: `Type::` still says "future technical record ... the *binding
+contract and implementation concept* for the follow-up implementation
+Commission", `Authorized here:: Nothing. Commissioning the implementation is
+a separate maintainer action.`, and `Status::` records only the
+`SLICE-A-004` implementation Run and its review. Neither the Opus
+implementation review, its five major findings, the two rework Commissions
+nor the unmet exit criterion 1 appears there. The `_open.adoc` card carries
+the same text.
+|A reader who consults the record's own standing fields — which is what
+those fields are for, and what a promotion decision will be recorded in —
+concludes that the current state is the un-reviewed 2026-11-26
+implementation and that nothing has been authorized since.
+|Refresh `Status::` with the review and the two rework Commissions, note
+that exit criterion 1 is not yet met (the (g) section already says so), and
+retire the stale `Type::`/`Authorized here::` wording. Naturally done in the
+promotion commit.
+|the contract header and the `_open.adoc` card
+
+|N9
+|note
+|EXECUTED for the mechanism; absent as a test
+|`tests/integration/test_execution_boundary_dispatch.py:326-359`
+|No Layer-1 case asserts that the started signal survives the
+`.git`-file-shaped `/bin/sh` wrapper in the direction that matters. `test_p5`
+drives a linked worktree with a real grant, but its provider exits 0, so the
+started check is never consulted; every case that does consult it uses a
+directory-shaped `.git`.
+|If the wrapper ever clobbered the status descriptor, a linked-worktree Hop
+whose provider ran and exited nonzero would be misclassified as "boundary
+failed before the provider started" — and `.git`-as-a-file is exactly WFC's
+own self-development shape. I verified by execution that the wrapper
+preserves every passed descriptor except 9 (see N1), so the property holds
+today; it is simply unasserted.
+|Add a linked-worktree case whose provider exits nonzero and assert it is
+classified as started.
+|one integration test
+
+|N10
+|note
+|TRACED
+|`src/workflow_coordinator/codex_adapter.py:443-500`;
+`src/workflow_coordinator/execution_launcher.py:368`
+|On the Codex path `prepared.environment` is `None`, so the confined process
+inherits the Coordinator's entire environment, now including the new
+`WFC_BOUNDARY_AUTHENTICATION_PATH` and the host `TMPDIR` the view does not
+bind (the first review's F13). The contract's (d) table enumerates mounts
+and provider settings but says nothing about the inherited environment.
+|No new exposure in practice — the authentication path is visible as a mount
+inside the view anyway — but the environment is an unenumerated part of what
+crosses into the boundary, and the Codex adapter still discards
+`prepared.cwd` and `prepared.environment` entirely rather than passing them
+to `Popen`, so a future grant that needed either would be silently dropped.
+|Record the inherited environment as a named, deliberate part of the view in
+(d), and have the Codex adapter pass the seam's `cwd`/`environment` through.
+Decide the `TMPDIR` question at Layer 2.
+|one contract table row; optionally two `codex_adapter.py` lines
+
+|N11
+|note
+|SUSPECTED
+|`src/workflow_coordinator/execution_launcher.py:293-302`
+|`provider_started` performs a blocking read whose termination depends on no
+process other than `bwrap` holding the write end. The operator measurement
+covers the *final command's* descriptor table; it does not cover `bwrap`'s
+own intermediate init process under `--unshare-pid`.
+|If that init process retained the write end and outlived `bwrap` (it should
+not), the adapter would hang after the provider exited instead of
+classifying. Probe: inside the view, double-fork a `setsid` process that
+sleeps 60 s, have the main command exit 1, and check that the adapter
+returns promptly and reports a *started* provider.
+|No change expected; the probe either closes the question or finds a real
+hang.
+|an operator probe, then a sentence in the contract
+
+|N12
+|note
+|EXECUTED
+|`src/workflow_coordinator/frontdoor/archive.py:398`, `:431`
+|`_plan_run_files` and `collect_run_files` now call `channel_dir.iterdir()`
+where they previously called `glob`, without the `OSError` tolerance the
+surrounding archive code generally has, and they silently skip any file
+recorded directly in `provider-channel/` by the pre-rework intermediate
+layout.
+|Only affects Run-state trees produced by commits `36292c7..6b89880`, which
+were never released; the released depth-one checkout shape still archives
+unchanged (asserted by its own test). An unreadable channel directory would
+now raise out of `wfc archive` rather than be skipped.
+|Nothing, unless the intermediate layout exists on a host that matters; a
+`contextlib.suppress(OSError)` around the `iterdir` would match the
+neighbouring style.
+|one archive line, or nothing
+|===
+
+[[f6-f15]]
+== 4. F6 to F15 re-assessment
+
+I re-read each against the final code rather than against the first
+review's text. "First" is the first review's severity; every row carries its
+own evidence class.
+
+[cols="1,1,1,2,5",options="header"]
+|===
+|Id |First |Mine |When |Why, with evidence class
+
+|F6
+|minor
+|minor
+|later
+|Unchanged: `_preflight_boundary` still accepts an unread `binding`
+parameter, check 8 of (e) is still absent, and the external-scratch half of
+check 4 is still unreachable because `operator.py` never passes
+`external_scratch` to `derive_boundary_grant` (TRACED, confirmed at
+`operator.py:1065-1073`). All three concern the *live* provider's settings
+and scratch, which only matter once a real CLI runs inside the view, so this
+belongs with Layer 2, not with promotion of a default-off feature.
+
+|F7
+|minor
+|note
+|later, with N1
+|*Partly resolved by the rework.* The concrete scenario F7 named — N15's
+unnormalizable scope reaching the dispatch frame as a bare
+`BoundaryConfigurationError` — is closed: `operator.py:1074-1078` now wraps
+`derive_boundary_grant` in a named `OperatorPreflightError`. What remains is
+the class hierarchy (`BoundaryConfigurationError` is still a plain
+`ValueError`, not an `ExecutionNotStartedError`) and both adapters'
+`except (OSError, ValueError)` collapsing every launch-time boundary failure
+into "local pre-acceptance executable launch failure". N1 gives that residue
+its first concrete trigger, which is why the two should be fixed together.
+
+|F8
+|minor
+|minor
+|later, with N1
+|*Narrowed, not closed.* The repository destination is still not checked
+against the generated system view (`_check_not_in_generated_system_view` has
+exactly two call sites, the channel and the authentication path), and
+`validate()` accepts a repository whose canonical path lies under `/tmp`
+(EXECUTED). The operator's measurement (d) confirms the shadowing is real.
+But the test-suite half of the first review's worry is already structurally
+impossible: `tests/conftest.py:176-192` refuses a pytest scratch at or under
+`/tmp` and a checkout under `/tmp`, so the Layer-1 suite can never run in
+the shadowing configuration. What is left is an operator-facing defect — a
+repository under `/tmp` silently gets an empty view instead of a named
+refusal — which is one guard and one test in the same module as N1. The
+first review's probes P2 and P3 are therefore largely answered without
+`bwrap`.
+
+|F9
+|minor
+|note
+|later
+|*Reduced.* TRACED. The new `test_f2_...` case builds the channel exactly where
+`operator.py` builds it, under the Run's own state root, so the production
+shape is now exercised at the dispatch level. N11's own case still uses
+`tmp_path/channel`, so the Run-state-name assertions are still made in a
+directory that never contained them — and F9's recommended fix text is now
+outdated, because the production adjacency moved from `../run.json` to
+`../../run.json`. Structurally the property holds regardless: nothing
+outside the repository is mounted except the channel, the authentication
+path and the scratch, so the Run state directory has no in-view path at all.
+Test quality, not a defect.
+
+|F10
+|minor
+|minor
+|later
+|Unchanged, and now demonstrably inaccurate in two places rather than one.
+`run_to_json` drops the `boundary` key whenever its value is `direct`
+(EXECUTED, `serialization.py:1359-1368`), so a post-slice `direct` Run
+persists no `boundary` field; `audit.py:383-384`'s comment nevertheless
+asserts "Absent (None) means unambiguously a Run from before this slice",
+and the contract repeats it at `:1200`. The projection also still reads the
+Run-wide value rather than the per-Hop `StagedQualificationAttempt.boundary`
+that (d) designates. No security consequence — both states mean unisolated
+— but a false comment in source is worth one line.
+
+|F11
+|note
+|note
+|later
+|Unchanged (`operator.py:154`, TRACED): still a string-prefix test on
+`shutil.which()`'s result with no `realpath`. A Layer-2 observation about
+the real CLI install layout will settle whether it matters at all.
+
+|F12
+|note
+|note
+|later
+|Unchanged; EXECUTED: `normalized_writable_scope(("./src",
+"src"))` returns both entries, and a scope of `"."` passes normalization.
+Both are still refused downstream by `validate()` with a message that names
+neither the entry nor the cause.
+
+|F13
+|note
+|note
+|Layer 2
+|Unchanged (TRACED); folded into N10. The Codex path still carries no
+external scratch and still inherits a host `TMPDIR` the view does not bind.
+The live effect remains SUSPECTED, as in the first review.
+
+|F14
+|note
+|*moot*
+|done
+|EXECUTED. Fixed by the rework as an unavoidable side effect: the rework's own change
+to `tests/unit/test_execution_launcher.py` made the Developer Guide's
+`bwrap`-dependent test list inaccurate, so commit `924332e` added the file
+with the precise qualifier ("resolve ... even though they never invoke it").
+This is F14's entire recommended remedy.
+
+|F15
+|note
+|*moot*
+|done
+|TRACED. Resolved exactly as the first review predicted ("nothing if F2 is fixed").
+The per-invocation channel removes the cross-Hop half: a Hop-N agent cannot
+reach Hop N+1's channel, cannot plant a `claude-closed-settings.json` for a
+later Hop to archive, and cannot leave a directory at `result-message.json`
+to break later Hops. The remaining half is now explicitly recorded:
+`archive.py:114-117` states that the three names are agent-reachable on the
+Codex path and are "never trusted content, only trusted *locations*".
+|===
+
+*Necessary before promotion: none of F6 to F15.* F7, F8 and N1 share one
+module and should be one small follow-up Commission; F6, F11 and F13 are
+Layer-2 work; F9, F10 and F12 are one-line corrections whenever their files
+are next touched.
+
+[[security]]
+== 5. Security re-check, test-and-claims audit, default-path impact
+
+=== 5.1 Security: the first review's "sound" still holds
+
+*The mount set is exactly the contract's kinds.* I built the argv for a full
+Codex-shaped grant (writable repository subpath, writable channel,
+authentication path, external scratch) and read all 70 tokens. In order:
+`--die-with-parent`, `--json-status-fd N`, `--dev /dev`, `--proc /proc`,
+`--unshare-pid`, `--new-session`, `--ro-bind /usr /usr`, the four
+`/bin`-family symlinks, the five enumerated `/etc` read-only binds,
+`--ro-bind <repo> <repo>`, `--tmpfs <repo>/.git` plus `--remount-ro
+<repo>/.git`, `--size 268435456 --tmpfs /tmp`, `--bind <repo>/src
+<repo>/src`, `--bind <channel> <channel>`, `--ro-bind <auth> <auth>`,
+`--bind <scratch> /tmp/s`, `--remount-ro /`, `--chdir <repo>`, `--`,
+command. EXECUTED. The only change from the pre-rework argv is the
+`--json-status-fd N` pair; no fifth mount kind, no blanket home bind, no
+gitdir, no Run state directory, no wholesale `/etc`, no `--as-pid-1`, and
+`--remount-ro /` still appears exactly once, after every mount and before
+`--chdir`.
+
+*No route to unisolated execution.* `prepare` still dispatches on
+`plan.grant.mode` alone and raises on anything that is neither `direct` nor
+`bubblewrap`; `prepare_bubblewrap` now additionally refuses without a status
+descriptor, which is one *more* fail-closed gate than before. Both
+production call sites of `run_serial_hops` pass no adapter, so the derived
+grant always reaches `_execution_adapter`. The Run-wide mode is still
+checked against the Run's persisted mode as the first statement of
+`run_serial_hops`, in both directions. `run_execution_configuration_from_yaml`
+and `consumer_config_from_yaml` still accept only the two closed values, and
+the value is frozen in the Commission envelope, so no in-Run edit of
+`.wfc/config.yaml` can downgrade the current Run. The Claude adapter's
+second read of the mode is still `!= "direct"` rather than `== BUBBLEWRAP`,
+and is still fail-safe: a third mode takes the in-view branch, opens no
+status pipe, and is then refused by `prepare` before any process starts
+(TRACED). EXECUTED: a fully populated grant in `direct` mode produces a
+`PreparedLaunch` identical to an empty one.
+
+*Escape.* Nothing in the rework touches the `.git` masking, the
+hardlink-alias walk, `_real_path`'s canonicality requirement, the
+destination-overlap checks or the `build_argv` revalidation. The one new
+host-visible object is a pipe whose write end never enters the view; the
+operator measured directly that the descriptor is not open inside and that a
+write to it fails with `EBADF`, and the new Layer-1 case asserts exactly
+that through the real primitive. The confined process therefore has nothing
+to unlink, nothing to forge and nothing to withdraw. I found no new reachable
+path, and the F8 shadowing case remains the only mount-model gap.
+
+*Provider relaxations.* Still nothing relaxes. `sandbox.enabled`,
+`failIfUnavailable: true`, `allowUnsandboxedCommands: false` and
+`denyRead: ["~/"]` are unchanged literals; `enableWeakerNestedSandbox`
+appears nowhere; Codex's `--sandbox workspace-write` and
+`--ask-for-approval never` are unchanged and not boundary-conditional. The
+only boundary-conditional Claude setting is still the in-view scratch path.
+
+*Byte-identity of the unisolated path, both adapters.* `prepare_direct`
+returns `tuple(plan.argv)`, `plan.cwd`, `plan.environment` and reads nothing
+from the grant (EXECUTED). In both adapters `started_signal` is `None`
+whenever the mode is not `bubblewrap`, so no pipe is opened, `pass_fds=()`
+is passed — which CPython treats identically to the default — `started` is
+`True` by construction and the new branch cannot fire. Claude's `argv`,
+`cwd`, settings and `TMPDIR` handling on the `direct` branch are untouched
+by the rework; Codex's `argv` and its absent `cwd`/`env` likewise. TRACED
+end to end for both; the unchanged conformance suites remain the regression
+net and I could not run them here.
+
+=== 5.2 Tests and claims after the rework
+
+*The negative cases still attempt the forbidden access through the real
+dispatch path.* N1, N7, N9, N10, N11 and N13 are unchanged and still drive
+`run_real_one_hop` with a fake provider committed inside a synthetic
+repository under a real `bwrap`. The rework added four cases that are
+stronger than what they replace: two primitive-level cases that use a real
+`bwrap` and a real `--json-status-fd` (one proving an `exit-code` document
+arrives and the descriptor is closed inside the view, one proving a corrupted
+bind source yields no `exit-code` document); and two dispatch-level F1 cases
+in which the fake provider actually runs and then deletes, recreates and
+forges every file it can reach — including a file named like the retired
+marker — and must still be classified as started. One case drives two
+consecutive Hops of one Run through the real path with the production channel
+layout, which is the cross-Hop coverage the first review found absent.
+
+*No test was weakened.* Nine cases were removed; every one tested a function
+or behaviour that no longer exists (`boundary_started_marker`,
+`missing_writable_targets`, directory pre-creation), and each was replaced by
+a refusal case with a tighter assertion. `test_p2` was renamed to
+`..._an_already_existing_authorized_directory`, which is what it now proves,
+and the contract's Layer-1 positive-case list was corrected to match. No skip
+marker was introduced.
+
+*Claims.* The three overclaims the first review named are gone: the
+authentication test is renamed to `..._requires_an_existing_absolute_path`
+with a companion stating the accepted behaviour; the two "measures rather
+than assumes" docstrings now say what they do and do not establish and point
+at the record that holds the measurement; the tautological assertions are
+deleted. Layer 1 and Layer 2 are kept apart consistently — the qualification
+record's own non-claims section is the strongest statement of it in the
+repository, and `docs/architecture.md`'s retained sentence ("no
+preventive-isolation claim is made for any invocation yet") is intact. Four
+claims still say more than the code establishes, all small and all already
+listed: N4 (the backlog record's present tense), N5 (the `StartedSignal`
+docstring), F10 (`audit.py`'s comment and the contract at `:1200`), and F6
+(`_preflight_boundary`'s docstring calling itself complete while check 8 is
+absent and one check is unreachable). I found no document claiming preventive
+isolation, live qualification, or a measurement a test does not make.
+
+=== 5.3 Default-path impact for every existing user
+
+The boundary stays opt-in and off. Three things in the reviewed diff
+nevertheless reach a `direct` Run.
+
+[cols="2,1,4",options="header"]
+|===
+|Change |Reaches `direct`? |Assessment
+
+|The launcher seam, the boundary grant, the started signal
+|no
+|`prepare_direct` reads nothing from the grant, no pipe is opened, and the
+new classification branch cannot fire. Byte-identical (EXECUTED at the seam,
+TRACED at both adapters).
+
+|New configuration keys `boundary` and `hop_timeout_seconds`
+|keys yes, behaviour no for `boundary`
+|Both are optional with a default that reproduces today's behaviour, and
+`run_to_json` omits `boundary` entirely when it is `direct`, so every
+historical envelope, Run and evidence file replays byte-identical (asserted
+by a byte-identity replay test). `hop_timeout_seconds` is new surface, not
+new behaviour on its own.
+
+|Per-invocation provider channel
+|*yes*
+|N2. New directory layout under the Run state root (one subdirectory per
+invocation, never removed) and a changed `wfc archive` layout *and* content
+(every invocation's three channel files instead of only the last Hop's).
+Arguably an improvement in diagnosability; undocumented either way.
+
+|Default per-Hop timeout 900 s to 14400 s
+|*yes*
+|From the separate `WI-WFC-HOP-TIMEOUT-DEFAULT-001` in the same diff range,
+with its own broad review and its own documentation in `ch03`, `ch09` and the
+agent skill. A genuinely changed default for every user: a hung provider now
+blocks for four hours instead of fifteen minutes. Deliberate and documented;
+named here only because the promotion question asks what changes for every
+user.
+
+|Preflight
+|no
+|`_preflight_boundary` returns immediately for `direct`. No new check runs on
+the unisolated path.
+|===
+
+One secondary effect worth stating: `_resolve_hop_timeout_seconds` now reads
+and parses `.wfc/config.yaml` in `cmd_run` before `run_lifecycle` reads it
+again, so a missing or malformed config fails one step earlier than before,
+with an `OSError`- or `CommissionError`-derived message. The documented
+precedence (flag, then config key, then built-in default) and the claim that
+`wfc resume` continues with the recorded value rather than re-resolving it
+are both accurate: `lifecycle.py:616` and `:645` take the value from the
+journal's `authorized` record (TRACED).
+
+[[promotion]]
+== 6. Promotion readiness and owner decisions
+
+*Established.*
+
+* The seam, the mount model and the fail-closed selection logic, re-verified
+  after the rework (EXECUTED for the argv and the pure functions).
+* A trusted, non-forgeable, non-withdrawable started signal on both adapters,
+  on the normal, exception, exec-failure and mount-failure paths, with the
+  timeout path deliberately excluded (EXECUTED and OPERATOR-MEASURED).
+* No cross-Hop state in the boundary path: the channel is per invocation, the
+  Claude scratch is per invocation, and no marker exists.
+* A named, fail-closed refusal for an absent writable scope entry, with
+  nothing created inside the repository by any code path (EXECUTED).
+* The two Layer-1 measurements no test can make, recorded with platform data,
+  method, non-claims and a re-qualification trigger (OPERATOR-MEASURED).
+* Byte-identity of the unisolated path and byte-identical replay of
+  historical Runs and evidence.
+
+*Not established.*
+
+* *Layer 2.* Untouched. No live provider ran inside the view, no credential
+  was used, L1 to L7 are all open, exit criterion 2 stays open.
+* *Exit criterion 1.* Still unmet, and the contract now says so: it requires
+  "every N-case asserting host-side non-effect", and several N-cases remain
+  primitive-level or partial (N2 to N6, N8, N10, N11 in the first review's
+  matrix; F9 above).
+* *Exit criteria 3 and 4.* The qualification record covers two claims only
+  and says so; no document may claim preventive isolation.
+* *The M8 host prerequisite* — that no provider CLI is reachable inside the
+  view on this host — is unverified here and, by the first review's account,
+  unverified anywhere: preflight check 5 is a string-prefix test with no
+  `realpath` (F11), and the real install layout of `claude` and `codex` on
+  the qualification host was not observed.
+* *F6 to F14* are undisposed and remain open by maintainer intent; this
+  review re-assesses their severity but dispositions nothing.
+* *The suite itself.* No test was run in this Hop: no `pytest`, no
+  `jsonschema`, no `ruff`, and `bwrap` is refused at this sandbox's
+  permission layer. The Layer-1 evidence rests entirely on the Coordinator's
+  own task-check.
+
+*Decisions for the owner.*
+
+. *Promote now or after the two documentation items?* My recommendation:
+  promote, and fold N2's documentation and N8's header refresh into the
+  promotion commit itself, since the promotion is recorded in the same header.
+. *N2's shape:* document the per-invocation channel as applying in both
+  modes, or scope the invocation component to `bubblewrap` and leave `direct`
+  on the flat path. The first is one paragraph; the second preserves exact
+  archive compatibility for existing consumers.
+. *When to fix N1, N3, F7 and F8* — one small Commission in two modules. They
+  are not promotion blockers for a default-off feature, but N1 and N3 should
+  land before the boundary is selected on any host, including for Layer 2.
+. *Whether F6 to F14 are now formally dispositioned* or stay open until Layer
+  2 produces the observations several of them wait on.
+. *Whether the 14400-second default per-Hop timeout is the value to ship* in
+  the installed Runtime, which is a separate product decision that this
+  promotion carries along.
+
+[[probes]]
+== 7. Probes for the operator with real `bwrap`
+
+Each is small, offline, needs no credentials, and answers something this Hop
+could not. The first review's P1, P2, P3, P5, P6 and P8 are now answered —
+P1 and P5/P6 by the rework and the qualification record, P2 and P3 largely by
+`tests/conftest.py`'s own refusal of a `/tmp` scratch — so they are not
+repeated.
+
+[cols="1,4,4",options="header"]
+|===
+|Id |Probe |What it would show
+
+|Q1
+|Force the status pipe onto descriptor 9: open five throwaway descriptors in
+the engine process (or temporarily hard-code `status_fd=9`) and run one
+boundary-selected Hop.
+|N1 end to end: whether the Hop refuses with "local pre-acceptance
+executable launch failure", and whether the operator can tell from the output
+what happened. Then repeat with a directory-shaped and a file-shaped `.git`.
+
+|Q2
+|Inside the view, double-fork a `setsid` process that sleeps 60 s, then have
+the main command exit 1. Time the adapter's return.
+|N11: whether `bwrap`'s intermediate init process can hold the status pipe's
+write end open past the provider's exit and hang `provider_started`. Expected
+to return promptly and report a *started* provider.
+
+|Q3
+|Run the real generated argv with `--json-status-fd` replaced by an
+unsupported flag name, and separately against an older `bwrap` if one is
+available.
+|N3: what an operator actually sees when the status protocol is unavailable —
+confirming that it is reported as "boundary failed before the provider
+started" with the provider's own diagnostic lost.
+
+|Q4
+|Build a synthetic repository whose canonical path is under `/tmp` (not under
+a redirected `TMPDIR`), validate it, and `ls -a` plus `cat` a committed file
+inside the view.
+|F8's remaining operator-facing half, directly. Measurement (d) already
+indicates the shadowing; this confirms what a Level-1 operator with a
+`/tmp`-based checkout would see, and whether a named refusal is worth adding.
+
+|Q5
+|Inside the view, attempt `unshare -m` then `mount -o remount,rw
+<repository>`, and separately `unshare -Urm` followed by a bind of a host
+path onto a mount point that *already exists* inside the view.
+|The one part of the first review's P4 the measurements left open: a bind of
+a host path from a nested namespace was not conclusively tested because the
+chosen mount point did not exist. N8 of the contract asks for exactly this.
+
+|Q6
+|Run two boundary-selected Hops of one Run, then `wfc archive`, and list the
+archive tree.
+|N2 end to end: the real archive layout and content a consumer gets, and
+whether the per-invocation growth is acceptable for a 16-Hop Run.
+
+|Q7
+|Run `tests/unit/` and `tests/integration/` once with
+`WFC_BOUNDARY_AUTHENTICATION_PATH` unset and once set, and record the
+pass/skip counts with `bwrap --version` in the same output.
+|The one thing nobody has recorded: a reproducible statement of which
+Layer-1 cases pass on a named host with a named `bwrap`, which is what exit
+criterion 1's "passing under the Coordinator's task-check" currently rests on
+without a citable artifact.
+|===
+
+[[not-checked]]
+== 8. What I could not check
+
+* *Anything requiring a real `bwrap` run.* Invoking `bwrap` was refused by
+  this session's permission layer, not merely by missing user namespaces, so
+  every in-view behavioural property is assessed from the generated argv,
+  from the tests' own text, and from the operator's measurements. Q1 to Q6
+  close this.
+* *The test suite.* `pytest` and `jsonschema` are not installed and there is
+  no network, so no test was run. I could neither reproduce nor contradict the
+  Coordinator's task-check, and in particular cannot confirm that the
+  task-check host had working unprivileged user namespaces, which is what
+  makes the Layer-1 integration cases meaningful rather than failing.
+* *`ruff check .`* — `ruff` is not installed in this sandbox and installing it
+  is out of bounds. The lint gate the task names was therefore not run by me;
+  the one lint residue found in the rework (`93a3d26`, an unused import) was
+  an operator-applied fix and is absent from the current tree.
+* *Layer 2 in every part.* No credentials, no network, no authorized live
+  provider invocation. Every live question stays open exactly as the contract
+  says: whether either CLI starts inside the view, the nested Claude sandbox
+  and its socket bridge, which `/etc` entries and which authentication path
+  are actually necessary, whether Codex's `--output-last-message` strategy
+  works through the channel, and whether the channel needs to be in Claude's
+  own `allowRead`.
+* *Whether the five enumerated `/etc` entries are the necessary set.* An L6
+  output, unchanged by the rework.
+* *The real `claude`/`codex` install layout on the qualification host,* and so
+  whether preflight check 5 admits or refuses it today (M8, F11).
+* *The frequency of N1's trigger in a production engine process.* I verified
+  by execution that five extra open descriptors put the pipe's write end on
+  9, and that `build_argv` then refuses; I did not instrument a real engine
+  process to find out how many descriptors it actually holds at dispatch time.
+  That half is SUSPECTED, and Q1 settles it.
