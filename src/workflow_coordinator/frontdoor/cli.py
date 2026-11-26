@@ -21,6 +21,9 @@ def main(argv=None):
     if args[:1] == ['plan']:
         from .plan import main as plan_main
         return plan_main(args[1:])
+    if args[:1] == ['prepare-checkout']:
+        from .prepare_checkout import main as prepare_checkout_main
+        return prepare_checkout_main(args[1:])
     if args[:1] == ['request']:
         from .emit_request import main as request_main
         return request_main(args[1:])

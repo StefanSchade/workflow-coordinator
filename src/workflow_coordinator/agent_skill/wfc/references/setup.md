@@ -146,43 +146,55 @@ never invoke it:
 git config --show-origin --get-regexp '^filter\..*\.(clean|process)$'
 ```
 
-## Worktree and scratch layout
+## `wfc prepare-checkout`: one fresh checkout per Run
 
-Prepare one fresh Git worktree per Run -- a checkout that has already
-authorized one lifecycle refuses every later `wfc run`, keyed to the
-checkout's resolved top-level directory *and* its Git common directory
-together. Removing a worktree and recreating one at the *same path* is not
-fresh: it hashes to the same checkout identity and `wfc run` answers "a
-lifecycle already exists for this checkout; use `wfc resume`". A rotated
-checkout needs a new *path*, not only a fresh `git worktree add`. Write the
-task document and the Consumer Request *outside* the repository (a sibling
-scratch directory): an untracked file anywhere inside the repository counts
-as a dirty tree and refuses launch. Keep the scratch directory, the
-worktree/checkout, the Evidence repository and the installed Runtime
-(changed only by explicit promotion) apart. (Planned: a dedicated
-preparation command would make a fresh checkout mechanical and cheap.)
+```shell
+wfc prepare-checkout --repository . --path ../work-run7 --branch work/run7
+```
 
-## Preparing the check command's own environment
+One command prepares what a Run needs and removes nothing. It creates the
+worktree at `--path` on the new `--branch` from `--base-ref`
+(default `HEAD`), a sibling scratch directory (`<path>-scratch`) with `tmp/`
+for `TMPDIR`, runs this repository's declared preparation hook, and writes
+`<scratch>/launch-env.sh`. `source` that file, then run `wfc plan`/`wfc
+request`/`wfc run` in the new checkout: the baseline probe and each Hop's
+task-check inherit the launching environment. It authorizes nothing and runs
+no `plan`/`run`. It refuses by name, before creating what it can avoid
+creating: a path whose checkout identity already carries a lifecycle
+(`refused_existing_lifecycle`), an existing path, a missing parent, a path
+inside the repository, a scratch directory inside the checkout, a dirty base,
+an existing branch, an unsafe hook. One Run per checkout is unchanged: the
+identity is the resolved top-level *and* the Git common directory, so a
+rotated checkout needs a new *path*, not only a fresh `git worktree add`. A
+spent path stays spent -- this makes a fresh one cheap, never a spent one
+reusable, and removes no worktree, branch or directory.
 
-Preparing, verifying and, where the committed check or baseline probe needs
-it, correcting that command's own environment -- declared inputs, scratch
-directories, `TMPDIR` placement outside the worktree -- is ordinary
-preparation within an already-authorized Commission; it needs no separate
-human decision each time, and a probe that fails for a correctable reason
-may be retried, once corrected, in a fresh checkout. **Current limitation**:
-every fresh checkout needs its own venv with an editable install of the
-package under test (`pip install -e <checkout>`) -- a venv shared across
-checkouts, whose editable install still points at a different worktree,
-breaks *that* worktree's own task-check; do not share one venv across
-concurrent checkouts. For WFC's own self-development specifically, the
-offline test-input bundle and `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE` this
-entails are the same ordinary preparation step, described in Operator Manual
-chapter 3's offline-input guidance. Also for self-development: once a
-checkout has run `pip install -e .`, it carries a `src/*.egg-info`
-directory; do not then set `PYTHONPATH=src` when running the suite in that
-same checkout -- with the package already installed editable, `pip` and the
-import machinery see it as installed, and adding `src` to `PYTHONPATH` on
-top of that is redundant at best and can shadow the installed metadata.
-(Planned: a deterministic per-checkout preparation step would make this
-recipe mechanical rather than a manual recipe to repeat correctly every
-time.)
+## The preparation hook, and what it is trusted with
+
+The consumer-specific part -- a venv with its own editable install, declared
+inputs, whatever else the check command needs -- is a *hook*: an executable
+committed in the repository, declared by the optional one-line
+`checkout_preparation_hook:` key of `.wfc/config.yaml` or named with `--hook
+<repository-relative path>` (`--no-hook` skips it). WFC reads the declaration
+and the hook **at the base ref**, never from a working tree or a Run's
+candidate; gives it the checkout path, the scratch path and the base commit
+with `TMPDIR` set; and exports the bounded, never-trusted `NAME=VALUE` lines
+it prints on stdout (its only output channel -- diagnostics go to stderr),
+composing `PATH` itself from the hook's `WFC_PREPARE_PATH_PREPEND`. A failing
+or hanging hook is a named refusal; what was created is reported, left in
+place.
+
+**A committed hook is code the maintainer approved by committing it**: it runs
+on the operator's host, as the operator, before any Hop and outside every WFC
+boundary, and WFC bounds its own writes, not the hook's. Never write or edit a
+hook, or `.wfc/config.yaml` (the maintainer's file), on your own -- ask.
+
+Correcting that environment inside an authorized Commission is still ordinary
+preparation needing no separate human decision; a probe that failed for a
+correctable reason may be retried in a *fresh* checkout. Put the venv in the
+scratch directory, never in the checkout, and never share one across
+checkouts: an editable install pointing at another worktree breaks that
+worktree's task-check. WFC's own hook is `scripts/wfc_prepare_checkout_env.sh`
+(offline bundle, `WFC_TEST_INPUTS`/`WFC_TEST_PROFILE`). Where a checkout
+already carries a `src/*.egg-info` from an editable install, do not also set
+`PYTHONPATH=src` there: it is redundant and can shadow the installed metadata.

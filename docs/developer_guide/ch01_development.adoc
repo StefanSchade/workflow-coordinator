@@ -247,6 +247,55 @@ unchanged; it inherits that same process environment and so needs `WFC_TEST_INPU
 `WFC_TEST_PROFILE` there too. If the environment is not passed, it fails with the message
 above.
 
+[[selfdev-preparation-hook]]
+==== WFC's own Run-checkout preparation hook
+
+`scripts/wfc_prepare_checkout_env.sh` is this repository's own preparation
+hook for `wfc prepare-checkout`
+(link:{developer-docs}/operator_manual/ch03_running/01_preparation.adoc#prepare-checkout-hook[the
+hook contract]). It does by script what the paragraphs above describe by
+hand, once per fresh checkout: locate the bundle (`WFC_TEST_INPUTS` if set,
+otherwise `$XDG_DATA_HOME`/`$HOME/.local/share` + `/wfc/offline-test-inputs/cp313-linux-x86_64`),
+`verify` it, create `<scratch>/venv`, install
+`pip install --no-index --find-links <bundle> -e '.[dev]'` into it, and
+declare `WFC_PREPARE_PATH_PREPEND=<scratch>/venv/bin`, `WFC_TEST_INPUTS` and
+`WFC_TEST_PROFILE=cp313-linux-x86_64` on its stdout, which the command
+exports into `<scratch>/launch-env.sh`. The virtual environment lives in the
+*scratch* directory, never in the checkout, so it cannot dirty the tree that
+`wfc run` requires to be clean, and it is a per-checkout editable install:
+never share one venv across checkouts.
+
+This hook is development tooling, not product surface. `scripts/` is not
+packaged (`pyproject.toml` ships `workflow_coordinator*` only), and no
+product code path knows anything about bundles, profiles or virtual
+environments -- `prepare-checkout` only runs a declared, committed
+executable and exports what it prints.
+
+Declaring it is a *maintainer* act and is deliberately not done by the slice
+that shipped it: `.wfc/config.yaml` is the maintainer's file. The enablement
+is one line in that file,
+
+[source,yaml]
+----
+checkout_preparation_hook: scripts/wfc_prepare_checkout_env.sh
+----
+
+committed like any other configuration change, after which
+`wfc prepare-checkout` needs no `--hook` argument. Until then, pass it
+explicitly:
+
+[source,sh]
+----
+wfc prepare-checkout --repository . --path ../wfc-run7 --branch work/run7 \
+    --hook scripts/wfc_prepare_checkout_env.sh
+----
+
+Remember that the declaration and the hook are read from the commit named by
+`--base-ref`, so a hook edited in the working tree has no effect until it is
+committed -- and that running `prepare-checkout` from a provider-sandboxed
+shell whose placeholder files dirty the checkout root is refused
+(`refused_dirty_base`); use your own shell.
+
 ==== Staging a bundle for a restricted worker
 
 A restricted worker may not read the directory holding your wheelhouse. Stage the exact

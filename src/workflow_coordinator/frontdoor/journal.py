@@ -72,6 +72,20 @@ class CanonicalCheckout:
     git_common_dir: Path
 
 
+def checkout_identity(toplevel: Path, git_common_dir: Path) -> str:
+    """The one definition of the canonical checkout digest.
+
+    Extracted so that a caller which must reason about a checkout that does
+    not exist yet (``frontdoor.prepare_checkout``, deciding whether a *target
+    path* would reproduce a spent checkout identity) computes the identity
+    from this same definition rather than a second copy of it.  Both
+    arguments must already be resolved; ``canonical_checkout`` below is the
+    only resolver.
+    """
+
+    return hashlib.sha256(f"{toplevel}\n{git_common_dir}".encode("utf-8")).hexdigest()
+
+
 def canonical_checkout(repository: Path) -> CanonicalCheckout:
     """Identify ``repository`` by its resolved Git facts, not its given path.
 
@@ -85,8 +99,9 @@ def canonical_checkout(repository: Path) -> CanonicalCheckout:
 
     toplevel = repository_identity(repository)
     common = _git_common_dir(toplevel)
-    digest = hashlib.sha256(f"{toplevel}\n{common}".encode("utf-8")).hexdigest()
-    return CanonicalCheckout(checkout_id=digest, toplevel=toplevel, git_common_dir=common)
+    return CanonicalCheckout(
+        checkout_id=checkout_identity(toplevel, common), toplevel=toplevel, git_common_dir=common,
+    )
 
 
 def _is_within_or_equal(candidate: Path, boundary: Path) -> bool:
@@ -237,6 +252,18 @@ class LockHandle:
 
     fd: int
     path: Path
+
+
+def journal_path(checkout_dir: Path) -> Path:
+    """The one definition of a checkout's journal file name.
+
+    ``frontdoor.lifecycle`` opens it for the checkout it operates on;
+    ``frontdoor.prepare_checkout`` asks whether it already exists for the
+    checkout identity a *target path* would have.  One definition, so the two
+    can never look at different files.
+    """
+
+    return checkout_dir / "journal.jsonl"
 
 
 def lock_path(checkout_dir: Path) -> Path:

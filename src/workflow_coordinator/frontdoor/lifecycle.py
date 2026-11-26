@@ -67,6 +67,7 @@ from .journal import (
     JournalRecord,
     canonical_checkout,
     checkout_directory,
+    journal_path,
     query_lock_held,
     release_lock,
     require_disjoint_journal_root,
@@ -1184,7 +1185,7 @@ def _prepare_checkout(repository: Path) -> tuple[CanonicalCheckout, Path, Journa
     root = state_home()
     require_disjoint_journal_root(root, checkout)
     checkout_dir = checkout_directory(checkout, root=root)
-    journal = Journal(checkout_dir / "journal.jsonl")
+    journal = Journal(journal_path(checkout_dir))
     return checkout, checkout_dir, journal
 
 

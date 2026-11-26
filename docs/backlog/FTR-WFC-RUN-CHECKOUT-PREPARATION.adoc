@@ -2,18 +2,20 @@
 
 Type:: future technical record -- Front Door lifecycle-adjacent capability gap
 (preparation of a *new* checkout; deliberately not reuse of a spent one)
-Status:: proposed / backlog; nothing implemented
+Status:: variant A implemented 2026-11-26 (`WI-WFC-BETA2-O4-001`, D4 Option A);
+see <<design-2026-11-26,the Design>> and <<o4-lifecycle,Lifecycle>>. Variant B
+(destructive clean-up) remains unimplemented and undecided.
 Current controlling source:: This record; see link:_open.adoc[the active-work
 manifest] for its current card and
 link:beta2_operator_efficiency_plan.adoc#o4[the Beta-2 operator-efficiency
 plan] for the two variants, order and acceptance.
-Next action:: Decide link:beta2_operator_efficiency_plan.adoc#d4[D4] (prepare
-only, or prepare and clean up), then a separately authorized Commission after
-link:beta2_operator_efficiency_plan.adoc#o1[O1].
-Not authorized here:: Any implementation; any weakening of the
-one-Run-per-checkout invariant or of the ownership lock; any change to the
-journal, lifecycle classification or archive behaviour; any removal of a
-checkout, branch, worktree or Evidence repository; any Run.
+Next action:: None in this record for variant A. A later maintainer decision
+on variant B (controlled removal of what the command itself created) would be
+a separate slice; the operational evidence for it is the use of variant A.
+Not authorized here:: Any weakening of the one-Run-per-checkout invariant or
+of the ownership lock; any change to the journal, lifecycle classification or
+archive behaviour; any removal of a checkout, branch, worktree or Evidence
+repository; any Run.
 Priority:: medium-high by footprint: five recorded friction entries, and the
 cost recurs on every single Run.
 Date:: 2026-11-26.
@@ -115,18 +117,358 @@ AD-5's "controlled cleanup" names.
 
 == Open decisions
 
-* link:beta2_operator_efficiency_plan.adoc#d4[D4] -- variant A or B. The plan
-  recommends A for Beta 2 and B afterwards on the evidence of A's use, so
-  that the record of what the command created exists and is exercised before
-  anything is removed.
+* link:beta2_operator_efficiency_plan.adoc#d4[D4] -- variant A or B.
+  *Decided by the maintainer on 2026-11-26: Option A*, prepare only. Variant
+  B stays unimplemented and undecided; the plan's reasoning for deciding it
+  later on the evidence of A's use is unchanged.
 * How the consumer-specific preparation hook is declared, and whether it
   lives in `.wfc/config.yaml` (which is outside every WorkItem scope and
-  therefore a maintainer edit) or beside the Commission. Not analysed; it is
-  the first design question an implementing Commission must answer.
+  therefore a maintainer edit) or beside the Commission.
+  *Decided in <<design-2026-11-26,the Design>>, decision 4*: both, with a
+  committed declaration and a command-line override, and with the hook
+  itself always read at the base ref.
 * Whether the command also creates the branch, or only the worktree.
+  *Decided in <<design-2026-11-26,the Design>>, decision 3*: it creates the
+  branch, refusing an existing branch name by name.
 
+[[design-2026-11-26]]
+== Design (2026-11-26, WI-WFC-BETA2-O4-001)
+
+Written before implementation, per the plan's rule that a slice with a design
+question records its design first
+(link:beta2_operator_efficiency_plan.adoc#revision[the revision of
+2026-11-26]). Each decision states what is decided, the rejected
+alternatives, and the safety property it preserves. D4 Option A governs: the
+command prepares and *removes nothing*.
+
+*1. One command, `wfc prepare-checkout`, and what it deliberately does not
+do.* A new installed subcommand in `src/workflow_coordinator/frontdoor/prepare_checkout.py`,
+dispatched from `frontdoor/cli.py` beside `init`/`plan`/`request`/`run`. It
+performs exactly four effects, in this order, and then prints a summary: it
+creates a Git worktree of the consumer repository at a fresh path on a new
+branch; it creates a sibling scratch directory with a `tmp/` subdirectory for
+`TMPDIR`; it runs the declared consumer preparation hook, if there is one; and
+it writes one sourceable launch-environment file into that scratch directory.
+It does not run `wfc plan`, `wfc request` or `wfc run`, does not read or write
+any journal, allocates no Run, authorizes nothing, calls no provider, and
+makes no decision a Commission would otherwise make. *Rejected:* folding the
+preparation into `wfc run` (a single flag such as `--fresh-checkout`) --
+`wfc run`'s first act is to authorize, and preparation must be able to fail,
+be inspected and be repeated at a *different* path without ever consuming a
+lifecycle. *Rejected:* a shipped shell script instead of a subcommand -- the
+invariants below (the spent-path refusal in particular) need the product's own
+checkout-identity definition, not a copy of it.
+
+*2. The refusals, each by its own name, and their order.* Every refusal prints
+`wfc prepare-checkout: <name>: <reason>` and exits 2. Nothing in this command
+writes to or reads a lifecycle journal for its own purposes, so none of these
+names is a lifecycle classification and `lifecycle.EXIT_CODES` is untouched.
+The order is deliberate: everything decidable without an effect is decided
+before the first effect, so the normal failure mode leaves nothing behind at
+all.
+
+[cols="1,3",options="header"]
+|===
+|Refusal name |What it refuses
+
+|`refused_unknown_base_ref`
+|`--base-ref` (default `HEAD`) does not resolve to a commit in the
+repository.
+
+|`refused_dirty_base`
+|The repository given by `--repository` is not clean: tracked changes,
+untracked files (`--untracked-files=all`) or unresolved submodules, observed
+with the product's own `git_facts.observe_repository`. A prepared checkout
+must start from a committed baseline the operator can name; uncommitted work
+in the source tree would silently *not* be in the prepared checkout, and
+`wfc run` refuses a dirty tree anyway. There is deliberately no override
+(see <<o4-not-protected,what this does not protect against>> for the
+sandbox-placeholder interaction).
+
+|`refused_existing_path`
+|The target path, or the scratch path, already exists -- as a file,
+directory, symlink or anything else. Never a removal, never a reuse.
+
+|`refused_missing_parent`
+|The parent directory of the target or scratch path does not exist. The
+command creates the two leaves it owns, not an arbitrary directory tree
+outside the repository.
+
+|`refused_path_inside_repository`
+|The target or scratch path resolves inside the repository's own worktree or
+its Git common directory (or contains either). An untracked file anywhere
+inside the tree dirties it and refuses launch; a checkout inside a checkout
+is not a fresh checkout.
+
+|`refused_scratch_inside_checkout`
+|The scratch path resolves inside the target checkout path. `TMPDIR` must be
+outside the worktree, which is the whole point of the sibling directory.
+
+|`refused_existing_lifecycle`
+|The *prospective* canonical checkout identity of the target path already
+carries a journal under `journal.state_home()`. This is the
+one-Run-per-checkout invariant, enforced *before* anything is created: the
+identity is the digest of the resolved target top-level and the repository's
+resolved Git common directory, computed by the same single definition
+`journal.canonical_checkout` uses, so re-creating a worktree at a spent path
+is refused here by name instead of costing a `refused_active_lifecycle` at
+`wfc run`. The command never makes a spent checkout reusable; it makes a
+fresh path cheap (friction entry 12).
+
+|`refused_journal_root`
+|The target path would contain the journal state root, which `wfc run` would
+later refuse (`journal.require_disjoint_journal_root`, reused here).
+
+|`refused_existing_branch`
+|`--branch` already exists in the repository. The command creates a branch;
+it never moves, reuses or deletes a ref.
+
+|`refused_hook_outside_repository`
+|The hook is not an A1-normalized repository-relative path
+(`commissioning._path`, the same shape predicate the Commission's own pinned
+paths use), so it cannot name a file outside the repository or escape with
+`..`.
+
+|`refused_hook_not_committed`
+|The hook does not exist as a single blob at the base ref.
+
+|`refused_hook_not_executable`
+|The hook's committed mode at the base ref is not `100755`. A non-executable
+file, a directory and a submodule entry all land here.
+
+|`refused_hook_symlink`
+|The hook's committed mode at the base ref is `120000`, or any component of
+its path inside the created worktree is a symlink. A symlink could otherwise
+point out of the tree and be swapped between the check and the execution.
+
+|`refused_hook_not_identical_to_base_blob`
+|The file actually about to be executed, in the newly created worktree, is
+not a regular file whose Git blob hash equals the blob the base ref names.
+This is the re-check that closes the gap between deciding and executing.
+
+|`refused_hook_timeout`
+|The hook exceeded `--hook-timeout-seconds` (default 900). The worktree and
+scratch directory stay in place; nothing is removed.
+
+|`refused_hook_failed`
+|The hook exited nonzero. Its stderr tail is printed, bounded and labelled
+untrusted; the worktree and scratch directory stay in place.
+
+|`refused_hook_output`
+|The hook's stdout is not exactly the declaration channel this contract
+defines: a line that is not `NAME=VALUE`, a name outside
+`[A-Z][A-Z0-9_]{0,63}`, a value with a control character or over 4096 bytes,
+more than 64 declarations, more than 65536 bytes of stdout in total, or
+non-UTF-8 bytes.
+
+|`refused_hook_reserved_variable`
+|The hook declared `PATH` or `TMPDIR` directly. WFC owns both (decision 5).
+
+|`refused_hook_path_prepend`
+|`WFC_PREPARE_PATH_PREPEND` is not an absolute, existing directory inside the
+created checkout or scratch directory. The hook may only put a directory it
+prepared itself in front of `PATH`.
+
+|`refused_config`
+|The Consumer Config named by `--config` exists at the base ref but cannot be
+parsed, so the declaration cannot be read. A *missing or uncommitted* config
+file is not a refusal; it simply means "no hook declared".
+
+|`refused_create`
+|A directory or the launch-environment file this command must create cannot
+be created or written (for example a permission error on the scratch path).
+
+|`refused_git`
+|A Git invocation the command needs (including `git worktree add` itself)
+failed. Git's own stderr is printed as untrusted diagnostic text.
+|===
+
+*3. The layout, the branch, and the only writes outside the two created
+directories.* `--path` (required) is the fresh worktree; `--branch` (required)
+is the new branch; `--base-ref` defaults to the repository's current `HEAD`,
+resolved to a commit and reported; `--scratch` defaults to the sibling
+`<path>-scratch`. The command creates `<scratch>/tmp` for `TMPDIR` and writes
+`<scratch>/launch-env.sh`. It creates the branch rather than only the
+worktree, because the operator would otherwise have to name a branch for
+`git worktree add` by hand anyway and a detached worktree is a worse default
+for a Run whose candidate must be committed somewhere. *Stated plainly rather
+than hidden:* `git worktree add -b` necessarily writes two things *outside*
+the two created directories -- the per-worktree administrative directory
+under the repository's Git common directory, and the new branch ref. Both are
+purely additive, both are Git's own doing, and neither moves or removes an
+existing ref or worktree; the slice's "writes only inside the checkout and
+scratch directory it creates" claim is true of everything *WFC* writes, and
+this is the one exception, which no implementation of "create a worktree"
+can avoid. Nothing else outside those directories is written, and nothing
+anywhere is removed, in any code path, including every refusal path.
+*Rejected:* creating the worktree detached and leaving the branch to the
+operator (cheaper, but it moves a step back into the manual recipe this slice
+exists to remove).
+
+*4. Where the hook is declared, and what may be a hook.* Two declaration
+channels, one trust rule.
+
+* An optional, flat, one-line key of the Consumer Config,
+  `checkout_preparation_hook: <repository-relative path>`, parsed by
+  `frontdoor/config.py` under the existing closed-vocabulary rules (an
+  unknown key is still refused, so the key had to be added to the schema for
+  the declaration to be possible at all). The declaration is read *from the
+  committed config at the base ref*, not from the working tree: an
+  uncommitted edit of `.wfc/config.yaml` must not be able to redirect a
+  command that runs executable code on the operator's host. A missing or
+  uncommitted config file simply means "no declaration"; a committed but
+  unparseable one is a named refusal.
+* `--hook <repository-relative path>` on the command line, which overrides
+  the declaration, so the command is usable in a repository whose
+  `.wfc/config.yaml` the operator must not edit (it is the maintainer's
+  file). `--no-hook` prepares the worktree, scratch directory and launch
+  environment with no hook at all.
+
+The hook itself is *always* an executable blob committed at the base ref.
+It is never read from a Run's candidate, a Worker's working tree or any
+uncommitted file: the committed mode and blob at the base ref are checked
+before the worktree exists, and the file actually executed -- the one in the
+freshly created worktree, which is by construction a checkout of that same
+commit -- is re-checked to be a regular, non-symlinked file whose blob hash
+is that blob. *Rejected:* a hook path accepted as an arbitrary filesystem
+path (it would make "run this file as the operator" a command-line argument
+with no committed approval step); a hook declared only in `.wfc/config.yaml`
+(the file is the maintainer's and outside every WorkItem scope, so the
+command would be unusable in exactly the repository that needs it most); a
+hook declared only on the command line (the committed declaration is what
+makes the consumer's own preparation reproducible without an operator
+remembering a flag).
+
+*5. The hook contract: what it is given, what it must print, and the
+boundary.* The hook is executed with argv
+`<hook> <checkout-path> <scratch-path> <base-commit>`, with the working
+directory set to the created worktree, and with the launching operator's own
+environment plus `TMPDIR=<scratch>/tmp`. Its *stdout is a declaration
+channel only*: zero or more `NAME=VALUE` lines naming the environment it
+wants exported, bounded exactly as `refused_hook_output` above describes;
+every diagnostic belongs on stderr, which is captured, bounded to the same
+limit the in-Hop evidence path already uses
+(`evidence.UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES`) and only ever printed,
+labelled untrusted, never written to disk or to any record. The reserved name
+`WFC_PREPARE_PATH_PREPEND` declares one directory to put in front of `PATH`;
+`PATH` and `TMPDIR` themselves are refused as hook-declared names, so the
+composition of both stays WFC's own and deterministic. *Rejected:* letting the
+hook print a complete `PATH` (it would let hook output replace the operator's
+`PATH` wholesale); letting the hook write an env file itself (a second path
+contract, and an output channel WFC cannot bound); a scrubbed environment for
+the hook (a venv build needs the host toolchain, and pretending to isolate it
+would be a safety claim this command cannot keep).
+
+*Responsibility.* WFC is responsible for the safe *invocation* and for the
+invariants: that the hook is a committed executable at the base ref and not
+something a Run or a Worker produced, that its output is bounded, parsed
+strictly and never trusted as text, that it has a timeout, that its failure
+is a named refusal, and that nothing is removed. The consumer is responsible
+for the hook's *content* -- exactly as for the declared evidence command,
+which `wfc run` also executes verbatim without inspecting what it does.
+
+[[o4-not-protected]]
+*What this does not protect against, stated plainly.* A committed hook is
+code the maintainer approved by committing it. It runs on the operator's host,
+as the operator, with the operator's full environment and privileges, before
+any Worker Hop and outside every sandbox boundary WFC has: it can read and
+write anything the operator can, reach the network, and write outside the
+checkout and scratch directory it was given. WFC bounds its own writes, not
+the hook's. The timeout ends a hung hook, not a malicious one. Anyone who can
+land a commit on the base ref of a repository whose config declares a hook
+can therefore run code on the operator's host at the next preparation; that is
+the same trust the evidence command already has, and it is the reason the
+declaration and the hook are both read at the base ref rather than from a
+working tree. One further non-protection: `refused_dirty_base` has no
+override, and a shell whose sandbox leaves untracked placeholder entries in
+the checkout root (friction entry 17) therefore sees a dirty base -- run the
+command from the operator's own shell. The command deliberately does not
+touch those placeholders or any `.git/config.lock` (friction entries 6 and
+17): it removes nothing, and that observation stays an observation.
+
+*6. The launch environment, and why a file.* The baseline probe
+(`frontdoor/lifecycle.py`, `subprocess.run` with no `env=`) and the in-Hop
+task-check (`evidence.py`, which copies `os.environ`) both inherit the
+*launching* process's environment, so what has to be produced is an
+environment a later shell can enter in one step. The command writes
+`<scratch>/launch-env.sh`: a shell-quoted `export` block carrying
+`TMPDIR=<scratch>/tmp`, `PATH=<hook's prepend>:$PATH` when the hook declared
+one, and every variable the hook declared, with a header naming the worktree,
+branch, base commit and hook. It prints the exact `source` line to use. A
+file, not only a printed block, because the operator's next two commands are
+`wfc plan`/`wfc request` and `wfc run` in a *new* shell and a printed block
+has to be re-pasted correctly to be worth anything; it lives in the scratch
+directory, not in the repository, because an untracked file inside the tree
+would dirty exactly the tree `wfc run` requires. It contains no secret and no
+value the command invented: every value is either WFC's own (`TMPDIR`, the
+`PATH` composition) or one the hook declared. Sourcing it twice is harmless
+(the same directory lands first in `PATH` again). *Rejected:* exporting into
+the operator's shell automatically (a command cannot change its parent's
+environment); writing a machine-readable JSON env file as well (a second
+artifact with no consumer).
+
+*7. WFC's own hook, and the enablement this slice does not perform.*
+`scripts/wfc_prepare_checkout_env.sh` is WFC's own consumer-specific hook:
+it locates the verified offline bundle from `WFC_TEST_INPUTS` or a documented
+default under the data home, verifies it with
+`scripts/wfc_test_inputs.py verify`, creates `<scratch>/venv`, installs
+`pip install --no-index --find-links <bundle> -e '.[dev]'` into it, and
+declares `WFC_PREPARE_PATH_PREPEND=<scratch>/venv/bin`, `WFC_TEST_INPUTS` and
+`WFC_TEST_PROFILE=cp313-linux-x86_64`. The venv lives in the scratch
+directory, not in the checkout, so it cannot dirty the tree; it is a per-
+checkout editable install, which is friction entry 4's hazard removed rather
+than documented. This hook is *not* product surface: `scripts/` is not
+packaged (`pyproject.toml` ships only `workflow_coordinator*`), and no code
+path in the product knows anything about bundles, profiles or venvs -- which
+is risk (d) of the slice closed by construction. Enabling it in this
+repository's own `.wfc/config.yaml` is a maintainer act and is *not performed
+here*: the one-line enablement (`checkout_preparation_hook:
+scripts/wfc_prepare_checkout_env.sh`) is documented in the Developer Guide,
+and until the maintainer adds it, self-development preparation passes
+`--hook scripts/wfc_prepare_checkout_env.sh` explicitly.
+
+*8. What stays untouched, and the central acceptance.* No journal, lifecycle,
+classification or archive behaviour changes; `journal.py` gains one extracted
+pure helper (`checkout_identity`) that `canonical_checkout` now calls, so the
+digest has exactly one definition and the prospective identity cannot drift
+from the real one -- a test asserts the prospective digest equals
+`canonical_checkout`'s own for a worktree the command actually created. The
+central acceptance is the prepared-versus-unprepared proof: a toy consumer
+repository with a committed probe command that fails in an unprepared
+checkout and passes in a prepared one, with a committed toy hook, real `git`
+and no network, the probe invoked exactly as the baseline probe invokes it
+(same argv, same working directory, inheriting the launching environment).
+The env file is proved separately by sourcing it in a real shell and
+comparing the result with the mapping the command reported.
+
+[[o4-lifecycle]]
 == Lifecycle
 
-Proposed. No implementation, test, configuration change or Run is authorized
-by this record, and nothing about the checkout lifecycle, the ownership lock
-or AD-5's contract is changed by it.
+Variant A implemented (`WI-WFC-BETA2-O4-001`, D4 Option A), per
+link:beta2_operator_efficiency_plan.adoc#o4[the Beta-2 plan's slice O4]:
+`wfc prepare-checkout` (`frontdoor/prepare_checkout.py`) ships as described in
+<<design-2026-11-26,the Design>>. Nothing about the checkout lifecycle, the
+ownership lock, the journal, the archive or AD-5's contract is changed by it:
+the one-Run-per-checkout invariant is *enforced earlier*, never relaxed.
+Variant B (removal of what the command created) remains unimplemented; this
+record authorizes no removal of any kind.
+
+=== Implementation note (2026-11-26)
+
+`wfc prepare-checkout` is `src/workflow_coordinator/frontdoor/prepare_checkout.py`,
+dispatched from `frontdoor/cli.py`. The optional Consumer Config key
+`checkout_preparation_hook` is parsed in `frontdoor/config.py`;
+`journal.checkout_identity` is the extracted single definition of the
+canonical checkout digest. WFC's own hook is
+`scripts/wfc_prepare_checkout_env.sh` (not packaged; the one-line enablement
+of the declaration is documented, not performed). Tests are
+`tests/unit/test_frontdoor_prepare_checkout.py`: the named refusals including
+the spent-path and unsafe-hook families, the prospective-versus-actual
+checkout-identity equality, the bounded and strictly parsed hook output, the
+"nothing is removed and nothing outside the two created directories is
+written" assertions, the sourced env file, and the prepared-versus-unprepared
+baseline-probe proof. The Agent Skill (`references/setup.md`), the Operator
+Manual (chapters 3, 9 and 10), the Developer Guide (chapter 1) and
+link:FTR-WFC-LEVEL1-OPERATOR-GUIDANCE.adoc[the operator-guidance record] are
+updated in the same slice, retiring the statements the O1 slice wrote as
+*planned* for O4.

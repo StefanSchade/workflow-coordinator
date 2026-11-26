@@ -25,6 +25,7 @@ from workflow_coordinator.frontdoor import emit_request as EMIT_REQUEST
 from workflow_coordinator.frontdoor import init as INIT
 from workflow_coordinator.frontdoor import lifecycle as LIFECYCLE
 from workflow_coordinator.frontdoor import plan as PLAN
+from workflow_coordinator.frontdoor import prepare_checkout as PREPARE_CHECKOUT
 from workflow_coordinator.frontdoor import report as REPORT
 from workflow_coordinator.frontdoor import skill as SKILL
 
@@ -41,6 +42,7 @@ _CONTINUATION_RE = re.compile(r"\\\n\s*")
 _PARSE_ARGS: dict[str, Callable[[list[str]], argparse.Namespace]] = {
     "init": INIT._parse_args,
     "plan": PLAN._parse_args,
+    "prepare-checkout": PREPARE_CHECKOUT._parse_args,
     "request": EMIT_REQUEST._parse_args,
     "run": LIFECYCLE._parse_run_args,
     "resume": functools.partial(LIFECYCLE._parse_simple_args, "wfc resume"),

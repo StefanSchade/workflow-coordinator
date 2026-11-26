@@ -209,8 +209,9 @@ The generic sequence above remains the contract. Per DG-4/DG-5
 (link:{operator-docs}/backlog/beta1_bp7_cutover_plan.adoc[BP7 retirement
 cutover plan]), the former `scripts/wfc_op.py` Harness is retired: both proof
 Runs are independently accepted with archive-equivalence recorded, and the
-installed `wfc` console command (`wfc init`/`plan`/`run`/`resume`/`status`/
-`audit`/`report`/`archive`) is now the regular, and only, self-development
+installed `wfc` console command (`wfc init`/`plan`/`request`/
+`prepare-checkout`/`run`/`resume`/`status`/`audit`/`report`/`archive`) is now
+the regular, and only, self-development
 path. There is no separate `prepare`/`launch` split and no per-Attempt
 OPS/STATE export step: `wfc run` performs authorization, pre-launch checks,
 a baseline probe, the Commission commit, re-verification, and engine launch
@@ -255,19 +256,156 @@ provider. Journal records (`authorized`, `prelaunch`, `probe`, `commit`,
 `preparation-pins.txt`/`harness-prepared.json` facts; `wfc status` projects
 them. Drift is a named refusal, never a guess.
 
-The product Front Door has no scratch allocator of its own (per the
+The Harness's scratch allocator was never ported (per the
 link:{operator-docs}/backlog/beta1_bp7_cutover_plan.adoc#gap-analysis[cutover
-plan's gap analysis], there was never a ported equivalent); today, preparing
-the fresh worktree, its own venv with an editable install, and the declared
-evidence command's own environment is entirely manual, repeated by hand for
-every Run
-(link:{operator-docs}/backlog/FTR-WFC-RUN-CHECKOUT-PREPARATION.adoc[FTR-WFC-RUN-CHECKOUT-PREPARATION]
-is a planned deterministic preparation command for this recipe). The existing ch05
+plan's gap analysis]); `wfc prepare-checkout` (<<prepare-checkout,below>>) is
+the product's own replacement for the manual recipe, and the one deterministic
+step that produces a fresh worktree, a scratch directory and the launch
+environment the probe and each Hop's task-check inherit. The existing ch05
 link:{operator-docs}/operator_manual/ch05_self_development/01_topology_budget.adoc#self-development-temporary-storage[temporary-storage/inode guidance]
-remains necessary, unchanged by this cutover, and is now entirely the
-consumer-provided environment's own responsibility: prepare and verify
-`TMPDIR`/scratch space and inodes yourself before a test-heavy Run, the same
-way as before, just without a Harness step that did it for you.
+remains necessary, unchanged by this cutover, and remains the
+consumer-provided environment's own responsibility: inode and disk capacity
+for a test-heavy Run are the hook's and the operator's business, not
+something `prepare-checkout` can verify for you.
+
+[[prepare-checkout]]
+=== Preparing the fresh checkout: `wfc prepare-checkout`
+
+Authority:: informative (the command's own refusals are normative; see
+link:{operator-docs}/backlog/FTR-WFC-RUN-CHECKOUT-PREPARATION.adoc#design-2026-11-26[the
+record's Design])
+
+One command per Run, from any checkout of the repository:
+
+[source,shell]
+----
+wfc prepare-checkout --repository . --path ../wfc-run7 --branch work/run7 \
+  --hook scripts/wfc_prepare_checkout_env.sh
+
+source ../wfc-run7-scratch/launch-env.sh
+----
+
+It creates (1) a Git worktree at `--path` on the new `--branch`, from
+`--base-ref` (default the repository's current `HEAD`, resolved and reported);
+(2) a sibling scratch directory, by default `<path>-scratch`, with a `tmp/`
+subdirectory for `TMPDIR` -- outside the worktree, because an untracked file
+anywhere inside the tree dirties it and refuses launch; (3) the consumer's own
+environment preparation, by running a declared committed hook; and (4)
+`<scratch>/launch-env.sh`, a sourceable `export` block carrying `TMPDIR`, the
+hook's prepared directory first in `PATH`, and every variable the hook
+declared. It then prints the worktree, branch, scratch path, launch-environment
+path and the exact next commands. It runs no `wfc plan` and no `wfc run`,
+writes no journal, allocates no Run and authorizes nothing.
+
+*It removes nothing*, on any path, including every refusal path: a refusal
+after the worktree or scratch directory exists reports both and leaves them
+where they are. Preparation is the complement of rotation, not a form of it --
+it makes a fresh checkout cheap and never makes a spent one reusable
+(link:{operator-docs}/backlog/FTR-WFC-LIFECYCLE-ROTATION.adoc[FTR-WFC-LIFECYCLE-ROTATION]
+remains the record for reuse).
+
+Each refusal prints its own name and exits 2. Everything decidable without an
+effect is decided first, so the ordinary failure leaves nothing behind:
+`refused_unknown_base_ref`, `refused_dirty_base` (tracked changes, untracked
+files or unresolved submodules in the repository given -- there is deliberately
+no override), `refused_existing_path`, `refused_missing_parent`,
+`refused_path_inside_repository`, `refused_scratch_inside_checkout`,
+`refused_existing_lifecycle` (the *prospective* canonical checkout identity of
+the target path already carries a journal -- the one-Run-per-checkout invariant
+enforced before anything is created, instead of a `refused_active_lifecycle`
+that costs a checkout), `refused_journal_root`, `refused_existing_branch`,
+`refused_config` (a committed Consumer Config that cannot be parsed; a missing
+or uncommitted one simply means "no hook declared"), `refused_create` for a
+directory or file it cannot write, the hook family below, and `refused_git` for
+a failing Git invocation. None of these is a lifecycle classification: this
+command writes no journal and `wfc run`'s own classifications and exit codes
+are untouched.
+
+The only writes outside the two created directories are Git's own: the
+per-worktree administrative directory under the repository's Git common
+directory and the new branch ref. Both are additive, no existing ref or
+worktree is moved, and no implementation of "create a worktree" avoids them.
+
+[[prepare-checkout-hook]]
+=== The preparation hook: contract, trust and responsibility
+
+The consumer-specific part of preparation -- for WFC's own self-development a
+virtual environment with an editable install plus the verified offline bundle,
+for another repository something else entirely -- is a *hook*, not product
+behaviour. WFC's offline bundle is WFC's development tooling and deliberately
+not part of the product surface.
+
+Declaration:: either the optional one-line Consumer Config key
+`checkout_preparation_hook: <repository-relative path>`, or
+`--hook <repository-relative path>` on the command line, which overrides it;
+`--no-hook` prepares worktree, scratch directory and launch environment with
+no hook at all. The *declaration* is read from the Consumer Config committed
+at `--base-ref` (`--config` selects the file, default `.wfc/config.yaml`), not
+from the working tree: an uncommitted edit of that file must not be able to
+redirect a command that runs executable code on the operator's host. A missing
+or uncommitted config file simply means "no declaration".
+What may be a hook:: an executable blob (committed mode `100755`) present at
+`--base-ref` -- never a file from a Run's candidate, a Worker's working tree or
+any uncommitted path. The committed mode and blob are checked before the
+worktree exists (`refused_hook_outside_repository` for a path that is not an
+A1-normalized repository-relative path, `refused_hook_not_committed`,
+`refused_hook_not_executable`, `refused_hook_symlink`), and the file actually
+executed -- the one in the freshly created worktree, which is a checkout of
+that same commit -- is re-checked to be a regular, non-symlinked file whose
+blob hash is that blob (`refused_hook_not_identical_to_base_blob`).
+What it is given:: argv `<hook> <checkout-path> <scratch-path> <base-commit>`,
+the created worktree as working directory, and the launching operator's own
+environment plus `TMPDIR=<scratch>/tmp`. The environment is deliberately not
+scrubbed: a venv build needs the host toolchain.
+What it must print:: on *stdout only* the environment it wants exported, as
+`NAME=VALUE` lines and nothing else; diagnostics belong on stderr. Names match
+`[A-Z][A-Z0-9_]{0,63}`; values are single-line, control-character-free and at
+most 4096 bytes; at most 64 declarations and 65536 bytes in total. The reserved
+name `WFC_PREPARE_PATH_PREPEND` declares one directory to put in front of
+`PATH`, which must be an existing directory inside the created checkout or
+scratch directory. `PATH` and `TMPDIR` themselves are refused as hook-declared
+names (`refused_hook_reserved_variable`): WFC composes both. Anything else is
+`refused_hook_output` or `refused_hook_path_prepend`.
+Bounds and failure:: stderr is captured, bounded to the limit the in-Hop
+evidence path already uses, and only ever *printed*, labelled untrusted --
+never written to disk or to any record. `--hook-timeout-seconds` (default 900)
+bounds the hook; exceeding it is `refused_hook_timeout`, a nonzero exit is
+`refused_hook_failed`. In both cases the worktree and scratch directory
+already created are reported and left in place, and no launch environment is
+written.
+Responsibility:: WFC is responsible for the safe invocation and for the
+invariants above. The consumer is responsible for the hook's content --
+exactly as for the declared evidence command, which `wfc run` also executes
+verbatim without inspecting what it does.
+
+[CAUTION]
+====
+*A committed hook is code the maintainer approved by committing it.* It runs on
+the operator's host, as the operator, with the operator's full environment and
+privileges, before any Worker Hop and outside every sandbox boundary WFC has.
+It can read and write anything the operator can, reach the network, and write
+outside the checkout and scratch directory it was given: WFC bounds its own
+writes, not the hook's, and the timeout ends a hung hook, not a malicious one.
+Anyone who can land a commit on the base ref of a repository whose config
+declares a hook can therefore run code on the operator's host at the next
+preparation -- the same trust the evidence command already has, and the reason
+both the declaration and the hook are read at the base ref rather than from a
+working tree.
+====
+
+Two observations the command deliberately does not act on: a shell whose
+sandbox leaves untracked placeholder entries in the checkout root makes the
+base dirty, so run `prepare-checkout` from your own shell rather than from a
+provider-sandboxed one; and a stale `.git/config.lock` in the common Git
+directory is reported by Git, never touched by this command. It removes
+nothing, including those.
+
+For WFC's own self-development the hook is
+`scripts/wfc_prepare_checkout_env.sh`, described in
+link:{operator-docs}/developer_guide/ch01_development.adoc#selfdev-preparation-hook[the
+Developer Guide] together with the one-line
+enablement in `.wfc/config.yaml`, which is a maintainer act: until it is
+enabled, pass `--hook scripts/wfc_prepare_checkout_env.sh` explicitly.
 
 [[selfdev-offline-inputs]]
 === Offline inputs for WFC self-development

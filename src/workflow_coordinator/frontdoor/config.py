@@ -88,6 +88,13 @@ class ConsumerConfig:
     phase_execution: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     boundary: str = "direct"
     hop_timeout_seconds: float | None = None
+    # Optional, one-line declaration of this repository's own Run-checkout
+    # preparation hook (FTR-WFC-RUN-CHECKOUT-PREPARATION, D4 Option A): a
+    # repository-relative path to an executable committed in the repository.
+    # Only ``wfc prepare-checkout`` reads it, and only from the *committed*
+    # config at the base ref; nothing in authorization, launch, admission or
+    # archiving sees this key.
+    checkout_preparation_hook: str | None = None
 
 
 @dataclass(frozen=True)
@@ -181,7 +188,10 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
             "schema_version", "repository_name", "governance_dir", "work_item_scope_ceiling",
             "max_autonomous_hops", "default_execution",
         },
-        optional={"evidence", "phase_execution", "boundary", "hop_timeout_seconds"},
+        optional={
+            "evidence", "phase_execution", "boundary", "hop_timeout_seconds",
+            "checkout_preparation_hook",
+        },
     )
     if data["schema_version"] != 1:
         raise CommissionError("Consumer Config.schema_version must be 1")
@@ -230,6 +240,11 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
         hop_timeout_seconds = _hop_timeout_seconds(
             data["hop_timeout_seconds"], context="Consumer Config.hop_timeout_seconds"
         )
+    checkout_preparation_hook = None
+    if "checkout_preparation_hook" in data:
+        checkout_preparation_hook = _path(
+            data["checkout_preparation_hook"], context="Consumer Config.checkout_preparation_hook",
+        )
     return ConsumerConfig(
         schema_version=1,
         repository_name=_text(data["repository_name"], context="Consumer Config.repository_name"),
@@ -242,6 +257,7 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
         phase_execution=phase_execution,
         boundary=boundary,
         hop_timeout_seconds=hop_timeout_seconds,
+        checkout_preparation_hook=checkout_preparation_hook,
     )
 
 
