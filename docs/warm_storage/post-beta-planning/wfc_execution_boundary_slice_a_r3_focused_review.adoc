@@ -1,0 +1,129 @@
+= WFC Execution Boundary Slice A (third successor): focused review of the F1/F2 correction
+:toc:
+:toclevels: 2
+:revdate: 2026-11-26
+
+Standing:: Durable review artifact of the independent focused-review phase of
+Run `RUN-3b842e86635f4b94aec5dfa09943650d` (WorkItem
+`WI-WFC-EXEC-BOUNDARY-SLICE-A-004`, `robust@v1`), Hop `H004`, reviewing the
+correction at commit `d83885b` (worker Hop `H003`, range
+`1ac0316..d83885b`) against the two blocking Findings opened by the broad
+review of Hop `H002`
+(link:wfc_execution_boundary_slice_a_r3_broad_review.adoc[F1, F2]). Not a
+governance document, not an authorization, not a maintainer acceptance, and
+not the Layer 2 live qualification (out of scope for this Commission).
+Subject:: Whether the two additive tests in Hop `H003` genuinely close F1
+(resume boundary-mode-mismatch refusal untested) and F2 (N16's generic-Mount
+companion assertion untested), verified by reading and by running the real
+tests against the real code, not by trusting the Hop's own summary.
+Verdict:: *accept* -- both Findings resolved; no new blocking issue found; no
+existing test weakened; no source change was made or needed.
+
+[[verdict]]
+== Verdict and summary
+
+Hop H003 added exactly two things, both additive, both inside the two test
+files the broad review named as the correction site:
+
+* `tests/unit/test_execution_boundary_dispatch_preflight.py::test_resumed_hop_with_boundary_mode_mismatch_refuses_before_any_provider_process_starts`,
+  parametrized in both mismatch directions (`bubblewrap`-run-resumed-`direct`
+  and `direct`-run-resumed-`bubblewrap`).
+* `tests/unit/test_execution_boundary_config.py::test_undesignated_mount_with_outside_repository_source_is_refused`.
+
+No `src/` file was touched. I independently re-verified, rather than
+re-reading the Hop's own claim, that each new test exercises the exact
+invariant its named Finding required and genuinely fails without the
+underlying guarantee (both checks are pre-existing, unchanged code; the
+tests are the previously-missing regression coverage, not new behavior):
+
+* `operator.py:945-950`, the first statement of `run_serial_hops`, raises
+  `OperatorPreflightError` with message `"execution boundary mode
+  mismatch: ..."` whenever `run.boundary != execution_configuration.boundary`,
+  strictly before `checkout_state_root` is called -- i.e. before any dispatch
+  marker could be written. The new parametrized test constructs a Run with
+  one boundary mode via `new_run(..., boundary=...)`, calls `run_serial_hops`
+  with an `execution_configuration` resolved to the other mode, and asserts
+  both the raised message (`match="boundary mode mismatch"`) and that
+  `dispatch.json` was never created and the repository working tree is
+  unchanged. This is the exact shape F1 required, covering both mismatch
+  directions.
+* `execution_boundary.py`'s `validate()` bind-source loop raises
+  `BoundaryConfigurationError("bind sources must be inside repository")` via
+  `source.relative_to(repository)` for any non-scratch `Mount` whose source
+  does not resolve under the repository root. The new test constructs a
+  plain, undesignated `Mount` (not the external-scratch, provider-channel,
+  or provider-authentication parameter) whose source is an existing sibling
+  file entirely outside the repository tree, asserts the refusal
+  (`match="inside repository"`), and asserts the host-side file's content is
+  unchanged afterward. This is exactly N16's companion assertion that F2
+  named as missing.
+
+[[independent-execution]]
+== Independent execution (this Hop)
+
+Ran with a leftover review virtualenv from this worktree (`pytest 9.2.0`,
+`--wfc-partial`, which this repository's own `conftest.py` requires for any
+non-whole-suite selection and which clearly labels the run as partial, not
+required-suite acceptance):
+
+* The three new/changed tests in isolation: 3 passed
+  (`test_undesignated_mount_with_outside_repository_source_is_refused`,
+  both parametrizations of
+  `test_resumed_hop_with_boundary_mode_mismatch_refuses_before_any_provider_process_starts`).
+* The two touched files in full
+  (`test_execution_boundary_config.py`, `test_execution_boundary_dispatch_preflight.py`)
+  plus the three files the broad review's F1 evidence named as the
+  repository-wide search surface for call sites of `run_serial_hops`
+  (`test_operator.py`, `test_slice5b.py`, `test_a3_operating_contract.py`):
+  146 passed, 0 failed, 0 new skips.
+
+This agent sandbox cannot start `bwrap` and this agent sandbox's own `/tmp`
+is read-only, so the integration suite and
+`test_claude_adapter_conformance.py` could not be executed here; this is the
+same stated, pre-existing agent-local limitation the broad review already
+recorded in its own
+link:wfc_execution_boundary_slice_a_r3_broad_review.adoc#limits[limits
+section], and neither new test in this correction touches that code path.
+Neither Finding's correction required `src/` changes or integration-level
+coverage, so this limitation does not bear on either disposition below.
+
+`git status --short -uall` at the end of this Hop shows only the
+pre-existing, unrelated untracked dotfiles that predate the Run in this
+worktree; no staged changes; no file outside
+`tests/unit/test_execution_boundary_config.py`,
+`tests/unit/test_execution_boundary_dispatch_preflight.py` and this artifact
+was touched by H003 or this Hop.
+
+[[f1-disposition]]
+== F1 disposition -- resolved
+
+The missing regression coverage for the resume boundary-mode-mismatch
+refusal now exists, exercises the real `run_serial_hops` entry point in both
+mismatch directions, asserts the exact refusal message, and asserts no
+dispatch marker was written and the repository is unchanged. The underlying
+check was already correct (confirmed again by reading and by this Hop's own
+execution); the Finding was a coverage gap, now closed. No further action
+needed.
+
+[[f2-disposition]]
+== F2 disposition -- resolved
+
+The missing regression coverage for N16's generic-Mount companion assertion
+now exists: a plain, undesignated `Mount` with a source entirely outside the
+repository tree is refused by the unchanged generic containment rule, and the
+host-side source is confirmed unchanged afterward. The underlying check was
+already correct (confirmed again by reading and by this Hop's own
+execution); the Finding was a coverage gap, now closed. No further action
+needed.
+
+[[scope]]
+== Scope and withheld-authority check
+
+The correction stayed inside the two test files the broad review named; no
+`.wfc/config.yaml`, `governance/`, `.github/`, `Makefile`, `pyproject.toml`,
+`scripts/`, or `examples/` change; no `.adoc` file was touched, so the
+Front-Door docs-sync, strict-render and doc-catalog obligations are not
+triggered by this correction. No existing test was weakened, skipped, or
+deleted. No security claim, preventive-isolation claim, or live-qualification
+claim was added or changed. The Git index remained untouched throughout this
+Hop; no mutating Git command was run.
