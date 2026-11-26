@@ -81,7 +81,7 @@ mandate already covers the next step, take it and report what you did.
 | `refused_unauthorized` / `refused_drift` / `refused_journal_root` | Correct the input and `wfc run` again in the same checkout -- the lifecycle was never consumed. | -- |
 | `refused_prelaunch` / `refused_probe` / `refused_identity_changed` / `refused_launch_exhausted` | Diagnose the reported fact -- including preparing or correcting the declared evidence command's own environment -- and either `wfc resume` the same checkout or prepare a fresh one and retry, per the printed message; repeating a probe that just failed, once corrected, is ordinary preparation. | Widening scope, authority, program or Hop budget to make the probe pass. |
 | `refused_no_lifecycle` / `refused_active_lifecycle` | Prepare a fresh checkout and launch there. | -- |
-| `awaiting_human_budget` | Prepare a successor Commission at the same scope, program and an unwidened Hop budget. | Raising the Hop budget. |
+| `awaiting_human_budget` | Prepare a successor Commission at the same scope, program and an unwidened Hop budget. | Raising the Hop budget (Planned: an explicit, journaled, maintainer-authorised in-place extension; an agent never extends a budget on its own). |
 | `reconcile_required` (mechanical recoverable, see above) / `awaiting_human` with a `mechanical_preemption:` stop reason | `wfc resume` the same checkout; read the new `CLASSIFICATION`. | -- |
 | `refused_not_recoverable` | Report the printed reason. Where the Run cannot be recovered (identity changed since authorization, no Hop left), treat it like the stop it came from. | Whether to salvage, integrate by maintainer decision or discard; any widened authority. The identity invariant is not bypassed. |
 | `reconcile_required` / `stopped` / `interrupted` | Investigate the stop; where the preserved candidate is unambiguous and in-scope, prepare a successor Commission carrying the same already-decided scope, program and Hop budget forward. | Judging whether the candidate is worth salvaging, needs only forensic preservation, or should be discarded; any widened authority. |
@@ -162,7 +162,9 @@ per the table above. The four outcomes:
    identity); the stopped Hop still stays charged.
 2. **Maintainer salvage + fresh successor Run** -- useful candidate work is
    preserved as explicitly non-authoritative Git history; a separately
-   authorized successor inspects it fresh.
+   authorized successor inspects it fresh. A successor Run always enters
+   at the implementation phase today, even a review-only or
+   verification-only one -- so it costs a Worker Hop regardless.
 3. **Forensic preservation only** -- ambiguous or out-of-scope state;
    preserved externally, never as an ordinary salvage commit.
 4. **Discard** -- the candidate has no preservation value.

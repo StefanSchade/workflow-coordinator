@@ -117,7 +117,10 @@ estimate of expected Run length -- the single most commonly misapplied
 piece of operator judgment. A too-tight ceiling converts healthy
 review/correction convergence into an unnecessary `awaiting_human_budget`
 stop; there is no in-place raise once a Run stops on an exhausted budget --
-a fresh Commission is required. Budget using observed convergence, not the
+a fresh Commission is required. (Planned: an explicit, journaled,
+maintainer-authorised extension of a budget-stopped Run; an agent never
+extends a budget on its own, and Finding disposition stays the independent
+reviewer's.) Budget using observed convergence, not the
 expected count: a narrow, Hop-scoped package written against a controlling
 record has converged in roughly 2-5 Hops under `robust@v1`, a broad task
 without one in roughly 7-12; a retire-heavy correction (removing a mechanism
