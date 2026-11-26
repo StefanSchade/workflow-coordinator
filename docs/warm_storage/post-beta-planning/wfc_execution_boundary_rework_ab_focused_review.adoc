@@ -1,0 +1,369 @@
+= Execution Boundary rework AB -- trusted started signal, per-invocation provider channel, authentication-mount contract, fail-closed file-scope refusal -- independent focused review
+:toc:
+:toclevels: 2
+
+This record holds every independent focused-review pass over the corrections
+of `WI-WFC-EXEC-BOUNDARY-REWORK-AB-001`. Later passes are added above earlier
+ones; earlier passes are kept unedited apart from the `(current)` marker,
+which moves to the newest pass. The whole-candidate record of the same Run is
+link:wfc_execution_boundary_rework_ab_broad_review.adoc[the rework AB broad
+review]; the governing specification is
+link:../../backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc[the
+Slice A dispatch-integration contract] together with this Commission's task
+document and the maintainer's 2026-11-26 disposition.
+link:wfc_execution_boundary_slice_a_opus_implementation_review.adoc[The Slice A
+Opus implementation review] is provenance for the historical labels F1-F15; it
+is not a source of current requirements.
+
+== Pass H004 -- `RUN-f5b02c7990aa4a4b8343ec74e0016c77` (current)
+
+Status:: *CHANGES REQUIRED* -- one of the three open Findings is not yet
+fully corrected. `F001` and `F002` are resolved on my own execution and
+reading. `F003` stays open: every one of the five remedies its broad-review
+origin enumerated is done and verified, but two further statements about the
+*same* retired pre-create/removal bracket survive in the *same two source
+files* the correction Hop edited, and both are reproduced from the current
+text of the tree.
+WorkItem:: `WI-WFC-EXEC-BOUNDARY-REWORK-AB-001`
+Run / Hop:: `RUN-f5b02c7990aa4a4b8343ec74e0016c77` / `H004`
+(`focused_review`, independent reviewer, gate, blocking-only, finding
+authority `resolve`).
+Invocation:: `INV-3d5d43109df5444982759580420c8cbb`.
+Reviewed correction:: base HEAD `f29e006995a9a231107c5db0818ac2668a4688b7`,
+H003's range `f5288d06..f29e0069`:
+`docs/backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc`,
+`src/workflow_coordinator/execution_launcher.py`,
+`src/workflow_coordinator/operator.py`,
+`tests/integration/test_execution_boundary_dispatch.py`,
+`tests/unit/test_execution_launcher.py`. Read against the whole candidate at
+that HEAD. Every statement below is re-derived from the current text of the
+files and from my own executions, never from the Worker's summary.
+Date:: 2026-11-26.
+
+=== Finding state
+
+The projected authoritative Finding state for this Run carries three open
+blocking Findings, `F001`, `F002` and `F003`, introduced by the H002 broad
+review (as its proposals B1, B2, B3) and carried through H003 with correction
+evidence. I resolve `F001` and `F002` and leave `F003` open and blocking. The
+labels F1-F15 and B1-B3 used below are *historical* labels of
+link:wfc_execution_boundary_slice_a_opus_implementation_review.adoc[the Opus
+implementation review] and of the broad-review record respectively, cited as
+provenance only; they are not current-Run Finding IDs.
+
+=== Environment and what I could and could not execute
+
+This Hop's sandbox is more restricted than H002's and H003's, and I state the
+consequences so that nothing below is mistaken for more than it is:
+
+* *No `pytest`.* Neither `/usr/bin/python` nor `python3` has `pytest`
+  installed in this Hop's shell (`ModuleNotFoundError: No module named
+  'pytest'`), there is no project virtualenv in this worktree, and there is
+  no network to obtain one. I therefore ran *no* pytest node in this Hop.
+  This is an agent-local environmental limitation, not a candidate defect,
+  and it is distinct from the Coordinator's own trusted task-check.
+* *No direct `bwrap` invocation.* A bare `bwrap` command requires an
+  approval this session cannot answer, so I could not probe `bwrap` directly.
+  I could, and did, drive the product's own adapter code, which spawns
+  `bwrap` itself as a subprocess.
+* *`bwrap` cannot start here* for the same reason H002 recorded (no
+  unprivileged user namespaces). Every claim below about real-`bwrap`
+  behaviour under the task-check is a reading of the code plus the
+  maintainer's recorded probe facts.
+* What I *did* execute, with plain `python3` against the product modules:
+  the grant-derivation matrix (<<h004-f003>>), the `provider_started`
+  classification matrix (<<h004-signal>>), the Git baseline-commit
+  reproduction that `F001` is about (<<h004-f001>>), a direct replay of the
+  `F001` test's own body through `CodexCliAdapter.execute` (<<h004-f001>>),
+  and `py_compile` over every changed module (clean).
+* Strict render: `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+  --failure-level=WARN
+  docs/backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc` prints
+  nothing and exits 0.
+* Doc catalog: `python3 scripts/wfc_doc_catalog.py check` at base HEAD
+  reports `Informational: 83 unresolved links; 4 Project Memory source_path
+  misses` and `catalog current` -- byte-identical to the baseline the broad
+  review recorded at `:96`. After adding this record, `generate` reports
+  `597 records` and `check` again reports the same `83` and `4` with
+  `catalog current`, so this record adds no unresolved link and no Project
+  Memory miss. The generated output lives at
+  `build/wfc/document_catalog.jsonl`, which is ignored and never committed
+  (the script says so at its own `:6`), so no stray file is left behind.
+* Index discipline at the start of this Hop: `git status --short -uall` shows
+  no staged change and no modified or new tracked file at base HEAD; the only
+  untracked entries are this sandbox's own injected dotfiles (`.bashrc`,
+  `.claude/...`, `.idea`, `.mcp.json` and similar), which are not part of the
+  candidate. `__pycache__` trees under `src/` and `tests/` are covered by
+  `.gitignore` and do not appear.
+
+=== Finding dispositions
+
+[[h004-f001]]
+==== `F001` -- RESOLVED
+
+The invariant: every test the task lists as required must exist, run through
+the real dispatch path and pass.
+
+The defect was that
+`tests/integration/test_execution_boundary_dispatch.py::test_f1_a_boundary_that_fails_before_exec_is_still_classified_as_not_started`
+committed an empty staged tree in its own setup, so it failed before the
+classification it exists to assert was ever reached. I reproduced both halves
+side by side, running the file's own `_init_repo`/`_commit_all` sequence
+verbatim in a scratch directory:
+
+* without the placeholder file (the pre-H003 setup): `git commit` exits 1,
+  which `_commit_all`'s `check=True` turns into `CalledProcessError` --
+  deterministic, environment-independent;
+* with H003's `(repository / "placeholder.txt").write_text(...)` before
+  `_commit_all`: the commit succeeds and yields a real HEAD.
+
+I then replayed the test's body directly -- same grant shape (`bubblewrap`,
+no writable entries, one readable host auth file, a writable provider
+channel), same `CodexCliAdapter`, same `AgentExecutionRequest`, same absent
+wrapped executable -- and got exactly the exception the test asserts:
+`CodexCliError: execution boundary failed before the provider started`, with
+`__cause__` `None` (i.e. raised by the started-signal branch at
+`codex_adapter.py:495`, not by the `local pre-acceptance executable launch
+failure` wrapper). So the setup now completes, the assertion is reachable,
+and the message matches. The test's intent -- an absent wrapped executable,
+indistinguishable on the status-fd wire from a mount-setup failure -- is
+unchanged by the fix, and nothing was weakened: the added line is a
+placeholder file in a throwaway fixture repository.
+
+Residual honestly stated: in *this* sandbox `bwrap` fails at namespace
+creation rather than at `exec`, so my replay proves the classification is
+reached and correct but not the specific `child-pid`-then-no-`exit-code`
+sequence. Both failure shapes produce the same observation (no `exit-code`
+document) and therefore the same classification. The real-`bwrap` proof
+remains the Coordinator's task-check.
+
+[[h004-f002]]
+==== `F002` -- RESOLVED
+
+The invariant: required test (2) must exercise two consecutive
+boundary-selected Hops of one Run with the second failing at `bwrap` setup,
+asserting the started/not-started classification in Hop 2 and that no Hop 1
+state reaches it (probes P5/P6).
+
+The defect was that the delivered Hop 2 failed inside
+`execution_boundary.validate()` on a hardlink alias, before `build_argv` ran,
+so `provider_started()` was never consulted and the N7 primitive was being
+re-tested instead of the P5/P6 classification. H003 replaced that with a Hop
+2 whose provider executable does not exist. I verified the whole chain by
+reading the code and, where it does not need `bwrap` to succeed, by
+execution:
+
+. `prepare_bubblewrap` does not check the wrapped command for existence --
+  `build_argv` only requires a nonempty string argv
+  (`execution_boundary.py:293`). My `F001` replay confirms this executably:
+  with an absent executable the code reached `Popen` and then the
+  started-signal branch, so Hop 2 genuinely gets to `bwrap`.
+. `bwrap` is the spawned program, so `Popen` succeeds and the
+  `except (OSError, ValueError)` "local pre-acceptance" wrapper does not
+  fire; `bwrap` forks (writing `child-pid`), fails to `exec` the absent
+  command, and exits non-zero with no `exit-code` document -- fact (c) of the
+  maintainer's probe record.
+. `codex_adapter.py:489-495` then classifies not-started from the pipe alone
+  and raises `CodexCliError("execution boundary failed before the provider
+  started")`; `slice4.py:411-413` catches `CodexCliError`, unlinks the
+  dispatch marker and re-raises `Slice4Error(str(error))`. The test's
+  `pytest.raises(Slice4Error, match="execution boundary failed before the
+  provider started")` therefore matches on the propagated message, and its
+  closing `assert not (run_root / "dispatch.json").exists()` is the
+  consequence of the same `unlink` -- both assertions are tied to the real
+  decision path, not to a primitive.
+. The leakage half is still asserted: `grant1.provider_channel !=
+  grant2.provider_channel`, and Hop 1's channel listing is captured before
+  Hop 2 and re-asserted unchanged afterwards. Nothing in the Hop-2 decision
+  reads a file at all, which is what makes the former cross-Hop marker
+  defect unreachable by construction; were the old shared-channel marker
+  still in place, this Hop 2 would classify as *started*, so the case is a
+  genuine regression detector for F2.
+
+The deleted setup lines (`protected.txt` and the hardlink alias) removed no
+coverage: the alias shape they exercised is covered by
+`test_n7_hardlink_alias_created_before_launch_refuses_through_the_real_dispatch_path`
+in the same file and by the parameterised
+`test_writable_hardlink_alias_is_rejected_before_launch` in
+`tests/integration/test_execution_boundary_bwrap.py`. No test was weakened.
+
+Residual honestly stated: Hop 1 needs a provider that really runs, so I could
+not execute this case end to end here -- the same limitation H002 recorded for
+the file's other positive-path cases. Hop 1's construction is unchanged from
+the version that was in the tree at the broad review, and only the Hop-2
+executable and assertion changed.
+
+[[h004-f003]]
+==== `F003` -- OPEN, blocking
+
+The invariant: code, contract and test comments must state current behaviour;
+a mechanism the change retires is removed rather than left as dead code and
+stale documentation.
+
+*What H003 did, and what I verified.* The premise is correct and I confirmed
+it executably rather than by reading: I drove `derive_boundary_grant` over
+eight scope shapes against a scratch repository and in every case that
+returns a grant, every entry of `writable_repository_paths` exists on disk --
+an existing directory and an existing file resolve to themselves, an absent
+declared artifact resolves to `docs/warm` (its nearest existing ancestor), an
+absent entry nested inside an existing granted entry is dropped by
+`normalized_writable_scope` before resolution (and needs no refusal, because
+its parent is already writable), and every other absent entry is refused by
+name with the actionable two-option message. `direct` mode grants no writable
+repository path at all. So `missing_writable_targets` could only ever return
+`()` for a grant `operator.py` builds, and both loops were unreachable.
+
+All five remedies the broad review enumerated are done, and I checked each:
+
+* the pre-creation loop, the `pending_creates` variable and the matching
+  `finally` removal bracket are gone from `operator.py`;
+  `git diff -w --ignore-blank-lines` over that file shows *only* those
+  removals plus the corrected `validate_grant`-ordering comment, so the
+  de-indentation is semantics-preserving and nothing else shared the retired
+  `try`/`finally`;
+* `missing_writable_targets` is deleted, has no remaining reference anywhere
+  in `src/` or `tests/` (only historical review records mention it), and its
+  two dedicated unit tests and two inline assertions went with the function
+  they tested -- a legitimate deletion of coverage for removed dead code,
+  disclosed by the Worker;
+* `<<a-lifecycle>>` is rewritten and is honest: it marks itself retired,
+  states in the past tense what the bracket used to do, and states that
+  `derive_boundary_grant` now guarantees existence so there is nothing left
+  to create or remove;
+* the cross-referencing passages are reconciled -- `<<mounts>>` rules 1-3 at
+  `:579-600`, the channel-lifecycle paragraph at `:805`, the cleanup
+  statement at `:1403`, the invariant row at `:1433` and the historical step
+  list at `:1769` (annotated "later retired by the F5 rework" rather than
+  rewritten, correctly, since it records a step that was delivered and then
+  retired);
+* `test_p2`'s comment now says the real dispatch frame would refuse that
+  scope by name and that the test builds the directory itself to exercise the
+  already-exists positive case. That is accurate: my matrix shows
+  `authorized_scope=("new-dir",)` with `new-dir` absent is refused.
+
+*Why the Finding is nevertheless not resolved.* Two statements asserting the
+retired bracket as live behaviour survive, both in files H003 edited, and
+neither was in the three places the broad review enumerated:
+
+. `src/workflow_coordinator/execution_launcher.py:333-335` --
+  `validate_grant`'s own docstring: "Shared by the Coordinator's own
+  preflight (run once the pre-create bracket has materialised every missing
+  writable target, and before any provider dispatch) and by
+  ``prepare_bubblewrap`` below". This sits about 100 lines below the function
+  H003 deleted, in the same module that now owns the F5 rule. It states a
+  false *ordering precondition* for the shared mount-validation seam of the
+  security boundary: a reader is told that an upstream bracket materialises
+  missing writable targets before this validation runs, when no such bracket
+  exists and `derive_boundary_grant` guarantees existence instead. This is
+  exactly the cost the broad review named for the contract section ("will
+  mislead the next reader of the F5 rule"), relocated into the code, and it
+  is the kind of statement from which the retired mechanism would plausibly
+  be reintroduced.
+. `tests/integration/test_execution_boundary_dispatch.py:7-8` -- the module
+  docstring: "Every case constructs its own ``BoundaryGrant`` directly
+  (mirroring what ``operator.py``'s dispatch frame derives and pre-creates)".
+  The dispatch frame pre-creates nothing. This is the same false half that
+  H003 corrected 175 lines further down in `test_p2`'s own comment, left
+  standing as the file-level claim about *every* case in the file.
+
+Both are reproduced from the current text of the tree, both concern the same
+retired mechanism as the Finding, and both are a one-clause comment edit. No
+mechanism is added or removed by the remedy.
+
+*Remedy.* In `execution_launcher.validate_grant`'s docstring, replace the
+pre-create-bracket precondition with what actually holds: the Coordinator's
+preflight calls it after `derive_boundary_grant`, which already guarantees
+every granted writable entry exists, and it must run before any provider
+dispatch. In the dispatch test module's docstring, drop "and pre-creates" (or
+say that a case which needs an absent target to exist creates it itself,
+because the real dispatch frame refuses that scope by name). Nothing else in
+this Finding remains open.
+
+=== Non-blocking observations
+
+. *`F002`'s docstring wording.* It calls the Hop-2 failure a "genuine
+  `bwrap`-setup failure" and then, in the next clause, states the mechanism
+  exactly ("its provider executable does not exist, so `bwrap` forks
+  (writing `child-pid`) and then fails to exec it, writing no `exit-code`
+  document"). Strictly, that is probe fact (c), an `exec` failure, not fact
+  (b), a mount-setup failure. On the status-fd wire the two are
+  indistinguishable, which is the whole point of the classification, and the
+  docstring's own next clause is precise -- so this does not block. If the
+  text is touched anyway, "a genuine `bwrap`-level failure" would be exact.
+. *`docs/backlog/FTR-WFC-EXECUTION-BOUNDARY-FILE-SCOPE-CREATION.adoc:25`*
+  still says, in the present tense, "The implementation pre-creates absent
+  writable entries as directories (the contract's mount rule 1) unless the
+  phase declares the path as a durable artifact". That is a Problem-section
+  statement of the pre-rework state, and the immediately following paragraph
+  carries the maintainer's interim fail-closed decision, so a reader is not
+  left misinformed. A tense fix ("pre-created", "before this disposition")
+  would be more precise. Not blocking, and this record names it rather than
+  requiring it.
+. *Agent-side test execution was impossible in this Hop* (no `pytest`, no
+  network, no project virtualenv). The required-suite evidence for this
+  correction rests entirely on the Coordinator's task-check. I flag this only
+  so the gap is visible in the record, not as a candidate defect.
+
+=== What I independently re-verified and found unchanged
+
+These were accepted by the H002 broad review; I re-checked them because
+H003 touched `operator.py`, `execution_launcher.py` and both affected test
+files, and I found no regression.
+
+[[h004-signal]]
+==== The started signal is still the only input, and still fail-closed
+
+I drove `open_started_signal` / `close_started_signal_write_end` /
+`provider_started` over seven payloads. The results match the documented
+semantics exactly: nothing on the pipe, a `child-pid` document alone, and
+unparseable bytes all yield `started=False`; a `child-pid` followed by an
+`exit-code` document (0 or 3) and an `exit-code` document alone yield
+`started=True`; a payload whose JSON stream breaks before a later
+`exit-code` document yields `False`, i.e. a malformed stream fails towards
+"not started" rather than towards an unproven "started". No file, directory
+or agent-reachable path enters the decision: `codex_adapter.py:488-495` and
+`claude_adapter.py:393-400` read `provider_started(started_signal)` and
+nothing else, and the write end goes to the `bwrap` process alone
+(`pass_fds=(write_fd,)`), with the Coordinator's own copy closed in a
+`finally` immediately after spawn and the read end closed in an outer
+`finally`. The timeout case is still deliberately excluded from the
+classification (`if not timed_out and ...`), as `StartedSignal`'s docstring
+states, and `provider_started` is only ever called after
+`communicate()` has reaped the process, so the bounded read cannot block.
+
+==== `operator.py`'s combined change is coherent after the removal
+
+The dispatch frame's order is now: derive the grant (which may refuse the
+scope by name, before anything exists on the host) -> create the
+per-invocation channel directory, refusing a pre-existing one by name ->
+`_preflight_boundary` -> `validate_grant` for a non-direct grant -> build the
+adapter -> `run_real_one_hop`. Removing the bracket removed the only reason
+`validate_grant` was deferred, and the corrected comment says so. There is no
+double bookkeeping left between the F1/F2 channel handling and the F5
+refusal: the channel directory is the only thing the frame creates, and the
+F5 refusal happens strictly before it.
+
+==== Nothing from the retired marker mechanism is left as dead code
+
+The only remaining `.wfc-boundary-started` references are deliberate and
+correct: two integration cases that *forge* that exact filename inside the
+view to prove it no longer affects the classification
+(`test_execution_boundary_dispatch.py:653,694`), one unit assertion that the
+name and the `/bin/sh` touch-first wrapper are absent from the generated
+argv (`test_execution_launcher.py:202-219`), and the contract's
+`<<started-signal>>` section, which describes the marker in the past tense as
+the defect being retired. `missing_writable_targets` has no remaining
+reference in `src/` or `tests/`.
+
+==== Out-of-scope areas
+
+H003 touched no F4 assertion or measurement and no F6-F14 code: its range is
+confined to the pre-create/removal bracket, the two test cases named by
+`F001`/`F002`, and the contract passages describing the bracket. The two
+deleted unit tests and two deleted inline assertions targeted only the
+removed dead function.
+
+=== Route
+
+`correction`. One blocking Finding (`F003`) remains, with a named, bounded
+remedy in two comment locations inside the already-authorized scope.
