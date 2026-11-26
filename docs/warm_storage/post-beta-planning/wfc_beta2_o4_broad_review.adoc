@@ -1,0 +1,463 @@
+= Beta-2 O4 `wfc prepare-checkout`: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the Beta-2 slice O4
+candidate for WorkItem `WI-WFC-BETA2-O4-001` -- one deterministic Front Door
+command that prepares a fresh Run checkout, its scratch directory and its
+launch environment through a declared, committed preparation hook (decision
+D4, Option A, variant A: prepare only, no destructive clean-up). Later passes
+are added above earlier ones; earlier passes are kept unedited apart from the
+`(current)` marker, which moves to the newest pass.
+
+[[pass-h002]]
+== Pass H002 -- `RUN-fa02be5d…` (current)
+
+Status:: *CHANGES REQUIRED.* One blocking Finding: the named refusal
+`refused_path_inside_repository` guards only the working tree that was passed
+as `--repository`, not the repository's *other* working trees, so the command
+accepts -- and prepares into -- a fresh path nested inside a sibling worktree
+of the same repository, dirtying that worktree. I reproduced it in both
+directions and showed the consequence (`git_facts.preflight_hop` on the host
+worktree then fails with `non-ignored untracked state`). The task's
+`Acceptance` requires that the command refuse "a path inside the repository"
+by name, and this repository's own topology -- one fresh worktree per Run,
+fifteen sibling working trees of one repository today -- is exactly the
+topology in which the gap is reachable. Everything else I checked holds, and
+holds well: the design is written down first and is honest about its one
+unavoidable write outside the two created directories, the one-Run-per-
+checkout invariant is enforced *earlier* from a single extracted identity
+definition rather than relaxed, nothing is removed on any code path including
+every refusal path, the hook is only ever a committed executable blob at the
+base ref with a bounded, strictly parsed, never-trusted output channel, and
+the prepared-versus-unprepared probe proof is real. Four non-blocking
+observations are in section 7; one of them (`refused_config` versus a
+non-UTF-8 committed config) is worth fixing in the same correction Hop
+because a Hop is being spent anyway.
+WorkItem:: `WI-WFC-BETA2-O4-001`
+Run / Hop:: `RUN-fa02be5df2ea4836a2f372f25973113e` / `H002` (`broad_review`,
+whole-candidate pass, independent reviewer, gate, blocking-only,
+`finding_authority: resolve`). The Run carried no Finding into this Hop; this
+pass opens one blocking Finding and disposes none.
+Invocation:: `INV-34194ea2c9784c04aeb7f0496f1cfc6a`.
+Reviewed product:: the whole candidate at base HEAD
+`720a29416710a816d1b250e4c25a4e54d283ce3f`, the single commit `720a294` over
+`36f6a5d`: 22 leaves, 2432 insertions, 91 deletions --
+`src/workflow_coordinator/frontdoor/prepare_checkout.py` (new, 852 lines),
+`src/workflow_coordinator/frontdoor/{cli,config,journal,lifecycle}.py`,
+`scripts/wfc_prepare_checkout_env.sh` (new),
+`src/workflow_coordinator/agent_skill/wfc/references/setup.md`,
+`tests/unit/test_frontdoor_prepare_checkout.py` (new, 750 lines),
+`tests/unit/{test_agent_skill_content,test_quickstart_commands}.py`,
+`docs/backlog/{FTR-WFC-RUN-CHECKOUT-PREPARATION,FTR-WFC-LEVEL1-OPERATOR-GUIDANCE,_open}.adoc`,
+`docs/developer_guide/{ch01_development,ch03_engineering_conventions}.adoc`,
+`docs/operator_manual/ch01_orientation/01_model.adoc`,
+`docs/operator_manual/ch03_running/01_preparation.adoc`,
+`docs/operator_manual/ch05_self_development/01_topology_budget.adoc`,
+`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc`,
+`docs/operator_manual/ch10_level1_orchestration/01_operating_pattern.adoc`,
+`docs/operator_manual/operator_manual.adoc` and
+`docs/technical_model/ch04_target_and_alternatives/03_adr_closed_versioned_workflow_programs.adoc`.
+`.wfc/config.yaml`, `governance/`, `.github/`, `pyproject.toml`, `model.py`,
+`reducer.py`, `evidence.py`, `git_facts.py`, `commissioning.py`, the archive
+and audit modules and `lifecycle.EXIT_CODES` are byte-unchanged.
+Governing acceptance:: the Commission task (GOAL, BINDING DECISION D4, WHAT
+THE COMMAND MUST ACHIEVE (1)-(5), THE HOOK, NOTES, DOCUMENTATION, PLAN
+CONTEXT, FRONT DOOR DOCS-SYNC, CHECKS, COMMIT AND INDEX DISCIPLINE,
+Acceptance, Withheld authority), the `[[o4]]` slice entry and `D4` of
+`docs/backlog/beta2_operator_efficiency_plan.adoc` (the slice's "Acceptance
+(verifiable)" list is binding), the record
+`docs/backlog/FTR-WFC-RUN-CHECKOUT-PREPARATION.adoc`, `AD-5`, and the
+repository policy restated for this Run.
+
+=== 1. Gates I executed myself, and the ones I could not
+
+My Hop sandbox cannot start `bwrap`, has no network, and -- unlike the O5 and
+O6 review Hops -- has *no reachable `pytest` and no reachable `ruff`*: the
+operator's virtualenvs lie outside the paths this sandbox may read, and no
+package can be downloaded. I state plainly what that cost and what I did
+instead. Everything below is exploratory agent-side evidence; the
+Coordinator's `task-check` (real `bwrap`, verified offline bundle) remains the
+authoritative evidence command.
+
+New and changed tests:: I wrote a throwaway runner outside the repository's
+tracked content (under the gitignored `tmp/`, deleted again before I
+finished) implementing only the `pytest` surface these modules use --
+`tmp_path`, `monkeypatch`, `capsys`, module `@pytest.fixture`,
+`pytest.raises`, `mark.parametrize` -- and ran the real, unmodified test
+modules through it with real `git` and real subprocesses.
+`tests/unit/test_frontdoor_prepare_checkout.py`: *47 passed, 0 failed*,
+including the central prepared-versus-unprepared probe proof, the
+prospective-versus-actual checkout-identity equality, the ten bounded-output
+parametrisations and the "nothing removed, nothing written outside the two
+directories" assertions.
+`tests/unit/test_agent_skill_content.py`: 21 passed (the drift guard over the
+shipped command list and the reference-file line bounds among them).
+`tests/unit/test_quickstart_commands.py`: 4 passed.
+`tests/unit/test_lifecycle_journal.py`: 17 passed (the module whose single
+definition was extracted). `tests/unit/test_evidence_config.py`: 22 passed.
+`tests/unit/test_frontdoor_init_plan.py`: 19 passed.
+`tests/unit/test_self_development_consumer_config.py`: 7 passed.
+`tests/unit/test_frontdoor_emit_request.py` collects nothing under my runner
+because it is class-based and my runner does not support classes -- a
+limitation of my tooling, not a result about the candidate, and that module is
+untouched by this slice.
+Lint:: `python -m ruff check .` *could not be executed* (no `ruff`, no
+network). `[tool.ruff.lint] select = ["F"]`, so the gate is pyflakes
+correctness only. I substituted an AST approximation of the F rules most
+plausibly tripped by a new module or a removal -- unused import, redefinition,
+unused local binding, f-string without placeholder, duplicate dict key, plus
+a syntax compile -- over all eight changed Python files and read the new
+module's imports one by one: every one of the 25 names imported by
+`prepare_checkout.py` is used, and there is no residue of the retirement in
+`setup.md` or in the two drift guards. This is an approximation, not the gate.
+Strict render:: `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+--failure-level=WARN` over all twelve changed `.adoc` leaves and over this
+artifact prints nothing.
+Doc catalog:: `python3 scripts/wfc_doc_catalog.py generate` then `check`:
+`Informational: 83 unresolved links; 4 Project Memory source_path misses` and
+`catalog current` -- exactly the two baselines, no additions. The generated
+`build/wfc/document_catalog.jsonl` is inside the gitignored `build/` and is
+never committed; this artifact deliberately uses backticked paths rather than
+`link:` macros, so it adds no link to resolve.
+WFC's own hook:: `bash -n scripts/wfc_prepare_checkout_env.sh` is clean and
+the file is committed `100755`, so it satisfies the command's own hook rules.
+I could not run it to completion (it needs the verified offline bundle, which
+this sandbox cannot read, and a network-free `pip install` into a new venv),
+but I did exercise its failure path: with `WFC_TEST_INPUTS` pointing at an
+absent directory it exits 1 with *zero bytes on stdout* and the whole
+diagnostic on stderr, so `prepare-checkout` answers `refused_hook_failed`
+with a useful message rather than `refused_hook_output`. Its `exec 3>&1; exec
+1>&2` idiom is the right way to make that impossible to get wrong, and the
+`verify`-before-install order, the `--profile`/`--bundle` flags and the
+scratch-not-checkout venv location all match
+`scripts/wfc_test_inputs.py verify --help` and the Developer Guide.
+Working tree:: `git status --short -uall` shows no candidate residue and no
+residue of my own review (the only untracked entries are the dot-prefixed
+session/IDE files this sandbox creates, plus the pre-existing `tmp/pytest/`
+fixture root, which I did not touch). I issued no mutating Git command and
+the index is untouched.
+
+=== 2. The blocking Finding
+
+[[o4-f1]]
+*F-1 (blocking). `refused_path_inside_repository` does not cover the
+repository's other working trees, so the command prepares into a sibling
+worktree and dirties it.*
+
+What the candidate does:: `_require_outside_repository` (`prepare_checkout.py`)
+compares the target and scratch paths against `source.toplevel` and
+`source.git_common_dir` only -- the single working tree named by
+`--repository` and the Git common directory. A Git repository with linked
+worktrees has *many* working trees sharing that one common directory, and
+none of the others is checked.
+How I reproduced it:: in a toy repository with a main checkout and one linked
+worktree, `prepare_checkout(repository=<main>, target=<sibling>/run-checkout)`
+succeeds and creates both the worktree and its `-scratch` sibling inside the
+other working tree. The reverse direction (`--repository` the linked worktree,
+target inside the main checkout) also succeeds. `git worktree add` itself does
+not object.
+Why it matters:: afterwards the host working tree reports
+`?? run-checkout/` and `?? run-checkout-scratch/launch-env.sh` under
+`--untracked-files=all`, `observe_repository(host).clean` is `False`, and
+`git_facts.preflight_hop(host, ...)` raises
+`GitPreflightError: non-ignored untracked state`. If that host worktree is
+hosting a Run, its next Hop's auditable pre-Hop boundary fails, and
+`lifecycle._do_probe` would refuse a launch there with "repository is not at
+the clean authorized baseline". The refusal exists for precisely this reason,
+and the record states it in those words: "An untracked file anywhere inside
+the tree dirties it and refuses launch; a checkout inside a checkout is not a
+fresh checkout." Dirtying *another* checkout is the same defect as dirtying
+the given one, and in the one topology this command is written for -- one
+fresh worktree per Run, fifteen sibling working trees of this repository
+today -- the uncovered case is the ordinary one, not an exotic one.
+Which acceptance criterion:: the task's `Acceptance`: "it refuses, by name, a
+path whose checkout already has a lifecycle, an existing path, *a path inside
+the repository*, a dirty base, and an unsafe hook". The command's own identity
+model defines a checkout as the resolved top-level *plus* the resolved Git
+common directory, i.e. the repository is the common directory and all its
+working trees are trees of it; a path inside one of them is a path inside the
+repository.
+Feasible, simpler remedy (not a new requirement, and no new mechanism)::
+resolve the repository's registered working trees once, before the first
+effect, from the plumbing the module already shells out to --
+`git -C <repository> worktree list --porcelain`, whose `worktree <path>` lines
+list every working tree including the main one -- and refuse an overlap of
+either created path with any of them under the *existing*
+`refused_path_inside_repository` name. That check *subsumes* the present
+`source.toplevel` comparison, so it replaces a special case rather than
+adding one, and it needs one test per direction. No new refusal name, no new
+state, no new flag. (If the maintainer would rather accept the gap than spend
+a Hop, that is a decision for the maintainer, not something I may waive: the
+criterion is explicit and the violation is reproduced.)
+
+=== 3. The acceptance lists, item by item
+
+The command creates a usable worktree, scratch directory and launch environment at a fresh path through a declared committed hook:: Holds, and I verified it independently of the candidate's own tests. In my own toy
+repository (source repository = a *linked* worktree, to test the harder case)
+the command created the worktree on the new branch from the resolved base
+commit, the sibling `-scratch` with `tmp/`, ran the committed hook, and the
+committed probe then passed in the prepared checkout with the composed
+environment and failed without it. `--base-ref` resolves a branch name, an
+abbreviated commit and a full commit to the same full commit.
+A prepared checkout passes an unmodified baseline probe that an unprepared one fails (test):: Holds, and the test is the real thing, not a stand-in.
+`_probe_as_the_lifecycle_does` invokes the committed probe exactly as
+`lifecycle._do_probe` does -- the declared argv, the checkout as working
+directory, `capture_output`, and *no* `env=`, so the probe inherits the
+launching process's environment -- and the toy probe needs all three prepared
+facts (a tool first on `PATH`, the hook's declared variable, a writable
+`TMPDIR` outside the worktree). A plain `git worktree add` fails it; the
+prepared checkout passes it and the prepared tree is still clean afterwards,
+which is what makes the probe's own before/after cleanliness check pass too.
+The env file is proved separately by sourcing it in a real `sh` and comparing
+with the reported mapping, including that sourcing it twice is harmless.
+It refuses, by name, a path whose checkout already has a lifecycle:: Holds, and this is the invariant-critical one. The refusal is computed for the
+*prospective* identity before anything is created, from
+`journal.checkout_identity` -- a genuinely single definition that
+`canonical_checkout` now also calls, so the prospective digest cannot drift
+from the real one. A test asserts the equality for a worktree the command
+actually created; I re-checked it myself for the linked-worktree source case,
+where the digest must combine the *new* top-level with the *shared* common
+directory, and it holds. The spent-path refusal fires on either a journal file
+or any non-empty per-identity state directory, it is reached before the branch
+check and before any effect, and the pre-existing journal is untouched
+afterwards. Nothing in the module writes a journal: with an isolated
+`XDG_STATE_HOME` the state root is still empty after a successful
+preparation. `lifecycle.EXIT_CODES` and every lifecycle classification are
+byte-unchanged, and `journal.py` gained only the two extracted pure helpers
+(`checkout_identity`, `journal_path`) that remove a duplicated literal.
+… an existing path, a dirty base, an unsafe hook:: Hold. `refused_existing_path` uses `os.path.lexists`, so a *dangling symlink*
+at the target path is refused too (I checked). `refused_dirty_base` uses the
+product's own `observe_repository`, fires on an untracked file, and has no
+override -- which the record justifies and whose sandbox-placeholder
+consequence it documents rather than works around. The hook family is
+section 4.
+… a path inside the repository:: *Does not hold* for the repository's other working trees. See <<o4-f1,F-1>>. For the given working tree and the Git
+common directory it holds, and the ordering is right: the location refusal is
+decided before the existence refusal, which is the more actionable order.
+Nothing outside the created checkout and scratch directory is written, and nothing is removed:: Holds, with one honest exception the record states first
+and I confirmed, and one precision note (observation N-3). Over a successful
+preparation every pre-existing working-tree file of the source repository is
+byte- and mtime-identical, the source tree stays clean, a bystander file
+beside the two created paths is untouched, and nothing under `.git` is
+*removed* (the additions there are the per-worktree administration and the new
+branch ref, which no implementation of "create a worktree" avoids -- the
+record says so plainly instead of claiming otherwise). There is no `unlink`,
+`rmtree`, `rmdir`, `git branch -d`, `git worktree remove` or any other removal
+in the module, on any path: I read every refusal path and exercised the
+post-creation ones. A failing hook, a timing-out hook and a CLI refusal after
+creation all leave the worktree, the branch and the scratch directory in
+place, report both paths as `LEFT IN PLACE`, write no launch environment, and
+exit 2.
+The trust boundary of the hook is stated and tested:: Holds; section 4.
+WFC's own hook exists under `scripts/`:: Holds, and it is development tooling by construction, not product surface: `scripts/` is outside
+`[tool.setuptools.packages.find] include = ["workflow_coordinator*"]`, and a
+test walks every product module to assert that neither `WFC_TEST_INPUTS` nor
+`wfc_prepare_checkout_env` appears in any of them. Risk (d) of the slice is
+closed by construction rather than by a promise.
+The one-Run-per-checkout invariant, journal, lifecycle and archive behaviour are untouched:: Holds. The only non-test, non-doc edits outside the new
+module are: the `cli.py` dispatch line; one optional, inert Consumer Config
+key; the two extracted journal helpers; one `lifecycle.py` import so it uses
+`journal_path`. `ConsumerConfig` has exactly one construction site and is
+never reflected over (`asdict` is applied only to execution bindings), so the
+new key cannot leak into a digest, a projection or an audit record; a config
+that lacks it parses exactly as before, and a config that carries it parses
+under the same closed-vocabulary rules, which is what makes the documented
+one-line enablement safe for `wfc run` as well.
+The planned statements for O4 are retired; the Design section exists:: Hold; section 5.
+No existing test is weakened, skipped or deleted:: Holds. `git diff --numstat` over `tests/` is 753 insertions and *zero* deletions; the only
+two edits to existing test files add a `prepare-checkout` entry to a drift
+guard and to the documented-command parser table, which strengthens both.
+The evidence command passes; Coordinator task-check:: Not mine to assert. I could not run `make check` or `python -m pytest` (no `pytest`, no `bwrap`, no
+bundle); section 1 says exactly what I ran instead.
+
+=== 4. The hook's trust boundary, independently probed
+
+The design question of this slice is the hook, and this is the part I attacked
+hardest. The boundary holds, and the parts that cannot be defended are stated
+rather than papered over.
+
+* The hook is *always* a blob committed at `--base-ref`, resolved through
+  `commissioning._path` (so `a1_path_shape`: no absolute path, no `..`, no
+  `./`, no glob, no backslash, no trailing slash), with committed mode
+  `100755` required, `120000` refused by its own name, and a directory or
+  submodule entry landing in `refused_hook_not_executable`. The declaration
+  itself is read from the config *committed at the base ref*, which is the
+  property that matters: an uncommitted edit of `.wfc/config.yaml` cannot
+  redirect a command that executes code as the operator. I confirmed that a
+  hook added in a later commit does not exist for an earlier base, and that a
+  declaration naming an uncommitted path refuses rather than falling back to
+  the working tree.
+* The decide/execute gap is closed rather than assumed: the file actually run
+  is re-checked in the new worktree to be a regular, non-symlinked file whose
+  `git hash-object` equals the base blob, with every path component checked
+  for a symlink. Both halves are tested, and a path shape that could name a
+  file outside the tree is refused before the worktree exists.
+* The output channel is a declaration channel and nothing else. All ten
+  bounded-output parametrisations refuse: a stray diagnostic line, a
+  lower-case name, an over-long value, a control character, non-UTF-8 bytes, a
+  duplicate, over 64 declarations, over 65536 bytes, and `PATH`/`TMPDIR` as
+  reserved names. `PATH` and `TMPDIR` are therefore always WFC's own
+  composition, and `WFC_PREPARE_PATH_PREPEND` must be an absolute, existing
+  directory *inside* the created checkout or scratch directory: I checked that
+  a relative value, `/usr/bin`, and a symlink inside the scratch directory
+  pointing at `/usr/bin` are all refused -- the last one because the value is
+  `resolve()`d before the containment test, which is the right order.
+* Failure is bounded and untrusted. I gave a hook 200000 lines of stderr and a
+  nonzero exit: the refusal detail stays at the in-Hop evidence path's own
+  `UNTRUSTED_DIAGNOSTIC_CAPTURE_LIMIT_BYTES` per stream plus a byte-count
+  notice, labelled untrusted, printed only, never written to disk. A hanging
+  hook times out by name. Reusing the existing limit instead of inventing a
+  new one is the right call.
+* The responsibility split is stated where an operator will meet it -- the
+  record's Design, a `CAUTION` block in Operator Manual chapter 3, the
+  quickstart, the skill text and the module docstring -- and it is the correct
+  split: WFC owns the safe invocation and the invariants, the consumer owns
+  the hook's content, exactly as for the declared evidence command. The "what
+  this does not protect against" paragraph is honest about the part that
+  cannot be defended: a committed hook runs on the operator's host, as the
+  operator, outside every sandbox boundary WFC has, and anyone who can land a
+  commit on the base ref of a repository whose config declares a hook can run
+  code on that host at the next preparation. Not scrubbing the hook's
+  environment is justified the same way (a venv build needs the host
+  toolchain, and pretending to isolate it would be a safety claim the command
+  cannot keep). I agree with all three judgements; inventing a sandbox here
+  would be a safeguard that excludes hypothetical states while adding real
+  failure modes.
+
+=== 5. The Design section and Front Door docs-sync
+
+The dated `Design (2026-11-26, WI-WFC-BETA2-O4-001)` section of
+`docs/backlog/FTR-WFC-RUN-CHECKOUT-PREPARATION.adoc` is where the plan
+requires it (the record the slice names, never a review artifact), and it is a
+design, not a summary: eight numbered decisions, each with the alternatives it
+rejects and the property it preserves, the complete refusal table, the hook
+contract, the responsibility split and the non-protection statement. It was
+written before the code in the same commit, which is the best the Hop
+structure allows, and the reviewers can judge the design first because it is
+*complete* -- I found only one deviation between table and code (observation
+N-1) and one ordering difference between the table's sequence and the
+evaluated sequence, which the code comments explain and which costs nothing.
+The record's `Status`, `Open decisions`, `Lifecycle` and implementation note
+are updated consistently, and variant B is left explicitly undecided and
+unimplemented.
+
+Front Door docs-sync applies in full and was applied in full. The two O4
+statements the O1 slice wrote as *planned* are gone from
+`agent_skill/wfc/references/setup.md` -- *replaced*, not appended, which is
+what the task demands of a file loaded into an agent's context -- and the
+replacement keeps the facts that are still true (one venv per checkout, the
+venv in the scratch directory, no `PYTHONPATH=src` over an editable install)
+while adding the command, the hook and the "ask before writing a hook or
+touching `.wfc/config.yaml`" boundary. The `(Planned: …)` strings that remain
+in the skill belong to the budget-extension slice, not to O4. Operator Manual
+chapters 1, 3, 5, 9 and 10, `operator_manual.adoc`, AD-5, the Developer Guide
+(chapters 1 and 3), the operator-guidance record's entry 4 and the backlog
+index are all updated, the five Front Door command enumerations now also name
+`request` (the O5 slice's omission, fixed here and reported rather than
+silent, which I checked is true of the real CLI), and the normative weight is
+placed correctly: chapter 3 carries the full refusal list and the
+host-privilege `CAUTION`, chapter 9 the consumer-facing short form, chapter 10
+the Level-1 boundary that writing or enabling a hook is a maintainer decision.
+The contract tests for the shipped command lists were extended minimally and
+the change is stated. The retired paragraph about the Harness scratch
+allocator is rewritten rather than deleted, so the gap-analysis link still
+makes sense. The `.wfc/config.yaml` enablement was *not* performed, which is
+correct, and the one-line enablement is documented in the Developer Guide
+with the `--hook` fallback for the interim.
+
+=== 6. Simplicity and maintainability
+
+I looked for the usual costs and did not find a blocking one. 852 lines is a
+lot for one command, but the surface is mostly the task's own enumeration: 24
+refusal names, of which the task names or implies nearly all, and roughly a
+third of the file is docstring and comment carrying the reasoning where the
+code is. The decision/effect split is real (`parse_hook_declarations`,
+`compose_launch_environment`, `render_env_file`, `render_summary`,
+`resolve_scratch_path` and the two path predicates are pure functions, which
+is why the bounded-output and env-file tests need no filesystem at all), the
+effects sit in one `_prepare`, and `CreatedPaths` carries exactly what an
+honest refusal must report and nothing else -- it is explicitly *not* a
+removal list, which is the right shape for a variant-A command.
+
+Three things I weighed and would not ask to be changed: the hook's double
+check (committed blob, then the on-disk file in the new worktree) is not
+redundant, it is the only way to close the decide/execute gap the task names;
+the launch-environment *file* rather than a printed block is justified by the
+next two commands running in a new shell, and the file carries no value the
+command invented; and the twenty-four refusal names are not an abstraction,
+they are a vocabulary the operator reads. The one duplication worth a sentence
+is observation N-4.
+
+=== 7. Non-blocking observations
+
+None of these changes the verdict, and none is a new requirement. N-1 is worth
+fixing in the same correction Hop as <<o4-f1,F-1>> because a Hop is being
+spent anyway.
+
+N-1 -- a non-UTF-8 committed Consumer Config crashes instead of `refused_config`:: The design's table promises `refused_config` for a config
+that "exists at the base ref but cannot be parsed". `_git_raw` reads
+`git show <base>:<config>` with `text=True`, so a committed config containing
+non-UTF-8 bytes raises an unhandled `UnicodeDecodeError` out of
+`prepare_checkout` -- a traceback and exit 1 instead of the named refusal and
+exit 2. I reproduced it. Nothing is created and nothing is at risk, so this is
+not an acceptance violation, but it is a deviation from the shipped design's
+own table, and it is the defect class this repository has already named for
+itself: `git_facts._run_git_raw`'s docstring exists because a strict text
+decode of Git output "would otherwise escape … as an unhandled exception
+rather than a named, journaled refusal". A `bytes` read plus one `except
+UnicodeDecodeError` raising `refused_config` is the whole fix; the same
+applies in principle to the other `text=True` Git reads in the module.
+N-2 -- a hook that dirties the prepared tree is not detected, and the cost is the checkout's one lifecycle:: I gave a hook one line that writes an
+untracked file into the checkout: the preparation *succeeds* and reports
+success, and the operator discovers the problem at `wfc run`, where
+`lifecycle._do_probe`'s pre-check refuses with "repository is not at the clean
+authorized baseline" -- after authorization, so the checkout's single
+lifecycle is spent, which is the exact cost this slice exists to remove. The
+design deliberately assigns hook *content* to the consumer, WFC's own hook
+puts its venv in the scratch directory, and the command already calls
+`observe_repository` once, so a post-hook cleanliness check would be nearly
+free. I am not asking for it: it is additional mechanism beyond the slice's
+acceptance, and whether a prepared-but-dirty tree should be a refusal
+(`refused_hook_dirtied_checkout`) or stay the consumer's problem is a
+maintainer question. Recording it so the question is on the record.
+N-3 -- "nothing outside the two created directories is written" is true of durable writes:: `observe_repository`, which the dirty-base check calls, makes
+a throwaway copy of the live index with `tempfile.mkstemp` (so under
+`TMPDIR`) and unlinks it in a `finally`. That is pre-existing, shared, correct
+behaviour and the right way to read a tree without touching the real index,
+but the record's "this is the one exception" sentence is strictly about *Git's
+own* worktree administration. Half a sentence ("besides a transient index copy
+under `TMPDIR` that the shared observation path removes") would make the claim
+exactly true if the record is touched again.
+N-4 -- the module's three private Git helpers duplicate `git_facts`':: `_git`, `_git_raw` and `_git_succeeds` reimplement what `git_facts` keeps
+private, and they use plain `subprocess.run` without the `GIT_*` scrub and the
+`core.hooksPath=/dev/null` policy that `git_facts._trusted_git` applies to
+mutating Git. For this command that is defensible -- it runs on the operator's
+host, against the operator's own repository, and it is about to run a
+committed hook with full privileges, so a repository-local `post-checkout`
+hook is not a new boundary -- but `git worktree add` is a *mutating* Git
+operation and the reader will ask. One sentence of rationale in the module, or
+a shared read-only helper in `git_facts`, would settle it.
+
+=== 8. Scope, authority and Git discipline
+
+Every changed leaf is inside the slice's "Exact scope" (a new Front Door
+command under `src/workflow_coordinator/frontdoor/`, `frontdoor/cli.py`, unit
+tests, and the skill and manual paragraphs O1 wrote as *planned*) or is a file
+the task names explicitly (the O4 record's `Design` and implementation note,
+AD-5, the operator-guidance record's entry 4, the backlog index, the Developer
+Guide's hook and enablement documentation, `scripts/` for WFC's own hook, and
+the three small seams in `config.py`/`journal.py`/`lifecycle.py` the design
+justifies). None of the withheld items was touched: no `.wfc/config.yaml`,
+`governance/`, `.github/`, scope-ceiling or release-workflow change; no push,
+tag, release, publication, Runtime promotion or `wfc skill install`; no
+destructive operation of any kind by the command; no change to journal,
+lifecycle, classification, archive or the one-Run-per-checkout invariant; no
+checkout reuse; no change to the independent reviewer's sole Finding authority
+or to the trusted-commit boundary; no test weakened, skipped or deleted. The
+commit subject carries the WorkItem and Hop identity, and the prior Hop's
+CommitIntent paths match the 22 leaves in the diff. The Worker reported no
+Finding operation, which is correct. This Hop's only repository change is this
+artifact, in this Hop's authorized scope; I performed no mutating Git
+operation, the index is untouched, and my throwaway review tooling was removed
+before I finished.
