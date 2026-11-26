@@ -16,7 +16,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .audit import AuditError, ProjectionError, project_audit
+from .config import consumer_config_from_yaml, resolve_evidence
+from ..commissioning import CommissionError, _path
+from ..git_facts import GitPreflightError, repository_identity
 from ..reducer import MECHANICAL_PREEMPTION_PREFIX
+
+DEFAULT_CONFIG_PATH = ".wfc/config.yaml"
 
 REPORT_SCHEMA = "wfc.report/1"
 
@@ -320,20 +325,105 @@ def _load_audit_source(path: Path) -> dict:
     return data
 
 
+def resolve_attempt_from_repository(repository: str, config_relpath: str) -> Path:
+    """Resolve the one archived Attempt's ``audit.json`` from ``repository``'s
+    own Consumer Config, via ``frontdoor.config.resolve_evidence`` (WI-WFC-
+    BETA2-O5-001, D1 Option B's companion report-side change).
+
+    ``--repository`` here names the CONSUMER repository, never the Evidence
+    repository or an Attempt directly -- the positional ``source`` argument
+    still does that. Refuses (``ReportError``) when the Evidence location
+    cannot be resolved at all, when it holds no archived Attempt yet, and
+    when it holds more than one: this command resolves *an* Attempt, singular,
+    and never guesses which one among several."""
+
+    try:
+        root = repository_identity(Path(repository))
+    except GitPreflightError as error:
+        raise ReportError(str(error)) from error
+
+    try:
+        _path(config_relpath, context="--config")
+    except CommissionError as error:
+        raise ReportError(str(error)) from error
+
+    config_file = root / config_relpath
+    try:
+        config_text = config_file.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ReportError(
+            f"cannot read Consumer Config '{config_file}': {error} (run `wfc init` first, or pass --config)"
+        ) from error
+
+    try:
+        config = consumer_config_from_yaml(config_text)
+        settings = resolve_evidence(config, root)
+    except CommissionError as error:
+        raise ReportError(f"cannot resolve the Evidence location from {root}'s Consumer Config: {error}") from error
+
+    if not settings.path.is_dir():
+        raise ReportError(
+            f"unresolvable Evidence location: no Evidence repository at {settings.path} "
+            "(run `wfc init` against it, or pass an Attempt directory or audit.json path directly as SOURCE)"
+        )
+
+    candidates = sorted(settings.path.glob("archive/**/audit.json"))
+    if not candidates:
+        raise ReportError(
+            f"unresolvable Evidence location: no archived Attempt found under {settings.path} "
+            "(pass an Attempt directory or audit.json path directly as SOURCE once a Run has been archived)"
+        )
+    if len(candidates) > 1:
+        listed = ", ".join(str(candidate) for candidate in candidates)
+        raise ReportError(
+            f"ambiguous input: {len(candidates)} archived Attempts found under {settings.path}; "
+            f"pass one explicitly as SOURCE instead of --repository: {listed}"
+        )
+    return candidates[0]
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="wfc report",
-        description="Render the consolidated result of an archived Attempt from its audit projection.",
+        description=(
+            "Render the consolidated result of an archived Attempt from its audit projection. "
+            "SOURCE (an archived Attempt directory, or an audit.json path) names the Evidence/"
+            "Attempt location directly. --repository instead names the CONSUMER repository and "
+            "resolves the Evidence location from its own Consumer Config, refusing if that "
+            "resolves to zero or more than one archived Attempt. Pass exactly one of the two."
+        ),
     )
-    parser.add_argument("source", help="an archived Attempt directory, or an audit.json path")
+    parser.add_argument("source", nargs="?", default=None,
+                         help="an archived Attempt directory, or an audit.json path "
+                              "(mutually exclusive with --repository)")
+    parser.add_argument("--repository", default=None,
+                         help="the CONSUMER repository whose own Consumer Config names the Evidence "
+                              "location (mutually exclusive with SOURCE)")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
+                         help=f"Consumer Config path, relative to --repository; used only with "
+                              f"--repository (default: {DEFAULT_CONFIG_PATH})")
     parser.add_argument("--json", action="store_true", dest="as_json")
     return parser.parse_args(argv)
+
+
+def _resolve_source(args: argparse.Namespace) -> Path:
+    if args.source is not None and args.repository is not None:
+        raise ReportError(
+            f"ambiguous input: pass either SOURCE ({args.source!r}) or --repository "
+            f"({args.repository!r}), not both"
+        )
+    if args.source is not None:
+        return Path(args.source)
+    if args.repository is None:
+        raise ReportError("either SOURCE or --repository is required")
+    return resolve_attempt_from_repository(args.repository, args.config)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        audit = _load_audit_source(Path(args.source))
+        source = _resolve_source(args)
+        audit = _load_audit_source(source)
         report = build_report(audit)
     except ProjectionError as error:
         print(f"wfc report: {error}", file=sys.stderr)

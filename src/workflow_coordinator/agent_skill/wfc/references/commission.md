@@ -35,24 +35,48 @@ required program role. `--evidence-argv` is repeatable: one argv token of
 the task-check command, also used as the mandatory pre-launch baseline
 probe. `--durable-artifact PHASE=PATH` is `robust@v1` only.
 
+## `wfc request`: emitting the Consumer Request
+
+`wfc request` takes exactly the same fields as `wfc plan` above (the same
+task document and flags) plus an explicit `--output PATH`, and writes the
+Consumer Request YAML `wfc plan` would preview to that path -- byte for
+byte the same request-construction path, so the two commands' projected
+digests are always identical for identical inputs:
+
+```shell
+wfc request task.md --repository . \
+  --scope src \
+  --commission-id example-001 --work-item-id WI-EXAMPLE-001 \
+  --authority-source "Repository owner authorizes this bounded task." \
+  --program simple@v1 \
+  --persona worker="Bounded worker persona." \
+  --evidence-argv sh --evidence-argv checks/check.sh \
+  --guidance-path .wfc/governance/repository-policy.md \
+  --output ../wfc-scratch/request.yaml
+```
+
+Refuses, before any write: an already-existing `--output` file (pass
+`--force` to overwrite), and an `--output` path inside this repository's own
+worktree (pass `--allow-inside-repository` to allow it) -- an emitted,
+uncommitted file inside the tree would dirty exactly the clean tree `wfc
+run` requires, so keeping it in a sibling scratch directory (as above) needs
+no flag at all. Nothing here is authorized: it prints the same projected
+digests `wfc plan` prints, makes no Git mutation and no provider call, and
+its own closing line restates that `scope`/`program`/`personas`/
+`max_autonomous_hops`/`evidence.argv`/`authority_source` are this operator's
+own judgement, merely carried, never supplied or validated by this command.
+`wfc run --request <path>` re-reads that file from a plain filesystem path,
+re-parses it under the closed schema and re-digests it exactly as it would a
+hand-authored one -- the emitted file grants no authority of its own.
+
 ## Consumer Request fields
 
-Once the preview looks right, author the equivalent Consumer Request YAML
-with the same fields under `task:`, `scope:`, `personas:`, `evidence:` and
-`guidance:`, plus `schema_version: 1`, `commission_id`, `work_item_id`,
-`authority_source`, `program`, `max_autonomous_hops` and an explicit
-`durable_artifacts:` (normally `{}` for `simple@v1`). `wfc plan` does not
-write this file; `wfc run` reads it from `--request` by plain filesystem
+The fields above are `schema_version: 1`, `commission_id`, `work_item_id`,
+`authority_source`, `program`, `task:`, `scope:`, `personas:`, `evidence:`,
+`max_autonomous_hops`, an explicit `durable_artifacts:` (normally `{}` for
+`simple@v1`) and `guidance:`. `wfc plan` does not write this file -- only
+`wfc request` does; `wfc run` reads it from `--request` by plain filesystem
 path, so it need not live inside the repository.
-
-**Current limitation**: nothing emits this file for you -- author it by hand
-from the fields `wfc plan` just previewed, and keep it outside the
-repository with the task document. `wfc report` likewise cannot resolve the
-Evidence location from the repository's own config; pass the archived
-Attempt directory or `audit.json` path explicitly (see
-`stops-and-evidence.md`). (Planned: a dedicated emission command would
-reproduce the previewed Commission digest exactly, and `wfc report` would
-resolve the Evidence location itself.)
 
 ## Commission-authoring rules
 

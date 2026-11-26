@@ -50,6 +50,7 @@ STOP_TABLE_HEADER = "| Classification(s) | You may, on your own | A human decide
 SUBCOMMAND_MAIN = {
     "init": lambda argv: cli_main(["init", *argv]),
     "plan": lambda argv: cli_main(["plan", *argv]),
+    "request": lambda argv: cli_main(["request", *argv]),
     "archive": lambda argv: cli_main(["archive", *argv]),
     "audit": lambda argv: cli_main(["audit", *argv]),
     "report": lambda argv: cli_main(["report", *argv]),

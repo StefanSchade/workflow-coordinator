@@ -13,6 +13,13 @@ belong to actual admission, not to a preview. There is no durable binding
 left behind by this preview: any temporary artifact BP2b's own verification
 path once returned no longer exists once that call returns, and nothing
 here should be treated as live launch provenance.
+
+``wfc request`` (``frontdoor/emit_request.py``, D1 Option B) shares every
+argument definition and the request-construction/compile path with ``wfc
+plan`` through ``add_plan_input_arguments`` and ``resolve_plan_inputs``
+below -- it adds only an explicit ``--output`` and overwrite/location
+refusals on top. Nothing here is written to by that command: ``wfc plan``
+itself still performs no write of any kind.
 """
 
 from __future__ import annotations
@@ -109,6 +116,10 @@ def _durable_artifacts_from_flags(values: list[str]) -> dict[str, list[str]]:
     return artifacts
 
 
+class PlanInputError(CommissionError):
+    """A refusal resolving the shared ``plan``/``request`` CLI inputs."""
+
+
 def _program_ref_from_flag(value: str) -> tuple[str, str]:
     if "@" not in value:
         raise CommissionError(f"--program must be ID@REVISION, got: {value}")
@@ -158,14 +169,18 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def render_plan_summary(
-    *, task: TaskDocument, request: ConsumerRequest, config: ConsumerConfig,
+def render_commission_preview_lines(
+    *, header: str, task: TaskDocument, request: ConsumerRequest, config: ConsumerConfig,
     compiled: CompiledCommission, envelope: ExecutionEnvelope,
-) -> str:
-    """Render a deterministic, human-readable preview; nothing here is written."""
+) -> list[str]:
+    """The Commission/envelope preview body shared by ``wfc plan`` and ``wfc
+    request`` (D1 Option B) -- everything both commands print identically for
+    the same inputs, up to and excluding each command's own closing
+    statement. Reused, never duplicated, so the two can never silently drift
+    apart on what a given input set projects."""
 
     lines: list[str] = []
-    lines.append(f"wfc plan preview -- commission {request.commission_id} / work item {request.work_item_id}")
+    lines.append(header)
     lines.append(f"program: {request.program.id}@{request.program.revision}")
     lines.append(f"authority_source: {request.authority_source}")
     lines.append("")
@@ -209,6 +224,19 @@ def render_plan_summary(
         binding = envelope.configuration.binding_for(phase, role)
         lines.append(f"  {phase} ({role.value}): adapter={binding.adapter} model={binding.model} reasoning={binding.reasoning}")
     lines.append(f"execution envelope digest: sha256:{envelope.digest}")
+    return lines
+
+
+def render_plan_summary(
+    *, task: TaskDocument, request: ConsumerRequest, config: ConsumerConfig,
+    compiled: CompiledCommission, envelope: ExecutionEnvelope,
+) -> str:
+    """Render a deterministic, human-readable preview; nothing here is written."""
+
+    header = f"wfc plan preview -- commission {request.commission_id} / work item {request.work_item_id}"
+    lines = render_commission_preview_lines(
+        header=header, task=task, request=request, config=config, compiled=compiled, envelope=envelope,
+    )
     lines.append("")
     lines.append(
         "NEXT EXPLICIT ACTION: nothing was run or written by this preview -- no project "
@@ -218,16 +246,10 @@ def render_plan_summary(
     return "\n".join(lines) + "\n"
 
 
-def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        prog="wfc plan",
-        description=(
-            "Preview a bounded task: parse it and the given fields into a BP2b Consumer "
-            "Request/Config, project the Commission bytes and resolve the separate "
-            "execution envelope. Entirely read-only: no project command, provider, "
-            "Commission write or Git mutation."
-        ),
-    )
+def add_plan_input_arguments(parser: argparse.ArgumentParser) -> None:
+    """Every argument ``wfc plan`` and ``wfc request`` (D1 Option B) take in
+    common -- the one argument definition each shares, never redefined."""
+
     parser.add_argument("task", help="path to a '# title' / body / Acceptance / Withheld authority / "
                                       "Default escalation task document")
     parser.add_argument("--repository", default=".", help="consumer repository root (default: current directory)")
@@ -255,40 +277,50 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                          help="override one resolved execution binding field (repeatable)")
     parser.add_argument("--target-dir", default=None,
                          help="defaults to '<governance_dir>/<commission-id>'")
-    return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(sys.argv[1:] if argv is None else argv)
+@dataclass(frozen=True)
+class ResolvedPlanInputs:
+    """Everything ``render_commission_preview_lines`` needs, resolved once
+    from the shared CLI inputs -- the one place ``wfc plan`` and ``wfc
+    request`` each call, never duplicating the resolution steps."""
+
+    repository: Path
+    task: TaskDocument
+    request: ConsumerRequest
+    config: ConsumerConfig
+    compiled: CompiledCommission
+    envelope: ExecutionEnvelope
+
+
+def resolve_plan_inputs(args: argparse.Namespace) -> ResolvedPlanInputs:
+    """Resolve the shared ``plan``/``request`` CLI inputs through the exact
+    BP2b compile/resolve path, raising ``PlanInputError`` (never printing or
+    exiting) on any refusal so each command can prefix it with its own name."""
+
     try:
         repository = repository_identity(Path(args.repository))
     except GitPreflightError as error:
-        print(f"wfc plan: {error}", file=sys.stderr)
-        return 2
+        raise PlanInputError(str(error)) from error
 
     try:
         task_text = Path(args.task).read_text(encoding="utf-8")
     except OSError as error:
-        print(f"wfc plan: cannot read task document '{args.task}': {error}", file=sys.stderr)
-        return 2
+        raise PlanInputError(f"cannot read task document '{args.task}': {error}") from error
 
     try:
         _path(args.config, context="--config")
     except CommissionError as error:
-        print(f"wfc plan: {error}", file=sys.stderr)
-        return 2
+        raise PlanInputError(str(error)) from error
 
     config_path = Path(args.config)
     config_file = repository / config_path
     try:
         config_text = config_file.read_text(encoding="utf-8")
     except OSError as error:
-        print(
-            f"wfc plan: cannot read Consumer Config '{config_file}': {error} "
-            "(run `wfc init` first, or pass --config)",
-            file=sys.stderr,
-        )
-        return 2
+        raise PlanInputError(
+            f"cannot read Consumer Config '{config_file}': {error} (run `wfc init` first, or pass --config)"
+        ) from error
 
     try:
         task = task_document_from_markdown(task_text)
@@ -306,8 +338,40 @@ def main(argv: list[str] | None = None) -> int:
         overrides = execution_overrides_from_flags(args.execution_override)
         envelope = resolve_execution(config, overrides, compiled.phase_roles)
     except (CommissionError, GitPreflightError) as error:
+        raise PlanInputError(str(error)) from error
+
+    return ResolvedPlanInputs(
+        repository=repository, task=task, request=request, config=config, compiled=compiled, envelope=envelope,
+    )
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="wfc plan",
+        description=(
+            "Preview a bounded task: parse it and the given fields into a BP2b Consumer "
+            "Request/Config, project the Commission bytes and resolve the separate "
+            "execution envelope. Entirely read-only: no project command, provider, "
+            "Commission write or Git mutation."
+        ),
+    )
+    add_plan_input_arguments(parser)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        inputs = resolve_plan_inputs(args)
+    except PlanInputError as error:
         print(f"wfc plan: {error}", file=sys.stderr)
         return 2
 
-    print(render_plan_summary(task=task, request=request, config=config, compiled=compiled, envelope=envelope), end="")
+    print(
+        render_plan_summary(
+            task=inputs.task, request=inputs.request, config=inputs.config,
+            compiled=inputs.compiled, envelope=inputs.envelope,
+        ),
+        end="",
+    )
     return 0

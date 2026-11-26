@@ -929,3 +929,66 @@ def test_plan_still_runs_no_project_command_alongside_the_new_lifecycle_commands
     assert code == 0
     assert not (repository / "MARKER_WAS_RUN").exists()
     assert git(repository, "rev-parse", "HEAD") == head_before
+
+
+def test_request_emitted_file_reproduces_the_previewed_digests_and_launches_through_wfc_run(
+    repository: Path, tmp_path: Path, state_home: Path,
+):
+    """WI-WFC-BETA2-O5-001 (D1 Option B) central acceptance: the file `wfc
+    request` writes reproduces the exact digests `wfc plan` previewed for the
+    same inputs, and passed unchanged to `wfc run --request` it authorizes
+    and launches cleanly -- no `refused_drift`, no `refused_probe`."""
+
+    task_path = tmp_path / "task.md"
+    task_path.write_text(
+        "# Bounded request-to-run smoke task\n\nEmit, then launch, a bounded task.\n\n"
+        "## Acceptance\n\nThe emitted request launches cleanly.\n\n"
+        "## Withheld authority\n\nNo project command beyond the check.\n\n"
+        "## Default escalation\n\nStop if unclear.\n",
+        encoding="utf-8",
+    )
+    request_path = tmp_path / "request.yaml"
+    shared_args = [
+        str(task_path), "--repository", str(repository), "--scope", "src",
+        "--commission-id", "request-to-run-smoke", "--work-item-id", "WI-REQUEST-TO-RUN-SMOKE",
+        "--authority-source", "test authorizes this bounded lifecycle.", "--program", "simple@v1",
+        "--persona", "worker=Bounded worker persona.",
+        "--evidence-argv", "sh", "--evidence-argv", "checks/check.sh",
+        "--guidance-path", "GUIDANCE.md",
+        *_CLI_WORKER_OVERRIDE_FLAGS,
+    ]
+
+    import contextlib
+
+    plan_out_buffer = io.StringIO()
+    with contextlib.redirect_stdout(plan_out_buffer):
+        assert cli_main(["plan", *shared_args]) == 0
+    plan_out = plan_out_buffer.getvalue()
+
+    request_out_buffer = io.StringIO()
+    with contextlib.redirect_stdout(request_out_buffer):
+        assert cli_main(["request", *shared_args, "--output", str(request_path)]) == 0
+    request_out = request_out_buffer.getvalue()
+
+    def digest_lines(text: str) -> list[str]:
+        return [
+            line for line in text.splitlines()
+            if line.startswith("projected Commission manifest digest:")
+            or line.startswith("execution envelope digest:")
+        ]
+
+    assert digest_lines(plan_out) == digest_lines(request_out)
+    assert len(digest_lines(plan_out)) == 2
+
+    os.environ["WFC_FAKE_ENGINE_MODE"] = "completed_consistent"
+    L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
+    confirm_calls = []
+
+    def auto_yes(commission_digest: str, envelope_digest: str) -> bool:
+        confirm_calls.append((commission_digest, envelope_digest))
+        return True
+
+    inputs = _inputs(repository, request_path, confirm=auto_yes)
+    result = L.run_lifecycle(inputs)
+    assert result.classification == "completed"
+    assert len(confirm_calls) == 1

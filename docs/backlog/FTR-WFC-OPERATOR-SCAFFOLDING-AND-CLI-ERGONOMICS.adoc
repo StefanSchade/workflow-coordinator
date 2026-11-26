@@ -108,7 +108,119 @@ commissionable before it.
   defaulting outside and refusing inside would be consistent with the rest of
   the Front Door; not analysed further here.
 
+*Decided, 2026-11-26 (<<design-2026-11-26>>): both are resolved as this
+record's own Design, below, implementing slice <<o5-link,O5>>.*
+
+[[design-2026-11-26]]
+== Design (2026-11-26, WI-WFC-BETA2-O5-001)
+
+Written before implementation, per the plan's "new slices" rule
+(`beta2_operator_efficiency_plan.adoc`, "The new slices, whose design is
+part of the slice"). Four decisions; each states what is decided, the
+rejected alternative, and the safety or governance property it preserves.
+
+*1. The shared-helper boundary.* `frontdoor/plan.py` gains
+`add_plan_input_arguments` (the one argparse definition for every field
+`wfc plan` and `wfc request` take in common), `resolve_plan_inputs` (the one
+resolution of those fields through `consumer_request_from_plan_inputs` and
+`commissioning.compile_commission`/`config.resolve_execution`, already
+`wfc plan`'s own body, extracted unchanged), and
+`render_commission_preview_lines` (the preview body both commands print,
+parameterized only by a header line). `wfc request` lives in a new sibling
+module, `frontdoor/emit_request.py` -- not inside `plan.py` itself -- because
+every other installed subcommand already owns one file
+(`init.py`/`archive.py`/`report.py`/`lifecycle.py`/`skill.py`), and because a
+reviewer or the skill text locating "the write path" should find it in a
+module whose name says so, not inside the one module whose whole point is
+that it writes nothing. *Rejected:* a `--emit-request PATH` flag on `wfc
+plan` itself (D1 Option A) -- the maintainer decided Option B precisely to
+keep `wfc plan`'s "entirely read-only" sentence absolute rather than
+conditional. *Preserves:* `wfc plan`'s write-nothing contract (now also
+machine-checked: `test_plan_argument_parser_has_no_output_or_force_flag`),
+and "no duplicated logic" between the two request-construction paths (a
+digest-equality test between the two commands' own preview output is the
+central acceptance test, below).
+
+*2. The output-path refusal rule.* `wfc request --output PATH` refuses, before
+any write: (a) an already-existing `PATH`, unless `--force`; (b) a `PATH`
+that resolves inside the consumer repository's own worktree (`Path(PATH)
+.resolve()` nested under the Git-identity-resolved repository root), unless
+`--allow-inside-repository`. *Rejected:* silently overwriting, or refusing
+unconditionally with no override -- both documented alternatives the record's
+"Open decisions" named without choosing. The *inside-repository* rule follows
+the record's own stated reasoning verbatim: an untracked file anywhere in the
+tree dirties it and `wfc run` already refuses a dirty tree before any other
+check, so defaulting *outside* and refusing *inside* (rather than the
+reverse) means the common case needs no flag at all, and the uncommon case
+(an operator who wants the request committed alongside the task) stays one
+explicit flag away rather than impossible. *Preserves:* risk (a) named by the
+slice -- "an emitted request read as authorization" -- by keeping emission
+outside the tree by default, and the existing `NEXT EXPLICIT ACTION`
+convention (`frontdoor/plan.py`), echoed by `wfc request`'s own closing
+statement naming every judgement field it merely carried.
+
+*3. `wfc report --repository`'s exact rule.* `--repository` on `wfc report`
+names the CONSUMER repository (the same meaning `--repository` already has on
+`plan`/`run`/`status`); it is resolved via `config.resolve_evidence` to the
+Evidence repository, under which every `archive/**/audit.json` is a
+candidate archived Attempt. Exactly one candidate is used; zero is refused as
+*unresolvable Evidence location* (nothing archived yet, or the location
+itself cannot be resolved -- no `HOME`/`XDG_DATA_HOME`, or no Evidence
+repository there at all); more than one is refused as *ambiguous input*,
+naming every candidate, since this command resolves *an* Attempt, singular,
+and must never guess which one among several. The positional `source`
+argument keeps its existing, unchanged meaning (the Evidence/Attempt location
+directly); `source` and `--repository` together are refused, also as
+*ambiguous input*. Resolution targets the Attempt's `audit.json` file
+directly, never its directory: `discard` raw retention never places
+`manifest.json`, so a directory-based resolution (`project_audit` on the
+attempt directory) would refuse every `discard`-retention Attempt, which
+`--repository`'s whole point -- not asking the operator to already know the
+path -- must not do. *Rejected:* resolving to "the most recent" Attempt by
+mtime or journal order -- `resolve_evidence` names a *location*, not a
+*Run*, and guessing which Run among several silently picks a specific Run's
+facts for a flag that named none; a wrong silent guess here is worse than a
+named refusal. *Preserves:* `wfc report`'s own existing contract of never
+reporting an unknown or guessed status as a definite one (`frontdoor/report.py`
+module docstring) -- extended here to never guessing *which Attempt* either.
+
+*4. Safety properties preserved by every part of this slice, restated.* `wfc
+plan` performs no write of any kind, with or without `wfc request` existing
+alongside it (machine-checked, see above). `wfc request`'s emitted bytes
+carry no authority: `wfc run --request PATH` reads `PATH` verbatim from a
+plain filesystem path, re-parses it under the closed BP2b schema via
+`consumer_request_from_yaml`, and re-digests and re-verifies it exactly as it
+already does for a hand-authored file -- nothing in this slice touches
+`commissioning.compile_commission`, the Commission digest's own computation,
+or the plan-to-authorization drift check (`frontdoor/lifecycle.py:304-307`).
+`wfc report --repository` is read-only throughout: it only resolves a path
+and reads `audit.json`, the same `_load_audit_source` the positional form
+already uses.
+
+[[o5-link]]
 == Lifecycle
 
-Proposed. No implementation, test or Run is authorized by this record, and
-`wfc plan`'s current behaviour is unchanged by it.
+Implemented (WI-WFC-BETA2-O5-001, D1 Option B), per
+link:beta2_operator_efficiency_plan.adoc#o5[the Beta-2 plan's slice O5]:
+`wfc request` (`frontdoor/emit_request.py`) and `wfc report --repository`
+(`frontdoor/report.py::resolve_attempt_from_repository`) ship as described in
+the Design above. `wfc plan`'s behaviour for a bare invocation is unchanged
+and byte-identical; its write-nothing contract is additionally machine-checked.
+
+=== Implementation note (2026-11-26)
+
+Both commands are implemented, tested and documented in the same slice. The
+shared helper lives in `frontdoor/plan.py` (`add_plan_input_arguments`,
+`resolve_plan_inputs`, `render_commission_preview_lines`); `wfc request` is
+`frontdoor/emit_request.py`. The central acceptance test is a digest-equality
+assertion between `wfc plan`'s and `wfc request`'s own preview output for
+identical inputs (`tests/unit/test_frontdoor_emit_request.py`), plus an
+end-to-end test launching the emitted file through the real
+`frontdoor.lifecycle` authorization/commit/launch path to a `completed`
+classification (`tests/unit/test_lifecycle_controller.py`). `wfc report
+--repository` is covered by `tests/unit/test_report_repository_resolution.py`
+(both forms, both named refusals, and the "names the CONSUMER repository, not
+the Evidence repository" distinction). The Agent Skill (`commission.md`,
+`stops-and-evidence.md`), the Operator Manual (chapters 2, 3, 9, 10) and
+`FTR-WFC-LEVEL1-OPERATOR-GUIDANCE.adoc` are updated in the same slice,
+retiring the statements the O1 slice wrote as *planned* for O5.

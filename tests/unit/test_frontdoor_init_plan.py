@@ -247,6 +247,41 @@ def test_plan_previews_without_any_mutation_and_without_running_the_project_comm
     assert not (repository / ".wfc" / "governance").exists()
 
 
+def test_plan_writes_nothing_anywhere_not_only_inside_the_repository(repository: Path, tmp_path: Path):
+    """WI-WFC-BETA2-O5-001: a bare `wfc plan` stays byte-identical -- it must
+    still write no file at all, not even outside the repository, now that
+    `wfc request` (D1 Option B) exists as the sibling command that does."""
+
+    _run(["init", "--repository", str(repository), "--scope-ceiling", "src", "--scope-ceiling", "tests"])
+    git(repository, "add", ".")
+    git(repository, "commit", "-q", "-m", "chore: commit Consumer Config")
+
+    task_path = repository / "task.md"
+    task_path.write_text(_TASK_TEXT, encoding="utf-8")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    scratch_before = sorted(scratch.rglob("*"))
+
+    code, out, err = _run(_plan_args(repository, task_path=task_path))
+    assert code == 0, err
+    assert sorted(scratch.rglob("*")) == scratch_before
+    assert not list(scratch.iterdir())
+
+
+def test_plan_argument_parser_has_no_output_or_force_flag(capsys):
+    """`wfc plan` must never grow a write path: the ``--output``/``--force``/
+    ``--allow-inside-repository`` flags belong only to `wfc request`."""
+
+    from workflow_coordinator.frontdoor.plan import _parse_args
+
+    with pytest.raises(SystemExit) as excinfo:
+        _parse_args(["--help"])
+    assert excinfo.value.code == 0
+    help_text = capsys.readouterr().out
+    for flag in ("--output", "--force", "--allow-inside-repository"):
+        assert flag not in help_text
+
+
 def test_plan_never_runs_a_repository_configured_fsmonitor_helper(repository: Path):
     """R1 regression: a configured ``core.fsmonitor`` helper must never run on the plan path.
 

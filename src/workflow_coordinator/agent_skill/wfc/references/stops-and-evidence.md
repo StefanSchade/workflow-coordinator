@@ -132,11 +132,21 @@ classification, the review verdict and the task-check result together.
 
 ```shell
 wfc report <evidence-repo>/archive/unclassified/<attempt-id>/audit.json
+wfc report --repository .
 ```
 
-Renders the already-archived, already-classified facts; `wfc run` itself
-prints the exact destination path to use once a Run reaches a terminal
-state, and archiving happens automatically. The report also shows whatever
+The first form's `SOURCE` names the Evidence/Attempt location directly (an
+archived Attempt directory or `audit.json` path), exactly as `wfc run`
+prints it once a Run reaches a terminal state. The second form's
+`--repository` instead names the *consumer* repository: it resolves the
+Evidence location from that repository's own `.wfc/config.yaml` (the same
+`resolve_evidence` `wfc init`/`wfc archive` already use) and reports the one
+archived Attempt found there, refusing by name if none or more than one
+exists -- pass the first form explicitly once more than one Run has
+archived under it. Pass exactly one of `SOURCE`/`--repository`, never both.
+
+Renders the already-archived, already-classified facts; archiving happens
+automatically once a Run reaches a terminal state. The report also shows whatever
 provider-reported token usage was captured, and its `limits` line names
 `usage_not_reported`/`usage_partially_reported` when capture was absent or
 incomplete; it is never a price, and a figure the provider did not report is

@@ -339,21 +339,38 @@ which `wfc run` below will actually run. It prints the Commission bytes and
 execution envelope it *would* compile. `--guidance-path` defaults to
 resolving at the
 repository's current HEAD, which the `repository-policy.md` commit above
-already satisfies. Once the preview looks right, hand-author the equivalent
-Consumer Request YAML (the same fields, under `task:`, `scope:`, `personas:`,
-`evidence:` and `guidance:` -- with `guidance.path` and
-`guidance.source_commit` matching what you just committed --, plus
-`schema_version: 1`, `max_autonomous_hops` and an explicit, normally empty,
-`durable_artifacts: {}`) into the same scratch directory, for example
-`../wfc-scratch/request.yaml`. `wfc plan` does not write that file for you;
-`wfc run` below reads it from `--request` by plain filesystem path, so it
-need not live inside the repository either -- keeping it in the scratch
-directory keeps the tree clean. (Planned: a dedicated emission command would
-reproduce this previewed Commission digest exactly, instead of a hand-authored
-file.) `wfc report`, below, has the same current limitation in reverse: it
-cannot resolve the Evidence location from `.wfc/config.yaml` itself, so its
-first argument must be the archived Attempt directory or `audit.json` path
-you already know from <<quickstart-evidence-location>>.
+already satisfies. Once the preview looks right, emit the equivalent
+Consumer Request YAML with `wfc request`: the same fields and flags as
+`wfc plan` above, plus an explicit `--output`:
+
+[source,shell]
+----
+wfc request ../wfc-scratch/task.md --repository . --scope src \
+  --commission-id add-json-output-001 --work-item-id WI-ADD-JSON-OUTPUT-001 \
+  --authority-source "Repository owner authorizes this bounded task." \
+  --program simple@v1 \
+  --persona worker="Bounded worker persona; implement the requested change within scope." \
+  --evidence-argv sh --evidence-argv checks/check.sh \
+  --guidance-path .wfc/governance/repository-policy.md \
+  --execution-override worker.adapter=codex_cli --execution-override worker.model=<model> \
+  --output ../wfc-scratch/request.yaml
+----
+
+`wfc request` prints the identical projected digests `wfc plan` just
+printed -- the same shared request-construction path, so the two can never
+drift apart on what a given input set projects -- and writes the exact
+Consumer Request YAML those digests were computed from to `--output`.
+Refuses an already-existing `--output` file (`--force` to overwrite anyway)
+and, by default, an `--output` path inside this repository's own worktree
+(`--allow-inside-repository` to allow it anyway): an emitted, uncommitted
+file inside the tree would dirty exactly the clean tree `wfc run` requires,
+so the scratch directory above needs no flag at all. Nothing here is
+authorized: no project command, provider call, Commission write or Git
+mutation; `wfc run` below still re-reads the file from `--request` by plain
+filesystem path, re-parses it under the closed schema and re-digests it,
+exactly as it would a hand-authored file -- the emitted bytes grant no
+authority of their own. `wfc report`, below, resolves its own `--repository`
+differently: see <<quickstart-status>>.
 
 [[quickstart-run]]
 === Unattended `wfc run --yes`
@@ -396,16 +413,21 @@ for the full mechanics.
 [source,shell]
 ----
 wfc status --repository .
-wfc report <evidence-repo>/archive/unclassified/<attempt-id>/audit.json
+wfc report --repository .
 ----
 
 `wfc status` is read-only and safe from a second shell while a Run is in
 progress. Archiving happens automatically once the Run reaches a terminal
 state; `wfc run` itself prints the exact destination path to use, and every
 Run from this walkthrough archives under `archive/unclassified/` since
-nothing here sets a domain/workstream. `wfc report` renders the
-already-archived result, and `wfc audit <attempt-dir>` is only for
-reproducing or re-deriving `audit.json` directly.
+nothing here sets a domain/workstream. `wfc report --repository .` resolves
+the Evidence location from `.wfc/config.yaml` and renders the one archived
+Attempt found there -- this `--repository` names the *consumer* repository,
+not the Evidence repository, and the command refuses by name if nothing has
+archived yet or if more than one Attempt has; after a second Run, name the
+Attempt directly instead: `wfc report
+<evidence-repo>/archive/unclassified/<attempt-id>/audit.json`. `wfc audit
+<attempt-dir>` is only for reproducing or re-deriving `audit.json` directly.
 See link:{operator-docs}/operator_manual/ch03_running/02_launch_status.adoc#status[STATUS]
 and the link:{operator-docs}/operator_manual/ch04_evidence/_chapter.adoc#evidence[evidence chapter].
 
