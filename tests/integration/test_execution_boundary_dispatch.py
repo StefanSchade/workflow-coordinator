@@ -164,7 +164,7 @@ def test_p1_worker_writes_inside_authorized_scope_and_candidate_is_accepted(tmp_
     assert (repository / "authorized.txt").read_text() == "written by provider\n"
 
 
-def test_p2_worker_writes_into_a_not_yet_existing_authorized_directory(tmp_path):
+def test_p2_worker_writes_into_an_already_existing_authorized_directory(tmp_path):
     repository = tmp_path / "repo"
     _init_repo(repository)
     fake = _write_fake_provider(repository, f'''\
