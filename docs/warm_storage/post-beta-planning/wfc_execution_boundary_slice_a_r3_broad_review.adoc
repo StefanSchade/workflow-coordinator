@@ -1,0 +1,340 @@
+= WFC Execution Boundary Slice A (third successor): independent broad review
+:toc:
+:toclevels: 2
+:revdate: 2026-11-26
+
+Standing:: Durable review artifact of the independent broad-review phase of Run
+`RUN-3b842e86635f4b94aec5dfa09943650d` (WorkItem
+`WI-WFC-EXEC-BOUNDARY-SLICE-A-004`, `robust@v1`), Hop `H002` on the candidate
+at commit `d64c8d3` (worker Hop `H001`, range
+`328e712..d64c8d3`). Not a governance document, not an authorization, not a
+maintainer acceptance, and not the Layer 2 live qualification (out of scope
+for this Commission).
+Subject:: The whole candidate against
+link:../../backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc[the
+binding contract], all five ordered internal steps (section (j)), measured
+against the real code and the real test suite, not against the candidate's
+own summary of itself.
+Verdict:: *changes_required* -- two blocking Findings, both missing required
+Layer-1 test coverage for an explicitly named contract property; no violation
+of implemented behavior was reproduced anywhere else, and no security claim,
+test, or scope statement needed correction.
+
+[[verdict]]
+== Verdict and summary
+
+The candidate is a high-quality, essentially complete implementation of the
+whole five-step contract. All five decomposition steps (provider-channel
+separation, boundary view, launcher seam and its carrier, enablement/lifecycle/
+evidence, documentation reconciliation) are present and match the binding
+contract section by section. Both known task-check regressions named in the
+Commission text are genuinely fixed (not papered over): the Claude and Codex
+direct-mode paths are byte-identical to `main` (verified by code reading and,
+for Claude, by reproducing the exact pre-existing `/tmp`-symlink sandbox
+limitation that masks it in this agent's own sandbox -- see <<limits>>), and
+the `.git`-file worktree qualification test is updated to the new
+path-identity convention with its original meaning preserved and documented.
+No existing test is weakened, skipped, or deleted. Documentation claims are
+honest throughout: every changed `.adoc`/`.md` file states that no
+preventive-isolation claim is made and that Layer 2 has not been performed.
+No file outside the authorized scope was touched (`.wfc/config.yaml`,
+`governance/`, `.github/`, `Makefile`, `pyproject.toml`, `scripts/`,
+`examples/` are all byte-unchanged in this diff).
+
+Two blocking Findings stand in the way of acceptance. Both are coverage gaps
+against an explicitly named contract requirement, not a reproduced defect in
+the implementation itself:
+
+. *F1 -- the resume boundary-mode-mismatch refusal has no test anywhere in the
+  suite* (<<f1>>).
+. *F2 -- N16's companion assertion ("an undesignated caller-supplied `Mount`
+  with an outside-repository source is still refused") has no test anywhere
+  in the suite, old or new* (<<f2>>).
+
+Both are correctable with small, additive, same-shape tests inside the
+already-touched test files; neither requires a design change or a change to
+any claim already made.
+
+[[verified]]
+== What I verified independently, and what it showed
+
+Every row below was established in this Hop by reading the real code and
+running the real test suite against it (within this agent sandbox's own
+limits, <<limits>>), not by trusting the candidate's own summary of itself.
+
+[cols="4,4",options="header"]
+|===
+|Claim under test |Outcome
+
+|Both known task-check regressions (the `/repo`-destination qualification
+test; the `TMPDIR` byte-identity regression in both adapters' direct path)
+|*Confirmed fixed.* `claude_adapter.py:323-336` and `codex_adapter.py:448`
+both branch on `self.boundary is None or self.boundary.mode == "direct"` and
+in that branch reproduce exactly `main`'s prior environment/settings
+construction (`scratch_for_child_env = str(tmp_dir)`, the short symlink);
+only the `bubblewrap` branch uses the in-view `/tmp/s` destination.
+`test_nested_claude_bwrap_qualification.py`'s renamed test documents the new
+path-identity convention and the reason `--chdir /repo` is retired, preserves
+the original "no silent precondition gap" meaning, and measures (rather than
+assumes) the doubly-nested-namespace outcome.
+
+|The asymmetry between `CodexCliError` (wrapped into `Slice4Error`) and
+`ClaudeCliError` (previously falling through to the generic
+`ExecutionNotStartedError` branch)
+|*Confirmed fixed.* `slice4.py` now catches `(CodexCliError, ClaudeCliError)`
+in one branch before the generic `ExecutionNotStartedError` branch.
+
+|The launcher seam matches the specified shape (`BoundaryGrant`, `LaunchPlan`,
+`PreparedLaunch`, `prepare`/`prepare_direct`/`prepare_bubblewrap`, no process
+handling moved out of the adapters)
+|*Confirmed.* `execution_launcher.py` matches section (a) field-for-field;
+both adapters keep their own `Popen`, stream wiring, `start_new_session`,
+`communicate(timeout=...)` and `SIGTERM`/3s/`SIGKILL` sequence unchanged;
+`prepare` dispatches on `plan.grant.mode` alone and an unrecognised mode
+refuses (`test_unrecognised_mode_is_a_refusal_never_a_direct_launch`).
+
+|`.git`-file worktree masking via `--ro-bind-data` plus the tiny exec-wrapper
+|*Confirmed by code reading and by the existing primitive-level test*
+(`test_git_file_shaped_worktree_is_masked_as_empty_unwritable_regular_file`):
+the wrapper opens the mask FD from `/dev/null` and execs into the real
+`bwrap` invocation, same PID/process-group/session.
+
+|Path-identity mounting replaces the `/repo` convention; `/repo` stays
+available for an explicit caller
+|*Confirmed.* `validate()`'s bind-shape check now requires
+`dest == PurePosixPath(str(source))`; the retired convention is kept as a
+negative case in `test_file_grant_is_exact_and_invalid_config_never_spawns`.
+
+|The three designated external-mount kinds (external scratch, provider
+channel, provider authentication) are each a separately named, separately
+validated parameter, never a shared "external mounts" list
+|*Confirmed.* Three distinct parameters on `validate()`/`ValidatedBoundary`/
+`BoundaryGrant`, each with its own disjointness, directory-ness and
+not-in-generated-system-view checks; `_check_channel_not_run_state` is its own
+named check. No fourth kind and no generic external-mount allowlist exists
+anywhere in the diff.
+
+|The provider channel is separated from the Run state directory, in both
+construction sites, with the archive plan extended to the channel subdirectory
+while keeping the existing depth-one patterns
+|*Confirmed.* `operator.py` and `slice4.py` both construct the adapter with a
+`<run_root>/provider-channel` directory, never `run_root` itself;
+`frontdoor/archive.py` adds a separate `CHANNEL_ALLOW`/`CHANNEL_DIR_NAME`
+walk rather than widening `CHECKOUT_ALLOW`, so the existing bp5/bp7 fixture
+shapes keep matching unchanged.
+
+|N11's guarantee: the five Run-state file names are absent from the view on
+the writable Codex channel path, and the host-side Run-state directory is
+byte-identical afterward
+|*Confirmed* by reading
+`test_n11_codex_channel_write_access_never_reaches_run_state_files`, which
+plants host-trusted content at all five names in the real `run_root`
+(outside the channel), lets the fake provider attempt to read and overwrite
+all five inside the channel, and asserts both `present=[]` and host-side
+byte-identity afterward.
+
+|The pre-create/post-Hop-removal bracket for a not-yet-existing writable
+target is Coordinator-owned, `finally`-shaped, and a removal failure cannot
+suppress an exception in flight
+|*Confirmed.* `operator.py`'s per-Hop loop computes the grant, pre-creates
+missing writable targets with `mode=0o700`, dispatches inside a `try`, and
+removes each still-empty target in a `finally` with `except OSError: pass`
+around each individual `rmdir()`.
+
+|Opt-in selection, with the closed `direct`/`bubblewrap` vocabulary added as
+an *optional* key on both `run_execution_configuration_from_yaml` and
+`consumer_config_from_yaml`, defaulting to `direct`
+|*Confirmed* by reading `serialization.py` and `frontdoor/config.py`, and by
+`test_execution_configuration_boundary_key_is_optional_closed_and_run_wide`
+(every historical envelope without the key still parses, to `"direct"`).
+
+|Preflight checks 1-7 of section (e) are each a named, fail-closed
+`OperatorPreflightError` that proves the port was never entered
+|*Confirmed* by reading `operator._preflight_boundary` and by the two
+dispatch-level preflight tests
+(`test_unestablishable_boundary_refuses_before_any_provider_process_starts`,
+`test_boundary_selected_without_channel_or_authentication_refuses_before_dispatch`),
+both of which assert no `dispatch.json` marker was ever written and the
+repository is unchanged.
+
+|`bwrap` setup failure vs. a started-then-failed provider is classified by
+`bwrap`'s own exit path (a marker file touched immediately before `exec`-ing
+into the real provider argv), never by guessing from stderr text
+|*Confirmed* by reading `execution_launcher.boundary_started_marker` and
+`prepare_bubblewrap`'s command-wrapping, and both adapters'
+`marker[1].exists()` check.
+
+|No silent fallback: an unestablishable boundary never dispatches an
+unisolated process
+|*Confirmed.* Every preflight failure and `BoundaryConfigurationError` raises
+before `_execution_adapter`/`Popen` is ever reached; `prepare()` refuses an
+unrecognised mode rather than defaulting to `prepare_direct`.
+
+|Resume consistency: a resumed Hop refuses by name on a boundary-mode mismatch
+with the Run it continues
+|*Implemented correctly* (`operator.run_serial_hops`, checked by code reading
+and independently reproduced by driving `run_serial_hops` directly with a
+Run created `boundary="bubblewrap"` against an `execution_configuration`
+resolved to `"direct"`: raises `OperatorPreflightError` naming the mismatch,
+before any dispatch marker is written) *but has no test anywhere in the
+committed suite* -- see <<f1>>.
+
+|N16's generic-Mount companion assertion
+|*Not tested anywhere*, old or new -- see <<f2>>. The implementation itself
+(`source.relative_to(repository)` in `validate()`) is unchanged and correct
+by reading; only the dedicated regression test is missing.
+
+|Doc-sync, strict render, doc-catalog parity, ruff/compile cleanliness
+|*Confirmed.* Every changed `.adoc` file (the 11 touched outside
+`FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc` itself, which also
+renders clean) passes `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+--failure-level=WARN` with no output. `scripts/wfc_doc_catalog.py generate`
+then `check` reports 83 unresolved links and 4 Project Memory misses, matching
+the candidate's own stated baseline exactly (no regression), and left no
+stray `build/` artifact in `git status`. `ruff check` is clean on every
+changed Python leaf.
+
+|`git status --short -uall` at the end of Hop `H001`
+|*Clean* except pre-existing, unrelated untracked dotfiles in this worktree
+that predate the Run (`.bashrc`, `.claude/`, `.idea`, etc.); no staged
+changes, consistent with the no-`git add` discipline this Commission's
+predecessor Run violated.
+|===
+
+[[f1]]
+== F1 -- resume boundary-mode-mismatch refusal is untested
+
+*Where.* `src/workflow_coordinator/operator.py:945-950`, inside
+`run_serial_hops`, the single entry point both the fresh-launch and the
+continuation call sites use (`operator.py:2001`, `:2158`).
+
+*What the contract requires.* Section (e), "How an operator can tell which
+mode a Run used", third bullet: "The Run's own persisted state carries it, so
+recovery and `wfc resume` cannot silently resume an isolated Run unisolated: a
+resumed Hop must use the same boundary mode, and a mismatch is a refusal by
+name." Restated in the invariants table (f): "A resumed Hop must use the same
+boundary mode as the Run it continues; a mismatch is a refusal by name,
+consistent with the existing 'recovery requires an unchanged implementation
+identity' rule." Decomposition step 4 names "resume consistency" as one of
+that step's own deliverables, alongside the explicitly-tested negative cases
+N14 and N15. The task's own Acceptance section names "resume consistency" as
+a required, accepted property of the whole candidate.
+
+*What I found.* The check itself is present, simple, and -- by direct
+execution against the real `run_serial_hops` entry point with a Run created
+`boundary="bubblewrap"` and an `execution_configuration` resolved to
+`"direct"` -- correctly raises `OperatorPreflightError` naming the mismatch
+before any dispatch marker is written. No defect is reproduced in the
+*behavior*. But no test in the committed suite exercises this path at all: a
+repository-wide search for the exact refusal message, for `run.boundary`
+comparisons, and for every call site of `run_serial_hops` across
+`tests/unit/test_operator.py`, `tests/unit/test_slice5b.py`,
+`tests/unit/test_a3_operating_contract.py` and
+`tests/unit/test_execution_boundary_dispatch_preflight.py` turns up nothing
+that passes two different boundary modes through a Run and its
+`execution_configuration`. This is a security-relevant invariant (it is what
+keeps a later careless edit from silently resuming an isolated Run
+unisolated, or vice versa) stated three times in the contract and named in
+Acceptance, with zero regression coverage.
+
+*Why this is blocking rather than a non-blocking note.* The task's acceptance
+criteria list "resume consistency" as a property that must hold for
+acceptance, on the same footing as the named preflight checks and error
+classification, all of which *are* tested. An untested security invariant
+explicitly named in a binding contract is exactly the kind of gap the
+engineering conventions' "a behavior change needs a test that fails without
+it" rule exists to catch, and the risk is not hypothetical: nothing in the
+suite would catch a future edit that weakens, inverts, or removes this check.
+
+*Feasible correction.* One additional unit test in
+`tests/unit/test_execution_boundary_dispatch_preflight.py`, following the
+exact shape already used there for N14 (construct a Run with one boundary
+mode via `new_run(..., boundary=...)`, call `run_serial_hops` with an
+`execution_configuration` resolved to the other mode, assert
+`OperatorPreflightError` naming the mismatch and that no `dispatch.json`
+marker was ever written). This is additive, small, and does not touch any
+existing assertion.
+
+[[f2]]
+== F2 -- N16's generic-Mount companion assertion is untested
+
+*Where.* `src/workflow_coordinator/execution_boundary.py:192-196`,
+`validate()`'s bind-source loop (`source.relative_to(repository)`), unchanged
+by this Commission.
+
+*What the contract requires.* The Layer-1 negative-case table, N16: "Pass an
+arbitrary host path through *each* of the designated external mount
+parameters... The same case asserts that an undesignated caller-supplied
+`Mount` with an outside-repository source is still refused" -- stated
+explicitly as the proof that widening the fence to three designated
+exceptions did not become a general loosening of the repository-only
+bind-source rule (<<outside-sources>> in the contract). The exit criteria
+require "Layer 1 complete... with every N-case" passing.
+
+*What I found.* `test_external_scratch_arbitrary_host_path_cannot_be_substituted`,
+`test_provider_channel_must_not_be_the_run_state_directory`,
+`test_readable_host_path_cannot_substitute_an_arbitrary_host_path` and
+`test_designated_external_mounts_cannot_overlap_the_generated_system_view`
+cover N16's three designated-parameter checks thoroughly. But no test, in
+this diff or in the pre-existing suite (I checked the parent commit's
+version of `test_execution_boundary_config.py` too), ever constructs a plain
+caller-supplied `Mount(source=<path entirely outside the repository>,
+destination=..., mode=WRITABLE|READ_ONLY)` and asserts it is refused. Every
+`bad`-list entry in
+`test_file_grant_is_exact_and_invalid_config_never_spawns` uses a source
+inside the repository (a symlink, a relative path, a `.git` path, a missing
+parent, or a mismatched `/repo` destination); none has a source outside the
+repository tree entirely. The underlying code path is correct by reading and
+is unchanged by this Commission, but the specific regression test the
+contract names for exactly this companion assertion does not exist anywhere.
+
+*Feasible correction.* One additional `bad`-list entry (or a new small test)
+with a `Mount` whose source is, e.g., `tmp_path.parent / "outside" / "file"`
+(a sibling of the repository, created and populated before the call),
+destination irrelevant, mode `WRITABLE`, asserting
+`BoundaryConfigurationError` with the existing "bind sources must be inside
+repository" message. Additive, small, same shape as the existing table.
+
+[[limits]]
+== Limits of this Hop's own verification
+
+This agent sandbox cannot start `bwrap` (`--unshare-user` refuses: no
+permission to create a new user namespace) and this agent sandbox's own real
+`/tmp` is read-only (confirmed directly:
+`os.makedirs('/tmp/probe...')` raises `OSError: [Errno 30] Read-only file
+system`). Both are stated, anticipated agent-local limitations, not product
+defects, and both are already true on `main` for the unmodified
+`_SHORT_TMP_ROOT = Path("/tmp")` logic the Claude adapter has always used:
+
+* Every `tests/integration/test_execution_boundary_bwrap.py`,
+  `tests/integration/test_execution_boundary_dispatch.py` and
+  `tests/integration/test_nested_claude_bwrap_qualification.py` case needs a
+  real `bwrap` run and could not be executed in this Hop; these are
+  authoritative only under the Coordinator's task-check in an environment
+  where `bwrap` works, exactly as the Commission anticipated. I verified their
+  content by reading, not by running them.
+* All 23 failures in `tests/unit/test_claude_adapter_conformance.py` trace to
+  the identical `OSError: [Errno 30] Read-only file system` at
+  `claude_adapter.py:315` (`tmp_dir.symlink_to(real_dir)`, where `tmp_dir` is
+  under the real, read-only `/tmp`); I confirmed this is not a regression by
+  reading the diff, which leaves `_SHORT_TMP_ROOT`, `_external_scratch_root`
+  and this symlink call mechanically unchanged from `main`.
+* The 3 failures in `tests/unit/test_lifecycle_controller.py` all trace to
+  `wfc: error: unrecognized arguments: --execution-bindings-sha256`: the
+  review venv's installed `wfc` console-script resolves an older,
+  pre-Slice-A copy of the package from site-packages
+  (`/tmp/wfc-review-h002-venv/lib/python3.13/site-packages/workflow_coordinator/__init__.py`)
+  rather than this source tree (confirmed by inspecting
+  `workflow_coordinator.__file__` and by finding
+  `--execution-bindings-sha256` only in `operator.py:356` of this source
+  tree, added for a different, unrelated reason than this slice). Not a
+  product defect.
+* Everything else -- `tests/unit` as a whole (two full runs, one excluding
+  `test_claude_adapter_conformance.py`), `ruff check`, `asciidoctor` strict
+  render on every changed `.adoc`, and the doc-catalog `generate`+`check`
+  parity -- ran to completion in this Hop and is reported above from that
+  execution, not from the candidate's own citation.
+
+Live Layer 2 qualification (real authenticated providers) was correctly not
+attempted by the candidate and was not attempted by this review either; it
+remains an operator-performed, out-of-Commission act.
