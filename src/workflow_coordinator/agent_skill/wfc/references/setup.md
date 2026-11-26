@@ -60,6 +60,12 @@ git add .wfc/config.yaml
 git commit -m "chore: add wfc configuration"
 ```
 
+`.wfc/config.yaml` also accepts an optional `hop_timeout_seconds` key (a
+positive number of seconds): this repository's default per-Hop CAP, meant
+only to end a genuinely hung provider invocation, never a budget for
+ordinary work. `wfc run --hop-timeout-seconds` overrides it for one
+invocation; absent both, the built-in default is 14400 seconds (4 hours).
+
 ## Execution bindings and adapters
 
 ```yaml

@@ -10,6 +10,7 @@ the Commission's own immutable bytes, per C1.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -86,6 +87,7 @@ class ConsumerConfig:
     evidence: EvidenceConfigValue | None = None
     phase_execution: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     boundary: str = "direct"
+    hop_timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,12 @@ def _single_line_value(value: Any, *, context: str) -> str:
     if text.splitlines() != [text]:
         raise CommissionError(f"{context} must be a single-line value")
     return text
+
+
+def _hop_timeout_seconds(value: Any, *, context: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        raise CommissionError(f"{context} must be a positive, finite number of seconds")
+    return float(value)
 
 
 def _evidence_config_value(value: Any, *, context: str) -> EvidenceConfigValue:
@@ -169,7 +177,7 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
             "schema_version", "repository_name", "governance_dir", "work_item_scope_ceiling",
             "max_autonomous_hops", "default_execution",
         },
-        optional={"evidence", "phase_execution", "boundary"},
+        optional={"evidence", "phase_execution", "boundary", "hop_timeout_seconds"},
     )
     if data["schema_version"] != 1:
         raise CommissionError("Consumer Config.schema_version must be 1")
@@ -213,6 +221,11 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
     evidence = None
     if "evidence" in data:
         evidence = _evidence_config_value(data["evidence"], context="Consumer Config.evidence")
+    hop_timeout_seconds = None
+    if "hop_timeout_seconds" in data:
+        hop_timeout_seconds = _hop_timeout_seconds(
+            data["hop_timeout_seconds"], context="Consumer Config.hop_timeout_seconds"
+        )
     return ConsumerConfig(
         schema_version=1,
         repository_name=_text(data["repository_name"], context="Consumer Config.repository_name"),
@@ -224,6 +237,7 @@ def consumer_config_from_yaml(text: str) -> ConsumerConfig:
         evidence=evidence,
         phase_execution=phase_execution,
         boundary=boundary,
+        hop_timeout_seconds=hop_timeout_seconds,
     )
 
 

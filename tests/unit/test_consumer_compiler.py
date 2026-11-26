@@ -344,6 +344,23 @@ def test_consumer_config_boundary_key_is_optional_and_propagates_to_the_envelope
         consumer_config_from_yaml(config_text() + "boundary: other\n")
 
 
+def test_consumer_config_hop_timeout_seconds_key_is_optional() -> None:
+    config = consumer_config_from_yaml(config_text())
+    assert config.hop_timeout_seconds is None
+
+    config = consumer_config_from_yaml(config_text() + "hop_timeout_seconds: 3600\n")
+    assert config.hop_timeout_seconds == 3600.0
+
+    config = consumer_config_from_yaml(config_text() + "hop_timeout_seconds: 1800.5\n")
+    assert config.hop_timeout_seconds == 1800.5
+
+
+@pytest.mark.parametrize("invalid", ["0", "-1", "true", "false", "'900'", ".nan", ".inf", "-.inf"])
+def test_consumer_config_rejects_invalid_hop_timeout_seconds(invalid: str) -> None:
+    with pytest.raises(CommissionError, match="hop_timeout_seconds must be a positive, finite number"):
+        consumer_config_from_yaml(config_text() + f"hop_timeout_seconds: {invalid}\n")
+
+
 def test_phase_bindings_follow_executing_topology_and_merge_field_by_field() -> None:
     workflow = profile({
         "draft": phase({"continue": route("goto", "revise")}),

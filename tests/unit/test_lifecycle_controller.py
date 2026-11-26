@@ -104,6 +104,11 @@ def _write_request(repository: Path, path: Path, *, evidence_argv=("sh", "checks
 
 
 _OVERRIDES = {"worker": {"adapter": "codex_cli", "model": "fixture-model", "reasoning": "medium"}}
+_CLI_WORKER_OVERRIDE_FLAGS = [
+    "--execution-override", "worker.adapter=codex_cli",
+    "--execution-override", "worker.model=fixture-model",
+    "--execution-override", "worker.reasoning=medium",
+]
 
 
 def _inputs(repository: Path, request_path: Path, *, confirm=lambda a, b: True, executable=None, **kwargs) -> L.RunInputs:
@@ -278,6 +283,85 @@ def test_concurrent_run_on_same_checkout_refused_at_once_first_untouched(reposit
     L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
     result = L.run_lifecycle(inputs)
     assert result.classification == "awaiting_human"
+
+
+# --------------------------------------------------------------------------
+# Hop timeout resolution (WI-WFC-HOP-TIMEOUT-DEFAULT-001): the flag, then the
+# Consumer Config's ``hop_timeout_seconds``, then the built-in default; the
+# resolved value is exactly what gets journaled and handed to the engine.
+# --------------------------------------------------------------------------
+
+def test_default_hop_timeout_seconds_is_four_hours():
+    assert L.DEFAULT_HOP_TIMEOUT_SECONDS == 14400.0
+
+
+def test_hop_timeout_seconds_flag_defaults_to_none_distinguishing_absence():
+    args = L._parse_run_args(["--request", "x.yaml"])
+    assert args.hop_timeout_seconds is None
+
+
+def _authorized_hop_timeout_seconds(repository: Path) -> float:
+    checkout_dir = J.checkout_directory(J.canonical_checkout(repository))
+    journal = J.Journal(checkout_dir / "journal.jsonl")
+    return journal.latest(("authorized",)).data["hop_timeout_seconds"]
+
+
+def test_hop_timeout_seconds_falls_back_to_the_built_in_default(repository: Path, tmp_path: Path, state_home: Path):
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    os.environ["WFC_FAKE_ENGINE_MODE"] = "awaiting_human"
+    L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
+    code = cli_main([
+        "run", "--repository", str(repository), "--request", str(request_path),
+        "--executable", str(FAKE_PROVIDER), "--yes", *_CLI_WORKER_OVERRIDE_FLAGS,
+    ])
+    assert code == L.EXIT_CODES["awaiting_human"]
+    assert _authorized_hop_timeout_seconds(repository) == L.DEFAULT_HOP_TIMEOUT_SECONDS
+
+
+def test_hop_timeout_seconds_config_key_applies_when_the_flag_is_absent(repository: Path, tmp_path: Path, state_home: Path):
+    config = repository / L.DEFAULT_CONFIG_PATH
+    config.write_text(config.read_text() + "\nhop_timeout_seconds: 777\n")
+    git(repository, "add", L.DEFAULT_CONFIG_PATH)
+    git(repository, "commit", "-m", "test: set a repository hop timeout default")
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    os.environ["WFC_FAKE_ENGINE_MODE"] = "awaiting_human"
+    L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
+    code = cli_main([
+        "run", "--repository", str(repository), "--request", str(request_path),
+        "--executable", str(FAKE_PROVIDER), "--yes", *_CLI_WORKER_OVERRIDE_FLAGS,
+    ])
+    assert code == L.EXIT_CODES["awaiting_human"]
+    assert _authorized_hop_timeout_seconds(repository) == 777.0
+
+
+def test_hop_timeout_seconds_flag_overrides_the_config_key(repository: Path, tmp_path: Path, state_home: Path):
+    config = repository / L.DEFAULT_CONFIG_PATH
+    config.write_text(config.read_text() + "\nhop_timeout_seconds: 777\n")
+    git(repository, "add", L.DEFAULT_CONFIG_PATH)
+    git(repository, "commit", "-m", "test: set a repository hop timeout default")
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    os.environ["WFC_FAKE_ENGINE_MODE"] = "awaiting_human"
+    L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
+    code = cli_main([
+        "run", "--repository", str(repository), "--request", str(request_path),
+        "--executable", str(FAKE_PROVIDER), "--hop-timeout-seconds", "55", "--yes",
+        *_CLI_WORKER_OVERRIDE_FLAGS,
+    ])
+    assert code == L.EXIT_CODES["awaiting_human"]
+    assert _authorized_hop_timeout_seconds(repository) == 55.0
+
+
+def test_hop_timeout_seconds_resolved_value_is_the_one_handed_to_the_engine(repository: Path, tmp_path: Path, state_home: Path):
+    request_path = _write_request(repository, tmp_path / "request.yaml")
+    inputs = _inputs(repository, request_path, hop_timeout_seconds=42.0)
+    os.environ["WFC_FAKE_ENGINE_MODE"] = "awaiting_human"
+    L._ENGINE_COMMAND = (sys.executable, str(FAKE_ENGINE))
+    result = L.run_lifecycle(inputs)
+    assert result.classification == "awaiting_human"
+    checkout_dir = J.checkout_directory(J.canonical_checkout(repository))
+    journal = J.Journal(checkout_dir / "journal.jsonl")
+    argv = journal.latest(("launch_intent",)).data["argv"]
+    assert argv[argv.index("--timeout-seconds") + 1] == "42.0"
 
 
 # --------------------------------------------------------------------------

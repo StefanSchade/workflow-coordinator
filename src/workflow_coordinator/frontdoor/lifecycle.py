@@ -77,7 +77,7 @@ from .verify import verify_commission
 
 DEFAULT_CONFIG_PATH = ".wfc/config.yaml"
 DEFAULT_EXECUTABLE = "codex"
-DEFAULT_HOP_TIMEOUT_SECONDS = 900.0
+DEFAULT_HOP_TIMEOUT_SECONDS = 14400.0
 MAX_LAUNCH_ATTEMPTS = 3
 
 
@@ -1204,7 +1204,15 @@ def _parse_run_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--target-dir", default=None)
     parser.add_argument("--execution-override", action="append", default=[], metavar="ROLE.FIELD=VALUE")
     parser.add_argument("--executable", default=DEFAULT_EXECUTABLE)
-    parser.add_argument("--hop-timeout-seconds", type=float, default=DEFAULT_HOP_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--hop-timeout-seconds", type=float, default=None,
+        help=(
+            "per-Hop timeout in seconds for the engine process; a CAP meant only to end a "
+            "genuinely hung provider invocation, never a budget. Precedence: this flag, then "
+            "the hop_timeout_seconds key in .wfc/config.yaml, then the built-in default of "
+            f"{int(DEFAULT_HOP_TIMEOUT_SECONDS)} seconds (4 hours)."
+        ),
+    )
     parser.add_argument("--yes", action="store_true")
     return parser.parse_args(argv)
 
@@ -1273,15 +1281,29 @@ def _print_postrun_notice(result: LifecycleResult) -> None:
         sys.stdout.write(_stdout_safe(result.postrun_report_text))
 
 
+def _resolve_hop_timeout_seconds(flag_value: float | None, repository: Path, config_path: str) -> float:
+    """Precedence: the ``--hop-timeout-seconds`` flag, then ``.wfc/config.yaml``'s
+    ``hop_timeout_seconds``, then ``DEFAULT_HOP_TIMEOUT_SECONDS``."""
+
+    if flag_value is not None:
+        return flag_value
+    config_text = (repository / config_path).read_text(encoding="utf-8")
+    config = consumer_config_from_yaml(config_text)
+    if config.hop_timeout_seconds is not None:
+        return config.hop_timeout_seconds
+    return DEFAULT_HOP_TIMEOUT_SECONDS
+
+
 def cmd_run(argv: list[str]) -> int:
     args = _parse_run_args(argv)
     try:
         repository = repository_identity(Path(args.repository))
         overrides = execution_overrides_from_flags(args.execution_override)
+        hop_timeout_seconds = _resolve_hop_timeout_seconds(args.hop_timeout_seconds, repository, args.config)
         inputs = RunInputs(
             repository=repository, config_path=args.config, request_path=Path(args.request).resolve(),
             target_dir=args.target_dir, overrides=overrides, executable=args.executable,
-            hop_timeout_seconds=args.hop_timeout_seconds, confirm=_make_confirm(yes=args.yes),
+            hop_timeout_seconds=hop_timeout_seconds, confirm=_make_confirm(yes=args.yes),
         )
         result = run_lifecycle(inputs)
     except (LifecycleError, CommissionError, GitPreflightError, JournalError, OSError) as error:
