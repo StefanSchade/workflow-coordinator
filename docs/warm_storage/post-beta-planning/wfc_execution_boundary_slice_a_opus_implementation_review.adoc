@@ -1,0 +1,1264 @@
+= WFC Execution Boundary Slice A: Opus implementation review
+:toc:
+:toclevels: 2
+:revdate: 2026-11-26
+
+Standing:: Durable review artifact of
+`WI-WFC-EXEC-BOUNDARY-OPUS-IMPL-REVIEW-001` (Run
+`RUN-22b2f86dafbd4ff29cbe480113536513`, Hop `H001`), the first Opus-class
+read of the Slice A implementation. The contract was authored and reviewed by
+Opus; the implementation and all three of its reviews (worker, focused, broad)
+were Sonnet. Not a governance document, not an authorization, not a maintainer
+acceptance, and not the Layer 2 live qualification. It changes no code, no
+test and no existing document.
+Subject:: The integrated candidate `c5843d8..6b89880` under `src`, `tests` and
+the reconciled model/manual/guide documents, measured against
+link:../../backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc[the
+binding contract] sections (a) to (j) and its exit criteria, with
+link:../../backlog/FTR-WFC-EXECUTION-TRUST-BOUNDARIES.adoc[the umbrella
+record] and link:wfc_execution_boundary_planning_record.adoc[the planning
+record] as context. The earlier
+link:wfc_execution_boundary_slice_a_r3_broad_review.adoc[broad] and
+link:wfc_execution_boundary_slice_a_r3_focused_review.adoc[focused] reviews
+were treated as claims to challenge, not as evidence.
+Evidence discipline:: Every finding carries an explicit evidence class.
+*EXECUTED* means this Hop ran it and observed the result. *TRACED* means the
+code path was followed by hand and the conclusion follows from the text alone.
+*SUSPECTED* means plausible but unverified, with the verifying probe named.
+This Hop's sandbox cannot start `bwrap` (no unprivileged user namespaces) and
+has a read-only `/tmp`, and `pytest` is not installed in it, so no test in the
+suite was run here; everything marked EXECUTED was run as a direct probe
+against the real modules.
+
+[[verdict]]
+== 1. Verdict, in five lines
+
+. The mount model, the seam and the fail-closed selection logic are sound: the
+  generated view contains *exactly* the contract's mount kinds and nothing
+  more, `prepare_direct` is a true identity for both adapters, and no route
+  to unisolated execution under a selected `bubblewrap` mode was found.
+. No escape from the boundary was found or is suspected: no reachable `.git`,
+  gitdir, common directory, object database, Run state, `$HOME` content or
+  write outside the grant, in any code path I traced.
+. Rework *is* needed, and it is narrow: the new started/not-started signal was
+  placed inside the one directory the contract had just finished arguing must
+  not be agent-writable, and it goes stale across Hops (F1, F2 -- both
+  EXECUTED).
+. Three further items block clean promotion: the one credential-bearing mount
+  accepts any existing host path with no narrowing check or documented rule
+  (F3, EXECUTED); the sandbox-root measurement that exit criterion 1 requires
+  "recorded either way" is asserted tautologically and recorded nowhere (F4,
+  TRACED); and a scope entry naming a not-yet-existing *file* is pre-created
+  as a *directory*, so such a Commission cannot run under the boundary and is
+  not refused by name (F5, EXECUTED).
+. Recommendation: commission one small, targeted rework (five source leaves,
+  five test leaves, two documents; `robust@v1`; four to six Hops) for F1 to
+  F5, then promote as a Layer-1-qualified, opt-in feature. Do *not* redesign:
+  the architecture the contract specified is what was built.
+
+[[findings]]
+== 2. Findings, ranked by severity
+
+Severity is relative to promoting this as an *opt-in, Layer-1-qualified*
+feature whose only user is a Level-1 operator. No finding is a boundary
+escape; F1 to F5 are integrity, measurement and fail-closed defects.
+
+[cols="1,1,1,3,4,4,4,2",options="header"]
+|===
+|Id |Sev |Evidence |Location |Defect |Concrete failure scenario |Recommended fix |Owner scope
+
+|F1
+|major
+|EXECUTED
+|`src/workflow_coordinator/execution_launcher.py:238-240`;
+`src/workflow_coordinator/codex_adapter.py:469-472`;
+`src/workflow_coordinator/claude_adapter.py:378-381`
+|The boundary-started marker, which is the sole input to the
+started-versus-not-started classification, is created and stored inside a
+location the confined process can write.
+|A Codex-path agent writes files inside its grant, deletes
+`.wfc-boundary-started` from the writable channel and exits non-zero. The
+adapter reports "execution boundary failed before the provider started",
+`slice4` removes `dispatch.json`, no Hop is charged and no post-Hop
+candidate-scope observation runs for that invocation. The same move lets a
+failing provider masquerade as a boundary failure.
+|Keep the marker on a host path the view never binds (for example a
+Coordinator-owned per-invocation file outside the channel and the scratch), or
+classify from `bwrap`'s own exit status and stderr-free setup path instead of
+from a file the child can unlink.
+|`execution_launcher.py`, both adapters, one new dispatch-level test
+
+|F2
+|major
+|EXECUTED
+|`src/workflow_coordinator/operator.py:1053`;
+`src/workflow_coordinator/slice4.py:324`;
+`src/workflow_coordinator/execution_launcher.py:238-240`
+|The provider channel is `<run_root>/provider-channel`, one directory per
+checkout, not per invocation as `<<channel>>` specifies, so the marker from an
+earlier Hop survives into the next one.
+|Second boundary-selected Codex Hop of a Run: `bwrap`'s own setup fails, the
+marker is never written this time, but the Hop-1 file still exists, so the
+invocation is classified as a provider that started and returned no result
+and takes the uncertain-dispatch path instead of a named not-started refusal.
+Deterministic, not a race.
+|Make the channel per invocation (`<run_root>/provider-channel/<invocation_id>`)
+or unlink the marker immediately before launch; add a test that drives two
+consecutive boundary Hops.
+|`operator.py`, `slice4.py`, `execution_launcher.py`, `frontdoor/archive.py`
+glob depth, two tests
+
+|F3
+|major
+|EXECUTED
+|`src/workflow_coordinator/execution_boundary.py:255-273`;
+`src/workflow_coordinator/operator.py:106-113`;
+`tests/unit/test_execution_boundary_config.py:336-343`
+|The designated provider-authentication mount accepts any existing host file
+or directory; the contract's rule "no blanket `$HOME` bind, and no bind of a
+whole provider configuration directory when a single file suffices" is neither
+enforced in code nor stated in the Operator Manual, and the only control is
+one unvalidated environment variable.
+|An operator sets `WFC_BOUNDARY_AUTHENTICATION_PATH` to `$HOME`, to a whole
+`~/.claude`, or (as I observed) to `/etc/shadow`; validation accepts it and
+`build_argv` emits `--ro-bind` for it, silently widening the view for every
+invocation of that Run with no refusal and no audit signal.
+|Narrow the kind: refuse the operator's home directory itself, refuse a
+directory above a configured maximum depth or entry count, or require the
+operator to name a file; and document the rule where the variable is
+documented. Rename the test that currently claims more than it proves.
+|`execution_boundary.py`, `operator.py`,
+`docs/operator_manual/ch01_orientation/02_boundaries.adoc`, one test
+
+|F4
+|major
+|TRACED
+|`tests/integration/test_execution_boundary_bwrap.py:334`;
+`tests/integration/test_nested_claude_bwrap_qualification.py:93`
+|Two "measure rather than assume" assertions cannot fail and record nothing:
+the N12 sandbox-root probe asserts that its own output is one of its only two
+possible values, and the rewritten nested-`bwrap` case asserts
+`returncode != 0` inside the `else` of `returncode == 0`.
+|Exit criterion 1 requires Layer 1 "with the sandbox-root measurement N12
+requires recorded either way", and the stop rule forbids settling that
+question by assumption. Today a passing suite reports nothing about whether
+`--remount-ro /` closed the base tmpfs, so the criterion is unmet and the
+stated residual cannot be closed or confirmed.
+|Assert the measured outcome explicitly and persist it, or write the observed
+value to a recorded artifact the qualification record can cite; replace the
+tautological `else` assertion with the property actually intended.
+|two integration tests, plus one line in the qualification record
+
+|F5
+|major
+|EXECUTED
+|`src/workflow_coordinator/execution_launcher.py:112-140`;
+`src/workflow_coordinator/operator.py:1065-1067`
+|A writable scope entry that does not exist is pre-created as a directory at
+its own path unless it is one of the executing phase's declared durable
+artifacts, so a not-yet-existing *file* in a worker phase's scope becomes a
+directory with that name.
+|This review Commission's own scope is a single not-yet-existing `.adoc`
+file. Under `boundary: bubblewrap` the Coordinator would `mkdir` a directory
+named `wfc_..._review.adoc`, the agent could never create the file, and if it
+wrote anything inside, the non-empty directory would survive the cleanup
+bracket as an untracked directory in the worktree. Nothing refuses by name.
+|Refuse by name when a missing scope entry cannot be resolved to a writable
+directory grant, or grant the nearest existing ancestor for every missing
+entry and state the overgrant, rather than materialising a directory at a
+path the Commission may mean as a file.
+|`execution_launcher.py`, `operator.py`, one unit test
+
+|F6
+|minor
+|TRACED, part EXECUTED
+|`src/workflow_coordinator/operator.py:118-159`
+|Preflight is incomplete and partly dead: check 8 of (e) is absent; the
+external-scratch half of check 4 (line 144) can never fire because the
+operator never puts a scratch path in the grant; and the `binding` parameter
+accepted at line 118 is never read, so check 6 is not adapter-specific as (e)
+requires.
+|On the Claude path the external scratch is injected by the adapter at launch,
+so its validation happens inside `prepare`; a misconfigured scratch root is
+reported as "local pre-acceptance executable launch failure" with no mention
+of the boundary. A settings file naming a path absent from the view would not
+be refused at all.
+|Validate the scratch root the adapter will use at preflight, implement check
+8 against the generated settings, and either use `binding` for an
+adapter-specific authentication check or drop the parameter.
+|`operator.py`, `claude_adapter.py` seam for the scratch, two tests
+
+|F7
+|minor
+|TRACED
+|`src/workflow_coordinator/execution_boundary.py:19`;
+`src/workflow_coordinator/claude_adapter.py:365`;
+`src/workflow_coordinator/codex_adapter.py:456`;
+`src/workflow_coordinator/operator.py:1055-1063`
+|`BoundaryConfigurationError` does not join the `ExecutionNotStartedError`
+hierarchy as (e) requires; it is a plain `ValueError`, so both adapters'
+`except (OSError, ValueError)` collapse every boundary failure at launch into
+one generic message, and `derive_boundary_grant` raises it out of
+`run_serial_hops` unwrapped rather than as a named `OperatorPreflightError`.
+|An unnormalizable scope list (N15) reaching the real dispatch frame surfaces
+as a bare `BoundaryConfigurationError` caught by `main`'s broad handler, not
+as the named preflight refusal (e) specifies. Classification stays correct;
+only the name and the diagnostic are lost.
+|Make `BoundaryConfigurationError` subclass `ExecutionNotStartedError`, catch
+it by name in both adapters with a boundary-specific message, and wrap the
+`derive_boundary_grant` call in `OperatorPreflightError`.
+|`execution_boundary.py`, both adapters, `operator.py`, one test
+
+|F8
+|minor
+|EXECUTED for the gap, SUSPECTED for the effect
+|`src/workflow_coordinator/execution_boundary.py:117-118`, `:129-133`,
+`:165-171`, `:306`, `:316`
+|The generated-system-view overlap guard is applied to the provider channel
+and the authentication path but not to the repository or its writable
+submounts, and `_system_roots()` omits `/etc`, `/dev`, `/proc` and `/tmp`.
+|A repository whose canonical path lies under `/tmp` validates, and
+`--ro-bind <repo> <repo>` is emitted before `--size ... --tmpfs /tmp`, so the
+later tmpfs would shadow the repository bind and the agent would see an empty
+repository containing only its writable grant. Likely on a developer host
+whose `TMPDIR` is the default `/tmp`, including for the new Layer-1
+integration tests, which build their repositories under `tmp_path`.
+|Apply `_check_not_in_generated_system_view` to the repository destination and
+to each writable submount destination, and refuse by name.
+|`execution_boundary.py`, one unit test
+
+|F9
+|minor
+|TRACED
+|`tests/integration/test_execution_boundary_dispatch.py:481-530`
+|N11 does not reproduce the production channel layout: the test's channel is
+`tmp_path/channel`, not nested inside the Run state directory, so the fake
+provider never attempts the adjacency that actually exists in production
+(`<channel>/../run.json`), and the Claude-path companion assertion that the
+channel itself is not writable exists only at the primitive level.
+|The case asserts `present=[]` for five names in a directory that never
+contained them and host-side identity for files the agent had no path to. A
+future change that nested the channel differently, or that made the Claude
+channel writable, would not be caught here.
+|Build the channel at `<run_root>/provider-channel` in the test, attempt
+`../run.json` and `../../` traversal from it, and add the Claude read-only
+companion through the dispatch path.
+|one integration test
+
+|F10
+|minor
+|TRACED
+|`src/workflow_coordinator/frontdoor/audit.py:50`, `:384`, `:443`
+|The audit projection reads the Run-wide `run.boundary` rather than the
+per-Hop binding evidence that (a)'s consequence 3 designates as the single
+source, and a post-slice `direct` Run now projects `boundary: null`, which is
+indistinguishable from a pre-slice Run.
+|A Hop dispatched through an injected adapter projects `direct` into the
+binding evidence while `wfc audit` shows the Run-wide `bubblewrap` for the
+same Hop. Not reachable from `main`, which never injects an adapter, so this
+is a source-of-truth deviation rather than an exploitable divergence.
+|Project the per-Hop value from `StagedQualificationAttempt.boundary`, which
+already carries it, and state the pre-slice-versus-direct ambiguity where the
+disambiguation is claimed.
+|`frontdoor/audit.py`, one unit test, one contract sentence
+
+|F11
+|note
+|EXECUTED
+|`src/workflow_coordinator/operator.py:154`
+|Preflight check 5 is a string-prefix test on `shutil.which()`'s result with
+no `realpath`, so a `PATH` entry traversing out of `/usr` (and, by the same
+reasoning, a `/usr/local/bin` symlink into `$HOME`) satisfies it.
+|A provider installed under `$HOME` and exposed through
+`/usr/../home/<user>/bin` passes the check and then fails to exec inside the
+view, producing the confusing failure the check exists to prevent.
+|Compare `os.path.realpath()` of the resolved executable against the
+view-visible roots.
+|`operator.py`, one unit test
+
+|F12
+|note
+|EXECUTED
+|`src/workflow_coordinator/execution_launcher.py:94-109`
+|`normalized_writable_scope` refuses empty, absolute and `..` entries but does
+not canonicalize a `./` prefix, so `("./src", "src")` survives normalization
+as two entries, and a scope of `"."` passes normalization.
+|Both are refused later by `validate()` with a path-identity or
+overlapping-destination message that names neither the scope entry nor the
+real cause.
+|Normalize with `PurePosixPath(entry).as_posix()` before comparison and refuse
+`"."` by name.
+|`execution_launcher.py`, one unit test
+
+|F13
+|note
+|TRACED, SUSPECTED for the live effect
+|`src/workflow_coordinator/codex_adapter.py:448-455`
+|The Codex path carries no external scratch, so inside the boundary Codex
+inherits the Coordinator's `TMPDIR`, which names a host path the view does not
+bind.
+|Any tool under Codex that honours `TMPDIR` finds a nonexistent directory.
+This is a Layer-2 (L3) risk, and exactly what (e)'s absent check 8 was meant
+to turn into a named refusal.
+|Decide at Layer 2 whether the Codex path needs a scratch bind; until then,
+record it as a named open item.
+|a qualification note, not a code change yet
+
+|F14
+|note
+|EXECUTED
+|`docs/developer_guide/ch01_development.adoc:66-70`
+|The documented list of `bwrap`-dependent tests omits
+`tests/unit/test_execution_launcher.py`, three of whose cases need a
+resolvable `bwrap` because `prepare_bubblewrap` calls `validate()`.
+|A contributor on a host without `bwrap` sees unit-level failures the guide
+says to expect only from the named files.
+|Add the file to the list.
+|one documentation line
+
+|F15
+|note
+|TRACED
+|`src/workflow_coordinator/frontdoor/archive.py:111-118`, `:391-394`
+|Three channel file names are archived from a directory that is agent-writable
+on the Codex path, and the channel persists across Hops.
+|A Codex-path agent can create `claude-closed-settings.json` in the channel
+and have it archived as if it were the Coordinator's generated settings, and
+can leave a directory at `result-message.json` to make every later Hop of the
+same Run fail at `atomic_write_text`.
+|Follows from F2: a per-invocation channel removes the cross-Hop half; for the
+archive, record the three names as agent-reachable rather than trusted.
+|`frontdoor/archive.py` comment, or nothing if F2 is fixed
+|===
+
+[[finding-detail]]
+== 2a. Finding detail: what was executed
+
+=== F1 and F2, the started marker
+
+`prepare_bubblewrap` wraps the provider command as
+`/bin/sh -c ': > "$1"; shift; exec "$@"' sh <marker> <provider argv...>`
+(`execution_launcher.py:284`), and `boundary_started_marker` places `<marker>`
+in the writable provider channel for a Codex-shaped grant and in the external
+scratch for a Claude-shaped one (`:236-245`). Both are bound read-write into
+the view, so the confined process can unlink the file. I confirmed the full
+argv by building it (see <<q1>>), then drove the real `CodexCliAdapter` with a
+stub standing in for `bwrap`:
+
+* stub exits non-zero without running the wrapped command, no stale marker:
+  `CodexCliError: execution boundary failed before the provider started` --
+  the intended classification.
+* same stub, with a marker file left in the channel beforehand: no error; the
+  outcome is `returncode = 1`, `candidate = None`,
+  `diagnostics = ('Codex CLI exited 1',)` -- a `bwrap` setup failure reported
+  as a started provider.
+* stub that runs the wrapper (so the marker is created), then deletes the
+  marker and exits non-zero: `CodexCliError: execution boundary failed before
+  the provider started` -- a provider that did run, classified as never
+  started.
+
+The channel is `<run_root>/provider-channel` with no invocation component
+(`operator.py:1053`, `slice4.py:324`), so the second case is the ordinary
+shape of every Hop after the first in a boundary-selected Codex Run. The
+contract's `<<channel>>` section rejected mounting the Run state directory
+precisely because it would give the agent "write access to the dispatch
+marker on which this slice's own not-started/started classification depends";
+the implementation then created a new classification input and put it inside
+the one directory it had just made agent-writable.
+
+=== F3, the authentication mount
+
+I called `validate()` with each candidate as `readable_host_paths` against a
+synthetic repository and printed the emitted argv:
+
+* a home-shaped directory containing `.ssh/id_ed25519`, `.claude/credentials.json`
+  and an unrelated repository: *accepted*, `--ro-bind <dir> <dir>`.
+* a whole `.claude` directory: *accepted*.
+* an unrelated private-key file: *accepted*.
+* `/etc/shadow`: *accepted*.
+* `/` : refused, but only because it overlaps the repository, which happens to
+  lie under it on this host.
+
+The checks that do exist are real and correct as far as they go: the path must
+be absolute, canonical, existing, a file or directory, disjoint from the
+repository, the system roots, the channel, the scratch and every other mount,
+and outside the generated system view (I confirmed `/dev`, `/etc/resolv.conf`
+and `/tmp` are each refused by name). What is absent is any notion of
+*narrowness*, which is the one property the contract's credential rules are
+about. The companion test's name,
+`test_readable_host_path_cannot_substitute_an_arbitrary_host_path`, states the
+property that is missing; its body only proves that a nonexistent path and a
+relative path are refused.
+
+=== F5, file-shaped scope entries
+
+With `artifact_paths` empty, as it is for a `robust@v1` worker phase:
+
+* `authorized_scope=("docs/warm_storage/post-beta-planning/new_review.adoc",)`
+  yields `writable_repository_paths = ('docs/warm_storage/post-beta-planning/new_review.adoc',)`
+  and `missing_writable_targets = (<repo>/docs/warm_storage/post-beta-planning/new_review.adoc,)`.
+* the same entry declared in `artifact_paths` yields
+  `('docs/warm_storage/post-beta-planning',)` with nothing to pre-create --
+  the intended reviewer shape.
+* an artifact whose whole parent chain is absent falls back to the artifact's
+  own path, so the degenerate case is pre-created as a directory too.
+
+The behaviour is a defensible reading of `<<mounts>>`, whose rule 1 says any
+absent entry is a directory "unless the Commission says otherwise" while rule
+2 says a not-yet-existing file resolves to its nearest existing ancestor; the
+implementation made "the phase's declared durable artifacts" the only way a
+Commission can say otherwise, and `test_derive_boundary_grant_never_overgrants_to_the_repository_root`
+locks that in. The result is still a Commission shape that cannot run under
+the boundary and is not refused by name, which is the part that needs a
+maintainer decision rather than a silent default.
+
+[[q1]]
+== 3.1 Security
+
+Nothing in this section is a defect; it is what I checked and found sound,
+with the two integrity defects already stated as F1 to F3.
+
+*The generated view contains exactly the contract's mount kinds.* I built the
+argv for a full Codex-shaped grant (writable repository subpath, channel,
+authentication path, external scratch) and read every token. In order:
+`--die-with-parent`, `--dev /dev`, `--proc /proc`, `--unshare-pid`,
+`--new-session`, `--ro-bind /usr /usr`, `--symlink usr/bin /bin` and the three
+other `/bin`-family links, the five enumerated `/etc` read-only binds,
+`--ro-bind <repo> <repo>`, `--tmpfs <repo>/.git` plus `--remount-ro
+<repo>/.git`, `--size 268435456 --tmpfs /tmp`, `--bind <repo>/src <repo>/src`,
+`--bind <channel> <channel>`, `--ro-bind <auth> <auth>`, `--bind <scratch>
+/tmp/s`, `--remount-ro /`, `--chdir <repo>`, `--`, command. EXECUTED. There is
+no fifth mount kind, no `$HOME` bind, no gitdir, no Run state directory, no
+`/etc` wholesale, no `--as-pid-1`, and `--size` immediately precedes the
+`/tmp` tmpfs it caps. `--remount-ro /` appears exactly once, after every mount
+and before `--chdir`.
+
+*`.git` and the Git object database.* `validate()` accepts a `.git` directory
+or regular file and refuses a symlink (`execution_boundary.py:169-171`;
+EXECUTED for all three shapes). The directory shape is masked with a
+read-only tmpfs, the file shape with `--ro-bind-data 9 <repo>/.git` behind a
+`/bin/sh` wrapper that opens FD 9 on `/dev/null` and execs into `bwrap`, so
+PID, process group and session are unchanged (`:334-342`; EXECUTED for the
+argv shape). A writable grant can never be `.git` or contain it: `relative`
+must be non-empty and must not contain a `.git` component (`:197-200`), which
+also means the repository root itself can never be writable -- I confirmed
+that a scope of `"."` is refused. Neither the per-worktree gitdir nor the
+common directory is ever a mount source or destination; they are unreachable
+because nothing outside the repository is mounted. TRACED. The contract's
+"assert that they are not inside the view" is *not* implemented as an explicit
+assertion; the property holds structurally instead. I do not treat that as a
+defect, because the structural guarantee is stronger than the assertion would
+be, but it is a conformance difference worth recording.
+
+*Routes to unisolated execution.* I looked for all of them.
+`prepare` dispatches on `plan.grant.mode` alone and raises on anything that is
+neither `direct` nor `bubblewrap` (EXECUTED). Both production call sites of
+`run_serial_hops` (`operator.py:2001`, `:2158`) pass no adapter, so
+`_execution_adapter` always receives the derived grant and an adapter can
+never be constructed without one while `bubblewrap` is selected. The
+Run-wide mode is checked against the Run's persisted mode as the first
+statement of `run_serial_hops` (`:946-951`), in both mismatch directions.
+`run_execution_configuration_from_yaml` and `consumer_config_from_yaml` accept
+only the two closed values. An unrecognised mode on the Codex path refuses
+with a not-started error and no provider process starts (EXECUTED: a stub
+provider's own marker file was never created). Exception paths: every
+`BoundaryConfigurationError` reaches a not-started classification, by F7's
+indirect route rather than by name. Timeout and kill paths are untouched in
+both adapters, and the marker check is skipped when `timed_out` is true.
+Resume cannot downgrade. No environment variable or configuration key
+downgrades silently; the only new environment variable,
+`WFC_BOUNDARY_AUTHENTICATION_PATH`, can only *add* a read-only mount, which is
+F3.
+
+*The mode is read in two places.* `claude_adapter.py:323` tests
+`self.boundary is not None and self.boundary.mode != "direct"` to choose
+between host-path and in-view settings and `TMPDIR`. This is a second read of
+the mode outside the seam, and it tests for inequality to `direct` rather than
+equality to `bubblewrap`. It is nevertheless fail-safe: an unrecognised mode
+takes the in-view branch and is then refused by `prepare` before any process
+starts, so the only residue is a settings file naming in-view paths that no
+process ever reads. TRACED, with the Codex equivalent EXECUTED. I would still
+prefer `== BUBBLEWRAP` there, since the current form silently treats a future
+third mode as isolated.
+
+*Symlinks, path normalization, TOCTOU, `..`, bind-over-bind.* `_real_path`
+requires every source to be absolute and already fully resolved, so a
+non-canonical or symlinked source is refused before any access (EXECUTED
+incidentally: my first probe was refused for exactly this reason). `..` in a
+destination is refused; overlapping caller destinations are refused; the
+channel and authentication destinations are additionally checked against each
+other, against the scratch, and against the generated system view (EXECUTED).
+The hardlink-alias walk runs over every writable grant, the writable channel
+and the external scratch, refusing any non-directory inode with
+`st_nlink != 1`, at `validate()` and again inside `build_argv`, which
+revalidates from scratch. The residual TOCTOU window is the one the contract
+already accepts as residual risk 1 and 2. The one gap I found in this family
+is F8, the repository destination not being checked against the generated
+system view.
+
+*`/proc`, `/dev`, PID namespace, `--new-session`.* `--proc /proc` with
+`--unshare-pid`, `--dev /dev`, `--new-session`, and no `--as-pid-1`, all
+present and asserted by unit tests on the argv. The residual host-global
+`/proc` exposure is named in the contract and not resolved here, correctly.
+The N8 question (can the child create a new mount or user namespace that
+re-mounts a host path) is answered only by a shallow test: it probes `mount -t
+tmpfs` and a nested `bwrap --unshare-user --bind`, both inside an `if`, so the
+case also passes when `mount` is simply absent from the view or when nested
+namespaces are unavailable for unrelated reasons, and it never attempts the
+classic `unshare -m` plus remount-read-write of the repository bind. I did not
+find a reason to believe the property fails -- mounts created in bwrap's own
+user namespace are locked against a nested namespace -- but it is asserted
+more weakly than N8 asks. SUSPECTED; probe P4 below.
+
+*Provider-relaxed settings.* Nothing relaxes. `sandbox.enabled`,
+`failIfUnavailable` and `allowUnsandboxedCommands` are unconditional literals
+(`claude_adapter.py:234-236`), `enableWeakerNestedSandbox` appears nowhere in
+`src`, `denyRead: ["~/"]` is retained, `--permission-mode acceptEdits` and
+`--permission-prompts none` are unchanged, and Codex's `--sandbox
+workspace-write` and `--ask-for-approval never` are unchanged and not
+boundary-conditional. The only boundary-conditional change to the Claude
+settings is `allowRead`/`allowWrite`/`TMPDIR` naming `/tmp/s` instead of the
+host scratch, which is the correction (d) mandates, and it is written only on
+the branch whose grant mode is not `direct`. So no in-view-shaped or relaxed
+setting can be present on a process that actually ran unisolated. TRACED.
+
+== 3.2 Contract conformance, section by section
+
+[cols="1,2,4",options="header"]
+|===
+|Section |State |Note
+
+|(a) seam
+|conformant, one addition
+|`BoundaryGrant`, `LaunchPlan`, `PreparedLaunch`, `prepare`, `prepare_direct`,
+`prepare_bubblewrap` all present with the specified shapes; no process
+handling moved. Addition: `prepare_bubblewrap` returns
+`build_argv(...) + marker-wrapper + argv`, not `build_argv(...) + argv`. The
+wrapper is F1's mechanism.
+
+|(a) carrier
+|conformant
+|Constructor parameter `boundary: BoundaryGrant \| None = None` on both CLI
+adapters; the port is untouched; one derivation function used by the one
+production construction site; `slice4.run_real_one_hop` has the forwarded
+optional parameter.
+
+|(a) lifecycle
+|conformant, one leak
+|Pre-create and removal are a Coordinator-owned `finally` bracket with
+per-target `except OSError: pass`. `mkdir(parents=True)` creates intermediate
+directories that the bracket never removes, and they are created with the
+process umask rather than `0o700`; both are invisible to Git, so this is
+untidiness rather than a defect.
+
+|(b) `.git` view
+|conformant; one specified assertion absent
+|See <<q1>>. The gitdir/common-dir "assert not in the view" step is
+structural, not an assertion.
+
+|(c) mount model
+|conformant; two deviations
+|Path-identity mounting, writable-grant derivation from
+`profile.phases[...].authorized_scope` (the same value the post-Hop check
+uses), normalization, `/tmp` size cap, enumerated `/etc`, channel, `$HOME`
+treatment and the sandbox-root `--remount-ro /` are all as specified.
+Deviations: F5 (not-yet-existing file shape) and F8 (repository not checked
+against the generated system view).
+
+|(c) channel
+|conformant except granularity
+|Relocated out of the Run state directory, read-only for Claude, read-write
+for Codex, archive extended with a separate `CHANNEL_ALLOW` that keeps the
+depth-one patterns, run-state-name guard present. The directory is per
+checkout, not per invocation: F2.
+
+|(d) provider configuration
+|conformant
+|Nothing relaxed; `boundary` added to the per-Hop binding evidence and the
+persisted Run state. The audit projection takes it from the Run rather than
+the Hop: F10.
+
+|(e) enablement
+|conformant
+|Optional closed key on both schemas, defaulting to `direct`; the envelope
+text and digest are unchanged when `direct`, so every historical envelope,
+Run and evidence file replays byte-identical (tests read; the serialization
+logic traced).
+
+|(e) preflight
+|checks 1, 2, 3, 5, 6 and 7 implemented; 4 partial; 8 absent
+|F6. Check 2's probe is `bwrap --unshare-user --dev /dev -- /bin/true`, which
+is the contract's own form but exercises neither `--unshare-pid --proc /proc`
+nor `--remount-ro /`, so it can succeed where the real view would fail.
+
+|(e) classification
+|correct outcome, wrong naming
+|F7. The Claude-versus-Codex asymmetry the contract asked to be made
+consistent *was* made consistent (`slice4.py:398`).
+
+|(e) no silent fallback
+|conformant
+|See <<q1>>.
+
+|(e) timeout and cleanup
+|conformant
+|Adapters unchanged; scratch cleanup still in the Claude `finally`; the
+pre-created directories removed by the Coordinator bracket.
+
+|(f) invariants
+|conformant
+|`trusted_commit`/`observe_hop` with `allowed_paths=phase.authorized_scope` are
+untouched in `slice4.py:212`, `:281`, `:345` and `vertical.py:404`, `:420`;
+the boundary derives its grant from the same value. Evidence stays
+unconfined. Resume consistency implemented and tested.
+
+|(g) Layer 1
+|positive cases 1 to 6 present; negative cases uneven
+|See <<matrix>>. Several N-cases are proven at the primitive level rather than
+"through the real dispatch path", which is what Layer 1's own wording asks
+for.
+
+|(g) exit criteria
+|criterion 1 unmet
+|F4: the N12 sandbox-root measurement is not recorded. Criteria 2 to 4 are
+correctly reported as not met, and no document claims otherwise.
+
+|(i) stop rule
+|respected, with one hit
+|No mount of the object database, `$HOME`, a whole configuration directory or
+`/etc` wholesale; no provider weakening; no fallback; no relaxed post-Hop
+check; no live-qualification claim. The one hit is the sandbox-root bullet,
+through F4.
+
+|(j) decomposition and docs
+|conformant
+|All five steps present; the stale-statement list is reconciled; no file
+outside the Commission's scope was touched.
+|===
+
+*Byte-identity of the direct path.* Claude: `argv` unchanged, `cwd =
+request.repository.resolve()` carried through `plan.cwd`, environment
+allowlist plus `TMPDIR/TMP/TEMP = str(tmp_dir)` exactly as before, settings
+built from `str(real_dir)` exactly as before. Codex: `argv` unchanged, no
+`cwd` and no `env` passed before or after. `prepare_direct` returns
+`tuple(plan.argv)`, `plan.cwd`, `plan.environment` and reads nothing from the
+grant (EXECUTED). TRACED for both adapters end to end; the unchanged
+conformance suites are the regression net and I could not run them here. One
+engineering wrinkle: the Codex adapter discards `prepared.cwd` and
+`prepared.environment` entirely rather than passing them to `Popen`, so the
+seam's outputs are ignored on that path -- harmless today because both are
+`None`, but it means a future grant that needed either would be silently
+dropped on the Codex side.
+
+== 3.3 Test quality
+
+What is sound, and worth saying plainly: *no test is skipped and no skip
+marker was introduced*. The `bwrap`-dependent files fail loudly on a host
+without working user namespaces, which is the right direction and what the
+Developer Guide says. The existing primitive-level suite was not weakened: the
+`/repo`-to-path-identity migration kept every negative case and added the
+retired `/repo` destination as a new refusal case. The relocation-driven edits
+in `tests/unit/test_slice4.py` are pure path moves. The serialization tests
+include a byte-identity replay of a pre-change `run.json`, which is the
+strongest form of the "historical records still replay" claim.
+
+Three real weaknesses:
+
+. *F4*, the two tautological assertions. `test_sandbox_root_remount_ro_does_not_disturb_writable_grants`
+  ends with `assert b'no_host_backing=0' in result.stdout or b'no_host_backing=1'
+  in result.stdout`, and the script prints exactly one of those two strings;
+  the rewritten nested-`bwrap` case ends its failure branch with `assert
+  result.returncode != 0` inside `else` of `if result.returncode == 0`. Both
+  are described in their own docstrings as "measuring rather than assuming",
+  and neither records the measurement anywhere a reader can retrieve.
+. *F9*, N11's configuration does not match production.
+. *N8* is weaker than its name: both of its probes sit inside `if`
+  conditions that are also false when the probed binary is absent or the
+  nested namespace is unavailable for unrelated reasons.
+
+One existing test did change meaning:
+`tests/integration/test_nested_claude_bwrap_qualification.py`. Its exact
+`returncode == 1` and exact-stderr assertions were replaced by "stderr is not
+the old diagnostic and contains no `overflowuid`", and its
+`assert not nested-marker.exists()` by a two-branch conditional whose failure
+branch asserts nothing. The behaviour genuinely changed -- Slice A supplies
+`/proc`, which is the whole point -- so the old assertions could not stand,
+and the fixture's `--chdir /repo` had to move. The rename and the long
+docstring are honest about all of that. But the replacement is materially
+weaker than it needed to be: the test would now pass for almost any nonzero
+exit with almost any stderr. I would not call this "weakening a test to make
+a change pass" in the stop-rule sense; I would call it an incomplete
+replacement, and it is the same pattern as F4.
+
+Contract claims with no test at all, as far as I could find: the
+gitdir/common-dir non-containment assertion (because it is not implemented as
+an assertion); preflight check 8 (because it is not implemented); the
+external-scratch half of preflight check 4 (because it is unreachable); the
+cross-Hop behaviour of the channel and the marker (F2); and the
+adapter-specific authentication requirement of check 6 (F6).
+
+== 3.4 Honesty of claims
+
+This is the strongest part of the candidate. Every reconciled document states
+that no preventive-isolation claim is made and that Layer 2 has not been
+performed, and `docs/architecture.md:82` retains the sentence the contract
+required be retained verbatim. See <<claims>> for the per-claim audit. The
+Layer 1 versus Layer 2 distinction is kept consistently: the integration
+suite's own module docstring calls itself Layer 1, the quickstart and the Beta
+limitations list say the live layer is not in the package's test suite, and
+nothing in `src` describes a fake-provider result as a qualification.
+
+Three overclaims, all small and all in test or docstring prose rather than in
+product documentation:
+
+. `test_readable_host_path_cannot_substitute_an_arbitrary_host_path` claims a
+  property the body does not establish and the code does not have (F3).
+. The two "measures rather than assumes" docstrings describe a measurement
+  that is not recorded (F4).
+. The contract's own sentence "A Run whose projection carries no `boundary`
+  field is, unambiguously, a Run from before this slice" is no longer true of
+  the implementation, which projects `null` for a post-slice `direct` Run
+  (F10).
+
+I found no claim of scope *enforcement* beyond prevention-for-the-filesystem,
+no claim that the boundary replaces the post-Hop check, and no claim about
+hostile code, the network or confidentiality.
+
+== 3.5 Engineering quality
+
+Sound: the module is small, pure and exhaustively unit-testable as the
+contract intended; both adapters keep their own process handling; the single
+derivation function means the two construction sites cannot drift; the
+`finally` bracket is correct about not suppressing an in-flight exception;
+`_check_writable_aliases` and `_real_path` fail closed on `OSError` and on any
+non-canonical input; `build_argv` revalidates so a hand-built
+`ValidatedBoundary` cannot bypass validation; the archive extension is a
+separate named allowlist rather than a widened one.
+
+Items a maintainer may regret, beyond the findings: the unused `binding`
+parameter and the unreachable scratch check in `_preflight_boundary` (F6); the
+Codex adapter ignoring two of the three values the seam returns; the
+`writable_host_paths` field that exists only to be refused (defensible, since
+the contract names it, but it is a field no code path can ever populate); and
+the preflight namespace probe not resembling the view it is meant to
+pre-qualify. Duplicated logic between the adapters is minimal and of the
+unavoidable kind -- the four-line marker check is textually identical in both,
+which is where F1's fix should be factored. Concurrency: the boundary adds no
+shared mutable state beyond the per-checkout channel directory, which is
+exactly F2's problem; two Runs against the same checkout would already be
+refused by the checkout association.
+
+== 3.6 The Sonnet-only chain: recurring classes
+
+I can name five classes, each with instances. They are classes of *local
+correctness without re-reading the adjacent argument*, not carelessness: every
+instance is individually plausible and individually documented.
+
+[cols="1,3,4",options="header"]
+|===
+|Class |Description |Instances
+
+|C1
+|A new trusted signal placed in the one location the contract had just
+finished arguing must not be agent-writable. The local reasoning ("the
+channel is where host-visible per-invocation files go") is right; the adjacent
+threat argument three paragraphs earlier in the same contract section was not
+re-applied to the new artifact.
+|F1, F2, and F15's archive consequence.
+
+|C2
+|"Measure rather than assume" implemented as an assertion that cannot fail,
+with the measured value discarded. The docstring states the correct intent;
+the assertion encodes none of it.
+|F4, twice. Also the harmless-but-pointless `blocked` flag in P3, computed and
+never asserted.
+
+|C3
+|A name or docstring that states the property the code or test does not have.
+|F3's test name; F9's docstring; F10 against the contract sentence.
+
+|C4
+|A check written for an input that is never supplied, or a parameter accepted
+and ignored, so the check reads as present and is unreachable.
+|F6, both halves.
+
+|C5
+|Partial application of a newly added guard: the new mount kinds got the new
+generated-system-view check, the pre-existing repository path did not; the new
+scope normalizer refuses three malformations and not the fourth.
+|F8, F12, and F11's missing `realpath`.
+|===
+
+What I did *not* find, having looked for it: copy-paste drift between the two
+adapters (the two boundary code paths are near-identical and correct on both
+sides, including the direct-path byte-identity); optimistic error handling that
+swallows a failure (every handler I traced fails closed, and F7 is a naming
+loss, not a swallowed failure); or any document that claims more than the code
+establishes.
+
+[[matrix]]
+== 4. Test-coverage matrix
+
+Verdicts: *sound* = asserts the contract property at the level the contract
+asks for; *weak* = asserts a narrower property or at a lower level; *absent* =
+no test found; *tautological* = the assertion cannot fail.
+
+[cols="2,1,3,1,3",options="header"]
+|===
+|Contract requirement |Case |Test |Verdict |Note
+
+|Worker writes inside scope, candidate accepted
+|P1
+|`integration/test_execution_boundary_dispatch.py::test_p1_...`
+|sound
+|Real `run_real_one_hop`, fake provider committed in the synthetic repository.
+
+|Authorized target directory absent at launch
+|P2
+|`...::test_p2_...`
+|weak
+|Performs the pre-create bracket by hand rather than through `operator.py`, so
+the bracket itself is untested at the dispatch level.
+
+|Reviewer writes its artifact, nothing outside its directory
+|P3
+|`...::test_p3_...`
+|sound
+|Correctly phrased as directory-level, not artifact-level; host-side
+non-effect asserted.
+
+|Channel both directions including rename
+|P4
+|`...::test_p4_...` and `bwrap.py::test_provider_channel_both_directions`
+|sound
+|Rename-over-target exercised.
+
+|Linked worktree dispatches
+|P5
+|`...::test_p5_...`
+|sound
+|
+
+|Direct path byte-identical
+|P6
+|`unit/test_execution_launcher.py::test_prepare_direct_*`,
+`unit/test_claude_adapter_conformance.py::test_explicit_direct_mode_grant_is_byte_identical_to_no_grant_at_all`
+|weak
+|Seam-level identity is exact; the adapter-level case compares settings and
+the absence of `/tmp/s` only, and only for Claude. `argv`/`cwd`/`env`
+identity rests on the unchanged conformance suites.
+
+|N1 write outside the grant
+|N1
+|`dispatch.py::test_n1_...`
+|sound
+|Attempt failure and host identity both asserted.
+
+|N2 write inside `.git`
+|N2
+|`bwrap.py::test_real_filesystem_boundary`
+|weak
+|Primitive level, not dispatch level; covers a new and an existing file.
+Hooks and the index are covered only by the whole-`.git` masking.
+
+|N3 read `.git`, refs, index, objects, both shapes
+|N3
+|`bwrap.py::test_real_filesystem_boundary`,
+`::test_git_file_shaped_worktree_is_masked_as_empty_unwritable_regular_file`
+|weak
+|Primitive level; both `.git` shapes covered; `git rev-parse` inside the view
+asserted to fail.
+
+|N4 gitdir and common dir by absolute path from a linked worktree
+|N4
+|`bwrap.py::test_linked_worktree_gitdir_and_common_dir_are_unreachable`
+|weak
+|Primitive level; host-side object asserted unchanged.
+
+|N5 symlink escape from a writable grant
+|N5
+|`bwrap.py::test_real_filesystem_boundary`,
+`::test_external_scratch_internal_symlink_escape_is_contained`
+|weak
+|Primitive level.
+
+|N6 `..` escape from a writable destination
+|N6
+|`bwrap.py::test_real_filesystem_boundary`
+|weak
+|Primitive level.
+
+|N7 hardlink alias before launch and from inside
+|N7
+|`dispatch.py::test_n7_...`, `bwrap.py::test_writable_hardlink_alias_*`,
+`::test_sandbox_cannot_create_alias_to_protected_file`
+|sound
+|The dispatch-level half asserts a not-started refusal and that the provider
+never started.
+
+|N8 new mount or user namespace from inside
+|N8
+|`bwrap.py::test_sandbox_cannot_create_a_new_mount_or_user_namespace`
+|weak
+|Both probes pass vacuously if the probed binary is absent; no `unshare -m`
+plus remount-read-write attempt.
+
+|N9 file creation, authorized and unauthorized parent
+|N9
+|`dispatch.py::test_n9_...`
+|sound
+|Both directions and host-side absence asserted.
+
+|N10 `$HOME`, other checkout, Run state, Evidence repository
+|N10
+|`dispatch.py::test_n10_...`
+|weak
+|Covers one other-checkout `run.json`; `$HOME` beyond the materialised chain
+and the Evidence repository are not probed.
+
+|N11 Run-state names absent from the writable channel, host identity
+|N11
+|`dispatch.py::test_n11_...`
+|weak
+|F9: the channel is not nested in the Run state directory, so the real
+adjacency is never attempted. The Claude read-only companion exists only at
+the primitive level.
+
+|N12 `/tmp` cap, scratch, host `/tmp` unaffected
+|N12a
+|`bwrap.py::test_tmp_size_cap_is_enforced_and_host_tmp_is_unaffected`
+|weak
+|Primitive level, but the property is exactly asserted.
+
+|N12 sandbox-root measurement recorded either way
+|N12b
+|`bwrap.py::test_sandbox_root_remount_ro_does_not_disturb_writable_grants`
+|tautological
+|F4. The writable-grant and scratch halves of the same test *are* sound.
+
+|N13 no surviving descendant after the kill sequence; argv flags
+|N13
+|`dispatch.py::test_n13_...`, `bwrap.py::test_pid_namespace_is_unshared`,
+`unit/test_execution_boundary_config.py::test_proc_and_pid_namespace_flags_present_without_as_pid_1`
+|sound
+|Double-fork plus `setsid` descendant, heartbeat-based liveness, flags
+asserted.
+
+|N14 selected but unestablishable: named refusal, nothing started
+|N14
+|`unit/test_execution_boundary_dispatch_preflight.py` (two cases)
+|sound
+|Drives the real `run_serial_hops` production path; asserts no dispatch
+marker and an unchanged worktree.
+
+|N15 unnormalizable scope refused before dispatch
+|N15
+|`unit/test_execution_launcher.py::test_normalized_writable_scope_refuses_*`
+|weak
+|Function level only; at the dispatch level the refusal is an unnamed
+`BoundaryConfigurationError` (F7).
+
+|N16 arbitrary host path through each designated parameter
+|N16
+|`unit/test_execution_boundary_config.py` (channel, auth, scratch cases) and
+`::test_undesignated_mount_with_outside_repository_source_is_refused`
+|weak
+|The undesignated-`Mount` companion is sound. For the three designated
+parameters only nonexistent, relative, non-directory, run-state-shaped and
+system-view-overlapping paths are refused; an arbitrary *existing* host path
+is accepted by design (F3).
+
+|Resume mode mismatch refuses by name
+|--
+|`unit/test_execution_boundary_dispatch_preflight.py::test_resumed_hop_...`
+|sound
+|Both directions.
+
+|Optional closed `boundary` key, historical replay
+|--
+|`unit/test_serialization.py` (three cases), `unit/test_consumer_compiler.py`
+|sound
+|Includes a byte-identical replay of a pre-change `run.json`.
+
+|Archive reaches both file shapes
+|--
+|`unit/test_archive_provider_channel.py`
+|sound
+|Depth-one patterns and the channel subdirectory both asserted.
+
+|Audit projects the boundary field
+|--
+|`unit/test_audit_projection.py::test_hop_boundary_field_projects_the_run_wide_value`
+|weak
+|Asserts the implemented Run-wide source, which is not the source (d)
+designates (F10).
+
+|Preflight check 8
+|--
+|none
+|absent
+|Not implemented (F6).
+
+|Gitdir/common-dir non-containment assertion
+|--
+|none
+|absent
+|Not implemented as an assertion; property holds structurally.
+
+|Channel and marker across Hops
+|--
+|none
+|absent
+|F2.
+|===
+
+[[claims]]
+== 5. Claims audit
+
+[cols="3,2,3",options="header"]
+|===
+|Claim |Standing |Assessment
+
+|`docs/architecture.md:88-106`: an opt-in boundary is wired into both
+adapters, defaults to off, is *designed* so writes outside the grant and
+`.git` access are refused at the OS level, and "no preventive-isolation claim
+is made for any invocation yet"
+|normative overview
+|*Accurate.* The hedge is in the right place and the retained sentence at
+`:82` is intact.
+
+|`docs/technical_model/.../04_persistence_adapters.adoc`: same shape, "would
+be prevented", Layer 2 not performed
+|explanatory
+|*Accurate.*
+
+|`docs/functional_model/.../02_vision_and_goals.adoc`: the post-Hop Git
+observation "remains the authoritative enforcement ... which the boundary's
+own prevention does not replace"
+|explanatory
+|*Accurate*, and the code agrees: `allowed_paths=phase.authorized_scope` is
+untouched in all four call sites.
+
+|`docs/operator_manual/ch01_orientation/02_boundaries.adoc`: 256 MiB `/tmp`
+cap, named preflight refusals, `WFC_BOUNDARY_AUTHENTICATION_PATH` required
+|operational
+|*Accurate but incomplete.* It states that the variable is required and does
+not state what may be put in it; F3.
+
+|`docs/operator_manual/ch09_consumer_quickstart`: `bwrap` not required while
+the boundary stays off; limitations entry
+|operational
+|*Accurate.*
+
+|`docs/developer_guide/ch01_development.adoc:66-70`: the list of
+`bwrap`-dependent tests
+|operational
+|*Incomplete*: omits `tests/unit/test_execution_launcher.py` (F14). The
+pre-existing phrase "resolve and invoke a real `bwrap`" is still imprecise for
+the unit file, which resolves but does not invoke.
+
+|`FTR-...-DISPATCH-INTEGRATION.adoc:19`: Layer 1 is part of the suite; Layer 2
+not performed; boundary opt-in and not enabled here; no document may claim
+preventive isolation
+|binding contract, self-updated by the implementation Run
+|*Accurate as to Layer 2 and enablement.* "Layer 1 ... is part of the suite"
+is true, but exit criterion 1 is not met, because the N12 sandbox-root
+measurement is not recorded (F4). The status line should say so.
+
+|Broad review: "No existing test is weakened, skipped, or deleted"
+|review artifact
+|*Defensible but too strong.* The nested-`bwrap` case kept its name's intent
+and lost most of its assertive power; its failure branch asserts nothing.
+
+|Broad review: N11's guarantee "confirmed"
+|review artifact
+|*Overstated.* The test's channel is not where production puts it, so the
+adjacency that matters was never attempted (F9).
+
+|Broad review: `bwrap` setup failure versus started-then-failed is classified
+"by `bwrap`'s own exit path ... never by guessing from stderr text"
+|review artifact
+|*Incorrect as stated.* It is classified by the presence of a file the
+confined process can delete, and that file goes stale across Hops (F1, F2).
+The review verified the mechanism's shape and not its trust properties.
+
+|Code comment `codex_adapter.py:470-471` and `claude_adapter.py:379-380`:
+"bwrap itself exited before the provider ever ran (its own exit path, not a
+guess from stderr text)"
+|source comment
+|*Overclaims.* The signal is not `bwrap`'s exit path; it is an agent-writable
+file.
+
+|`execution_launcher.py:33-36`: `writable_host_paths` "must stay empty here"
+|docstring
+|*Accurate*, and enforced.
+
+|`execution_launcher.py:78-92`: a scope list "cannot fail to normalize to a
+disjoint set because of containment"
+|docstring
+|*Accurate* for canonical entries; the docstring's own precondition is what
+F12 does not fully enforce.
+|===
+
+[[rework]]
+== 6. Proposed rework Commission scope
+
+One Commission, `robust@v1`, Hop upper limit *6* (one worker Hop, one broad
+review, up to two correct/focused cycles). Evidence `task-check` only. The
+work is mechanical once the decisions below are taken; none of it changes the
+accepted architecture.
+
+Scope, exactly:
+
+* `src/workflow_coordinator/execution_launcher.py` -- marker location and the
+  scope-entry file-shape refusal (F1, F5, F12).
+* `src/workflow_coordinator/operator.py` -- per-invocation channel, preflight
+  check 8, `realpath` in check 5, the dead scratch check and the unused
+  `binding` parameter, wrapping `derive_boundary_grant` (F2, F5, F6, F7, F11).
+* `src/workflow_coordinator/slice4.py` -- per-invocation channel (F2).
+* `src/workflow_coordinator/execution_boundary.py` -- repository against the
+  generated system view; the authentication-path narrowing guard;
+  `BoundaryConfigurationError` joining the not-started hierarchy (F3, F7, F8).
+* `src/workflow_coordinator/claude_adapter.py`, `codex_adapter.py` -- the
+  shared marker check, named boundary errors, `== BUBBLEWRAP` instead of
+  `!= "direct"` (F1, F7).
+* `src/workflow_coordinator/frontdoor/archive.py` -- channel glob depth if the
+  channel becomes per-invocation (F2).
+* `tests/integration/test_execution_boundary_bwrap.py`,
+  `tests/integration/test_execution_boundary_dispatch.py`,
+  `tests/integration/test_nested_claude_bwrap_qualification.py`,
+  `tests/unit/test_execution_launcher.py`,
+  `tests/unit/test_execution_boundary_config.py`,
+  `tests/unit/test_execution_boundary_dispatch_preflight.py`.
+* `docs/operator_manual/ch01_orientation/02_boundaries.adoc`,
+  `docs/developer_guide/ch01_development.adoc`, and the contract's own status
+  line.
+
+Two decisions the Commission may not take for itself:
+
+. *F3's narrowing rule.* What exactly may be named as the provider
+  authentication location, and what the implementation should refuse. This is
+  the maintainer's M7 decision territory, not an implementation judgement.
+. *F5's resolution.* Whether a worker-phase scope entry naming a
+  not-yet-existing file should be a named preflight refusal (fail closed, the
+  Commission cannot run under the boundary until its scope or artifact
+  declaration is adjusted) or should resolve to the nearest existing ancestor
+  directory with a stated overgrant. The contract supports either reading.
+
+What can be left as is, with a recorded note rather than a change: F10 (the
+audit source; not reachable from `main`), F13 (Codex `TMPDIR`, a Layer-2
+observation), F15 (follows from F2), the absent gitdir assertion (the
+structural property is stronger), the primitive-level placement of N2 to N6
+and N12a (the properties are genuinely asserted, just not through the
+dispatch path), and `writable_host_paths` as a refused reserved field.
+
+[[probes]]
+== 7. Probes for the Level-1 operator, with real `bwrap`
+
+Each probe is small, offline, needs no provider credentials, and answers a
+question this Hop could not.
+
+[cols="1,4,4",options="header"]
+|===
+|Id |Probe |What it would show
+
+|P1
+|Run `tests/integration/test_execution_boundary_bwrap.py::test_sandbox_root_remount_ro_does_not_disturb_writable_grants`
+with `-s` and read the `no_host_backing=` line, then repeat with
+`--remount-ro /` removed from `build_argv`.
+|The N12 sandbox-root measurement exit criterion 1 requires. Specifically:
+whether `--remount-ro /` is non-recursive on this kernel, whether it closes
+bwrap's base tmpfs, and whether the writable grants, the private `/tmp` and
+`/tmp/s` survive it. This is the one measurement that is currently recorded
+nowhere.
+
+|P2
+|Build a synthetic repository under `/tmp` (not under a redirected `TMPDIR`),
+validate it, and run `ls -a` plus `cat` of a committed file inside the view.
+|Whether F8's shadowing really happens: if the repository appears empty, the
+missing generated-system-view check on the repository destination is a real
+availability defect, and the Layer-1 integration suite is `TMPDIR`-dependent.
+
+|P3
+|Run the whole `tests/integration/` and `tests/unit/` suite once with
+`TMPDIR` unset, and once with `TMPDIR` pointing outside `/tmp`.
+|Whether Layer 1 passes only under WFC's own redirected `TMPDIR`. Pairs with
+P2.
+
+|P4
+|Inside the view, attempt `unshare -m` followed by `mount -o remount,rw
+<repository>`, and separately `unshare -Urm` followed by the same remount and
+by a bind of a host path.
+|The property N8 names but does not reach: whether the read-only repository
+bind can be remounted read-write from a nested namespace. I expect it cannot,
+because bwrap's mounts are locked against a child user namespace, but that is
+SUSPECTED here.
+
+|P5
+|Drive two consecutive boundary-selected Codex Hops of one Run, breaking
+`bwrap` for the second (for example by making `/etc/passwd` unreadable, or by
+setting `/proc/sys/user/max_user_namespaces` to 0 between Hops).
+|F2 end to end in the real dispatch frame: whether the second Hop is reported
+as a named not-started refusal or as an uncertain dispatch.
+
+|P6
+|With a fake provider that deletes `<channel>/.wfc-boundary-started` and exits
+non-zero, run one boundary-selected Hop through `operator.run_serial_hops`.
+|F1 end to end: whether the Run reports "boundary failed before the provider
+started", whether `dispatch.json` is removed, and what the worktree looks like
+afterward.
+
+|P7
+|Set `WFC_BOUNDARY_AUTHENTICATION_PATH` to `$HOME` on a host whose repository
+is *not* under `$HOME`, select the boundary, and `ls -R $HOME` inside the
+view.
+|F3's blast radius in practice: how much of the operator's home directory
+becomes readable to the agent through a single mistyped variable.
+
+|P8
+|Select the boundary with a Commission whose `authorized_scope` names one
+not-yet-existing `.adoc` file that is not a declared durable artifact.
+|F5 end to end: whether a directory is created at the file's path, what the
+agent reports, and whether the directory survives the cleanup bracket.
+
+|P9
+|Run the `bwrap --unshare-user --dev /dev -- /bin/true` preflight probe and
+then the real generated argv with `-- /bin/true` on the same host.
+|Whether preflight check 2 can pass where the real view fails, which is the
+gap its narrower flag set leaves.
+|===
+
+[[could-not-check]]
+== 8. What I could not check
+
+* *Anything requiring a real `bwrap` run.* This Hop's sandbox has no
+  unprivileged user namespaces, and invoking `bwrap` was refused by the
+  sandbox's own permission layer. Every in-view behavioural property --
+  `--remount-ro /`, the `.git` masking as an actually empty unwritable file,
+  the `/tmp` size cap, `/tmp/s` coexistence, the PID-namespace reaping, N8 --
+  is therefore assessed from the generated argv and from the tests' own text,
+  never from observed in-view behaviour. Probes P1 to P9 close this.
+* *The test suite itself.* `pytest` and `jsonschema` are not installed here
+  and there is no network, so I ran no test. The focused review records
+  running 146 unit tests with a leftover virtualenv, and the Commission's
+  status line records that the Coordinator's task-check passed; I could
+  neither reproduce nor contradict either. In particular I cannot confirm that
+  the task-check environment had working user namespaces, which is what makes
+  the Layer-1 integration cases meaningful rather than failing.
+* *Layer 2.* Not attempted and not attemptable here: no credentials, no
+  network, and no live provider invocation is authorized for this Hop. Every
+  live question -- whether either CLI starts inside the view, whether the
+  nested Claude sandbox and its `AF_UNIX` bridge work, which `/etc` entries
+  and which authentication path are actually necessary, whether Codex's
+  `--output-last-message` write strategy works through the channel, whether
+  the channel directory needs to be in Claude's own `allowRead` for it to read
+  its settings file -- remains open exactly as the contract says.
+* *Whether the five enumerated `/etc` entries are the necessary set.* That is
+  an L6 output. The implementation binds all five when present, which is the
+  contract's stated assumption, not an observation.
+* *The real `claude`/`codex` install layout on the qualification host,* and
+  therefore whether preflight check 5 refuses or admits it today.
+* *Byte-identity of the direct path by execution.* Traced in full for both
+  adapters and covered by the unchanged conformance suites, but not run here;
+  the Claude adapter cannot even reach its launch path in this sandbox,
+  because creating the short `/tmp` symlink fails on a read-only `/tmp`.
