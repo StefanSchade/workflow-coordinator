@@ -5,7 +5,7 @@ committed inside the synthetic repository each test builds, dispatched
 through the real ``vertical.run_one_hop`` path (via
 ``slice4.run_real_one_hop``) with a real ``bwrap``. Every case constructs its
 own ``BoundaryGrant`` directly (mirroring what ``operator.py``'s dispatch
-frame derives and pre-creates) and injects a pre-built adapter, so the
+frame derives) and injects a pre-built adapter, so the
 dispatch-level positive and negative cases are exercised without depending on
 the full CLI/preflight plumbing covered separately in
 ``tests/unit/test_execution_boundary_dispatch_preflight.py``.

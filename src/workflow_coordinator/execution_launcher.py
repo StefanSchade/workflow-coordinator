@@ -330,11 +330,11 @@ def provider_started(signal: StartedSignal) -> bool:
 def validate_grant(grant: BoundaryGrant) -> execution_boundary.ValidatedBoundary:
     """Validate a bubblewrap grant's mount set, without building argv.
 
-    Shared by the Coordinator's own preflight (run once the pre-create
-    bracket has materialised every missing writable target, and before any
-    provider dispatch) and by ``prepare_bubblewrap`` below, so the two
-    cannot drift. Raises ``BoundaryConfigurationError`` -- never called for
-    a direct-mode grant.
+    Shared by the Coordinator's own preflight (run after
+    ``derive_boundary_grant``, which already guarantees that every surviving
+    writable entry exists, and before any provider dispatch) and by
+    ``prepare_bubblewrap`` below, so the two cannot drift. Raises
+    ``BoundaryConfigurationError`` -- never called for a direct-mode grant.
     """
     if grant.writable_host_paths:
         raise BoundaryConfigurationError(
