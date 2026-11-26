@@ -1031,132 +1031,113 @@ def run_serial_hops(
             raise OperatorPreflightError(
                 f"no admitted persona for workflow role: {workflow_role.value}"
             ) from error
-        pending_creates: tuple[Path, ...] = ()
         phase_artifacts = (
             durable_artifacts
             if run.hop_used == 0 and durable_artifacts
             else artifact_map.get(run.phase, ())
         )
-        try:
-            if adapter is None:
-                if execution_configuration is None:
-                    raise OperatorPreflightError(
-                        "production execution requires explicit resolved bindings"
-                    )
+        if adapter is None:
+            if execution_configuration is None:
+                raise OperatorPreflightError(
+                    "production execution requires explicit resolved bindings"
+                )
+            try:
+                resolved_binding = execution_configuration.binding_for(phase_key, workflow_role)
+            except KeyError as error:
+                raise OperatorPreflightError(
+                    f"no admitted execution binding for phase {phase_key} ({workflow_role.value})"
+                ) from error
+            run_root = checkout_state_root(state_root, association)
+            # Per-invocation, never per-checkout (F2): identity and
+            # lifetime match this one invocation, so a Hop-N marker (or
+            # any Hop-N state) can never be read back by Hop N+1. Grant
+            # derivation (which can refuse the scope by name, F5) runs
+            # first, against this path value alone, so a refusal here
+            # never leaves a created directory on the host; only once it
+            # has succeeded is the directory actually created, refusing
+            # rather than reusing a leftover -- it must not pre-exist.
+            # Not removed when the Hop ends: `wfc archive` still needs to
+            # read it, possibly long after this process has exited, so
+            # its only lifecycle end is the checkout's own (unmanaged
+            # here).
+            channel_dir = run_root / "provider-channel" / invocation_id
+            try:
+                grant = execution_launcher.derive_boundary_grant(
+                    mode=execution_configuration.boundary,
+                    repository=repository,
+                    authorized_scope=profile.phases[phase_key].authorized_scope,
+                    artifact_paths=phase_artifacts,
+                    provider_channel=channel_dir,
+                    provider_channel_writable=(resolved_binding.adapter == "codex_cli"),
+                    authentication_path=_boundary_authentication_path(),
+                )
+            except execution_boundary.BoundaryConfigurationError as error:
+                raise OperatorPreflightError(
+                    f"execution boundary selected but the writable scope could not be "
+                    f"established: {error}"
+                ) from error
+            try:
+                channel_dir.mkdir(parents=True)
+            except FileExistsError as error:
+                raise OperatorPreflightError(
+                    f"provider channel directory already exists for invocation {invocation_id}: "
+                    f"{channel_dir}"
+                ) from error
+            _preflight_boundary(grant, resolved_binding, executable)
+            if grant.mode != "direct":
+                # Checks 4, 7 and 8 of (e): the normalized grant set, the
+                # channel/scratch disjointness and run-state exclusion, and
+                # the hardlink-alias walk. Runs after grant derivation,
+                # which already guarantees every writable entry exists
+                # (F5), and must still run before any provider dispatch.
                 try:
-                    resolved_binding = execution_configuration.binding_for(phase_key, workflow_role)
-                except KeyError as error:
-                    raise OperatorPreflightError(
-                        f"no admitted execution binding for phase {phase_key} ({workflow_role.value})"
-                    ) from error
-                run_root = checkout_state_root(state_root, association)
-                # Per-invocation, never per-checkout (F2): identity and
-                # lifetime match this one invocation, so a Hop-N marker (or
-                # any Hop-N state) can never be read back by Hop N+1. Grant
-                # derivation (which can refuse the scope by name, F5) runs
-                # first, against this path value alone, so a refusal here
-                # never leaves a created directory on the host; only once it
-                # has succeeded is the directory actually created, refusing
-                # rather than reusing a leftover -- it must not pre-exist.
-                # Not removed when the Hop ends: `wfc archive` still needs to
-                # read it, possibly long after this process has exited, so
-                # its only lifecycle end is the checkout's own (unmanaged
-                # here).
-                channel_dir = run_root / "provider-channel" / invocation_id
-                try:
-                    grant = execution_launcher.derive_boundary_grant(
-                        mode=execution_configuration.boundary,
-                        repository=repository,
-                        authorized_scope=profile.phases[phase_key].authorized_scope,
-                        artifact_paths=phase_artifacts,
-                        provider_channel=channel_dir,
-                        provider_channel_writable=(resolved_binding.adapter == "codex_cli"),
-                        authentication_path=_boundary_authentication_path(),
-                    )
+                    execution_launcher.validate_grant(grant)
                 except execution_boundary.BoundaryConfigurationError as error:
                     raise OperatorPreflightError(
-                        f"execution boundary selected but the writable scope could not be "
-                        f"established: {error}"
+                        f"execution boundary selected but the generated view failed validation: {error}"
                     ) from error
-                try:
-                    channel_dir.mkdir(parents=True)
-                except FileExistsError as error:
-                    raise OperatorPreflightError(
-                        f"provider channel directory already exists for invocation {invocation_id}: "
-                        f"{channel_dir}"
-                    ) from error
-                _preflight_boundary(grant, resolved_binding, executable)
-                pending_creates = execution_launcher.missing_writable_targets(grant)
-                for target in pending_creates:
-                    target.mkdir(parents=True, mode=0o700)
-                if grant.mode != "direct":
-                    # Checks 4, 7 and 8 of (e): the normalized grant set, the
-                    # channel/scratch disjointness and run-state exclusion, and
-                    # the hardlink-alias walk. Deferred to here, after
-                    # pre-creation, because a not-yet-existing authorized
-                    # directory is a valid target only once materialised; this
-                    # must still run before any provider dispatch.
-                    try:
-                        execution_launcher.validate_grant(grant)
-                    except execution_boundary.BoundaryConfigurationError as error:
-                        raise OperatorPreflightError(
-                            f"execution boundary selected but the generated view failed validation: {error}"
-                        ) from error
-                execution_adapter = _execution_adapter(
-                    resolved_binding, result_directory=channel_dir, executable=executable, boundary=grant,
-                )
-                binding = _binding_evidence(resolved_binding, executable=executable, boundary=grant.mode)
-            else:
-                execution_adapter = adapter
-                binding = {
-                    "adapter": "local",
-                    "executable": executable,
-                    "model": None,
-                    "reasoning": None,
-                    "boundary": "direct",
-                }
-            current_qualification_index = qualification_index(run)
-            reconstructed = _reconstructed_context(
-                run, profile, repository, phase_artifacts, prior_observations
+            execution_adapter = _execution_adapter(
+                resolved_binding, result_directory=channel_dir, executable=executable, boundary=grant,
             )
-            convergence_context = convergence_prompt_context(
-                run, profile, current_qualification_index
-            )
-            projected_context = (
-                reconstructed
-                if convergence_context is None
-                else (*reconstructed, convergence_context)
-            )
-            hop_run = run_real_one_hop(
-                run, profile, repository, components,
-                agent_operating_contract=agent_operating_contract,
-                state_root=state_root, association=association,
-                task_payload=task_payload, invocation_id=invocation_id, persona=persona,
-                timeout_seconds=timeout_seconds, executable=executable,
-                adapter=execution_adapter,
-                durable_artifacts=phase_artifacts,
-                context_items=(
-                    (*initial_context_items, *projected_context)
-                    if run.hop_used == 0
-                    else projected_context
-                ),
-                evidence_runner=evidence_runner,
-                evidence_commands=evidence_commands or {},
-                execution_binding=binding,
-            )
-        finally:
-            # The agent never creates and never removes a grant path; this
-            # bracket is the Coordinator dispatch frame's alone, and a
-            # removal failure must never suppress an exception already in
-            # flight (<<a-lifecycle>>). Git does not track empty
-            # directories, so a still-empty one is invisible to the post-Hop
-            # delta either way.
-            for target in pending_creates:
-                try:
-                    if target.is_dir() and not any(target.iterdir()):
-                        target.rmdir()
-                except OSError:
-                    pass
+            binding = _binding_evidence(resolved_binding, executable=executable, boundary=grant.mode)
+        else:
+            execution_adapter = adapter
+            binding = {
+                "adapter": "local",
+                "executable": executable,
+                "model": None,
+                "reasoning": None,
+                "boundary": "direct",
+            }
+        current_qualification_index = qualification_index(run)
+        reconstructed = _reconstructed_context(
+            run, profile, repository, phase_artifacts, prior_observations
+        )
+        convergence_context = convergence_prompt_context(
+            run, profile, current_qualification_index
+        )
+        projected_context = (
+            reconstructed
+            if convergence_context is None
+            else (*reconstructed, convergence_context)
+        )
+        hop_run = run_real_one_hop(
+            run, profile, repository, components,
+            agent_operating_contract=agent_operating_contract,
+            state_root=state_root, association=association,
+            task_payload=task_payload, invocation_id=invocation_id, persona=persona,
+            timeout_seconds=timeout_seconds, executable=executable,
+            adapter=execution_adapter,
+            durable_artifacts=phase_artifacts,
+            context_items=(
+                (*initial_context_items, *projected_context)
+                if run.hop_used == 0
+                else projected_context
+            ),
+            evidence_runner=evidence_runner,
+            evidence_commands=evidence_commands or {},
+            execution_binding=binding,
+        )
         run = hop_run.run
         diagnostics_artifact = None
         if hop_run.vertical is None and hop_run.outcome is not None:

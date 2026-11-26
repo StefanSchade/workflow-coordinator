@@ -6,7 +6,7 @@ import pytest
 from workflow_coordinator.execution_boundary import EXTERNAL_SCRATCH_DESTINATION, BoundaryConfigurationError
 from workflow_coordinator.execution_launcher import (
     AbsentWritableScopeEntryError, BoundaryGrant, LaunchPlan, StartedSignal, close_started_signal_write_end,
-    derive_boundary_grant, direct_grant, missing_writable_targets, normalized_writable_scope,
+    derive_boundary_grant, direct_grant, normalized_writable_scope,
     open_started_signal, prepare, prepare_bubblewrap, prepare_direct, provider_started,
 )
 
@@ -92,7 +92,6 @@ def test_derive_boundary_grant_resolves_a_not_yet_existing_artifact_to_its_exist
         artifact_paths=("docs/warm_storage/new_review.adoc",),
     )
     assert grant.writable_repository_paths == ("docs/warm_storage",)
-    assert missing_writable_targets(grant) == ()
 
 
 def test_derive_boundary_grant_refuses_an_absent_non_artifact_entry_even_with_an_existing_ancestor(
@@ -121,7 +120,6 @@ def test_derive_boundary_grant_grants_an_existing_entry_directly(tmp_path: Path)
     (tmp_path / "src").mkdir()
     grant = derive_boundary_grant(mode="bubblewrap", repository=tmp_path, authorized_scope=("src",))
     assert grant.writable_repository_paths == ("src",)
-    assert missing_writable_targets(grant) == ()
 
 
 def test_derive_boundary_grant_never_overgrants_to_the_repository_root(tmp_path: Path):
@@ -159,19 +157,6 @@ def test_derive_boundary_grant_bubblewrap_mode_normalizes_scope_and_auth(tmp_pat
     assert grant.provider_channel == channel
     assert grant.provider_channel_writable is True
     assert grant.readable_host_paths == (auth,)
-
-
-def test_missing_writable_targets_only_applies_to_bubblewrap_mode(tmp_path: Path):
-    grant = BoundaryGrant(mode="direct", repository=tmp_path, writable_repository_paths=("absent",))
-    assert missing_writable_targets(grant) == ()
-
-
-def test_missing_writable_targets_reports_only_absent_entries(tmp_path: Path):
-    (tmp_path / "existing").mkdir()
-    grant = BoundaryGrant(
-        mode="bubblewrap", repository=tmp_path, writable_repository_paths=("existing", "absent"),
-    )
-    assert missing_writable_targets(grant) == (tmp_path / "absent",)
 
 
 def test_prepare_bubblewrap_refuses_a_populated_writable_host_paths(tmp_path: Path):

@@ -181,10 +181,13 @@ def test_p2_worker_writes_into_a_not_yet_existing_authorized_directory(tmp_path)
     )})
     state = tmp_path / "state"
     association = register_checkout(state, repository)
-    # The Coordinator dispatch frame pre-creates an absent authorized
-    # directory target before validate() runs (<<a-lifecycle>>); this test
-    # performs that same bracket step directly, since it injects the
-    # adapter rather than going through operator.py.
+    # operator.py's real dispatch frame would refuse "new-dir" by name (F5,
+    # AbsentWritableScopeEntryError): derive_boundary_grant only resolves a
+    # not-yet-existing entry when it is a declared durable artifact. This
+    # test constructs the directory itself, before building the grant
+    # directly, to exercise the unrelated positive case -- an authorized
+    # directory that already exists when the Hop starts -- without going
+    # through operator.py's preflight.
     target = repository / "new-dir"
     target.mkdir(mode=0o700)
     grant = _codex_grant(repository, tmp_path, writable=("new-dir",))
@@ -721,6 +724,7 @@ def test_f1_a_boundary_that_fails_before_exec_is_still_classified_as_not_started
     like a mount-setup failure, and both must classify as not-started."""
     repository = tmp_path / "repo"
     _init_repo(repository)
+    (repository / "placeholder.txt").write_text("placeholder\n")
     _commit_all(repository, "test: baseline")
     grant = _codex_grant(repository, tmp_path, writable=())
     missing_executable = str(repository / "does-not-exist")
@@ -749,18 +753,17 @@ def test_f2_a_second_boundary_hop_is_refused_without_any_state_from_the_first_ho
     real dispatch path, the channel directory derived exactly as
     ``operator.py``'s dispatch frame derives it (per invocation, under the
     Run's own state root). The first Hop succeeds and leaves its own result
-    in its own channel directory. Between the Hops, something changes on
-    the host (here: a hardlink alias appears in the writable grant, exactly
-    the shape N7 already proves is refused) -- simulating what P5 asks for
-    without needing a live, breakable `bwrap` install. The second Hop must
-    be refused by name, as cleanly as a first Hop would be, and nothing
-    about Hop 1's channel, result or marker-shaped state may be visible to
-    or required by Hop 2's classification."""
+    in its own channel directory. The second Hop is given a genuine
+    ``bwrap``-setup failure (P5/P6): its provider executable does not
+    exist, so `bwrap` forks (writing `child-pid`) and then fails to exec
+    it, writing no `exit-code` document -- the real started-signal
+    classification, not the pre-launch ``validate()`` shortcut N7 already
+    covers. The second Hop must be classified not-started by that real
+    decision, and nothing about Hop 1's channel, result or state may be
+    visible to or required by it."""
     repository = tmp_path / "repo"
     _init_repo(repository)
     (repository / "writable").mkdir()
-    protected = repository / "protected.txt"
-    protected.write_text("protected\n")
     fake = _write_fake_provider(repository, f'''\
         import pathlib, sys
         sys.stdin.read()
@@ -804,29 +807,24 @@ def test_f2_a_second_boundary_hop_is_refused_without_any_state_from_the_first_ho
     hop1_channel_contents = sorted(p.name for p in grant1.provider_channel.iterdir())
     assert "result-message.json" in hop1_channel_contents
 
-    # Something changes on the host between the two Hops (never the agent's
-    # own doing -- the agent could not create this from inside the view,
-    # exactly as N7 proves): a hardlink alias appears in the writable grant.
-    (repository / "writable" / "alias").hardlink_to(protected)
-
+    # Hop 2 gets a genuine bwrap-setup failure, not a host-side mutation: its
+    # provider executable does not exist, so bwrap forks and then fails to
+    # exec it, exactly fact (c) of the maintainer's candidate description.
     grant2 = _grant_for("INV-2")
+    missing_executable = str(repository / "does-not-exist")
     adapter2 = CodexCliAdapter(grant2.provider_channel, model="m", reasoning_effort="high",
-                                executable=str(fake), boundary=grant2)
-    # The alias is refused by validate() itself, before any bwrap process is
-    # built (the same primitive N7 already proves) -- a pre-launch refusal,
-    # not the started-signal classification -- but it is still a clean
-    # not-started outcome, reached without any dependency on Hop 1's state.
-    with pytest.raises(Slice4Error, match="local pre-acceptance executable launch failure"):
+                                executable=missing_executable, boundary=grant2)
+    with pytest.raises(Slice4Error, match="execution boundary failed before the provider started"):
         run_real_one_hop(
             hop1.reduction.run, workflow, repository, _components(),
             agent_operating_contract=load_agent_operating_contract(),
             state_root=state, association=association,
             task_payload="fixture", invocation_id="INV-2", persona="fixture persona",
-            timeout_seconds=15, executable=str(fake), adapter=adapter2,
+            timeout_seconds=15, executable=missing_executable, adapter=adapter2,
         )
-    assert protected.read_text() == "protected\n"
     assert grant1.provider_channel != grant2.provider_channel
     # Hop 1's own channel and result are exactly as Hop 1 left them -- Hop
-    # 2's refusal reads nothing from it and writes nothing into it.
+    # 2's not-started classification reads nothing from it and writes
+    # nothing into it.
     assert sorted(p.name for p in grant1.provider_channel.iterdir()) == hop1_channel_contents
     assert not (run_root / "dispatch.json").exists()

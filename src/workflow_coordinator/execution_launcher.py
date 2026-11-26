@@ -218,24 +218,6 @@ def derive_boundary_grant(
     )
 
 
-def missing_writable_targets(grant: BoundaryGrant) -> tuple[Path, ...]:
-    """Authorized writable targets that do not yet exist.
-
-    Read-only: the Coordinator's per-Hop dispatch frame creates each one
-    (mode ``0o700``) before ``validate()`` runs, and removes it afterwards if
-    it is still empty (<<a-lifecycle>>). The agent and the adapter own
-    neither end of that bracket.
-    """
-    if grant.mode != BUBBLEWRAP:
-        return ()
-    missing = []
-    for relative in grant.writable_repository_paths:
-        target = grant.repository / relative
-        if not target.exists():
-            missing.append(target)
-    return tuple(missing)
-
-
 def prepare(plan: LaunchPlan) -> PreparedLaunch:
     """The single entry point both adapters call. Dispatches on
     ``plan.grant.mode`` alone; an unrecognised mode is a refusal, never a

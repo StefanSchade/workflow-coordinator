@@ -330,27 +330,26 @@ a check in each implementation rather than on who can be handed a grant at
 all.
 
 [[a-lifecycle]]
-=== Who owns the pre-create and post-Hop removal lifecycle
+=== Who owns deciding what the grant mounts
 
-The same Coordinator frame that computes the grant. Materialising an absent
-authorized directory target (<<mounts>>) and removing it afterwards are two
-ends of one bracket around the Hop, and the adapter can own neither end: its
-`execute()` returns before the Hop's post-Hop observation and candidate
-acceptance (`vertical.py:400-422`), so an adapter-side removal would run too
-early, and an adapter that creates and deletes host directories is no longer a
-transport.
-
-Concretely, in `operator.py`'s per-Hop loop body: compute the grant, create
-the absent directory targets, construct the adapter with the grant (`:978`),
-call `run_real_one_hop` (`:1007-1023`), and after it returns (`:1024`) --
-which is after the post-Hop observation inside it -- remove the directories it
-created that are still empty. The bracket must also run when the Hop raises,
-so it is a `finally`-shaped bracket and a removal failure must not displace an
-exception already in flight. The agent never creates and never removes a
-grant path, and nothing is created outside the repository. Ordering is stated
-for clarity rather than for safety: Git does not track empty directories, so
-a still-empty pre-created directory is invisible to the post-Hop delta either
-way.
+*Retired by the same 2026-11-26 F5 disposition that rewrote <<mounts>> rule
+4 above.* This section used to describe a pre-create/post-Hop-removal
+bracket around the Hop: the Coordinator's per-Hop loop body created each
+not-yet-existing authorized directory target before `validate()` ran, and
+removed it afterwards if it was still empty. `derive_boundary_grant`
+(`execution_launcher.py`) now guarantees that every entry of a derived
+grant's `writable_repository_paths` already exists on disk before the grant
+is ever returned: an existing entry resolves to itself, a declared durable
+artifact resolves to its nearest existing ancestor, and every other absent
+entry is refused outright (`AbsentWritableScopeEntryError`, <<mounts>> rule
+3). There is therefore nothing left for a dispatch-frame bracket to create
+or to remove, in `operator.py` or anywhere else: no directory is ever
+materialised that the Commission did not itself already create, and no
+removal step runs after the Hop. The agent never creates and never removes
+a grant path either, and nothing is ever created outside the repository.
+What the Coordinator's per-Hop loop body still owns is simply computing the
+grant (which can refuse the scope by name) before constructing the adapter
+and calling `run_real_one_hop`.
 
 === What flows through it
 
@@ -606,13 +605,16 @@ The rule is now fail-closed:
   link:FTR-WFC-EXECUTION-BOUNDARY-FILE-SCOPE-CREATION.adoc[the follow-up
   backlog record].
 . Resolution (where it succeeds) and refusal (where it does not) both happen
-  before validation, in the per-Hop dispatch frame that computes the grant
-  and brackets the Hop (<<a-lifecycle>>); nothing is ever created by the
-  agent or the adapter, and never outside the repository. A refusal here
-  leaves no stray directory behind: grant derivation runs before the
-  per-invocation provider channel directory (<<channel>>) is created, so a
-  Commission refused this way leaves nothing new anywhere on the host, not
-  only inside the repository.
+  in `derive_boundary_grant`, before validation, in the per-Hop dispatch
+  frame that computes the grant (<<a-lifecycle>>); nothing is ever created
+  by the Coordinator, the agent or the adapter, and never outside the
+  repository -- rule 2's ancestor-overgrant is the only path by which an
+  already-existing directory, never a newly created one, is ever mounted at
+  other than its own authorized path. A refusal here leaves no stray
+  directory behind: grant derivation runs before the per-invocation provider
+  channel directory (<<channel>>) is created, so a Commission refused this
+  way leaves nothing new anywhere on the host, not only inside the
+  repository.
 
 === Symlinks, hardlinks and mount overlaps
 
@@ -799,9 +801,9 @@ below, a Hop N *classification input* -- survive into Hop N+1. The directory
 must not pre-exist for a given invocation (refuse rather than reuse a
 leftover) and is never reused by a later invocation; it is intentionally
 *not* removed when the Hop ends, because `wfc archive` must still be able to
-read it afterward (<<a-lifecycle>> is unaffected: this directory is not a
-pre-created writable grant target, so it is outside that bracket). Its only
-lifecycle end is the checkout's own.
+read it afterward -- this is a separate directory from, and not governed by,
+the writable-scope resolution <<a-lifecycle>> describes. Its only lifecycle
+end is the checkout's own.
 
 [cols="3,2,4",options="header"]
 |===
@@ -1398,12 +1400,12 @@ Unchanged in the adapters, with one gained property: `--die-with-parent`
 combined with `--unshare-pid` means the sandbox's whole process tree dies with
 the `bwrap` process the adapter started, so a descendant that leaves its
 process group no longer survives. Scratch cleanup stays in the Claude
-adapter's `finally` block; the pre-created empty authorized directories are
-removed, if still empty, by the Coordinator dispatch frame that created them,
-after the Hop returns and after its post-Hop observation (<<a-lifecycle>>) --
-not by the adapter, which has returned by then. A cleanup failure must
-not suppress an exception already in flight, as the existing scratch-removal
-helpers already ensure.
+adapter's `finally` block. There is no authorized-directory cleanup bracket
+any more (<<a-lifecycle>>): `derive_boundary_grant` only ever grants an
+already-existing directory, so the Coordinator dispatch frame creates
+nothing it would need to remove. A cleanup failure must not suppress an
+exception already in flight, as the existing scratch-removal helpers already
+ensure.
 
 [[invariants]]
 == (f) Interaction with existing invariants
@@ -1428,8 +1430,9 @@ exists -- the boundary can be off, can be newly broken, or can have a
 prevention gap (<<residual>>).
 
 |Candidate acceptance and the clean-worktree assertions
-|Unchanged. Pre-created empty directories are invisible to Git and therefore
-to these checks; that is why empty *files* are not pre-created.
+|Unchanged. Nothing is pre-created on the Coordinator's behalf any more
+(<<a-lifecycle>>), so there is nothing for these checks to see that the
+Commission itself did not create.
 
 |Evidence, the baseline probe and `task-check`
 |Unchanged, Coordinator-owned, and deliberately *outside* the agent boundary.
@@ -1763,9 +1766,10 @@ are review checkpoints inside that Run, not separate Commissions:
   for the direct path, and a test that an unrecognised mode refuses.
 . *Enablement, lifecycle and evidence.* The optional `boundary` key in both
   configuration schemas, preflight, error classification, the pre-create and
-  post-Hop removal bracket in the dispatch frame (<<a-lifecycle>>), the
-  persisted Run state, the binding evidence and the audit projection, resume
-  consistency. Negative cases N14 and N15.
+  post-Hop removal bracket in the dispatch frame (this step's own proposal;
+  later retired by the F5 rework, see <<a-lifecycle>>), the persisted Run
+  state, the binding evidence and the audit projection, resume consistency.
+  Negative cases N14 and N15.
 . *Documentation reconciliation.* The stale-statement list below.
 
 If the Run exhausts its Hop budget, step 5 is the only step that may be
