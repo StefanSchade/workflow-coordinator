@@ -1,10 +1,12 @@
 PYTHON ?= python3
 SHEETS_RUN ?= sheets-run
+DOCS_ROOT ?= docs
 
 MEMORY_WORKBOOK := $(PYTHON) scripts/memory_workbook.py --sheets-run $(SHEETS_RUN)
 
 .PHONY: test lint format-check check build snapshot snapshot-multi coverage coverage-html
 .PHONY: memory-setup memory-export memory-import memory-roundtrip-check
+.PHONY: docs-render check-docs
 
 test:
 	$(PYTHON) -m pytest -q
@@ -26,6 +28,15 @@ format-check:
 		tests/architecture/test_package_boundaries.py
 
 check: lint format-check test
+
+# `check` stays independent of the documentation toolchain: adding asciidoctor
+# as a prerequisite would make every Commission's baseline probe depend on
+# Ruby. docs-render is the separate, opt-in gate; check-docs aggregates both
+# so a documentation Commission can still name one evidence command.
+docs-render:
+	$(PYTHON) scripts/wfc_docs_render.py $(DOCS_ROOT)
+
+check-docs: check docs-render
 
 build:
 	$(PYTHON) -m build
