@@ -1,0 +1,155 @@
+= Default Hop timeout raise and `hop_timeout_seconds` config key -- independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent whole-candidate broad-review pass over
+`WI-WFC-HOP-TIMEOUT-DEFAULT-001`. Later passes are added above earlier ones;
+earlier passes are kept unedited apart from the `(current)` marker, which
+moves to the newest pass.
+
+== Pass H002 -- `RUN-561b19e253f74a09aea7e0fb14036c8b` (current)
+
+Status:: *ACCEPT* -- no blocking Finding. Every required behaviour, test and
+docs-sync statement I independently checked holds.
+WorkItem:: `WI-WFC-HOP-TIMEOUT-DEFAULT-001`
+Run / Hop:: `RUN-561b19e253f74a09aea7e0fb14036c8b` / `H002` (`broad_review`,
+independent reviewer, gate, blocking-only).
+Invocation:: `INV-65c4d71d2d9342779faebfc2ad003f10`.
+Reviewed product:: the whole candidate at base HEAD
+`5ef77a4a7acb242b1d513c3edc626951a0a89b18`, i.e. H001's full range
+`7bd1450..5ef77a4` (Commission open through H001's finishing Hop):
+`src/workflow_coordinator/frontdoor/lifecycle.py`,
+`src/workflow_coordinator/frontdoor/config.py`,
+`tests/unit/test_consumer_compiler.py`, `tests/unit/test_lifecycle_controller.py`,
+`docs/operator_manual/ch03_running/02_launch_status.adoc`,
+`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc`,
+`src/workflow_coordinator/agent_skill/wfc/references/setup.md`. I re-derived
+behaviour directly from the current text of every changed file and by
+executing the focused tests myself, not from the Worker's own summary.
+Governing acceptance:: the task document's REQUIRED BEHAVIOUR items 1-5,
+TESTS, FRONT DOOR DOCS-SYNC, CHECKS, Acceptance, Withheld authority and the
+REVIEW FOCUS paragraph addressed to the independent reviewer.
+Date:: 2026-11-26.
+
+=== Finding state
+
+The projected authoritative Finding state for this Run carries no Findings
+before this pass. I propose none; I found no reproducible violation of an
+explicit acceptance criterion.
+
+=== What I independently re-verified and found correct
+
+* *Built-in default* -- `DEFAULT_HOP_TIMEOUT_SECONDS = 14400.0` is named once
+  in `frontdoor/lifecycle.py` and used both as the argparse-independent
+  fallback in `_resolve_hop_timeout_seconds` and nowhere else duplicated.
+* *Config key validation* -- `_hop_timeout_seconds` in `frontdoor/config.py`
+  rejects `bool` (checked first, since `bool` is an `int` subclass in
+  Python), non-`int`/`float`, non-finite (`NaN`/`inf`), and non-positive
+  values, raising `CommissionError("Consumer Config.hop_timeout_seconds must
+  be a positive, finite number of seconds")`, in the same message style as
+  the neighbouring `boundary`/`max_autonomous_hops` keys. A config omitting
+  the key yields `ConsumerConfig.hop_timeout_seconds is None`, so every
+  existing construction and config is unaffected beyond the new built-in
+  default -- confirmed by reading `consumer_config_from_yaml` end to end and
+  by executing the new parametrized tests myself.
+* *Precedence* -- `_resolve_hop_timeout_seconds(flag_value, repository,
+  config_path)` implements flag, then config key, then built-in default,
+  exactly as required; `cmd_run` is the only call site, called once before
+  `RunInputs` is built. The flag's argparse default became `None`, and the
+  help text states the precedence and the 14400-second/4-hour default
+  verbatim.
+* *Recorded value* -- the resolved `hop_timeout_seconds` is what
+  `RunInputs` carries into `_authorize`, which journals it unchanged as
+  `authorized.data["hop_timeout_seconds"]`; `resume_lifecycle` and
+  `cmd_resume` read only the journaled record and were not touched, so `wfc
+  resume` keeps using the value fixed at authorization. `RunInputs(...)` has
+  exactly one construction site in `src/`.
+* *Flag's own validation preserved* -- I confirmed, by reading both the
+  diff and the unchanged lines, that the frontdoor's `--hop-timeout-seconds`
+  flag performed no positivity check before this change and still performs
+  none after it; only the engine's own `operator.py` prelaunch admission
+  (`if timeout_seconds <= 0: raise OperatorPreflightError(...)`, line 612-613,
+  untouched) rejects a non-positive resolved value, for both the flag and the
+  config-key path alike. This matches the task's explicit instruction to
+  check current behaviour and preserve it, and the Worker's claim about it
+  is accurate.
+* *Evidence timeout untouched* -- `DEFAULT_EVIDENCE_TIMEOUT_SECONDS` and
+  `wfc plan --evidence-timeout` are not mentioned anywhere in the diff; the
+  one remaining "900-second timeout" statement I found in
+  `docs/technical_model/ch02_current_mechanics/03_reduction_git_evidence.adoc:108`
+  is this unrelated evidence/task-check timeout (confirmed still `900` in
+  `governance/policy-bases/repository-standard-v1.yaml:25`), correctly left
+  alone.
+* *No stale 900-second Hop-timeout statement left in scope* -- grepped the
+  whole diff and the task's named "known places to examine"; the one other
+  `--timeout-seconds` mention outside scope,
+  `docs/operator_manual/ch02_commissioning/01_authority.adoc:64`, names the
+  legacy engine's own bare flag with no stated default and was correctly
+  left untouched (nothing stale there).
+* *Docs-sync additions are accurate* -- the new paragraphs in
+  `02_launch_status.adoc`, `01_quickstart.adoc` and
+  `agent_skill/wfc/references/setup.md` all state the CAP framing,
+  flag/config/default precedence and the 14400-second/4-hour default
+  correctly and consistently with the code; the `<<quickstart-init>>`
+  cross-reference resolves to its anchor.
+* *Tests* -- executed myself (see below): the new parametrized
+  `test_consumer_config_rejects_invalid_hop_timeout_seconds` (`0`, `-1`,
+  `true`, `false`, a quoted string, `NaN`, `+inf`, `-inf`) and
+  `test_consumer_config_hop_timeout_seconds_key_is_optional`, plus the six
+  new `test_lifecycle_controller.py` tests (built-in-default constant,
+  flag-parses-to-`None`, config-applies-when-flag-absent,
+  flag-overrides-config, falls-back-to-default-when-both-absent via real CLI
+  dispatch, and the RunInputs-level check that the resolved value is the
+  literal `--timeout-seconds` argv token handed to the engine) all pass.
+  Grepped both changed test files for a stale `900.0`/`900` Hop-timeout
+  assertion: none exists, so none needed updating; no existing assertion was
+  weakened or deleted.
+
+=== Measured checks (this pass)
+
+Focused pytest:: no required-suite offline-inputs bundle (`WFC_TEST_INPUTS`/
+`WFC_TEST_PROFILE`) was available in this review sandbox, so I ran the
+project's own `--wfc-partial` escape hatch against
+`tests/unit/test_consumer_compiler.py` and `tests/unit/test_lifecycle_controller.py`
+with an editable `PYTHONPATH=src` interpreter (a pre-existing venv with
+`pytest` found under `/tmp`; no network fetch performed). All 15
+`hop_timeout`-named tests pass in isolation. Three unrelated tests
+(`test_resume_after_verification_checks_cached_envelope_and_uses_pinned_phase_binding`,
+`test_scripted_yes_run_with_fake_provider_reaches_completed_classification`,
+`test_resume_after_classified_is_a_no_op_and_ext_records_are_ignored`) fail in
+this sandbox with `wfc: error: unrecognized arguments:
+--execution-bindings-sha256`; I reproduced the identical failure against the
+unmodified pre-candidate base commit (`7bd1450`, extracted via `git archive`
+into a scratch directory) with the same command, confirming this is a
+pre-existing agent-local environment/installed-entry-point mismatch in this
+sandbox, not a regression from this candidate. With those three deselected,
+the remaining 83 tests across both files pass. I also ran
+`tests/unit/test_agent_skill_content.py` and `tests/unit/test_frontdoor_skill.py`
+(touched indirectly by the `setup.md` docs-sync edit): all pass, and no
+digest/content-pinning test needed updating since none pins `setup.md`'s
+literal bytes. `tests/architecture/test_offline_distribution.py` fails on a
+`pip install setuptools` network fetch this sandbox cannot perform -- an
+agent-local environmental limitation (no offline wheel available), unrelated
+to this candidate's change, not evidence of a production defect. Did not run
+live providers.
+Strict render:: `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+--failure-level=WARN` against both changed `.adoc` files
+(`02_launch_status.adoc`, `01_quickstart.adoc`): no output, exit 0, for both.
+Doc catalog:: ran `generate` then `check` against both the pre-candidate base
+(`7bd1450`, scratch extraction) and the current candidate: both report the
+identical `Informational: 83 unresolved links; 4 Project Memory source_path
+misses` baseline, with `catalog current` for the candidate -- no additional
+unresolved links or Project Memory misses. The generated
+`build/wfc/document_catalog.jsonl` is `.gitignore`d; no stray file was left.
+`git status --short`:: clean apart from this pass's own new artifact and the
+sandbox-injected shell/IDE dotfiles already present at session start (none of
+them part of any CommitIntent).
+
+=== Why this is `accept`, not `correction`
+
+No blocking Finding was found: the built-in default, the optional config key
+and its strict validation, the flag/config/default precedence, the recorded
+authorization value, and the docs-sync are all implemented as specified and
+verified by my own execution; no existing test was weakened; evidence timeout
+is untouched. I therefore request `accept`, the forward route, as required
+for a review Hop with no blocking issue.
