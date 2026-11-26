@@ -1,0 +1,410 @@
+= Beta-2 O5 `wfc request` and `wfc report --repository`: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the Beta-2 slice
+O5 candidate for WorkItem `WI-WFC-BETA2-O5-001` -- a separate `wfc request`
+subcommand emitting the Consumer Request `wfc plan` only previews (decision
+D1, Option B), and `wfc report --repository` resolving the Evidence location
+from the consumer repository's own Consumer Config. Later passes are added
+above earlier ones; earlier passes are kept unedited apart from the
+`(current)` marker, which moves to the newest pass.
+
+[[pass-h002]]
+== Pass H002 -- `RUN-75b1daa6…` (current)
+
+Status:: *ACCEPT.* No blocking Finding. I reviewed the whole candidate at
+`644bbe4` against the Commission task, the `[[o5]]` slice entry of
+`docs/backlog/beta2_operator_efficiency_plan.adoc` (whose "Acceptance
+(verifiable)" list is the binding one), decision `[[d1]]`, the record
+`FTR-WFC-OPERATOR-SCAFFOLDING-AND-CLI-ERGONOMICS.adoc`, friction entries 5,
+13, 16 and 21, and the repository as it is. I verified every load-bearing
+claim by execution rather than on the Worker's account, including the two
+claims that are easy to assert and hard to prove: that a bare `wfc plan` is
+byte-identical to the pre-refactor command (checked by loading the base
+commit's `plan.py` alongside the new one and diffing both commands' output on
+a happy path and five refusal paths), and that the emitted file really is the
+previewed Commission (checked by re-parsing the written bytes and re-deriving
+the projection and the run-side digest independently of the candidate's own
+tests). Both hold. Seven non-blocking observations are in section 6; none
+changes the verdict or an acceptance criterion.
+WorkItem:: `WI-WFC-BETA2-O5-001`
+Run / Hop:: `RUN-75b1daa656574e31b07570d343af2ae6` / `H002` (`broad_review`,
+whole-candidate pass, independent reviewer, gate, blocking-only,
+`finding_authority: resolve`). The Run carried no Finding into this Hop and
+this pass opens none, so no Finding delta is reported.
+Invocation:: `INV-bc987f27dfb54878ad25befbe7718578`.
+Reviewed product:: the whole candidate at base HEAD
+`644bbe446fad58c6e7c14517e267379c00f055f4`, the single commit `644bbe4` over
+`b6783d1`: twenty leaves, 1095 insertions, 87 deletions --
+`src/workflow_coordinator/frontdoor/{cli,emit_request,plan,report}.py`,
+`src/workflow_coordinator/agent_skill/wfc/references/{commission,stops-and-evidence}.md`,
+`docs/operator_manual/ch02_commissioning/02_authoring.adoc`,
+`docs/operator_manual/ch03_running/01_preparation.adoc`,
+`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc`,
+`docs/operator_manual/ch10_level1_orchestration/{01_operating_pattern,02_worked_sequence}.adoc`,
+`docs/backlog/{FTR-WFC-OPERATOR-SCAFFOLDING-AND-CLI-ERGONOMICS,FTR-WFC-LEVEL1-OPERATOR-GUIDANCE,_open}.adoc`
+and `tests/unit/{test_frontdoor_emit_request,test_report_repository_resolution,test_frontdoor_init_plan,test_lifecycle_controller,test_agent_skill_content,test_quickstart_commands}.py`.
+`.wfc/config.yaml`, `governance/`, `.github/`, `pyproject.toml`, `model.py`,
+`reducer.py`, the Consumer Request schema (`frontdoor/request.py`) and the
+Commission digest's own computation (`commissioning.py`,
+`frontdoor/lifecycle.py`) are byte-unchanged.
+Governing acceptance:: the Commission task (GOAL, BINDING SHAPE (1)-(4),
+DOCUMENTATION, DESIGN, PLAN CONTEXT, FRONT DOOR DOCS-SYNC, CHECKS, COMMIT AND
+INDEX DISCIPLINE, Acceptance, Withheld authority), the `o5` slice entry and
+`d1` of `docs/backlog/beta2_operator_efficiency_plan.adoc`, and the
+repository policy restated for this Run.
+Review path note:: `robust@v1` as commissioned here routes
+`implement -> broad_review -> accept|correction`; `focused_review` is reached
+only after a `correct` Hop. With no blocking Finding, this broad pass is the
+only independent review this Run performs, which is the configured
+choreography, not a skipped gate.
+
+=== 1. Gates I executed myself
+
+My Hop sandbox cannot start `bwrap`, has a read-only `/tmp` and no network. I
+ran everything below from an existing scratch virtualenv outside the
+repository; `pytest`'s `pythonpath = ["src", "."]` makes the tests import this
+worktree's source, which I confirmed (that virtualenv's own *installed*
+`workflow_coordinator` is a stale pre-Front-Door snapshot with no `frontdoor`
+package at all, so it cannot have supplied any result below). These are
+exploratory agent-side results, not Coordinator-trusted evidence; the
+Coordinator's `task-check` remains authoritative.
+
+`ruff check .`:: `All checks passed!` -- no unused import or other residue of
+the `plan.py` extraction, which is the named defect class for this gate.
+Focused tests:: `--wfc-partial tests/unit/test_frontdoor_emit_request.py
+tests/unit/test_report_repository_resolution.py
+tests/unit/test_frontdoor_init_plan.py` -- 36 tests, all pass. The new
+end-to-end acceptance test
+(`test_lifecycle_controller.py::test_request_emitted_file_reproduces_the_previewed_digests_and_launches_through_wfc_run`)
+passes on its own in 1.17 s.
+Contract/drift tests:: `--wfc-partial tests/unit/test_agent_skill_content.py
+tests/unit/test_quickstart_commands.py tests/unit/test_report.py
+tests/unit/test_report_status_coverage.py tests/unit/test_frontdoor_skill.py`
+-- 145 tests, all pass. These are the shipped skill/command-list and
+documented-command drift guards; both of the two that changed gained a
+`request` entry and nothing was relaxed.
+Whole unit suite:: `--wfc-partial tests/unit` -- 1735 passed, 1 skipped
+(pre-existing), 27 failed: 24 in `tests/unit/test_claude_adapter_conformance.py`
+and 3 in `tests/unit/test_lifecycle_controller.py`. Both groups are
+agent-local with the diagnostic recorded. The adapter group fails in the
+adapter's own TMPDIR handling, `OSError: [Errno 30] Read-only file system`
+when linking a short path under `/tmp`, which this sandbox forbids. The three
+lifecycle tests are the ones that launch the *installed* engine console
+script rather than the `FAKE_ENGINE` fixture; the stale installed snapshot
+refuses `wfc: error: unrecognized arguments: --execution-bindings-sha256`,
+a flag this worktree's `operator.py:356` does define. Neither group touches
+or is touched by any changed module.
+Architecture and integration:: `--wfc-partial tests/architecture` -- two
+failures, `test_bp1_identity.py::test_installed_identity_and_real_preflight`
+and `test_offline_distribution.py::test_clean_isolated_distribution_and_wheel_install`,
+both inside `python -m build`'s isolated-build dependency installation (no
+network). `tests/integration/test_beta_e2e_fake_provider.py` and
+`tests/integration/test_consumer_demo_kit.py` fail on the same stale
+installed `wfc` console script as above (`--execution-bindings-sha256`), which
+is also why they cannot validate this candidate either way.
+Strict render:: `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+--failure-level=WARN` over all eight changed `.adoc` leaves and over this
+artifact prints nothing.
+Doc catalog:: `scripts/wfc_doc_catalog.py generate` (614 records) then
+`check`: `Informational: 83 unresolved links; 4 Project Memory source_path
+misses` and `catalog current` -- exactly the two baselines, no additions. The
+generated `build/wfc/document_catalog.jsonl` is never committed; `build/` did
+not exist before I generated it and does not exist now.
+Working tree:: `git status --short -uall` over `src`, `tests`, `docs`,
+`examples`, `scripts`, `governance`, `project_memory`, `Makefile` and
+`pyproject.toml` is empty -- the candidate left no stray file. The only
+untracked entries in the worktree are the dot-prefixed session/IDE
+environment files this sandbox creates (`.bashrc`, `.claude/*`, `.idea`,
+`.mcp.json`, `.vscode`, …), which are not candidate residue. I issued no
+mutating Git command and did not touch the index.
+
+=== 2. The slice's own acceptance list, item by item
+
+The emitted Consumer Request, passed unchanged to `wfc run --request`, reproduces the previewed Commission digest exactly:: Holds, verified three
+ways and not only at the seam the candidate's own test uses.
++
+(a) The candidate's central test compares the digest *lines* `wfc plan` and
+`wfc request` print for identical inputs; that is the digest-equality test the
+slice asks for, but on its own it compares two in-process runs of one shared
+helper.
++
+(b) I therefore re-derived the projection from the *written bytes*
+independently: re-parsing the emitted file with `consumer_request_from_yaml`,
+recompiling with `compile_commission` against the same committed config, and
+hashing `compiled.manifest` reproduces the previewed `projected Commission
+manifest digest` exactly, and every `projected Commission files` per-path
+SHA-256 line matches as well.
++
+(c) On the run side, `lifecycle._compile` over the emitted file yields the
+same commission digest as over a byte-identical hand-authored copy, and the
+emitted request is a fixed point of the closed schema
+(`consumer_request_from_yaml(text).raw_text == text`), which is what makes
+`wfc run`'s re-read/re-parse/re-digest cycle stable. Two emissions from the
+same inputs are byte-identical, so `--force` cannot silently change a
+Commission.
++
+One point of vocabulary a future reader needs (N-2): the digest both commands
+*print* is the projection digest over `compiled.manifest`, which is
+structurally a different value from the `Commission digest` `wfc run` prints
+and authorizes (`_materials_digest` over the Commission texts plus the
+request's raw text). That asymmetry is pre-existing and untouched here;
+"reproduces the previewed digest" is true in the projection sense verified
+above, and the authorization-side equality is what the drift check enforces.
+… and passes the unchanged plan-to-authorization drift check:: Holds. The
+check at `frontdoor/lifecycle.py:304-307` is byte-unchanged. The new
+end-to-end test writes the request with the real `wfc request`, then drives
+the real `frontdoor.lifecycle` authorization/pre-launch/commit/verify/launch
+path over that file with the fake engine to `classification == "completed"`
+-- no `refused_drift`, no `refused_probe`. I reran it in isolation.
+A bare `wfc plan` writes nothing and its output is unchanged:: Holds, and
+this is the claim I checked hardest, because the refactor moved the whole
+body. I loaded the base commit's `plan.py` as a second module beside the new
+one and compared both `main()` implementations on identical argv: on a
+successful 38-line preview the stdout and stderr are byte-identical, and on
+five refusal paths (missing task document, non-repository `--repository`,
+scope exceeding the ceiling, malformed `--program`, absolute `--config`) the
+exit code and the complete stderr text are identical as well. The extraction
+preserves the error-message prefixes because `resolve_plan_inputs` raises
+`PlanInputError` carrying the same strings and each caller re-adds its own
+`wfc plan: `/`wfc request: ` prefix. For "writes nothing" the candidate adds
+a test that `wfc plan` leaves an *outside-the-repository* scratch directory
+empty (the pre-existing tests only snapshot the tree) and a parser test that
+`--output`/`--force`/`--allow-inside-repository` are absent from `wfc plan
+--help`; both are real guards against the obvious future regression.
+`wfc report` resolves an archived Attempt from the repository's own config, and the existing positional form still works unchanged:: Holds.
+`resolve_attempt_from_repository` (`frontdoor/report.py`) resolves the
+consumer root by Git identity, applies the same `commissioning._path` shape
+check to `--config`, parses the Consumer Config and calls
+`config.resolve_evidence`. I checked the candidate glob
+(`archive/**/audit.json`) against the real archiver rather than only against
+the fixture: `archive.py:784-785` places an Attempt at
+`archive/<domain>/<workstream>/<attempt-id>/` or
+`archive/unclassified/<attempt-id>/`, both of which the glob matches, and
+`audit.py:699` writes `audit.json` only beside `manifest.json` at the Attempt
+root, so one Attempt contributes exactly one candidate. Resolving the
+`audit.json` *file* rather than the directory is the right call for the
+reason the record states: `discard` retention places no `manifest.json`, so a
+directory-based resolution would refuse exactly the Attempts whose path the
+operator is least likely to know. The positional form is unchanged -- it
+became `nargs="?"`, nothing else -- and `_load_audit_source` is shared, which
+the candidate pins with a test asserting that `--repository` and the
+positional path produce identical `--json` output.
+The named refusals:: Hold, each tested and each named in the help text. Zero
+candidates and a missing Evidence repository both refuse as *unresolvable
+Evidence location*; more than one candidate refuses as *ambiguous input*
+listing every candidate; `SOURCE` together with `--repository` refuses as
+*ambiguous input*; neither refuses with "either SOURCE or --repository is
+required". Passing the *Evidence* repository as `--repository` refuses
+instead of accidentally working, which is the distinction the task asks to be
+tested, not just documented.
+No new authority, no Git mutation, no provider call:: Holds. `wfc request`
+reaches the filesystem exactly twice (read the task document and the config,
+then one `mkdir(parents=True, exist_ok=True)` and one `write_text`), runs Git
+only through the read-only `repository_identity`/`repository_head` plumbing,
+and I confirmed by test and by hand that the consumer repository's HEAD,
+tracked bytes and `git status --porcelain -uall` are unchanged across a run,
+including the refused runs. `wfc report --repository` only resolves a path
+and reads. Neither command constructs a Commission directory or an engine
+command.
+
+=== 3. The task's BINDING SHAPE (1)-(4)
+
+Same inputs, same argument definitions, same request-construction path, no duplicated logic:: Holds, and the boundary is the smallest one that achieves
+it. `plan.py` exposes exactly three shared seams --
+`add_plan_input_arguments` (one argparse definition, called by both parsers),
+`resolve_plan_inputs` returning a frozen `ResolvedPlanInputs`, and
+`render_commission_preview_lines` (the common preview body, parameterized
+only by its header line). `consumer_request_from_plan_inputs` is untouched
+and is reached only through `resolve_plan_inputs`, so there is no second
+construction path that could drift. `emit_request.py` adds no field of its
+own beyond `--output`, `--force` and `--allow-inside-repository`.
+Output-path refusals:: Hold. An existing destination is refused unless
+`--force`; a destination that resolves inside the consumer repository's
+worktree is refused unless `--allow-inside-repository`. Both are evaluated
+*before* any `mkdir` or write -- I confirmed a refused run creates neither
+the file nor its parent directory, and leaves an existing file's bytes
+untouched. The comparison is sound: `repository_identity` returns a resolved
+absolute path and `--output` is resolved too, so the check cannot be defeated
+by a relative argument or a symlinked path. I checked the case the tests do
+not cover, a *relative* `--output` with the current directory inside the
+repository (`wfc request … --output request.yaml`, run from the repository
+root): correctly refused, nothing written. The rule, both flags and the
+reason ("an emitted request is not an authorization and must not dirty the
+clean tree `wfc run` requires") are documented in the record's Design, the
+module docstring, the help text, the skill and the manual.
+The required output statements:: Hold. `wfc request` prints the identical
+preview body (so the digests are right there), then the destination path,
+then a `NEXT EXPLICIT ACTION` line stating that nothing was authorized -- no
+project command, provider call, Commission write or Git mutation -- that the
+file grants no authority because `wfc run --request` re-reads, re-parses
+under the closed BP2b schema and re-digests it, and that `scope`, `program`,
+`personas`, `max_autonomous_hops`, `evidence.argv` and `authority_source` are
+the operator's own judgement "merely carried here -- never supplied,
+validated or authorized by this command". I read the rendered output of a
+real run, not only the test's substring assertions.
+Registration and the shipped lists:: Holds. `frontdoor/cli.py` dispatches
+`request` to `emit_request.main` in the same shape as its siblings;
+`test_agent_skill_content.py`'s `SUBCOMMAND_MAIN` and
+`test_quickstart_commands.py`'s `_PARSE_ARGS` both gained a `request` entry
+bound to the *real* parser, so the new skill and quickstart examples are
+drift-guarded exactly like the existing commands. No console-script or
+packaging entry was needed, correctly: `request` dispatches inside the
+existing `wfc` entry point, and `pyproject.toml` is untouched.
+
+=== 4. The Design section and Front Door docs-sync
+
+The record carries a dated `2026-11-26` `Design` section with four numbered
+decisions -- the shared-helper boundary, the output-path refusal rule, the
+`wfc report --repository` rule and the safety properties preserved -- each
+naming the rejected alternative (D1 Option A; silent overwrite or no
+override at all; "most recent Attempt" by mtime or journal order) and the
+property it protects. I checked every factual claim in it against the code:
+all are true of `644bbe4`, including the three that are easy to get wrong
+(that `wfc plan` keeps no write path at all, that resolution targets
+`audit.json` rather than the Attempt directory because of `discard`
+retention, and that nothing in the slice touches `compile_commission`, the
+digest computation or the drift check). The design and the implementation
+arrived in one commit, so I cannot verify from Git that it was written first;
+its content is consistent with having driven the code. A dated
+`Implementation note` matches what was built, the `Lifecycle` line moved from
+"Proposed" to "Implemented", `FTR-WFC-LEVEL1-OPERATOR-GUIDANCE.adoc`'s own
+load-bearing row is retired with a dated note that correctly says the shipped
+texts are edited in this WorkItem rather than there, and `_open.adoc`'s O5
+bullet is updated.
+
+Docs-sync applies in full here and was applied. The O1 "planned"/"current
+limitation" statements for O5 are *replaced*, not appended to, in
+`references/commission.md` (the twelve-line limitation paragraph becomes a
+`## wfc request` section plus a corrected "Consumer Request fields"
+paragraph) and in `references/stops-and-evidence.md`, and in the Operator
+Manual chapters 2, 3, 9 and 10. I grepped the shipped texts afterwards: no
+"Planned"/"current limitation" statement about request emission or report
+resolution remains anywhere outside `docs/backlog` and `docs/*_storage`,
+where it is provenance; the three remaining `(Planned: …)` notes in the skill
+belong to other slices (in-place Hop-budget extension, the preparation step,
+the Runtime split). The replacements are honest about the limits of what
+shipped -- chapter 9 and chapter 10 both say `wfc report --repository`
+refuses once more than one Attempt has archived and tell the operator to name
+the Attempt directly then, and chapter 3 correctly notes that this
+repository's own convention commits the request *inside* the tree and
+therefore needs `--allow-inside-repository`. I also checked the rest of the
+docs-sync owner list: the three ch09 tutorials, the `beta-limitations` list
+and the `examples/consumer-demo` kit contain no statement that this slice
+made false (the kit ships pre-written `requests/*.request.yaml` files), and
+the unchanged `wfc report <source>` references elsewhere stay true because
+the positional form is unchanged. Two informative sites were left incomplete
+rather than inaccurate; see N-5.
+
+=== 5. Simplicity, and the safety properties the task names
+
+The source change is 138 new lines in `emit_request.py` (about half of them
+docstring), 96 in `report.py`, 3 in `cli.py` and a net +39 in `plan.py` that
+is mostly a move. I looked for a materially simpler realisation with the same
+guarantees and did not find one. The three extracted seams are each used by
+both commands, so none is speculative generality; `ResolvedPlanInputs` is a
+frozen six-field carrier that replaces a six-value tuple return and keeps the
+resolution steps in one place; `PlanInputError` exists so the shared
+resolution can refuse without printing or exiting, which is what lets the two
+commands keep their own message prefixes byte-for-byte. The two escape-hatch
+flags are the minimum the chosen rule needs (one for each refusal) and the
+repository's own commit-the-request convention actually exercises the second.
+No new persisted state, no new journal field, no new classification, no new
+exit code, no second request-construction path, no duplicated preview text.
+
+The safety properties survive. `wfc plan` still performs no write of any kind
+and is byte-identical in behaviour, now machine-checked from two directions.
+The emitted bytes carry no authority: they are an ordinary file on an
+ordinary path, and `wfc run` re-reads, re-parses under the closed schema and
+re-digests before authorizing or committing -- the schema, the digest and the
+drift check are byte-unchanged, and I confirmed the emitted text is a fixed
+point of that schema. The default refusal to write inside the worktree keeps
+the clean-tree precondition and the "an emitted request is not an
+authorization" property aligned rather than merely documented. The
+independent reviewer's sole Finding authority, the trusted-commit boundary,
+fail-closed admission and recovery and one-Run-per-checkout are untouched:
+no new code path commits, admits or classifies anything.
+
+=== 6. Non-blocking observations
+
+N-1 the end-to-end test stops one assertion short of the criterion's own wording:: `test_request_emitted_file_reproduces_the_previewed_digests_and_launches_through_wfc_run`
+already captures the authorized `(commission_digest, envelope_digest)` pair in
+`confirm_calls` but asserts only `len(confirm_calls) == 1`. Asserting that
+pair against the digest derived from the previewed/emitted request would make
+"the emitted request reproduces the digest the authorization path derives"
+mechanically evident instead of transitively implied. I verified that
+equality out-of-band (section 2b/2c), so nothing is unproven -- it is simply
+not pinned by a test.
+N-2 two different values are both called "the Commission digest":: `wfc plan`
+and `wfc request` print `projected Commission manifest digest` (SHA-256 over
+`compiled.manifest`); `wfc run` prints and authorizes `Commission digest`
+(`_materials_digest` over the projected Commission texts plus the request's
+raw text). The two strings never match, by construction and before this
+slice. An operator who compares the preview line with the authorization line
+will think something drifted. Out of scope here, but now that a command
+exists whose whole purpose is "the emitted request *is* the previewed one",
+naming the two values distinctly in the manual (or printing both in the
+preview) would be worth a later slice.
+N-3 an unusable `--output` surfaces as a traceback, not a named refusal:: with
+`--output` naming an existing *directory* plus `--force`, or a path whose
+parent is unwritable, `write_text`/`mkdir` raise `IsADirectoryError` /
+`PermissionError` out of `main`. This matches `frontdoor/init.py`, which also
+writes without wrapping `OSError`, so it is house behaviour rather than a
+defect introduced here; a `try/except OSError` around the two write calls
+returning the usual `wfc request: …` refusal would make the new command's
+whole surface uniformly fail-closed.
+N-4 `wfc report --config` is silently inert with a positional SOURCE:: it is
+documented as "used only with --repository" and I confirmed it is simply
+ignored there. Given that this command now refuses `SOURCE` plus
+`--repository` as *ambiguous input*, refusing `SOURCE` plus an explicit
+`--config` for the same reason would be more consistent; today it is a
+harmless no-op.
+N-5 two informative sites still describe hand-authoring only:: `docs/operator_manual/ch08_examples/03_commission_to_archive.adoc`
+section 4 ("author the equivalent Consumer Request YAML … and commit it") and
+`docs/operator_manual/ch10_level1_orchestration/02_worked_sequence.adoc:127`
+("author the Consumer Request, then launch … exactly as in Commission 1").
+Neither became false -- hand-authoring is still supported, ch08 declares
+itself illustrative with "linked procedures retain ownership" and links to
+the chapter 2 page that *was* updated, and the ch10 line back-references a
+sequence whose own text now mentions `wfc request`. So they are incomplete,
+not misleading, and I do not block on them; a clause in each is worth folding
+in at integration time. Separately,
+`docs/developer_guide/ch02_code_navigation.adoc` still presents
+`frontdoor/init.py` and `frontdoor/plan.py` as the installed consumer-facing
+commands and does not mention `frontdoor/emit_request.py`; that document is
+outside the docs-sync owner list and is explicitly informative navigation,
+but it is where a newcomer looks for "which module implements which command".
+N-6 `--repository` on `wfc report` reaches only a single-Attempt Evidence location:: by design: more than one candidate refuses rather than guessing,
+and the Design section's rejection of an mtime/journal-order guess is sound
+("a wrong silent guess here is worse than a named refusal"). The consequence
+is that in a mature Evidence repository the flag is permanently refused, so
+friction entries 13/16 are removed for the first Run of a repository and for
+rehearsals, not for steady-state operation. The shipped texts say this
+plainly, which is the right behaviour for now; a later slice could keep the
+refusal and add an explicit selector (`--attempt <id>`, or `--latest` as an
+operator-stated choice) rather than a silent default.
+N-7 `--force` has no second guard on a non-request destination:: `--force`
+overwrites whatever `--output` names, including a file that has nothing to do
+with WFC. The destination is always operator-typed and the refusal-by-default
+is the real protection, so this is proportionate; worth remembering only if
+`wfc request` ever gains a default or derived output path.
+
+=== 7. Scope, authority and Git discipline
+
+Every changed leaf is inside the slice's "Exact scope" (`plan.py` plus a new
+emission entry point, `report.py`, `cli.py`, their unit tests, and the skill
+and manual paragraphs O1 wrote as *planned*) or is a record the task names
+explicitly (the O5 record's `Design` and implementation note, the
+operator-guidance record's row, the backlog index bullet). None of the
+withheld items was touched: no `.wfc/config.yaml`, `governance/`, `.github/`,
+scope-ceiling or release-workflow change; no push, tag, release, publication,
+Runtime promotion or `wfc skill install`; no kernel or admission change; no
+Consumer Request schema or Commission digest change; `pyproject.toml`
+unchanged. No test was weakened, skipped or deleted -- `git diff --numstat`
+over `tests/` shows 503 insertions and *zero* deletions, and the only two
+edits to existing test files add a `request` entry to a drift guard, which
+strengthens it. The commit subject carries the WorkItem and Hop identity and
+the prior CommitIntent's twenty paths match the twenty leaves in the diff.
+This Hop's only repository change is this artifact, in this Hop's authorized
+scope; I performed no mutating Git operation and the index is untouched.
