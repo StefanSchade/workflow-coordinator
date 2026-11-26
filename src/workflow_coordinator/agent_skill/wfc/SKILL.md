@@ -128,7 +128,11 @@ merely because an earlier attempt failed.
 * Edit `.wfc/` state or Evidence by hand.
 * Open or resolve a Finding.
 * Relaunch `wfc run` in a checkout that already has a lifecycle.
-* Run a `wfc` subcommand this skill does not describe.
+* Run a `wfc` subcommand this skill does not describe. (`prepare-successor`
+  and `export-salvage`, described in `references/stops-and-evidence.md`, are
+  a separate, maintainer-level tool invoked as
+  `python -m workflow_coordinator.operator`, not a `wfc` subcommand; this
+  rule does not withhold them.)
 * Install or upgrade WFC, or this skill, unasked.
 
 ## Where exact facts come from

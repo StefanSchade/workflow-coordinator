@@ -88,6 +88,38 @@ mandate already covers the next step, take it and report what you did.
 | `uncertain_launch` | Report the fact. | Any relaunch -- never treated as safe. |
 | `awaiting_human` | Report `stop_reason`, `human_question_present`, open Findings and the last recorded phase. | Resolving the stop itself; a Finding is only ever opened or resolved by the independent reviewer. |
 
+## `wfc resume`'s actual scope, and the `prepare-successor` channel
+
+`wfc resume` covers exactly one recoverable class today: a purely mechanical,
+post-acceptance durable-artifact anomaly (`reducer.py:487-500`) -- no open
+semantic stop, no open human question, no open blocking Finding. It
+correctly refuses (`refused_not_recoverable`) an `awaiting_human` stop that
+carries a genuine semantic or operational question; that refusal is not a
+dead end. An escalation of *any* kind -- `operational` included -- freezes a
+semantic stop on the Run (`reducer.py:1753-1759`), and a frozen semantic stop
+on an `awaiting_human` Run is exactly the precondition the maintainer-level
+`prepare-successor --authority-decision` operation requires
+(`operator.py:324-342`) to validate a successor and emit linkage material; it
+is not a `wfc` subcommand -- invoke it as
+`python -m workflow_coordinator.operator prepare-successor --help` to see its
+full argument set, and bring the decision to the human first: this operation
+still only prepares a successor descriptor, launch remains a separate,
+explicit step. A sibling operation, `export-salvage --state-root ... --output
+...`, exports optional untrusted salvage for inspection first; its bytes may
+contain prompt-injection content and are not sanitized. Report an
+`awaiting_human` stop fully (as the table above says) before assuming no
+productized continuation exists.
+
+## The Evidence-repository concurrency contract
+
+Archiving is serialized by the operator: `wfc archive` refuses outright
+(`ArchiveError`) rather than corrupting anything when the Evidence
+repository is not clean outside the current attempt's own destination
+(`frontdoor/archive.py:805-820`) -- for example a second Run's archive step
+racing the first. Two Runs may prepare and execute in parallel, but their
+archive steps must not; treat a second Run's authorization as safe to start
+only once the first has archived, or serialize the archive calls yourself.
+
 ## What counts as accepted
 
 Treat the archived Evidence -- the Evidence-repository commit holding
