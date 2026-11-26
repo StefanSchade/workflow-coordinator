@@ -1,0 +1,544 @@
+= Execution Boundary rework AB -- trusted started signal, per-invocation provider channel, authentication-mount contract, fail-closed file-scope refusal -- independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent whole-candidate broad-review pass over
+`WI-WFC-EXEC-BOUNDARY-REWORK-AB-001`. Later passes are added above earlier
+ones; earlier passes are kept unedited apart from the `(current)` marker,
+which moves to the newest pass.
+
+== Pass H002 -- `RUN-f5b02c7990aa4a4b8343ec74e0016c77` (current)
+
+Status:: *CHANGES REQUIRED* -- three blocking Findings, all reproduced or
+reproducible from the current text of the candidate. The security core of the
+rework is sound: I could not find any remaining way for the confined agent to
+write, delete or forge the started decision, on either adapter, and I could
+not find a path by which Hop N state reaches Hop N+1's classification. What
+blocks acceptance is test substance and the coherence of what the F5 rework
+left behind, not the security model.
+WorkItem:: `WI-WFC-EXEC-BOUNDARY-REWORK-AB-001`
+Run / Hop:: `RUN-f5b02c7990aa4a4b8343ec74e0016c77` / `H002` (`broad_review`,
+independent reviewer, gate, blocking-only).
+Invocation:: `INV-ac3aad3ea7774c939a21d26b3db18aa0`.
+Reviewed product:: the whole candidate at base HEAD
+`7882905b2543bd8d35201b34067a94c0ef91f15b`, i.e. H001's full range
+`146e051..7882905`: `docs/backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc`,
+`docs/developer_guide/ch01_development.adoc`,
+`docs/operator_manual/ch01_orientation/02_boundaries.adoc`,
+`docs/operator_manual/ch07_diagnostics/02_failure_modes.adoc`,
+`src/workflow_coordinator/claude_adapter.py`,
+`src/workflow_coordinator/codex_adapter.py`,
+`src/workflow_coordinator/execution_boundary.py`,
+`src/workflow_coordinator/execution_launcher.py`,
+`src/workflow_coordinator/frontdoor/archive.py`,
+`src/workflow_coordinator/operator.py`,
+`src/workflow_coordinator/slice4.py`,
+`tests/integration/test_execution_boundary_bwrap.py`,
+`tests/integration/test_execution_boundary_dispatch.py`,
+`tests/unit/test_archive_provider_channel.py`,
+`tests/unit/test_execution_boundary_config.py`,
+`tests/unit/test_execution_boundary_dispatch_preflight.py`,
+`tests/unit/test_execution_launcher.py`, `tests/unit/test_slice4.py`. I
+re-derived every statement below from the current text of the files and from
+my own executions, never from the Worker's summary.
+Governing acceptance:: the task document's THE DEFECTS (F1, F2, F3, F5),
+MAINTAINER DISPOSITION, CANDIDATE FOR THE SIGNAL, PER-INVOCATION CHANNEL,
+TESTS items (1)-(7), OUT OF SCOPE, DOCUMENTATION AND DOCS-SYNC, COMMIT AND
+INDEX DISCIPLINE, REVIEW FOCUS, Acceptance and Withheld authority.
+Date:: 2026-11-26.
+
+=== Finding state
+
+The projected authoritative Finding state for this Run carries no Findings
+before this pass. I propose three new blocking Findings (B1, B2, B3 below);
+their run-local IDs are the Coordinator's to allocate. The labels F1-F15 used
+throughout this record are the *historical* finding labels of
+link:wfc_execution_boundary_slice_a_opus_implementation_review.adoc[the Slice A
+Opus implementation review], cited as provenance only; they are not current-Run
+Finding IDs and I dispose of none of them here.
+
+=== Environment and what I could and could not execute
+
+`bwrap` 0.11.0 is installed on this host (`/usr/bin/bwrap`, and
+`--json-status-fd FD` is present in its `--help`), but it cannot start:
+`bwrap: No permissions to create new namespace, likely because the kernel does
+not allow non-privileged user namespaces`. `/tmp` is read-only in this sandbox
+and there is no network and no offline test-input bundle. Consequences,
+stated so nothing below is mistaken for more than it is:
+
+* I executed, and they all pass: `tests/unit/test_execution_launcher.py`,
+  `tests/unit/test_archive_provider_channel.py`,
+  `tests/unit/test_slice4.py`,
+  `tests/unit/test_execution_boundary_dispatch_preflight.py`,
+  `tests/unit/test_execution_boundary_config.py`
+  (`--wfc-partial`, 65 + 36 cases, no failures).
+* I executed the whole of `tests/unit` under `--wfc-partial`: 27 failures,
+  all in `tests/unit/test_claude_adapter_conformance.py` (24, every one
+  failing at the unmodified `tmp_dir.symlink_to(...)` line with
+  `OSError: [Errno 30] Read-only file system: ... -> '/tmp/wfc-claude-...'`,
+  i.e. this sandbox's read-only `/tmp`) and
+  `tests/unit/test_lifecycle_controller.py` (3, every one failing because the
+  borrowed venv's installed `wfc` console script predates
+  `--execution-bindings-sha256`: `wfc: error: unrecognized arguments:
+  --execution-bindings-sha256 ...`). Neither group touches the boundary,
+  launcher, archive, `slice4` or `operator` code this Commission changed.
+  Both are environmental, not candidate defects.
+* `tests/integration/test_execution_boundary_bwrap.py` and
+  `tests/integration/test_execution_boundary_dispatch.py` cannot pass here;
+  13 of the dispatch file's 15 cases (including 10 that predate this
+  Commission) fail on the unavailable user namespace. That is my sandbox, not
+  the candidate -- *except* for the one case named in B1, which fails before
+  `bwrap` is reached at all and is therefore a real, environment-independent
+  defect I did reproduce.
+* Strict render: `asciidoctor --safe-mode=safe -a assembled -o /dev/null
+  --failure-level=WARN` over all four changed `.adoc` files prints nothing.
+* Doc catalog: `scripts/wfc_doc_catalog.py generate` then `check` reports
+  `595 records`, `Informational: 83 unresolved links; 4 Project Memory
+  source_path misses`, `catalog current` -- identical to the baseline the
+  Worker recorded, with every unresolved link in files outside this
+  Commission's scope, and `git status --short -uall` shows no stray generated
+  file.
+* Index discipline: `git status --short -uall` shows no staged change and no
+  modified or new tracked file at base HEAD; the only untracked entries are
+  this sandbox's own injected dotfiles (`.bashrc`, `.claude/...`, `.idea`,
+  `.mcp.json` and similar), which are not part of the candidate.
+
+Every claim below about real-`bwrap` behaviour is therefore a reading of the
+code plus the maintainer's recorded probe facts, and remains for the
+Coordinator's task-check to execute.
+
+=== Blocking Findings
+
+[[b1]]
+==== B1 -- a required F1 test fails deterministically in its own setup, so the not-started classification is proven by nothing at the dispatch level
+
+`tests/integration/test_execution_boundary_dispatch.py::test_f1_a_boundary_that_fails_before_exec_is_still_classified_as_not_started`
+(line 714) calls `_init_repo(repository)` and then `_commit_all(repository,
+"test: baseline")` without ever creating a file in that repository -- unlike
+every other case in the file, it never calls `_write_fake_provider`, because
+the whole point of the case is a *missing* executable. `_commit_all` runs
+`git add -A` (which stages nothing) and then `git commit -m ...` under
+`check=True`, which exits 1 on an empty staged tree. Reproduced:
+
+----
+E  subprocess.CalledProcessError: Command '('git', '-C', '.../test_f1_a_boundary_that_fails_0/repo',
+   'commit', '-m', 'test: baseline')' returned non-zero exit status 1.
+/usr/lib/python3.13/subprocess.py:577
+----
+
+This failure needs no `bwrap` and no namespace: it is the second statement of
+the test body, it is independent of this sandbox's limitations, and it will
+fail identically under the Coordinator's task-check. Its consequences for
+acceptance:
+
+* The required suite cannot pass, which the Acceptance section requires
+  outright.
+* Task TESTS item (1)'s not-started half ("a boundary that fails before exec
+  is classified as not started") is, at the dispatch level, exercised by
+  nothing: this is the only case that drives the real
+  `provider_started()`-based classification to `False` through an adapter's
+  `execute()`. The not-started *direction* of the new signal is currently
+  verified only at the primitive level
+  (`test_json_status_fd_reports_no_exit_code_document_when_mount_setup_fails`),
+  which is explicitly not what the review focus asks for ("assert the
+  classification, not just the primitive").
+
+Remedy (feasible and minimal): create and commit at least one file before
+`_commit_all` -- for example `_write_fake_provider(repository, "import sys\n")`
+and keep `missing_executable` pointing at a different, genuinely absent path,
+or write a one-line placeholder file. Nothing about the case's intent needs to
+change.
+
+[[b2]]
+==== B2 -- required test (2) substitutes a pre-launch refusal for the Hop-2 `bwrap`-setup failure it must exercise, so the P5/P6 regression is not covered
+
+The task requires: "two or more consecutive boundary-selected Hops of one Run,
+*the second with a failing bwrap setup*, are classified correctly and no state
+of Hop 1 leaks into Hop 2 (review probes P5/P6)". The delivered case,
+`test_f2_a_second_boundary_hop_is_refused_without_any_state_from_the_first_hop_leaking_in`
+(line 747), makes Hop 2 fail by hardlinking `protected.txt` into the writable
+grant, which `execution_boundary.validate()` refuses on `st_nlink != 1` --
+*before* `build_argv` runs and therefore before any `bwrap` process exists.
+The test's own docstring states this ("The alias is refused by `validate()`
+itself, before any bwrap process is built ... a pre-launch refusal, not the
+started-signal classification").
+
+That is precisely the wrong failure mode for this requirement. The defect
+P5/P6 probed was that a Hop-N marker left in the per-checkout channel made a
+Hop-N+1 *`bwrap`-setup* failure classify as a started provider. The reworked
+classification is only reached when `bwrap` actually runs and exits without an
+`exit-code` document; in this test Hop 2 never gets that far, so the one
+decision the requirement is about is never executed in a second Hop. The
+assertions that do fire -- distinct channel directories, Hop 1's channel
+contents unchanged, `protected.txt` unchanged, no `dispatch.json` -- restate
+N7 plus a path-inequality, not the classification.
+
+The docstring's justification does not hold: "simulating what P5 asks for
+without needing a live, breakable `bwrap` install" is not required, because a
+Hop-2 `bwrap`-level failure needs no broken install and this very file already
+produces two of them -- a nonexistent wrapped executable (the case in B1, fact
+(c) of the maintainer's candidate description) and, at the primitive level, a
+bind source corrupted after `build_argv`
+(`test_execution_boundary_bwrap.py::test_json_status_fd_reports_no_exit_code_document_when_mount_setup_fails`).
+
+Remedy (feasible, using machinery already in the same file): keep Hop 1 exactly
+as it is, and give Hop 2 a `bwrap`-level failure -- the simplest is a second
+adapter whose `executable` does not exist, so `bwrap` forks (emitting
+`child-pid`), fails to `exec`, and emits no `exit-code` document. Then assert
+that Hop 2 is classified *not started* by name through
+`run_real_one_hop`, while Hop 1's own channel directory and result still exist
+untouched on disk. That asserts both halves the requirement names: the Hop-2
+classification, and that Hop 1's state neither feeds nor disturbs it.
+
+[[b3]]
+==== B3 -- the pre-create/post-Hop-removal bracket F5 retired is left live in code, contract and a test comment
+
+After the F5 rework, `derive_boundary_grant` guarantees that every entry of
+`BoundaryGrant.writable_repository_paths` exists on disk: an existing entry
+resolves to itself, a declared durable artifact resolves to its nearest
+*existing* ancestor, and every other absent entry is refused by
+`AbsentWritableScopeEntryError`
+(`execution_launcher.py:141-178`, `:199-206`). Therefore
+`execution_launcher.missing_writable_targets()` (`:221-236`) can only ever
+return `()` for any grant `operator.py` builds -- it has exactly one
+construction site, and it is `derive_boundary_grant`. Three places still
+assert the opposite:
+
+. `operator.py:1089-1091` computes `pending_creates =
+  execution_launcher.missing_writable_targets(grant)` and then
+  `target.mkdir(parents=True, mode=0o700)` for each; `operator.py:1148-1159`
+  is the matching `finally` removal bracket. Both loops are now unreachable,
+  and `missing_writable_targets`'s own docstring (`:222-228`) still describes
+  the bracket as current behaviour ("the Coordinator's per-Hop dispatch frame
+  creates each one ... and removes it afterwards if it is still empty").
+. The contract's `<<a-lifecycle>>` section ("Who owns the pre-create and
+  post-Hop removal lifecycle",
+  `docs/backlog/FTR-WFC-EXECUTION-BOUNDARY-DISPATCH-INTEGRATION.adoc:332-353`)
+  still presents "Materialising an absent authorized directory target
+  (<<mounts>>) and removing it afterwards" as two live ends of one bracket,
+  naming the `operator.py` line ranges that perform it. The rewritten
+  `<<mounts>>` rule 4 then cross-references `<<a-lifecycle>>` as though
+  pre-creation still happened, and the step list at `:1766` still bills "the
+  pre-create and post-Hop removal bracket in the dispatch frame" as delivered
+  behaviour.
+. `tests/integration/test_execution_boundary_dispatch.py:184-187` (in
+  `test_p2_worker_writes_into_a_not_yet_existing_authorized_directory`, at
+  the lines immediately before `target = repository / "new-dir"`)
+  pre-creates the directory with the comment "The Coordinator dispatch frame
+  pre-creates an absent authorized directory target before `validate()` runs
+  (<<a-lifecycle>>); this test performs that same bracket step directly,
+  since it injects the adapter rather than going through `operator.py`." That
+  is now false in both halves: the dispatch frame creates nothing, and a
+  Commission with `authorized_scope=("new-dir", ...)` where `new-dir` does not
+  exist is exactly the shape `operator.py` now refuses. The test still passes
+  (it builds its grant directly), but it documents a Commission shape the
+  product no longer admits.
+
+This is the same class of defect F1 and F2 were: a retired mechanism still
+described as live, in the very documents this Commission was asked to make
+accurate. It is also what the Commission's own instruction about the marker
+demanded in the other direction ("then remove it and its tests rather than
+leaving dead code"), what `ch03_engineering_conventions`' rule that "names,
+errors and nearby comments state current behavior" requires, and what the
+review focus names as coherence of the combined `operator.py` change
+("channel creation and cleanup, refusal classification, no double bookkeeping
+between F1/F2 and F5"). The concrete cost is a dispatch frame carrying a
+`finally` bracket that can never fire, an exported launcher function with no
+reachable caller behaviour, and a contract section that will mislead the next
+reader of the F5 rule.
+
+Remedy (strictly a simplification -- it removes mechanism, adds none): delete
+the pre-creation loop and its `finally` removal bracket from `operator.py`,
+delete `missing_writable_targets` (or, if it is kept for the direct-grant
+`()` short-circuit, state in its docstring that it is now always empty for a
+derived grant and say what still calls it and why), rewrite `<<a-lifecycle>>`
+to state that nothing is pre-created or removed any more and what owns the
+per-invocation channel directory instead, reconcile the `:1766` step list,
+and correct p2's comment to say that the test constructs the pre-existing
+directory itself because the real dispatch frame would refuse that scope.
+
+=== What I independently re-verified and found correct
+
+==== F1, the started signal
+
+* *No agent-reachable input remains in the decision.* The only input is
+  `provider_started(started_signal)`
+  (`codex_adapter.py:488`, `claude_adapter.py:393`), which reads a pipe the
+  Coordinator opened with `os.pipe()` (`execution_launcher.py:293-296`) and
+  handed to the `bwrap` process alone via `pass_fds=(write_fd,)` plus
+  `--json-status-fd` (`execution_boundary.py:305-309`). I grepped the whole
+  tree: `.wfc-boundary-started`, `boundary_started_marker` and
+  `BOUNDARY_STARTED_MARKER_NAME` survive only in two new tests that *forge*
+  a file of that name and in historical review records -- there is no
+  remaining code path that creates or reads such a file, and no `/bin/sh`
+  touch-first wrapper (`prepare_bubblewrap` now passes `tuple(plan.argv)`
+  straight through, `execution_launcher.py:377-386`). The marker helper, its
+  constant and its five tests are gone, not left as dead code.
+* *Fail-closed when the signal is missing.* `prepare_bubblewrap` refuses to
+  build an argv at all without `LaunchPlan.status_fd`, so a bubblewrap launch
+  cannot silently proceed signal-less; `test_prepare_bubblewrap_requires_a_status_descriptor`
+  pins it and passes.
+* *Semantics match the maintainer's probe facts.* `provider_started` returns
+  `True` only if some drained document contains an `exit-code` key, so fact
+  (a)/(d) classify as started (including a non-zero exit, pinned by
+  `test_provider_started_true_for_a_nonzero_exit_code_document`), and facts
+  (b)/(c) -- `child-pid` alone -- classify as not started
+  (`test_provider_started_false_when_only_a_child_pid_document_arrives`). The
+  rationale for `--json-status-fd` over `--info-fd` is argued in the contract
+  and is sound: `--info-fd` carries no document that proves the wrapped
+  command was reached.
+* *No deadlock, bounded read.* The Coordinator closes its own copy of the
+  write end in a `finally` immediately after `Popen`
+  (`codex_adapter.py:474-476`, `claude_adapter.py:379-381`), so after
+  `communicate()` has reaped `bwrap` no holder of the write end remains and
+  `os.read` EOFs; `_STATUS_FD_MAX_BYTES` caps it at 64 KiB besides. I traced
+  the exception paths too: `prepare()` raising
+  `BoundaryConfigurationError` (a `ValueError`) is caught by both adapters'
+  `except (OSError, ValueError)` into `CodexCliError`/`ClaudeCliError`, which
+  subclass `ExecutionNotStartedError` -- so a launcher-side refusal is
+  classified not-started, and both the write and the read descriptor are
+  closed on every path, including that one.
+* *No inheritance by the provider or any grandchild.* `pass_fds` names only
+  the write end, `subprocess` closes every other inherited descriptor, and
+  the fd is not open inside the view (the maintainer's probe fact (e), pinned
+  by `test_json_status_fd_is_written_by_bwrap_and_is_not_open_inside_the_view`,
+  which writes to the same fd *number* from inside and asserts failure). A
+  descriptor that is closed in the provider is closed in every descendant it
+  forks, so the grandchild half of the review focus follows; it needs no
+  separate case.
+* *The `.git`-as-a-file wrapper is handled.* `build_argv` refuses a
+  `status_fd` equal to the reserved `_GIT_FILE_MASK_FD` (9), which the
+  `/bin/sh -c 'exec 9</dev/null && exec "$0" "$@"'` wrapper reopens to
+  `/dev/null` right before exec-ing `bwrap`. Without that guard a pipe landing
+  on fd 9 in a linked worktree -- WFC's own self-development shape -- would
+  have silently redirected `bwrap`'s status documents to `/dev/null` and
+  misclassified every started provider as not-started. Correct, and in the
+  fail-closed direction; see N2 for the residual.
+
+==== F2, the per-invocation channel
+
+* Both construction sites use `<run_root>/provider-channel/<invocation_id>`:
+  `operator.py:1065` (with `invocation_id = f"INV-{uuid.uuid4().hex}"`
+  regenerated per loop iteration, so a resumed or repeated Hop can never
+  collide) and `slice4.py:332` (created only when no adapter is injected, so
+  it cannot collide with the directory `operator.py` already created for the
+  same invocation). Grep confirms there is no third site and no remaining
+  per-checkout construction.
+* The ordering is right and is the part that matters for F5: grant derivation
+  runs *before* `channel_dir.mkdir(parents=True)`, so a refused Commission
+  leaves nothing on disk anywhere. `test_worker_scope_naming_an_absent_file_is_refused_by_name_before_any_provider_process_starts`
+  asserts exactly that (nothing new in the repository, no channel directory)
+  and passes for both adapter names.
+* No cross-Hop state remains on either adapter's writable surface: the Codex
+  channel is per invocation, and the Claude external scratch is already
+  invocation-scoped (`claude_adapter._external_scratch_dir`, keyed by
+  `_invocation_token(request)`) and removed in `finally` by
+  `_remove_scratch_path` on every path. The started decision itself carries no
+  cross-Hop state at all any more: the pipe is created and destroyed inside
+  one `execute()`.
+* The archive reads the new depth: `_plan_run_files` and `collect_run_files`
+  iterate `channel_dir` subdirectories and glob the three allowed names inside
+  each, recording `run/checkouts/<checkout>/provider-channel/<inv>/<name>`;
+  the historical depth-one checkout shape still archives unchanged. Both
+  pinned and passing.
+
+==== F15, which names in the channel are agent-reachable
+
+Stating this as the task requires: inside the per-invocation channel
+directory, the three archived names `structured-result.schema.json`,
+`result-message.json` and `claude-closed-settings.json` are *agent-reachable*
+on the Codex path, because the channel is bound writable there
+(`provider_channel_writable=True` for `codex_cli`). Their *locations* are
+trusted; their *bytes* are not, and nothing in the archiver, the adapters or
+the reducer treats them as Coordinator-authored. The cross-Hop half of F15 is
+closed by construction: each invocation gets a fresh directory, so a Codex-path
+agent can no longer plant `claude-closed-settings.json` for a later Hop to
+archive as the Coordinator's own settings, nor leave a directory at
+`result-message.json` to break a later Hop's `atomic_write_text` (that write
+now happens in the same invocation's own fresh directory, before the provider
+runs). The agent also cannot create sibling invocation directories, because
+`provider-channel/` itself is not mounted -- only its own invocation
+subdirectory is. See N5 for the one residual I found in the archiver.
+
+==== F3, the authentication mount
+
+* The implementation is accepted as-is, with no new path restriction added --
+  I checked: `execution_boundary.validate()`'s `readable_host_paths` block is
+  unchanged apart from the unrelated `status_fd` additions to `build_argv`.
+* The contract corrections are honest. `<<outside-sources>>` rule 1 now says
+  in terms that narrowness "is an *operating recommendation* ... not a
+  technically enforced invariant", names what is actually accepted (including
+  a whole `$HOME` or a whole provider configuration directory), and places the
+  responsibility with the operator. The mount table's row no longer claims
+  "narrowed to the single file or directory the live qualification proves
+  necessary" and says plainly that this described "an intended narrowing check
+  that was never implemented and is not authorized now". The Operator Manual
+  states the mount as "an *explicit extension of the read authority*" and
+  spells out the consequence of naming a broad path. No overclaim remains.
+* The misleading test name is fixed: `test_readable_host_path_requires_an_existing_absolute_path`
+  now states exactly what its body proves (a nonexistent and a relative path
+  are refused), and the new companion
+  `test_readable_host_path_accepts_any_existing_disjoint_host_path` pins the
+  accepted-by-design behaviour with a whole credential directory. Both pass.
+* *I independently retraced every channel by which the mount source could be
+  influenced from inside a Run, and found none open.*
+  `WFC_BOUNDARY_AUTHENTICATION_PATH` occurs in `src/` in exactly two places:
+  `operator.py:111`, the single read (`os.environ.get`, in
+  `_boundary_authentication_path()`, which takes no argument and opens no
+  file), and `operator.py:149`, a preflight diagnostic string. There is no
+  `.wfc/config.yaml` key, no commission/request field, no repository file and
+  no run-state file that feeds it -- I grepped `src/`, `tests/` and every
+  `*.yaml`/`*.yml`/`*.toml` in the tree. The environment a dispatched provider
+  receives is either the Claude allowlist (fixed names plus operator-listed
+  `WFC_CLAUDE_EXTRA_ENV_NAMES`) or the Coordinator's inherited environment
+  (Codex); in neither case can a child write back into the parent's
+  environment, which is a property of POSIX rather than of a check that could
+  lapse. The only other `env=`-passing spawns in `src/` are `git_facts`'
+  trusted Git environments and `evidence.py:334`'s configured evidence
+  environment, both Coordinator-owned and both in child processes. The
+  Commission's own three tests attempt the repository-file, channel-file,
+  task-text and child-`export` channels and pass. The contract's "Traced and
+  closed" paragraph matches what I found.
+
+==== F5, the fail-closed refusal
+
+* The rule is exactly the narrowest one the disposition asked for and is
+  stated identically in `AbsentWritableScopeEntryError`'s docstring, the
+  contract's `<<mounts>>` rules 1-4, the Operator Manual's boundary page and
+  the `ch07` failure-mode table: an existing entry is itself; an absent
+  declared durable artifact of the executing phase resolves to its nearest
+  existing ancestor inside the repository; every other absent entry is refused
+  by name. No directory is created where a file may have been authorized, and
+  no grant is widened to an unnamed ancestor.
+* The previously-silent degenerate case (a declared artifact whose whole
+  parent chain is absent, which used to fall back to the entry itself) is now
+  refused by the same named error, with its own test. Good catch beyond the
+  letter of the task.
+* The refusal is actionable and reaches the operator as a named preflight
+  classification: `OperatorPreflightError` carrying the entry path and the two
+  remedies (declare it as a durable artifact, or create it in the base). The
+  `ch07` row gives the same two remedies and explicitly warns against widening
+  the scope as a workaround. Both-adapter coverage and the existing-path
+  companion are present and pass.
+* No relaxation of fail-closed behaviour anywhere: `AbsentWritableScopeEntryError`
+  subclasses `BoundaryConfigurationError` subclasses `ValueError`, so every
+  adapter-side and operator-side path still lands in a not-started
+  classification.
+
+==== Scope, authority and discipline
+
+* *No withheld authority was taken.* The diff touches no `.wfc/config.yaml`,
+  `governance/`, `.github/`, `Makefile`, `pyproject.toml`, `scripts/` or
+  `examples/` file; it adds no mount kind (`build_argv`'s mount emission is
+  unchanged apart from `--json-status-fd`), changes no default-on enablement,
+  does not touch the post-Hop scope check or trusted Git, and claims neither
+  preventive isolation nor live qualification anywhere -- the new contract
+  section is explicit that the probes are Layer 1.
+* *No test was weakened or deleted without a replacement of equal or greater
+  rigour.* I diffed every `def test_` added and removed: nine removed, all
+  either marker-mechanism tests whose mechanism no longer exists (five) or
+  directory-pre-creation tests whose behaviour F5 deliberately retired
+  (three, each replaced by a refusal test with a tighter assertion), plus one
+  archive test renamed and strengthened. Net count is up, and the three
+  F5-retired cases were replaced by four.
+* *F4 is untouched* -- the N12 and nested-`bwrap` assertions and the
+  qualification measurement are byte-identical.
+
+=== Out-of-scope code the candidate touched (as the task requires listing)
+
+. *F14*, `docs/developer_guide/ch01_development.adoc:64-73`: the
+  `bwrap`-dependent test list gained `tests/unit/test_execution_launcher.py`.
+  Unavoidable -- this Commission's own change to that file is what made the
+  list inaccurate -- and it is F14's entire recommended remedy, a single
+  documentation line.
+. *F7*, `operator.py:1067-1080`: the new `except
+  execution_boundary.BoundaryConfigurationError -> OperatorPreflightError`
+  wrapper around `derive_boundary_grant` is half of out-of-scope F7's
+  recommended remedy ("wrap the `derive_boundary_grant` call in
+  `OperatorPreflightError`"), applied to *every* cause rather than only to
+  F5's. F5 does need a named preflight refusal, so some wrapping is
+  unavoidable; the breadth is not. See N4.
+
+No other out-of-scope finding's code was touched: F6, F8-F13 and F15's
+`archive.py` code paths are unchanged except for the F2-required glob depth
+and the F15 comment the disposition itself asked for.
+
+=== Non-blocking observations
+
+N1:: *A documentation inconsistency about the timeout path, not a defect.*
+`provider_started()` is still *called* on the timeout path -- `started =
+provider_started(started_signal) if started_signal is not None else True` runs
+before the `if not timed_out and ...` guard -- and its value is then
+discarded. `StartedSignal`'s docstring says "The pipe is deliberately never
+consulted when the adapter's own timeout/kill sequence fired", while the
+contract's `<<started-signal>>` section says the opposite and correct thing
+("The pipe is still drained and closed in every case (including the timeout
+case) ... but its content never changes the classification"). Behaviour is
+right (the kill case stays `timed_out=True` and never becomes "not started"),
+and the read cannot block because `communicate()` has already reaped the only
+remaining holder of the write end; only the docstring sentence should be
+aligned with the contract's.
+N2:: *The reserved-fd guard refuses where it could relocate.* `build_argv`
+turns `status_fd == 9` into a hard `BoundaryConfigurationError`. The direction
+is right, but it converts a benign file-descriptor-number coincidence into an
+unexplained dispatch refusal, and only in the `.git`-is-a-file (linked
+worktree) shape -- the shape WFC's own development uses. `os.dup`-ing the write
+end above the reserved number in `open_started_signal`, or choosing the mask
+descriptor dynamically, would remove the failure mode instead of naming it.
+Probability is low (it needs descriptors 3-8 all busy at `os.pipe()` time), so
+this is a robustness note, not a blocker.
+N3:: *Coverage asymmetries in the required test list, beyond B1 and B2.* Task
+item (1)'s not-started half is written only for the Codex adapter (the
+classification code is identical in both adapters, so this is a thinness, not
+a gap in the product); item (3) is proven at the primitive level only, which
+is adequate for the question it asks; item (4), the kill/timeout
+classification, is covered only incidentally by the pre-existing
+`test_n13_killing_a_timed_out_invocation_leaves_no_surviving_descendant`,
+which does assert `outcome.timed_out is True` and would fail if the timeout
+path consulted the signal -- a dedicated one-line case naming the documented
+semantics would be clearer. Worth folding into B1/B2's correction rather than
+pursued separately.
+N4:: *Narrow the F7-overlapping catch.* `operator.py:1076` catches every
+`BoundaryConfigurationError` from `derive_boundary_grant` and relabels it
+"execution boundary selected but the writable scope could not be established",
+which is wrong text for an unrecognised boundary mode or an unnormalizable
+scope (N15/F12 shapes). Catching `AbsentWritableScopeEntryError` for that
+message and leaving other causes their own wording would keep F5's named
+refusal without pre-empting F7's disposition.
+N5:: *A pre-existing archiver residual F15 does not close, outside this
+Commission's scope.* `archive._copy_one` uses `shutil.copy2`, and both
+`_plan_run_files` and `collect_run_files` select with `Path.is_file()`; all
+three follow symlinks. A Codex-path agent that replaces one of the three
+allowed names in its own (writable) channel directory with a symlink to any
+host file the Coordinator can read would have that file's *content* copied into
+the archive under a trusted-looking name. This predates the Commission, is not
+part of F1/F2/F3/F5, and the disposition for F15 asked only for the
+"agent-reachable, not trusted" record -- which was made. Recommend a backlog
+record for an `is_symlink()` refusal in the archiver.
+N6:: *Channel lifetime.* The per-invocation directory is never removed, by
+design, because `wfc archive` must still read it; its growth is one small
+directory per boundary-selected Hop and ends with the checkout. The "must not
+pre-exist -- refuse if it does" rule can effectively never fire, since the leaf
+name is a fresh UUID. Both are reasonable; one contract sentence saying the
+growth is bounded by the Run's Hop count and cleaned with the checkout would
+close the question the task asked ("decide cleanly where it is archived and
+where it is removed").
+N7:: *Retired archive shape.* Files recorded directly in
+`provider-channel/<name>` by the Slice A implementation are no longer archived
+(pinned deliberately by
+`test_provider_channel_files_directly_inside_the_channel_directory_are_not_archived`).
+Intentional and consistent with F2; worth knowing if an existing Run's archive
+is re-taken.
+
+=== Verdict
+
+*CHANGES REQUIRED.* B1 is a reproduced, environment-independent failure of a
+required test. B2 is a required test that does not exercise the behaviour the
+task names, with a feasible alternative available in the same file. B3 is a
+coherence and docs-accuracy defect that the Commission's own docs-sync
+obligation and its own anti-dead-code instruction cover. None of the three
+asks for new mechanism; B3 removes some. The security core -- the
+non-forgeable, non-withdrawable started signal, the per-invocation channel,
+the F3 contract correction and the named F5 refusal -- I found correct and
+honestly documented, and I recommend it be preserved unchanged through the
+correction.
