@@ -16,7 +16,143 @@ the whole-candidate pass that opened F001. Later passes are added above
 earlier ones; earlier passes are kept unedited apart from the `(current)`
 marker, which moves to the newest pass.
 
-== Pass H007 -- `RUN-b92592fa…` (current)
+== Pass H009 -- `RUN-b92592fa…` (current)
+
+Status:: *ACCEPT.* No Finding governs this pass: F001 and F002 are both
+already resolved (H004, H007). H008 is a text-only correction of a
+Coordinator task-check failure that the H006 quickstart edit itself
+introduced (a dangling line-continuation backslash at the end of a fragment
+shell block, which made the three `test_quickstart_commands.py` nodes that
+reach `_wfc_commands` raise `ValueError: No escaped character` in
+`shlex.split`) -- not a regression of F002's fix. I independently
+re-executed the reasoning rather than trusting the Worker's account: I
+re-ran the test module's own extraction-and-validation logic directly
+against the real Front-Door parsers (`pytest` is not installed in this
+sandbox, so I replicated the test's logic in a scratch script, confirmed its
+extraction and assertions match `tests/unit/test_quickstart_commands.py`
+line for line, then deleted the scratch file) and confirmed all three
+previously-failing checks now pass: 12 `wfc` commands extracted, every flag
+real, every required flag present. I also re-ran the real
+`evidence_sequence_from_flags` against the quickstart's two-gate flag order
+independently of H007's own re-run and confirmed it still yields the exact
+two gates (`lint`, then `task-check`) F002 required -- H008 did not regress
+F002's fix. No new blocking issue found.
+WorkItem:: `WI-WFC-BETA2-O7-001`
+Run / Hop:: `RUN-b92592fac84644cbb4dec966af7bf7b1` / `H009` (`focused_review`,
+independent reviewer, gate, blocking-only, `finding_authority: resolve`).
+Invocation:: `INV-32281fffc1004178912d37cf73f1a2c3`.
+Reviewed product:: the H008 correction commit
+`d63b13062b10f7f3966118ece70c60ef05fcbcfa` over `dfbae5f` (the H007 focused
+review commit): one leaf,
+`docs/operator_manual/ch09_consumer_quickstart/01_quickstart.adoc`. `git
+status --short -uall` shows only the pre-existing sandbox dotfiles
+untracked; the index is empty and no mutating Git command was run in this
+Hop.
+Governing Finding:: none -- both F001 and F002 are already resolved; this
+pass checks a trusted-evidence-failure correction, not a Finding
+disposition.
+
+=== 1. The H008 correction -- independently re-verified
+
+H007 accepted F002's fix and requested `renew_broad_review`, but the
+Coordinator's own trusted task-check then failed (exit 2) because the H006
+quickstart commit left a fragment shell block
+(`mkdir -p .wfc/governance && cat > ... <<'EOF' ... --guidance-path
+.wfc/governance/repository-policy.md \`, the single-gate preamble two
+paragraphs above the multi-gate passage) whose last captured line ended in
+an unterminated `\` continuation. `tests/unit/test_quickstart_commands.py`
+joins continuations with `_CONTINUATION_RE` and then `shlex.split()`s every
+line of every shell block; a trailing backslash as the final byte of a block
+makes `shlex.split` raise, failing the three tests that call `_wfc_commands`
+on that block.
+
+H008 replaces the fragment with the complete `wfc plan` command (all flags,
+including the two named gates spliced in at the correct position), removing
+the dangling continuation. I confirmed this three ways:
+
+* Ran the test module's extraction and both assertion loops
+  (`test_every_documented_subcommand_and_flag_exists_on_the_real_cli`,
+  `test_documented_commands_supply_every_required_flag`) against the real
+  parsers captured from `INIT`/`PLAN`/`PREPARE_CHECKOUT`/`EMIT_REQUEST`/
+  `LIFECYCLE`/`AUDIT`/`REPORT`/`ARCHIVE`/`SKILL` -- same modules, same
+  capture technique as the real test file. Result: 15 shell blocks, 12 `wfc`
+  commands extracted, no `shlex` error, every flag recognized, every
+  required flag present. All checks passed.
+* Scanned every `.adoc` file under `docs/` for a shell block whose last line
+  ends in a dangling `\` -- none found, independently confirming H008's own
+  claim that no other block carries the same defect.
+* Re-ran `evidence_sequence_from_flags` directly against the quickstart's
+  two-gate flag order (`--evidence-command lint --evidence-argv
+  <lint-argv0> --evidence-argv <lint-argv1> --evidence-command task-check
+  --evidence-argv sh --evidence-argv checks/check.sh`): two gates, `lint`
+  with its own argv and `task-check` with `["sh", "checks/check.sh"]`, each
+  `timeout_seconds: 900` -- identical to H007's own result, so F002's fix is
+  intact after H008.
+
+*No blocking issue found.*
+
+=== 2. Gates I executed myself
+
+[cols="2,3,1",options="header"]
+|===
+|Gate |Command |Result
+
+|Quickstart CLI-command checks
+|Test module's own extraction/validation logic, replicated against the real
+parsers (`pytest` not installed)
+|15 shell blocks, 12 `wfc` commands, no `shlex` error, every flag and every
+required flag present -- the three previously-failing checks pass.
+
+|Repository-wide dangling-continuation scan
+|Regex scan of every `[source,shell]` block under `docs/` for a trailing `\`
+at block end
+|No other block affected.
+
+|Real grouping function, two-gate flag order
+|`evidence_sequence_from_flags` run directly against the quickstart's
+corrected flag order
+|Two ordered, correctly separated gates (`lint`, `task-check`) -- F002's fix
+still holds.
+
+|Strict render
+|`asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN`
+on the one changed file
+|*Nothing printed.*
+
+|Doc catalog
+|`python3 scripts/wfc_doc_catalog.py generate` then `check`
+|`619 records … unchanged`; `83 unresolved links; 4 Project Memory
+source_path misses` -- *exactly the baseline*, catalog current, no stray
+file left.
+
+|Index and tree
+|`git status --short -uall`
+|Clean; only the pre-existing sandbox dotfiles untracked.
+
+|Lint re-execution
+|`python3 -m ruff check .`
+|*Environmental limitation*, unchanged from prior passes: `ruff` is not
+installed in this sandbox and there is no network to install it. No Python
+file is touched by the H008 diff (confirmed by `git diff --stat`: one
+`.adoc` leaf only), so the lint gate is unaffected by this correction.
+|===
+
+The full evidence command (the Coordinator's task-check, real `bwrap`,
+offline bundle) is authoritative and is not re-executed here.
+
+=== 3. Non-blocking observations
+
+None newly raised. N-9 remains the standing open observation carried from
+the H005 review, unchanged by H008 and not reopened here.
+
+=== 4. Route
+
+`renew_broad_review`. No blocking issue found in this focused review, so the
+route that hands back to the Worker does not apply; `robust@v1`'s
+structurally guaranteed renewed broad review is the only path to completion
+from here.
+
+== Pass H007 -- `RUN-b92592fa…`
 
 Status:: *ACCEPT.* The single blocking Finding the H005 renewed broad review
 opened -- F002, the quickstart's multi-gate instruction that absorbed the
