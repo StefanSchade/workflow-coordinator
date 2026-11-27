@@ -22,6 +22,7 @@ from .model import (
     COMMIT_ACTION,
     COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
     COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS,
+    BudgetExtension,
     CommitIntent,
     ConvergenceConfiguration,
     ConvergenceAssessment,
@@ -1365,6 +1366,11 @@ def run_to_json(run: Run) -> str:
         # had the key -- replays byte-identical; only an actually-isolated
         # Run's "bubblewrap" value is ever written.
         data.pop("boundary", None)
+    if not data.get("budget_extensions"):
+        # O8: no recorded maintainer extension is equivalent to the key being
+        # absent, so a Run from before this slice -- which never had the key
+        # -- replays byte-identically; only an actually-extended Run writes it.
+        data.pop("budget_extensions", None)
     if run.schema_version == 1:
         data.pop("semantic_stop", None)
         data.pop("successor_provenance", None)
@@ -1561,6 +1567,103 @@ def _sha256(value: Any, *, context: str) -> str:
     if re.fullmatch(r"[0-9a-f]{64}", text) is None:
         raise ValidationError(f"{context} must be a lowercase SHA-256 digest")
     return text
+
+
+def _budget_extension(value: Any, *, context: str) -> BudgetExtension:
+    """One recorded maintainer Hop-budget extension, under a closed schema.
+
+    O8: the per-element checks only; the chain checks (contiguous sequences,
+    an arithmetic chain that ends at the Run's own ``hop_limit``, and used
+    Hops never falling below a recorded grant) are in
+    ``_validate_budget_extensions`` because they need the whole Run.
+    """
+
+    data = _fields(value, context=context, required={
+        "sequence", "granted_at", "additional_hops", "hop_limit_before", "hop_limit_after",
+        "hop_used_at_grant", "run_status_at_grant", "stop_reason_at_grant",
+        "current_head_at_grant", "authority", "authority_sha256",
+    })
+    authority = _string(data["authority"], context=f"{context}.authority")
+    digest = _sha256(data["authority_sha256"], context=f"{context}.authority_sha256")
+    if hashlib.sha256(authority.encode("utf-8")).hexdigest() != digest:
+        raise ValidationError(f"{context}.authority_sha256 does not digest its own authority statement")
+    additional_hops = _integer(
+        data["additional_hops"], context=f"{context}.additional_hops", positive=True,
+    )
+    hop_limit_before = _integer(
+        data["hop_limit_before"], context=f"{context}.hop_limit_before", positive=True,
+    )
+    hop_limit_after = _integer(
+        data["hop_limit_after"], context=f"{context}.hop_limit_after", positive=True,
+    )
+    if hop_limit_before + additional_hops != hop_limit_after:
+        raise ValidationError(f"{context} does not add its own additional Hops to its own before-ceiling")
+    hop_used_at_grant = _integer(data["hop_used_at_grant"], context=f"{context}.hop_used_at_grant")
+    if hop_used_at_grant < 0:
+        raise ValidationError(f"{context}.hop_used_at_grant must not be negative")
+    if hop_used_at_grant > hop_limit_before:
+        raise ValidationError(f"{context}.hop_used_at_grant exceeds its own before-ceiling")
+    return BudgetExtension(
+        sequence=_integer(data["sequence"], context=f"{context}.sequence", positive=True),
+        granted_at=_string(data["granted_at"], context=f"{context}.granted_at"),
+        additional_hops=additional_hops,
+        hop_limit_before=hop_limit_before,
+        hop_limit_after=hop_limit_after,
+        hop_used_at_grant=hop_used_at_grant,
+        run_status_at_grant=_string(
+            data["run_status_at_grant"], context=f"{context}.run_status_at_grant",
+        ),
+        stop_reason_at_grant=_string(
+            data["stop_reason_at_grant"], context=f"{context}.stop_reason_at_grant",
+        ),
+        current_head_at_grant=_string(
+            data["current_head_at_grant"], context=f"{context}.current_head_at_grant",
+        ),
+        authority=authority,
+        authority_sha256=digest,
+    )
+
+
+def _validate_budget_extensions(run: Run) -> None:
+    """O8's closed-wire chain checks for ``Run.budget_extensions``.
+
+    These are what make "used Hops are never reset or refunded"
+    (`WFC-AUTO-05`) a persistence invariant rather than a convention: a Run
+    whose ``hop_used`` ever fell below a recorded grant's own charge, or
+    whose extension chain does not add up to its current ``hop_limit``, is
+    refused on the wire. They also pin the only state an extension may ever
+    have been granted against.
+    """
+
+    extensions = run.budget_extensions
+    if not extensions:
+        return
+    for index, extension in enumerate(extensions, start=1):
+        if extension.sequence != index:
+            raise ValidationError(
+                f"Run.budget_extensions[{index - 1}].sequence is not its own position in the grant order"
+            )
+        if extension.run_status_at_grant != RunStatus.AWAITING_HUMAN_BUDGET.value:
+            raise ValidationError(
+                f"Run.budget_extensions[{index - 1}] was not granted against a budget-stopped Run"
+            )
+        if extension.stop_reason_at_grant != "autonomous_hop_budget_exhausted":
+            raise ValidationError(
+                f"Run.budget_extensions[{index - 1}] was not granted against an exhausted Hop budget"
+            )
+        if extension.hop_used_at_grant > run.hop_used:
+            raise ValidationError(
+                f"Run.hop_used is below the Hops already charged at "
+                f"Run.budget_extensions[{index - 1}]: used Hops are never refunded"
+            )
+        if index > 1 and extension.hop_limit_before != extensions[index - 2].hop_limit_after:
+            raise ValidationError(
+                f"Run.budget_extensions[{index - 1}] does not continue the previous grant's ceiling"
+            )
+    if extensions[-1].hop_limit_after != run.hop_limit:
+        raise ValidationError("Run.budget_extensions does not add up to Run.hop_limit")
+    if extensions[0].hop_limit_before >= run.hop_limit:
+        raise ValidationError("Run.budget_extensions must raise the admitted Hop ceiling")
 
 
 def _optional_integer(value: Any, *, context: str) -> int | None:
@@ -2323,14 +2426,21 @@ def run_from_json(text: str) -> Run:
         raise ValidationError(f"invalid Run JSON: {error}") from error
     raw = _mapping(value, context="Run")
     version = _integer(raw.get("schema_version"), context="Run.schema_version")
-    v2_fields = {field.name for field in fields(Run)} - {"boundary"}
+    # O8: ``budget_extensions`` is optional at every version and absent from
+    # the document of a Run that was never extended, so every Run written
+    # before this slice loads and replays byte-identically.
+    optional_fields = {"boundary", "budget_extensions"}
+    v2_fields = {field.name for field in fields(Run)} - optional_fields
     v1_fields = v2_fields - {"semantic_stop", "successor_provenance"}
     if version == 1:
-        data = _fields(raw, context="Run", required=v1_fields, optional={"boundary"})
+        data = _fields(raw, context="Run", required=v1_fields, optional=optional_fields)
     elif version in {2, 3}:
-        data = _fields(raw, context="Run", required=v2_fields, optional={"boundary"})
+        data = _fields(raw, context="Run", required=v2_fields, optional=optional_fields)
     else:
         raise ValidationError(f"Run.schema_version has unsupported version: {version}")
+    raw_extensions = data.get("budget_extensions", [])
+    if not isinstance(raw_extensions, list):
+        raise ValidationError("Run.budget_extensions must be a list")
     boundary = data.get("boundary", "direct")
     if boundary not in {"direct", "bubblewrap"}:
         raise ValidationError(f"Run.boundary has unsupported value: {boundary!r}")
@@ -2377,6 +2487,10 @@ def run_from_json(text: str) -> Run:
             )
         ),
         boundary=boundary,
+        budget_extensions=tuple(
+            _budget_extension(item, context=f"Run.budget_extensions[{index}]")
+            for index, item in enumerate(raw_extensions)
+        ),
     )
     if run.hop_used != len(run.hops):
         raise ValidationError("Run.hop_used must equal the number of Hop summaries")
@@ -2392,6 +2506,7 @@ def run_from_json(text: str) -> Run:
         hop.hop_id for hop in run.hops
     }:
         raise ValidationError("Run.semantic_stop.source_hop_id is absent from Run.hops")
+    _validate_budget_extensions(run)
     if version == 3:
         _validate_v3_run(run)
     return run

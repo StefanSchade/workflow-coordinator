@@ -122,7 +122,11 @@ Run to `ready` only to leave it stopped again with its honest diagnosis
 erased and no remaining documented path forward; the Run keeps its
 `reconcile_required`/`awaiting_human` record and stop reason, and
 authorizing additional Hop budget for it is a separate, explicit
-maintainer decision outside this mechanism. On success it appends new
+maintainer decision outside this mechanism (and `wfc extend-budget`,
+<<budget-extension>>, does not cover it either: that command requires an
+`awaiting_human_budget` stop, so this shape is
+link:{operator-docs}/backlog/beta2_operator_efficiency_plan.adoc#o10[slice
+O10]'s). On success it appends new
 journal records only (never rewrites or deletes one), moves the identical
 Run to `ready` at its unchanged phase with the stopped Hop still charged
 and the Hop budget unchanged, and continues the engine's own Hop loop to a
@@ -176,6 +180,109 @@ That walkthrough is informative and subordinate to this normative section,
 including exact preservation and fresh assurance; its worked case (§2)
 and captured experience (§6) are illustrative background. Its links through
 the legacy recovery path lead back here.
+
+[[budget-extension]]
+=== Recorded maintainer Hop-budget extension (`wfc extend-budget`)
+
+The second bounded, already-implemented in-place continuation, and the only
+one that *requires* a human decision rather than replacing one: a Run that
+stopped `awaiting_human_budget` (`stop_reason=autonomous_hop_budget_exhausted`)
+can be continued on an explicit, recorded maintainer authority, without a
+successor Commission and without its own new review chain. The decisions,
+the rejected alternatives and the honest limits are in
+link:{operator-docs}/backlog/FTR-WFC-STOPPED-RUN-CONTINUATION-ECONOMY.adoc#design[the
+record's `Design` section]; this section is the normative operator contract.
+
+[source,shell]
+----
+wfc extend-budget --additional-hops 3 \
+  --authority "Maintainer instruction of <date> in this session: <the instruction>" \
+  [--preview]
+----
+
+Both value arguments are required: no default amount, no default statement.
+Before any mutation -- and as the whole of `--preview`, which takes no lock
+and changes nothing -- the command prints one confirmation block naming the
+Run id, the WorkItem, the phase, the Hops used of the current ceiling, the
+admitted and current ceiling, the requested amount, the resulting ceiling,
+both bounds with this Run's consumption of them, the policy ceiling, and the
+authority statement with its SHA-256.
+
+*What is recorded.* The Run keeps `hop_limit` as its one enforced effective
+ceiling and gains an append-only `budget_extensions` entry stating who/what
+authorised the grant, when, how much, and against which Run state (status,
+stop reason, used Hops and end HEAD at the grant). The admitted
+`WorkItem.max_autonomous_hops`, the compiled Commission files and the
+Commission digest are *never rewritten* -- the digest is re-verified
+unchanged before anything is recorded, so the original admission stays
+verifiable and the ceiling admission judged stays reconstructible from the
+Run as `hop_limit` minus the recorded grants.
+
+*What it never does.* Reset or refund a charged Hop (`WFC-AUTO-05`; a Run
+whose used Hops fell below a recorded grant's own charge is refused on the
+wire, so this is a persistence invariant, not a convention); change Hop
+charging; change Finding authority. Nothing on the path reads, writes, opens
+or closes a Finding. An *open blocking Finding does not block an
+extension* -- continuing the Run's own review/correction chain is the only
+thing that may dispose of it, and only the independent reviewer ever does.
+
+*The bounds*, all enforced before any effect: at most *four Hops per call*
+(one `robust@v1` correction cycle is three Hops -- Worker correction, focused
+review, renewed broad review -- plus one further Worker Hop; more in one step
+is new work and belongs in a Commission authored as one); in total at most
+*half the admitted ceiling, rounded up*, computed from the Run's own record
+so repeated small grants cannot creep past it; and never above the admitted
+repository policy's `max_autonomous_hops` (re-derived from this checkout's
+cached, digest-verified Commission, never from the live `.wfc/config.yaml`)
+nor above the hard Coordinator maximum of 64.
+
+*Every refusal is named and changes nothing at all* (classification
+`refused_budget_extension`, exit `34`): any classification other than
+`awaiting_human_budget`; a Run that is not actually out of budget, whose
+stop reason is not the exhausted budget, or that carries a frozen semantic
+stop (that Run needs the human's answer, and where eligible the
+`prepare-successor` channel, not more budget); an amount outside any bound;
+an empty authority statement, one shorter than 40 characters once whitespace
+is collapsed, or a bare authorisation gesture (`yes`, `--yes`, `approved`)
+in place of a statement of the instruction; a moved HEAD; a worktree that is
+not clean with resolved submodules; a changed Commission or execution-envelope
+identity; a changed provider or absent engine executable; an already-active
+lifecycle in this checkout. A continuation engine that resolves and then
+fails to spawn rolls the Run and checkpoint back to their pre-extension
+state and records `budget_extension_rolled_back`; the grant and its rollback
+both stay in the append-only journal, and because the grant is no longer in
+the Run it consumes none of the total bound.
+
+*Visibility.* `wfc status` prints a `BUDGET EXTENSION <n>:` block per grant;
+`wfc report` renders a `budget ext` line per grant and, for a budget stop,
+names this command as the next human choice; `audit.json` carries the grants
+*structurally* -- amount, ceilings, used Hops, time and the statement's
+SHA-256, deliberately not its free text, because the sanitized projection is
+default-deny and must not let a free-text sentence decide whether a Run is
+archivable; the archived raw `run.json` carries the verbatim statement, which
+the digest ties to the projection. A continuation attempt's own archive uses
+the same distinct, collision-free `-recovery-<n>` destination mechanism as a
+mechanically recovered continuation.
+
+*What this cannot enforce, stated plainly.* Nothing at this CLI can
+distinguish a human-instructed extension from an invented one: whoever can
+run `wfc` can pass both arguments, and a Level-1 operator is itself an agent
+that already passes `--yes` for launches. Technical prevention is impossible
+at this surface and is not claimed. The controls are the recorded authority
+statement (a false one is a durable, attributable false claim in the record
+the maintainer reads), the Agent Skill rule that an agent never extends a
+budget without the maintainer's explicit instruction in the current session
+and says so in its report, the visibility above, and the bounds, which make
+the worst case finite and small rather than open-ended.
+
+*What stays separate.* `wfc resume` gains nothing: a budget stop still falls
+through to its unchanged no-op, and a mechanically recoverable stop with no
+Hop left still refuses by name (`no autonomous Hop budget remains for a
+continuation`). `prepare-successor` stays categorically ineligible for a
+budget stop. Extending a Run that is *both* budget-exhausted and
+mechanically recoverable is deliberately not wired here; it belongs to
+link:{operator-docs}/backlog/beta2_operator_efficiency_plan.adoc#o10[Beta-2
+slice O10].
 
 == Canonical salvage procedure (outcome 2)
 
@@ -294,7 +401,10 @@ This procedure is maintainer-owned throughout. WFC does not automatically
 decide candidate value, widen scope, commission successors, resume stopped
 Runs, or select between same-Run resume and a fresh successor. Those remain
 explicit maintainer acts; future product automation would require separate
-design, review, and authority, none of which this document creates.
+design, review, and authority, none of which this document creates. The
+recorded Hop-budget extension (<<budget-extension>>) is not an exception to
+this: it is a *command for* an explicit maintainer decision, never an
+automatic one, and it records the authority it was given.
 
 One bounded, already-implemented exception to "WFC does not ... create
 salvage commits": `frontdoor.preservation` creates an automatic,
@@ -334,7 +444,9 @@ and a Run snapshot matching its already-published checkpoint identity.
 It also admits a clean successor checkout at an exact baseline under newly
 pinned governing inputs and an explicit maintainer authority decision.
 `reconcile_required` and `awaiting_human_budget` do not satisfy predecessor
-eligibility: `prepare-successor` is not a repair for those states. An
+eligibility: `prepare-successor` is not a repair for those states, and this
+is unchanged by <<budget-extension>>, which continues the *same* Run in
+place instead of admitting a successor. An
 `export-salvage` bundle alone grants neither that eligibility nor authority
 and does not turn the manual Git-preservation path into automated recovery.
 

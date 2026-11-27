@@ -83,7 +83,16 @@ _NEXT_HUMAN_CHOICE = {
     # question that provably does not exist, nor a recovery that provably
     # does not happen.
     "awaiting_human": "a human must answer the open question, then run `wfc resume`",
-    "awaiting_human_budget": "a human must authorize additional hop budget, then run `wfc resume`",
+    # O8: before this slice this line named `wfc resume`, which never
+    # answered a budget stop at all (its recovery predicate requires a
+    # `mechanical_preemption:` stop reason). It now names the command that
+    # does, and the authority it actually requires.
+    "awaiting_human_budget": (
+        "a human must decide whether to authorize additional Hop budget; on the "
+        "maintainer's explicit instruction run `wfc extend-budget --additional-hops N "
+        "--authority \"<the instruction>\"`, which records the extension and continues "
+        "the same Run, or prepare a successor Commission instead"
+    ),
     "reconcile_required": "a human must reconcile the Run's conflicting state before resuming",
     "stopped": "a human must decide how to proceed; this Run will not resume on its own",
     # frontdoor.lifecycle.EXIT_CODES: controller-level classifications.
@@ -106,6 +115,10 @@ _NEXT_HUMAN_CHOICE = {
     "lifecycle_active": "the lifecycle is still active; wait, then re-check with `wfc report`",
     "no_lifecycle": "a human must inspect why no lifecycle journal exists for this Run",
     "refused_not_recoverable": "a human must inspect the named refusal reason; nothing was changed by the attempt",
+    "refused_budget_extension": (
+        "a human must inspect the named refusal reason; no extension was recorded and "
+        "nothing was changed, so the Run keeps its stop and every charged Hop"
+    ),
 }
 _UNKNOWN_NEXT_ACTION = "status is unknown; a human must inspect this Run directly"
 _KNOWN_STATUSES = frozenset({"completed", *_NEXT_HUMAN_CHOICE})
@@ -218,6 +231,10 @@ def build_report(audit: Mapping[str, Any], *, archive_ref: str | None = None) ->
         "program": program,
         "hops_used": run.get("hops_used"),
         "hop_limit": run.get("hop_limit"),
+        # O8: the audit's structural projection of every recorded maintainer
+        # Hop-budget extension, carried through unchanged (an empty list for
+        # every Run that was never extended).
+        "budget_extensions": run.get("budget_extensions") or [],
         "commits": commits,
         "evidence": evidence_lines,
         "findings_open_blocking": open_blocking,
@@ -265,6 +282,15 @@ def render_report_text(report: Mapping[str, Any]) -> str:
         lines.append("            status is unknown -- not reported as success")
     if report.get("stop_reason"):
         lines.append(f"stop reason {report['stop_reason']}")
+
+    for extension in report.get("budget_extensions") or []:
+        lines.append(
+            f"budget ext  +{extension.get('additional_hops')} hops "
+            f"({extension.get('hop_limit_before')} -> {extension.get('hop_limit_after')})  "
+            f"used {extension.get('hop_used_at_grant')} at grant  "
+            f"{extension.get('granted_at')}  "
+            f"authority sha256:{extension.get('authority_sha256')}"
+        )
 
     if report.get("commits"):
         lines.append("commits     " + "  ".join(report["commits"]))

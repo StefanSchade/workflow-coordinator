@@ -2,14 +2,25 @@
 
 Type:: future technical record -- Hop accounting, admission and review
 authority (category B on three counts; see the authority section)
-Status:: proposed / backlog; *budget extension decided for Beta 2 as slice O8, Worker-only closure rejected, 2026-11-26*; nothing implemented
+Status:: class (a), the budget extension, is *implemented on 2026-11-27* as
+slice O8 (`WI-WFC-BETA2-O8-001`, decision D7a); see <<design>> for the
+decisions and <<implementation>> for what shipped. Class (b)'s heavy
+`prepare-successor` channel and the rejected Worker-only Finding closure
+(D7b) are unchanged by it. Independent acceptance and product closure are
+the maintainer's to record.
 Current controlling source:: This record; see link:_open.adoc[the active-work
 manifest] for its current card and
 link:beta2_operator_efficiency_plan.adoc#d7[the Beta-2 operator-efficiency
 plan's decision D7] for the recommendation and the interim remedy.
-Next action:: None scheduled. Any work here needs its own separately
+Next action:: None of this record's own. A Runtime promotion and `wfc skill
+install` are what make `wfc extend-budget` and the changed shipped texts
+reach a consumer, and remain a separate maintainer action. The remaining
+general same-Run continuation classes are
+link:beta2_operator_efficiency_plan.adoc#o10[slice O10]'s.
+Status (proposal state, historical):: proposed / backlog; *budget extension decided for Beta 2 as slice O8, Worker-only closure rejected, 2026-11-26*; nothing implemented
+Next action (proposal state, historical):: None scheduled. Any work here needs its own separately
 authorized and independently reviewed design package.
-Not authorized here:: Any implementation; any change to Hop charging, to
+Not authorized here (proposal state, historical, superseded by D7a for class (a) only):: Any implementation; any change to Hop charging, to
 `max_autonomous_hops` admission, to recovery eligibility, to Finding
 disposition authority or to the independent reviewer's sole authority to open
 and resolve a Finding; any Run.
@@ -23,6 +34,266 @@ Beta-2 operator-efficiency analysis], candidate `C8`, friction entries 15 and
 == Maintainer decision (2026-11-26)
 
 D7a: *implement* an explicit, traceably recorded budget extension by the maintainer, as slice link:beta2_operator_efficiency_plan.adoc#o8[O8]; an autonomous budget raise by an agent stays excluded. D7b: *rejected* -- Worker-only closure of a Finding is not implemented; the independent Finding disposition stays. The preserved properties are the independent reviewer's sole Finding authority and `WFC-AUTO-05` (used Hops are never reset); their present technical realisation may change. The status, priority and `Not authorized here` lines above describe the state before this decision.
+
+[[design]]
+== Design (2026-11-27, slice O8, `WI-WFC-BETA2-O8-001`)
+
+Written before the code, under decision
+link:beta2_operator_efficiency_plan.adoc#d7[D7a] and the Beta rule, for the
+questions link:beta2_operator_efficiency_plan.adoc#o8[the slice] asks. Each
+decision names the property it preserves and the alternative it rejects.
+Scope of the slice is class *(a)* of the problem below -- a budget-stopped
+Run -- and nothing else: class (b)'s `prepare-successor` channel, the
+rejected Worker-only Finding closure (D7b) and `wfc resume`'s
+durable-artifact recovery class are untouched.
+
+Preserved unchanged by every decision below: used Hops are never reset or
+refunded (`WFC-AUTO-05`); the independent reviewer's sole authority to open
+and resolve a Finding; the trusted-commit boundary; fail-closed admission;
+one Run per checkout; the admitted Commission and its digest as the Run's
+governing truth; Hop charging (`model.record_hop`) and both budget-stop
+sites in the reducer.
+
+=== Where the effective limit lives
+
+*Decision.* `Run.hop_limit` stays the one enforced effective ceiling, and a
+recorded extension raises it. The extension itself is a new, append-only
+element of the Run record, `Run.budget_extensions`, each element carrying
+*who/what authorised it, when, how much, and against which Run state*:
+
+[source,text]
+----
+BudgetExtension(sequence, granted_at, additional_hops,
+                hop_limit_before, hop_limit_after, hop_used_at_grant,
+                run_status_at_grant, stop_reason_at_grant,
+                current_head_at_grant, authority, authority_sha256)
+----
+
+The admitted `WorkItem.max_autonomous_hops`, the compiled Commission files
+and the Commission digest are *never rewritten*: the digest is re-verified
+unchanged (the same check `wfc resume`'s recovery makes) before anything is
+recorded, so the original admission stays verifiable and an extension is
+never mistakable for an original authorisation. The originally admitted
+ceiling remains reconstructible from the Run alone as
+`hop_limit - sum(additional_hops)`.
+
+*Why this preserves `WFC-AUTO-05`.* Nothing on the path reads or writes
+`hop_used` or `hops`; the reduction only ever *increases* `hop_limit`. The
+persisted record pins `hop_used_at_grant`, and closed-wire validation
+refuses any Run whose `hop_used` is below a recorded grant's charge or whose
+extension chain does not add up to its current `hop_limit`. "Used Hops are
+never refunded" is therefore a persistence invariant, not a convention.
+
+*Alternatives rejected.* (i) *Recompile the Commission with a higher
+`max_autonomous_hops`*: it rewrites admitted governing truth and moves the
+Commission digest, so the original admission is no longer verifiable and the
+extension becomes invisible as an extension. (ii) *A second counter beside
+`hop_limit`* (`hop_limit + extension` evaluated at each reader): every
+existing reader of `hop_limit` -- `model.record_hop`, both reducer stop
+sites, `reducer.resume_after_reconcile`, `slice4`, `operator.run_serial_hops`
+and its hard-maximum guard, the recovery predicate, status, report, audit --
+would have to be found and changed, and a missed reader is either a silent
+budget bypass or a silent stop. Rejected on risk, not on taste. (iii) *A
+journal-only raise* that the lifecycle applies for one continuation without
+recording it in the Run: the Run, its checkpoint and its archive would then
+disagree with how many Hops the Run may actually charge.
+
+=== The command: a new `wfc extend-budget`, not an option of `wfc resume`
+
+*Decision.* One new subcommand:
+
+[source,shell]
+----
+wfc extend-budget --repository . \
+  --additional-hops 3 \
+  --authority "Maintainer instruction of 2026-11-27 in this session: ..." \
+  [--preview]
+----
+
+Both `--additional-hops` and `--authority` are required: no default amount,
+no default statement, no implicit "one more Hop".
+
+*Why not `wfc resume --additional-hops`.* `wfc resume`'s whole contract is
+that it asks the human for nothing and either recovers mechanically or
+refuses by name. Hanging a human-authority mutation on it would make the
+habitual bare `wfc resume` and an authority-bearing `wfc resume --...` the
+same verb, under a name that promises no authority, and would put a flag
+parser in front of the one command an operator reaches for after every
+anomaly. A separate verb makes the authority act its own command with its
+own name in the journal, its own exit codes and no way of performing it
+while reaching for recovery -- and leaves `wfc resume` literally unchanged,
+which this slice requires.
+
+*What it asks of the human, and shows.* Before any mutation (and as the
+whole of `--preview`) it prints one confirmation block: Run id, WorkItem id,
+phase, Hops used of the current ceiling with the note that they stay
+charged, the current ceiling, the requested amount, the resulting ceiling,
+the per-call and total bounds with this Run's consumption of them, and the
+authority statement with its SHA-256. `--preview` takes no lock, writes
+nothing and exits 0.
+
+*What it then does.* Records the extension, re-projects the checkpoint, and
+drives the *same* Run on through the unchanged `--continue-existing`
+admission path (`operator._continue_existing_run`) at the Run's own
+`current_head`, exactly as mechanical recovery does, to a further
+`classified` record. One command, one outcome; the Run proceeds in its
+recorded phase with its Run-local Findings, pinned governing inputs and
+charged-Hop history intact.
+
+=== The bounds, and why
+
+Three, all enforced in the pure reduction before any effect:
+
+* *Per call: 1..4 Hops.* Under `robust@v1` one correction cycle is three
+  Hops (Worker correction, focused review, renewed broad review); four
+  admits that cycle plus one further Worker Hop, which is the entire shape
+  friction entries 15 and 19 describe. More in one step is no longer a
+  mechanical residue but new work, and new work belongs in a Commission that
+  is authored, previewed and reviewed as one.
+* *Total per Run: `ceil(admitted / 2)` Hops*, where `admitted` is the
+  originally admitted ceiling reconstructed from the Run. An extension
+  corrects the operator's own budget estimate; it does not re-commission. A
+  Run may never be made more than half again as large as what admission
+  actually judged, and it cannot creep there in small steps.
+* *Never above the admitted policy ceiling* (`policy.max_autonomous_hops`,
+  re-derived from this checkout's cached, digest-verified Commission --
+  never from the live `.wfc/config.yaml`, which the invoking agent can edit)
+  *nor above `COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS`* (64).
+
+So an extension cannot silently become unlimited: each bound is a function
+of facts already frozen at admission, and the two Run-scoped bounds are
+recomputed from the Run's own record on every call.
+
+=== Checkpoint, ownership lock and the one-Run-per-checkout lifecycle
+
+The ownership lock is taken *before any mutation* and held across the
+continuation launch (passed to the child by file descriptor), exactly as the
+recovery path does, so an extension in a checkout whose lifecycle is active
+refuses by name and changes nothing. `checkpoint.json` is re-projected from
+the extended Run immediately after the Run snapshot, so the published
+checkpoint identity (`run_json_sha256`) matches the snapshot it projects;
+its `budget` block gains the effective `limit` and the `extended_by` total
+beside the pre-existing `used`/`remaining`. The checkout is not re-used and
+no new Run is created: one checkout still carries exactly one Run, which is
+why an extension is the cheap answer at all.
+
+If the continuation engine resolves at the pre-mutation check and then fails
+to spawn, the Run and checkpoint are rolled back to their pre-extension
+state and a `budget_extension_rolled_back` record is appended -- the
+append-only journal keeps the granted *and* the rolled-back record, so the
+attempt stays auditable, and because the extension is no longer in the Run
+it also does not consume the total bound. Stated plainly: a rolled-back
+extension is an attempt, not a grant.
+
+=== What is refused, by name
+
+Every refusal below changes nothing at all. The first group is the pure
+reduction (`reducer.extend_hop_budget`), the second the lifecycle's
+live-fact re-verification.
+
+* the Run is not in `awaiting_human_budget`; or its stop reason is not
+  `autonomous_hop_budget_exhausted`; or its used Hops are below its own
+  ceiling (it is not actually out of budget);
+* the Run carries a frozen `semantic_stop` -- that Run needs the human's
+  answer and, where eligible, the `prepare-successor` channel, not more
+  budget;
+* the amount is not a positive integer, exceeds the per-call bound, exceeds
+  this Run's remaining total bound, or would exceed the admitted policy
+  ceiling or the Coordinator hard maximum;
+* the authority statement is empty, is shorter than 40 characters once
+  whitespace is collapsed, or is a bare authorisation token (see below);
+* this checkout has no lifecycle, or its classification is not
+  `awaiting_human_budget`; another lifecycle holds the ownership lock;
+  HEAD differs from the Run's recorded end HEAD; the worktree is not clean
+  with resolved submodules; the Commission or execution-envelope identity
+  changed since authorization; the provider or engine executable is absent
+  or changed; the governing profile cannot be re-derived.
+
+An *open blocking Finding does not block an extension* -- that is the whole
+point of the slice (friction entry 19 stopped one Broad Review short with
+exactly one). The continuation runs the Run's existing, reviewed
+correction/review chain, which is the only thing that may dispose of that
+Finding. Nothing on this path reads, writes, opens or closes a Finding, so
+D7b is untouched by construction, not by promise.
+
+=== Visibility
+
+* `wfc status` prints a `BUDGET EXTENSION` block per recorded grant (amount,
+  before/after ceiling, Hops used at the grant, time, authority statement)
+  from the checkout's own append-only journal.
+* `wfc report` reports `budget_extensions` and renders one `budget ext` line
+  per grant; the `awaiting_human_budget` next-action line now names the real
+  command instead of `wfc resume`, which never answered a budget stop.
+* `audit.json` carries the extensions in the `run` section *structurally* --
+  amount, before/after ceiling, Hops used at the grant, time, and the
+  authority statement's SHA-256, deliberately *not* its free text. The audit
+  projection is default-deny and passes a privacy guard that refuses any
+  absolute path or private string; an operator's free-text sentence cannot
+  be allowed to decide whether a Run is archivable at all. The verbatim text
+  is in the archived raw `run.json`, and the digest ties the two together.
+* The archive carries both: the raw `run.json` (verbatim statement) and
+  `audit.json` (structural projection). A continuation attempt's archive
+  gets the pre-existing continuation ordinal suffix (`-recovery-N`), which
+  this slice deliberately does not rename -- renaming it would change the
+  archive destinations of the unrelated mechanical-recovery path.
+
+=== What this cannot enforce, stated honestly
+
+Technical prevention of an agent extending its own budget *is impossible at
+this CLI*, and is not claimed anywhere. The Level-1 operator is itself an
+agent that already passes `--yes` for launches; whoever can run `wfc` can
+pass `--additional-hops` and `--authority` too, and no flag, prompt or exit
+code can distinguish a human-instructed extension from an invented one.
+
+What actually controls it:
+
+. *The recorded authority statement*, verbatim in the Run, the journal, the
+  checkpoint and the archive, and by digest in `audit.json`. A false
+  statement is a durable, attributable false claim in the record the
+  maintainer reads -- which is a governance control, not a technical one.
+. *The skill rule*: an agent never extends a budget without the maintainer's
+  explicit instruction in the current session, quotes that instruction as
+  the authority statement, and reports the extension in its own report.
+. *Visibility* in status, report, audit and the archive, so no extension is
+  quiet.
+. *The bounds*, which make the worst case of an unauthorised extension
+  finite and small (at most four Hops per call and half the admitted ceiling
+  in total) instead of open-ended.
+
+*Adopted as the strongest additional control that needs no new
+infrastructure:* refuse a degenerate authority statement. `--authority` is
+required; its value must be at least 40 characters once whitespace is
+collapsed and must not be one of a closed set of bare authorisation tokens
+(`y`, `yes`, `--yes`, `ok`, `okay`, `approved`, `authorised`, `authorized`,
+`confirmed`, `granted`, `go`, `maintainer`, `maintainer approved`, ...,
+compared case-insensitively with surrounding punctuation stripped). This is
+sound against the realistic failure mode -- an agent reflexively reusing the
+launch ritual's `--yes` spelling as if it were authority -- and it names its
+refusal. It is *not* a defence against a deliberately fabricated sentence,
+and is not presented as one.
+
+*Evaluated and rejected.* (i) *An interactive TTY confirmation*: the Level-1
+operator runs without a TTY (the lifecycle's own `_make_confirm` already
+returns `False` there), so it would make the command unusable in the actual
+operating model and would need exactly the `--yes` escape hatch we are not
+relying on. (ii) *A maintainer-signed authority token*: it needs key
+material and distribution -- a new infrastructure component the slice
+excludes -- and in a single-maintainer local setup the key would sit on the
+machine the agent drives. (iii) *Requiring the statement to be a committed
+repository file*: the agent writes repository files too, so it adds ceremony
+without adding a boundary.
+
+=== Deliberate non-goals of this slice
+
+* A budget-stopped Run that is *also* a mechanically recoverable
+  durable-artifact stop is not covered: `wfc resume` still refuses by name
+  (`no autonomous Hop budget remains for a continuation`) and
+  `extend-budget` still requires `awaiting_human_budget`. Combining the two
+  belongs to link:beta2_operator_efficiency_plan.adoc#o10[O10], which the
+  plan already makes depend on this slice's budget semantics.
+* No extension of a `reconcile_required`, `awaiting_human`, `suspended`,
+  `stopped`, `completed` or `ready` Run; no successor-path change; no
+  autonomous, non-recorded extension path of any kind.
 
 
 == Problem
@@ -114,19 +385,111 @@ The disposition actually used for the recorded incident is recorded in
 friction entry 19 as a deliberate, maintainer-approved exception and is not a
 precedent this record generalises.
 
+[[implementation]]
+== What shipped (2026-11-27, `WI-WFC-BETA2-O8-001`)
+
+Class (a) of the problem above, exactly as <<design>> decided it, and
+nothing else.
+
+*The command.* `wfc extend-budget --repository . --additional-hops N
+--authority "<the maintainer's instruction>" [--preview]`
+(`frontdoor/lifecycle.py::extend_budget_lifecycle`, dispatched by
+`frontdoor/cli.py`). Both value arguments are required; there is deliberately
+no `--yes`. It prints the confirmation block before any mutation (and as the
+whole of `--preview`), records the grant, re-projects the checkpoint, and
+drives the *same* Run through the unchanged `--continue-existing` admission
+path to a further `classified` record, with preservation and the postrun
+archive step following exactly as for any other continuation. New
+classification `refused_budget_extension` (exit `34`); `--preview` exits `0`
+and is deliberately not an `EXIT_CODES` classification, since it is not a Run
+outcome.
+
+*The record.* `model.BudgetExtension` and `Run.budget_extensions`
+(append-only; the key is absent from an unextended Run's document, so every
+Run written before this slice replays byte-identically).
+`reducer.extend_hop_budget` is the whole decision: pure, total, and the only
+place that raises `hop_limit`. `serialization` validates the chain on the
+wire -- contiguous grant sequences, an arithmetic chain ending at the Run's
+own `hop_limit`, a digest that matches its own statement, a grant only ever
+against an `awaiting_human_budget`/`autonomous_hop_budget_exhausted` state,
+and `hop_used` never below a recorded grant's charge. That last one is how
+`WFC-AUTO-05` became a persistence invariant rather than a convention.
+
+*The bounds*, enforced in the reduction: `BUDGET_EXTENSION_MAX_PER_CALL = 4`;
+in total `ceil(admitted / 2)` with `admitted` reconstructed from the Run; and
+never above the admitted policy ceiling (re-derived from the cached,
+digest-verified Commission) nor `COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS`.
+`BUDGET_EXTENSION_MIN_AUTHORITY_CHARACTERS = 40` plus a closed set of bare
+authorisation tokens refuse a gesture in place of a statement.
+
+*Visibility.* `wfc status` prints a `BUDGET EXTENSION <n>:` block per grant
+from the checkout journal; `frontdoor/report.py` carries `budget_extensions`
+and renders one `budget ext` line per grant, and its
+`awaiting_human_budget` next-action line now names this command instead of
+`wfc resume`, which never answered a budget stop; `frontdoor/audit.py`
+projects the grants structurally with the statement's SHA-256 and not its
+free text; the archived raw `run.json` carries the verbatim statement.
+`checkpoint_projection`'s `budget` block gained `limit` and `extended_by`.
+
+*One adjacent correction.* `reducer.validate_convergence_route_history`'s
+budget-preemption exemption for a v3 strategy-gate Hop was written when a
+budget stop was necessarily terminal. It now also accepts the recorded
+extension as evidence of the same historical fact (that Hop's route *was*
+preempted by an exhausted budget); without it an extended v3 convergence Run
+could never be projected again. The consumer programs compile to profile
+schema 2, so this shape is not reachable through the Front Door today; the
+exemption is corrected rather than left as a latent trap.
+
+*Unchanged, and tested as unchanged.* `wfc resume` (a budget stop still
+falls through to its no-op; a mechanically recoverable stop with no Hop left
+still refuses by name), `prepare-successor` eligibility, Hop charging, and
+the independent reviewer's sole Finding authority -- an open blocking Finding
+deliberately does not block an extension, and nothing on the path touches a
+Finding (D7b).
+
+*Documentation.* Operator Manual chapters 2, 3, 5, 6 and 10 (the
+budget-extension contract itself is
+link:../operator_manual/ch06_recovery/01_outcomes.adoc#budget-extension[chapter
+6's]), the technical model's runtime and persistence views, and the shipped
+Agent Skill sources (`SKILL.md`, `references/commission.md`,
+`references/stops-and-evidence.md`) -- in each case *replacing* the statement
+that there is no in-place raise, and adding the rule that an agent never
+extends a budget on its own. The shipped texts reach an installed consumer
+only on a separate Runtime promotion and `wfc skill install`, neither
+authorized nor performed here. Independent acceptance and product closure are
+the maintainer's to record.
+
 == Open decisions
 
+* Classes (b) and (c) of the problem above are untouched and remain open as
+  described: a lighter answer channel for an operational stop, and what
+  governing truth a continuation admits. Class (b)'s cheap half stays a text
+  matter for link:FTR-WFC-LEVEL1-OPERATOR-GUIDANCE.adoc[the
+  operator-guidance record].
+* A Run that is *both* budget-exhausted and mechanically recoverable is not
+  covered by either mechanism; link:beta2_operator_efficiency_plan.adoc#o10[slice
+  O10] owns it, as the plan already states.
+* Whether the per-call and total bounds are the right numbers is an empirical
+  question this slice cannot answer: they are stated, documented and
+  mechanically enforced, and should be revisited against observed use rather
+  than argued in advance.
+
+=== Open decisions of the proposal state (historical)
+
 * link:beta2_operator_efficiency_plan.adoc#d7[D7] -- address or defer. The
-  plan recommends *defer*, on recurrence (once), on the strength of the
+  plan recommended *defer*, on recurrence (once), on the strength of the
   interim remedy, and because two of the three boundaries above are
-  safeguards rather than mechanics.
+  safeguards rather than mechanics. Decided 2026-11-26: D7a implement, D7b
+  rejected.
 * If opened: which of the three classes is in scope. They are separable, and
-  the first (a maintainer-authorized in-place raise that re-admits the
-  WorkItem explicitly) is the narrowest and the only one that does not touch
-  Finding authority.
+  the first (a maintainer-authorized in-place raise) is the narrowest and the
+  only one that does not touch Finding authority. That is the class O8
+  implemented.
 
 == Lifecycle
 
-Proposed and deferred. No implementation, test or Run is authorized by this
-record; Hop charging, recovery eligibility and Finding authority are
-unchanged by it.
+Class (a) implemented on 2026-11-27 as slice O8; see <<design>> and
+<<implementation>>. Hop charging, `wfc resume`'s recovery eligibility,
+successor eligibility and Finding authority are unchanged by it. Classes (b)
+and (c) remain proposed, and no implementation, test or Run for them is
+authorized by this record.

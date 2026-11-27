@@ -36,7 +36,7 @@ def main(argv=None):
     if args[:1] == ['report']:
         from .report import main as report_main
         return report_main(args[1:])
-    if args[:1] in (['run'], ['resume']):
+    if args[:1] in (['run'], ['resume'], ['extend-budget']):
         from .lifecycle import main as lifecycle_main
         return lifecycle_main(args)
     if args[:1] == ['status'] and not any(

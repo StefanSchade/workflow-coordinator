@@ -650,6 +650,38 @@ class HopSummary:
 
 
 @dataclass(frozen=True)
+class BudgetExtension:
+    """One recorded maintainer extension of a Run's effective Hop ceiling.
+
+    O8 (`FTR-WFC-STOPPED-RUN-CONTINUATION-ECONOMY`, decision D7a): the Run's
+    ``hop_limit`` stays the one enforced effective ceiling, and this record
+    -- append-only, one element per granted extension -- states *who/what
+    authorised it, when, how much, and against which Run state*. The
+    admitted ``WorkItem.max_autonomous_hops`` and the Commission digest are
+    never rewritten, so the originally admitted ceiling stays verifiable and
+    is reconstructible from the Run alone as
+    ``hop_limit - sum(additional_hops)``.
+
+    ``hop_used_at_grant`` is what makes `WFC-AUTO-05` ("used Hops are never
+    reset or refunded") a persistence invariant rather than a convention:
+    closed-wire validation refuses a Run whose ``hop_used`` is below any
+    recorded grant's charge.
+    """
+
+    sequence: int
+    granted_at: str
+    additional_hops: int
+    hop_limit_before: int
+    hop_limit_after: int
+    hop_used_at_grant: int
+    run_status_at_grant: str
+    stop_reason_at_grant: str
+    current_head_at_grant: str
+    authority: str
+    authority_sha256: str
+
+
+@dataclass(frozen=True)
 class Run:
     schema_version: int
     run_id: str
@@ -681,10 +713,28 @@ class Run:
     # Run it continues -- recovery requires an unchanged implementation
     # identity, and the boundary mode is part of that identity.
     boundary: str = "direct"
+    # O8: every recorded maintainer extension of this Run's effective Hop
+    # ceiling, in grant order. Empty for every Run that was never extended
+    # (which is every Run from before this slice), and the key is omitted
+    # from the persisted document in that case, so an unextended Run's
+    # ``run.json`` bytes are unchanged by this field's existence.
+    budget_extensions: tuple[BudgetExtension, ...] = ()
 
     @property
     def hop_remaining(self) -> int:
         return self.hop_limit - self.hop_used
+
+    @property
+    def admitted_hop_limit(self) -> int:
+        """The ceiling admission itself judged, before any recorded extension."""
+
+        return self.hop_limit - sum(
+            extension.additional_hops for extension in self.budget_extensions
+        )
+
+    @property
+    def extended_hops(self) -> int:
+        return sum(extension.additional_hops for extension in self.budget_extensions)
 
 
 def is_closed_terminal_worker_shape(profile: WorkflowProfile, phase: Phase) -> bool:

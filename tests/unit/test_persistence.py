@@ -176,7 +176,9 @@ def test_checkpoint_is_deterministic_and_derives_routes_from_profile(tmp_path):
     second = checkpoint_projection(run, workflow, observations=observations)
     assert first == second
     assert first["next_permitted_route_keys"] == ["a_route", "z_route"]
-    assert first["budget"] == {"used": 0, "remaining": 2}
+    assert first["budget"] == {
+        "used": 0, "remaining": 2, "limit": 2, "extended_by": 0,
+    }
     assert first["evidence"][0]["status"] == "pass"
     assert first["evidence"][0]["untrusted_diagnostic"] is None
     assert "project_memory" not in first

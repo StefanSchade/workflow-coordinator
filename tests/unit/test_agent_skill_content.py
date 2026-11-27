@@ -57,6 +57,10 @@ SUBCOMMAND_MAIN = {
     "report": lambda argv: cli_main(["report", *argv]),
     "run": lambda argv: cli_main(["run", *argv]),
     "resume": lambda argv: cli_main(["resume", *argv]),
+    # O8, WI-WFC-BETA2-O8-001: the new `frontdoor/cli.py` dispatch branch, so
+    # the drift guard below keeps covering every real subcommand the skill
+    # may name -- and checks this one's own flags against its real argparse.
+    "extend-budget": lambda argv: cli_main(["extend-budget", *argv]),
     "status": lambda argv: cli_main(["status", *argv]),
     "skill": lambda argv: cli_main(["skill", *argv]),
 }

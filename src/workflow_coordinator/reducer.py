@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import re
 
 from .model import (
+    COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
+    BudgetExtension,
     ConvergenceFact,
     ConvergenceAssessmentResult,
     ConvergenceRole,
@@ -237,14 +240,34 @@ def validate_convergence_route_history(
 
     hop_order = {hop.hop_id: index for index, hop in enumerate(run.hops)}
 
-    def is_live_budget_preemption(boundary: int, hop: HopSummary) -> bool:
-        """Whether this persisted Hop has the complete live budget-stop shape.
+    def is_budget_preempted_route(boundary: int, hop: HopSummary) -> bool:
+        """Whether this persisted Hop's route was preempted by the Hop budget.
 
         ``reduce_result`` charges the Hop before testing the autonomous budget.
         A preempted dispatch therefore leaves the record as the final Hop and
-        atomically records an exhausted, budget-stopped Run.
+        atomically records an exhausted, budget-stopped Run -- the live shape
+        below.
+
+        O8: a recorded maintainer budget extension releases exactly that stop,
+        so the same Hop is no longer the final one and the Run is no longer
+        budget-stopped, while the *historical* fact the exemption rests on --
+        this Hop's route really was preempted by an exhausted budget -- is
+        unchanged. The extension record is that fact's evidence: it pins the
+        stop reason it was granted against and the used-Hop count at the
+        grant, which is this Hop's own sequence. Without this conjunct an
+        extended v3 convergence Run could never be projected again.
         """
 
+        if (
+            hop.applied_route is None
+            and hop.stop_reason == "autonomous_hop_budget_exhausted"
+            and any(
+                extension.stop_reason_at_grant == "autonomous_hop_budget_exhausted"
+                and extension.hop_used_at_grant == hop.sequence
+                for extension in run.budget_extensions
+            )
+        ):
+            return True
         return (
             hop.applied_route is None
             and hop.stop_reason == "autonomous_hop_budget_exhausted"
@@ -321,7 +344,7 @@ def validate_convergence_route_history(
                     )
             if expected_role is ConvergenceRole.STRATEGY_GATE:
                 route = phase.routes.get(hop.requested_route or "")
-                budget_preempted = is_live_budget_preemption(boundary, hop)
+                budget_preempted = is_budget_preempted_route(boundary, hop)
                 if (
                     route is None
                     or (
@@ -2165,6 +2188,227 @@ def resume_after_reconcile(run: Run, profile: WorkflowProfile, *, current_head: 
         status=RunStatus.READY,
         stop_reason=None,
         human_question=None,
+    )
+
+
+# --------------------------------------------------------------------------
+# O8, WI-WFC-BETA2-O8-001: the explicit, recorded maintainer extension of a
+# budget-stopped Run's effective Hop ceiling (decision D7a; see
+# ``FTR-WFC-STOPPED-RUN-CONTINUATION-ECONOMY``'s Design section). Pure and
+# total: every refusal is named here, before the boundary performs any
+# effect, and the only state this reduction changes is ``hop_limit``,
+# ``status``, ``stop_reason`` and the appended ``budget_extensions`` record.
+# ``hop_used`` and ``hops`` are never read for anything but validation and
+# never written -- used Hops are never reset or refunded (`WFC-AUTO-05`).
+# Nothing here reads, writes, opens or closes a Finding (D7b).
+# --------------------------------------------------------------------------
+
+BUDGET_EXHAUSTED_STOP_REASON = "autonomous_hop_budget_exhausted"
+
+# The per-call bound. Under ``robust@v1`` one correction cycle is three Hops
+# (Worker correction, focused review, renewed broad review); four admits that
+# cycle plus one further Worker Hop, which is the whole shape the record's
+# friction entries 15 and 19 describe. More in one step is new work, and new
+# work belongs in a Commission that is authored, previewed and reviewed as
+# one.
+BUDGET_EXTENSION_MAX_PER_CALL = 4
+
+# The authority statement must be long enough to name an instruction rather
+# than merely assert one.
+BUDGET_EXTENSION_MIN_AUTHORITY_CHARACTERS = 40
+
+# Spellings that are an *authorisation gesture*, not a statement of the
+# maintainer's instruction. The realistic failure mode this closes is an
+# agent reflexively reusing the launch ritual's ``--yes`` as if it were
+# authority; it is deliberately not a defence against a deliberately
+# fabricated sentence, which no CLI control can be (see the record's "What
+# this cannot enforce, stated honestly").
+BUDGET_EXTENSION_BARE_AUTHORITY_TOKENS = frozenset({
+    "y", "n", "yes", "no", "ok", "okay", "sure", "go", "proceed", "continue",
+    "approve", "approved", "authorise", "authorised", "authorize", "authorized",
+    "confirm", "confirmed", "grant", "granted", "accept", "accepted",
+    "permit", "permitted", "allow", "allowed", "maintainer", "operator",
+    "human", "user", "me", "i", "it", "this", "that", "the", "and", "a",
+    "extend", "extension", "budget", "hops", "hop", "more", "please",
+})
+
+
+def budget_extension_total_bound(run: Run) -> int:
+    """The total number of Hops this Run's extensions may ever add.
+
+    Half the ceiling admission itself judged, rounded up: an extension
+    corrects the operator's own budget estimate, it does not re-commission.
+    Computed from the Run's own record, so repeated small extensions cannot
+    creep past it.
+    """
+
+    admitted = run.admitted_hop_limit
+    return (admitted + 1) // 2
+
+
+def normalized_authority_statement(authority: str) -> str:
+    """Collapse whitespace; the stored statement itself stays verbatim."""
+
+    return " ".join(authority.split())
+
+
+def _authority_words(normalized: str) -> tuple[str, ...]:
+    return tuple(
+        word for word in (
+            segment.strip("-_.,;:!?()[]{}\"'`*").casefold()
+            for segment in normalized.split(" ")
+        ) if word
+    )
+
+
+def refuse_degenerate_authority(authority: str) -> str | None:
+    """Name the refusal for an empty or gesture-only authority statement.
+
+    Returns ``None`` when the statement is admissible, else the reason.
+    """
+
+    normalized = normalized_authority_statement(authority)
+    if not normalized:
+        return "the recorded maintainer authority statement is empty"
+    words = _authority_words(normalized)
+    if words and set(words).issubset(BUDGET_EXTENSION_BARE_AUTHORITY_TOKENS):
+        return (
+            "the recorded maintainer authority statement is a bare authorisation "
+            "token, not a statement of the maintainer's instruction"
+        )
+    if len(normalized) < BUDGET_EXTENSION_MIN_AUTHORITY_CHARACTERS:
+        return (
+            "the recorded maintainer authority statement is too short to name the "
+            f"maintainer's instruction (minimum {BUDGET_EXTENSION_MIN_AUTHORITY_CHARACTERS} "
+            f"characters, got {len(normalized)})"
+        )
+    return None
+
+
+def diagnose_budget_extension_state(run: Run) -> str | None:
+    """Name why this Run's *state* admits no budget extension, or ``None``.
+
+    Separated from ``extend_hop_budget`` so a read-only surface (a preview,
+    a report) can state the same refusal without constructing a grant.
+    """
+
+    if run.status is not RunStatus.AWAITING_HUMAN_BUDGET:
+        return (
+            "the Run is not stopped on an exhausted autonomous Hop budget: "
+            f"{run.status.value}"
+        )
+    if run.stop_reason != BUDGET_EXHAUSTED_STOP_REASON:
+        return (
+            "the Run's stop reason is not an exhausted autonomous Hop budget: "
+            f"{run.stop_reason}"
+        )
+    if run.hop_used < run.hop_limit:
+        return (
+            "the Run is not actually out of autonomous Hop budget: "
+            f"{run.hop_used} of {run.hop_limit} Hops used"
+        )
+    if run.hop_used > run.hop_limit:
+        return "the Run's used Hops exceed its own Hop ceiling"
+    if run.semantic_stop is not None:
+        return (
+            "the Run carries a frozen semantic stop; it needs the human's answer, "
+            "not more autonomous Hop budget"
+        )
+    return None
+
+
+def diagnose_budget_extension_amount(
+    run: Run, additional_hops: int, *, policy_max_autonomous_hops: int,
+) -> str | None:
+    """Name why this *amount* is out of bounds for this Run, or ``None``."""
+
+    if isinstance(additional_hops, bool) or not isinstance(additional_hops, int):
+        return "the requested extension must be a positive integer number of Hops"
+    if additional_hops < 1:
+        return (
+            "the requested extension must be a positive integer number of Hops: "
+            f"{additional_hops}"
+        )
+    if additional_hops > BUDGET_EXTENSION_MAX_PER_CALL:
+        return (
+            f"the requested extension of {additional_hops} Hops exceeds the per-call "
+            f"bound of {BUDGET_EXTENSION_MAX_PER_CALL} Hops"
+        )
+    bound = budget_extension_total_bound(run)
+    already = run.extended_hops
+    if already + additional_hops > bound:
+        return (
+            f"the requested extension of {additional_hops} Hops exceeds this Run's total "
+            f"extension bound of {bound} Hops ({already} already granted against an "
+            f"admitted ceiling of {run.admitted_hop_limit})"
+        )
+    if policy_max_autonomous_hops < 1:
+        return "the admitted repository policy declares no usable autonomous Hop ceiling"
+    if run.hop_limit + additional_hops > policy_max_autonomous_hops:
+        return (
+            f"the resulting ceiling of {run.hop_limit + additional_hops} Hops exceeds the "
+            f"admitted repository policy ceiling of {policy_max_autonomous_hops} Hops"
+        )
+    if run.hop_limit + additional_hops > COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS:
+        return (
+            f"the resulting ceiling of {run.hop_limit + additional_hops} Hops exceeds the "
+            f"Coordinator hard maximum of {COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS} Hops"
+        )
+    return None
+
+
+def extend_hop_budget(
+    run: Run,
+    *,
+    additional_hops: int,
+    authority: str,
+    granted_at: str,
+    policy_max_autonomous_hops: int,
+) -> Run:
+    """Raise a budget-stopped Run's effective ceiling by a recorded grant.
+
+    The Run returns to ``READY`` at its unchanged phase, with its Findings,
+    its pinned governing truth, its recorded Hops and its charged Hop count
+    untouched -- only ``hop_limit`` rises, and only by the recorded amount.
+    An open blocking Finding deliberately does *not* refuse: continuing the
+    Run's own reviewed correction/review chain is the only thing that may
+    dispose of it, and this reduction has no Finding authority whatsoever.
+    """
+
+    state_refusal = diagnose_budget_extension_state(run)
+    if state_refusal is not None:
+        raise ReductionError(state_refusal)
+    amount_refusal = diagnose_budget_extension_amount(
+        run, additional_hops, policy_max_autonomous_hops=policy_max_autonomous_hops,
+    )
+    if amount_refusal is not None:
+        raise ReductionError(amount_refusal)
+    authority_refusal = refuse_degenerate_authority(authority)
+    if authority_refusal is not None:
+        raise ReductionError(authority_refusal)
+    if not isinstance(granted_at, str) or not granted_at.strip():
+        raise ReductionError("a budget extension must record the time it was granted")
+
+    extension = BudgetExtension(
+        sequence=len(run.budget_extensions) + 1,
+        granted_at=granted_at,
+        additional_hops=additional_hops,
+        hop_limit_before=run.hop_limit,
+        hop_limit_after=run.hop_limit + additional_hops,
+        hop_used_at_grant=run.hop_used,
+        run_status_at_grant=run.status.value,
+        stop_reason_at_grant=run.stop_reason or "",
+        current_head_at_grant=run.current_head,
+        authority=authority,
+        authority_sha256=hashlib.sha256(authority.encode("utf-8")).hexdigest(),
+    )
+    return replace(
+        run,
+        status=RunStatus.READY,
+        stop_reason=None,
+        human_question=None,
+        hop_limit=extension.hop_limit_after,
+        budget_extensions=(*run.budget_extensions, extension),
     )
 
 

@@ -84,18 +84,36 @@ def _continue_existing(args: argparse.Namespace, repository: Path, state_root: P
         "completed_consistent": RunStatus.COMPLETED,
         "awaiting_human_again": RunStatus.AWAITING_HUMAN,
         "reconcile_required_again": RunStatus.RECONCILE_REQUIRED,
+        # O8: the continuation spends every newly authorized Hop and stops on
+        # the exhausted budget again, so a test can exercise a second
+        # extension (and the total-extension bound) on the identical Run.
+        "budget_exhausted_again": RunStatus.AWAITING_HUMAN_BUDGET,
     }.get(mode)
     if terminal_status is None:
         return 9
-    next_sequence = run.hop_used + 1
+    sequences = (
+        range(run.hop_used + 1, run.hop_limit + 1)
+        if mode == "budget_exhausted_again"
+        else range(run.hop_used + 1, run.hop_used + 2)
+    )
+    stop_reason = None
+    if terminal_status is RunStatus.AWAITING_HUMAN_BUDGET:
+        stop_reason = "autonomous_hop_budget_exhausted"
+    elif terminal_status is not RunStatus.COMPLETED:
+        stop_reason = "second_fixture_stop"
+    base_head = run.current_head
     run = replace(
-        run, status=terminal_status, current_head=args.expected_head, hop_used=next_sequence,
-        stop_reason=None if terminal_status is RunStatus.COMPLETED else "second_fixture_stop",
-        hops=(*run.hops, HopSummary(
-            hop_id=f"H{next_sequence:03d}", sequence=next_sequence, role="independent_reviewer",
-            outcome="completed", base_head=run.current_head, end_head=args.expected_head, actual_commits=(),
-            finding_delta_ids=(), evidence_refs=(), applied_route=None, stop_reason=None,
-            summary="fixture continuation Hop", attribution="agent",
+        run, status=terminal_status, current_head=args.expected_head,
+        hop_used=max(sequences.stop - 1, run.hop_used),
+        stop_reason=stop_reason,
+        hops=(*run.hops, *(
+            HopSummary(
+                hop_id=f"H{sequence:03d}", sequence=sequence, role="independent_reviewer",
+                outcome="completed", base_head=base_head, end_head=args.expected_head,
+                actual_commits=(), finding_delta_ids=(), evidence_refs=(), applied_route=None,
+                stop_reason=None, summary="fixture continuation Hop", attribution="agent",
+            )
+            for sequence in sequences
         )),
     )
     write_run_snapshot(run_root / "run.json", run)
@@ -140,7 +158,7 @@ def main() -> int:
     work_item_id = "WI-FAKE"
     profile_id = "fake-profile"
     profile_revision = "1"
-    if mode in ("mechanical_reconcile_required", "mechanical_awaiting_human"):
+    if mode in ("mechanical_reconcile_required", "mechanical_awaiting_human", "budget_exhausted"):
         # B, WI-WFC-RECOVERY-ROUTING-001: a mechanical-recovery continuation
         # re-admits through the real ``operator.py`` pipeline, which requires
         # the Run's own ``profile_id``/``profile_revision``/``work_item_id``
@@ -148,6 +166,8 @@ def main() -> int:
         # them for real only for the modes that exercise that continuation;
         # every other (legacy) caller may still pass a non-existent
         # ``--profile``/``--work-item`` placeholder path unchanged.
+        # O8: ``budget_exhausted`` drives the same real continuation path
+        # after `wfc extend-budget`, so it needs the identical real ids.
         real_profile = workflow_profile_from_yaml((repository / args.profile).read_text(encoding="utf-8"))
         real_work_item = work_item_from_yaml((repository / args.work_item).read_text(encoding="utf-8"))
         work_item_id = real_work_item.work_item_id
@@ -191,6 +211,13 @@ def main() -> int:
         # terminal awaiting_human" (B(ii), the incident shape) cases.
         "mechanical_reconcile_required": RunStatus.RECONCILE_REQUIRED,
         "mechanical_awaiting_human": RunStatus.AWAITING_HUMAN,
+        # O8, WI-WFC-BETA2-O8-001: the honest *budget-exhausted* shape --
+        # every authorized Hop actually charged and recorded, and the
+        # reducer's own ``autonomous_hop_budget_exhausted`` stop reason. The
+        # pre-existing ``awaiting_human_budget`` mode above keeps its own
+        # (deliberately unexhausted) shape for the crash-matrix and postrun
+        # classification tests that use it.
+        "budget_exhausted": RunStatus.AWAITING_HUMAN_BUDGET,
     }.get(mode)
     if terminal_status is None:
         return 9
@@ -201,7 +228,26 @@ def main() -> int:
         "WFC_FAKE_ENGINE_MECHANICAL_STOP_REASON",
         "mechanical_preemption:required durable artifact has no CommitIntent",
     )
-    if mode in ("mechanical_reconcile_required", "mechanical_awaiting_human"):
+    if mode == "budget_exhausted":
+        charged = int(os.environ.get("WFC_FAKE_ENGINE_BUDGET_HOPS", "2"))
+        run = replace(
+            run,
+            hop_limit=charged,
+            hop_used=charged,
+            hops=tuple(
+                HopSummary(
+                    hop_id=f"H{sequence:03d}", sequence=sequence,
+                    role="worker" if sequence == 1 else "independent_reviewer",
+                    outcome="completed", base_head=args.expected_head,
+                    end_head=args.expected_head, actual_commits=(), finding_delta_ids=(),
+                    evidence_refs=(), applied_route=None, stop_reason=None,
+                    summary="fixture Hop", attribution="agent",
+                )
+                for sequence in range(1, charged + 1)
+            ),
+            stop_reason="autonomous_hop_budget_exhausted",
+        )
+    elif mode in ("mechanical_reconcile_required", "mechanical_awaiting_human"):
         run = replace(
             run,
             hops=(HopSummary(

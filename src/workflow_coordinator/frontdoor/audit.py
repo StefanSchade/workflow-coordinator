@@ -36,7 +36,19 @@ _CHECKOUT_RUN_RE = re.compile(r"^run/checkouts/([^/]+)/run\.json$")
 _RUN_KEYS = frozenset({
     "run_id", "work_item_id", "status", "stop_reason", "hops_used", "hop_limit",
     "baseline_head", "final_head", "worktree_clean", "human_question_present",
-    "semantic_stop_present",
+    "semantic_stop_present", "budget_extensions",
+})
+# O8: one recorded maintainer Hop-budget extension, projected *structurally*.
+# The authority statement's free text is deliberately absent and represented
+# by its SHA-256: this projection is default-deny and passes a privacy guard
+# that refuses any absolute path, private string or remote URL, and an
+# operator's free-text sentence must never be able to decide whether a Run is
+# archivable at all. The verbatim statement is in the archived raw
+# ``run.json``, and this digest ties the two together.
+_BUDGET_EXTENSION_KEYS = frozenset({
+    "sequence", "granted_at", "additional_hops", "hop_limit_before", "hop_limit_after",
+    "hop_used_at_grant", "run_status_at_grant", "stop_reason_at_grant",
+    "current_head_at_grant", "authority_sha256",
 })
 _AGENT_CONTRACT_KEYS = frozenset({"id", "version", "sha256"})
 _GOVERNANCE_KEYS = frozenset({
@@ -193,9 +205,41 @@ def _build_run_section(run_doc: dict, summary_doc: dict | None, limits: list[str
         "worktree_clean": worktree_clean,
         "human_question_present": run_doc.get("human_question") is not None,
         "semantic_stop_present": run_doc.get("semantic_stop") is not None,
+        "budget_extensions": _budget_extension_entries(run_doc),
     }
     _assert_keys(section, _RUN_KEYS, context="run section")
     return section
+
+
+def _budget_extension_entries(run_doc: dict) -> list:
+    """O8: every recorded maintainer Hop-budget extension, by explicit key.
+
+    An empty list for every Run that was never extended (which is every Run
+    archived before this slice: the key is absent from their ``run.json``).
+    """
+
+    recorded = run_doc.get("budget_extensions")
+    if not isinstance(recorded, list):
+        return []
+    entries = []
+    for extension in recorded:
+        if not isinstance(extension, dict):
+            continue
+        entry = {
+            "sequence": extension.get("sequence"),
+            "granted_at": extension.get("granted_at"),
+            "additional_hops": extension.get("additional_hops"),
+            "hop_limit_before": extension.get("hop_limit_before"),
+            "hop_limit_after": extension.get("hop_limit_after"),
+            "hop_used_at_grant": extension.get("hop_used_at_grant"),
+            "run_status_at_grant": extension.get("run_status_at_grant"),
+            "stop_reason_at_grant": extension.get("stop_reason_at_grant"),
+            "current_head_at_grant": extension.get("current_head_at_grant"),
+            "authority_sha256": extension.get("authority_sha256"),
+        }
+        _assert_keys(entry, _BUDGET_EXTENSION_KEYS, context="budget extension entry")
+        entries.append(entry)
+    return entries
 
 
 def _build_governance_section(plan_doc: dict | None, run_doc: dict, limits: list[str]) -> dict | None:

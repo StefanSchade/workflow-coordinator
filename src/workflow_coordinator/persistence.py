@@ -445,7 +445,17 @@ def checkpoint_projection(
             "child_run_id": run.child_run_id,
             "suspension_head": run.suspension_head,
         },
-        "budget": {"used": run.hop_used, "remaining": run.hop_remaining},
+        # O8: ``limit`` is the *effective* ceiling and ``extended_by`` the
+        # total a recorded maintainer extension added to the admitted one, so
+        # a checkpoint states the budget it was projected under rather than
+        # leaving the ceiling to be inferred. ``used`` is never reduced by an
+        # extension (`WFC-AUTO-05`).
+        "budget": {
+            "used": run.hop_used,
+            "remaining": run.hop_remaining,
+            "limit": run.hop_limit,
+            "extended_by": run.extended_hops,
+        },
         "hops": [
             {
                 "hop_id": hop.hop_id,

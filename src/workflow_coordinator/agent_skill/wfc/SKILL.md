@@ -45,9 +45,10 @@ delegation object, file or flag of its own to grant one.
 4. **Narrow reading** -- ambiguity is not delegation: ask. The scope ceiling in
    `.wfc/config.yaml` bounds a Commission; it does not approve one.
 5. **Never delegated by a launch** -- judging a stop's disposition; widening scope or
-   budget, also after a stop; a push, tag, publication or configuration change; changing
-   the installed WFC version; discarding a branch, worktree, stash or preserved ref this
-   session did not itself create for this task.
+   budget, also after a stop -- a budget-stopped Run's own `wfc extend-budget` included,
+   which needs the maintainer's explicit instruction in the current session; a push, tag,
+   publication or configuration change; changing the installed WFC version; discarding a
+   branch, worktree, stash or preserved ref this session did not itself create for this task.
 6. **The record** -- `authority_source` names truthfully who authorized the Commission and
    by which instruction.
 7. **The reserved go** -- when the human keeps the launch decision, prepare everything and
@@ -57,9 +58,9 @@ delegation object, file or flag of its own to grant one.
    session itself created for it, without a further ask.
 
 Always stop and ask before: a push, tag, publication or configuration change; a Runtime
-promotion or a change of installed WFC version; widening scope, authority, program or
-Hop budget beyond what the human set; judging a stop's disposition; discarding a branch,
-worktree, stash or preserved ref this session did not itself create for this task.
+promotion or an installed-version change; widening scope, authority, program or Hop budget
+beyond what the human set, `wfc extend-budget` included; judging a stop's disposition; and
+discarding a branch, worktree, stash or preserved ref this session did not create for it.
 
 ## Preflight
 
@@ -74,9 +75,8 @@ Run every time, before relying on this skill for an actual task:
    loaded from. `current`: proceed. Any other state: read `wfc skill show`
    and follow that text for this session, and tell the human to re-run
    `wfc skill install <host>` for that scope. If it is unclear which
-   installation this session was loaded from, proceed only when every
-   reported installation that is not `absent` is `current`; otherwise use
-   `wfc skill show`.
+   installation this was loaded from, proceed only when every reported
+   installation that is not `absent` is `current`; else use `wfc skill show`.
 
 ## When WFC fits, and when it does not
 

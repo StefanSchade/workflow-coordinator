@@ -52,12 +52,23 @@ from ..implementation_identity import implementation_identity
 from ..model import Run, RunStatus
 from ..persistence import atomic_write_json, checkpoint_projection, write_run_snapshot
 from ..reducer import (
+    BUDGET_EXTENSION_MAX_PER_CALL,
     ReductionError,
+    budget_extension_total_bound,
+    diagnose_budget_extension_amount,
+    diagnose_budget_extension_state,
     diagnose_mechanical_recovery_eligibility,
+    extend_hop_budget,
+    refuse_degenerate_authority,
     require_reconcile,
     resume_after_reconcile,
 )
-from ..serialization import load_run, run_execution_configuration_from_yaml, workflow_profile_from_yaml
+from ..serialization import (
+    load_run,
+    repository_policy_from_yaml,
+    run_execution_configuration_from_yaml,
+    workflow_profile_from_yaml,
+)
 from .config import ExecutionEnvelope, consumer_config_from_yaml, execution_overrides_from_flags, resolve_execution
 from . import postrun, preservation
 from .journal import (
@@ -143,7 +154,20 @@ EXIT_CODES: dict[str, int] = {
     # the cached classification this `wfc resume` attempt started from is
     # unaffected and remains the truthful record of the engine's own outcome.
     "refused_not_recoverable": 33,
+    # O8, WI-WFC-BETA2-O8-001 (additive; every value above is frozen and
+    # unchanged): `wfc extend-budget` refused by name. Never mutates
+    # anything; the Run keeps its `awaiting_human_budget` record, its stop
+    # reason and every charged Hop.
+    "refused_budget_extension": 34,
 }
+
+# O8: the outcome of ``wfc extend-budget --preview``. Deliberately *not* an
+# ``EXIT_CODES`` entry: that table is the Run-outcome classification
+# vocabulary ``wfc report`` must carry a fixed next-human-choice line for,
+# and a preview is not a Run outcome -- it writes nothing, is never recorded
+# in a ``classified`` journal record, and can therefore never appear in an
+# audit or a report. ``cmd_extend_budget`` maps it to exit 0 explicitly.
+BUDGET_EXTENSION_PREVIEW_CLASSIFICATION = "budget_extension_preview"
 
 # BP6c (additive; every value in EXIT_CODES above is frozen and unchanged):
 # the post-classification archive/audit/report step itself refused or
@@ -183,6 +207,11 @@ class LifecycleResult:
     postrun_exit_override: int | None = None
     postrun_notice: str | None = None
     postrun_report_text: str | None = None
+    # O8: every recorded maintainer Hop-budget extension of this checkout's
+    # Run, read from the checkout's own append-only journal, for the
+    # report-only ``wfc status`` surface. Empty for every checkout that was
+    # never extended, so no existing construction of this dataclass changes.
+    budget_extensions: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -810,6 +839,12 @@ def _classify_from_state_root(repository: Path, engine_state_root: Path):
 def _evaluate(repository: Path, checkout_dir: Path, journal: Journal) -> LifecycleResult:
     """Pure (no side effect) read of the furthest truthful lifecycle state."""
 
+    # O8: every granted Hop-budget extension of this checkout's Run, so
+    # ``wfc status`` shows it on every reported shape, not only after a
+    # continuation. Read-only; a checkout that was never extended reports
+    # an empty tuple, exactly as before.
+    extensions = _journaled_budget_extensions(journal)
+
     classified = journal.latest(("classified",))
     if classified is not None:
         data = classified.data
@@ -817,6 +852,7 @@ def _evaluate(repository: Path, checkout_dir: Path, journal: Journal) -> Lifecyc
             classification=data["classification"], message="lifecycle already classified (no-op)",
             run_id=data.get("run_id"), run_status=data.get("run_status"), end_head=data.get("end_head"),
             state_root=data.get("state_root"), checkout_state_root=data.get("checkout_state_root"),
+            budget_extensions=extensions,
         )
 
     authorized = journal.latest(("authorized",))
@@ -859,6 +895,7 @@ def _evaluate(repository: Path, checkout_dir: Path, journal: Journal) -> Lifecyc
         classification=classification, message=f"classified: {classification}",
         run_id=run.run_id, run_status=run.status.value, end_head=run.current_head,
         state_root=str(engine_state_root), checkout_state_root=str(run_root),
+        budget_extensions=extensions,
     )
 
 
@@ -910,22 +947,33 @@ def _recovery_commission_identity_ok(repository: Path, checkout_dir: Path, autho
 def _do_continuation_launch(
     repository: Path, checkout_dir: Path, journal: Journal, lock, authorized: JournalRecord,
     prelaunch: JournalRecord, *, current_head: str,
+    record_prefix: str = "mechanical_recovery",
+    refusal_classification: str = "refused_not_recoverable",
+    what: str = "recovery",
 ) -> tuple[JournalRecord, subprocess.Popen]:
     """Distinct record kinds from ``_do_launch``'s own ``launch_*`` family:
-    a recovery launch must never be mistaken for, or retried by, the
+    a continuation launch must never be mistaken for, or retried by, the
     original launch's own crash-matrix bookkeeping (``MAX_LAUNCH_ATTEMPTS``,
-    ``_continue_after_launch``), which stays unchanged and unaware of it."""
+    ``_continue_after_launch``), which stays unchanged and unaware of it.
+
+    O8: ``record_prefix``/``refusal_classification``/``what`` keep the two
+    continuation callers' journal vocabularies and named refusals distinct
+    (mechanical recovery versus a recorded budget extension). The defaults
+    are the pre-O8 mechanical-recovery values, so that path's records and
+    refusal classification are unchanged.
+    """
 
     argv = _continuation_engine_argv(repository, checkout_dir, authorized, prelaunch, current_head=current_head)
-    journal.append("mechanical_recovery_launch_intent", {"argv": argv})
+    journal.append(f"{record_prefix}_launch_intent", {"argv": argv})
     try:
         process = subprocess.Popen(argv, pass_fds=(lock.fd,), close_fds=True, cwd=str(repository))
     except OSError as error:
-        journal.append("mechanical_recovery_launch_failed", {"error": str(error)})
+        journal.append(f"{record_prefix}_launch_failed", {"error": str(error)})
         raise LifecycleError(
-            f"recovery continuation engine failed to launch: {error}", classification="refused_not_recoverable",
+            f"{what} continuation engine failed to launch: {error}",
+            classification=refusal_classification,
         ) from error
-    record = journal.append("mechanical_recovery_launch_spawned", {"pid": process.pid, "start_time": time.time()})
+    record = journal.append(f"{record_prefix}_launch_spawned", {"pid": process.pid, "start_time": time.time()})
     return record, process
 
 
@@ -1062,6 +1110,299 @@ def _attempt_mechanical_recovery(
         "end_head": result.end_head, "state_root": result.state_root, "checkout_state_root": result.checkout_state_root,
     })
     return result
+
+
+# --------------------------------------------------------------------------
+# O8, WI-WFC-BETA2-O8-001: ``wfc extend-budget`` -- the explicit, recorded
+# maintainer extension of a budget-stopped Run's effective Hop ceiling
+# (decision D7a; the design is the record's own ``Design`` section).
+#
+# Reachable only from a checkout already ``classified`` as
+# ``awaiting_human_budget``; every other classification, Run state, amount
+# or authority statement is refused by name and mutates nothing at all.
+# A granted extension only ever *appends* journal records and raises the
+# Run's own ``hop_limit`` -- it never resets or refunds a charged Hop, never
+# rewrites the admitted Commission or its digest, and never reads, writes,
+# opens or closes a Finding (D7b). ``wfc resume``'s mechanical-recovery
+# path above is untouched by it.
+# --------------------------------------------------------------------------
+
+def _refused_budget_extension(reason: str, run: Run | None = None) -> LifecycleResult:
+    return LifecycleResult(
+        classification="refused_budget_extension",
+        message=f"budget extension refused: {reason}",
+        run_id=None if run is None else run.run_id,
+        run_status=None if run is None else run.status.value,
+        end_head=None if run is None else run.current_head,
+    )
+
+
+def _utc_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _budget_extension_confirmation(
+    run: Run, *, additional_hops: int, authority: str, policy_max_autonomous_hops: int,
+) -> str:
+    """The one visible confirmation block, printed before any mutation.
+
+    States exactly what the human is authorizing: which Run, how far it has
+    already been charged, the ceiling now and after, both bounds with this
+    Run's consumption of them, and the authority statement with its digest.
+    """
+
+    bound = budget_extension_total_bound(run)
+    already = run.extended_hops
+    lines = [
+        "BUDGET EXTENSION (recorded maintainer authority)",
+        f"  run id            {run.run_id}",
+        f"  work item         {run.work_item_id}",
+        f"  phase             {run.phase}",
+        f"  run status        {run.status.value} ({run.stop_reason})",
+        f"  hops used         {run.hop_used} of {run.hop_limit} (charged; never refunded)",
+        f"  admitted ceiling  {run.admitted_hop_limit}",
+        f"  current ceiling   {run.hop_limit}",
+        f"  additional hops   {additional_hops}",
+        f"  new ceiling       {run.hop_limit + additional_hops}",
+        f"  per-call bound    {BUDGET_EXTENSION_MAX_PER_CALL}",
+        f"  total bound       {bound} ({already + additional_hops} granted for this Run after this extension)",
+        f"  policy ceiling    {policy_max_autonomous_hops}",
+        f"  authority         {authority}",
+        f"  authority sha256  {hashlib.sha256(authority.encode('utf-8')).hexdigest()}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _journaled_budget_extensions(journal: Journal) -> tuple[Mapping[str, Any], ...]:
+    """Every granted extension recorded for this checkout, in grant order.
+
+    Read-only, from the append-only journal: a rolled-back grant is excluded
+    here (it changed nothing in the end), while its ``*_intent`` and
+    ``*_rolled_back`` records stay in the journal as the attempt's own
+    auditable trace.
+    """
+
+    granted: list[Mapping[str, Any]] = []
+    for record in journal.read_all():
+        if record.kind == "budget_extension_granted":
+            granted.append(dict(record.data))
+        elif record.kind == "budget_extension_rolled_back" and granted:
+            # A rollback is written under the same held ownership lock as
+            # the grant it undoes, and nothing else can be granted in
+            # between, so it always undoes exactly the latest grant.
+            granted.pop()
+    return tuple(granted)
+
+
+def extend_budget_lifecycle(
+    repository: Path, *, additional_hops: int, authority: str, preview: bool = False,
+    out=None,
+) -> LifecycleResult:
+    """Record one maintainer Hop-budget extension and continue the same Run.
+
+    Returns a named ``refused_budget_extension`` result (nothing mutated) or,
+    on success, the continuation's own further classification. ``preview``
+    prints the identical confirmation block, takes no ownership lock and
+    changes nothing.
+    """
+
+    # Resolved at call time, never bound as a default: a caller (or a test)
+    # that redirects ``sys.stdout`` must see the confirmation block.
+    out = sys.stdout if out is None else out
+    checkout, checkout_dir, journal = _prepare_checkout(repository)
+    classified = journal.latest(("classified",))
+    if classified is None:
+        raise LifecycleError(
+            "no lifecycle recorded for this checkout; nothing to extend",
+            classification="refused_no_lifecycle",
+        )
+    classification = classified.data.get("classification")
+    if classification != "awaiting_human_budget":
+        return _refused_budget_extension(
+            "this checkout's recorded classification is not awaiting_human_budget: "
+            f"{classification}"
+        )
+    checkout_state_root_value = classified.data.get("checkout_state_root")
+    if not checkout_state_root_value:
+        return _refused_budget_extension("the classified Run's own state root is not recorded")
+    run_path = Path(checkout_state_root_value) / "run.json"
+    if not run_path.is_file():
+        return _refused_budget_extension(f"no Run record is present at {run_path.name}")
+    try:
+        run = load_run(run_path)
+    except Exception as error:
+        return _refused_budget_extension(f"the recorded Run is not loadable: {error}")
+
+    state_refusal = diagnose_budget_extension_state(run)
+    if state_refusal is not None:
+        return _refused_budget_extension(state_refusal, run)
+
+    authorized = journal.latest(("authorized",))
+    prelaunch = journal.latest(("prelaunch_passed",))
+    if authorized is None or prelaunch is None:
+        return _refused_budget_extension(
+            "lifecycle authorization or launch provenance is incomplete", run,
+        )
+
+    try:
+        _, compiled = _cached_commission(repository, checkout_dir, authorized)
+        profile = workflow_profile_from_yaml(compiled.texts[compiled.paths["profile"]])
+        policy = repository_policy_from_yaml(compiled.texts[compiled.paths["policy"]])
+    except Exception as error:
+        return _refused_budget_extension(
+            f"the governing profile or policy could not be re-derived: {error}", run,
+        )
+    if run.phase not in profile.phases:
+        return _refused_budget_extension(
+            f"the Run's recorded phase is absent from the governing profile: {run.phase}", run,
+        )
+
+    # The admitted policy ceiling, re-derived from this checkout's cached,
+    # digest-verified Commission -- never read from the live
+    # ``.wfc/config.yaml``, which the invoking agent can edit.
+    policy_max_autonomous_hops = policy.max_autonomous_hops
+    amount_refusal = diagnose_budget_extension_amount(
+        run, additional_hops, policy_max_autonomous_hops=policy_max_autonomous_hops,
+    )
+    if amount_refusal is not None:
+        return _refused_budget_extension(amount_refusal, run)
+    authority_refusal = refuse_degenerate_authority(authority)
+    if authority_refusal is not None:
+        return _refused_budget_extension(authority_refusal, run)
+
+    out.write(_budget_extension_confirmation(
+        run, additional_hops=additional_hops, authority=authority,
+        policy_max_autonomous_hops=policy_max_autonomous_hops,
+    ))
+    if preview:
+        return LifecycleResult(
+            classification=BUDGET_EXTENSION_PREVIEW_CLASSIFICATION,
+            message="preview only; no extension was recorded and nothing was changed",
+            run_id=run.run_id, run_status=run.status.value, end_head=run.current_head,
+            checkout_state_root=str(checkout_state_root_value),
+            budget_extensions=_journaled_budget_extensions(journal),
+        )
+
+    # Every remaining predicate element -- the live Git facts, the
+    # Commission/envelope identity, the provider and engine executables, and
+    # the pure reduction itself -- is checked, and the ownership lock taken,
+    # *before* any mutation, for the same reason the mechanical-recovery path
+    # above does it: a refusal must never leave the Run rewritten to `ready`
+    # with its honest budget stop erased and no process to drive it.
+    facts = observe_repository(repository)
+    if facts.head != run.current_head:
+        return _refused_budget_extension(
+            "current HEAD differs from the Run's recorded end HEAD", run,
+        )
+    if not facts.clean or facts.unresolved_submodules:
+        return _refused_budget_extension(
+            "worktree is not clean with resolved submodules", run,
+        )
+    if not _recovery_commission_identity_ok(repository, checkout_dir, authorized):
+        return _refused_budget_extension(
+            "Commission or execution envelope identity changed since authorization", run,
+        )
+    try:
+        _verify_identities_unchanged(prelaunch)
+    except LifecycleError as error:
+        return _refused_budget_extension(str(error), run)
+    try:
+        engine_argv0 = _resolve_engine_command()[0]
+    except RuntimeError as error:
+        return _refused_budget_extension(str(error), run)
+    if not os.path.isfile(engine_argv0) or not os.access(engine_argv0, os.X_OK):
+        return _refused_budget_extension(
+            f"no engine executable is available for a continuation: {engine_argv0}", run,
+        )
+    granted_at = _utc_timestamp()
+    try:
+        extended = extend_hop_budget(
+            run, additional_hops=additional_hops, authority=authority,
+            granted_at=granted_at, policy_max_autonomous_hops=policy_max_autonomous_hops,
+        )
+    except ReductionError as error:
+        return _refused_budget_extension(f"budget extension re-verification failed: {error}", run)
+
+    lock = try_acquire_lock(checkout_dir)
+    if lock is None:
+        return _refused_budget_extension(
+            "active lifecycle already running for this checkout", run,
+        )
+    grant = extended.budget_extensions[-1]
+    grant_facts = {
+        "run_id": run.run_id, "work_item_id": run.work_item_id,
+        "checkout_state_root": checkout_state_root_value,
+        "sequence": grant.sequence, "granted_at": grant.granted_at,
+        "additional_hops": grant.additional_hops,
+        "hop_limit_before": grant.hop_limit_before, "hop_limit_after": grant.hop_limit_after,
+        "hop_used_at_grant": grant.hop_used_at_grant,
+        "run_status_at_grant": grant.run_status_at_grant,
+        "stop_reason_at_grant": grant.stop_reason_at_grant,
+        "current_head_at_grant": grant.current_head_at_grant,
+        "authority": grant.authority, "authority_sha256": grant.authority_sha256,
+        "phase": run.phase,
+    }
+    try:
+        journal.append("budget_extension_intent", grant_facts)
+        write_run_snapshot(run_path, extended)
+        atomic_write_json(
+            Path(checkout_state_root_value) / "checkpoint.json",
+            checkpoint_projection(extended, profile),
+        )
+        journal.append("budget_extension_granted", grant_facts)
+        _, process = _do_continuation_launch(
+            repository, checkout_dir, journal, lock, authorized, prelaunch,
+            current_head=facts.head, record_prefix="budget_extension",
+            refusal_classification="refused_budget_extension", what="budget extension",
+        )
+    except LifecycleError as error:
+        # The continuation engine resolved at the pre-mutation check and then
+        # failed to spawn: roll the Run and checkpoint back to their
+        # pre-extension state so the Run keeps its honest budget stop rather
+        # than sitting in `ready` with no process driving it. The journal
+        # stays append-only -- the grant record and this rollback record are
+        # both kept, so the attempt is auditable -- and because the grant is
+        # no longer in the Run it also does not consume the total bound.
+        write_run_snapshot(run_path, run)
+        atomic_write_json(
+            Path(checkout_state_root_value) / "checkpoint.json",
+            checkpoint_projection(run, profile),
+        )
+        journal.append("budget_extension_rolled_back", {
+            "run_id": run.run_id, "sequence": grant.sequence, "error": str(error),
+        })
+        release_lock(lock)
+        raise
+    process.wait()
+    release_lock(lock)
+
+    engine_state_root = Path(prelaunch.data["engine_state_root"])
+    continuation_classification, continued_run = _classify_from_state_root(repository, engine_state_root)
+    if continuation_classification == "inconsistent":
+        raise LifecycleError(
+            "engine/journal facts are contradictory after a budget-extension continuation",
+            classification="inconsistent",
+        )
+    association = json.loads((engine_state_root / "checkout-association.json").read_text(encoding="utf-8"))
+    run_root = engine_state_root / "checkouts" / association["checkout_id"]
+    result = LifecycleResult(
+        classification=continuation_classification,
+        message=(
+            f"Hop budget extended by {grant.additional_hops} to {grant.hop_limit_after} on "
+            f"recorded maintainer authority; classified: {continuation_classification}"
+        ),
+        run_id=continued_run.run_id, run_status=continued_run.status.value,
+        end_head=continued_run.current_head,
+        state_root=str(engine_state_root), checkout_state_root=str(run_root),
+        budget_extensions=_journaled_budget_extensions(journal),
+    )
+    journal.append("classified", {
+        "classification": result.classification, "run_id": result.run_id, "run_status": result.run_status,
+        "end_head": result.end_head, "state_root": result.state_root, "checkout_state_root": result.checkout_state_root,
+    })
+    preservation.run_pending_preservation(repository, checkout_dir, journal)
+    postrun_status = postrun.run_pending_postrun(repository, checkout_dir, journal)
+    return _apply_postrun(result, postrun_status)
 
 
 # --------------------------------------------------------------------------
@@ -1311,6 +1652,51 @@ def _parse_simple_args(prog: str, argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _parse_extend_budget_args(argv: list[str]) -> argparse.Namespace:
+    """O8: deliberately no ``--yes``.
+
+    The launch ritual's ``--yes`` is an authorisation *gesture*; this command
+    asks for an explicit amount and a statement of the maintainer's own
+    instruction instead, and refuses a gesture in its place. Both value
+    arguments are required: there is no default amount and no default
+    authority statement (see `FTR-WFC-STOPPED-RUN-CONTINUATION-ECONOMY`'s
+    Design section, "What this cannot enforce, stated honestly").
+    """
+
+    parser = argparse.ArgumentParser(
+        prog="wfc extend-budget",
+        description=(
+            "Record an explicit maintainer extension of a budget-stopped Run's Hop "
+            "ceiling and continue the same Run. Used Hops are never reset or refunded, "
+            "the admitted Commission and its digest are never rewritten, and only the "
+            "independent reviewer may ever dispose of a Finding. An agent never extends "
+            "a budget without the maintainer's explicit instruction in the current "
+            "session, and says so in its report."
+        ),
+    )
+    parser.add_argument("--repository", default=".")
+    parser.add_argument(
+        "--additional-hops", type=int, required=True, metavar="N",
+        help=(
+            "how many autonomous Hops to add to this Run's effective ceiling; "
+            f"at most {BUDGET_EXTENSION_MAX_PER_CALL} per call, and in total at most "
+            "half the ceiling the Commission itself admitted"
+        ),
+    )
+    parser.add_argument(
+        "--authority", required=True, metavar="STATEMENT",
+        help=(
+            "the maintainer's own instruction, quoted, recorded verbatim in the Run, "
+            "the journal and the archive; a bare authorisation token is refused"
+        ),
+    )
+    parser.add_argument(
+        "--preview", action="store_true",
+        help="print the confirmation block and change nothing at all",
+    )
+    return parser.parse_args(argv)
+
+
 def _print_result(result: LifecycleResult) -> None:
     print(f"CLASSIFICATION: {result.classification}")
     print(f"MESSAGE: {result.message}")
@@ -1324,6 +1710,27 @@ def _print_result(result: LifecycleResult) -> None:
         print(f"STATE ROOT: {result.state_root}")
     if result.checkout_state_root:
         print(f"CHECKOUT STATE ROOT: {result.checkout_state_root}")
+    _print_budget_extensions(result)
+
+
+def _print_budget_extensions(result: LifecycleResult) -> None:
+    """O8: report-only; one block per recorded maintainer Hop-budget grant.
+
+    Printed by every surface that prints a ``LifecycleResult``, so an
+    extension is never invisible on the command an operator actually runs.
+    """
+
+    for extension in result.budget_extensions:
+        print(f"BUDGET EXTENSION {extension.get('sequence')}:")
+        print(
+            f"  additional hops: {extension.get('additional_hops')} "
+            f"({extension.get('hop_limit_before')} -> {extension.get('hop_limit_after')})"
+        )
+        print(f"  hops used at grant: {extension.get('hop_used_at_grant')} (charged; never refunded)")
+        print(f"  granted at: {extension.get('granted_at')}")
+        print(f"  run state at grant: {extension.get('run_status_at_grant')} ({extension.get('stop_reason_at_grant')})")
+        print(f"  authority: {_stdout_safe(str(extension.get('authority')))}")
+        print(f"  authority sha256: {extension.get('authority_sha256')}")
 
 
 def _stdout_safe(text: str) -> str:
@@ -1417,6 +1824,27 @@ def cmd_resume(argv: list[str]) -> int:
     return result.exit_code
 
 
+def cmd_extend_budget(argv: list[str]) -> int:
+    args = _parse_extend_budget_args(argv)
+    try:
+        repository = repository_identity(Path(args.repository))
+        result = extend_budget_lifecycle(
+            repository, additional_hops=args.additional_hops, authority=args.authority,
+            preview=args.preview,
+        )
+    except (LifecycleError, CommissionError, GitPreflightError, JournalError, OSError) as error:
+        classification = getattr(error, "classification", "refused_budget_extension")
+        print(f"wfc extend-budget: {error}", file=sys.stderr)
+        return EXIT_CODES.get(classification, 2)
+    _print_result(result)
+    _print_postrun_notice(result)
+    if result.classification == BUDGET_EXTENSION_PREVIEW_CLASSIFICATION:
+        # A preview reports successfully that it changed nothing; it is not
+        # a Run outcome and therefore carries no EXIT_CODES value.
+        return 0
+    return result.exit_code
+
+
 def cmd_status(argv: list[str]) -> int:
     args = _parse_simple_args("wfc status", argv)
     try:
@@ -1445,5 +1873,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_resume(args[1:])
     if args[:1] == ["status"]:
         return cmd_status(args[1:])
-    print("wfc: expected one of: run, resume, status", file=sys.stderr)
+    if args[:1] == ["extend-budget"]:
+        return cmd_extend_budget(args[1:])
+    print("wfc: expected one of: run, resume, status, extend-budget", file=sys.stderr)
     return 2
