@@ -24,16 +24,25 @@ wfc plan task.md --repository . \
   --authority-source "Repository owner authorizes this bounded task." \
   --program simple@v1 \
   --persona worker="Bounded worker persona." \
-  --evidence-argv sh --evidence-argv checks/check.sh \
+  --evidence-command lint --evidence-argv make --evidence-argv lint \
+  --evidence-timeout 120 \
+  --evidence-command task-check --evidence-argv make --evidence-argv test \
   --guidance-path .wfc/governance/repository-policy.md
 ```
 
 `--scope` is repeatable: a bounded, file-exact (or deliberately
 directory-scoped) mutation boundary. `--program` is `simple@v1` or
 `robust@v1` (`direct@v1` is withheld). `--persona` is repeatable, one per
-required program role. `--evidence-argv` is repeatable: one argv token of
-the task-check command, also used as the mandatory pre-launch baseline
-probe. `--durable-artifact PHASE=PATH` is `robust@v1` only.
+required program role. `--durable-artifact PHASE=PATH` is `robust@v1` only.
+
+The evidence flags declare an **ordered sequence of named commands**:
+`--evidence-command NAME` opens a gate, and the `--evidence-argv TOKEN`
+(repeatable) and optional `--evidence-timeout SECONDS` (default and maximum
+900, **per command**) that follow belong to it. Tokens given before any
+`--evidence-command` belong to an implicit first gate named `task-check`, so
+`--evidence-argv sh --evidence-argv checks/check.sh` alone still means what
+it always did. `wfc plan` prints the gates in order with the worst-case
+total.
 
 ## `wfc request`: emitting the Consumer Request
 
@@ -50,7 +59,9 @@ wfc request task.md --repository . \
   --authority-source "Repository owner authorizes this bounded task." \
   --program simple@v1 \
   --persona worker="Bounded worker persona." \
-  --evidence-argv sh --evidence-argv checks/check.sh \
+  --evidence-command lint --evidence-argv make --evidence-argv lint \
+  --evidence-timeout 120 \
+  --evidence-command task-check --evidence-argv make --evidence-argv test \
   --guidance-path .wfc/governance/repository-policy.md \
   --output ../wfc-scratch/request.yaml
 ```
@@ -153,32 +164,36 @@ and its tests, plus a docs-sync pass) has needed roughly twice the otherwise
 expected count, so budget that shape accordingly rather than assuming the
 usual multiplier covers it.
 
-## The evidence command and its baseline probe
+## The evidence commands and their baseline probe
 
-A Commission declares exactly one trusted `task-check` command (timeout at
-most 900 seconds). **The command must run the repository's own
-deterministic gates, not only its tests** -- when the repository has a
-combined target such as `make check` (lint, format and tests), name that,
-or a wrapper that runs them in order; a command that runs tests alone can
-pass ten Hops and two Broad Reviews while one lint-only defect (an unused
-import left by a removal) goes undetected, because no test node runs the
-linter. Reviewer and Worker Hops are not a substitute for a cheap
-deterministic check that would have caught the same defect at the first
-Hop's task-check. For documentation-only work use the repository's
-documentation-inclusive aggregate (`make check-docs`) instead. (This is the
-interim rule; an ordered evidence-command list is a separately authorized,
-category-B product change this rule does not require.) The identical
-command runs first, before any provider starts, as a mandatory pre-launch
-baseline probe: it must already be committed, exit `0` on today's clean
-tree, and leave the tree and `HEAD` unchanged. A non-zero exit, an
-unresolvable executable, a timeout, or any tree mutation refuses the whole
-Run before launch (`refused_probe`) and still consumes this checkout's one
-lifecycle. A non-zero-exit refusal prints a bounded, explicitly untrusted
-tail of the stdout/stderr it already captured, beside the exit code -- still
-run it by hand in the fresh checkout, with any required environment already
-prepared, before ever launching, rather than relying on that tail alone.
-Diagnosing and
-correcting a correctable cause -- a missing declared input, a misplaced
-scratch directory -- and repeating the probe in a fresh checkout is
-ordinary preparation, not a decision that needs asking first; see
+A Commission declares an **ordered sequence of named trusted commands**, each
+with its own timeout of at most 900 seconds (a per-command cap: the
+sequence's worst case is the sum). **The sequence must cover the
+repository's own deterministic gates, not only its tests, cheap ones
+first** -- for this repository `lint` (`make lint`), `format-check`
+(`make format-check`), `task-check` (`make test`), plus `docs-render`
+(`make docs-render`) when the Commission writes documentation. They run in
+the declared order and stop at the first failure, which the diagnostic names,
+so a lint residue costs one cheap gate instead of a test suite. A sequence
+that runs tests alone can pass ten Hops and two Broad Reviews while one
+lint-only defect (an unused import left by a removal) goes undetected,
+because no test node runs the linter; reviewer and Worker Hops are not a
+substitute for a cheap deterministic check. One conflated command
+(`make check`, or a wrapper script) is still admitted as the degenerate
+one-element sequence, but it is no longer the rule: it reports one exit code
+for every gate and cannot fail fast at the cheap one.
+
+The identical sequence runs first, in the same order, before any provider
+starts, as a mandatory pre-launch baseline probe: every command must already
+be committed, exit `0` on today's clean tree, and leave the tree and `HEAD`
+unchanged. A non-zero exit, an unresolvable executable, a timeout, or any
+tree mutation refuses the whole Run before launch (`refused_probe`), naming
+the command, and still consumes this checkout's one lifecycle. A
+non-zero-exit refusal prints a bounded, explicitly untrusted tail of the
+stdout/stderr it already captured -- still run the commands by hand in the
+fresh checkout, with any required environment already prepared, before ever
+launching, rather than relying on that tail alone. Diagnosing and correcting
+a correctable cause -- a missing declared input, a misplaced scratch
+directory -- and repeating the probe in a fresh checkout is ordinary
+preparation, not a decision that needs asking first; see
 `stops-and-evidence.md` for the full table.

@@ -484,30 +484,45 @@ def _do_probe(repository: Path, checkout_dir: Path, journal: Journal, authorized
 
     request_text = (checkout_dir / "commission" / "request.yaml").read_text(encoding="utf-8")
     request = consumer_request_from_yaml(request_text)
-    argv = list(request.evidence.argv)
-    try:
-        completed = subprocess.run(
-            argv, cwd=str(repository), timeout=request.evidence.timeout_seconds, capture_output=True,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise LifecycleError(f"baseline probe timed out; no provider ran: {error}", classification="refused_probe") from error
-    except OSError as error:
-        raise LifecycleError(f"baseline probe executable is unresolvable; no provider ran: {error}", classification="refused_probe") from error
+    # The whole declared sequence, in declared order, fail-fast, with each
+    # command's own timeout: exactly what the Coordinator will run as the
+    # task-check after every Worker Hop. A probe over only a cheap prefix
+    # would admit a Run whose first Hop fails the task-check for a reason
+    # that was already there (FTR-WFC-EVIDENCE-COMMAND-SEQUENCE, Design
+    # decision (d)). Every refusal names the command it belongs to.
+    for command in request.evidence:
+        try:
+            completed = subprocess.run(
+                list(command.argv), cwd=str(repository), timeout=command.timeout_seconds,
+                capture_output=True,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise LifecycleError(
+                f"baseline probe command '{command.name}' timed out; no provider ran: {error}",
+                classification="refused_probe",
+            ) from error
+        except OSError as error:
+            raise LifecycleError(
+                f"baseline probe command '{command.name}' is unresolvable; no provider ran: {error}",
+                classification="refused_probe",
+            ) from error
 
-    facts_after = observe_repository(repository)
-    if completed.returncode != 0:
-        raise LifecycleError(
-            f"baseline probe failed with exit code {completed.returncode}; no provider ran\n"
-            + _bounded_untrusted_tail(completed.stdout, completed.stderr),
-            classification="refused_probe",
-        )
-    if facts_after.head != facts_before.head or not facts_after.clean or facts_after.unresolved_submodules:
-        changed = sorted({*facts_after.tracked_changes, *facts_after.untracked_changes})
-        raise LifecycleError(
-            f"baseline probe mutated the repository; no provider ran (changed: {', '.join(changed) or 'HEAD moved'})",
-            classification="refused_probe",
-        )
-    return journal.append("probe_passed", {})
+        facts_after = observe_repository(repository)
+        if completed.returncode != 0:
+            raise LifecycleError(
+                f"baseline probe command '{command.name}' failed with exit code "
+                f"{completed.returncode}; no provider ran\n"
+                + _bounded_untrusted_tail(completed.stdout, completed.stderr),
+                classification="refused_probe",
+            )
+        if facts_after.head != facts_before.head or not facts_after.clean or facts_after.unresolved_submodules:
+            changed = sorted({*facts_after.tracked_changes, *facts_after.untracked_changes})
+            raise LifecycleError(
+                f"baseline probe command '{command.name}' mutated the repository; no provider ran "
+                f"(changed: {', '.join(changed) or 'HEAD moved'})",
+                classification="refused_probe",
+            )
+    return journal.append("probe_passed", {"commands": [command.name for command in request.evidence]})
 
 
 # --------------------------------------------------------------------------

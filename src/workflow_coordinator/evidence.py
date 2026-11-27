@@ -405,6 +405,39 @@ class ProductionEvidenceRunner:
 PRODUCTION_EVIDENCE_RUNNER = ProductionEvidenceRunner()
 
 
+def observe_required_evidence(
+    names: Sequence[str],
+    commands: Mapping[str, PreparedEvidenceCommand],
+    runner: EvidenceRunner,
+) -> tuple[tuple[Observation, ...], tuple[str, ...]]:
+    """Execute the declared evidence sequence in order, stopping at the first
+    command that does not cleanly pass (fail-fast).
+
+    Returns the observations actually produced -- a prefix of ``names`` -- and
+    the validation errors of those observations.  A command after the first
+    non-``pass`` is not executed and gets *no* Observation: the attempt's
+    ``required_evidence`` plan still names the full sequence, so "planned but
+    not reached" is the difference between plan and observations rather than a
+    new status in the trusted A2 vocabulary (FTR-WFC-EVIDENCE-COMMAND-SEQUENCE,
+    Design decision (d)).  Cheap gates are declared first, so the cheap signal
+    arrives first and alone; how an observation is judged is unchanged.
+    """
+
+    observations: list[Observation] = []
+    errors: list[str] = []
+    for name in names:
+        expected = commands[name]
+        observation = runner.observe(expected)
+        observations.append(observation)
+        error = observation_error(observation, expected=expected)
+        if error is not None:
+            errors.append(error)
+            break
+        if observation.status != "pass":
+            break
+    return tuple(observations), tuple(errors)
+
+
 def observation_error(
     observation: Observation, *, expected: PreparedEvidenceCommand
 ) -> str | None:

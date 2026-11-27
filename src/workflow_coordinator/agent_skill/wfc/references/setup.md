@@ -9,10 +9,10 @@ Distils Operator Manual chapter 9,
 * Python 3.10+ to run `wfc` itself.
 * An already-installed, already-authenticated provider CLI for the adapter
   in use: `codex` for `codex_cli`, `claude` for `claude_cli`.
-* A single, already-committed check command that exits `0` on today's clean
-  tree without changing anything -- `wfc run` executes it verbatim as a
-  mandatory pre-launch baseline probe, and again as the Commission's
-  declared `task-check` evidence.
+* One or more already-committed check commands, each exiting `0` on today's
+  clean tree without changing anything -- `wfc run` executes the declared
+  sequence verbatim, in order, as a mandatory pre-launch baseline probe and
+  again as the Commission's declared evidence.
 * A Git identity (`user.name`/`user.email`) visible in actual Git
   configuration, never only via `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/
   `GIT_CONFIG_GLOBAL` environment variables -- WFC's trusted Git operations

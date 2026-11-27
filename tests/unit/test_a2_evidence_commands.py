@@ -311,6 +311,70 @@ def test_execution_is_literal_rooted_devnull_and_preserves_empty_arg(tmp_path):
     assert not (tmp_path / "nope").exists()
 
 
+def _sequence(tmp_path, *names):
+    definitions = {name: EvidenceCommand(("git", "--version"), 10) for name in names}
+    prepared = prepare_evidence_commands(names, definitions, tmp_path)
+    return names, {command.command_name: command for command in prepared}
+
+
+class _RecordingRunner:
+    """Returns the status scripted per command name and records the order."""
+
+    def __init__(self, statuses):
+        self.statuses = statuses
+        self.calls: list[str] = []
+
+    def observe(self, command):
+        self.calls.append(command.command_name)
+        status = self.statuses.get(command.command_name, "pass")
+        return simulated_observation(command, status=status, summary=f"scripted {status}")
+
+
+def test_required_evidence_runs_the_whole_sequence_in_declared_order(tmp_path):
+    names, commands = _sequence(tmp_path, "lint", "format-check", "task-check")
+    runner = _RecordingRunner({})
+
+    observations, errors = evidence.observe_required_evidence(names, commands, runner)
+
+    assert runner.calls == ["lint", "format-check", "task-check"]
+    assert [item.command_name for item in observations] == list(names)
+    assert errors == ()
+
+
+@pytest.mark.parametrize("status", ["fail", "error", "not_run"])
+def test_required_evidence_stops_at_the_first_command_that_does_not_pass(tmp_path, status):
+    names, commands = _sequence(tmp_path, "lint", "format-check", "task-check")
+    runner = _RecordingRunner({"format-check": status})
+
+    observations, errors = evidence.observe_required_evidence(names, commands, runner)
+
+    # Fail-fast: the expensive gate is never spent on a tree the cheap gate
+    # already rejected, and the command that did not run has no Observation.
+    assert runner.calls == ["lint", "format-check"]
+    assert [item.command_name for item in observations] == ["lint", "format-check"]
+    assert observations[-1].status == status
+    assert errors == ()
+
+
+def test_required_evidence_stops_at_a_malformed_observation_and_names_it(tmp_path):
+    names, commands = _sequence(tmp_path, "lint", "task-check")
+
+    class ForgingRunner:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def observe(self, command):
+            self.calls.append(command.command_name)
+            return replace(simulated_observation(command), argv_digest="0" * 64)
+
+    runner = ForgingRunner()
+    observations, errors = evidence.observe_required_evidence(names, commands, runner)
+
+    assert runner.calls == ["lint"]
+    assert len(observations) == 1
+    assert errors == ("malformed trusted evidence: authored argv digest mismatch",)
+
+
 def test_valid_production_and_simulated_observations_pass_boundary_validation(tmp_path):
     prepared = prepare_evidence_commands(
         ("valid",), {"valid": EvidenceCommand((sys.executable, "-c", "pass"), 10)}, tmp_path

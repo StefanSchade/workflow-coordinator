@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from workflow_coordinator import evidence, operator
+from workflow_coordinator.frontdoor import audit as au
 from workflow_coordinator.operator import OperatorPreflightError, _successor_context, main, run_serial_hops
 from workflow_coordinator.operator import _pinned_text
 from workflow_coordinator.adapter import AgentExecutionOutcome
@@ -21,6 +22,7 @@ from workflow_coordinator.model import (
     COORDINATOR_HARD_MAX_AUTONOMOUS_HOPS,
     ExecutionBinding,
     RepositoryPolicy,
+    RequiredEvidenceIdentity,
     WorkItem,
     WorkflowRole,
     new_run,
@@ -33,11 +35,14 @@ from workflow_coordinator.prompt import (
 from workflow_coordinator.reducer import ReductionError
 from workflow_coordinator.slice4 import checkout_state_root, register_checkout
 from tests.support import (
+    charge_hop,
     convergence_cycle,
     convergence_routing_profile,
     phase,
+    prepared_evidence,
     profile,
     qualification_evidence,
+    simulated_observation,
     route,
     run_for,
     tracked_convergence_run,
@@ -131,6 +136,52 @@ def test_failed_transport_diagnostics_retain_a_present_candidate_fact(
         ],
         "diagnostics_artifact": None,
     }
+
+
+def test_legacy_execution_evidence_records_the_declared_sequence_beside_what_ran(
+    repository, tmp_path: Path,
+):
+    """O7: every Commission the consumer Front Door compiles is a schema-2
+    Run, so this projection is the only place a fail-fast stop's unreached
+    gate can reach the archive (and `wfc report`) at all."""
+
+    workflow = profile({"work": phase({"done": route("complete")})})
+    run, _ = charge_hop(run_for(workflow))
+    commands = prepared_evidence(repository, ("lint", "task-check"))
+    plan = tuple(
+        RequiredEvidenceIdentity(
+            command_name=command.command_name,
+            argv_digest=command.argv_digest,
+            timeout_seconds=command.timeout_seconds,
+        )
+        for command in commands.values()
+    )
+    record = operator._legacy_execution_evidence(
+        run,
+        AgentExecutionOutcome("{}", 0, False, "", "", ()),
+        invocation_id="INV-sequence",
+        phase="work",
+        workflow_role=WorkflowRole.WORKER,
+        persona="fixture worker",
+        binding={"adapter": "local", "executable": "local", "model": None, "reasoning": None},
+        timeout_seconds=2.0,
+        observations=(simulated_observation(commands["lint"], status="fail", summary="exit 1"),),
+        required_evidence=plan,
+    )
+
+    assert [item["command_name"] for item in record["required_evidence"]] == ["lint", "task-check"]
+    assert [item["command_name"] for item in record["trusted_observations"]] == ["lint"]
+    assert record["required_evidence"][1]["argv_digest"] == commands["task-check"].argv_digest
+    # The difference between the two lists -- never a status a runner invented
+    # -- is what the audit projects as `not_executed`.
+    assert au._not_executed_evidence_entries(record) == [
+        {
+            "command_name": "task-check",
+            "status": "not_executed",
+            "exit_code": None,
+            "argv_digest": commands["task-check"].argv_digest,
+        }
+    ]
 
 
 @pytest.mark.parametrize(

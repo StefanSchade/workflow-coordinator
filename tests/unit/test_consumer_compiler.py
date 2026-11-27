@@ -158,6 +158,187 @@ def test_consumer_request_rejects_execution_fields_nested_in_evidence(repository
         consumer_request_from_yaml(text)
 
 
+_SINGLE_EVIDENCE_BLOCK = "evidence:\n  argv: [sh, checks/check.sh]\n  timeout_seconds: 10\n"
+_SEQUENCE_EVIDENCE_BLOCK = """evidence:
+  - name: lint
+    argv: [sh, checks/lint.sh]
+    timeout_seconds: 30
+  - name: format-check
+    argv: [sh, checks/format.sh]
+    timeout_seconds: 20
+  - name: task-check
+    argv: [sh, checks/check.sh]
+    timeout_seconds: 10
+"""
+
+
+def sequence_request_text(head: str, *, block: str = _SEQUENCE_EVIDENCE_BLOCK, robust: bool = False) -> str:
+    """The same request as above, with an ordered evidence sequence (O7)."""
+
+    base = robust_request_text(head) if robust else simple_request_text(head)
+    assert _SINGLE_EVIDENCE_BLOCK in base
+    return base.replace(_SINGLE_EVIDENCE_BLOCK, block)
+
+
+# ---------------------------------------------------------------------------
+# The ordered evidence-command sequence (O7, D6;
+# docs/backlog/FTR-WFC-EVIDENCE-COMMAND-SEQUENCE.adoc Design).
+# ---------------------------------------------------------------------------
+
+
+def test_consumer_request_parses_the_ordered_evidence_sequence_in_declared_order(repository: Path) -> None:
+    head = git(repository, "rev-parse", "HEAD")
+    request = consumer_request_from_yaml(sequence_request_text(head))
+    assert [command.name for command in request.evidence] == ["lint", "format-check", "task-check"]
+    assert [command.argv for command in request.evidence] == [
+        ("sh", "checks/lint.sh"), ("sh", "checks/format.sh"), ("sh", "checks/check.sh"),
+    ]
+    assert [command.timeout_seconds for command in request.evidence] == [30, 20, 10]
+
+
+def test_consumer_request_single_mapping_is_the_degenerate_task_check_list(repository: Path) -> None:
+    head = git(repository, "rev-parse", "HEAD")
+    request = consumer_request_from_yaml(simple_request_text(head))
+    assert len(request.evidence) == 1
+    assert request.evidence[0].name == "task-check"
+    assert request.evidence[0].argv == ("sh", "checks/check.sh")
+    assert request.evidence[0].timeout_seconds == 10
+
+
+@pytest.mark.parametrize(
+    ("block", "message"),
+    [
+        ("evidence: []\n", "non-empty list"),
+        ("evidence:\n  - [sh, checks/check.sh]\n", "must be a mapping"),
+        (
+            "evidence:\n  - {name: lint, argv: [sh, checks/lint.sh]}\n",
+            "missing required field",
+        ),
+        (
+            "evidence:\n  - {name: lint, argv: [sh, l.sh], timeout_seconds: 10, provider: codex_cli}\n",
+            "forbidden field",
+        ),
+        (
+            "evidence:\n  - {name: Lint, argv: [sh, l.sh], timeout_seconds: 10}\n",
+            r"must match \[a-z\]",
+        ),
+        (
+            "evidence:\n  - {name: lint, argv: [sh, l.sh], timeout_seconds: 10}\n"
+            "  - {name: lint, argv: [sh, m.sh], timeout_seconds: 10}\n",
+            "must be unique: lint",
+        ),
+        (
+            "evidence:\n  - {name: lint, argv: [], timeout_seconds: 10}\n",
+            "argv must be a non-empty list",
+        ),
+        (
+            "evidence:\n  - {name: lint, argv: [sh, l.sh], timeout_seconds: 901}\n",
+            "timeout_seconds must be a non-boolean integer in 1..900",
+        ),
+        (
+            "evidence:\n  - {name: lint, argv: [sh, l.sh], timeout_seconds: true}\n",
+            "timeout_seconds must be a non-boolean integer in 1..900",
+        ),
+        (
+            "evidence:\n  name: lint\n  argv: [sh, l.sh]\n  timeout_seconds: 10\n",
+            "must be a list of commands, not one mapping",
+        ),
+    ],
+    ids=[
+        "empty-list", "item-not-a-mapping", "missing-field", "forbidden-field", "name-shape",
+        "duplicate-name", "empty-argv", "timeout-above-cap", "boolean-timeout",
+        "named-single-mapping",
+    ],
+)
+def test_consumer_request_refuses_a_malformed_evidence_sequence(
+    repository: Path, block: str, message: str,
+) -> None:
+    head = git(repository, "rev-parse", "HEAD")
+    with pytest.raises(CommissionError, match=message):
+        consumer_request_from_yaml(sequence_request_text(head, block=block))
+
+
+def test_consumer_compile_gives_every_gated_phase_the_identical_ordered_sequence(repository: Path) -> None:
+    head = git(repository, "rev-parse", "HEAD")
+    request = consumer_request_from_yaml(sequence_request_text(head, robust=True))
+    config = consumer_config_from_yaml(config_text(roles="worker,independent_reviewer"))
+    compiled = compile_commission(request, config, repository=repository)
+
+    phases = yaml.safe_load(compiled.texts[compiled.paths["profile"]])["phases"]
+    ordered = ["lint", "format-check", "task-check"]
+    # The program decides WHICH phases are gated; the Commission decides WHAT
+    # the gates are. Every gated phase receives the identical, complete list,
+    # so no Commission can give one phase a weaker gate than another.
+    assert phases["broad_review"]["evidence"] == ordered
+    assert phases["focused_review"]["evidence"] == ordered
+    assert phases["implement"]["evidence"] == []
+    assert phases["correct"]["evidence"] == []
+
+    policy = yaml.safe_load(compiled.texts[compiled.paths["policy"]])
+    assert list(policy["evidence_commands"]) == ordered
+    assert policy["evidence_commands"]["lint"] == {"argv": ["sh", "checks/lint.sh"], "timeout_seconds": 30}
+    assert policy["evidence_commands"]["task-check"] == {"argv": ["sh", "checks/check.sh"], "timeout_seconds": 10}
+
+
+def test_consumer_compile_of_a_degenerate_request_is_byte_identical_to_an_explicit_task_check(
+    repository: Path,
+) -> None:
+    """The migration property of Design decision (b): a request that declares
+    one command named ``task-check`` compiles exactly as it did before O7, so
+    no Commission digest moves for it."""
+
+    head = git(repository, "rev-parse", "HEAD")
+    config = consumer_config_from_yaml(config_text())
+    degenerate = compile_commission(
+        consumer_request_from_yaml(simple_request_text(head)), config, repository=repository,
+    )
+    explicit = compile_commission(
+        consumer_request_from_yaml(sequence_request_text(
+            head,
+            block="evidence:\n  - {name: task-check, argv: [sh, checks/check.sh], timeout_seconds: 10}\n",
+        )),
+        config,
+        repository=repository,
+    )
+    compiled_without_request_digest = {
+        path: text for path, text in explicit.texts.items() if path != explicit.paths["manifest"]
+    }
+    assert compiled_without_request_digest == {
+        path: text for path, text in degenerate.texts.items() if path != degenerate.paths["manifest"]
+    }
+    # Only the request's own bytes (and therefore its digest) differ.
+    assert explicit.manifest["request"]["sha256"] != degenerate.manifest["request"]["sha256"]
+    assert explicit.manifest["digests"][explicit.paths["profile"]] == degenerate.manifest["digests"][degenerate.paths["profile"]]
+
+
+def test_consumer_sequence_end_to_end_admits_every_command(repository: Path) -> None:
+    for name in ("lint.sh", "format.sh"):
+        script = repository / "checks" / name
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(0o755)
+    head = git(repository, "rev-parse", "HEAD")
+    request_text = sequence_request_text(head)
+    request = consumer_request_from_yaml(request_text)
+    config = consumer_config_from_yaml(config_text())
+    compiled = compile_commission(request, config, repository=repository)
+    compiled.write_to(repository)
+    (repository / "sequence-request.yaml").write_text(request_text, encoding="utf-8")
+    (repository / "sequence-config.yaml").write_text(config_text(), encoding="utf-8")
+    git(repository, "add", ".")
+    git(repository, "commit", "-q", "-m", "test: materialize an ordered-sequence Commission")
+    expected_head = git(repository, "rev-parse", "HEAD")
+
+    envelope = resolve_execution(config, {}, compiled.phase_roles)
+    _, result = verify_commission(
+        "sequence-request.yaml", "sequence-config.yaml",
+        repository=repository, expected_head=expected_head, execution_envelope=envelope,
+    )
+    # admit_parsed prepares every selected command, in declared order, and
+    # fails closed if any one of them cannot resolve to an executable.
+    prepared = result[13]
+    assert list(prepared) == ["lint", "format-check", "task-check"]
+
+
 def test_consumer_request_rejects_direct_program(repository: Path) -> None:
     head = git(repository, "rev-parse", "HEAD")
     text = simple_request_text(head).replace("program: {id: simple, revision: v1}", "program: {id: direct, revision: v1}")

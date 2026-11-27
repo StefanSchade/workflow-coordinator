@@ -31,6 +31,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -39,7 +40,7 @@ from ..git_facts import GitPreflightError, repository_head, repository_identity
 from .config import (
     ConsumerConfig, ExecutionEnvelope, consumer_config_from_yaml, execution_overrides_from_flags, resolve_execution,
 )
-from .request import ConsumerRequest, consumer_request_from_yaml
+from .request import DEGENERATE_EVIDENCE_COMMAND_NAME, ConsumerRequest, consumer_request_from_yaml
 
 DEFAULT_CONFIG_PATH = ".wfc/config.yaml"
 DEFAULT_EVIDENCE_TIMEOUT_SECONDS = 900
@@ -116,6 +117,69 @@ def _durable_artifacts_from_flags(values: list[str]) -> dict[str, list[str]]:
     return artifacts
 
 
+class _EvidenceSequenceAction(argparse.Action):
+    """Collect the three evidence flags into one list in command-line order.
+
+    Grouping has to be positional, because an ordered sequence of gates is
+    what the operator is declaring: ``--evidence-command`` opens a gate and
+    the ``--evidence-argv``/``--evidence-timeout`` that follow belong to it.
+    One shared ordered accumulator is the only way argparse can preserve
+    that; the grouping itself is ``evidence_sequence_from_flags``.
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        tokens = getattr(namespace, self.dest, None)
+        if tokens is None:
+            tokens = []
+            setattr(namespace, self.dest, tokens)
+        tokens.append((option_string, values))
+
+
+def evidence_sequence_from_flags(
+    tokens: list[tuple[str, Any]] | None, *, default_timeout: int
+) -> list[dict[str, Any]]:
+    """Group the ordered evidence flags into the declared gate sequence.
+
+    Tokens given before any ``--evidence-command`` attach to an implicit
+    first gate named ``task-check``, so every command line written before the
+    ordered sequence existed keeps its exact meaning (FTR-WFC-EVIDENCE-
+    COMMAND-SEQUENCE, Design decision (c)).
+    """
+
+    gates: list[dict[str, Any]] = []
+
+    def current() -> dict[str, Any]:
+        if not gates:
+            gates.append({"name": DEGENERATE_EVIDENCE_COMMAND_NAME, "argv": [], "timeout_seconds": None})
+        return gates[-1]
+
+    for option, value in tokens or []:
+        if option == "--evidence-command":
+            name = str(value).strip()
+            if any(gate["name"] == name for gate in gates):
+                raise CommissionError(f"--evidence-command names a gate more than once: {name}")
+            gates.append({"name": name, "argv": [], "timeout_seconds": None})
+        elif option == "--evidence-argv":
+            current()["argv"].append(str(value))
+        elif option == "--evidence-timeout":
+            gate = current()
+            if gate["timeout_seconds"] is not None:
+                raise CommissionError(
+                    f"--evidence-timeout is given more than once for evidence command: {gate['name']}"
+                )
+            gate["timeout_seconds"] = value
+        else:  # pragma: no cover -- argparse never produces another option here
+            raise CommissionError(f"unsupported evidence flag: {option}")
+    if not gates:
+        raise CommissionError("at least one --evidence-argv token is required")
+    for gate in gates:
+        if not gate["argv"]:
+            raise CommissionError(f"evidence command declares no --evidence-argv token: {gate['name']}")
+        if gate["timeout_seconds"] is None:
+            gate["timeout_seconds"] = default_timeout
+    return gates
+
+
 class PlanInputError(CommissionError):
     """A refusal resolving the shared ``plan``/``request`` CLI inputs."""
 
@@ -129,10 +193,28 @@ def _program_ref_from_flag(value: str) -> tuple[str, str]:
     return program_id, revision
 
 
+def _evidence_request_value(evidence: list[dict[str, Any]]) -> Any:
+    """Render the declared gate sequence in the admitted form it needs.
+
+    One implicitly named gate -- the spelling every pre-O7 command line uses
+    -- is written as the degenerate ``{argv, timeout_seconds}`` mapping, so
+    such a command line still produces a byte-identical Consumer Request and
+    therefore identical projected digests. Anything the operator named
+    explicitly is written as the ordered list.
+    """
+
+    if len(evidence) == 1 and evidence[0]["name"] == DEGENERATE_EVIDENCE_COMMAND_NAME:
+        return {"argv": list(evidence[0]["argv"]), "timeout_seconds": evidence[0]["timeout_seconds"]}
+    return [
+        {"name": gate["name"], "argv": list(gate["argv"]), "timeout_seconds": gate["timeout_seconds"]}
+        for gate in evidence
+    ]
+
+
 def consumer_request_from_plan_inputs(
     *, task: TaskDocument, commission_id: str, work_item_id: str, authority_source: str,
-    program: str, scope: list[str], personas: list[str], evidence_argv: list[str],
-    evidence_timeout: int, max_autonomous_hops: int, durable_artifact: list[str],
+    program: str, scope: list[str], personas: list[str], evidence: list[dict[str, Any]],
+    max_autonomous_hops: int, durable_artifact: list[str],
     guidance_path: str, guidance_commit: str,
 ) -> ConsumerRequest:
     """Assemble and strictly re-parse one ``ConsumerRequest`` from plan CLI inputs.
@@ -156,7 +238,7 @@ def consumer_request_from_plan_inputs(
         },
         "scope": list(scope),
         "personas": _personas_from_flags(personas),
-        "evidence": {"argv": list(evidence_argv), "timeout_seconds": evidence_timeout},
+        "evidence": _evidence_request_value(evidence),
         "max_autonomous_hops": max_autonomous_hops,
         "durable_artifacts": _durable_artifacts_from_flags(durable_artifact),
         "guidance": {"path": guidance_path, "source_commit": guidance_commit},
@@ -196,8 +278,17 @@ def render_commission_preview_lines(
         "personas: " + ", ".join(f"{role}={value}" for role, value in sorted(request.personas.items()))
     )
     lines.append(f"max_autonomous_hops: {request.max_autonomous_hops} (config ceiling: {config.max_autonomous_hops})")
-    lines.append(f"evidence.argv: {' '.join(request.evidence.argv)}")
-    lines.append(f"evidence.timeout_seconds: {request.evidence.timeout_seconds}")
+    total = sum(command.timeout_seconds for command in request.evidence)
+    plural = "" if len(request.evidence) == 1 else "s"
+    lines.append(
+        f"evidence: {len(request.evidence)} ordered fail-fast command{plural}, "
+        f"worst case {total}s in total"
+    )
+    for position, command in enumerate(request.evidence, start=1):
+        lines.append(
+            f"  {position}. {command.name}  timeout {command.timeout_seconds}s  "
+            f"argv: {' '.join(command.argv)}"
+        )
     if request.durable_artifacts:
         lines.append("durable_artifacts:")
         for phase in sorted(request.durable_artifacts):
@@ -263,9 +354,23 @@ def add_plan_input_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--program", required=True, help="ID@REVISION, e.g. simple@v1 or robust@v1")
     parser.add_argument("--persona", action="append", default=[], required=True, metavar="ROLE=PERSONA",
                          help="persona text for one program role (repeatable, one per required role)")
-    parser.add_argument("--evidence-argv", action="append", default=[], required=True, metavar="TOKEN",
-                         help="one argv token of the task-check command (repeatable, at least one)")
-    parser.add_argument("--evidence-timeout", type=int, default=DEFAULT_EVIDENCE_TIMEOUT_SECONDS)
+    # One ordered accumulator for the three evidence flags: the gates run in
+    # the order declared here, fail-fast, as the pre-launch baseline probe and
+    # as the task-check after every Worker Hop.
+    parser.add_argument("--evidence-command", action=_EvidenceSequenceAction, dest="evidence_tokens",
+                         default=None, metavar="NAME",
+                         help="open a new evidence command in the ordered sequence; the "
+                              "--evidence-argv/--evidence-timeout that follow belong to it "
+                              "(repeatable; name must match [a-z][a-z0-9_-]{0,63})")
+    parser.add_argument("--evidence-argv", action=_EvidenceSequenceAction, dest="evidence_tokens",
+                         default=None, required=True, metavar="TOKEN",
+                         help="one argv token of the evidence command currently open, or of an "
+                              "implicit first command named task-check (repeatable, at least one)")
+    parser.add_argument("--evidence-timeout", action=_EvidenceSequenceAction, dest="evidence_tokens",
+                         default=None, type=int, metavar="SECONDS",
+                         help="timeout of the evidence command currently open "
+                              f"(default {DEFAULT_EVIDENCE_TIMEOUT_SECONDS}; at most "
+                              f"{DEFAULT_EVIDENCE_TIMEOUT_SECONDS} per command)")
     parser.add_argument("--max-autonomous-hops", type=int, default=None,
                          help="defaults to the Consumer Config's own ceiling")
     parser.add_argument("--durable-artifact", action="append", default=[], metavar="PHASE=PATH",
@@ -327,10 +432,13 @@ def resolve_plan_inputs(args: argparse.Namespace) -> ResolvedPlanInputs:
         config = consumer_config_from_yaml(config_text)
         guidance_commit = args.guidance_commit or repository_head(repository)
         max_autonomous_hops = args.max_autonomous_hops if args.max_autonomous_hops is not None else config.max_autonomous_hops
+        evidence = evidence_sequence_from_flags(
+            args.evidence_tokens, default_timeout=DEFAULT_EVIDENCE_TIMEOUT_SECONDS,
+        )
         request = consumer_request_from_plan_inputs(
             task=task, commission_id=args.commission_id, work_item_id=args.work_item_id,
             authority_source=args.authority_source, program=args.program, scope=args.scope,
-            personas=args.persona, evidence_argv=args.evidence_argv, evidence_timeout=args.evidence_timeout,
+            personas=args.persona, evidence=evidence,
             max_autonomous_hops=max_autonomous_hops, durable_artifact=args.durable_artifact,
             guidance_path=args.guidance_path, guidance_commit=guidance_commit,
         )

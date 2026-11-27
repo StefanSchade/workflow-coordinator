@@ -338,18 +338,20 @@ stop on ambiguity
 EOF
 ----
 
-`wfc run` below executes a single check command of your own, verbatim, as a
-mandatory pre-launch baseline probe before it ever starts a provider: it
-must already exist, already be committed, exit `0` when run from the
-repository root on today's clean tree, and leave the tree and `HEAD`
-unchanged. A non-zero exit, an unresolvable executable, a timeout, or any
-tree mutation refuses the whole Run before launch (classification
-`refused_probe`, exit code 23) and still consumes this checkout's one
-lifecycle -- prepare a fresh checkout to retry. The same command is also the
-Commission's declared `task-check` evidence (see Limitations below). For
-this walkthrough, create and commit a trivial placeholder; replace it with
-your project's real check before relying on this for anything but the
-walkthrough:
+`wfc run` below executes the check commands you declare, verbatim and in the
+order you declare them, as a mandatory pre-launch baseline probe before it
+ever starts a provider: each must already exist, already be committed, exit
+`0` when run from the repository root on today's clean tree, and leave the
+tree and `HEAD` unchanged. A non-zero exit, an unresolvable executable, a
+timeout, or any tree mutation refuses the whole Run before launch
+(classification `refused_probe`, exit code 23), names the command it came
+from, and still consumes this checkout's one lifecycle -- prepare a fresh
+checkout to retry. The same sequence is also the Commission's declared
+evidence (see Limitations below); declare the cheap gates first, so a lint
+error costs a lint run rather than a test suite. This walkthrough declares
+one placeholder command for brevity; replace it with your project's real
+gates -- lint first, then the test suite -- before relying on this for
+anything but the walkthrough:
 
 [source,shell]
 ----
@@ -382,7 +384,12 @@ wfc plan ../wfc-scratch/task.md --repository . --scope src \
 `wfc plan` is entirely read-only: it writes nothing, runs no project command,
 and never touches Git; `--evidence-argv sh --evidence-argv checks/check.sh`
 is not executed here -- it only names the check script you committed above,
-which `wfc run` below will actually run. It prints the Commission bytes and
+which `wfc run` below will actually run. With no `--evidence-command NAME`
+flag these tokens declare the one-command sequence named `task-check`; add
+`--evidence-command NAME` before a command's own `--evidence-argv`/
+`--evidence-timeout` flags to declare further, ordered gates (for example
+`--evidence-command lint --evidence-argv make --evidence-argv lint` before
+the `task-check` group). It prints the Commission bytes and
 execution envelope it *would* compile. `--guidance-path` defaults to
 resolving at the
 repository's current HEAD, which the `repository-policy.md` commit above
@@ -521,13 +528,17 @@ link:{operator-docs}/operator_manual/operator_manual.adoc[Operator Manual].
   link:{operator-docs}/operator_manual/ch07_diagnostics/01_troubleshooting.adoc#troubleshooting[troubleshooting].
 * *One adapter per Run.* Every role in a Run shares the same adapter and the
   same provider executable; mixing adapters within one Run is not supported.
-* *One evidence command.* A Commission declares exactly one trusted
-  `task-check` command, with a timeout of at most 900 seconds; there is no
-  separate per-phase or per-Hop evidence command. The identical command also
-  runs, before `task-check` is ever reached, as a mandatory pre-launch
-  baseline probe (see <<quickstart-request>>); a non-zero exit, an
-  unresolvable executable, a timeout, or any tree mutation there refuses the
-  whole Run before any provider starts.
+* *One evidence sequence, the same for every gated phase.* A Commission
+  declares an ordered sequence of named trusted commands -- one or more, each
+  with a timeout of at most 900 seconds, which is a per-command cap -- and it
+  cannot vary them per phase or per Hop: every phase the program declares as
+  gated runs the identical, complete sequence. The commands run in the
+  declared order and stop at the first one that does not pass, and the
+  identical sequence also runs, before any `task-check` is ever reached, as a
+  mandatory pre-launch baseline probe (see <<quickstart-request>>); a
+  non-zero exit, an unresolvable executable, a timeout, or any tree mutation
+  there refuses the whole Run before any provider starts and names the
+  command it came from.
 * *Clean-tree and scope-ceiling rules.* The working tree must be completely
   clean at launch, and every scope path must equal, or sit strictly beneath,
   a path already named in `.wfc/config.yaml`'s `--scope-ceiling`; a

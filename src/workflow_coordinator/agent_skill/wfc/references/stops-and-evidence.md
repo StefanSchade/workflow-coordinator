@@ -126,7 +126,12 @@ Treat the archived Evidence -- the Evidence-repository commit holding
 `manifest.json` and the sanitized `audit.json` projection -- and the
 independent review record as the source of truth, never the Worker's own
 self-reported summary. Checking "what was accepted" means reading the
-classification, the review verdict and the task-check result together.
+classification, the review verdict and the evidence results together. A
+Commission declares an ordered sequence of named commands that runs
+fail-fast, so read every gate's own line: `pass`, a clean `fail` with its
+exit code, an `error`, or `not_executed` for a gate the stop never reached
+(the sequence ended at an earlier one). `not_executed` is the report's own
+marker for "planned but not reached", never an executed command's result.
 
 ## Reading `wfc report`
 

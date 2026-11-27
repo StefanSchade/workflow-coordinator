@@ -789,10 +789,20 @@ def _legacy_execution_evidence(
     binding: dict[str, object],
     timeout_seconds: float,
     observations: tuple[object, ...] = (),
+    required_evidence: tuple[object, ...] = (),
     outcome_error: str | None = None,
     diagnostics_artifact: str | None = None,
 ) -> dict[str, object]:
-    """Preserve schema-3 audit output for non-convergence Run versions."""
+    """Preserve schema-3 audit output for non-convergence Run versions.
+
+    ``required_evidence`` records the Hop's *declared* evidence sequence
+    beside the observations that actually ran. A fail-fast stop leaves the
+    later commands unobserved, and this is the only place a schema-2 Run --
+    every Commission the consumer Front Door compiles -- can carry that
+    difference into the archive (FTR-WFC-EVIDENCE-COMMAND-SEQUENCE, Design
+    decision (e)). Absent for Runs recorded before the sequence existed,
+    which is exactly what the audit's own tolerance expects.
+    """
 
     hop = run.hops[-1]
     return {
@@ -814,6 +824,14 @@ def _legacy_execution_evidence(
         "base_head": hop.base_head,
         "end_head": hop.end_head,
         "actual_commits": list(hop.actual_commits),
+        "required_evidence": [
+            {
+                "command_name": item.command_name,
+                "argv_digest": item.argv_digest,
+                "timeout_seconds": item.timeout_seconds,
+            }
+            for item in required_evidence
+        ],
         "trusted_observations": [observation_to_data(item) for item in observations],
     }
 
@@ -1210,6 +1228,11 @@ def run_serial_hops(
                         binding=binding,
                         timeout_seconds=timeout_seconds,
                         observations=observations,
+                        required_evidence=(
+                            hop_run.vertical.required_evidence
+                            if hop_run.vertical is not None
+                            else ()
+                        ),
                         outcome_error=hop_run.outcome_error,
                         diagnostics_artifact=diagnostics_artifact,
                     )

@@ -130,6 +130,18 @@ def test_closed_terminal_worker_shape_is_the_only_reviewless_evidence_exception(
     _admit_evidence_disposition(admitted)
     assert select_result_contract(admitted, selected, run_for(admitted)) is ResultContractKind.GENERIC_ROUTING_RESULT
 
+    # The shape is identified structurally, never by the declared evidence
+    # command names or their number: an ordered evidence sequence is the
+    # Commission's own declaration (FTR-WFC-EVIDENCE-COMMAND-SEQUENCE, Design
+    # decision (a)). Both of these are the same admitted shape as `selected`.
+    for named in (
+        replace(selected, evidence=("other",)),
+        replace(selected, evidence=("lint", "format-check", "task-check")),
+    ):
+        same_shape = profile({"implement": named})
+        _admit_evidence_disposition(same_shape)
+        assert select_result_contract(same_shape, named, run_for(same_shape)) is ResultContractKind.GENERIC_ROUTING_RESULT
+
     invalid = (
         replace(selected, routes={"accept": route("goto", "implement")}),
         replace(selected, routes={"accept": route("complete", supervisor=True)}),
@@ -137,13 +149,21 @@ def test_closed_terminal_worker_shape_is_the_only_reviewless_evidence_exception(
         replace(selected, routes={"accept": route("complete"), "again": route("complete")}),
         replace(selected, modifier_components=()),
         replace(selected, routes={"stop": route("complete")}),
-        replace(selected, evidence=("other",)),
     )
     for candidate in invalid:
         rejected = profile({"implement": candidate})
         with pytest.raises(OperatorPreflightError, match="not a gate review"):
             _admit_evidence_disposition(rejected)
         assert select_result_contract(rejected, candidate, run_for(rejected)) is ResultContractKind.WORK_RESULT
+
+    # What the exact ``("task-check",)`` tuple also carried, and what the
+    # structural predicate keeps: an *ungated* single-phase self-check Worker
+    # is not this shape. Admission tolerates it (it requires nothing of a
+    # phase without evidence), but it runs under the Worker result contract.
+    ungated = replace(selected, evidence=())
+    ungated_profile = profile({"implement": ungated})
+    _admit_evidence_disposition(ungated_profile)
+    assert select_result_contract(ungated_profile, ungated, run_for(ungated_profile)) is ResultContractKind.WORK_RESULT
 
     extra_phase = profile({"implement": selected, "other": replace(selected, evidence=())})
     with pytest.raises(OperatorPreflightError, match="not a gate review"):

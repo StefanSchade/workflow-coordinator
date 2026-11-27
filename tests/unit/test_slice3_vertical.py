@@ -636,6 +636,89 @@ def test_closed_terminal_worker_failure_outcomes_stop_after_one_provider_call(
     assert result.reduction.run.stop_reason == expected_stop
 
 
+def test_ordered_evidence_sequence_runs_in_order_and_records_every_observation(repository):
+    """O7: a gated phase runs the whole declared sequence when each one passes."""
+
+    workflow = profile({"implement": replace(
+        phase({"accept": route("complete")}),
+        modifier_components=("simple-self-check",),
+        repository_policy_components=(),
+        evidence=("lint", "format-check", "task-check"),
+        authorized_scope=("src",),
+    )})
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(
+        run_for(workflow, budget=1, run_schema_version=3), current_head=head, baseline_head=head,
+    )
+    calls = []
+
+    class Runner:
+        def observe(self, command):
+            calls.append(command.command_name)
+            return simulated_observation(command)
+
+    result = run_one_hop(
+        run, workflow, repository, CapturingAdapter(closed_terminal_worker_envelope()),
+        components(("worker", 1), ("simple-self-check", 1)),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture worker", task_payload="tiny", invocation_id="INV-1",
+        evidence_runner=Runner(),
+        evidence_commands=prepared_evidence(repository, ("lint", "format-check", "task-check")),
+    )
+
+    assert calls == ["lint", "format-check", "task-check"]
+    assert [item.command_name for item in result.observations] == calls
+    assert result.reduction.run.status.value == "completed"
+    assert result.staged_attempt is not None
+    # The plan names the whole declared sequence; the observations are what ran.
+    assert [item.command_name for item in result.staged_attempt.required_evidence] == calls
+
+
+def test_ordered_evidence_sequence_stops_at_the_first_failing_command(repository):
+    """O7: the first failing gate stops the sequence and the Run; the gates
+    after it are neither executed nor observed."""
+
+    workflow = profile({"implement": replace(
+        phase({"accept": route("complete")}),
+        modifier_components=("simple-self-check",),
+        repository_policy_components=(),
+        evidence=("lint", "task-check"),
+        authorized_scope=("src",),
+    )})
+    head = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True, capture_output=True, check=True).stdout.strip()
+    run = replace(
+        run_for(workflow, budget=1, run_schema_version=3), current_head=head, baseline_head=head,
+    )
+    calls = []
+
+    class Runner:
+        def observe(self, command):
+            calls.append(command.command_name)
+            return simulated_observation(
+                command,
+                status="fail" if command.command_name == "lint" else "pass",
+                summary="exit 1" if command.command_name == "lint" else "exit 0",
+            )
+
+    result = run_one_hop(
+        run, workflow, repository, CapturingAdapter(closed_terminal_worker_envelope()),
+        components(("worker", 1), ("simple-self-check", 1)),
+        agent_operating_contract=load_agent_operating_contract(),
+        persona="fixture worker", task_payload="tiny", invocation_id="INV-1",
+        evidence_runner=Runner(),
+        evidence_commands=prepared_evidence(repository, ("lint", "task-check")),
+    )
+
+    assert calls == ["lint"]
+    assert [item.command_name for item in result.observations] == ["lint"]
+    assert result.observations[0].status == "fail"
+    # A review-less terminal Worker has no failure route: the Run stops.
+    assert result.reduction.run.status.value == "awaiting_human"
+    assert result.reduction.run.stop_reason == "required_evidence_failed_without_route"
+    assert result.staged_attempt is not None
+    assert [item.command_name for item in result.staged_attempt.required_evidence] == ["lint", "task-check"]
+
+
 @pytest.mark.parametrize("status", ("fail", "error", "not_run"))
 def test_closed_terminal_worker_required_evidence_never_applies_accept(
     repository, status

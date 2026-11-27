@@ -4,6 +4,9 @@ A ``ConsumerRequest`` is the task-shaped half of a BP2b compile input.  It
 deliberately carries no execution binding: no adapter, model, reasoning
 effort, or provider key is a legal field anywhere in this grammar.  Execution
 choices are resolved separately by ``frontdoor.config.resolve_execution``.
+``evidence`` is an *ordered* list of named commands -- the sequence the
+Coordinator runs, in that order and fail-fast, as the pre-launch baseline
+probe and after every gated Hop (FTR-WFC-EVIDENCE-COMMAND-SEQUENCE).
 The closed-schema parsing helpers reused from ``commissioning`` reject any
 unexpected field, which is what actually refuses a forged binding key -- this
 module does not additionally deny-list field names.
@@ -11,6 +14,7 @@ module does not additionally deny-list field names.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -34,8 +38,18 @@ class ProgramRef:
     revision: str
 
 
+# Deliberately the same shape ``policy.evidence_commands`` enforces
+# (``serialization._evidence_commands``): a request must never be able to
+# compile into a policy its own loader would refuse.
+_EVIDENCE_COMMAND_NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+DEGENERATE_EVIDENCE_COMMAND_NAME = "task-check"
+
+
 @dataclass(frozen=True)
 class EvidenceCommandRequest:
+    """One named gate of the ordered evidence sequence (O7, decision D6)."""
+
+    name: str
     argv: tuple[str, ...]
     timeout_seconds: int
 
@@ -58,15 +72,24 @@ class ConsumerRequest:
     task: TaskBinding
     scope: tuple[str, ...]
     personas: Mapping[str, str]
-    evidence: EvidenceCommandRequest
+    evidence: tuple[EvidenceCommandRequest, ...]
     max_autonomous_hops: int
     durable_artifacts: Mapping[str, tuple[str, ...]]
     guidance: GuidanceRef
     raw_text: str
 
 
-def _evidence_command_request(value: Any, *, context: str) -> EvidenceCommandRequest:
-    data = _mapping(value, context=context, required={"argv", "timeout_seconds"})
+def _evidence_command_request(value: Any, *, context: str, name: str | None) -> EvidenceCommandRequest:
+    """Parse one gate. ``name`` is None for a list item, which names itself."""
+
+    required = {"argv", "timeout_seconds"} if name is not None else {"name", "argv", "timeout_seconds"}
+    data = _mapping(value, context=context, required=required)
+    if name is None:
+        name = _text(data["name"], context=f"{context}.name")
+        if _EVIDENCE_COMMAND_NAME.fullmatch(name) is None:
+            raise CommissionError(
+                f"{context}.name must match [a-z][a-z0-9_-]{{0,63}}: {name!r}"
+            )
     raw_argv = data["argv"]
     if not isinstance(raw_argv, list) or not raw_argv:
         raise CommissionError(f"{context}.argv must be a non-empty list")
@@ -82,7 +105,46 @@ def _evidence_command_request(value: Any, *, context: str) -> EvidenceCommandReq
         raise CommissionError(
             f"{context}.timeout_seconds must be a non-boolean integer in 1..{COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS}"
         )
-    return EvidenceCommandRequest(tuple(argv), timeout)
+    return EvidenceCommandRequest(name, tuple(argv), timeout)
+
+
+def _evidence_sequence(value: Any, *, context: str) -> tuple[EvidenceCommandRequest, ...]:
+    """Parse the ordered, non-empty evidence sequence in either admitted form.
+
+    A YAML *list* declares the ordered named gates; a single YAML *mapping*
+    is the degenerate list of exactly one gate named ``task-check`` -- the
+    pre-O7 form, which stays admitted unchanged (FTR-WFC-EVIDENCE-COMMAND-
+    SEQUENCE, Design decision (c)). The two are distinguished by type, never
+    by a flag, so no request can declare both.
+    """
+
+    if isinstance(value, dict):
+        if "name" in value:
+            # Refuse by name rather than through the closed schema's generic
+            # "forbidden field" message: naming a command is exactly what the
+            # list form is for, and the author is one bracket away from it.
+            raise CommissionError(
+                f"{context} names a command, so it must be a list of commands, not one mapping"
+            )
+        return (
+            _evidence_command_request(
+                value, context=context, name=DEGENERATE_EVIDENCE_COMMAND_NAME
+            ),
+        )
+    if not isinstance(value, list) or not value:
+        raise CommissionError(
+            f"{context} must be a non-empty list of named commands, or one "
+            "{argv, timeout_seconds} mapping as the degenerate single-command form"
+        )
+    commands = tuple(
+        _evidence_command_request(item, context=f"{context}[{index}]", name=None)
+        for index, item in enumerate(value)
+    )
+    names = [command.name for command in commands]
+    if len(set(names)) != len(names):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise CommissionError(f"{context} command names must be unique: {', '.join(duplicates)}")
+    return commands
 
 
 def _guidance_ref(value: Any, *, context: str) -> GuidanceRef:
@@ -162,7 +224,7 @@ def consumer_request_from_yaml(text: str) -> ConsumerRequest:
         task=task,
         scope=scope,
         personas=personas,
-        evidence=_evidence_command_request(data["evidence"], context="Consumer Request.evidence"),
+        evidence=_evidence_sequence(data["evidence"], context="Consumer Request.evidence"),
         max_autonomous_hops=hops,
         durable_artifacts=artifacts,
         guidance=_guidance_ref(data["guidance"], context="Consumer Request.guidance"),

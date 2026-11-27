@@ -172,6 +172,48 @@ class TestExecutableIdentityStability:
         assert "executable_identity_stable" not in audit["hops"][0]["evidence"][0]
 
 
+class TestOrderedEvidenceSequence:
+    """O7: a fail-fast stop leaves a planned gate without an Observation, and
+    the projection must say so rather than fall silent
+    (docs/backlog/FTR-WFC-EVIDENCE-COMMAND-SEQUENCE.adoc, Design (e))."""
+
+    def test_every_executed_gate_is_projected_in_execution_order(self, tmp_path):
+        hops = [ab.HopSpec(
+            hop_id="H001", sequence=1,
+            observations=(
+                ab.ObservationSpec(command_name="lint", status="pass", exit_code=0, argv_digest="d" * 64),
+                ab.ObservationSpec(command_name="task-check", status="pass", exit_code=0),
+            ),
+            required_evidence=(("lint", "d" * 64), ("task-check", "a" * 64)),
+        )]
+        audit = _project(tmp_path, hops=hops, hop_used=1)
+        assert [item["command_name"] for item in audit["hops"][0]["evidence"]] == ["lint", "task-check"]
+        assert [item["status"] for item in audit["hops"][0]["evidence"]] == ["pass", "pass"]
+
+    def test_a_planned_gate_that_never_ran_is_projected_as_not_executed(self, tmp_path):
+        hops = [ab.HopSpec(
+            hop_id="H001", sequence=1, outcome="completed",
+            observations=(
+                ab.ObservationSpec(command_name="lint", status="fail", exit_code=1, argv_digest="d" * 64),
+            ),
+            required_evidence=(("lint", "d" * 64), ("task-check", "a" * 64)),
+        )]
+        audit = _project(tmp_path, hops=hops, hop_used=1)
+        evidence = audit["hops"][0]["evidence"]
+        assert [(item["command_name"], item["status"]) for item in evidence] == [
+            ("lint", "fail"), ("task-check", "not_executed"),
+        ]
+        skipped = evidence[1]
+        assert skipped["exit_code"] is None
+        assert skipped["argv_digest"] == "a" * 64
+        assert "stdout_sha256" not in skipped
+
+    def test_a_pre_o7_attempt_without_a_recorded_plan_projects_only_observations(self, tmp_path):
+        hops = [ab.HopSpec(hop_id="H001", sequence=1)]
+        audit = _project(tmp_path, hops=hops, hop_used=1)
+        assert [item["command_name"] for item in audit["hops"][0]["evidence"]] == ["task-check"]
+
+
 class TestRawDigests:
     def test_every_raw_file_digest_and_byte_count_matches_the_manifest(self, tmp_path):
         attempt_dir = ab.build_attempt(tmp_path)

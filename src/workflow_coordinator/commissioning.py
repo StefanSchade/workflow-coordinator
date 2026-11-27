@@ -137,7 +137,7 @@ def _robust_template() -> dict[str, Any]:
     return {
         "schema_version": 1, "program_id": "robust", "revision": "v1",
         "roles": ["worker", "independent_reviewer"], "scope_slot": "S", "artifact_scope_slot": "A",
-        "evidence_profiles": {"task-check-v1": {"evidence": ["task-check"]}},
+        "evidence_slot": "E",
         "phases": {
             "implement": {"role": "worker", "components": {"role": ["worker"], "modifiers": [], "repository_policy": []}, "durable_artifact": "none", "scope": "S", "artifact_key": None, "authorized_actions": ["edit", "commit"], "human_gates": [], "evidence": [], "review": None, "routes": {"broad_review": {"effect": "goto", "target": "broad_review"}}},
             "broad_review": {"role": "independent_reviewer", "components": {"role": ["reviewer"], "modifiers": [], "repository_policy": []}, "durable_artifact": "required", "scope": "A", "artifact_key": "broad_review", "authorized_actions": ["review", "edit", "commit"], "human_gates": [], "evidence": "E", "review": {"purpose": "independent adversarial full-scope review of the rendered Commission", "breadth": "broad", "authority": "gate", "context": "fresh", "blocking_policy": "blocking_only", "trigger": "profile_selected", "exit": "declared_route", "finding_authority": ["resolve"], "failed_evidence_route": "correction"}, "routes": {"accept": {"effect": "complete"}, "correction": {"effect": "goto", "target": "correct"}}},
@@ -152,7 +152,7 @@ def _simple_template() -> dict[str, Any]:
 
     return {
         "schema_version": 1, "program_id": "simple", "revision": "v1", "roles": ["worker"], "scope_slot": "S",
-        "evidence_profiles": {"task-check-v1": {"evidence": ["task-check"]}},
+        "evidence_slot": "E",
         "phases": {
             "implement": {"role": "worker", "components": {"role": ["worker"], "modifiers": ["simple-self-check"], "repository_policy": []}, "durable_artifact": "none", "scope": "S", "authorized_actions": ["edit", "commit"], "human_gates": [], "evidence": "E", "review": None, "routes": {"accept": {"effect": "complete"}}},
         },
@@ -282,10 +282,14 @@ def compile_commission(
         raise CommissionError(
             f"{program_id}@{program_revision} requires exactly " + ", ".join(sorted(required_personas)) + " personas"
         )
-    evidence_profile_names = list(template["evidence_profiles"])
-    if len(evidence_profile_names) != 1:
-        raise CommissionError("internal: consumer programs must define exactly one evidence profile")
-    evidence_names = tuple(template["evidence_profiles"][evidence_profile_names[0]]["evidence"])
+    # The program decides WHICH phases are gated (``evidence: "E"`` versus
+    # ``evidence: []``); the Consumer Request decides WHAT the gates are, in
+    # order. Every gated phase receives the identical, complete list, so no
+    # Commission can give one phase a weaker gate than another (FTR-WFC-
+    # EVIDENCE-COMMAND-SEQUENCE, Design decision (b)).
+    evidence_names = tuple(command.name for command in request.evidence)
+    if not evidence_names:
+        raise CommissionError("Consumer Request must declare at least one evidence command")
     required_artifacts = {
         phase["artifact_key"] for phase in template["phases"].values() if phase["durable_artifact"] == "required"
     }
@@ -360,7 +364,8 @@ def compile_commission(
         "work_item_scope_ceiling": list(config.work_item_scope_ceiling), "max_autonomous_hops": config.max_autonomous_hops,
         "actions": ["edit", "commit", "review"],
         "evidence_commands": {
-            "task-check": {"argv": list(request.evidence.argv), "timeout_seconds": request.evidence.timeout_seconds},
+            command.name: {"argv": list(command.argv), "timeout_seconds": command.timeout_seconds}
+            for command in request.evidence
         },
     }
     item_data = {

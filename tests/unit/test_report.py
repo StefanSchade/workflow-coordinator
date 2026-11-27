@@ -39,6 +39,20 @@ class TestCompletedReport:
         assert "findings    none open" in text
         assert "not done    nothing was pushed" in text
 
+    def test_text_render_names_each_gate_of_an_ordered_sequence(self, tmp_path):
+        """O7: `wfc report` shows which command passed, failed, or never ran."""
+
+        hops = [ab.HopSpec(
+            hop_id="H001", sequence=1,
+            observations=(
+                ab.ObservationSpec(command_name="lint", status="fail", exit_code=1, argv_digest="d" * 64),
+            ),
+            required_evidence=(("lint", "d" * 64), ("task-check", "a" * 64)),
+        )]
+        text = rp.render_report_text(rp.build_report(_audit_for(tmp_path, hops=hops, hop_used=1)))
+        assert "evidence    lint  fail  exit 1  (H001)" in text
+        assert "evidence    task-check  not_executed  (H001)" in text
+
     def test_json_render_carries_the_same_content_as_the_dict(self, tmp_path):
         audit = _audit_for(tmp_path)
         report = rp.build_report(audit)

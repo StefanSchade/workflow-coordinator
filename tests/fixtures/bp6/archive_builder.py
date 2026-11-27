@@ -136,6 +136,11 @@ class HopSpec:
     summary_prose: str = PROVIDER_PROSE_CANARY
     attribution: str = "agent"
     observations: Sequence[ObservationSpec] = field(default_factory=lambda: (ObservationSpec(),))
+    # O7: the declared evidence plan as ``(command_name, argv_digest)`` pairs,
+    # for a fixture that must show a planned gate the fail-fast stop never
+    # reached. ``None`` omits the key entirely, exactly as a pre-O7 attempt
+    # record does.
+    required_evidence: Sequence[tuple[str, str]] | None = None
     # ``None`` (the default) means no usage.json record was ever persisted
     # for this Hop -- distinct from a persisted record whose own coverage is
     # "none". Pass a dict shaped like ``usage_record_to_data``'s output (see
@@ -161,7 +166,18 @@ class HopSpec:
         }
 
     def execution_evidence_attempt(self, *, scratch: str) -> dict:
+        planned = (
+            {}
+            if self.required_evidence is None
+            else {
+                "required_evidence": [
+                    {"command_name": name, "argv_digest": digest, "timeout_seconds": 900}
+                    for name, digest in self.required_evidence
+                ]
+            }
+        )
         return {
+            **planned,
             "hop_id": self.hop_id,
             "invocation_id": f"INV-{self.hop_id}",
             "phase": self.phase,

@@ -688,7 +688,19 @@ class Run:
 
 
 def is_closed_terminal_worker_shape(profile: WorkflowProfile, phase: Phase) -> bool:
-    """Return whether ``phase`` is the closed, review-less terminal Worker shape."""
+    """Return whether ``phase`` is the closed, review-less terminal Worker shape.
+
+    The evidence conjunct is deliberately *structural*: the shape requires a
+    non-empty Coordinator-required evidence binding, and reads neither a
+    command name nor a command count.  An ordered evidence sequence is a
+    Commission's own declaration, so a predicate that identifies an admitted
+    workflow shape must not depend on it (FTR-WFC-EVIDENCE-COMMAND-SEQUENCE,
+    Design decision (a)).  What the two consumers of this predicate need is
+    carried by the structural conjuncts plus the fact that this terminal
+    Worker is gated by Coordinator-run evidence at all: an *ungated*
+    single-phase self-check Worker is not this shape and still selects the
+    Worker result contract.
+    """
 
     if len(profile.phases) != 1 or profile.convergence is not None:
         return False
@@ -696,7 +708,7 @@ def is_closed_terminal_worker_shape(profile: WorkflowProfile, phase: Phase) -> b
         phase.role is not WorkflowRole.WORKER
         or phase.review is not None
         or phase.modifier_components != ("simple-self-check",)
-        or phase.evidence != ("task-check",)
+        or not phase.evidence
         or phase.convergence_role is not ConvergenceRole.NONE
         or phase.normal_correction_route is not None
         or phase.escape_route is not None

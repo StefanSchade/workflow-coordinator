@@ -9,10 +9,12 @@ installed CLI path -- not a stub simulation of either command.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from workflow_coordinator.frontdoor.cli import main
 
@@ -458,6 +460,149 @@ def test_plan_reports_malformed_guidance_commit_clearly(repository: Path):
     assert "40-character SHA" in err
 
 
+# --------------------------------------------------------------------------
+# The ordered evidence-command sequence on the shared plan/request CLI
+# (O7, D6; docs/backlog/FTR-WFC-EVIDENCE-COMMAND-SEQUENCE.adoc Design (c)).
+# --------------------------------------------------------------------------
+
+_GATE_FLAGS = [
+    "--evidence-command", "lint", "--evidence-argv", "make", "--evidence-argv", "lint",
+    "--evidence-timeout", "120",
+    "--evidence-command", "task-check", "--evidence-argv", "make", "--evidence-argv", "test",
+    "--evidence-timeout", "900",
+]
+
+
+def _plan_args_with_gates(repository: Path, *, task_path: Path, gates: list[str]) -> list[str]:
+    args = [
+        item for item in _plan_args(repository, task_path=task_path)
+        if item not in {"--evidence-argv", "sh", "checks/check.sh"}
+    ]
+    return [*args, *gates]
+
+
+def _initialized(repository: Path) -> Path:
+    _run(["init", "--repository", str(repository), "--scope-ceiling", "src", "--scope-ceiling", "tests"])
+    git(repository, "add", ".")
+    git(repository, "commit", "-q", "-m", "chore: commit Consumer Config")
+    task_path = repository / "task.md"
+    task_path.write_text(_TASK_TEXT, encoding="utf-8")
+    return task_path
+
+
+def test_plan_previews_the_ordered_gate_sequence_with_its_worst_case_total(repository: Path):
+    task_path = _initialized(repository)
+
+    code, out, err = _run(_plan_args_with_gates(repository, task_path=task_path, gates=_GATE_FLAGS))
+
+    assert code == 0, err
+    assert "evidence: 2 ordered fail-fast commands, worst case 1020s in total" in out
+    assert "1. lint  timeout 120s  argv: make lint" in out
+    assert "2. task-check  timeout 900s  argv: make test" in out
+    # Order is the declared order, not alphabetical or sorted by timeout.
+    assert out.index("1. lint") < out.index("2. task-check")
+
+
+def test_plan_carries_the_declared_gate_sequence_into_the_projected_commission(repository: Path):
+    from workflow_coordinator.frontdoor.plan import (
+        DEFAULT_EVIDENCE_TIMEOUT_SECONDS, evidence_sequence_from_flags, resolve_plan_inputs, _parse_args,
+    )
+
+    task_path = _initialized(repository)
+    args = _parse_args(_plan_args_with_gates(repository, task_path=task_path, gates=_GATE_FLAGS)[1:])
+    inputs = resolve_plan_inputs(args)
+
+    assert [command.name for command in inputs.request.evidence] == ["lint", "task-check"]
+    policy = yaml.safe_load(inputs.compiled.texts[inputs.compiled.paths["policy"]])
+    assert list(policy["evidence_commands"]) == ["lint", "task-check"]
+    profile_data = yaml.safe_load(inputs.compiled.texts[inputs.compiled.paths["profile"]])
+    assert profile_data["phases"]["implement"]["evidence"] == ["lint", "task-check"]
+    # The grouping itself: tokens attach to the gate opened last.
+    assert evidence_sequence_from_flags(
+        [("--evidence-argv", "make"), ("--evidence-command", "lint"), ("--evidence-argv", "ruff")],
+        default_timeout=DEFAULT_EVIDENCE_TIMEOUT_SECONDS,
+    ) == [
+        {"name": "task-check", "argv": ["make"], "timeout_seconds": DEFAULT_EVIDENCE_TIMEOUT_SECONDS},
+        {"name": "lint", "argv": ["ruff"], "timeout_seconds": DEFAULT_EVIDENCE_TIMEOUT_SECONDS},
+    ]
+
+
+def test_plan_without_any_evidence_command_flag_stays_the_degenerate_task_check(repository: Path):
+    """The migration property: a command line written before O7 produces the
+    identical Consumer Request bytes, so its projected digests do not move."""
+
+    task_path = _initialized(repository)
+    head = git(repository, "rev-parse", "HEAD")
+
+    code, out, err = _run([*_plan_args(repository, task_path=task_path), "--guidance-commit", head])
+
+    assert code == 0, err
+    assert "evidence: 1 ordered fail-fast command, worst case 900s in total" in out
+    assert "1. task-check  timeout 900s  argv: sh checks/check.sh" in out
+
+    from workflow_coordinator.frontdoor.plan import consumer_request_from_plan_inputs, task_document_from_markdown
+    request = consumer_request_from_plan_inputs(
+        task=task_document_from_markdown(_TASK_TEXT), commission_id="consumer-plan-smoke",
+        work_item_id="WI-CONSUMER-PLAN-SMOKE",
+        authority_source="Maintainer authorizes this bounded preview only.", program="simple@v1",
+        scope=["src", "tests"], personas=["worker=Bounded worker persona."],
+        evidence=[{"name": "task-check", "argv": ["sh", "checks/check.sh"], "timeout_seconds": 900}],
+        max_autonomous_hops=5, durable_artifact=[], guidance_path="GUIDANCE.md", guidance_commit=head,
+    )
+    assert yaml.safe_load(request.raw_text)["evidence"] == {
+        "argv": ["sh", "checks/check.sh"], "timeout_seconds": 900,
+    }
+
+
+@pytest.mark.parametrize(
+    ("gates", "message"),
+    [
+        (
+            ["--evidence-command", "lint", "--evidence-argv", "make", "--evidence-argv", "lint",
+             "--evidence-command", "lint", "--evidence-argv", "make"],
+            "names a gate more than once: lint",
+        ),
+        (
+            ["--evidence-argv", "make", "--evidence-command", "lint"],
+            "declares no --evidence-argv token: lint",
+        ),
+        (
+            ["--evidence-argv", "make", "--evidence-timeout", "60", "--evidence-timeout", "70"],
+            "given more than once for evidence command: task-check",
+        ),
+        (
+            ["--evidence-command", "Lint", "--evidence-argv", "make"],
+            r"must match \[a-z\]",
+        ),
+        (
+            ["--evidence-command", "lint", "--evidence-argv", "make", "--evidence-timeout", "901"],
+            "timeout_seconds must be a non-boolean integer in 1..900",
+        ),
+    ],
+    ids=["duplicate-gate", "gate-without-argv", "double-timeout", "name-shape", "timeout-above-cap"],
+)
+def test_plan_refuses_a_malformed_gate_sequence(repository: Path, gates: list[str], message: str):
+    task_path = _initialized(repository)
+
+    code, out, err = _run(_plan_args_with_gates(repository, task_path=task_path, gates=gates))
+
+    assert code == 2
+    assert re.search(message, err), err
+
+
+def test_plan_still_requires_at_least_one_evidence_argv(repository: Path, capsys):
+    from workflow_coordinator.frontdoor.plan import _parse_args
+
+    task_path = _initialized(repository)
+    without = [
+        item for item in _plan_args_with_gates(repository, task_path=task_path, gates=[])[1:]
+    ]
+    with pytest.raises(SystemExit) as excinfo:
+        _parse_args(without)
+    assert excinfo.value.code == 2
+    assert "--evidence-argv" in capsys.readouterr().err
+
+
 def test_plan_matches_direct_bp2b_compile_and_resolve(repository: Path):
     from workflow_coordinator.commissioning import compile_commission
     from workflow_coordinator.frontdoor.config import consumer_config_from_yaml, resolve_execution
@@ -479,7 +624,8 @@ def test_plan_matches_direct_bp2b_compile_and_resolve(repository: Path):
         task=task, commission_id="consumer-plan-smoke", work_item_id="WI-CONSUMER-PLAN-SMOKE",
         authority_source="Maintainer authorizes this bounded preview only.", program="simple@v1",
         scope=["src", "tests"], personas=["worker=Bounded worker persona."],
-        evidence_argv=["sh", "checks/check.sh"], evidence_timeout=900, max_autonomous_hops=5,
+        evidence=[{"name": "task-check", "argv": ["sh", "checks/check.sh"], "timeout_seconds": 900}],
+        max_autonomous_hops=5,
         durable_artifact=[], guidance_path="GUIDANCE.md", guidance_commit=head,
     )
     compiled = compile_commission(request, config, repository=repository)

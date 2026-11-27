@@ -103,8 +103,11 @@ decision is needed only for what Authorization's item 5 withholds, never
 merely because an earlier attempt failed.
 
 1. Confirm the repository is ready (clean tree, `.wfc/config.yaml`, a
-   committed guidance file, a committed evidence/task-check command).
-2. Draft the Commission: task document, scope, program, personas, evidence.
+   committed guidance file, and every committed command of the evidence
+   sequence).
+2. Draft the Commission: task document, scope, program, personas, and the
+   ordered evidence sequence (cheap gates first: lint, then format, then the
+   test suite; `references/commission.md`).
 3. Preview it with `wfc plan` (read-only; writes nothing, launches nothing).
 4. Run the authorization check above; ask only for what is not yet decided.
 5. In a fresh worktree, with the task document and Consumer Request outside

@@ -273,6 +273,38 @@ def _evidence_entry(observation: dict, admitted_fingerprints: Mapping[str, Any])
     return entry
 
 
+def _not_executed_evidence_entries(attempt: Mapping[str, Any]) -> list[dict]:
+    """Project the planned evidence commands the fail-fast stop never reached.
+
+    An ordered evidence sequence stops at its first non-passing command, and a
+    command that did not run has no Observation at all (FTR-WFC-EVIDENCE-
+    COMMAND-SEQUENCE, Design decision (d)). Without these entries a report
+    showing only "lint fail" could be read as if the later gates had passed.
+    ``not_executed`` is this projection's own marker and is deliberately not a
+    trusted Observation status: no runner can produce it, and it never carries
+    an exit code or a stream digest.
+    """
+
+    observed = {
+        observation.get("command_name")
+        for observation in attempt.get("trusted_observations", []) or []
+    }
+    entries = []
+    for planned in attempt.get("required_evidence", []) or []:
+        name = planned.get("command_name")
+        if name in observed:
+            continue
+        entry = {
+            "command_name": name,
+            "status": "not_executed",
+            "exit_code": None,
+            "argv_digest": planned.get("argv_digest"),
+        }
+        _assert_keys(entry, _EVIDENCE_KEYS, context="hop evidence entry")
+        entries.append(entry)
+    return entries
+
+
 def _hop_usage_entry(raw_record: Mapping[str, Any] | None) -> dict | None:
     """Project one persisted invocation usage record into the exact,
     allow-listed per-hop audit shape, or ``None`` when no record was
@@ -423,6 +455,7 @@ def _build_hops_section(
         if attempt is not None:
             for observation in attempt.get("trusted_observations", []) or []:
                 evidence_list.append(_evidence_entry(observation, admitted_fingerprints))
+            evidence_list.extend(_not_executed_evidence_entries(attempt))
 
         raw_usage_record = None
         if usage_doc is not None:

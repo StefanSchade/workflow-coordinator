@@ -84,7 +84,10 @@ def repository(tmp_path: Path) -> Path:
     return repo
 
 
-def _write_request(repository: Path, path: Path, *, evidence_argv=("sh", "checks/check.sh"), evidence_timeout=60, commission_id="bp4-smoke") -> Path:
+def _write_request(
+    repository: Path, path: Path, *, evidence_argv=("sh", "checks/check.sh"), evidence_timeout=60,
+    commission_id="bp4-smoke", evidence=None,
+) -> Path:
     head = git(repository, "rev-parse", "HEAD")
     data = {
         "schema_version": 1, "commission_id": commission_id, "work_item_id": "WI-BP4-SMOKE",
@@ -95,7 +98,10 @@ def _write_request(repository: Path, path: Path, *, evidence_argv=("sh", "checks
             "escalation_default": "stop on ambiguity",
         },
         "scope": ["src"], "personas": {"worker": "Bounded worker persona."},
-        "evidence": {"argv": list(evidence_argv), "timeout_seconds": evidence_timeout},
+        "evidence": (
+            evidence if evidence is not None
+            else {"argv": list(evidence_argv), "timeout_seconds": evidence_timeout}
+        ),
         "max_autonomous_hops": 3, "durable_artifacts": {},
         "guidance": {"path": "GUIDANCE.md", "source_commit": head},
     }
@@ -612,6 +618,91 @@ def test_probe_mutation_refuses_and_leaves_the_mutation_visible(repository: Path
     assert excinfo.value.classification == "refused_probe"
     assert (repository / "PROBE_MUTATION.txt").exists()
     assert git(repository, "status", "--porcelain") != ""
+
+
+def _sequence_evidence(repository: Path, *, failing: str | None = None, order_file="probe-order.txt"):
+    """Three committed gate scripts; each appends its name to ``order_file``.
+
+    ``order_file`` is written outside the repository so the probe's own
+    clean-tree requirement is not what is being tested here.
+    """
+
+    for name in ("lint", "format-check", "task-check"):
+        script = repository / "checks" / f"{name}.sh"
+        exit_code = 7 if name == failing else 0
+        script.write_text(
+            f'#!/bin/sh\necho {name} >> "$PROBE_ORDER_FILE"\n'
+            f"echo {name}-stdout\nexit {exit_code}\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+    git(repository, "add", ".")
+    git(repository, "commit", "-q", "-m", "test: commit the ordered gate scripts")
+    return [
+        {"name": "lint", "argv": ["sh", "checks/lint.sh"], "timeout_seconds": 60},
+        {"name": "format-check", "argv": ["sh", "checks/format-check.sh"], "timeout_seconds": 60},
+        {"name": "task-check", "argv": ["sh", "checks/task-check.sh"], "timeout_seconds": 60},
+    ]
+
+
+def test_probe_runs_the_whole_declared_sequence_in_declared_order(
+    repository: Path, tmp_path: Path, state_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """O7: the baseline probe is the same ordered sequence the task-check runs."""
+
+    order_file = tmp_path / "probe-order.txt"
+    monkeypatch.setenv("PROBE_ORDER_FILE", str(order_file))
+    evidence = _sequence_evidence(repository)
+    request_path = _write_request(repository, tmp_path / "request.yaml", evidence=evidence)
+
+    inputs = _inputs(repository, request_path)
+    L.run_lifecycle(inputs)
+
+    assert order_file.read_text(encoding="utf-8").split() == ["lint", "format-check", "task-check"]
+
+
+def test_probe_fails_fast_and_names_the_failing_command_with_its_untrusted_tail(
+    repository: Path, tmp_path: Path, state_home: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """O7: the first failing gate stops the sequence before any provider runs,
+    the refusal names that command, and O2's bounded untrusted tail stays."""
+
+    order_file = tmp_path / "probe-order.txt"
+    monkeypatch.setenv("PROBE_ORDER_FILE", str(order_file))
+    evidence = _sequence_evidence(repository, failing="format-check")
+    request_path = _write_request(repository, tmp_path / "request.yaml", evidence=evidence)
+    head_before = git(repository, "rev-parse", "HEAD")
+
+    inputs = _inputs(repository, request_path)
+    with pytest.raises(L.LifecycleError) as excinfo:
+        L.run_lifecycle(inputs)
+
+    assert excinfo.value.classification == "refused_probe"
+    message = str(excinfo.value)
+    assert "baseline probe command 'format-check' failed with exit code 7" in message
+    assert "no provider ran" in message
+    assert "format-check-stdout" in message  # the bounded untrusted tail (O2)
+    # The expensive gate after the failing one never ran, and nothing was committed.
+    assert order_file.read_text(encoding="utf-8").split() == ["lint", "format-check"]
+    assert git(repository, "rev-parse", "HEAD") == head_before
+    assert git(repository, "status", "--porcelain") == ""
+
+
+def test_probe_names_the_command_whose_executable_is_unresolvable(
+    repository: Path, tmp_path: Path, state_home: Path,
+):
+    evidence = [
+        {"name": "lint", "argv": ["sh", "checks/check.sh"], "timeout_seconds": 60},
+        {"name": "task-check", "argv": ["./checks/not-there.sh"], "timeout_seconds": 60},
+    ]
+    request_path = _write_request(repository, tmp_path / "request.yaml", evidence=evidence)
+
+    inputs = _inputs(repository, request_path)
+    with pytest.raises(L.LifecycleError) as excinfo:
+        L.run_lifecycle(inputs)
+
+    assert excinfo.value.classification == "refused_probe"
+    assert "baseline probe command 'task-check' is unresolvable" in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------

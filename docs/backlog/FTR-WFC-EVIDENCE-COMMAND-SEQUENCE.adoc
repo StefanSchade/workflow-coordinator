@@ -3,16 +3,24 @@
 Type:: future technical record -- evidence contract capability question
 (category B: it reaches the accepted program literals and, through the
 terminal-Worker shape predicate, result-contract selection)
-Status:: proposed / backlog; *decided for Beta 2 as slice O7 on 2026-11-26*, nothing implemented
+Status:: *implemented on 2026-11-27* as slice O7 (`WI-WFC-BETA2-O7-001`,
+decision D6); see <<design>> for the decisions and <<implementation>> for
+what shipped. Independent acceptance and product closure are the
+maintainer's to record. The `Status`, `Next action` and `Not authorized
+here` lines of the proposal state are kept below as history.
 Current controlling source:: This record; see link:_open.adoc[the active-work
 manifest] for its current card and
 link:beta2_operator_efficiency_plan.adoc#d6[the Beta-2 operator-efficiency
-plan's decision D6] for the recommendation and the interim remedy.
-Next action:: None scheduled. If the maintainer opens it, a design
+plan's decision D6] for the decision and the interim remedy it superseded.
+Next action:: None of this record's own. A Runtime promotion and `wfc skill
+install` are what make the changed shipped texts and the new request form
+reach a consumer, and remain a separate maintainer action.
+Status (proposal state, historical):: proposed / backlog; *decided for Beta 2 as slice O7 on 2026-11-26*, nothing implemented
+Next action (proposal state, historical):: None scheduled. If the maintainer opens it, a design
 investigation first -- itself separately authorized and independently
 reviewed -- which must resolve the `model.py:699` coupling below explicitly
 rather than discover it during implementation.
-Not authorized here:: Any implementation, schema or contract change; any
+Not authorized here (proposal state, historical, superseded by D6):: Any implementation, schema or contract change; any
 change to the accepted `robust@v1` or `simple@v1` programs, their evidence
 profiles or their digests; any change to result-contract selection, to
 evidence timeout semantics or to the trusted A2 evidence contract; any
@@ -30,6 +38,9 @@ D6: *implement, do not defer.* The evidence-command list enters Beta 2 as slice 
 
 
 == Problem
+
+*Resolved on 2026-11-27 by <<design>>; this section describes the state
+before that slice.*
 
 A Commission declares exactly one trusted `task-check` command
 (`commissioning.py:362-364`), which is also the mandatory pre-launch baseline
@@ -79,7 +90,19 @@ a standing maintainer constraint, and both programs' literals are
 digest-bearing, so any change to them moves every Commission digest that
 selects them.
 
-== The interim remedy, which takes most of the benefit
+*Corrected on 2026-11-27 (slice O7).* Both boundaries fell away. D6 lifted
+the `robust@v1` constraint explicitly. And the literals are less
+digest-bearing than this paragraph assumed: their `evidence_profiles` table
+never reached an emitted Commission byte, so removing it moves no digest at
+all -- a request declaring one command named `task-check` still compiles
+byte-for-byte as before. See <<design>>, decision (b).
+
+== The interim remedy, which took most of the benefit until O7
+
+*Superseded on 2026-11-27 by <<design>>.* The single-command rule this
+section describes -- and the operator rule derived from it -- is retired;
+the ordered list is the shape to declare now. The section is kept because it
+records the two environment constraints that still hold.
 
 Available today, with no contract change: declare the repository's own gate
 as the single command -- `make check` here -- or a committed wrapper script
@@ -102,20 +125,333 @@ The operator rule and the worked example belong to
 link:FTR-WFC-LEVEL1-OPERATOR-GUIDANCE.adoc[the operator-guidance record],
 which carries them as text rather than as a contract change.
 
+[[design]]
+== Design (2026-11-27, slice O7, `WI-WFC-BETA2-O7-001`)
+
+Written before the code, under decision
+link:beta2_operator_efficiency_plan.adoc#d6[D6] and the Beta rule, for the
+five questions link:beta2_operator_efficiency_plan.adoc#o7[the slice] asks.
+Each decision names the safety property it preserves and the alternative it
+rejects. Preserved unchanged by every decision below: the independent
+reviewer's sole Finding authority, the trusted-commit boundary, fail-closed
+admission, that the same command(s) run as the pre-launch baseline probe and
+after every Worker Hop, and that the Coordinator -- never the agent -- runs
+and judges them.
+
+=== The data model
+
+A Consumer Request declares an *ordered, non-empty list of named evidence
+commands*:
+
+[source,yaml]
+----
+evidence:
+  - name: lint
+    argv: [make, lint]
+    timeout_seconds: 120
+  - name: task-check
+    argv: [make, test]
+    timeout_seconds: 900
+----
+
+The pre-O7 single-command mapping stays admitted as the *degenerate list* of
+exactly one command named `task-check`:
+
+[source,yaml]
+----
+evidence:
+  argv: [sh, checks/check.sh]
+  timeout_seconds: 300
+----
+
+`ConsumerRequest.evidence` is therefore always a tuple of
+`EvidenceCommandRequest(name, argv, timeout_seconds)`, in declared order.
+That order is the execution order; it is carried verbatim into
+`policy.evidence_commands`, into every gated phase's `evidence:` list, into
+the admission plan (`operator._selected_evidence_names`,
+`evidence.prepare_evidence_commands`), into the per-Hop execution and into
+the baseline probe.
+
+=== Refusal rules (all fail-closed, before any effect)
+
+At `frontdoor/request.py`, as `CommissionError`:
+
+* a list form that is empty, or whose item is not a mapping;
+* an item with a missing or forbidden field (the closed `{name, argv,
+  timeout_seconds}` set; the closed-schema refusal that already rejects a
+  forged execution binding nested in `evidence` is unchanged);
+* a `name` that does not match `[a-z][a-z0-9_-]{0,63}` -- deliberately the
+  same regex `policy.evidence_commands` already enforces
+  (`serialization.py`), so a request can never compile into a policy the
+  loader would then refuse;
+* a duplicate `name` (also a duplicate against the degenerate form's
+  implicit `task-check`, which cannot arise because the two forms are
+  mutually exclusive by YAML type);
+* an empty `argv`, a non-string or NUL-bearing token, an empty `argv[0]`;
+* a `timeout_seconds` that is not a non-boolean integer in
+  `1..COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS`;
+* a single mapping that carries a `name` -- refused by name ("it must be a
+  list of commands, not one mapping") rather than through the closed
+  schema's generic forbidden-field message, since naming a command is
+  exactly what the list form is for.
+
+At the CLI (`wfc plan`, `wfc request`; one shared argument definition and one
+shared construction path, as O5 left them): `--evidence-command NAME` opens a
+gate in the sequence, `--evidence-argv TOKEN` appends one argv token to the
+gate opened last, `--evidence-timeout SECONDS` sets that gate's timeout
+(default 900). Tokens given before any `--evidence-command` attach to an
+implicit first gate named `task-check`, so every pre-O7 command line keeps
+its exact meaning. Refused: a gate with no argv token, a duplicate gate name,
+a second `--evidence-timeout` for one gate.
+
+That implicit spelling also *emits* the degenerate mapping rather than a
+one-element list, so a pre-O7 command line still produces a byte-identical
+Consumer Request -- and therefore the identical projected digests `wfc plan`
+printed before this slice. Any explicitly named gate emits the list form.
+
+=== (a) The result-contract coupling: a structural predicate
+
+*Decision.* `model.is_closed_terminal_worker_shape` keeps all its other
+conjuncts and replaces `phase.evidence == ("task-check",)` by `phase.evidence`
+being *non-empty*. Nothing in result-contract selection reads a command name
+or a command count any more.
+
+*The property that exact tuple protected.* The predicate has two consumers,
+and neither ever needed the literal names:
+
+. `operator._admit_evidence_disposition` -- the single narrow exception to
+  "every phase carrying Coordinator-required evidence must be a *gate* review
+  that declares a `failed_evidence_route`". The exception is justified by the
+  *shape*: a review-less terminal Worker has no review to route a failure
+  into, and a clean evidence failure there stops the Run fail-closed
+  (`required_evidence_failed_without_route`). What must stay impossible is a
+  review/correction phase borrowing that exception.
+. `model.select_result_contract` -- that shape is admitted under the generic
+  routing-result contract, while an ordinary review-less Worker phase runs
+  under the Worker result contract. What must stay impossible is confusing
+  the two.
+
+Both facts are carried by the predicate's structural conjuncts (sole phase,
+no convergence, Worker role, `review: null`, modifier exactly
+`simple-self-check`, no convergence role, no correction or escape route, and
+exactly one unsupervised `accept` route with effect `complete`, without a
+target or question). The evidence conjunct carried one further fact worth
+keeping -- *this terminal Worker is gated by Coordinator-run evidence at
+all* -- and one that was incidental: which commands, and how many.
+Non-emptiness keeps the first and drops the second.
+
+*Rejected: a versioned or declared contract marker* (a profile field naming
+the result contract, or a `simple@v2`). It adds a public profile surface and
+a second source of truth that can contradict the structure: a profile could
+then *claim* the generic contract while being a robust Worker phase, which is
+exactly the confusion the predicate exists to prevent. The structure is
+already complete; a marker would be redundant state with a fail-open failure
+mode.
+
+*Rejected: decoupling selection from the evidence list entirely* (dropping
+the conjunct with no replacement). A single-phase self-check Worker with
+*no* evidence would then also select the generic contract -- the exception
+would silently extend to a shape with no deterministic gate at all. That is
+a weaker safeguard, and D6 forbids trading the property for its
+realisation's convenience.
+
+=== (b) The program literals: in place, no new revision
+
+*Decision.* `commissioning._simple_template` / `_robust_template` keep every
+phase's existing `evidence: "E"` / `evidence: []` declaration and lose their
+`evidence_profiles` table; the compiler fills every `"E"` with the request's
+ordered command names, exactly as it already fills `scope: "S"` and `scope:
+"A"`. No new program revision, per
+link:../technical_model/ch04_target_and_alternatives/03_adr_closed_versioned_workflow_programs.adoc#adr-ad3[AD-3]:
+the Python literal in the compiler is the authoritative definition of
+`simple@v1`/`robust@v1`; the catalogue YAML under
+`governance/workflow-programs/` is retained historical material, is read by
+no product code, and is not touched by this slice (which holds no
+`governance/` authority).
+
+*Property preserved.* The program still decides *which phases* are gated and
+which are not; the Commission decides *what the gates are*, as it already did
+for the single command's argv. Every gated phase receives the *identical,
+complete* list -- the compiler substitutes one tuple into every `"E"` slot --
+so no Commission can give one phase a weaker gate than another, and the
+review gates and the terminal Worker gate can never diverge. A phase declared
+`evidence: []` (the Worker and correction phases of `robust@v1`) stays
+ungated.
+
+*What moves in the digests.* Nothing, for a request that declares one command
+named `task-check`: the literal's `evidence_profiles` table never reached any
+emitted byte (the compiler emits `schema_version`, `profile_id`, `revision`
+and `phases` only), and the resolved phase list is still `[task-check]`. Such
+a request compiles byte-for-byte as before, so its `commission-manifest.json`
+digests, its projected file digests and `wfc plan`'s preview digests are
+unchanged. Digests move only where a request actually declares a different
+name or more than one command -- that is, only for new Commissions, which is
+the intended effect.
+
+*Already archived Evidence is unaffected.* An archive holds the rendered
+bytes and the trusted observations of its own Run; nothing recompiles a
+historical Commission (`frontdoor.verify.verify_commission` only ever
+re-compiles the request it is handed, at its own expected HEAD). The replay
+and equivalence fixtures pin digests of role resources, the operating-contract
+resource and historical archive documents -- none of which this slice touches
+-- so no pinned digest in `tests/` had to move. The one live identity that does
+move is `implementation_identity.implementation_tree_sha256`, as it does for
+every source change; it is a within-Run stability fact, never a cross-release
+pin.
+
+=== (c) The request schema and the 900-second cap: per command
+
+*Decision.* The cap stays per command, as D5 leaves it:
+`COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS` (`model.py:27`) bounds one
+subprocess, and is enforced three times for each command -- at request parse
+(`frontdoor/request.py`), again on the compiled policy
+(`serialization._evidence_commands`) and again at admission
+(`evidence.prepare_evidence_commands`). The worst case of a sequence is
+therefore the *sum* of its declared timeouts; `wfc plan` and `wfc request`
+print that sum so the operator sees the bound before launching.
+
+*Property preserved.* The hard cap is untouched (withheld authority), and a
+list cannot smuggle a longer single command past it. The agent-invocation
+budget is a separate, already-existing bound (`hop_timeout_seconds`).
+
+*Rejected: an aggregate cap over the list.* It reopens D5, which the
+maintainer closed, and would make a pre-launch refusal depend on an
+arithmetic the kernel does not otherwise model. *Rejected: a maximum number
+of commands.* No safety property needs it; the honest bound is the previewed
+sum, and no other Consumer Request list (scope, durable artifacts) is
+counted either.
+
+*Rejected: a clean break that removes the single-command form.* Beta permits
+it, but it would buy no safety property and would invalidate every shipped
+example request, the tutorial listings that
+`tests/architecture/test_tutorial_kit_quotes.py` guards byte-for-byte, and
+every archived request -- several of them in `examples/consumer-demo`,
+outside this slice's authorized scope. The degenerate list is documented as exactly that, not as
+a deprecated form, so there is nothing to refuse by name.
+
+=== (d) The baseline probe, fail-fast order and the diagnostic
+
+*Decision.* The probe runs the *whole* declared list, in declared order,
+fail-fast, before any provider starts, with each command's own timeout --
+the same list the task-check will run after every Worker Hop. In a Hop,
+`vertical` runs `phase.evidence` in order through the unchanged
+`EvidenceRunner` seam and stops at the first command that is not a clean
+`pass` (a `fail`, an `error`, a `not_run`, or an `observation_error`).
+
+*Property preserved.* "The same command(s) run as the pre-launch baseline
+probe and after every Worker Hop" is preserved for the list as a whole: a
+probe over only a cheap prefix would admit a Run whose first Hop fails the
+task-check for a pre-existing reason -- precisely the cost friction entry 18
+recorded. The reducer's reaction is unchanged: a clean `fail` takes the
+gate's declared `failed_evidence_route` or stops the Run fail-closed, while
+`error`/`not_run`/malformed stays the hard mechanical stop that preempts the
+semantic result. Fail-fast changes which commands produce an observation, never
+how an observation is judged.
+
+*The diagnostic names the command.* Every probe refusal -- non-zero exit,
+timeout, unresolvable executable, tree mutation -- names the failing command
+by name beside its classification, and the non-zero-exit refusal keeps the
+bounded, explicitly untrusted output tail that O2 added. The clean-tree check
+runs after each command, so a mutating gate is attributed to the command that
+mutated. In a Hop, the per-command observations already reach the next Hop's
+reconstructed context as `trusted_evidence=<name>|status=...`.
+
+*The un-run tail is absent, not a new status.* The Hop keeps the full
+declared list as its `required_evidence` plan and records the executed
+prefix as `trusted_observations`. The schema-4 staged attempt already
+carries both, and the schema-4 evidence schema already admits the
+difference (it refuses observations *outside* the plan, never a plan entry
+without an observation); `reducer.trusted_evaluator_qualification` still
+demands a passing observation for *every* planned command, so a fail-fast
+prefix can never qualify a convergence cycle. The *legacy* execution-evidence
+record (`operator._legacy_execution_evidence`) gains the same
+`required_evidence` list, because the compiled consumer profile is
+`schema_version: 2` and therefore every Commission the Front Door compiles
+is a schema-2 Run that takes exactly that path -- without it the report of
+the shipping path could not show an unreached gate at all. Records written
+before this slice simply carry no plan, which is what the audit's own
+tolerance already expects. *Rejected: a new `skipped` Observation
+status* -- it would widen the trusted A2 status vocabulary that
+`evidence.observation_error`, `serialization`, the Operator Manual and the
+Technical Model all pin, to say something the plan-minus-observations
+difference already says. *Rejected: reusing `not_run` for the skipped tail*
+-- its admitted meaning is a hard mechanical stop, so it would convert a
+clean `fail` into an `error`-class stop and discard the routing the gate
+declares.
+
+*Rejected: routing a named gate's failure differently from a behavioural
+one* (the second open question of the proposal state). A lint residue and a
+failing test are different signals to a human, but giving them different
+*routes* would mean the Commission, not the program, choosing a Run's
+disposition from a command name. The order already carries the operator's
+intent: cheap gates first, so the cheap signal arrives first and alone.
+
+=== (e) What the report shows
+
+`wfc report` and `wfc audit` already project one line per trusted
+observation, with its command name, status and exit code; with a list that is
+one line per gate, in execution order. For a gate the fail-fast stop skipped,
+the audit projects one entry from the attempt's own plan with `status:
+not_executed` -- a projection-level marker, never a runner-produced
+Observation status -- so a report can never read as if the later gates had
+passed. The probe's own journal record names the commands that passed.
+
+[[implementation]]
+== What shipped (2026-11-27)
+
+* `frontdoor/request.py`: `ConsumerRequest.evidence` is an ordered tuple of
+  named commands; both forms and all refusals above.
+* `frontdoor/plan.py`: the three-flag gate sequence, and a preview that
+  lists every gate in order with its timeout and the worst-case total.
+  `wfc request` inherits both through the shared definition.
+* `commissioning.py`: `evidence_profiles` removed from both literals; the
+  request's ordered names fill every `"E"` slot and define
+  `policy.evidence_commands`.
+* `model.py`: the structural predicate of (a).
+* `evidence.py` / `vertical.py`: `observe_required_evidence` runs a
+  prepared sequence in order, fail-fast, at the one existing execution site;
+  `VerticalRun.required_evidence` carries the declared plan beside the
+  observations, derived once.
+* `operator.py`: the legacy (schema-2, i.e. every consumer Run)
+  execution-evidence record carries that plan.
+* `frontdoor/lifecycle.py`: the probe runs the sequence, names the failing
+  command in every refusal, and records the passed names.
+* `frontdoor/audit.py`: the `not_executed` projection for a skipped gate.
+* Texts: the Operator Manual (ch02, ch03, ch04 -- which gains the
+  `evidence-sequence` section -- ch08, ch09, ch10), the Technical Model
+  (ch01, ch02 and a dated qualification of AD-1 and its configuration-
+  boundary statement in ch04), the Functional Model, the Developer Guide,
+  the shipped Agent Skill (`SKILL.md`, `references/commission.md`,
+  `references/setup.md`, `references/stops-and-evidence.md`),
+  link:beta2_operator_efficiency_plan.adoc#revised-cut[the plan's
+  evidence-command rule], link:_open.adoc[the active-work manifest's card]
+  and link:FTR-WFC-LEVEL1-OPERATOR-GUIDANCE.adoc[the operator-guidance
+  record], whose friction-entry-18 rule ("the single command must be
+  `make check`") is replaced, not appended to, by the ordered-gate rule.
+
+Known residue outside this slice's authorized scope, for the maintainer:
+`docs/semantic_model/ch01_current_semantics/04_evidence_and_verification.adoc`
+("`robust@v1` and `simple@v1` ... always require `task-check`") and
+`docs/semantic_model/ch01_current_semantics/01_vocabulary.adoc` ("an evidence
+command", singular) now describe the pre-O7 shape. Both are one-sentence
+corrections in a chapter this slice may not edit.
+
 == Open decisions
 
-* link:beta2_operator_efficiency_plan.adoc#d6[D6] -- open the design question
-  or defer. The plan recommends *defer*: a change to the accepted programs,
-  their digests and result-contract selection, in the release after the one
-  in which the publication path first ran, for a benefit largely obtainable
-  through the interim remedy.
-* If opened: whether a named gate's failure routes differently from a
-  behavioural failure (a lint residue and a failing test are not the same
-  signal), and whether the baseline probe runs the whole list or only the
-  cheap prefix. Neither is analysed here.
+Both questions of the proposal state are decided in <<design>>: the baseline
+probe runs the whole list (d), and a named gate's failure routes exactly like
+any other required-evidence failure (d, last paragraph). D6 itself is
+decided and implemented.
+
+Still open, and not reopened here: whether a future program revision should
+be able to declare *per-phase* evidence subsets (today every gated phase
+receives the identical list, which is the safeguard of (b)); and the
+environment dependence the interim-remedy section records, which the
+timeout BUG owns.
 
 == Lifecycle
 
-Proposed and deferred. No implementation, schema change, program change or
-Run is authorized by this record, and the single-command evidence contract is
-unchanged by it.
+Proposed 2026-11-26, decided the same day as D6, implemented 2026-11-27 by
+`WI-WFC-BETA2-O7-001`. Independent acceptance and product closure are the
+maintainer's to record; a Runtime promotion and `wfc skill install` remain
+separate maintainer actions.

@@ -24,7 +24,7 @@ from .evidence import (
     EvidenceRunner,
     FAIL_CLOSED_EVIDENCE_RUNNER,
     PreparedEvidenceCommand,
-    observation_error,
+    observe_required_evidence,
 )
 from .git_facts import (
     GitDelta,
@@ -101,6 +101,11 @@ class VerticalRun:
     staged_attempt: StagedQualificationAttempt | None
     qualification_index: TrustedQualificationIndex
     execution_evidence_json: str | None
+    # The phase's declared evidence sequence, in order, as the Hop planned it.
+    # ``observations`` is the prefix that actually ran (fail-fast), so the two
+    # together are what a reader needs to see a gate that was planned and
+    # never reached. Derived once here and never re-derived by a consumer.
+    required_evidence: tuple[RequiredEvidenceIdentity, ...] = ()
 
 
 def convergence_prompt_context(
@@ -427,15 +432,8 @@ def run_one_hop(
         ),
     )
     authorized_evidence = evidence_commands or {}
-    observations = tuple(
-        evidence_runner.observe(authorized_evidence[name]) for name in phase.evidence
-    )
-    observation_errors = tuple(
-        error
-        for name, observation in zip(phase.evidence, observations, strict=True)
-        if (
-            error := observation_error(observation, expected=authorized_evidence[name])
-        ) is not None
+    observations, observation_errors = observe_required_evidence(
+        phase.evidence, authorized_evidence, evidence_runner
     )
     post_evidence = observe_repository(repository)
     post_evidence_anomalies: tuple[str, ...] = ()
@@ -599,4 +597,5 @@ def run_one_hop(
         attempt,
         qualification_index,
         evidence_json,
+        required_plan,
     )

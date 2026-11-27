@@ -156,7 +156,8 @@ class TestDigestEqualityBetweenPreviewAndEmission:
             task=task, commission_id="consumer-request-smoke", work_item_id="WI-CONSUMER-REQUEST-SMOKE",
             authority_source="Maintainer authorizes this bounded preview only.", program="simple@v1",
             scope=["src"], personas=["worker=Bounded worker persona."],
-            evidence_argv=["sh", "checks/check.sh"], evidence_timeout=900, max_autonomous_hops=5,
+            evidence=[{"name": "task-check", "argv": ["sh", "checks/check.sh"], "timeout_seconds": 900}],
+            max_autonomous_hops=5,
             durable_artifact=[], guidance_path="GUIDANCE.md", guidance_commit=head,
         )
         assert output_path.read_text(encoding="utf-8") == expected.raw_text
@@ -171,7 +172,10 @@ class TestDigestEqualityBetweenPreviewAndEmission:
         )
         assert code == 0, err
         assert "nothing was authorized" in out
-        for field in ("scope", "program", "personas", "max_autonomous_hops", "evidence.argv", "authority_source"):
+        for field in (
+            "scope", "program", "personas", "max_autonomous_hops",
+            "ordered evidence commands", "authority_source",
+        ):
             assert field in out
 
 

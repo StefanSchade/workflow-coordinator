@@ -80,9 +80,10 @@ Publication, not acceptance.
 
 |Trusted evidence
 |Coordinator
-|Independent, post-commit, Coordinator-executed observation of
-`phase.evidence`: `pass`, clean `fail`, or `error`/`not_run`. Agent-side
-test runs are never this, however diagnostic they are.
+|Independent, post-commit, Coordinator-executed observation of each command
+of `phase.evidence`, in order, fail-fast (<<evidence-sequence>>): `pass`,
+clean `fail`, or `error`/`not_run`. Agent-side test runs are never this,
+however diagnostic they are.
 
 |Review acceptance
 |gate phase (semantic)
@@ -215,6 +216,45 @@ authorizes a deletion, rename, Git configuration change or agent Git write.
 Diagnosis and retained-work boundaries are in
 link:{operator-docs}/operator_manual/ch07_diagnostics/02_failure_modes.adoc#failure-matrix[the failure matrix].
 
+[[evidence-sequence]]
+=== 2b. The ordered evidence sequence
+
+A Commission declares an *ordered sequence of named evidence commands* --
+one or more, each with its own `argv` and `timeout_seconds` -- and the
+program decides which phases are gated by it. Since 27 November 2026
+(`WI-WFC-BETA2-O7-001`,
+link:{operator-docs}/backlog/FTR-WFC-EVIDENCE-COMMAND-SEQUENCE.adoc[the
+record's Design section]) the rules are:
+
+* *Order is execution order, and it is fail-fast.* The Coordinator runs the
+  commands in the declared order and stops at the first one that does not
+  cleanly `pass`. Declare the cheap gates first (lint, then format, then the
+  test suite): a lint residue then costs one cheap command instead of a
+  whole suite, and the diagnostic names the command that failed.
+* *A command that did not run has no Observation.* The Hop's trusted
+  evidence plan names the whole declared sequence; the observations are what
+  actually ran. `wfc report`/`wfc audit` therefore show a planned command
+  the stop never reached as `not_executed` -- a projection marker, never a
+  command's own result -- so a report cannot be read as if the later gates
+  had passed.
+* *The timeout cap is per command.* 900 seconds
+  (`COORDINATOR_HARD_MAX_EVIDENCE_TIMEOUT_SECONDS`) bounds one command, so
+  the sequence's worst case is the sum of its timeouts; `wfc plan` and `wfc
+  request` print each command, its timeout and that total.
+* *Every gated phase runs the identical, complete sequence.* There is no
+  per-phase or per-Hop selection, so no Commission can give one phase a
+  weaker gate than another, and the same sequence runs as the mandatory
+  pre-launch baseline probe before any provider starts.
+* *Judgement is unchanged.* Each command's observation is still `pass`, a
+  clean `fail`, or `error`/`not_run`, with exactly the routing consequences
+  of <<failed-evidence-route,section 3>>: a named gate's failure routes like
+  any other required-evidence failure.
+* *One conflated command remains admitted* as the degenerate one-element
+  sequence (`evidence:` as a single `{argv, timeout_seconds}` mapping, or a
+  command line with no `--evidence-command` flag). It is no longer the
+  recommended shape: it reports one exit code for every gate and cannot fail
+  fast at the cheap one.
+
 [[failed-evidence-route]]
 === 3. `failed_evidence_route`
 
@@ -236,9 +276,13 @@ canonical shape. Agent-side diagnostic test execution is unaffected.
 
 The admission code separately recognizes one closed, review-less terminal
 Worker shape (`model.py::is_closed_terminal_worker_shape`): a single phase,
-no convergence, modifier `simple-self-check`, only `task-check` evidence and
-one unsupervised `accept` route with effect `complete`, without a target or
-question. It is not a correction loop and cannot declare
+no convergence, modifier `simple-self-check`, a *non-empty* evidence binding
+and one unsupervised `accept` route with effect `complete`, without a target
+or question. The evidence conjunct is deliberately structural -- any number
+of commands, under any names, as long as the phase is gated at all -- since
+the sequence is the Commission's own declaration and must not decide which
+workflow shape is admitted; an *ungated* single-phase self-check Worker is
+not this shape. It is not a correction loop and cannot declare
 `failed_evidence_route`; a clean failure still stops it. This narrow
 exception does not relax the gate-only rule for review/correction workflows.
 
@@ -344,7 +388,7 @@ Properties of this shape:
   genuine multi-Hop autonomous loop, bounded by the ordinary Hop budget
   (link:{operator-docs}/operator_manual/ch02_commissioning/02_authoring.adoc#hop-budget[Hop budget]) rather than looping indefinitely.
 
-Worker phases *may* still run the same evidence command themselves,
+Worker phases *may* still run the same evidence commands themselves,
 diagnostically, within their Hop authority -- `phase.evidence` governs
 what the *Coordinator* requires, not an expansion of the agent's shell
 authority. The distinction that matters:

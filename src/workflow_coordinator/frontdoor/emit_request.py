@@ -87,9 +87,9 @@ def render_request_summary(*, inputs: ResolvedPlanInputs, output_path: Path) -> 
         "provider call, Commission write or Git mutation. The file above grants no authority: "
         "`wfc run --request ...` re-reads it from a plain filesystem path, re-parses it under "
         "the closed BP2b schema and re-digests it before anything is authorized or committed. "
-        "scope, program, personas, max_autonomous_hops, evidence.argv and authority_source are "
-        "this operator's own judgement, merely carried here -- never supplied, validated or "
-        "authorized by this command."
+        "scope, program, personas, max_autonomous_hops, the ordered evidence commands and "
+        "authority_source are this operator's own judgement, merely carried here -- never "
+        "supplied, validated or authorized by this command."
     )
     return "\n".join(lines) + "\n"
 
