@@ -1286,11 +1286,18 @@ def _attempt_mechanical_recovery(
         # checkpoint are durably persisted *before* the already-reconciled
         # predecessor marker is retired, and the marker is retired before any
         # later dispatch is permitted -- the ordering
-        # ``FTR-WFC-ATOMIC-HOP-RECOVERY`` makes mandatory. Without the
-        # retirement the continuation re-enters
-        # ``slice4.run_real_one_hop``'s stale-marker branch, re-reconciles
-        # the identical already-charged uncertain Hop and the Run can never
-        # progress. Retiring it enables no replay (the Hop id is in
+        # ``FTR-WFC-ATOMIC-HOP-RECOVERY`` makes mandatory. What leaving the
+        # marker in place would cost depends on the Run's schema version. A
+        # schema-3 Run re-enters ``slice4.run_real_one_hop``'s stale-marker
+        # branch (guarded by ``run.schema_version == 3``), which re-reconciles
+        # the identical already-charged uncertain Hop and does not unlink the
+        # marker, so that Run can never progress. The schema-2 Runs the Front
+        # Door creates today take the branch below it, which unlinks the stale
+        # marker itself and returns the Run at ``READY`` for the next
+        # dispatch, so there the cost is one wasted engine iteration. The
+        # retirement is kept for both: it removes that iteration now and keeps
+        # this class correct for a schema-3 continuation.
+        # Retiring it enables no replay (the Hop id is in
         # ``run.hops``, so the next dispatch takes the following sequence
         # with a fresh invocation identity) and loses no information (the
         # predicate proved no staged qualification attempt refers to it).

@@ -43,8 +43,10 @@ no-opping, exactly as before.
 
 Three sources. (1) The recorded friction of the Level-1 session:
 link:../warm_storage/post-beta-planning/wfc_level1_operator_friction_log.adoc[entries
-14, 15, 16, 19, 20]. (2) This repository's own source at the Commission
-baseline `e6b250f`, read directly; every mechanical claim below cites it. (3)
+14, 15, 16, 19, 20]. (2) This repository's own source, read directly; every
+mechanical claim below cites it. The `path:line` pointers resolve at the state
+this slice ships, not at the Commission baseline `e6b250f`, because the slice
+moves some of the lines it cites. (3)
 This record's own pre-existing analysis (`Charging and reduction rules`,
 `Future R2 eligibility`, `Three recovery mechanisms`).
 
@@ -245,12 +247,35 @@ already-honest interruption.
 === The one new effect, and its mandatory ordering
 
 One effect is genuinely new: the already-reconciled predecessor dispatch
-marker must be *retired*. Without that, the continuation re-enters
-`slice4.run_real_one_hop`'s stale-marker branch (`slice4.py:201-238`),
-re-reconciles the identical already-charged uncertain Hop and the Run can
-never progress -- the pinned test
-`test_a_resumed_run_bounces_back_while_the_marker_is_not_retired` makes that
-mechanism explicit.
+marker is *retired*. What omitting it would cost depends on the Run's schema
+version, and the two cases differ sharply enough to be worth stating exactly.
+
+For a *schema-3* Run the omission is fatal to liveness. The continuation
+re-enters `slice4.run_real_one_hop`'s stale-marker branch
+(`slice4.py:201-238`), which re-reconciles the identical already-charged
+uncertain Hop, returns the Run to `reconcile_required` and does *not* unlink
+the marker, so that Run can never progress. The pinned reducer test
+`test_a_resumed_run_bounces_back_while_the_marker_is_not_retired` drives
+exactly the reducer call that branch makes and pins that mechanism.
+
+For the *schema-2* Runs the Front Door actually creates that branch is
+unreachable: its guard is
+`run.schema_version == 3 and existing.role == "uncertain_dispatch"`
+(`slice4.py:201`), and `commissioning.py:358` renders every Consumer Request's
+profile at `schema_version: 2`, so `model.py:1122` creates schema-2 Runs --
+the same fact limit 2 below rests on. Re-entry falls through to
+`slice4.py:239-246`, which writes a checkpoint, unlinks the stale marker
+*itself* and returns the Run unchanged at `READY`, after which
+`operator.py:1022`'s `while run.status is RunStatus.READY` loop dispatches the
+next Hop normally. There the cost of omitting the retirement is one wasted
+engine iteration, not a stuck Run.
+
+The retirement is therefore kept deliberately, for both reasons: it removes
+that wasted iteration today, and it is what keeps this class correct if a
+schema-3 Run ever continues through the Front Door. It is an effect this
+boundary owns, not a liveness requirement of the shipped class. The refusal of
+a *present* marker that does not correlate exactly is an independent safety
+gate and stands on its own.
 
 The ordering this record already requires is honoured: the resumed Run
 snapshot and its checkpoint are persisted *before* the marker is retired, and
@@ -454,6 +479,27 @@ the check that matters.
   The correction needed is one clause: `prerequisite_return`, and an
   `interruption` that does not satisfy the quiescence predicate, remain
   library-only.
+. *A named refusal of this class does not itself complete a pending candidate
+  capture.* Recorded alongside the correction of the marker-retirement
+  account above. Before this slice a
+  `reconcile_required`/`interruption` Run fell through `wfc resume` to
+  `_advance` and then to `preservation.run_pending_preservation` and
+  `postrun.run_pending_postrun`. Such a Run that now fails a conjunct --
+  class 2, the uncommitted-candidate case -- returns `refused_not_recoverable`
+  before those two steps (`frontdoor/lifecycle.py:1991-1992`). That early
+  return is pre-existing (`WI-WFC-RECOVERY-ROUTING-001`); this slice only
+  widens the set of Runs that reach it. In the normal flow `wfc run` has
+  already completed preservation, so it bites only in the narrow window where
+  the controller died between the `classified` record and preservation -- and
+  in that window `wfc resume` is the only command that would have completed
+  them (`wfc run` refuses first with `refused_active_lifecycle`,
+  `frontdoor/lifecycle.py:1809-1812`, and `wfc status` never runs them). No
+  data is lost: the candidate is still in the worktree and
+  `reconcile_required` remains a preservation trigger
+  (`frontdoor/preservation.py:30-32`), so the capture runs as soon as the stop
+  is resolved by any other path. Letting a refusal still run the pending
+  capture is a change to the shared refusal return that both recovery classes
+  use, not to this class, and is recorded here rather than made.
 
 === Why a resume cannot loop
 
@@ -465,6 +511,10 @@ allowance anywhere in this slice.
 
 
 == Pointer: R1.5's production entry now exists for one narrow class (2026-11-26)
+
+NOTE: Superseded in its count and its line pointers by the `Design` section
+above (2026-11-27): a second class is now wired, and the pointers below moved.
+Kept as the dated record of what was true on 2026-11-26.
 
 Re-checked at HEAD `78bd7a7` by
 link:../warm_storage/post-beta-planning/wfc_beta2_operator_efficiency_analysis.adoc[the

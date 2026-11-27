@@ -145,11 +145,14 @@ def test_open_blocking_finding_is_admitted_and_never_touched():
 
 
 def test_a_resumed_run_bounces_back_while_the_marker_is_not_retired():
-    """Why the boundary must retire the already-reconciled marker: this is
-    the exact call ``slice4.run_real_one_hop``'s stale-marker branch makes
-    on re-entry. It charges nothing twice -- and returns the Run straight
-    back to ``reconcile_required``, so without the retirement a resumed Run
-    could never progress."""
+    """Why the boundary retires the already-reconciled marker: this is the
+    exact call the *schema-3* stale-marker branch of
+    ``slice4.run_real_one_hop`` makes on re-entry. It charges nothing twice --
+    and returns the Run straight back to ``reconcile_required``, so for a
+    schema-3 Run an un-retired marker would stop it progressing. For the
+    schema-2 Runs the Front Door creates, re-entry takes the branch below
+    instead, which unlinks the stale marker itself, and the omission would
+    cost one engine iteration; the retirement is kept for both reasons."""
 
     run, marker = interrupted_run()
     resumed = resume_after_reconcile(run, gate_profile(), current_head=run.current_head)
