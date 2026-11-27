@@ -196,11 +196,13 @@ def _program_ref_from_flag(value: str) -> tuple[str, str]:
 def _evidence_request_value(evidence: list[dict[str, Any]]) -> Any:
     """Render the declared gate sequence in the admitted form it needs.
 
-    One implicitly named gate -- the spelling every pre-O7 command line uses
-    -- is written as the degenerate ``{argv, timeout_seconds}`` mapping, so
-    such a command line still produces a byte-identical Consumer Request and
-    therefore identical projected digests. Anything the operator named
-    explicitly is written as the ordered list.
+    A sequence of exactly one gate named ``task-check`` -- what every pre-O7
+    command line declares, however it was spelled -- is written as the
+    degenerate ``{argv, timeout_seconds}`` mapping, so such a command line
+    still produces a byte-identical Consumer Request and therefore identical
+    projected digests. Every other sequence is written as the ordered list.
+    The form follows the declared meaning, not the spelling, so two spellings
+    of one sequence cannot project two different digests.
     """
 
     if len(evidence) == 1 and evidence[0]["name"] == DEGENERATE_EVIDENCE_COMMAND_NAME:
