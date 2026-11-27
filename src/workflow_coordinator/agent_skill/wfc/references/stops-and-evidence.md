@@ -92,7 +92,7 @@ Run in place, with its phase, Run-local Findings, pinned governing truth and
 every charged Hop intact; `--preview` changes nothing.
 
 ```shell
-wfc extend-budget --additional-hops 2 --authority "<the maintainer's instruction>"
+wfc extend-budget --additional-hops 2 --authority "MAINTAINER_INSTRUCTION_VERBATIM"
 ```
 
 **You never run it on your own**: it needs the maintainer's explicit
@@ -160,10 +160,10 @@ accepted" means reading the classification, the review verdict and the
 evidence results together. The named commands run fail-fast in declared
 order, so read every gate's own line: `pass`, a clean `fail` with its exit
 code, an `error`, or `not_executed` -- the marker for a gate the stop never
-reached, not a result.
+reached, not a result. Two alternative forms -- run one of them, never both:
 
 ```shell
-wfc report <evidence-repo>/archive/unclassified/<attempt-id>/audit.json
+wfc report EVIDENCE_REPO/archive/unclassified/ATTEMPT_ID/audit.json
 wfc report --repository .
 ```
 

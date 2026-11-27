@@ -110,4 +110,6 @@ def test_the_shipped_skill_tells_the_operator_when_to_read_the_notes():
     entry = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
     setup = (SKILL_ROOT / "references/setup.md").read_text(encoding="utf-8")
     assert NOTES_PATH in entry and NOTES_PATH in setup
-    assert f"git show <base-ref>:{NOTES_PATH}" in entry
+    # WI-WFC-BETA2-SKC2-001: UPPER_CASE placeholder, so the fenced command is
+    # executable rather than two shell redirections.
+    assert f"git show BASE_REF:{NOTES_PATH}" in entry

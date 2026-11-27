@@ -25,9 +25,9 @@ wfc plan task.md --repository . \
   --authority-source "Repository owner authorizes this bounded task." \
   --program simple@v1 \
   --persona worker="Bounded worker persona." \
-  --evidence-command lint --evidence-argv <lint-argv-token> \
+  --evidence-command lint --evidence-argv LINT_ARGV_TOKEN \
   --evidence-timeout 120 \
-  --evidence-command task-check --evidence-argv <test-argv-token> \
+  --evidence-command task-check --evidence-argv TASK_CHECK_ARGV_TOKEN \
   --guidance-path .wfc/governance/repository-policy.md
 ```
 
@@ -53,11 +53,12 @@ always did. `wfc plan` prints the gates in order with the worst-case total.
 plus an explicit `--output PATH`, and writes the Consumer Request YAML
 `wfc plan` would preview -- byte for byte the same request-construction path,
 so the two commands' projected digests are always identical for identical
-inputs:
+inputs. The following is a fragment, not a complete command line: repeat
+every flag of the `wfc plan` call above, with `request` in place of `plan`,
+and add the output path.
 
-```shell
-wfc request task.md --repository . <the same flags as above> \
-  --output ../wfc-scratch/request.yaml
+```text
+wfc request task.md --repository . ... --output ../wfc-scratch/request.yaml
 ```
 
 Refuses, before any write: an already-existing `--output` file (pass
@@ -68,7 +69,7 @@ run` requires, so keeping it in a sibling scratch directory (as above) needs
 no flag at all. It authorizes nothing: no Git mutation, no provider call, and
 its closing line restates that scope, program, personas, Hop budget, the
 ordered evidence commands and `authority_source` are this operator's own
-judgement, merely carried, never validated by it. `wfc run --request <path>`
+judgement, merely carried, never validated by it. `wfc run --request PATH`
 re-reads the file from a plain filesystem path -- so it need not live inside
 the repository -- re-parses it under the closed schema and re-digests it
 exactly as it would a hand-authored one; the emitted file grants no authority
@@ -96,7 +97,7 @@ of its own.
   text: no `git add`/`git commit`/other Git mutation -- report a
   `CommitIntent` instead -- and the `CommitIntent.subject` must carry the
   WorkItem id and the current Hop id (for example
-  `feat(x): <summary> (WI-..., H00N)`); a subject missing either stops the
+  `feat(x): SUMMARY (WI-..., H00N)`); a subject missing either stops the
   Run mechanically (`WFC-GIT-08`), not through review.
 * **A note is not an escalation.** A `CommitIntent` is permitted only with a
   clean disposition -- no escalation, no `scope_changed`, no `requires_human`;

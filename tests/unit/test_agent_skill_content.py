@@ -281,6 +281,68 @@ def test_drift_guard_wfc_commands_match_real_cli():
     assert checked_any, "expected at least one 'wfc ...' line in a fenced shell block"
 
 
+def _shell_fence_commands(text: str):
+    """Logical command lines from the ``shell``/``bash``/``sh`` fences only.
+
+    ``text`` fences are excluded on purpose: that is how the skill marks a
+    fragment, which may legitimately not run as written.
+    """
+    buffer: list[str] = []
+    for lang, line in _fenced_shell_lines(text):
+        if lang not in {"shell", "bash", "sh"}:
+            continue
+        rstripped = line.rstrip()
+        if rstripped.endswith("\\"):
+            buffer.append(rstripped[:-1])
+            continue
+        buffer.append(rstripped)
+        yield " ".join(buffer)
+        buffer = []
+    if buffer:
+        yield " ".join(buffer)
+
+
+@pytest.mark.parametrize("path", ALL_SKILL_FILES, ids=lambda p: p.name)
+def test_no_shell_fence_carries_a_placeholder_the_shell_would_redirect(path):
+    """WI-WFC-BETA2-SKC2-001: a block the skill presents as runnable must run
+    as written once its placeholders are filled in -- a stronger property than
+    being valid shell, which `<angle-bracket>` placeholders also are (`bash -n`
+    exits 0 for them) while the shell reads them as redirections. The
+    convention is an UPPER_CASE placeholder word, matching the installed CLI's
+    own metavariables. `tests/architecture/test_runnable_shell_examples.py`
+    holds the canonical checker and its self-tests, and covers the Operator
+    Manual too; this guard keeps the shipped skill honest on its own.
+    """
+    offenders = []
+    for command in _shell_fence_commands(path.read_text(encoding="utf-8")):
+        if not command.strip():
+            continue
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            offenders.append(f"unbalanced quoting: {command!r}")
+            continue
+        for index in range(len(tokens) - 2):
+            if tokens[index] == "<" and tokens[index + 2] == ">":
+                offenders.append(f"<{tokens[index + 1]}> in {command!r}")
+    assert not offenders, (
+        f"{path.name}: use an UPPER_CASE placeholder, or mark the block as a "
+        f"fragment with a 'text' fence: {offenders}"
+    )
+
+
+def test_skill_states_its_placeholder_convention_once():
+    """The mechanical guard above enforces a convention; the convention has to
+    be written where the operator reads it, and only once."""
+    entry = _normalized(SKILL_FILE.read_text(encoding="utf-8"))
+    assert "UPPER_CASE" in entry
+    assert "run as written" in entry, (
+        "the convention must say a runnable block is more than valid shell"
+    )
+
+
 def test_delegated_authority_persists_phrase_present():
     """WI-WFC-LEVEL1-AUTONOMY-002: a technical failure or stopped attempt does
     not end Level 1's delegated task authority; this must survive verbatim in
@@ -475,8 +537,11 @@ def test_operator_notes_convention_is_documented_with_its_boundaries():
     assert OPERATOR_NOTES_PATH in entry
     assert OPERATOR_NOTES_PATH in setup
     # Read from committed history, never from a working tree or a candidate.
-    assert f"git show <base-ref>:{OPERATOR_NOTES_PATH}" in entry
-    assert f"git show <base-ref>:{OPERATOR_NOTES_PATH}" in setup
+    # WI-WFC-BETA2-SKC2-001: the placeholder is an UPPER_CASE word, because
+    # `git show <base-ref>:...` inside a shell fence is read by the shell as
+    # two redirections (see tests/architecture/test_runnable_shell_examples.py).
+    assert f"git show BASE_REF:{OPERATOR_NOTES_PATH}" in entry
+    assert f"git show BASE_REF:{OPERATOR_NOTES_PATH}" in setup
     normalized_setup = _normalized(setup)
     assert "never a working tree and never a Run's candidate" in normalized_setup
     # Optional, no authority, and distinct from the Commission's guidance file.

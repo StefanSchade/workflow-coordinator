@@ -465,7 +465,7 @@ chapter move with it in the same slice.
 *Decided:* one documented repository-relative path, `docs/operator-notes.md`.
 A consumer repository may commit it; the skill tells the Level-1 operator to
 read it *when it exists*, from the *committed* starting state of the checkout
-the Run begins from (`git show <base-ref>:docs/operator-notes.md`), after a
+the Run begins from (`git show BASE_REF:docs/operator-notes.md`), after a
 cheap existence check that is never a mandatory step. It carries Level-1
 operating notes only, is not the Commission's `guidance.path` (which is the
 Worker's committed policy document, read by the Runtime at a pinned commit),
@@ -491,11 +491,15 @@ repositories with no AsciiDoc toolchain. The deviation is deliberate, bounded
 to this one convention, and recorded here.
 
 *Properties preserved:* reading from committed history, not the working tree
-or a Run candidate, keeps a Run's own output from becoming operator
-instructions in the next Run -- the same rule the Runtime already applies to
-`guidance.path` and to the `prepare-checkout` hook. And because the notes
-confer no authority, a consumer that commits them cannot widen what the
-skill's Authorization section withholds.
+or a Run candidate, fixes *which* notes a Run is operated by -- the same rule
+the Runtime already applies to `guidance.path` and to the `prepare-checkout`
+hook. And because the notes confer no authority, a consumer that commits them
+cannot widen what the skill's Authorization section withholds.
+
+NOTE: this paragraph originally claimed that the read anchor "keeps a Run's
+own output from becoming operator instructions in the next Run". That is
+over-strong and was corrected by slice SKC2 (<<design-skc2>>); the guarantee
+that actually holds is narrower.
 
 === SK-3: Level 0 and Level 1, and the multi-Run correction
 
@@ -581,8 +585,199 @@ expectations changed* section says which and why. No Runtime code changed,
 and no Front Door command, argument, classification, report, diagnostic or
 recovery behaviour changed -- this slice is documentation and tests.
 
+[[design-skc2]]
+== Design (2026-11-27, slice SKC2 -- executable examples and the notes trust statement)
+
+A bounded correction of the integrated slice SK (`WI-WFC-BETA2-SK-001`,
+integrated at `3161028`). The architecture and the consolidation stay
+accepted; SK's own review artifacts are untouched. Two findings from an
+additional external review were forwarded by the maintainer. Both were
+re-verified against the repository here, and both hold.
+
+=== SKC2-1: one placeholder convention -- an UPPER_CASE word
+
+*The defect, precisely.* A placeholder in angle brackets inside a block a
+reader is meant to paste is *valid* shell: `bash -n` exits `0` for every one
+of the blocks concerned, verified here. What the shell does with
+`git show <base-ref>:docs/operator-notes.md` is read `<base-ref` as an input
+redirection and `>:docs/operator-notes.md` as an output redirection, so a
+literal execution fails with "No such file" or creates a stray file. The
+defect is therefore executability, not syntax, and the two have to be
+distinguished in both the convention and the test.
+
+*Decided:* inside any block or inline command presented as runnable, a value
+the reader supplies is an `UPPER_CASE` word, quoted only where the real value
+contains spaces. `SKILL.md` (*Where exact facts come from*) states it once,
+for the whole skill, in one sentence that names the stronger property: a
+runnable block must *run as written* once each placeholder is replaced, which
+is more than being valid shell. A block that cannot meet that is fenced as
+`text` and introduced as a fragment.
+
+*Why this form, over the alternatives:*
+
+* *It is already the installed CLI's own convention.* `wfc request --help`
+  prints `--output PATH`, `--evidence-argv TOKEN`, `--evidence-command NAME`,
+  `--durable-artifact PHASE=PATH`, `--execution-override ROLE.FIELD=VALUE`.
+  The skill already used that form in prose for argument names, so the choice
+  unifies two conventions rather than introducing a third.
+* *It is shell-inert:* no redirection, no glob, no brace expansion, and no
+  parameter expansion (a bare upper-case word is just a word). Pasted
+  literally it fails cleanly and informatively -- `git show BASE_REF:...`
+  reports an unknown revision -- instead of writing a file.
+* *It costs no lines.* The shipped files sit at their line caps (`setup.md`
+  199 of 200 before this slice), so a convention that adds a line per
+  placeholder was not affordable.
+* *Rejected -- a shell variable introduced by a preceding line*
+  (`base_ref=HEAD` then `git show "$base_ref:..."`). Strictly the most
+  executable form, and kept where a block already had such a variable
+  (`ch08_examples` now uses its own `$COMMISSION` in `--scope`). Rejected as
+  the general convention: it adds a line per placeholder, and a `wfc plan`
+  example with eight placeholders would double in length.
+* *Rejected -- quoting the angle brackets* (`"<your model>"`). It removes the
+  redirection but keeps two notations in one text, and reads as a literal
+  value rather than a placeholder.
+
+*Scope of the correction, and the line that was drawn.* Every block presented
+as runnable was corrected: the shipped skill's Markdown `shell` fences, the
+Operator Manual's `[source,shell]` blocks, and `docs/operator-notes.md`.
+Inside the shipped skill the convention was additionally applied to its
+non-shell fences and to inline command and argument placeholders, so the
+artifact an agent copies from states and follows one convention throughout.
+*Left unchanged, deliberately:* angle-bracket placeholders in the Operator
+Manual's prose, tables, directory trees, output transcripts and `yaml`/`json`
+blocks. They are not pasted into a shell, carry no redirection hazard, and
+`<...>` is the ordinary typographic notation for a path or ref shape in
+prose; rewriting the manual's prose notation would be a large change with no
+executability benefit. The manual's rule is therefore statable: an
+`UPPER_CASE` word inside a runnable block, `<...>` in prose.
+
+*Two findings the correction turned up, beyond the four locations forwarded:*
+
+. `ch04_evidence/02_archive.adoc` and `ch06_recovery/01_outcomes.adoc`
+  presented *usage synopses* as `[source,shell]`: `[--dry-run]`,
+  `[--raw-retention {local,commit,discard}]` and a bare `[--preview]` line
+  are glob and brace-expansion syntax, not arguments. The archive synopsis is
+  now a `text` block labelled as a synopsis; the `[--preview]` line is gone
+  and the prose already carried the fact.
+. Three `ch09_consumer_quickstart` tutorial blocks were not merely
+  non-executable but *syntactically invalid*: the apostrophe in
+  `--guidance-commit <the kit's guidance commit>` opens a single quote that
+  never closes, and `bash -n` fails on all three. This is the one part of the
+  defect class a token-level check cannot see, and the reason the weaker
+  `bash -n` line was kept rather than dropped.
+
+*Safety properties preserved:* none is touched. No Runtime, CLI, schema or
+authority-model change; no new runtime function, configuration option or
+approval level. The independent reviewer's sole Finding authority, the
+trusted-commit boundary, fail-closed admission and one Run per checkout are
+untouched; this slice is documentation and tests.
+
+=== SKC2-2: what the notes read anchor does and does not guarantee
+
+*The claim that was wrong.* Several places stated, in substance, that *a Run
+cannot write the notes the next Run is operated by*. It does not hold.
+`docs/operator-notes.md` sits under `docs`, which is inside the committed
+scope ceiling, so a Commission may scope the file; this very slice's
+authorized scope includes it. Run A's Worker may change it, the trusted
+commit records the change, and once it is reviewed and integrated it is part
+of the committed base Run B starts from, where Level 1 reads it for Run B.
+
+*The guarantee that holds, and is now stated instead:* the notes are read
+from a *specific committed base state* -- `git show BASE_REF:...`, never a
+working tree and never a Run's candidate. That is a *reproducibility and
+integrity* property of the bytes read: the same base ref always yields the
+same notes, and neither an uncommitted working-tree edit nor a Run still in
+flight can influence the notes selected for a given Run.
+
+*Reproducibility is not trustworthiness,* and the corrected text says so
+explicitly rather than letting the reader infer it: a committed file is not
+thereby human-authored, and not thereby individually checked by the
+maintainer. Committing fixes *which* bytes are read, not *whether they are
+any good*.
+
+*Unchanged:* the notes confer no authority, are subordinate to the skill's
+general operator rules, are not the Commission's `guidance.path`, and a note
+the installed CLI contradicts is merely stale.
+
+*Added as an operating recommendation only, never as a mechanism:* a change
+to the notes inside a Run's scope should go through that Run's ordinary
+independent review, and a maintainer who does not want a Worker to edit the
+notes keeps the file out of Worker scopes. No runtime function, configuration
+option or approval level was introduced, and none is needed for either.
+
+=== SKC2 inventory of affected locations (2026-11-27)
+
+Derived by searching the repository for the placeholder shape inside runnable
+blocks and for the trust phrasings and their paraphrases ("cannot write",
+"must not be able to", "never influence", "is operated by").
+
+*Finding 1 -- corrected.* `SKILL.md` (the notes command; `wfc skill install`;
+the new convention statement); `references/commission.md` (the two
+`--evidence-argv` tokens; the `wfc request` block, now a labelled `text`
+fragment; two inline placeholders); `references/setup.md` (the two `yaml`
+binding examples, five inline placeholders, the notes command);
+`references/stops-and-evidence.md` (the `wfc report` paths; the
+`--authority` placeholder, quoted and so never a redirection, converted for
+one consistent convention; a lead-in naming the two forms as alternatives);
+`docs/operator-notes.md` (the `prepare-checkout` block and two inline
+placeholders); and in the Operator Manual `ch03_running/01_preparation.adoc`,
+`ch04_evidence/02_archive.adoc`, `ch05_self_development/01_topology_budget.adoc`
+(including one inside a `$( ... )` command substitution),
+`ch05_self_development/02_promotion.adoc`, `ch06_recovery/01_outcomes.adoc`,
+`ch06_recovery/02_successors.adoc`, `ch08_examples/03_commission_to_archive.adoc`,
+all four `ch09_consumer_quickstart` pages and
+`ch10_level1_orchestration/01_operating_pattern.adoc`.
+
+*Finding 2 -- corrected.* `ch09_consumer_quickstart/01_quickstart.adoc` (the
+forwarded location, now carrying the full distinction),
+`references/setup.md` (the forwarded location), `docs/operator-notes.md` (its
+own standing paragraph), and this record's SK-2 *Properties preserved*
+paragraph. `SKILL.md`'s *The loop*, `ch10_level1_orchestration` and
+`ch05_self_development/01_topology_budget.adoc` state only the read anchor and
+the no-authority rule, which are correct as they stand; `SKILL.md` gained the
+reproducibility/trust distinction in one clause. The skill consolidation
+inventory and `tests/unit/test_agent_skill_content.py` assert "never a
+working tree and never a Run's candidate", which *is* the narrow guarantee,
+and were left asserting it.
+
+*Left alone, outside this slice's authorized scope* -- reported, not changed:
+three runnable blocks elsewhere still carry redirection placeholders, in
+`docs/backlog/FTR-WFC-CONSUMER-DEMO-WORKSPACE.adoc` (a backlog record) and in
+`docs/warm_storage/beta1-productization/wfc_beta1_bp5_final_assurance_001_focused_review.adoc`
+and
+`docs/warm_storage/post-beta-planning/wfc_postbeta_docb_level1_focused_review.adoc`
+(completed review artifacts, which are not edited on principle). Two inline
+prose placeholders in `docs/developer_guide/` fall under the prose rule above
+and are not defects.
+
+*Tests.* `tests/architecture/test_runnable_shell_examples.py` is new and holds
+the canonical checker: it lexes every runnable block (Markdown fences and
+`[source,shell]` blocks) with `shlex` in punctuation-aware mode and rejects
+the unquoted `<` WORD `>` triple, looking into `$( ... )` bodies as well,
+with `bash -n` as a deliberately weaker second line. Being quote-aware is
+what makes it usable rather than merely strict: `printf 'TMPDIR=%s\n'
+"${TMPDIR:-<unset>}"` in `ch05_self_development` is correct, executable shell
+in which `<unset>` is a literal fallback value, and a text-level search for
+`<...>` would reject it. Guard self-tests pin both directions, including that
+true negative. Measured against the base commit, the checker reports 51
+redirection placeholders across eleven files and none after the correction.
+`tests/unit/test_agent_skill_content.py` gained the same guard for the
+shipped skill alone, plus a check that the convention is stated. *Two pinned
+expectations were changed deliberately*, both the literal
+`git show <base-ref>:docs/operator-notes.md`, in
+`tests/unit/test_agent_skill_content.py` and
+`tests/architecture/test_operator_notes_convention.py`: they pinned the
+defective command, and now pin the corrected one. No test was weakened,
+skipped or deleted.
+
+*Front Door docs-sync:* this slice changes no Front Door behaviour and no
+operating surface -- it corrects how existing behaviour is written down. The
+shipped Agent Skill sources were checked and edited as part of the slice; the
+Operator Manual pages they mirror were checked and corrected in the same
+slice.
+
 == Lifecycle
 
-Implemented, see the dated note above. The shipped texts reach an installed
+Implemented, see the dated notes above. The shipped texts reach an installed
 consumer only on a separate Runtime promotion and `wfc skill install`,
 neither authorized or performed here.

@@ -4,10 +4,21 @@ Level-1 operating notes for Runs *in this repository*, read by the session
 that drives `wfc` from outside. The shipped Agent Skill
 (`src/workflow_coordinator/agent_skill/wfc/references/setup.md`, section
 *Consumer operator notes*) defines this file's convention: it is read from
-committed history at the Run's base ref, only when it exists, and it carries
-**no authority whatever** -- no delegation, no scope, no approval, and no
-licence to skip a rule of the skill. Where it contradicts the installed CLI,
-the CLI is right and the note is stale.
+committed history, at the base state a Run starts from, only when it exists,
+and it carries **no authority whatever** -- no delegation, no scope, no
+approval, and no licence to skip a rule of the skill. Where it contradicts
+the installed CLI, the CLI is right and the note is stale.
+
+Reading it from a named commit makes *which* notes a Run is operated by
+reproducible and out of reach of an uncommitted edit or a Run still in
+flight. It does not make the content trustworthy: this file sits under
+`docs`, which is inside the committed scope ceiling, so a Commission scoped
+to it may change it, and once that change is reviewed and integrated it is
+part of a later Run's base. Nothing here is therefore human-authored or
+individually checked by the maintainer merely because it is committed. A
+change to this file inside a Run's scope should go through that Run's
+ordinary independent review; keep the file out of a Worker's scope when no
+Worker should touch it.
 
 Not for Workers: a Worker's binding policy document is the Commission's
 `guidance.path` (`.wfc/governance/repository-policy.md`), not this file.
@@ -44,8 +55,8 @@ Run that will fail its own task-check.
 ## Preparing a Run checkout
 
 ```shell
-wfc prepare-checkout --repository . --path ../wfc-<slice>-NNN \
-  --branch wfc/<slice>-NNN --hook scripts/wfc_prepare_checkout_env.sh
+wfc prepare-checkout --repository . --path ../wfc-SLICE-NNN \
+  --branch wfc/SLICE-NNN --hook scripts/wfc_prepare_checkout_env.sh
 ```
 
 `.wfc/config.yaml` declares no `checkout_preparation_hook`, so the hook is
@@ -56,11 +67,11 @@ bundle, verifies the bundle's bytes against the profile before installing
 anything, and declares `WFC_PREPARE_PATH_PREPEND`, `WFC_TEST_INPUTS` and
 `WFC_TEST_PROFILE` on its declaration channel. It fails, by name, when the
 bundle is missing; its default location is
-`<XDG_DATA_HOME or ~/.local/share>/wfc/offline-test-inputs/<profile>`, and
-the developer guide's *offline test inputs* section says how to build and
-verify one.
+`$XDG_DATA_HOME/wfc/offline-test-inputs/PROFILE` (falling back to
+`~/.local/share` when `XDG_DATA_HOME` is unset), and the developer guide's
+*offline test inputs* section says how to build and verify one.
 
-Then `source <scratch>/launch-env.sh` and run `wfc plan`/`wfc request`/
+Then `source SCRATCH/launch-env.sh` and run `wfc plan`/`wfc request`/
 `wfc run` from the new checkout, so the baseline probe and every Hop's
 task-check inherit that environment. Run the exact declared commands by hand
 there first: a refused probe spends the checkout's one lifecycle.

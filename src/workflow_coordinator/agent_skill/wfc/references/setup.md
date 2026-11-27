@@ -32,9 +32,7 @@ wfc --version --json
 
 The exact pin installs this pre-release deliberately: a plain
 `pip install workflow-coordinator` does not. `--version --json` reports the
-executing package's implementation identity. There is no top-level
-`wfc --help`: an unrecognized bare subcommand falls through to an internal,
-unrelated legacy entry point -- never run one. If `wfc skill status <host>`
+executing package's implementation identity. If `wfc skill status HOST`
 leaves it unclear which installation this skill was loaded from, proceed only
 when every reported installation that is not `absent` is `current`; else read
 `wfc skill show` and follow it.
@@ -72,20 +70,20 @@ for one invocation, and absent both the default is 14400 seconds (4 hours).
 default_execution:
   worker:
     adapter: codex_cli
-    model: <your model>
+    model: YOUR_MODEL
     reasoning: medium
 ```
 
-Precedence: `default_execution.<role>`, then any
+Precedence: `default_execution.ROLE`, then any
 `--execution-override ROLE.FIELD=VALUE` given to `wfc plan`/`wfc run` (the
 value is preserved exactly, surrounding spaces included), then the optional
-`phase_execution.<phase>` entry. For `robust@v1`, keep the
+`phase_execution.PHASE` entry. For `robust@v1`, keep the
 `independent_reviewer` role binding and add per-phase models on top:
 
 ```yaml
 phase_execution:
-  broad_review: {model: <your broad review model>}
-  focused_review: {model: <your focused review model>, reasoning: medium}
+  broad_review: {model: BROAD_REVIEW_MODEL}
+  focused_review: {model: FOCUSED_REVIEW_MODEL, reasoning: medium}
 ```
 
 Use exact phase names reachable from the chosen program's entry through
@@ -136,19 +134,18 @@ wfc prepare-checkout --repository . --path ../work-run7 --branch work/run7
 
 One command prepares what a Run needs and removes nothing. It creates the
 worktree at `--path` on the new `--branch` from `--base-ref` (default
-`HEAD`), a sibling scratch directory (`<path>-scratch`) with `tmp/` for
+`HEAD`), a sibling scratch directory (`PATH-scratch`) with `tmp/` for
 `TMPDIR`, runs this repository's declared preparation hook, and writes
-`<scratch>/launch-env.sh`. `source` that file, then run `wfc plan`/`wfc
+`SCRATCH/launch-env.sh`. `source` that file, then run `wfc plan`/`wfc
 request`/`wfc run` in the new checkout: the baseline probe and each Hop's
-task-check inherit the launching environment. It authorizes nothing, runs no
-`plan`/`run`, and refuses by name before creating what it can avoid creating:
-a checkout identity that already carries a lifecycle
-(`refused_existing_lifecycle`), an existing path or branch, a missing parent,
-a path inside *any* working tree of the repository, a scratch directory
-inside the checkout, a dirty base, an unsafe hook. One Run per checkout is
-unchanged: the identity is the resolved top-level *and* the Git common
-directory, so a rotated checkout needs a new *path*, not just a fresh
-`git worktree add`. A fresh path is cheap; a spent one is never reusable.
+task-check inherit the launching environment. It authorizes nothing and
+refuses by name before creating what it can avoid creating: a checkout
+identity that already carries a lifecycle (`refused_existing_lifecycle`), an
+existing path or branch, a missing parent, a path inside *any* working tree
+of the repository, a scratch directory inside the checkout, a dirty base, an
+unsafe hook. One Run per checkout is unchanged: the identity is the resolved
+top-level *and* the Git common directory, so a rotated checkout needs a new
+*path*, not just a fresh `git worktree add`; a spent path is never reusable.
 
 ## The preparation hook, and what it is trusted with
 
@@ -156,7 +153,7 @@ Everything stack-specific about preparing a checkout -- an environment for the
 declared check commands, inputs they need, caches -- is the consumer's own
 *hook*: an executable committed in the repository, declared by the optional
 one-line `checkout_preparation_hook:` key of `.wfc/config.yaml` or named with
-`--hook <repository-relative path>` (`--no-hook` skips it). WFC reads the
+`--hook REPOSITORY_RELATIVE_PATH` (`--no-hook` skips it). WFC reads the
 declaration and the hook **at the base ref**, never from a working tree or a
 Run's candidate; gives it the checkout path, the scratch path and the base
 commit with `TMPDIR` set; and exports the bounded, never-trusted `NAME=VALUE`
@@ -179,10 +176,14 @@ A repository may commit its own Level-1 operating notes at
 `docs/operator-notes.md`: a plain file convention, not a mechanism -- no
 config key names it, no command reads it, WFC never projects it anywhere.
 
-* **From committed history**, at the base ref the Run starts from
-  (`git show <base-ref>:docs/operator-notes.md`), never a working tree and
-  never a Run's candidate -- a Run must not be able to write the notes the
-  next Run is operated by.
+* **From a specific committed base state**: at the base ref the Run starts
+  from (`git show BASE_REF:docs/operator-notes.md`), never a working tree and
+  never a Run's candidate. That fixes *which* notes a Run is operated by --
+  reproducibly, and beyond the reach of an uncommitted edit or of a Run still
+  in flight -- but it does not make them trustworthy, and it does not mean a
+  Run cannot write them: a Commission scoped to the file may change it, and
+  once reviewed and integrated that change is part of a later Run's base.
+  Keep the file out of Worker scopes if no Worker should touch it.
 * **On demand only**: a cheap existence check while authoring a task; for a
   repository without one, nothing is missing and no step is skipped.
 * **Level-1 notes only**: this repository's gate names and what each costs,
