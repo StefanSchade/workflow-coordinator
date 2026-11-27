@@ -3,7 +3,7 @@
 ``.wfc/config.yaml`` and ``.wfc/governance/repository-policy.md`` are
 maintainer-owned baseline inputs (not Worker scope); this module only verifies
 them against the real parser, per the BP7 cutover plan's C1 acceptance
-(``docs/backlog/beta1_bp7_cutover_plan.adoc``, <<config-recommendation>> and
+(``docs/cold_storage/backlog/post-0.1.0b1/beta1_bp7_cutover_plan.adoc``, <<config-recommendation>> and
 <<sequence>> C1). Every assertion below names an exact committed value so a
 change to that value -- not just a missing block -- fails the test.
 """
