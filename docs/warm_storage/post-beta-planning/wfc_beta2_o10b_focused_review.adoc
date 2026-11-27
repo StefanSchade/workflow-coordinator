@@ -1,0 +1,178 @@
+= Beta-2 O10B quiescent-interruption recovery: independent focused review
+:toc:
+:toclevels: 2
+
+This record holds every independent focused-review pass that checks a
+correction Hop's fix of specific blocking Finding(s) raised against the
+Beta-2 slice O10B candidate for WorkItem `WI-WFC-BETA2-O10B-001` -- the
+per-class evaluation of a general reconcile-and-resume and the one class it
+ships, the proven-quiescent post-dispatch interruption. A focused review
+checks only the correction and the Finding(s) it was sent to resolve, not
+the whole candidate again; see
+`docs/warm_storage/post-beta-planning/wfc_beta2_o10b_broad_review.adoc` for
+the whole-candidate pass that opened F001. Later passes are added above
+earlier ones; earlier passes are kept unedited apart from the `(current)`
+marker, which moves to the newest pass.
+
+== Pass H004 -- `RUN-6f8e6810…` (current)
+
+Status:: *ACCEPT.* The single blocking Finding the H002 broad review opened
+-- F001, the false marker-retirement necessity claim stated in four places
+-- is resolved by the H003 correction, commit `464fdaf`. I did not take the
+Worker's account on trust: I re-opened every source location the correction
+touches or cites (`slice4.py:201`, `:239-246`, `commissioning.py:358`,
+`model.py:1122`, `operator.py:1022`, `lifecycle.py:1289-1304`,
+`lifecycle.py:1809-1812`, `:1991-1992`, `preservation.py:30-32`) and
+confirmed each corrected statement is exactly true of the source, and that
+no stale unqualified claim remains anywhere else in the diff's reach. No new
+blocking issue found.
+WorkItem:: `WI-WFC-BETA2-O10B-001`
+Run / Hop:: `RUN-6f8e68109aee4469a01f520db5ab1c20` / `H004` (`focused_review`,
+independent reviewer, gate, blocking-only, `finding_authority: resolve`).
+Invocation:: `INV-2441b9f0ca0f4d7d940db376920bfb2c`.
+Reviewed product:: the H003 correction commit
+`464fdaff3459f15cdad7ce6014614ae43facb4a3` over `2bdbf9f` (the H002 broad
+review commit): five leaves, `docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`,
+`docs/backlog/_open.adoc`, `docs/operator_manual/ch06_recovery/01_outcomes.adoc`,
+`src/workflow_coordinator/frontdoor/lifecycle.py`,
+`tests/unit/test_quiescent_interruption_reducer.py`. `git status --short
+-uall` shows only the pre-existing sandbox dotfiles untracked; the index is
+empty and no mutating Git command was run in this Hop.
+Governing Finding:: `F001`, opened `blocking=true` by the H002 broad review
+(`disposition=gate: open`, `blocking_origin=agent_proposal`,
+`ledger_authority=coordinator`, `introduced_by=H002`, `changed_by=H002`).
+
+=== 1. F001 -- resolved
+
+The Finding required that a normative statement about current behaviour be
+true of the behaviour the slice ships: all four places that asserted the
+marker retirement is *necessary* for the Run to progress -- the record's
+`Design` section, the normative Operator Manual chapter, the retirement's
+source comment, and a test docstring -- are false for the schema-2 Runs the
+Front Door actually creates, where an un-retired marker costs one wasted
+engine iteration rather than a stuck Run.
+
+The correction restates all four, qualified by schema version, consistently:
+fatal to liveness for a schema-3 Run (the cited stale-marker branch,
+unreachable today), one wasted engine iteration for the schema-2 Runs the
+Front Door creates (the branch below it, which retires the marker itself and
+returns the Run at `READY`), kept deliberately for both reasons. I re-derived
+every supporting fact from the source rather than from the correction's own
+prose:
+
+* `slice4.py:201` reads exactly
+  `if run.schema_version == 3 and existing.role == "uncertain_dispatch":` --
+  the branch the original four statements blamed is schema-3-gated.
+* `commissioning.py:358` renders every profile at `"schema_version": 2`, and
+  `model.py:1122` reads exactly `schema_version=3 if profile.schema_version
+  == 3 else 2` -- so the Front Door creates schema-2 Runs, confirming the
+  branch is unreachable through it today.
+* `slice4.py:240` (`if run.schema_version != 3:`) through `:246`
+  (`return RealHopRun(None, run, checkpoint, None)`) is the schema-2
+  re-entry: it writes a checkpoint, unlinks the stale marker itself
+  (`:245`) and returns the Run *unchanged* at its prior status, which is
+  `READY` on this path.
+* `operator.py:1022` (`while run.status is RunStatus.READY:`) is the loop
+  that then dispatches the next Hop normally -- the "one wasted engine
+  iteration" the correction claims, not a stuck Run.
+* `lifecycle.py:1289-1304`'s retirement comment was rewritten in the same
+  words as the record and the manual, and I read it at the corrected HEAD:
+  it states the identical schema-3/schema-2 split.
+
+I also grepped the diff's reach for any surviving unqualified "never
+progress"/"re-reconcile … forever" phrasing and found none outside the two
+places that now correctly scope it to the schema-3 case (the record's
+`Design` section and the lifecycle comment, both qualified). The test
+docstring (`test_quiescent_interruption_reducer.py:147-157`) now attributes
+the demonstrated reducer call to "the *schema-3* stale-marker branch"
+specifically and states the schema-2 cost correctly; the test body itself is
+unchanged (still drives the real schema-3-shaped call), so the correction is
+a docstring-accuracy fix, not a behaviour or assertion change. *Resolved.*
+
+=== 2. The two further limits folded into the same correction -- re-verified
+
+The correction also records two further honest limits in the record's
+`Design` section, in a Hop that was already touching the file. I checked
+both against source rather than trusting the account:
+
+* *A named refusal does not itself complete a pending candidate capture.*
+  `lifecycle.py:1991-1992` reads exactly `if recovered.classification ==
+  "refused_not_recoverable": return recovered` before the two calls to
+  `preservation.run_pending_preservation` and
+  `postrun.run_pending_postrun` that otherwise follow. The early return is
+  pre-existing and widened in reach by this slice, not introduced by it.
+  `lifecycle.py:1809-1812` confirms `wfc run` refuses first with
+  `refused_active_lifecycle` in the window this limit describes, and
+  `preservation.py:30-32`'s `_TRIGGER_CLASSIFICATIONS` still includes
+  `reconcile_required`, so no data is lost -- the capture runs as soon as
+  the stop is resolved by any other path, exactly as claimed.
+* `docs/backlog/_open.adoc`'s count was updated from four to five limits,
+  matching the record's `Design` section, which now lists five.
+
+=== 3. Front Door docs-sync -- confirmed unaffected
+
+This correction changes no Front Door behaviour: the diff is comments, one
+docstring, and documentation prose. I checked the shipped Agent Skill
+reference the correction's own summary says it did not touch
+(`src/workflow_coordinator/agent_skill/wfc/references/commission.md`): it is
+200 lines exactly (its pinned cap) and its only "retire" occurrence is about
+correction cost, unrelated to marker retirement, so no edit was owed there.
+
+=== 4. Gates I executed myself
+
+[cols="2,3,1",options="header"]
+|===
+|Gate |Command |Result
+
+|Strict render (all three changed `.adoc` files)
+|`asciidoctor --safe-mode=safe -a assembled -o /dev/null --failure-level=WARN <file>`,
+run once per file
+|*Nothing printed*, for each of the three.
+
+|Doc catalog
+|`python3 scripts/wfc_doc_catalog.py generate` then `check`
+|`622 records … unchanged`; `83 unresolved links; 4 Project Memory
+source_path misses` -- *exactly the baseline*, catalog current, no stray
+file left.
+
+|Index and tree
+|`git status --short -uall`
+|Clean; only the pre-existing sandbox dotfiles untracked.
+
+|Changed Python file
+|`python3 -I -m py_compile src/workflow_coordinator/frontdoor/lifecycle.py src/workflow_coordinator/slice4.py`
+|Compiles cleanly (`slice4.py` is read-only context for this correction, not
+part of the diff, but compiles too).
+
+|Lint / test re-execution
+|`python3 -m ruff check .` / `python3 -m pytest`
+|*Environmental limitation*, unchanged from prior passes: neither `ruff` nor
+`pytest` is installed in this sandbox and there is no network to install
+them. The corrected test module's logic was instead re-derived from source
+in section 1; no assertion was weakened, skipped or deleted (confirmed by
+`git show` of the diff: the docstring changes, the test body does not).
+|===
+
+The full evidence command (the Coordinator's task-check, real `bwrap`,
+offline bundle) is authoritative and is not re-executed here.
+
+=== 5. Non-blocking observations from the broad review
+
+The H002 broad review's five non-blocking observations were not all in
+scope for this bounded correction. Observations 1 and 2 (the stale citation
+anchor, the missing superseded-note) were folded into the H003 correction
+and I re-verified both: the record's "Three sources" paragraph no longer
+claims its pointers resolve at the Commission baseline, and the dated
+2026-11-26 "Pointer" section now carries a `NOTE` pointing to the `Design`
+section as superseding it. Observations 4 and 5 (the skill reference's
+dropped Finding condition; the preview's unconditional "would then do" line)
+were deliberately not actioned, with reasons the H003 summary gives and I
+checked: the skill file is at its pinned 200-line cap, and the preview line
+is a code change this correction did not block on. Neither is reopened here.
+
+=== 6. Route
+
+`renew_broad_review`. No blocking issue found in this focused review, so the
+route that hands back to the Worker does not apply; `robust@v1`'s
+structurally guaranteed renewed broad review is the only path to completion
+from here.
