@@ -648,17 +648,28 @@ def _sequence_evidence(repository: Path, *, failing: str | None = None, order_fi
 def test_probe_runs_the_whole_declared_sequence_in_declared_order(
     repository: Path, tmp_path: Path, state_home: Path, monkeypatch: pytest.MonkeyPatch,
 ):
-    """O7: the baseline probe is the same ordered sequence the task-check runs."""
+    """O7: the baseline probe is the same ordered sequence the task-check runs.
 
+    This drives the *whole* lifecycle, so the gate scripts record both
+    executions of the sequence: the pre-launch baseline probe, and then the
+    task-check of the one Worker Hop that `simple@v1` runs (its single
+    `implement` phase is gated). Asserting the concatenation of the two --
+    rather than the probe's prefix -- is what pins the slice's own
+    invariant: the identical commands, in the identical declared order, run
+    before any provider starts *and* after the Worker Hop.
+    """
+
+    declared = ["lint", "format-check", "task-check"]
     order_file = tmp_path / "probe-order.txt"
     monkeypatch.setenv("PROBE_ORDER_FILE", str(order_file))
     evidence = _sequence_evidence(repository)
     request_path = _write_request(repository, tmp_path / "request.yaml", evidence=evidence)
 
     inputs = _inputs(repository, request_path)
-    L.run_lifecycle(inputs)
+    result = L.run_lifecycle(inputs)
 
-    assert order_file.read_text(encoding="utf-8").split() == ["lint", "format-check", "task-check"]
+    assert result.classification == "completed"
+    assert order_file.read_text(encoding="utf-8").split() == declared * 2
 
 
 def test_probe_fails_fast_and_names_the_failing_command_with_its_untrusted_tail(

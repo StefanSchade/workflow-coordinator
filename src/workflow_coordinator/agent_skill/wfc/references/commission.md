@@ -74,8 +74,8 @@ run` requires, so keeping it in a sibling scratch directory (as above) needs
 no flag at all. Nothing here is authorized: it prints the same projected
 digests `wfc plan` prints, makes no Git mutation and no provider call, and
 its own closing line restates that `scope`/`program`/`personas`/
-`max_autonomous_hops`/`evidence.argv`/`authority_source` are this operator's
-own judgement, merely carried, never supplied or validated by this command.
+`max_autonomous_hops`/the ordered evidence commands/`authority_source` are
+this operator's own judgement, merely carried, never validated by it.
 `wfc run --request <path>` re-reads that file from a plain filesystem path,
 re-parses it under the closed schema and re-digests it exactly as it would a
 hand-authored one -- the emitted file grants no authority of its own.
