@@ -189,11 +189,17 @@ def test_skill_md_body_order_and_line_limits():
         "## Where exact facts come from",
     ]
     assert [line for _, line in headings] == expected
-    # The first three sections ("What this is", "Authorization", "Preflight")
-    # must lie entirely inside the first 80 lines: bounded by where the
-    # fourth heading ("When WFC fits...") begins.
+    # The guard's real intent is that the authority rules are reached before
+    # anything operational: "## Authorization" must begin early, and the
+    # first three sections must still end well inside the file.
+    # WI-WFC-BETA2-SK-001 raised the second bound from 80 to 95 lines,
+    # deliberately: section 1 now carries the Level-0/Level-1 separation,
+    # about twelve lines of load-bearing text it did not have before.
+    # Compressing the Authorization rules to stay under 80 would have been
+    # the wrong trade.
+    assert headings[1][0] <= 45
     fourth_heading_line_number = headings[3][0]
-    assert fourth_heading_line_number - 1 <= 80
+    assert fourth_heading_line_number - 1 <= 95
 
 
 def test_reference_files_are_linked_one_level_deep_and_line_bounded():
@@ -348,3 +354,186 @@ def test_stops_and_evidence_keeps_salvage_and_discard_as_human_judgment():
     )
     assert "human judgment" in normalized
     assert "nothing is discarded without that judgment" in normalized
+
+
+# ==========================================================================
+# WI-WFC-BETA2-SK-001 (slice SK): the shipped skill is the *generic* operator
+# guide. Consumer-specific operating knowledge lives in the consumer's own
+# committed operator notes, through the documented file convention. These
+# guards pin structure and location, never a particular wording.
+# ==========================================================================
+
+OPERATOR_NOTES_PATH = "docs/operator-notes.md"
+
+# Tokens that only ever describe one consumer's stack or one repository's
+# layout. Each one lived in a generic skill file before slice SK and now
+# belongs in that repository's own operator notes. `python3`/`pip` stay
+# admitted: the Runtime itself is a Python package, which is a fact about
+# WFC, not about any repository it operates on.
+CONSUMER_SPECIFIC_TOKENS = (
+    "WFC_TEST_INPUTS",
+    "WFC_TEST_PROFILE",
+    "egg-info",
+    "PYTHONPATH",
+    "wfc_prepare_checkout_env",
+    "test_self_development_consumer_config",
+    "Makefile",
+    "pytest",
+    "ruff",
+    "make lint",
+    "make test",
+    "make check",
+    "make format-check",
+    "make docs-render",
+    "make check-docs",
+)
+
+# Every authority rule the skill must keep stating, each as the smallest set
+# of substrings that carries its *meaning*. They are matched against the
+# whole skill (entry file plus references) so that moving a rule between
+# files is free and losing it is not.
+AUTHORITY_RULES = {
+    "--yes asserts, never verifies": ("`--yes`", "asserts that authorization"),
+    "delegation covers later launches": (
+        "Existing delegation",
+        "covers every launch inside it",
+        "across technical execution attempts",
+    ),
+    "no self-initiated widening": (
+        "widening scope, authority, program or Hop budget",
+        "binding a role to a model the human did not approve",
+    ),
+    "no self-initiated budget extension": (
+        "an agent never extends a budget on its own",
+        "maintainer's explicit instruction in the current session",
+    ),
+    "no promotion, publication or reinstallation": (
+        "a push, tag, publication or configuration change",
+        "Runtime promotion or any change of the installed WFC version",
+        "installing or reinstalling this skill",
+    ),
+    "stop disposition stays with the human": (
+        "judging a stop's disposition",
+        "nothing is discarded without that judgment",
+    ),
+    "Finding authority is the reviewer's alone": (
+        "Open or resolve a Finding.",
+        "only ever opened or resolved by the independent reviewer",
+    ),
+    "the ceiling bounds but does not approve": (
+        "bounds a Commission; it does not approve one",
+    ),
+    "nothing under .git/ is edited by hand": (
+        "Remove or edit anything under `.git/` by hand",
+    ),
+    "operator notes confer no authority": (
+        "advice only, never authority",
+        "No authority, ever.",
+    ),
+}
+
+
+def _all_skill_text() -> str:
+    return _normalized(
+        "\n".join(path.read_text(encoding="utf-8") for path in ALL_SKILL_FILES)
+    )
+
+
+def _skill_section(heading: str) -> str:
+    lines = SKILL_FILE.read_text(encoding="utf-8").splitlines()
+    start = next(index for index, line in enumerate(lines) if line.startswith(heading))
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].startswith("## ")),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
+
+
+@pytest.mark.parametrize("path", ALL_SKILL_FILES, ids=lambda p: p.name)
+def test_generic_skill_names_no_consumer_stack_or_repository_layout(path):
+    text = path.read_text(encoding="utf-8")
+    present = [token for token in CONSUMER_SPECIFIC_TOKENS if token in text]
+    assert not present, (
+        f"{path.name} names consumer-specific facts {present}; they belong in that "
+        f"repository's own {OPERATOR_NOTES_PATH}"
+    )
+
+
+@pytest.mark.parametrize("rule", sorted(AUTHORITY_RULES), ids=lambda name: name)
+def test_every_authority_rule_is_still_stated_somewhere_in_the_skill(rule):
+    combined = _all_skill_text()
+    missing = [part for part in AUTHORITY_RULES[rule] if part not in combined]
+    assert not missing, f"authority rule {rule!r} lost its statement(s): {missing}"
+
+
+def test_operator_notes_convention_is_documented_with_its_boundaries():
+    """The convention is a contract between the skill and a consumer
+    repository: the path, where it is read from, that it is optional, that it
+    grants nothing, and that it is not the Worker's guidance file."""
+    entry = SKILL_FILE.read_text(encoding="utf-8")
+    setup = (SKILL_ROOT / "references/setup.md").read_text(encoding="utf-8")
+    assert OPERATOR_NOTES_PATH in entry
+    assert OPERATOR_NOTES_PATH in setup
+    # Read from committed history, never from a working tree or a candidate.
+    assert f"git show <base-ref>:{OPERATOR_NOTES_PATH}" in entry
+    assert f"git show <base-ref>:{OPERATOR_NOTES_PATH}" in setup
+    normalized_setup = _normalized(setup)
+    assert "never a working tree and never a Run's candidate" in normalized_setup
+    # Optional, no authority, and distinct from the Commission's guidance file.
+    assert "nothing is missing" in _normalized(entry)
+    assert "No authority, ever." in setup
+    assert "guidance.path" in setup
+
+
+def test_skill_states_level_0_and_level_1_and_sequential_multi_run_operation():
+    """Level 0 executes one Commission per Run; sequencing several Runs is
+    Level 1's own ordinary work. The old text called chaining Commissions a
+    case where WFC "does not fit", which is a Level-0 fact stated as a
+    Level-1 limit."""
+    what_this_is = _normalized(_skill_section("## What this is"))
+    assert "Level 0 is WFC" in what_this_is
+    assert "exactly one Commission per Run" in what_this_is
+    assert "Level 1 is you" in what_this_is
+    fit = _normalized(_skill_section("## When WFC fits"))
+    assert "in sequence" in fit
+    assert "chaining several Commissions" not in fit
+    # The authority boundary around parallel Runs is not widened by any of it.
+    assert "need a delegation that covers running them in parallel" in fit
+
+
+def test_loop_section_says_which_reference_and_the_notes_check_belong_where():
+    """Progressive disclosure: the references are links an agent follows, so
+    the entry file must say at which step to open each one."""
+    loop = _skill_section("## The loop")
+    for reference in REFERENCE_FILES:
+        assert f"references/{reference.name}" in loop, (
+            f"the loop never says when to open references/{reference.name}"
+        )
+    assert OPERATOR_NOTES_PATH in loop
+
+
+def test_every_tag_pinned_skill_file_is_covered_by_the_release_bump_surface():
+    """A skill file carrying a tag-pinned manual link must be named in
+    `scripts/wfc_release_prepare.py`'s enumerated surface, or the release
+    step would leave it pinned to the previous version."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "wfc_release_prepare_for_skill_test", ROOT / "scripts/wfc_release_prepare.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    covered = {
+        site.path
+        for site in module.surface(VERSION, "9.9.9")
+        if site.rule == "tag_pinned_url"
+    }
+    for path in ALL_SKILL_FILES:
+        text = path.read_text(encoding="utf-8")
+        if "github.com/StefanSchade/workflow-coordinator/blob/" not in text:
+            continue
+        relative = path.relative_to(ROOT).as_posix()
+        assert relative in covered, (
+            f"{relative} carries a tag-pinned link but is not in the release "
+            f"bump surface"
+        )

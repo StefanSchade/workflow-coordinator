@@ -1,7 +1,8 @@
 # Commission authoring
 
 Distils Operator Manual chapter 2,
-[Commission authoring](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/operator_manual/ch02_commissioning/02_authoring.adoc).
+[Commission authoring](https://github.com/StefanSchade/workflow-coordinator/blob/v0.1.0b1/docs/operator_manual/ch02_commissioning/02_authoring.adoc),
+as released with v0.1.0b1.
 
 ## Task document
 
@@ -24,9 +25,9 @@ wfc plan task.md --repository . \
   --authority-source "Repository owner authorizes this bounded task." \
   --program simple@v1 \
   --persona worker="Bounded worker persona." \
-  --evidence-command lint --evidence-argv make --evidence-argv lint \
+  --evidence-command lint --evidence-argv <lint-argv-token> \
   --evidence-timeout 120 \
-  --evidence-command task-check --evidence-argv make --evidence-argv test \
+  --evidence-command task-check --evidence-argv <test-argv-token> \
   --guidance-path .wfc/governance/repository-policy.md
 ```
 
@@ -34,35 +35,28 @@ wfc plan task.md --repository . \
 directory-scoped) mutation boundary. `--program` is `simple@v1` or
 `robust@v1` (`direct@v1` is withheld). `--persona` is repeatable, one per
 required program role. `--durable-artifact PHASE=PATH` is `robust@v1` only.
+`--execution-override ROLE.FIELD=VALUE` adjusts one resolved binding field;
+`setup.md` holds the precedence and the YAML shape, and the same
+one-adapter/`--executable` rule applies at launch.
 
 The evidence flags declare an **ordered sequence of named commands**:
 `--evidence-command NAME` opens a gate, and the `--evidence-argv TOKEN`
-(repeatable) and optional `--evidence-timeout SECONDS` (default and maximum
-900, **per command**) that follow belong to it. Tokens given before any
-`--evidence-command` belong to an implicit first gate named `task-check`, so
-`--evidence-argv sh --evidence-argv checks/check.sh` alone still means what
-it always did. `wfc plan` prints the gates in order with the worst-case
-total.
+(repeatable, one token per flag) and optional `--evidence-timeout SECONDS`
+(default and maximum 900, **per command**) that follow belong to it. Tokens
+given before any `--evidence-command` belong to an implicit first gate named
+`task-check`, so a single `--evidence-argv` pair alone still means what it
+always did. `wfc plan` prints the gates in order with the worst-case total.
 
 ## `wfc request`: emitting the Consumer Request
 
-`wfc request` takes exactly the same fields as `wfc plan` above (the same
-task document and flags) plus an explicit `--output PATH`, and writes the
-Consumer Request YAML `wfc plan` would preview to that path -- byte for
-byte the same request-construction path, so the two commands' projected
-digests are always identical for identical inputs:
+`wfc request` takes exactly the same task document and flags as `wfc plan`,
+plus an explicit `--output PATH`, and writes the Consumer Request YAML
+`wfc plan` would preview -- byte for byte the same request-construction path,
+so the two commands' projected digests are always identical for identical
+inputs:
 
 ```shell
-wfc request task.md --repository . \
-  --scope src \
-  --commission-id example-001 --work-item-id WI-EXAMPLE-001 \
-  --authority-source "Repository owner authorizes this bounded task." \
-  --program simple@v1 \
-  --persona worker="Bounded worker persona." \
-  --evidence-command lint --evidence-argv make --evidence-argv lint \
-  --evidence-timeout 120 \
-  --evidence-command task-check --evidence-argv make --evidence-argv test \
-  --guidance-path .wfc/governance/repository-policy.md \
+wfc request task.md --repository . <the same flags as above> \
   --output ../wfc-scratch/request.yaml
 ```
 
@@ -71,23 +65,14 @@ Refuses, before any write: an already-existing `--output` file (pass
 worktree (pass `--allow-inside-repository` to allow it) -- an emitted,
 uncommitted file inside the tree would dirty exactly the clean tree `wfc
 run` requires, so keeping it in a sibling scratch directory (as above) needs
-no flag at all. Nothing here is authorized: it prints the same projected
-digests `wfc plan` prints, makes no Git mutation and no provider call, and
-its own closing line restates that `scope`/`program`/`personas`/
-`max_autonomous_hops`/the ordered evidence commands/`authority_source` are
-this operator's own judgement, merely carried, never validated by it.
-`wfc run --request <path>` re-reads that file from a plain filesystem path,
-re-parses it under the closed schema and re-digests it exactly as it would a
-hand-authored one -- the emitted file grants no authority of its own.
-
-## Consumer Request fields
-
-The fields above are `schema_version: 1`, `commission_id`, `work_item_id`,
-`authority_source`, `program`, `task:`, `scope:`, `personas:`, `evidence:`,
-`max_autonomous_hops`, an explicit `durable_artifacts:` (normally `{}` for
-`simple@v1`) and `guidance:`. `wfc plan` does not write this file -- only
-`wfc request` does; `wfc run` reads it from `--request` by plain filesystem
-path, so it need not live inside the repository.
+no flag at all. It authorizes nothing: no Git mutation, no provider call, and
+its closing line restates that scope, program, personas, Hop budget, the
+ordered evidence commands and `authority_source` are this operator's own
+judgement, merely carried, never validated by it. `wfc run --request <path>`
+re-reads the file from a plain filesystem path -- so it need not live inside
+the repository -- re-parses it under the closed schema and re-digests it
+exactly as it would a hand-authored one; the emitted file grants no authority
+of its own.
 
 ## Commission-authoring rules
 
@@ -98,35 +83,27 @@ path, so it need not live inside the repository.
   writing it into a Commission adopts the error.
 * **Check the basis document's baseline.** When a task is commissioned from
   a document that itself names a base commit or a comparison point, check
-  that baseline against the current `main` before commissioning, and state
-  any drift in the task text; a basis document that is many commits stale
-  can carry claims the repository has already outgrown.
+  that baseline against the current integration branch before commissioning,
+  and state any drift in the task text; a basis document that is many commits
+  stale can carry claims the repository has already outgrown.
 * **A temporary scope-ceiling entry and its pinning test move together.**
   If a task needs a maintainer-granted temporary entry in
-  `.wfc/config.yaml`'s `work_item_scope_ceiling`, state that the repository's
-  own test asserting the exact committed ceiling list (for example
-  `tests/unit/test_self_development_consumer_config.py:42-48`) must be
-  updated in the same worktree-local base commit, or the next Run's baseline
-  probe fails before any provider runs.
+  `.wfc/config.yaml`'s `work_item_scope_ceiling`, and the repository has a
+  test asserting the exact committed ceiling list, state in the task that the
+  test must be updated in the same worktree-local base commit -- otherwise
+  the next Run's baseline probe fails before any provider runs.
 * **State the commit mechanics explicitly.** Remind the Worker in the task
   text: no `git add`/`git commit`/other Git mutation -- report a
   `CommitIntent` instead -- and the `CommitIntent.subject` must carry the
   WorkItem id and the current Hop id (for example
   `feat(x): <summary> (WI-..., H00N)`); a subject missing either stops the
   Run mechanically (`WFC-GIT-08`), not through review.
-
-## Execution bindings and `--executable`
-
-`wfc plan`/`wfc run` resolve each role's adapter/model/reasoning from
-`.wfc/config.yaml`'s `default_execution`, any `--execution-override
-ROLE.FIELD=VALUE`, then `phase_execution`; see `setup.md` for the full
-precedence and the YAML shape. All effective bindings in a Run share one
-adapter, and `wfc run --executable` must match it (`--executable claude`
-for `claude_cli`, `--executable codex`, the default, for `codex_cli`). WFC
-refuses an unambiguous cross-adapter mismatch before dispatch -- a bare
-`--executable` name resolving to the *other* adapter's own known binary --
-but never an explicit path or an unrecognized bare name; get it right at
-launch time regardless of this narrow safety net.
+* **A note is not an escalation.** A `CommitIntent` is permitted only with a
+  clean disposition -- no escalation, no `scope_changed`, no `requires_human`;
+  combined with any of them it stops the Run mechanically before task-check
+  and review, and the candidate then needs salvage and a successor. Say in
+  the task text that a stale or out-of-scope statement the work uncovers is
+  reported as a note in a `completed` result.
 
 ## Scope and the scope ceiling
 
@@ -135,12 +112,13 @@ in `.wfc/config.yaml`'s `--scope-ceiling`; a root-level file must be listed
 individually, never implied by a sibling directory. A Commission that moves
 or deletes many files must list every directory or file holding a link into
 the moved paths -- an unlisted consumer stops the Run after the work is
-done.
+done. Derive that list mechanically: search the repository for the statement
+or path the work retires, before launching.
 
 ## `simple@v1` versus `robust@v1`
 
-`simple@v1`: a sole Worker self-checks and the Coordinator runs the
-`task-check`; no independent review/correction loop. `robust@v1`: fresh
+`simple@v1`: a sole Worker self-checks and the Coordinator runs the evidence
+sequence; no independent review/correction loop. `robust@v1`: fresh
 independent review and, when warranted, correction and renewed broad
 review. Choose per package: a small, low-risk package is a reasonable
 `simple@v1` candidate; anything whose acceptance should rest on adversarial
@@ -156,33 +134,33 @@ stop. Such a Run can be continued in place with `wfc extend-budget`, but
 only on the maintainer's explicit instruction in the current session and
 within its bounds (at most four Hops per call, in total at most half the
 ceiling this Commission admitted) -- *an agent never extends a budget on its
-own* (`references/stops-and-evidence.md`). Plan the ceiling so you never
-need it. Budget using observed convergence, not the
-expected count: a narrow, Hop-scoped package written against a controlling
-record has converged in roughly 2-5 Hops under `robust@v1`, a broad task
-without one in roughly 7-12; a retire-heavy correction (removing a mechanism
-and its tests, plus a docs-sync pass) has needed roughly twice the otherwise
-expected count, so budget that shape accordingly rather than assuming the
-usual multiplier covers it.
+own* (`stops-and-evidence.md`). Plan the ceiling so you never need it.
+
+Budget from convergence actually observed in this repository -- its own
+operator notes are where such figures belong -- not from the expected count,
+and widen the ceiling for a shape that has historically needed it (a
+retire-heavy change that removes a mechanism, its tests and the statements
+about it across documents). A figure measured once in one repository is an
+observation, not a rule for the next.
 
 ## The evidence commands and their baseline probe
 
 A Commission declares an **ordered sequence of named trusted commands**, each
 with its own timeout of at most 900 seconds (a per-command cap: the
-sequence's worst case is the sum). **The sequence must cover the
-repository's own deterministic gates, not only its tests, cheap ones
-first** -- for this repository `lint` (`make lint`), `format-check`
-(`make format-check`), `task-check` (`make test`), plus `docs-render`
-(`make docs-render`) when the Commission writes documentation. They run in
-the declared order and stop at the first failure, which the diagnostic names,
-so a lint residue costs one cheap gate instead of a test suite. A sequence
-that runs tests alone can pass ten Hops and two Broad Reviews while one
-lint-only defect (an unused import left by a removal) goes undetected,
-because no test node runs the linter; reviewer and Worker Hops are not a
-substitute for a cheap deterministic check. One conflated command
-(`make check`, or a wrapper script) is still admitted as the degenerate
-one-element sequence, but it is no longer the rule: it reports one exit code
-for every gate and cannot fail fast at the cheap one.
+sequence's worst case is the sum). **The sequence must be the repository's
+own deterministic gates, not only its tests, cheapest first** -- typically a
+linter, then a formatting check, then the test suite, plus whatever gate
+covers the kind of artifact this Commission writes (a documentation render,
+for example). The repository names them; this skill does not. They run in the
+declared order and stop at the first failure, which the diagnostic names, so
+a lint residue costs one cheap gate instead of a test suite. A sequence that
+runs tests alone can pass ten Hops and two Broad Reviews while one lint-only
+defect (an unused import left by a removal) goes undetected, because no test
+node runs the linter; reviewer and Worker Hops are not a substitute for a
+cheap deterministic check. One conflated command (an aggregate target or a
+wrapper script) is still admitted as the degenerate one-element sequence, but
+it is no longer the rule: it reports one exit code for every gate and cannot
+fail fast at the cheap one.
 
 The identical sequence runs first, in the same order, before any provider
 starts, as a mandatory pre-launch baseline probe: every command must already
